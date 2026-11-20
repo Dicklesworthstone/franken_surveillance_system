@@ -1475,6 +1475,13 @@ impl LocalRootPublisher {
         self.injected_crash = Some(point);
     }
 
+    /// Arms the spool's one-shot laboratory crash inside the next object stage, before
+    /// publication. Reopening observes the same bytes left by that staging cut point.
+    #[doc(hidden)]
+    pub fn inject_staging_crash_after(&mut self, phase: fss_object::StagePhase) {
+        self.spool.inject_crash_after(phase);
+    }
+
     fn require_live(&self) -> Result<(), LocalPublicationError> {
         if self.poisoned {
             return Err(LocalPublicationError::Poisoned);

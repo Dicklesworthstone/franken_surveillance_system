@@ -114,20 +114,82 @@ fn recorded(receipt: &FileIngestReceipt) -> Result<&FileAcquisitionHistory, Box<
         .ok_or_else(|| "a new import must record its acquisition".into())
 }
 
-fn caplog(outcome: &str, history: &FileAcquisitionHistory) {
+const COMPLETED: &[AcquisitionStateKind] = &[
+    Requested,
+    Authenticated,
+    AdapterAccepted,
+    Degraded,
+    Cancelled,
+];
+const FAILED_AFTER_DEGRADATION: &[AcquisitionStateKind] =
+    &[Requested, Authenticated, AdapterAccepted, Degraded, Failed];
+const INDETERMINATE_AFTER_DEGRADATION: &[AcquisitionStateKind] = &[
+    Requested,
+    Authenticated,
+    AdapterAccepted,
+    Degraded,
+    Indeterminate,
+];
+
+fn caplog(
+    outcome: &str,
+    history: &FileAcquisitionHistory,
+    kinds: &[AcquisitionStateKind],
+    ending: &str,
+    retained: bool,
+) -> TestResult {
+    let request = history.session().request();
+    let src = &request.source_identity.source_id;
+    let dev = &request.device_identity.device_id;
+    let adp = &request.adapter_identity.adapter_id;
+    let terminal_digest = match history.session().state() {
+        AcquisitionState::Failed { failure, .. } => {
+            failure.verify(src, dev, adp)?;
+            failure.witness_digest()
+        }
+        AcquisitionState::Cancelled { quiescence, .. } => {
+            quiescence.verify(adp, dev, src)?;
+            quiescence.receipt_digest()
+        }
+        AcquisitionState::Indeterminate { witness, .. } => {
+            witness.verify(src, dev, adp)?;
+            witness.witness_digest()
+        }
+        _ => return Err("expected a concluded file acquisition".into()),
+    };
+    let absent = matches!(history.absence_claim(), Err(AcquisitionError::AbsenceClaimForbidden { state, .. })
+                          if state == history.terminal());
+    let passed = history.kinds() == kinds
+        && history.ending().as_str() == ending
+        && history.retained() == retained
+        && absent
+        && history
+            .records()
+            .first()
+            .is_some_and(|r| r.witness_digest == request.request_digest())
+        && history
+            .records()
+            .last()
+            .is_some_and(|r| r.witness_digest == terminal_digest);
     let digests: Vec<String> = history
         .records()
         .iter()
         .map(|r| format!("\"{}\"", r.witness_digest))
         .collect();
     println!(
-        "CAPLOG {{\"bead\":\"fss-2h5zq.25\",\"step\":\"{outcome}\",\"observed\":\"{}\",\"terminal\":\"{}\",\"ending\":\"{}\",\"retained\":{},\"witness_digests\":[{}]}}",
+        "CAPLOG {{\"step\":\"{outcome}\",\"verdict\":\"{}\",\"observed\":{{\"kinds\":\"{}\",\"terminal\":\"{}\",\"ending\":\"{}\",\"retained\":{},\"absence_refused\":{absent},\"witness_digests\":[{}]}}}}",
+        if passed { "pass" } else { "fail" },
         history.kinds_text(),
         history.terminal().as_str(),
         history.ending().as_str(),
         history.retained(),
         digests.join(",")
     );
+    assert!(
+        passed,
+        "{outcome}: expected {kinds:?} ending {ending}, retained {retained}"
+    );
+    Ok(())
 }
 
 /// Decodes `fss.canonical.v1 | domain | value` bytes, checking the content digest.
@@ -234,7 +296,7 @@ fn complete_h264_import_retains_end_of_file_history() -> TestResult {
     )?;
     assert_eq!(receipt.outcome, FileIngestOutcome::New);
     let history = recorded(&receipt)?;
-    caplog("complete", history);
+    caplog("complete", history, COMPLETED, "end_of_file_source", true)?;
 
     assert_eq!(
         history.kinds(),
@@ -315,6 +377,19 @@ fn complete_h264_import_retains_end_of_file_history() -> TestResult {
         degradation.invalidated_negative_claims,
         vec!["absence".to_owned()]
     );
+    // Test the gate at the recorded loss of coverage, before the file is drained.
+    let mut degraded = fss_core::AcquisitionSession::new(request.clone())?;
+    degraded.authenticate(auth, transitions[1].0.timestamp_ns)?;
+    degraded.accept(ack, transitions[2].0.timestamp_ns)?;
+    degraded.degrade(degradation, transitions[3].0.timestamp_ns)?;
+    assert_eq!(degraded.history(), &history.records()[..4]);
+    assert!(matches!(
+        degraded.check_absence_claim_allowed(),
+        Err(AcquisitionError::AbsenceClaimForbidden {
+            state: Degraded,
+            ..
+        })
+    ));
     let quiescence: QuiescenceReceipt = decode_retained(
         &transitions[4].1,
         QuiescenceReceipt::SCHEMA,
@@ -331,7 +406,14 @@ fn complete_h264_import_retains_end_of_file_history() -> TestResult {
     );
 
     // Secret-free: the operator principal never reaches a retained acquisition object.
-    for (_, witness) in &transitions {
+    let encoded = fss_ledger::encode_batch(manifest_batch)?;
+    assert!(
+        !encoded
+            .windows(PRINCIPAL_MARKER.len())
+            .any(|w| w == PRINCIPAL_MARKER.as_bytes())
+    );
+    for child in &manifest_batch.children {
+        let witness = deployment.publisher().spool().read(*child)?;
         assert!(
             !witness
                 .windows(PRINCIPAL_MARKER.len())
@@ -353,7 +435,7 @@ fn truncated_and_gapped_mjpeg_degrade_with_named_dimensions() -> TestResult {
         &mut deployment,
     )?;
     let history = recorded(&truncated)?;
-    caplog("truncated", history);
+    caplog("truncated", history, COMPLETED, "end_of_file_source", true)?;
     assert_eq!(
         history.kinds(),
         vec![
@@ -381,7 +463,13 @@ fn truncated_and_gapped_mjpeg_degrade_with_named_dimensions() -> TestResult {
         &mut deployment,
     )?;
     let history = recorded(&garbage)?;
-    caplog("malformed_gaps", history);
+    caplog(
+        "malformed_gaps",
+        history,
+        COMPLETED,
+        "end_of_file_source",
+        true,
+    )?;
     assert_eq!(history.terminal(), Cancelled);
     let lost = retained_degradation(&deployment, &garbage)?.lost_dimensions;
     assert!(
@@ -419,7 +507,7 @@ fn cancellation_mid_import_ends_operator_cancel_and_retains_nothing() -> TestRes
             .acquisition
             .as_ref()
             .ok_or("an accepted import has a session")?;
-        caplog(label, history);
+        caplog(label, history, COMPLETED, "operator_cancel", false)?;
         assert_eq!(
             history.kinds(),
             vec![
@@ -465,7 +553,13 @@ fn refused_input_fails_through_the_core_with_a_failure_witness() -> TestResult {
         FileIngestError::CaptureHintAfterReceive { .. }
     ));
     let history = failure.acquisition.as_ref().ok_or("session expected")?;
-    caplog("refused", history);
+    caplog(
+        "refused",
+        history,
+        &[Requested, Authenticated, Failed],
+        "failed",
+        false,
+    )?;
     assert_eq!(history.kinds(), vec![Requested, Authenticated, Failed]);
     assert_eq!(
         history.ending(),
@@ -538,7 +632,13 @@ fn capacity_failure_after_degradation_is_failed_and_leaves_no_history() -> TestR
         FileIngestError::SpoolCapacityExceeded { .. }
     ));
     let history = failure.acquisition.as_ref().ok_or("session expected")?;
-    caplog("capacity", history);
+    caplog(
+        "capacity",
+        history,
+        FAILED_AFTER_DEGRADATION,
+        "failed",
+        false,
+    )?;
     assert_eq!(
         history.kinds(),
         vec![Requested, Authenticated, AdapterAccepted, Degraded, Failed]
@@ -590,7 +690,13 @@ fn completion_failure_after_capsules_is_indeterminate() -> TestResult {
         .ok_or("failed completion must fail")?;
         assert!(matches!(failure.error, FileIngestError::Reference(_)));
         let history = failure.acquisition.as_ref().ok_or("session expected")?;
-        caplog("indeterminate", history);
+        caplog(
+            "indeterminate",
+            history,
+            INDETERMINATE_AFTER_DEGRADATION,
+            "indeterminate",
+            false,
+        )?;
         assert_eq!(
             history.kinds(),
             vec![
@@ -640,7 +746,13 @@ fn import_resumed_after_cancellation_retains_history_once() -> TestResult {
     let mut deployment = ReferenceDeployment::reopen(&dir, &site(label), &cx)?;
     let receipt = FileIngestAdapter::ingest(request(path, label)?, &cx, &mut deployment)?;
     let history = recorded(&receipt)?;
-    caplog("resumed_after_cancel", history);
+    caplog(
+        "resumed_after_cancel",
+        history,
+        COMPLETED,
+        "end_of_file_source",
+        true,
+    )?;
     assert_eq!(
         history.kinds(),
         vec![
@@ -676,7 +788,13 @@ fn retained_history_survives_reopen_and_reimport_is_idempotent() -> TestResult {
     let mut deployment = ReferenceDeployment::reopen(&dir, &site(label), &cx)?;
     let reopened = AcquisitionRetention::open(&deployment, first.import_identity)?;
     let reopened_history = reopened.history().ok_or("history must be recorded")?;
-    caplog("reopened", reopened_history);
+    caplog(
+        "reopened",
+        reopened_history,
+        COMPLETED,
+        "end_of_file_source",
+        true,
+    )?;
     assert_eq!(reopened_history, &history);
     assert_eq!(reopened_history.records(), history.records());
     assert_absence_forbidden(reopened_history, Cancelled);
@@ -707,5 +825,193 @@ fn reopen_refuses_unknown_imports_and_replays_exactly() -> TestResult {
     // The recorded history replays to exactly the retained records.
     let reopened = AcquisitionRetention::open(&deployment, receipt.import_identity)?;
     assert_eq!(reopened, receipt.acquisition);
+    Ok(())
+}
+
+#[test]
+fn malformed_mid_file_fails_without_publishing_earlier_units() -> TestResult {
+    let label = "malformed_mid_file";
+    let dir = fresh_dir(label)?;
+    let cx = test_cx(label)?;
+    let mut dep = ReferenceDeployment::open(&dir, &site(label), &cx)?;
+    let mut bytes = fs::read(fixture("h264/clean.264")?)?;
+    // An ordinary invalid header between otherwise valid NAL units.
+    let offset = bytes.len() + 3;
+    bytes.extend_from_slice(&[0, 0, 1, 0x89, 0xf0, 0, 0, 1, 9, 0xf0]);
+    let file = scratch("malformed-mid-file.264");
+    fs::write(&file, bytes)?;
+    let failure = FileIngestAdapter::ingest_with_session(request(file, label)?, &cx, &mut dep)
+        .expect_err("the forbidden bit must refuse this file");
+    assert!(
+        matches!(failure.error,
+        FileIngestError::AnnexB(fss_reference::ingest::annexb::AnnexBError::ForbiddenBitSet { offset: at, .. })
+            if at == offset),
+        "{:?}",
+        failure.error
+    );
+    let history = failure.acquisition.as_ref().ok_or("session expected")?;
+    caplog(
+        label,
+        history,
+        &[Requested, Authenticated, AdapterAccepted, Failed],
+        "failed",
+        false,
+    )?;
+    drop(dep);
+    let reopened = ReferenceDeployment::reopen(&dir, &site(label), &cx)?;
+    assert!(reopened.ledger().batches().is_empty());
+    Ok(())
+}
+
+#[test]
+fn crash_before_first_publication_leaves_no_ledger_batch_on_reopen() -> TestResult {
+    let label = "crash_before_publish";
+    let dir = fresh_dir(label)?;
+    let cx = test_cx(label)?;
+    let source = fixture("mjpeg/mjpeg_clean_3frames.mjpeg")?;
+    let mut dep = ReferenceDeployment::open(&dir, &site(label), &cx)?;
+    dep.publisher_mut()
+        .inject_staging_crash_after(fss_object::StagePhase::AfterStagingWrite);
+    let failure =
+        FileIngestAdapter::ingest_with_session(request(source.clone(), label)?, &cx, &mut dep)
+            .expect_err("staging interrupted before the first publication");
+    assert!(
+        matches!(
+            failure.error,
+            FileIngestError::LocalPublication(fss_publication::LocalPublicationError::Spool(
+                fss_object::SpoolError::InjectedCrash {
+                    phase: fss_object::StagePhase::AfterStagingWrite
+                }
+            ))
+        ),
+        "{:?}",
+        failure.error
+    );
+    caplog(
+        label,
+        failure.acquisition.as_ref().ok_or("session expected")?,
+        FAILED_AFTER_DEGRADATION,
+        "failed",
+        false,
+    )?;
+    drop(dep);
+    let mut reopened = ReferenceDeployment::reopen(&dir, &site(label), &cx)?;
+    assert!(reopened.ledger().batches().is_empty());
+    let receipt = FileIngestAdapter::ingest(request(source, label)?, &cx, &mut reopened)?;
+    assert_eq!(receipt.outcome, FileIngestOutcome::New);
+    assert_eq!(
+        receipt.acquisition,
+        AcquisitionRetention::open(&reopened, receipt.import_identity)?
+    );
+    Ok(())
+}
+
+#[test]
+fn first_capsule_append_requires_reconciliation_on_both_sides_of_the_commit() -> TestResult {
+    for (label, phase, committed) in [
+        ("first_append_body", AppendPhase::BodyWrite, false),
+        ("first_append_commit", AppendPhase::CommitSync, true),
+    ] {
+        let dir = fresh_dir(label)?;
+        let cx = test_cx(label)?;
+        let source = fixture("h264/clean.264")?;
+        let mut dep = ReferenceDeployment::open(&dir, &site(label), &cx)?;
+        dep.fail_ledger_append_after_phase(phase);
+        let failure =
+            FileIngestAdapter::ingest_with_session(request(source.clone(), label)?, &cx, &mut dep)
+                .expect_err("the acknowledgement is indeterminate");
+        assert!(
+            matches!(&failure.error,
+            FileIngestError::Reference(fss_reference::ReferenceError::Publication(
+                fss_publication::PublicationError::Ledger(fss_ledger::DurableLedgerError::Journal(
+                    fss_ledger::JournalError::AppendIndeterminate { phase: at, .. },
+                )),
+            )) if *at == phase),
+            "{:?}",
+            failure.error
+        );
+        let history = failure.acquisition.as_ref().ok_or("session expected")?;
+        caplog(
+            label,
+            history,
+            INDETERMINATE_AFTER_DEGRADATION,
+            "indeterminate",
+            false,
+        )?;
+        let blocked =
+            FileIngestAdapter::ingest_with_session(request(source.clone(), label)?, &cx, &mut dep)
+                .expect_err("a retry cannot resolve the pending append");
+        assert!(
+            matches!(
+                &blocked.error,
+                FileIngestError::Reference(fss_reference::ReferenceError::Publication(
+                    fss_publication::PublicationError::Ledger(
+                        fss_ledger::DurableLedgerError::Journal(
+                            fss_ledger::JournalError::ReconciliationRequired { .. }
+                        )
+                    )
+                ))
+            ),
+            "{:?}",
+            blocked.error
+        );
+        assert_eq!(
+            blocked
+                .acquisition
+                .as_ref()
+                .map(FileAcquisitionHistory::terminal),
+            Some(Indeterminate)
+        );
+        let result = dep
+            .ledgered_publisher()
+            .reconcile_ledger_append(fss_reference::IncompleteTailPolicy::Truncate)?;
+        assert!(matches!(
+            (committed, result),
+            (
+                true,
+                fss_ledger::DurableAppendReconciliation::Committed { .. }
+            ) | (
+                false,
+                fss_ledger::DurableAppendReconciliation::NotCommitted { .. }
+            )
+        ));
+        drop(dep);
+        let mut reopened = ReferenceDeployment::reopen(&dir, &site(label), &cx)?;
+        assert_eq!(reopened.ledger().batches().len(), usize::from(committed));
+        let receipt = FileIngestAdapter::ingest(request(source, label)?, &cx, &mut reopened)?;
+        assert_eq!(
+            receipt.outcome,
+            if committed {
+                FileIngestOutcome::Resumed
+            } else {
+                FileIngestOutcome::New
+            }
+        );
+        let retained = AcquisitionRetention::open(&reopened, receipt.import_identity)?;
+        assert_eq!(retained, receipt.acquisition);
+        let completed = retained.history().ok_or("retained recovery")?;
+        let mut resolved = completed.session().state().clone();
+        let AcquisitionState::Cancelled { prior_state, .. } = &mut resolved else {
+            return Err("reopened completion must carry a quiescence receipt".into());
+        };
+        *prior_state = Indeterminate;
+        // Bind the interrupted attempt to the reopened, committed request and its actual
+        // quiescence witness. The core rejects a second reconciliation from the terminal state.
+        let mut interrupted = history.session().clone();
+        interrupted.reconcile(resolved.clone(), "reopened file completion", RECEIVE)?;
+        assert!(matches!(
+            interrupted.reconcile(resolved, "duplicate", RECEIVE),
+            Err(AcquisitionError::IllegalTransition {
+                from: Cancelled,
+                to: Cancelled
+            })
+        ));
+        assert_eq!(
+            interrupted.history().last().map(|r| r.witness_digest),
+            completed.records().last().map(|r| r.witness_digest)
+        );
+        assert_eq!(acquisition_delta_count(&reopened), COMPLETED.len());
+        assert_absence_forbidden(completed, Cancelled);
+    }
     Ok(())
 }

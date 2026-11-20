@@ -23,8 +23,8 @@
 //! * A normally finished import ends `Cancelled` with a zero-task, zero-descriptor, drained
 //!   [`QuiescenceReceipt`]. The core has no "end of source" kind, so the ending is labelled
 //!   [`FileSessionEnding::EndOfFileSource`], never an operator cancel.
-//! * Failures before any capsule batch commits end `Failed` with a [`FailureWitness`]; failures
-//!   after the capsule batch committed, when the completion outcome is not known, end
+//! * Failures known to precede the first capsule commit end `Failed` with a [`FailureWitness`];
+//!   an ambiguous first append or a failure after a capsule batch committed ends
 //!   `Indeterminate` with an [`IndeterminateWitness`] naming the resume obligation; a cooperative
 //!   cancellation ends `Cancelled` with [`FileSessionEnding::OperatorCancel`].
 
@@ -119,8 +119,8 @@ pub enum FileSessionEnding {
         /// Stable failure code carried by the [`FailureWitness`].
         error_code: String,
     },
-    /// The capsule batch committed but completion did not; the session is `Indeterminate`
-    /// until a resumed import completes it.
+    /// The first append is ambiguous or a capsule batch committed before completion could
+    /// be confirmed. Reconcile the durable ledger before resuming the import.
     Indeterminate {
         /// Stable failure code that left the completion outcome unknown.
         error_code: String,
@@ -662,28 +662,39 @@ impl FileSessionDriver {
     }
 
     /// Concludes a failed attempt through the core: cooperative cancellation ends `Cancelled`,
-    /// a failure after the capsule batch committed ends `Indeterminate`, any other failure ends
-    /// `Failed`. Nothing is retained.
+    /// an ambiguous first append or a later publication failure ends `Indeterminate`.
+    /// Nothing from the failed attempt is presumed retained.
     pub(crate) fn conclude_error(mut self, error: &FileIngestError) -> FileAcquisitionHistory {
         let request = self.session.request().clone();
         let adapter_id = request.adapter_identity.adapter_id.clone();
         let device_id = request.device_identity.device_id.clone();
         let source_id = request.source_identity.source_id.clone();
         let code = error_code(error);
+        // The first append may already have a durable trailer before it returns an error.
+        // Only reconciliation can decide whether the capsule batch actually committed.
+        let append_indeterminate = matches!(
+            error,
+            FileIngestError::Reference(crate::ReferenceError::Publication(
+                fss_publication::PublicationError::Ledger(fss_ledger::DurableLedgerError::Journal(
+                    fss_ledger::JournalError::AppendIndeterminate { .. }
+                        | fss_ledger::JournalError::ReconciliationRequired { .. },
+                )),
+            ))
+        );
         let (outcome, ending) = if let Some(stage) = cancellation_stage(error) {
             let quiescence = self.quiescence();
             (
                 self.session.cancel(quiescence, self.at),
                 FileSessionEnding::OperatorCancel { stage },
             )
-        } else if self.capsules_committed {
+        } else if self.capsules_committed || append_indeterminate {
             let witness = IndeterminateWitness {
                 adapter_id,
                 device_id,
                 source_id,
                 indeterminate_at_ns: self.at,
                 reason: bounded(&format!(
-                    "capsule batch committed; import completion not committed ({code})"
+                    "file import publication requires reconciliation ({code})"
                 )),
                 unresolved_obligations: vec![format!("resume_file_import:{}", self.import_hex)],
             };
