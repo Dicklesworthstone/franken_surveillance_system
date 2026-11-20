@@ -553,7 +553,6 @@ fn live_cancellation_approval_survives_elapsed_time_but_cannot_extend_expiry() -
     Ok(())
 }
 
-
 #[test]
 fn held_planning_lease_advances_without_poll_writes_and_persists_exact_expiry() -> TestResult {
     let fixture = Fixture::new("runtime-held-plan-expiry", SITE)?;
@@ -572,9 +571,15 @@ fn held_planning_lease_advances_without_poll_writes_and_persists_exact_expiry() 
     );
     let before_poll = journal_bytes(&fixture.root)?;
     clock.set(START + 1_000);
-    assert_eq!(held.check_time(clock.context())?, TimestampNs(START + 1_000));
+    assert_eq!(
+        held.check_time(clock.context())?,
+        TimestampNs(START + 1_000)
+    );
     clock.set(START + 2_000);
-    assert_eq!(held.check_time(clock.context())?, TimestampNs(START + 2_000));
+    assert_eq!(
+        held.check_time(clock.context())?,
+        TimestampNs(START + 2_000)
+    );
     assert_eq!(journal_bytes(&fixture.root)?, before_poll);
     held.revalidate(clock.context())?;
     assert_eq!(
@@ -634,8 +639,8 @@ fn held_planning_admission_rechecks_after_its_own_durable_watermark_write() -> T
 }
 
 #[test]
-fn held_planning_admission_refuses_clock_downgrade_scope_regression_and_cancellation()
--> TestResult {
+fn held_planning_admission_refuses_clock_downgrade_scope_regression_and_cancellation() -> TestResult
+{
     let fixture = Fixture::new("runtime-held-plan-clock", SITE)?;
     let clock = Clock::new(&fixture.root, START);
     let opened = open_session(clock.context(), &open_request()?)?;

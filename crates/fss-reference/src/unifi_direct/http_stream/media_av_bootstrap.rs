@@ -156,21 +156,43 @@ impl Handoff {
         resources: av_unknown_worker_guard::BootstrapResources,
     ) -> Result<ArchiveHandoff, Box<ArchiveHandoffRefusal>> {
         if self.connected.pipeline.source_key() != self.bootstrap.first_segment.fragment().key() {
-            return Err(Box::new(ArchiveHandoffRefusal::Source { handoff: self, resources }));
+            return Err(Box::new(ArchiveHandoffRefusal::Source {
+                handoff: self,
+                resources,
+            }));
         }
         if !self.connected.pipeline.audio_tracking_active()
             || self.connected.pipeline.has_pending_audio()
         {
-            return Err(Box::new(ArchiveHandoffRefusal::Audio { handoff: self, resources }));
+            return Err(Box::new(ArchiveHandoffRefusal::Audio {
+                handoff: self,
+                resources,
+            }));
         }
-        let Handoff { connected, bootstrap } = self;
-        let av_owned_sink::Bootstrap { sink, first_segment, origin } = bootstrap;
+        let Handoff {
+            connected,
+            bootstrap,
+        } = self;
+        let av_owned_sink::Bootstrap {
+            sink,
+            first_segment,
+            origin,
+        } = bootstrap;
         let sink = match sink.into_unknown_time() {
             Ok(sink) => sink,
-            Err(sink) => return Err(Box::new(ArchiveHandoffRefusal::Sink {
-                handoff: Handoff { connected, bootstrap: av_owned_sink::Bootstrap { sink, first_segment, origin } },
-                resources,
-            })),
+            Err(sink) => {
+                return Err(Box::new(ArchiveHandoffRefusal::Sink {
+                    handoff: Handoff {
+                        connected,
+                        bootstrap: av_owned_sink::Bootstrap {
+                            sink,
+                            first_segment,
+                            origin,
+                        },
+                    },
+                    resources,
+                }));
+            }
         };
         let parts = av_worker::UnknownTimeParts {
             sink,
@@ -183,20 +205,38 @@ impl Handoff {
             work_limit: resources.work_limit,
         };
         let worker = match resources.rollover_custody {
-            Some(custody) => match av_worker::UnknownTimeWorker::from_recovered_preverified(parts, custody) {
-                Ok(worker) => worker,
-                Err((parts, custody)) => return Err(Box::new(ArchiveHandoffRefusal::RecoveredWorker {
-                    connected, parts, first_segment, origin, custody,
-                })),
-            },
+            Some(custody) => {
+                match av_worker::UnknownTimeWorker::from_recovered_preverified(parts, custody) {
+                    Ok(worker) => worker,
+                    Err((parts, custody)) => {
+                        return Err(Box::new(ArchiveHandoffRefusal::RecoveredWorker {
+                            connected,
+                            parts,
+                            first_segment,
+                            origin,
+                            custody,
+                        }));
+                    }
+                }
+            }
             None => match av_worker::UnknownTimeWorker::new(parts) {
                 Ok(worker) => worker,
-                Err(parts) => return Err(Box::new(ArchiveHandoffRefusal::Worker {
-                    connected, parts, first_segment, origin,
-                })),
+                Err(parts) => {
+                    return Err(Box::new(ArchiveHandoffRefusal::Worker {
+                        connected,
+                        parts,
+                        first_segment,
+                        origin,
+                    }));
+                }
             },
         };
-        Ok(ArchiveHandoff { connected, worker, first_segment, origin })
+        Ok(ArchiveHandoff {
+            connected,
+            worker,
+            first_segment,
+            origin,
+        })
     }
 }
 
@@ -218,7 +258,8 @@ impl Driver {
     /// Install a bounded, non-consuming name probe before processing media.
     /// The matching name is a source claim, not authenticated peer identity.
     pub fn begin_name_probe(
-        &mut self, probe: fss_packet::extended_flv::stream::NameProbeOwner,
+        &mut self,
+        probe: fss_packet::extended_flv::stream::NameProbeOwner,
     ) -> Result<(), fss_packet::extended_flv::stream::NameProbeOwner> {
         if self.parts.fenced || self.parts.connected.pipeline.has_pending_audio() {
             return Err(probe);
@@ -228,7 +269,10 @@ impl Driver {
 
     /// Advance the probe while retaining the prefix and cumulative work.
     pub async fn probe_name_step(
-        &mut self, task: &TaskCx<'_>, cx: &Cx, now: fss_core::TimestampNs,
+        &mut self,
+        task: &TaskCx<'_>,
+        cx: &Cx,
+        now: fss_core::TimestampNs,
     ) -> Result<crate::unifi_direct::ingress::NameProbeStep, pipeline::NameProbeError> {
         if self.parts.fenced || self.parts.connected.pipeline.has_pending_audio() {
             return Err(pipeline::NameProbeError::NotFresh);
@@ -266,12 +310,19 @@ impl Driver {
             || !valid_supplied_audio(supplied_unverified_audio, policy)
             || connected.pipeline.enable_audio_tracking().is_err()
         {
-            return Err(AttachRefusal { connected, supplied_unverified_audio });
+            return Err(AttachRefusal {
+                connected,
+                supplied_unverified_audio,
+            });
         }
         Ok(Self {
             parts: Parts {
                 connected,
-                collector: av_bootstrap::Collector::new(supplied_unverified_audio, retention, policy),
+                collector: av_bootstrap::Collector::new(
+                    supplied_unverified_audio,
+                    retention,
+                    policy,
+                ),
                 fenced: false,
             },
         })
@@ -400,11 +451,14 @@ pub(super) fn valid_supplied_audio(
     policy: av_owned_sink::BootstrapPolicy,
 ) -> bool {
     supplied.is_none_or(|bytes| {
-        fss_packet::extended_flv::aac::Configuration::parse_explicit(&bytes)
-            .is_ok_and(|config| {
-                fss_packet::extended_flv::aac_clock::Clock::new(
-                    &config, 0, policy.jitter_ms, policy.max_epoch_frames,
-                ).is_ok()
-            })
+        fss_packet::extended_flv::aac::Configuration::parse_explicit(&bytes).is_ok_and(|config| {
+            fss_packet::extended_flv::aac_clock::Clock::new(
+                &config,
+                0,
+                policy.jitter_ms,
+                policy.max_epoch_frames,
+            )
+            .is_ok()
+        })
     })
 }

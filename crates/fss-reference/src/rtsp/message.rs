@@ -1081,15 +1081,13 @@ impl RtspParser {
             let line_end = offset.saturating_add(raw_line.len());
             let in_line = pos >= offset && pos < line_end;
             let line = Self::trim_trailing_cr(raw_line);
-            let folded =
-                line_index > 0 && line.first().is_some_and(|b| *b == b' ' || *b == b'\t');
+            let folded = line_index > 0 && line.first().is_some_and(|b| *b == b' ' || *b == b'\t');
             if in_line {
                 if line_index == 0 {
                     return false;
                 }
                 if folded {
-                    return previous_header_name
-                        .is_some_and(|name| !Self::is_framing_header(name));
+                    return previous_header_name.is_some_and(|name| !Self::is_framing_header(name));
                 }
                 let Some(colon_offset) = line.iter().position(|&b| b == b':') else {
                     return false;

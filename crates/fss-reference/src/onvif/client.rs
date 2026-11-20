@@ -330,7 +330,9 @@ impl From<WireError> for ClientError {
     }
 }
 impl From<wire::RecordingCheckError> for ClientError {
-    fn from(error: wire::RecordingCheckError) -> Self { Self::Recording(error) }
+    fn from(error: wire::RecordingCheckError) -> Self {
+        Self::Recording(error)
+    }
 }
 impl From<AuthenticationError> for ClientError {
     fn from(error: AuthenticationError) -> Self {
@@ -474,7 +476,10 @@ pub fn run(
 }
 
 /// Shared owner preserves PRE_AUTH time, authentication and the six-attempt ceiling.
-fn start_session(config: &ClientConfig, cx: &impl OnvifContext) -> Result<SessionBudget, ClientError> {
+fn start_session(
+    config: &ClientConfig,
+    cx: &impl OnvifContext,
+) -> Result<SessionBudget, ClientError> {
     let mut budget = SessionBudget::default();
     let now = budget.now(config, cx)?;
     if config.deadline_ns.saturating_sub(now) > MAX_SESSION_NS {

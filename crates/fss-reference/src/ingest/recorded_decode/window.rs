@@ -15,8 +15,8 @@
 //! grants, source-side payment-mask attestations and custody publication remain separate owners.
 
 use fss_core::{
-    CanonicalEncode, CanonicalEncoder, CaptureInterval, ClockBasis, ContentDigest,
-    DigestAlgorithm, SensorCapsule, SensorId, Sha256Hasher, StreamId, TimestampNs,
+    CanonicalEncode, CanonicalEncoder, CaptureInterval, ClockBasis, ContentDigest, DigestAlgorithm,
+    SensorCapsule, SensorId, Sha256Hasher, StreamId, TimestampNs,
 };
 
 /// Hard bound shared with the admitted non-streaming native video range profile.
@@ -313,7 +313,8 @@ impl FrameWindowSelector {
             return Err(FrameWindowError::SourceMismatch);
         }
         let capture = capsule.capture;
-        let included = if capture.latest < self.window.start || capture.earliest >= self.window.end {
+        let included = if capture.latest < self.window.start || capture.earliest >= self.window.end
+        {
             false
         } else if capture.earliest >= self.window.start && capture.latest < self.window.end {
             true
@@ -371,11 +372,15 @@ impl FrameWindowSelector {
         self.decisions.update(&self.observed.to_be_bytes());
         self.decisions.update(&self.selected.to_be_bytes());
         self.decisions.update(&skipped.to_be_bytes());
-        self.decisions.update(&selected_capture.earliest.0.to_be_bytes());
-        self.decisions.update(&selected_capture.latest.0.to_be_bytes());
+        self.decisions
+            .update(&selected_capture.earliest.0.to_be_bytes());
+        self.decisions
+            .update(&selected_capture.latest.0.to_be_bytes());
         let selection_digest = ContentDigest::new(
             DigestAlgorithm::Sha256,
-            self.decisions.finalize().map_err(|_| FrameWindowError::Limit)?,
+            self.decisions
+                .finalize()
+                .map_err(|_| FrameWindowError::Limit)?,
         );
         Ok(FrameWindowReceipt {
             request_digest: self.request_digest,

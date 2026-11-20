@@ -97,17 +97,22 @@ impl SupervisionInventoryEntry {
             reserved_bytes: state.reserved_bytes,
             reserved_read_attempts: state.reserved_read_attempts,
             reservation: state.reservation.clone(),
-            reservation_generations_current: state.reservation.as_ref()
+            reservation_generations_current: state
+                .reservation
+                .as_ref()
                 .map(|reservation| same_generations(&reservation.anchor, live_anchor)),
-            pending: state.pending.as_ref().map(|pending| PendingSupervisionInventory {
-                receipt: pending.receipt,
-                report_receipt: pending.report_receipt,
-                anchor: pending.anchor.clone(),
-                payload_digest: pending.payload_digest,
-                payload_len: pending.payload.len(),
-                active_window_count: pending.active_window_count,
-                generations_current: same_generations(&pending.anchor, live_anchor),
-            }),
+            pending: state
+                .pending
+                .as_ref()
+                .map(|pending| PendingSupervisionInventory {
+                    receipt: pending.receipt,
+                    report_receipt: pending.report_receipt,
+                    anchor: pending.anchor.clone(),
+                    payload_digest: pending.payload_digest,
+                    payload_len: pending.payload.len(),
+                    active_window_count: pending.active_window_count,
+                    generations_current: same_generations(&pending.anchor, live_anchor),
+                }),
             schedule: state.schedule.clone(),
             last_acknowledged: state.last_acknowledged,
             last_discarded: state.last_discarded,
@@ -122,9 +127,13 @@ fn live_authority(
     session: &AgentSession,
     now: TimestampNs,
 ) -> Result<(ContentDigest, LedgerAnchor)> {
-    let entry = memory.sessions.get(&session.session_id)
+    let entry = memory
+        .sessions
+        .get(&session.session_id)
         .filter(|entry| entry.session.principal_id == session.principal_id && !entry.closed)
-        .ok_or(DurableSessionError::Session(ReferenceSessionError::Unavailable))?;
+        .ok_or(DurableSessionError::Session(
+            ReferenceSessionError::Unavailable,
+        ))?;
     if now < entry.last_observed_at {
         return Err(DurableSessionError::Session(ReferenceSessionError::ClockRegression).into());
     }
@@ -171,15 +180,18 @@ impl DurableSessionStore {
         }
         let ceilings = self.coordination.as_ref().map(|state| state.limits);
         let restored = super::super::replay_all(&report, self.limits, ceilings)?;
-        if restored.memory.checkpoint(self.limits.max_checkpoint_bytes)
-            .map_err(DurableSessionError::from)?.digest() != self.checkpoint_digest
+        if restored
+            .memory
+            .checkpoint(self.limits.max_checkpoint_bytes)
+            .map_err(DurableSessionError::from)?
+            .digest()
+            != self.checkpoint_digest
         {
             return Err(DurableSessionError::InvalidHistory.into());
         }
         project_inventory(&restored, session, now)
     }
 }
-
 
 pub(crate) fn project_inventory(
     restored: &super::super::ReplayedSessionState,
@@ -189,11 +201,17 @@ pub(crate) fn project_inventory(
     let (authority_digest, live_anchor) = live_authority(&restored.memory, session, now)?;
     let mut entries = Vec::new();
     for ((owner, _), state) in &restored.supervisions.subscriptions {
-        if owner != &session.session_id { continue; }
+        if owner != &session.session_id {
+            continue;
+        }
         if entries.len() >= MAX_SESSION_SUPERVISION_SUBSCRIPTIONS {
             return Err(DurableSupervisionError::CapacityExceeded);
         }
-        entries.push(SupervisionInventoryEntry::from_state(state, authority_digest, &live_anchor));
+        entries.push(SupervisionInventoryEntry::from_state(
+            state,
+            authority_digest,
+            &live_anchor,
+        ));
     }
     Ok(entries)
 }

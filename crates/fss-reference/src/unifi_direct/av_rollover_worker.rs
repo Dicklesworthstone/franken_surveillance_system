@@ -206,7 +206,9 @@ impl From<archive::Error> for ArchiveFailure {
             archive::Error::Cancelled => Self::Cancelled,
             archive::Error::Mismatch => Self::Mismatch,
             archive::Error::Work(fss_geometry::GeometryError::Cancelled) => Self::Cancelled,
-            archive::Error::Work(fss_geometry::GeometryError::BudgetExhausted) => Self::BudgetExhausted,
+            archive::Error::Work(fss_geometry::GeometryError::BudgetExhausted) => {
+                Self::BudgetExhausted
+            }
             archive::Error::Work(_) => Self::Work,
             archive::Error::Storage(_) => Self::Storage,
         }

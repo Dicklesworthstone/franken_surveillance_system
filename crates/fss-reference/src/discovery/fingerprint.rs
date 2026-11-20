@@ -260,10 +260,26 @@ mod tests {
     #[test]
     fn vendor_table_covers_the_owner_families() {
         let cases = [
-            ("60:d5:61:21:4d:36", "Shenzhen Glazero Technology Co., Ltd.", Brand::Tuya),
-            ("50:3d:d1:e3:e2:07", "TP-Link Systems Inc.", Brand::EmbeddedWeb),
-            ("b0:d5:9d:9a:8e:c4", "Shenzhen Zowee Technology Co., Ltd", Brand::Standards),
-            ("d4:ad:fc:4d:05:ed", "Shenzhen Intellirocks Tech. Co. Ltd.", Brand::CloudOnly),
+            (
+                "60:d5:61:21:4d:36",
+                "Shenzhen Glazero Technology Co., Ltd.",
+                Brand::Tuya,
+            ),
+            (
+                "50:3d:d1:e3:e2:07",
+                "TP-Link Systems Inc.",
+                Brand::EmbeddedWeb,
+            ),
+            (
+                "b0:d5:9d:9a:8e:c4",
+                "Shenzhen Zowee Technology Co., Ltd",
+                Brand::Standards,
+            ),
+            (
+                "d4:ad:fc:4d:05:ed",
+                "Shenzhen Intellirocks Tech. Co. Ltd.",
+                Brand::CloudOnly,
+            ),
         ];
         for (mac, vendor, want) in cases {
             let h = host("192.168.4.9", mac, Some(vendor), &[]);

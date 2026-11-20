@@ -237,8 +237,14 @@ fn valid_minimum(mode: BootstrapMode) -> bool {
                 && !minimum.root.is_laboratory()
                 && minimum.root.bytes() != [0; 32]
                 && match mode {
-                    BootstrapMode::Discover { max_records, work_limit, .. } =>
-                        (1..=65_536).contains(&max_records) && (1..=100_000_000_000).contains(&work_limit),
+                    BootstrapMode::Discover {
+                        max_records,
+                        work_limit,
+                        ..
+                    } => {
+                        (1..=65_536).contains(&max_records)
+                            && (1..=100_000_000_000).contains(&work_limit)
+                    }
                     _ => true,
                 }
         }
@@ -397,12 +403,14 @@ impl BootstrapWorker {
                     s.journal_limits,
                     s.journal_io.clone(),
                 ),
-                BootstrapMode::Recover { minimum } | BootstrapMode::Discover { minimum, .. } => FileEffectJournal::open(
-                    &s.journal_root,
-                    s.journal_limits,
-                    s.journal_io.clone(),
-                    minimum,
-                ),
+                BootstrapMode::Recover { minimum } | BootstrapMode::Discover { minimum, .. } => {
+                    FileEffectJournal::open(
+                        &s.journal_root,
+                        s.journal_limits,
+                        s.journal_io.clone(),
+                        minimum,
+                    )
+                }
             };
             match journal {
                 Ok(journal) => state.journal = Some(Box::new(journal)),
@@ -445,12 +453,14 @@ impl BootstrapWorker {
                     s.custody_io.clone(),
                     s.custody_scope,
                 ),
-                BootstrapMode::Recover { .. } | BootstrapMode::Discover { .. } => FileTrustedRootPinRetainer::open_trusting_storage(
-                    &s.custody_root,
-                    s.custody_limits,
-                    s.custody_io.clone(),
-                    s.custody_scope,
-                ),
+                BootstrapMode::Recover { .. } | BootstrapMode::Discover { .. } => {
+                    FileTrustedRootPinRetainer::open_trusting_storage(
+                        &s.custody_root,
+                        s.custody_limits,
+                        s.custody_io.clone(),
+                        s.custody_scope,
+                    )
+                }
             };
             match retainer {
                 Ok(retainer) => state.retainer = Some(Box::new(retainer)),
@@ -507,15 +517,26 @@ impl BootstrapWorker {
             }
             let result = match state.storage.mode {
                 BootstrapMode::Create => {
-                    ReservedPlan::create_guarded(plan, bound, &journal_replay, &mut guard).map_err(PlanRefusal::Bound)
+                    ReservedPlan::create_guarded(plan, bound, &journal_replay, &mut guard)
+                        .map_err(PlanRefusal::Bound)
                 }
                 BootstrapMode::Recover { .. } => {
-                    ReservedPlan::recover_guarded(plan, bound, &journal_replay, &mut guard).map_err(PlanRefusal::Bound)
+                    ReservedPlan::recover_guarded(plan, bound, &journal_replay, &mut guard)
+                        .map_err(PlanRefusal::Bound)
                 }
-                BootstrapMode::Discover { max_records, work_limit, .. } => {
-                    ReservedPlan::recover_discovered_guarded(plan, bound, &journal_replay, max_records,
-                        &mut fss_geometry::WorkBudget::new(work_limit), &mut guard).map_err(PlanRefusal::Discovered)
-                }
+                BootstrapMode::Discover {
+                    max_records,
+                    work_limit,
+                    ..
+                } => ReservedPlan::recover_discovered_guarded(
+                    plan,
+                    bound,
+                    &journal_replay,
+                    max_records,
+                    &mut fss_geometry::WorkBudget::new(work_limit),
+                    &mut guard,
+                )
+                .map_err(PlanRefusal::Discovered),
             };
             match result {
                 Ok(mut ready) => {
@@ -538,7 +559,12 @@ impl BootstrapWorker {
                             cancelled
                         }
                         PlanRefusal::Discovered(refusal) => {
-                            let cancelled = matches!(refusal.reason, DiscoverError::Cancelled | DiscoverError::Bind(ReservationError::Cancelled) | DiscoverError::Work(fss_geometry::GeometryError::Cancelled));
+                            let cancelled = matches!(
+                                refusal.reason,
+                                DiscoverError::Cancelled
+                                    | DiscoverError::Bind(ReservationError::Cancelled)
+                                    | DiscoverError::Work(fss_geometry::GeometryError::Cancelled)
+                            );
                             state.plan = Some(refusal.plan);
                             state.bound = Some(refusal.journal);
                             state.discover_error = Some(refusal.reason);

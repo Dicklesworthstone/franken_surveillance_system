@@ -36,7 +36,8 @@ impl fmt::Debug for RecordingInventory {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RecordingInventory")
             .field("recordings", &self.recordings.len())
-            .field("exchanges", &self.exchanges).finish_non_exhaustive()
+            .field("exchanges", &self.exchanges)
+            .finish_non_exhaustive()
     }
 }
 
@@ -60,14 +61,19 @@ pub struct RecordingReplay {
 }
 impl fmt::Debug for RecordingReplay {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RecordingReplay").field("exchanges", &self.exchanges).finish_non_exhaustive()
+        f.debug_struct("RecordingReplay")
+            .field("exchanges", &self.exchanges)
+            .finish_non_exhaustive()
     }
 }
 
 impl RecordingInformation {
     /// Compare the exact native closed replay request without changing either endpoint.
     /// Successful comparison remains an advertised-extrema observation, never continuous coverage.
-    pub fn validate_requested_window(&self, window: ReplayWindow) -> Result<RecordingRangeAssessment, RecordingCheckError> {
+    pub fn validate_requested_window(
+        &self,
+        window: ReplayWindow,
+    ) -> Result<RecordingRangeAssessment, RecordingCheckError> {
         let start = i128::try_from(window.start().unix_nanoseconds())
             .map_err(|_| RecordingCheckError::InvalidRequestedBounds)?;
         let end = i128::try_from(window.end().unix_nanoseconds())
@@ -76,38 +82,73 @@ impl RecordingInformation {
     }
 }
 
-fn discover(config: &ClientConfig, cx: &impl OnvifContext, budget: &mut SessionBudget) -> Result<RecordingServices, ClientError> {
-    let response = exchange(config, &config.device, &wire::get_services_request(), cx, budget)?;
+fn discover(
+    config: &ClientConfig,
+    cx: &impl OnvifContext,
+    budget: &mut SessionBudget,
+) -> Result<RecordingServices, ClientError> {
+    let response = exchange(
+        config,
+        &config.device,
+        &wire::get_services_request(),
+        cx,
+        budget,
+    )?;
     Ok(wire::parse_recording_services(soap_body(&response)?)?)
 }
 
-fn release(config: &ClientConfig, route: &HttpRoute, cx: &impl OnvifContext, budget: &mut SessionBudget) -> Result<(), ClientError> {
+fn release(
+    config: &ClientConfig,
+    route: &HttpRoute,
+    cx: &impl OnvifContext,
+    budget: &mut SessionBudget,
+) -> Result<(), ClientError> {
     let now = budget.now(config, cx)?;
-    cx.checkpoint(route, HttpOperation::Release, now, config.deadline_ns).map_err(wsse_checkpoint_error)
+    cx.checkpoint(route, HttpOperation::Release, now, config.deadline_ns)
+        .map_err(wsse_checkpoint_error)
 }
 
 /// Inventory existing recordings with at most two logical operations. Media version is
 /// irrelevant only in this explicitly selected recording lane; the live-media API is unchanged.
-pub fn inventory(config: &ClientConfig, cx: &impl OnvifContext) -> Result<RecordingInventory, ClientError> {
+pub fn inventory(
+    config: &ClientConfig,
+    cx: &impl OnvifContext,
+) -> Result<RecordingInventory, ClientError> {
     validate_config(config, None)?;
     let mut budget = start_session(config, cx)?;
     let services = discover(config, cx, &mut budget)?;
-    let recording = services.recording.as_ref().ok_or(ClientError::Unsupported)?;
+    let recording = services
+        .recording
+        .as_ref()
+        .ok_or(ClientError::Unsupported)?;
     let route = media_route(config, &recording.xaddr)?;
-    let response = exchange(config, &route, &wire::get_recordings_request(), cx, &mut budget)?;
+    let response = exchange(
+        config,
+        &route,
+        &wire::get_recordings_request(),
+        cx,
+        &mut budget,
+    )?;
     let list = wire::parse_recordings(soap_body(&response)?)?;
     release(config, &config.device, cx, &mut budget)?;
     release(config, &route, cx, &mut budget)?;
     Ok(RecordingInventory {
-        services, recordings: list.recordings,
-        response_body_digest: list.response_body_digest, exchanges: budget.exchanges,
+        services,
+        recordings: list.recordings,
+        response_body_digest: list.response_body_digest,
+        exchanges: budget.exchanges,
     })
 }
 
 /// Resolve one exact recording and one unchanged closed request. Bad tokens fail before I/O;
 /// ambiguous/contradictory/outside-range observations fail before acquiring a replay URI.
 /// Unknown extrema remain explicit in the information record and never cause clipping.
-pub fn select(config: &ClientConfig, recording_token: &str, window: ReplayWindow, cx: &impl OnvifContext) -> Result<RecordingReplay, ClientError> {
+pub fn select(
+    config: &ClientConfig,
+    recording_token: &str,
+    window: ReplayWindow,
+    cx: &impl OnvifContext,
+) -> Result<RecordingReplay, ClientError> {
     validate_config(config, Some(recording_token))?;
     let information_request = wire::get_recording_information_request(recording_token)?;
     let uri_request = wire::get_replay_uri_request(recording_token)?;
@@ -132,7 +173,12 @@ pub fn select(config: &ClientConfig, recording_token: &str, window: ReplayWindow
         release(config, route, cx, &mut budget)?;
     }
     Ok(RecordingReplay {
-        services, information, uri: uri.uri, uri_response_digest: uri.response_body_digest,
-        peer: scope.peer, authority: scope.authority.clone(), exchanges: budget.exchanges,
+        services,
+        information,
+        uri: uri.uri,
+        uri_response_digest: uri.response_body_digest,
+        peer: scope.peer,
+        authority: scope.authority.clone(),
+        exchanges: budget.exchanges,
     })
 }

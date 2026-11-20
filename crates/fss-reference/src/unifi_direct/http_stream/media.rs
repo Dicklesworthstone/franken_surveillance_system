@@ -7,7 +7,10 @@
 
 use super::{Plan, Preconditions, ReadbackChange, ReadbackObservation, checkpoint::Anchored};
 use crate::unifi_direct::{
-    camera_api::{HandoffError, HandoffResponseObservation, HandoffWrite, SerializerAuthority, VideoSerializers},
+    camera_api::{
+        HandoffError, HandoffResponseObservation, HandoffWrite, SerializerAuthority,
+        VideoSerializers,
+    },
     camera_http, ingress, listener,
     pipeline::{NameProbeError, Pipeline, ProbeError},
     recording::Recorder,
@@ -89,8 +92,8 @@ pub enum ResponseCustodyError {
 /// Synchronous caller-owned custody of an untrusted HTTP response claim. The
 /// caller must bound or offload blocking work, preserve the supplied permit on
 /// failure, and not treat this claim as verified effect or permission to retry.
-pub type ResponseRecorder<'a> = dyn FnMut(&mut CommittedEffect, HandoffResponseObservation)
-    -> Result<(), ResponseCustodyError> + 'a;
+pub type ResponseRecorder<'a> = dyn FnMut(&mut CommittedEffect, HandoffResponseObservation) -> Result<(), ResponseCustodyError>
+    + 'a;
 
 /// Retained committed effect and optional private readback after refusal.
 /// `may_have_written` is not proof of a remote outcome; reconcile the journal.
@@ -220,7 +223,15 @@ pub async fn start<IO: AsyncRead + AsyncWrite + Unpin>(
     permit: CommittedEffect,
     authorize_observation: impl Fn(Ipv4Addr, u64) -> bool,
 ) -> Result<Connected, Refusal> {
-    start_with_response(http, listener, request, permit, authorize_observation, &mut |_, _| Ok(())).await
+    start_with_response(
+        http,
+        listener,
+        request,
+        permit,
+        authorize_observation,
+        &mut |_, _| Ok(()),
+    )
+    .await
 }
 
 /// Start with caller-owned response custody, before reading settings or media.
@@ -281,16 +292,21 @@ pub async fn start_with_response<IO: AsyncRead + AsyncWrite + Unpin>(
         .await
     {
         Ok(response) => response,
-        Err(error) => return Err(Refusal {
-            failure: Failure::Response(error),
-            permit,
-            may_have_written: true,
-            readback: None,
-        }),
+        Err(error) => {
+            return Err(Refusal {
+                failure: Failure::Response(error),
+                permit,
+                may_have_written: true,
+                readback: None,
+            });
+        }
     };
     if let Err(reason) = record_response(&mut permit, response) {
         return Err(Refusal {
-            failure: Failure::ResponseCustody { observation: response, reason },
+            failure: Failure::ResponseCustody {
+                observation: response,
+                reason,
+            },
             permit,
             may_have_written: true,
             readback: None,

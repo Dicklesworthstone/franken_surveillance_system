@@ -122,10 +122,15 @@ fn conditioned_support(
             digest: row.digest,
             availability: availability(row.state),
         })
-        .chain(review.denied_references().keys().map(|digest| AvailabilityObservation {
-            digest: *digest,
-            availability: ObjectAvailability::Unavailable,
-        }))
+        .chain(
+            review
+                .denied_references()
+                .keys()
+                .map(|digest| AvailabilityObservation {
+                    digest: *digest,
+                    availability: ObjectAvailability::Unavailable,
+                }),
+        )
         .collect();
     analyze_current_availability(
         projection,

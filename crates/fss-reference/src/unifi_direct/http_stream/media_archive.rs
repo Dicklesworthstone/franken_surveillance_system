@@ -258,7 +258,18 @@ pub async fn start<'a, 'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
     permit: CommittedEffect,
     authorize_observation: impl Fn(std::net::Ipv4Addr, u64) -> bool,
 ) -> Result<Driver, StartRefusal<'a>> {
-    start_with_response(task, cx, clock, http, listener, inputs, permit, authorize_observation, &mut |_, _| Ok(())).await
+    start_with_response(
+        task,
+        cx,
+        clock,
+        http,
+        listener,
+        inputs,
+        permit,
+        authorize_observation,
+        &mut |_, _| Ok(()),
+    )
+    .await
 }
 
 /// Start with caller-owned custody of the camera's untrusted HTTP response.
@@ -322,7 +333,15 @@ pub async fn start_with_response<'a, 'scope, 'task, IO: AsyncRead + AsyncWrite +
         storage,
         policy,
     } = inputs;
-    let connected = match media::start_with_response(http, listener, request, permit, authorize_observation, record_response).await
+    let connected = match media::start_with_response(
+        http,
+        listener,
+        request,
+        permit,
+        authorize_observation,
+        record_response,
+    )
+    .await
     {
         Ok(connected) => connected,
         Err(refusal) => {
@@ -343,9 +362,12 @@ impl Driver {
         &mut self,
         probe: fss_packet::extended_flv::stream::NameProbeOwner,
     ) -> Result<(), fss_packet::extended_flv::stream::NameProbeOwner> {
-        if self.parts.halted || self.parts.source_armed || self.parts.video_armed
+        if self.parts.halted
+            || self.parts.source_armed
+            || self.parts.video_armed
             || self.parts.source.status() != source_worker::Status::Idle
-            || self.parts.video.is_some() {
+            || self.parts.video.is_some()
+        {
             return Err(probe);
         }
         self.parts.connected.begin_name_probe(probe)
@@ -354,9 +376,14 @@ impl Driver {
     /// Advance the installed non-consuming probe under the caller's task.
     /// Dropping a pending call retains its prefix and cumulative work budget.
     pub async fn probe_name_step(
-        &mut self, task: &TaskCx<'_>, cx: &Cx, now: fss_core::TimestampNs,
+        &mut self,
+        task: &TaskCx<'_>,
+        cx: &Cx,
+        now: fss_core::TimestampNs,
     ) -> Result<crate::unifi_direct::ingress::NameProbeStep, pipeline::NameProbeError> {
-        if self.parts.halted { return Err(pipeline::NameProbeError::NotFresh); }
+        if self.parts.halted {
+            return Err(pipeline::NameProbeError::NotFresh);
+        }
         self.parts.connected.probe_name_step(task, cx, now).await
     }
 

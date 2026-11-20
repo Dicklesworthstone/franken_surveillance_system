@@ -65,8 +65,8 @@ pub(super) fn query(
                     return Err(StatusError::Unreadable);
                 }
             };
-            let capsule = SensorCapsule::from_canonical_bytes(&bytes)
-                .map_err(|_| StatusError::Corrupt)?;
+            let capsule =
+                SensorCapsule::from_canonical_bytes(&bytes).map_err(|_| StatusError::Corrupt)?;
             metadata
                 .entry((
                     capsule.sensor_id.as_str().to_owned(),

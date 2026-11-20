@@ -41,6 +41,7 @@
 
 pub mod ablation;
 pub mod calibration;
+pub mod conformal;
 pub mod eprocess;
 pub mod probability;
 pub mod unique_source;
@@ -54,6 +55,10 @@ pub use ablation::{
     FUSION_ABLATION_SCHEMA, FusionAblation, MAX_ABLATION_TARGETS, ablate,
 };
 pub use calibration::{ScoreBin, ScoreCalibration};
+pub use conformal::{
+    ConformalPValue, ConformalVerdict, MAX_CONFORMAL_SAMPLES, PPM_SCALE, SPLIT_CONFORMAL_DOMAIN,
+    SplitConformalCalibrator, confidence_to_nonconformity_ppm, minimum_calibration_samples,
+};
 pub use decide::fuse;
 pub use eprocess::{
     EPROCESS_RESET_DOMAIN, EPROCESS_STATE_DOMAIN, EPROCESS_STEP_DOMAIN, EPROCESS_SUPPORT_DOMAIN,

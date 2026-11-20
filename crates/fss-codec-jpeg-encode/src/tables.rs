@@ -59,7 +59,10 @@ const fn codes(counts: &[u8; 16], values: &[u8]) -> [Code; 256] {
     while width < 16 {
         let mut n = 0;
         while n < counts[width] {
-            result[values[at] as usize] = Code { bits: code as u16, width: width as u8 + 1 };
+            result[values[at] as usize] = Code {
+                bits: code as u16,
+                width: width as u8 + 1,
+            };
             code += 1;
             at += 1;
             n += 1;
@@ -95,7 +98,10 @@ mod tests {
             (&CHROMA_DC_COUNTS, CHROMA_DC_VALUES.as_slice(), &CHROMA_DC),
             (&CHROMA_AC_COUNTS, CHROMA_AC_VALUES.as_slice(), &CHROMA_AC),
         ] {
-            assert_eq!(counts.iter().map(|n| usize::from(*n)).sum::<usize>(), values.len());
+            assert_eq!(
+                counts.iter().map(|n| usize::from(*n)).sum::<usize>(),
+                values.len()
+            );
             for (i, &symbol) in values.iter().enumerate() {
                 let code = table[usize::from(symbol)];
                 assert!((1..=16).contains(&code.width));

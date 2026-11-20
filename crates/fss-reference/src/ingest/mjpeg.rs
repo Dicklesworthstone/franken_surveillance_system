@@ -844,6 +844,8 @@ impl From<ReplayAdapterError> for JpegSplitError {
     }
 }
 
+const CHECKPOINT_BYTES: usize = 64 * 1024;
+
 /// Finds the first SOI marker (`0xFF, 0xD8`) and returns the offset of the `0xFF` immediately
 /// preceding `0xD8`.
 ///
@@ -852,23 +854,46 @@ impl From<ReplayAdapterError> for JpegSplitError {
 /// offset of the last `0xFF`. Leading fill bytes stay outside the frame span and are recorded by
 /// the caller as an omission (fss-dazsb: taking the first `0xFF` of the run made the segment one
 /// byte longer than the image and the codec refused an intact frame as malformed).
-fn find_soi(bytes: &[u8], start: usize) -> Option<usize> {
-    let mut i = start;
-    while i + 1 < bytes.len() {
-        if bytes[i] == 0xFF {
-            let mut j = i + 1;
-            while j < bytes.len() && bytes[j] == 0xFF {
-                j += 1;
-            }
-            if j < bytes.len() && bytes[j] == 0xD8 {
-                return Some(j - 1);
-            }
-            i = j;
-        } else {
-            i += 1;
+fn find_soi(
+    bytes: &[u8],
+    mut start: usize,
+    cx: Option<&ReplayCx>,
+) -> Result<Option<usize>, JpegSplitError> {
+    loop {
+        if let Some(cx) = cx {
+            cx.checkpoint("split_jpeg_stream.find_soi")?;
+        }
+        // One byte of lookahead keeps a marker spanning two search blocks intact.
+        let end = start.saturating_add(CHECKPOINT_BYTES + 1).min(bytes.len());
+        if let Some(index) = bytes[start..end].windows(2).position(|w| w == [0xff, 0xd8]) {
+            return Ok(Some(start + index));
+        }
+        if end == bytes.len() {
+            return Ok(None);
+        }
+        start = end - 1;
+    }
+}
+
+/// Skip a run of fill bytes or non-marker data without losing cancellation on long runs.
+fn skip_marker_run(
+    bytes: &[u8],
+    mut pos: usize,
+    fill: bool,
+    cx: Option<&ReplayCx>,
+) -> Result<usize, JpegSplitError> {
+    for block in bytes[pos..].chunks(CHECKPOINT_BYTES) {
+        if let Some(index) = block.iter().position(|&b| (b == 0xff) != fill) {
+            return Ok(pos + index);
+        }
+        pos += block.len();
+        if block.len() == CHECKPOINT_BYTES
+            && let Some(cx) = cx
+        {
+            cx.checkpoint("split_jpeg_stream.marker_run")?;
         }
     }
-    None
+    Ok(pos)
 }
 
 /// Splits a raw byte stream into discrete JPEG frames with exact source spans and omissions.
@@ -905,7 +930,7 @@ pub fn split_jpeg_stream(
         });
     }
 
-    let first_soi = match find_soi(bytes, 0) {
+    let first_soi = match find_soi(bytes, 0, cx)? {
         Some(pos) => pos,
         None => return Err(JpegSplitError::NoSoi),
     };
@@ -943,13 +968,8 @@ pub fn split_jpeg_stream(
         let frame_index = frames.len();
         let frame_start = current_pos;
 
-        // Skip SOI marker: 0xFF..0xFF 0xD8
-        while current_pos < bytes.len() && bytes[current_pos] == 0xFF {
-            current_pos += 1;
-        }
-        if current_pos < bytes.len() && bytes[current_pos] == 0xD8 {
-            current_pos += 1;
-        }
+        // Both the initial search and truncated-frame resync point at the SOI itself.
+        current_pos += 2;
 
         let mut sof: Option<JpegSofInfo> = None;
         let mut restart_interval: u16 = 0;
@@ -972,9 +992,7 @@ pub fn split_jpeg_stream(
 
             // Scan until next 0xFF (detecting non-FF bytes between segments inside frame)
             let garbage_start = current_pos;
-            while current_pos < bytes.len() && bytes[current_pos] != 0xFF {
-                current_pos += 1;
-            }
+            current_pos = skip_marker_run(bytes, current_pos, false, cx)?;
             if current_pos > garbage_start {
                 findings.push(JpegFinding::GarbageInsideFrame {
                     frame_index,
@@ -998,9 +1016,7 @@ pub fn split_jpeg_stream(
             let marker_prefix = current_pos;
 
             // Skip fill bytes of 0xFF
-            while current_pos < bytes.len() && bytes[current_pos] == 0xFF {
-                current_pos += 1;
-            }
+            current_pos = skip_marker_run(bytes, current_pos, true, cx)?;
 
             if current_pos >= bytes.len() {
                 break;
@@ -1065,7 +1081,7 @@ pub fn split_jpeg_stream(
                     length: 0,
                     available,
                 });
-                current_pos = match find_soi(bytes, current_pos) {
+                current_pos = match find_soi(bytes, current_pos, cx)? {
                     Some(next_soi) => next_soi,
                     None => bytes.len(),
                 };
@@ -1094,7 +1110,7 @@ pub fn split_jpeg_stream(
                     length: declared_length,
                     available,
                 });
-                current_pos = match find_soi(bytes, current_pos) {
+                current_pos = match find_soi(bytes, current_pos, cx)? {
                     Some(next_soi) => next_soi,
                     None => bytes.len(),
                 };
@@ -1190,7 +1206,7 @@ pub fn split_jpeg_stream(
                 current_pos += declared_length;
 
                 // Scan Entropy Coded Segment (ECS)
-                let mut next_checkpoint = current_pos.saturating_add(65536);
+                let mut next_checkpoint = current_pos.saturating_add(CHECKPOINT_BYTES);
                 while current_pos < bytes.len() {
                     if current_pos.saturating_sub(frame_start) > limits.max_frame_bytes {
                         return Err(JpegSplitError::FrameTooLarge {
@@ -1204,7 +1220,7 @@ pub fn split_jpeg_stream(
                         && current_pos >= next_checkpoint
                     {
                         cx_ref.checkpoint("split_jpeg_stream")?;
-                        next_checkpoint = current_pos.saturating_add(65536);
+                        next_checkpoint = current_pos.saturating_add(CHECKPOINT_BYTES);
                     }
 
                     if bytes[current_pos] != 0xFF {
@@ -1215,9 +1231,7 @@ pub fn split_jpeg_stream(
                     let ecs_ff = current_pos;
                     current_pos += 1;
 
-                    while current_pos < bytes.len() && bytes[current_pos] == 0xFF {
-                        current_pos += 1;
-                    }
+                    current_pos = skip_marker_run(bytes, current_pos, true, cx)?;
 
                     if current_pos >= bytes.len() {
                         break;
@@ -1288,7 +1302,7 @@ pub fn split_jpeg_stream(
 
         // Search for the next frame's SOI
         if current_pos < bytes.len() {
-            match find_soi(bytes, current_pos) {
+            match find_soi(bytes, current_pos, cx)? {
                 Some(next_soi) => {
                     if next_soi > current_pos {
                         omissions.push(OmissionSpan {

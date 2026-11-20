@@ -185,7 +185,9 @@ pub struct Listener<'scope, 'task, 'policy> {
 
 struct AcceptLease<'a>(&'a Cell<bool>);
 impl Drop for AcceptLease<'_> {
-    fn drop(&mut self) { self.0.set(false); }
+    fn drop(&mut self) {
+        self.0.set(false);
+    }
 }
 
 /// One accepted, camera-scoped connection. Its source and inventory index are
@@ -205,54 +207,87 @@ pub struct Routed<'scope, 'task, 'policy> {
 
 impl<'scope, 'task, 'policy> Routed<'scope, 'task, 'policy> {
     /// Inventory entry selected by the untrusted source address.
-    pub fn enrollment_index(&self) -> usize { self.index }
+    pub fn enrollment_index(&self) -> usize {
+        self.index
+    }
     /// Owner-inventory MAC associated with this route. This is a claim, not
     /// proof of the connecting peer's identity.
-    pub fn claimed_mac(&self) -> [u8; 6] { self.mac }
+    pub fn claimed_mac(&self) -> [u8; 6] {
+        self.mac
+    }
     /// Clone the same permanently fencing gate for the TLS/plaintext layer.
-    pub fn gate(&self) -> AdmissionGate<'policy> { self.gate.clone() }
+    pub fn gate(&self) -> AdmissionGate<'policy> {
+        self.gate.clone()
+    }
 
     /// Use the identical task clock when metering the plaintext TLS layer.
-    pub fn clock(&self) -> MeteredClock<'scope, 'task> { self.clock }
+    pub fn clock(&self) -> MeteredClock<'scope, 'task> {
+        self.clock
+    }
 
     /// Camera-specific resource associated with both layers of this route.
-    pub fn resource(&self) -> &str { &self.resource }
+    pub fn resource(&self) -> &str {
+        &self.resource
+    }
 
     /// Check that the protocol driver uses the route's runtime context.
-    pub fn matches_context(&self, cx: &Cx) -> bool { std::ptr::eq(self.cx, cx) }
+    pub fn matches_context(&self, cx: &Cx) -> bool {
+        std::ptr::eq(self.cx, cx)
+    }
 
     fn admit(&self) -> io::Result<()> {
         self.gate.check()?;
         if Listener::check(self.task, self.cx, self.clock, &self.resource).is_err() {
             self.gate.state.fenced.set(true);
-            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "camera route authority refused"));
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "camera route authority refused",
+            ));
         }
         Ok(())
     }
 }
 
 impl Drop for Routed<'_, '_, '_> {
-    fn drop(&mut self) { self.active.set(false); }
+    fn drop(&mut self) {
+        self.active.set(false);
+    }
 }
 
 impl AsyncRead for Routed<'_, '_, '_> {
-    fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
-        if let Err(error) = self.admit() { return Poll::Ready(Err(error)); }
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        if let Err(error) = self.admit() {
+            return Poll::Ready(Err(error));
+        }
         Pin::new(&mut self.io).poll_read(cx, buf)
     }
 }
 
 impl AsyncWrite for Routed<'_, '_, '_> {
-    fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, bytes: &[u8]) -> Poll<io::Result<usize>> {
-        if let Err(error) = self.admit() { return Poll::Ready(Err(error)); }
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        if let Err(error) = self.admit() {
+            return Poll::Ready(Err(error));
+        }
         Pin::new(&mut self.io).poll_write(cx, bytes)
     }
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        if let Err(error) = self.admit() { return Poll::Ready(Err(error)); }
+        if let Err(error) = self.admit() {
+            return Poll::Ready(Err(error));
+        }
         Pin::new(&mut self.io).poll_flush(cx)
     }
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        if let Err(error) = self.admit() { return Poll::Ready(Err(error)); }
+        if let Err(error) = self.admit() {
+            return Poll::Ready(Err(error));
+        }
         Pin::new(&mut self.io).poll_shutdown(cx)
     }
 }
@@ -342,7 +377,14 @@ impl<'scope, 'task, 'policy> Listener<'scope, 'task, 'policy> {
     pub(crate) fn can_hold(&self, gate: &AdmissionGate<'_>, resource: &str) -> bool {
         Rc::ptr_eq(&self.identity, &gate.state.listener_identity)
             && gate.check().is_ok()
-            && self.ready_for(self.task, self.cx, &self.clock, resource, self.bound, *gate.source().ip())
+            && self.ready_for(
+                self.task,
+                self.cx,
+                &self.clock,
+                resource,
+                self.bound,
+                *gate.source().ip(),
+            )
     }
 
     /// Revalidate this exact bound socket against its task, clock, resource,
@@ -388,7 +430,9 @@ impl<'scope, 'task, 'policy> Listener<'scope, 'task, 'policy> {
             return Err(ReadinessRefusal::ListenerPolicy);
         }
         if self.resource != resource
-            && !self.policy.controller_camera(self.bound, &self.resource, resource, claimed_peer)
+            && !self
+                .policy
+                .controller_camera(self.bound, &self.resource, resource, claimed_peer)
         {
             return Err(ReadinessRefusal::CameraPolicy);
         }
@@ -504,17 +548,33 @@ impl<'scope, 'task, 'policy> Listener<'scope, 'task, 'policy> {
             || active.get()
             || resource.is_empty()
             || resource.len() > MAX_RESOURCE
-            || !self.ready_for(self.task, self.cx, &self.clock, &resource, self.bound, *gate.source().ip())
+            || !self.ready_for(
+                self.task,
+                self.cx,
+                &self.clock,
+                &resource,
+                self.bound,
+                *gate.source().ip(),
+            )
         {
             return Err(listener::Error::Denied);
         }
         let mut listener_resource = String::new();
         let mut camera_resource = String::new();
-        listener_resource.try_reserve_exact(self.resource.len()).map_err(|_| listener::Error::Source)?;
-        camera_resource.try_reserve_exact(resource.len()).map_err(|_| listener::Error::Source)?;
+        listener_resource
+            .try_reserve_exact(self.resource.len())
+            .map_err(|_| listener::Error::Source)?;
+        camera_resource
+            .try_reserve_exact(resource.len())
+            .map_err(|_| listener::Error::Source)?;
         listener_resource.push_str(&self.resource);
         camera_resource.push_str(&resource);
-        gate.state.camera.set(CameraBinding { listener_resource, camera_resource })
+        gate.state
+            .camera
+            .set(CameraBinding {
+                listener_resource,
+                camera_resource,
+            })
             .map_err(|_| listener::Error::Denied)?;
         gate.check().map_err(|_| listener::Error::Denied)?;
         // The gate policy can itself consume authority; check the camera and
@@ -522,7 +582,16 @@ impl<'scope, 'task, 'policy> Listener<'scope, 'task, 'policy> {
         Self::check(self.task, self.cx, self.clock, &self.resource)?;
         Self::check(self.task, self.cx, self.clock, &resource)?;
         active.set(true);
-        Ok(Routed { io, gate, task: self.task, cx: self.cx, clock: self.clock,
-            resource, index, mac, active })
+        Ok(Routed {
+            io,
+            gate,
+            task: self.task,
+            cx: self.cx,
+            clock: self.clock,
+            resource,
+            index,
+            mac,
+            active,
+        })
     }
 }

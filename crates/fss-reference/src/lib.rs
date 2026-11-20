@@ -19,12 +19,12 @@ mod adapter_rtsp_row;
 mod adapter_s3_import;
 mod adapter_uvc;
 mod adapter_wyze;
-/// Read-only `session.follow` (AOP-004): meaningful deltas since an earlier committed anchor.
-pub mod agent_follow;
-/// Exact H0/H1 event metadata descriptors for durable session-bound evidence hydration.
-pub mod agent_event_hydration;
 /// Exact adjacent event-revision changes under current immutable metadata authority.
 pub mod agent_event_changes;
+/// Exact H0/H1 event metadata descriptors for durable session-bound evidence hydration.
+pub mod agent_event_hydration;
+/// Read-only `session.follow` (AOP-004): meaningful deltas since an earlier committed anchor.
+pub mod agent_follow;
 pub mod agent_footage;
 pub mod agent_localizations;
 /// Canonical read-only ONVIF vendor-claim interpretation over exact retained sources.
@@ -41,8 +41,8 @@ pub mod agent_recording_context;
 pub mod agent_recordings;
 /// Bounded metadata discovery of retained detector and screened-zone report handles.
 pub mod agent_report_catalog;
-pub mod agent_sources;
 pub mod agent_session;
+pub mod agent_sources;
 /// Source-verified observations from an exact retained detector report and tracking recipe.
 pub mod agent_tracks;
 mod alert;
@@ -52,10 +52,10 @@ pub mod alert_control;
 pub mod alert_reconcile;
 /// Shared bounded immutable custody reads for retained source consumers.
 pub mod retained_source;
-/// The reader trait itself, re-exported so in-crate consumers can name it as `crate::RetainedSource`.
-pub use retained_source::RetainedSource;
 /// Native HTTP alert relay with durable-before-send commitment and explicit outcomes.
 pub use alert::webhook;
+/// The reader trait itself, re-exported so in-crate consumers can name it as `crate::RetainedSource`.
+pub use retained_source::RetainedSource;
 
 mod bundle;
 /// Full-camera screened, per-zone coverage proposals; no effect authority.
@@ -367,11 +367,12 @@ pub use packet_fault::{
     inject_stream,
 };
 pub use policy::{
-    COVERAGE_ANALYSIS_INCOMPLETE, COVERAGE_WITNESS_NOT_CERTIFYING, ReferenceEventReceipt,
-    ReferenceModelObservation, ReferenceModelResult, ReferencePolicyAction,
+    CALIBRATED_UNKNOWN_PRESENCE_POLICY, COVERAGE_ANALYSIS_INCOMPLETE,
+    COVERAGE_WITNESS_NOT_CERTIFYING, CalibratedModelObservation, CalibratedPolicyDecision,
+    ReferenceEventReceipt, ReferenceModelObservation, ReferenceModelResult, ReferencePolicyAction,
     ReferencePolicyDecision, ZoneEntryCorroboration, ZoneEntryWitness, evaluate_unknown_presence,
-    evaluate_unknown_presence_over_coverage, evaluate_zone_entry_corroboration,
-    policy_decision_path, publish_reference_event,
+    evaluate_unknown_presence_calibrated, evaluate_unknown_presence_over_coverage,
+    evaluate_zone_entry_corroboration, policy_decision_path, publish_reference_event,
 };
 pub use reference_deployment::{
     DEPLOYMENT_CANCEL_STAGES, DEPLOYMENT_LAYOUT_FILENAME, DEPLOYMENT_LAYOUT_FORMAT_VERSION,

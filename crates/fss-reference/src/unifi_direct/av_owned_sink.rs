@@ -295,7 +295,11 @@ impl OwnedSink {
             {
                 return Err(BootstrapError::VideoBinding);
             }
-            let constructor = if binding.inband { flv_avc::Muxer::new_inband } else { flv_avc::Muxer::new };
+            let constructor = if binding.inband {
+                flv_avc::Muxer::new_inband
+            } else {
+                flv_avc::Muxer::new
+            };
             let video = constructor(segment.fragment().key(), source, inputs.policy.media_limits)
                 .map_err(BootstrapError::Video)?;
             if *video.configuration_sources() != segment.fragment().configuration_sources() {
@@ -422,7 +426,11 @@ impl OwnedSink {
     /// Reconstruct video initialization from the exact owned source record.
     /// Publication later verifies it against the segment and A/V initialization.
     pub fn new(inputs: Inputs) -> Result<Self, ConstructionRefusal> {
-        let constructor = if inputs.av_initialization.inband_parameter_sets() { flv_avc::Muxer::new_inband } else { flv_avc::Muxer::new };
+        let constructor = if inputs.av_initialization.inband_parameter_sets() {
+            flv_avc::Muxer::new_inband
+        } else {
+            flv_avc::Muxer::new
+        };
         let video = match constructor(
             inputs.av_initialization.source_key(),
             &inputs.video_configuration,
@@ -441,7 +449,11 @@ impl OwnedSink {
     /// Restore an in-process retirement, preserving its pending source even if
     /// video-initialization reconstruction is refused.
     pub fn resume(retirement: Retirement) -> Result<Self, ResumeRefusal> {
-        let constructor = if retirement.inputs.av_initialization.inband_parameter_sets() { flv_avc::Muxer::new_inband } else { flv_avc::Muxer::new };
+        let constructor = if retirement.inputs.av_initialization.inband_parameter_sets() {
+            flv_avc::Muxer::new_inband
+        } else {
+            flv_avc::Muxer::new
+        };
         let video = match constructor(
             retirement.inputs.av_initialization.source_key(),
             &retirement.inputs.video_configuration,
@@ -593,7 +605,11 @@ impl UnknownTimeOwnedSink {
 
     /// Resume in-process ownership without discarding a pending source or fence.
     pub fn resume(retirement: UnknownTimeRetirement) -> Result<Self, UnknownTimeResumeRefusal> {
-        let constructor = if retirement.inputs.av_initialization.inband_parameter_sets() { flv_avc::Muxer::new_inband } else { flv_avc::Muxer::new };
+        let constructor = if retirement.inputs.av_initialization.inband_parameter_sets() {
+            flv_avc::Muxer::new_inband
+        } else {
+            flv_avc::Muxer::new
+        };
         let video = match constructor(
             retirement.inputs.av_initialization.source_key(),
             &retirement.inputs.video_configuration,

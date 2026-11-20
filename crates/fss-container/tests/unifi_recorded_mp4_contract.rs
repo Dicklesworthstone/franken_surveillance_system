@@ -3,6 +3,7 @@
 //! physical-input case is deliberately ignored unless an operator invokes it.
 //! It does not contact a camera, assert capture time, or establish custody.
 
+#[allow(dead_code)]
 #[path = "../../fss-reference/src/ingest/recorded_decode/video_access_unit.rs"]
 mod video_access_unit;
 

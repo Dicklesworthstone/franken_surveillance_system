@@ -66,7 +66,7 @@ fn parse(args: &[std::ffi::OsString]) -> Result<Options, &'static str> {
         return Err("argument bound exceeded");
     }
     let mut subnets = Vec::new();
-    let mut iface = Ipv4Addr::new(192, 168, 4, 165);
+    let mut iface = Ipv4Addr::UNSPECIFIED;
     let mut beacon_seconds = 10u64;
     let mut standards_seconds = 5u64;
     let mut watch_seconds: Option<u64> = None;
@@ -260,8 +260,8 @@ fn run_typed(o: &Options) -> Result<(DiscoverReport, DiscoverConfig), &'static s
 /// the vendor's own discovery frame: no credentials, one bounded UDP round, and
 /// the answer proves a TUTK listener before the brand is upgraded.
 fn probe_tutk_listeners(report: &mut DiscoverReport, cancel: &AtomicBool) {
-    use fss_reference::discovery::{dispatch, Brand, BrandConfidence, Confidence};
-    use fss_tutk::oldproto::{build_probe, parse_response, ProbeResponse};
+    use fss_reference::discovery::{Brand, BrandConfidence, Confidence, dispatch};
+    use fss_tutk::oldproto::{ProbeResponse, build_probe, parse_response};
     use std::net::UdpSocket;
     use std::time::{Duration, Instant};
 
@@ -273,7 +273,11 @@ fn probe_tutk_listeners(report: &mut DiscoverReport, cancel: &AtomicBool) {
     };
     let _ = sock.set_read_timeout(Some(Duration::from_millis(120)));
     // Empty UID is silent on this fleet; the vendor reply echoes our placeholder.
-    let probe = build_probe(b"WYZE0123456789ABCDEF", 0x0601, [0xF5, 0x05, 0x20, 0x26, 0x10, 0x08]);
+    let probe = build_probe(
+        b"WYZE0123456789ABCDEF",
+        0x0601,
+        [0xF5, 0x05, 0x20, 0x26, 0x10, 0x08],
+    );
     // Wi-Fi power-save swallows the first frames; the proven reference client
     // needs several spaced attempts before a sleeping camera answers.
     if std::env::var_os("FSS_DISCOVER_DEBUG").is_some() {

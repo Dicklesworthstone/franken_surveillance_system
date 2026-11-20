@@ -99,7 +99,9 @@ impl From<fss_publication::LocalPublicationError> for SourceHydrationError {
 impl From<fss_publication::custody_audit::belief_snapshot::durable::DurableBeliefError>
     for SourceHydrationError
 {
-    fn from(error: fss_publication::custody_audit::belief_snapshot::durable::DurableBeliefError) -> Self {
+    fn from(
+        error: fss_publication::custody_audit::belief_snapshot::durable::DurableBeliefError,
+    ) -> Self {
         Self::Deployment(Box::new(error))
     }
 }
@@ -347,7 +349,10 @@ impl ReferenceHydrationCatalog {
         reader.validate_source_descriptor(descriptor)?;
         let deployment_authority = reader.deployment_authority_for(descriptor, publication_root)?;
         self.check_source_binding_profile(
-            descriptor_digest, publication_root, descriptor.subject_digest, deployment_authority,
+            descriptor_digest,
+            publication_root,
+            descriptor.subject_digest,
+            deployment_authority,
         )?;
         if self
             .source_bindings
@@ -458,8 +463,10 @@ impl ReferenceHydrationCatalog {
             return Err(error.into());
         }
         self.check_source_binding_profile(
-            descriptor.descriptor_digest, binding.publication_root,
-            binding.subject_digest, binding.deployment_authority,
+            descriptor.descriptor_digest,
+            binding.publication_root,
+            binding.subject_digest,
+            binding.deployment_authority,
         )?;
         // Keep reader-specific authority checks inside the generic path. Type erasure must
         // not let a session serve an old descriptor through a reader pinned to a newer head.

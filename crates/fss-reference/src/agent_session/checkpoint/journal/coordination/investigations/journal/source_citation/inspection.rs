@@ -2,8 +2,8 @@
 //! Recover an exact committed citation without reacquiring source or repeating its case mutation.
 
 use super::*;
-use crate::agent_session::checkpoint::journal::read_report;
 use crate::agent_session::checkpoint::journal::coordination::investigations::MAX_INVESTIGATION_BYTES;
+use crate::agent_session::checkpoint::journal::read_report;
 
 /// Historical result scoped to one verified journal prefix and a currently authorized case reader.
 ///
@@ -80,16 +80,23 @@ impl DurableSessionStore {
         now: TimestampNs,
     ) -> Result<SourceCitationInspection, DurableInvestigationError> {
         self.preflight()?;
-        target.validate().map_err(DurableInvestigationError::Refused)?;
+        target
+            .validate()
+            .map_err(DurableInvestigationError::Refused)?;
         if target.case_id.len() > 128 || target.hypothesis.len() > 128 {
-            return Err(DurableInvestigationError::Refused(InvestigationError::InvalidRecord));
+            return Err(DurableInvestigationError::Refused(
+                InvestigationError::InvalidRecord,
+            ));
         }
         // Do not append even an observation to corrupt complete history.
         self.verify_storage()?;
         let visible = self.investigate(
             principal,
             session,
-            InvestigationCommand::Inspect { case_id: target.case_id.clone(), revision: None },
+            InvestigationCommand::Inspect {
+                case_id: target.case_id.clone(),
+                revision: None,
+            },
             now,
         )?;
         let report = read_report(self.path(), self.limits)?;
@@ -100,9 +107,15 @@ impl DurableSessionStore {
         {
             return Err(DurableSessionError::RootMismatch.into());
         }
-        let cases = self.coordination.as_ref().and_then(|state| state.cases.as_ref())
+        let cases = self
+            .coordination
+            .as_ref()
+            .and_then(|state| state.cases.as_ref())
             .ok_or(DurableSessionError::InvalidHistory)?;
-        let case = cases.entries.get(&target.case_id).ok_or(DurableSessionError::InvalidHistory)?;
+        let case = cases
+            .entries
+            .get(&target.case_id)
+            .ok_or(DurableSessionError::InvalidHistory)?;
         let mut found = None;
         let mut receipt_bytes = 0;
         for record in report.records() {
@@ -117,12 +130,14 @@ impl DurableSessionStore {
             if recorded_target != *target || acquisition.request != request {
                 continue;
             }
-            if found.is_some() || acquisition.principal != *principal
+            if found.is_some()
+                || acquisition.principal != *principal
                 || acquisition.privacy_class != visible.privacy_class()
             {
                 return Err(DurableSessionError::InvalidHistory.into());
             }
-            let revision = std::iter::once(&case.head).chain(case.history.iter())
+            let revision = std::iter::once(&case.head)
+                .chain(case.history.iter())
                 .find(|candidate| candidate.digest() == revision)
                 .ok_or(DurableSessionError::InvalidHistory)?;
             if revision.principal() != principal
@@ -132,22 +147,33 @@ impl DurableSessionStore {
             {
                 return Err(DurableSessionError::InvalidHistory.into());
             }
-            let revision_bytes = revision.try_canonical_bytes()
-                .map_err(DurableSessionError::from)?.len();
-            receipt_bytes = record.payload().len().checked_add(revision_bytes)
+            let revision_bytes = revision
+                .try_canonical_bytes()
+                .map_err(DurableSessionError::from)?
+                .len();
+            receipt_bytes = record
+                .payload()
+                .len()
+                .checked_add(revision_bytes)
                 .ok_or(DurableSessionError::CapacityExceeded)?;
             if revision_bytes > MAX_INVESTIGATION_BYTES || receipt_bytes > max_receipt_bytes {
                 return Err(DurableSessionError::CapacityExceeded.into());
             }
             let receipt = SourceCitationReceipt {
-                acquisition, target: recorded_target, revision: revision.clone(),
+                acquisition,
+                target: recorded_target,
+                revision: revision.clone(),
             };
             if receipt.digest() != digest || encode(&receipt, after)? != record.payload() {
                 return Err(DurableSessionError::InvalidHistory.into());
             }
             found = Some((record.root(), receipt));
         }
-        Ok(SourceCitationInspection { inspected_root, committed: found, receipt_bytes })
+        Ok(SourceCitationInspection {
+            inspected_root,
+            committed: found,
+            receipt_bytes,
+        })
     }
 }
 

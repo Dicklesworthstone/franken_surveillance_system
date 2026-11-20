@@ -152,7 +152,9 @@ impl OnvifOperation {
             Self::GetMedia2Profiles => "http://www.onvif.org/ver20/media/wsdl/GetProfiles",
             Self::GetMedia2StreamUri => "http://www.onvif.org/ver20/media/wsdl/GetStreamUri",
             Self::GetRecordings => "http://www.onvif.org/ver10/recording/wsdl/GetRecordings",
-            Self::GetRecordingInformation => "http://www.onvif.org/ver10/search/wsdl/GetRecordingInformation",
+            Self::GetRecordingInformation => {
+                "http://www.onvif.org/ver10/search/wsdl/GetRecordingInformation"
+            }
             Self::GetReplayUri => "http://www.onvif.org/ver10/replay/wsdl/GetReplayUri",
             Self::CreatePullPointSubscription => {
                 "http://www.onvif.org/ver10/events/wsdl/EventPortType/CreatePullPointSubscriptionRequest"
@@ -552,7 +554,9 @@ impl fmt::Display for WireError {
             Self::InvalidField => f.write_str("invalid ONVIF response field"),
             Self::ProfileLimitExceeded => f.write_str("ONVIF profile count exceeds limit"),
             Self::ServiceLimitExceeded => f.write_str("ONVIF service count exceeds limit"),
-            Self::RecordingLimitExceeded => f.write_str("ONVIF recording or track count exceeds limit"),
+            Self::RecordingLimitExceeded => {
+                f.write_str("ONVIF recording or track count exceeds limit")
+            }
             Self::EventLimitExceeded => f.write_str("ONVIF event count exceeds limit"),
             Self::ItemLimitExceeded => f.write_str("ONVIF event item count exceeds limit"),
             Self::AnalyticsLimitExceeded => f.write_str("ONVIF analytics count exceeds limit"),

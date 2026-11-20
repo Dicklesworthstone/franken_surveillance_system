@@ -46,14 +46,14 @@ mod conv;
 mod layout;
 #[path = "optimized_executor/matmul.rs"]
 mod matmul;
+#[cfg(test)]
+#[path = "optimized_executor/matmul_tests.rs"]
+mod matmul_tests;
 #[path = "optimized_executor/pointwise.rs"]
 mod pointwise;
 #[cfg(test)]
 #[path = "optimized_executor/tests.rs"]
 mod tests;
-#[cfg(test)]
-#[path = "optimized_executor/matmul_tests.rs"]
-mod matmul_tests;
 
 /// Largest admitted [`ExecThreads`] request. Execution never spawns more scoped threads than
 /// this per kernel, whatever the host reports.

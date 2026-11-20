@@ -282,77 +282,155 @@ pub fn copy_confirmed_to_fresh_store(
 ) -> Result<FreshStoreCopy, FreshStoreCopyError> {
     use fss_publication::RootLedgerOutcome;
 
-    let Some(pin) = old.parts.journal.confirmed() else { return Err(FreshStoreCopyError::Preconditions) };
+    let Some(pin) = old.parts.journal.confirmed() else {
+        return Err(FreshStoreCopyError::Preconditions);
+    };
     if old.fenced
         || !old.parts.journal.locally_settled(&old.parts.keeper)
         || !next.journal.locally_settled(&next.keeper)
         || next.journal.confirmed().is_some()
         || old.parts.journal.scope() != next.journal.scope()
-        || old.parts.retention != next.retention || pin.retention != next.retention
+        || old.parts.retention != next.retention
+        || pin.retention != next.retention
         || old.parts.deployment.root() == next.deployment.root()
         || old.parts.deployment.site_lineage() != next.deployment.site_lineage()
         || next.deployment.publisher().is_poisoned()
         || next.deployment.publisher().visible_root_count() != 0
         || next.deployment.publisher().broken_slots().next().is_some()
-        || next.deployment.publisher().orphaned_temps().next().is_some()
+        || next
+            .deployment
+            .publisher()
+            .orphaned_temps()
+            .next()
+            .is_some()
         || next.deployment.publisher().tombstones().next().is_some()
-        || next.deployment.current_anchor() != &fss_core::LedgerAnchor::genesis(next.deployment.site_lineage())
-        || old.pending.as_ref().is_some_and(|input| !valid_input(input, next))
+        || next.deployment.current_anchor()
+            != &fss_core::LedgerAnchor::genesis(next.deployment.site_lineage())
+        || old
+            .pending
+            .as_ref()
+            .is_some_and(|input| !valid_input(input, next))
         || !read.permits(pin.retention, pin.root)
         || !next.authority.permits(pin.retention, pin.root)
     {
         return Err(FreshStoreCopyError::Preconditions);
     }
     if let Some(custody) = &mut old.rollover_custody {
-        custody.check(&old.parts.journal, &old.parts.keeper, &old.parts.replay)
+        custody
+            .check(&old.parts.journal, &old.parts.keeper, &old.parts.replay)
             .map_err(FreshStoreCopyError::PriorLineage)?;
     }
     let predecessor_journal = old.parts.journal.anchor();
     let predecessor_keeper = old.parts.keeper.anchor();
     let predecessor_ledger = old.parts.deployment.current_anchor().clone();
     let recovered = archive::read_unknown_time_source_graph(
-        &mut old.parts.deployment, pin, read, old.parts.limits, work, &old.parts.replay,
-    ).map_err(FreshStoreCopyError::Read)?;
+        &mut old.parts.deployment,
+        pin,
+        read,
+        old.parts.limits,
+        work,
+        &old.parts.replay,
+    )
+    .map_err(FreshStoreCopyError::Read)?;
     let receipt = match recovered {
         archive::RecoveredSourceGraph::Single(source) => {
-            if source.camera_claim() != expected_camera_claim { return Err(FreshStoreCopyError::CameraClaim); }
+            if source.camera_claim() != expected_camera_claim {
+                return Err(FreshStoreCopyError::CameraClaim);
+            }
             let plan = source_evidence::Prepared::from_recovered(&source);
-            if archive::UnknownTimePin::from_source_plan(&plan) != pin { return Err(FreshStoreCopyError::Candidate); }
-            archive::publish_unknown_time_source_anchored(&plan, &mut next.deployment,
-                next.authority.as_ref(), next.limits, work, &next.replay, &mut next.journal, &mut next.keeper)
+            if archive::UnknownTimePin::from_source_plan(&plan) != pin {
+                return Err(FreshStoreCopyError::Candidate);
+            }
+            archive::publish_unknown_time_source_anchored(
+                &plan,
+                &mut next.deployment,
+                next.authority.as_ref(),
+                next.limits,
+                work,
+                &next.replay,
+                &mut next.journal,
+                &mut next.keeper,
+            )
         }
         archive::RecoveredSourceGraph::Batch(source) => {
-            if source.camera_claim != expected_camera_claim { return Err(FreshStoreCopyError::CameraClaim); }
-            let plan = source_batch::Prepared::from_recovered(source).map_err(|_| FreshStoreCopyError::Candidate)?;
-            if archive::UnknownTimePin::from_source_batch(&plan) != pin { return Err(FreshStoreCopyError::Candidate); }
-            archive::publish_unknown_time_source_batch_anchored(&plan, &mut next.deployment,
-                next.authority.as_ref(), next.limits, work, &next.replay, &mut next.journal, &mut next.keeper)
+            if source.camera_claim != expected_camera_claim {
+                return Err(FreshStoreCopyError::CameraClaim);
+            }
+            let plan = source_batch::Prepared::from_recovered(source)
+                .map_err(|_| FreshStoreCopyError::Candidate)?;
+            if archive::UnknownTimePin::from_source_batch(&plan) != pin {
+                return Err(FreshStoreCopyError::Candidate);
+            }
+            archive::publish_unknown_time_source_batch_anchored(
+                &plan,
+                &mut next.deployment,
+                next.authority.as_ref(),
+                next.limits,
+                work,
+                &next.replay,
+                &mut next.journal,
+                &mut next.keeper,
+            )
         }
-    }.map_err(FreshStoreCopyError::Publication)?;
+    }
+    .map_err(FreshStoreCopyError::Publication)?;
     let verified = (|| -> Result<(), FreshStoreVerification> {
-        if receipt.outcome != RootLedgerOutcome::Committed || receipt.root != pin.root
+        if receipt.outcome != RootLedgerOutcome::Committed
+            || receipt.root != pin.root
             || &receipt.anchor != next.deployment.current_anchor()
-            || next.journal.confirmed() != Some(pin) || !next.journal.locally_settled(&next.keeper)
-            || old.parts.journal.anchor() != predecessor_journal || old.parts.keeper.anchor() != predecessor_keeper
+            || next.journal.confirmed() != Some(pin)
+            || !next.journal.locally_settled(&next.keeper)
+            || old.parts.journal.anchor() != predecessor_journal
+            || old.parts.keeper.anchor() != predecessor_keeper
             || old.parts.deployment.current_anchor() != &predecessor_ledger
-        { return Err(FreshStoreVerification::Mismatch); }
+        {
+            return Err(FreshStoreVerification::Mismatch);
+        }
         let reread = archive::read_unknown_time_source_graph(
-            &mut next.deployment, pin, read, next.limits, work, &next.replay,
-        ).map_err(FreshStoreVerification::Read)?;
+            &mut next.deployment,
+            pin,
+            read,
+            next.limits,
+            work,
+            &next.replay,
+        )
+        .map_err(FreshStoreVerification::Read)?;
         let matches = match reread {
-            archive::RecoveredSourceGraph::Single(source) => source.camera_claim() == expected_camera_claim
-                && archive::UnknownTimePin::from_source_plan(&source_evidence::Prepared::from_recovered(&source)) == pin,
-            archive::RecoveredSourceGraph::Batch(source) => source.camera_claim == expected_camera_claim
-                && source_batch::Prepared::from_recovered(source).ok()
-                    .is_some_and(|plan| archive::UnknownTimePin::from_source_batch(&plan) == pin),
+            archive::RecoveredSourceGraph::Single(source) => {
+                source.camera_claim() == expected_camera_claim
+                    && archive::UnknownTimePin::from_source_plan(
+                        &source_evidence::Prepared::from_recovered(&source),
+                    ) == pin
+            }
+            archive::RecoveredSourceGraph::Batch(source) => {
+                source.camera_claim == expected_camera_claim
+                    && source_batch::Prepared::from_recovered(source)
+                        .ok()
+                        .is_some_and(|plan| {
+                            archive::UnknownTimePin::from_source_batch(&plan) == pin
+                        })
+            }
         };
-        if matches { Ok(()) } else { Err(FreshStoreVerification::Mismatch) }
+        if matches {
+            Ok(())
+        } else {
+            Err(FreshStoreVerification::Mismatch)
+        }
     })();
     if let Err(reason) = verified {
-        return Err(FreshStoreCopyError::AfterPublication { receipt: Box::new(receipt), reason });
+        return Err(FreshStoreCopyError::AfterPublication {
+            receipt: Box::new(receipt),
+            reason,
+        });
     }
-    Ok(FreshStoreCopy { pin, predecessor_journal, predecessor_keeper,
-        successor_journal: next.journal.anchor(), successor_keeper: next.keeper.anchor(), receipt })
+    Ok(FreshStoreCopy {
+        pin,
+        predecessor_journal,
+        predecessor_keeper,
+        successor_journal: next.journal.anchor(),
+        successor_keeper: next.keeper.anchor(),
+        receipt,
+    })
 }
 
 /// A held input published and read back in a seeded successor. The old input
@@ -433,8 +511,12 @@ pub fn copy_pending_to_seeded_store(
 ) -> Result<FreshStorePending, FreshStorePendingError> {
     use fss_publication::RootLedgerOutcome;
 
-    let input = old.pending.as_ref().ok_or(FreshStorePendingError::Preconditions)?;
-    if old.fenced || !old.parts.journal.locally_settled(&old.parts.keeper)
+    let input = old
+        .pending
+        .as_ref()
+        .ok_or(FreshStorePendingError::Preconditions)?;
+    if old.fenced
+        || !old.parts.journal.locally_settled(&old.parts.keeper)
         || !next.journal.locally_settled(&next.keeper)
         || old.parts.journal.confirmed() != Some(copied.pin)
         || old.parts.journal.anchor() != copied.predecessor_journal
@@ -443,7 +525,8 @@ pub fn copy_pending_to_seeded_store(
         || next.journal.anchor() != copied.successor_journal
         || next.keeper.anchor() != copied.successor_keeper
         || old.parts.journal.scope() != next.journal.scope()
-        || old.parts.retention != next.retention || copied.pin.retention != next.retention
+        || old.parts.retention != next.retention
+        || copied.pin.retention != next.retention
         || old.parts.deployment.root() == next.deployment.root()
         || old.parts.deployment.site_lineage() != next.deployment.site_lineage()
         || copied.receipt.outcome != RootLedgerOutcome::Committed
@@ -455,7 +538,9 @@ pub fn copy_pending_to_seeded_store(
         || next.deployment.publisher().tombstones().next().is_some()
         || !valid_input(input, next)
         || !read.permits(copied.pin.retention, copied.pin.root)
-        || !next.authority.permits(copied.pin.retention, copied.pin.root)
+        || !next
+            .authority
+            .permits(copied.pin.retention, copied.pin.root)
     {
         return Err(FreshStorePendingError::Preconditions);
     }
@@ -463,37 +548,81 @@ pub fn copy_pending_to_seeded_store(
         Input::Original { camera_claim, .. } | Input::Batch { camera_claim, .. } => *camera_claim,
         Input::Recovered(source) => source.camera_claim(),
     };
-    if input_camera != expected_camera_claim { return Err(FreshStorePendingError::CameraClaim); }
-    let cost = u64::try_from(input.bytes_len()).ok().and_then(|n| n.checked_mul(2))
+    if input_camera != expected_camera_claim {
+        return Err(FreshStorePendingError::CameraClaim);
+    }
+    let cost = u64::try_from(input.bytes_len())
+        .ok()
+        .and_then(|n| n.checked_mul(2))
         .ok_or(FreshStorePendingError::Work)?;
-    work.charge(cost).map_err(|_| FreshStorePendingError::Work)?;
+    work.charge(cost)
+        .map_err(|_| FreshStorePendingError::Work)?;
     if let Some(custody) = &mut old.rollover_custody {
-        custody.check(&old.parts.journal, &old.parts.keeper, &old.parts.replay)
+        custody
+            .check(&old.parts.journal, &old.parts.keeper, &old.parts.replay)
             .map_err(|_| FreshStorePendingError::Preconditions)?;
     }
     let seed = archive::read_unknown_time_source_graph(
-        &mut next.deployment, copied.pin, read, next.limits, work, &next.replay,
-    ).map_err(FreshStorePendingError::Seed)?;
+        &mut next.deployment,
+        copied.pin,
+        read,
+        next.limits,
+        work,
+        &next.replay,
+    )
+    .map_err(FreshStorePendingError::Seed)?;
     let seed_camera = match seed {
         archive::RecoveredSourceGraph::Single(source) => source.camera_claim(),
         archive::RecoveredSourceGraph::Batch(source) => source.camera_claim,
     };
-    if seed_camera != expected_camera_claim { return Err(FreshStorePendingError::CameraClaim); }
-    enum Candidate<'a> { Source(source_evidence::Prepared<'a>), Batch(source_batch::Prepared) }
+    if seed_camera != expected_camera_claim {
+        return Err(FreshStorePendingError::CameraClaim);
+    }
+    enum Candidate<'a> {
+        Source(source_evidence::Prepared<'a>),
+        Batch(source_batch::Prepared),
+    }
     let candidate = match input {
-        Input::Original { record, key, disposition, camera_claim } => source_evidence::Prepared::new(
-            record, *key, *disposition, *camera_claim, next.retention, next.max_source_bytes,
-        ).map(Candidate::Source).map_err(|_| FreshStorePendingError::Candidate)?,
-        Input::Recovered(source) => Candidate::Source(source_evidence::Prepared::from_recovered(source)),
-        Input::Batch { batch, key, camera_claim } => Candidate::Batch(source_batch::Prepared::from_items(
-            batch.items(), *key, *camera_claim, next.retention, batch.bytes(),
-        ).map_err(|_| FreshStorePendingError::Candidate)?),
+        Input::Original {
+            record,
+            key,
+            disposition,
+            camera_claim,
+        } => source_evidence::Prepared::new(
+            record,
+            *key,
+            *disposition,
+            *camera_claim,
+            next.retention,
+            next.max_source_bytes,
+        )
+        .map(Candidate::Source)
+        .map_err(|_| FreshStorePendingError::Candidate)?,
+        Input::Recovered(source) => {
+            Candidate::Source(source_evidence::Prepared::from_recovered(source))
+        }
+        Input::Batch {
+            batch,
+            key,
+            camera_claim,
+        } => Candidate::Batch(
+            source_batch::Prepared::from_items(
+                batch.items(),
+                *key,
+                *camera_claim,
+                next.retention,
+                batch.bytes(),
+            )
+            .map_err(|_| FreshStorePendingError::Candidate)?,
+        ),
     };
     let pin = match &candidate {
         Candidate::Source(plan) => archive::UnknownTimePin::from_source_plan(plan),
         Candidate::Batch(plan) => archive::UnknownTimePin::from_source_batch(plan),
     };
-    if pin == copied.pin { return Err(FreshStorePendingError::Candidate); }
+    if pin == copied.pin {
+        return Err(FreshStorePendingError::Candidate);
+    }
     if archive::source_root_capacity(pin, &next.deployment).is_some() {
         return Err(FreshStorePendingError::Capacity);
     }
@@ -501,9 +630,15 @@ pub fn copy_pending_to_seeded_store(
     // candidate, but an orphan at the candidate's exact slot must be resolved
     // before preparing its journal intent. The publisher enforces this same
     // slot check at commit; this earlier check preserves a clean journal.
-    let candidate_slot = archive::slot_for_root(pin.root).map_err(|_| FreshStorePendingError::Candidate)?;
+    let candidate_slot =
+        archive::slot_for_root(pin.root).map_err(|_| FreshStorePendingError::Candidate)?;
     let candidate_temp = fss_publication::LocalRootPublisher::root_temp_path(&candidate_slot);
-    if next.deployment.publisher().orphaned_temps().any(|path| path == candidate_temp.as_path()) {
+    if next
+        .deployment
+        .publisher()
+        .orphaned_temps()
+        .any(|path| path == candidate_temp.as_path())
+    {
         return Err(FreshStorePendingError::CandidateOrphan);
     }
     if !read.permits(pin.retention, pin.root) || !next.authority.permits(pin.retention, pin.root) {
@@ -512,39 +647,83 @@ pub fn copy_pending_to_seeded_store(
     let old_ledger = old.parts.deployment.current_anchor().clone();
     let receipt = match &candidate {
         Candidate::Source(plan) => archive::publish_unknown_time_source_anchored(
-            plan, &mut next.deployment, next.authority.as_ref(), next.limits, work,
-            &next.replay, &mut next.journal, &mut next.keeper,
+            plan,
+            &mut next.deployment,
+            next.authority.as_ref(),
+            next.limits,
+            work,
+            &next.replay,
+            &mut next.journal,
+            &mut next.keeper,
         ),
         Candidate::Batch(plan) => archive::publish_unknown_time_source_batch_anchored(
-            plan, &mut next.deployment, next.authority.as_ref(), next.limits, work,
-            &next.replay, &mut next.journal, &mut next.keeper,
+            plan,
+            &mut next.deployment,
+            next.authority.as_ref(),
+            next.limits,
+            work,
+            &next.replay,
+            &mut next.journal,
+            &mut next.keeper,
         ),
-    }.map_err(FreshStorePendingError::Publication)?;
+    }
+    .map_err(FreshStorePendingError::Publication)?;
     let verified = (|| -> Result<(), FreshStoreVerification> {
-        if receipt.outcome != RootLedgerOutcome::Committed || receipt.root != pin.root
+        if receipt.outcome != RootLedgerOutcome::Committed
+            || receipt.root != pin.root
             || &receipt.anchor != next.deployment.current_anchor()
-            || next.journal.confirmed() != Some(pin) || !next.journal.locally_settled(&next.keeper)
+            || next.journal.confirmed() != Some(pin)
+            || !next.journal.locally_settled(&next.keeper)
             || old.parts.journal.anchor() != copied.predecessor_journal
             || old.parts.keeper.anchor() != copied.predecessor_keeper
             || old.parts.deployment.current_anchor() != &old_ledger
-        { return Err(FreshStoreVerification::Mismatch); }
+        {
+            return Err(FreshStoreVerification::Mismatch);
+        }
         let recovered = archive::read_unknown_time_source_graph(
-            &mut next.deployment, pin, read, next.limits, work, &next.replay,
-        ).map_err(FreshStoreVerification::Read)?;
+            &mut next.deployment,
+            pin,
+            read,
+            next.limits,
+            work,
+            &next.replay,
+        )
+        .map_err(FreshStoreVerification::Read)?;
         let matches = match recovered {
-            archive::RecoveredSourceGraph::Single(source) => source.camera_claim() == expected_camera_claim
-                && archive::UnknownTimePin::from_source_plan(&source_evidence::Prepared::from_recovered(&source)) == pin,
-            archive::RecoveredSourceGraph::Batch(source) => source.camera_claim == expected_camera_claim
-                && source_batch::Prepared::from_recovered(source).ok()
-                    .is_some_and(|plan| archive::UnknownTimePin::from_source_batch(&plan) == pin),
+            archive::RecoveredSourceGraph::Single(source) => {
+                source.camera_claim() == expected_camera_claim
+                    && archive::UnknownTimePin::from_source_plan(
+                        &source_evidence::Prepared::from_recovered(&source),
+                    ) == pin
+            }
+            archive::RecoveredSourceGraph::Batch(source) => {
+                source.camera_claim == expected_camera_claim
+                    && source_batch::Prepared::from_recovered(source)
+                        .ok()
+                        .is_some_and(|plan| {
+                            archive::UnknownTimePin::from_source_batch(&plan) == pin
+                        })
+            }
         };
-        if matches { Ok(()) } else { Err(FreshStoreVerification::Mismatch) }
+        if matches {
+            Ok(())
+        } else {
+            Err(FreshStoreVerification::Mismatch)
+        }
     })();
     if let Err(reason) = verified {
-        return Err(FreshStorePendingError::AfterPublication { receipt: Box::new(receipt), reason });
+        return Err(FreshStorePendingError::AfterPublication {
+            receipt: Box::new(receipt),
+            reason,
+        });
     }
-    Ok(FreshStorePending { seed: copied.pin, pending: pin, receipt,
-        successor_journal: next.journal.anchor(), successor_keeper: next.keeper.anchor() })
+    Ok(FreshStorePending {
+        seed: copied.pin,
+        pending: pin,
+        receipt,
+        successor_journal: next.journal.anchor(),
+        successor_keeper: next.keeper.anchor(),
+    })
 }
 
 struct State {
@@ -618,16 +797,27 @@ fn valid_input(input: &Input, parts: &Parts) -> bool {
                 && !source.bytes().is_empty()
                 && source.bytes().len() <= parts.max_source_bytes
         }
-        Input::Batch { batch, key, camera_claim } => {
+        Input::Batch {
+            batch,
+            key,
+            camera_claim,
+        } => {
             !batch.items().is_empty()
                 && batch.items().len() <= source_batch::MAX_RECORDS
                 && batch.bytes() <= source_batch::MAX_BYTES
                 && batch.bytes() <= parts.limits.maximum_spool_object_bytes
                 && batch.bytes() <= parts.deployment.publisher().limits().spool.max_object_bytes
-                && batch.items().iter().all(|item| source_evidence::validate_input(
-                    &item.record, *key, item.disposition, *camera_claim,
-                    parts.retention, parts.max_source_bytes,
-                ).is_ok())
+                && batch.items().iter().all(|item| {
+                    source_evidence::validate_input(
+                        &item.record,
+                        *key,
+                        item.disposition,
+                        *camera_claim,
+                        parts.retention,
+                        parts.max_source_bytes,
+                    )
+                    .is_ok()
+                })
         }
     }
 }
@@ -863,7 +1053,9 @@ impl Worker {
         if self.fenced || self.running.is_some() {
             return false;
         }
-        self.state.try_lock().is_ok_and(|state| state.parts.retention == retention)
+        self.state
+            .try_lock()
+            .is_ok_and(|state| state.parts.retention == retention)
     }
 
     /// Inspect immediately available custody without reading or changing storage.
@@ -876,11 +1068,23 @@ impl Worker {
                 && state.parts.journal.pending().is_none()
                 && state.parts.journal.replay_pin().is_none()
                 && state.parts.keeper.target() == state.parts.journal.anchor()
-                && state.parts.journal.confirmed().is_none_or(|pin| pin.retention == state.parts.retention)
+                && state
+                    .parts
+                    .journal
+                    .confirmed()
+                    .is_none_or(|pin| pin.retention == state.parts.retention)
                 && !state.parts.deployment.publisher().is_poisoned()
-                && (1024..=64 * 1024 * 1024).contains(&state.parts.limits.maximum_spool_object_bytes)
+                && (1024..=64 * 1024 * 1024)
+                    .contains(&state.parts.limits.maximum_spool_object_bytes)
                 && (1..=262_144).contains(&state.parts.limits.maximum_ledger_deltas)
-                && state.parts.deployment.publisher().limits().spool.max_object_bytes <= state.parts.limits.maximum_spool_object_bytes
+                && state
+                    .parts
+                    .deployment
+                    .publisher()
+                    .limits()
+                    .spool
+                    .max_object_bytes
+                    <= state.parts.limits.maximum_spool_object_bytes
         })
     }
 
@@ -1085,11 +1289,25 @@ impl Worker {
                     *camera_claim,
                     parts.retention,
                     parts.max_source_bytes,
-                ).map(Candidate::Source).map_err(Refusal::Preparation),
-                Input::Recovered(source) => Ok(Candidate::Source(source_evidence::Prepared::from_recovered(source))),
-                Input::Batch { batch, key, camera_claim } => source_batch::Prepared::from_items(
-                    batch.items(), *key, *camera_claim, parts.retention, batch.bytes(),
-                ).map(Candidate::Batch).map_err(Refusal::BatchPreparation),
+                )
+                .map(Candidate::Source)
+                .map_err(Refusal::Preparation),
+                Input::Recovered(source) => Ok(Candidate::Source(
+                    source_evidence::Prepared::from_recovered(source),
+                )),
+                Input::Batch {
+                    batch,
+                    key,
+                    camera_claim,
+                } => source_batch::Prepared::from_items(
+                    batch.items(),
+                    *key,
+                    *camera_claim,
+                    parts.retention,
+                    batch.bytes(),
+                )
+                .map(Candidate::Batch)
+                .map_err(Refusal::BatchPreparation),
             };
             let plan = match prepared {
                 Ok(plan) => plan,
@@ -1110,7 +1328,8 @@ impl Worker {
                 inner: parts.authority.as_ref(),
             };
             if parts.journal.locally_settled(&parts.keeper)
-                && let Some((visible, maximum)) = archive::source_root_capacity(pin, &parts.deployment)
+                && let Some((visible, maximum)) =
+                    archive::source_root_capacity(pin, &parts.deployment)
                 && archive::RetainAuthority::permits(&access, parts.retention, pin.root)
                 && !child.is_cancel_requested()
             {
@@ -1123,11 +1342,25 @@ impl Worker {
             *report = Some(
                 match match &plan {
                     Candidate::Source(plan) => archive::publish_unknown_time_source_anchored(
-                        plan, &mut parts.deployment, &access, parts.limits, &mut budget,
-                        &parts.replay, &mut parts.journal, &mut parts.keeper),
+                        plan,
+                        &mut parts.deployment,
+                        &access,
+                        parts.limits,
+                        &mut budget,
+                        &parts.replay,
+                        &mut parts.journal,
+                        &mut parts.keeper,
+                    ),
                     Candidate::Batch(plan) => archive::publish_unknown_time_source_batch_anchored(
-                        plan, &mut parts.deployment, &access, parts.limits, &mut budget,
-                        &parts.replay, &mut parts.journal, &mut parts.keeper),
+                        plan,
+                        &mut parts.deployment,
+                        &access,
+                        parts.limits,
+                        &mut budget,
+                        &parts.replay,
+                        &mut parts.journal,
+                        &mut parts.keeper,
+                    ),
                 } {
                     Ok(receipt) => Publication::Published { pin, receipt },
                     Err(error) => {

@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use fss_cli::escape_json_str;
-use fss_fusion::ScoreCalibration;
+use fss_fusion::{ScoreCalibration, SplitConformalCalibrator, minimum_calibration_samples};
 use fss_reference::evaluation::{
     CandidateDisposition, CandidateSet, ClosedIntervalNs, EvaluationError, EvaluationIdentity,
     EvaluationPolicy, EvaluationReport, EventCandidate, FalseAlertBudget, LabelSet, LabeledClip,
@@ -32,12 +32,16 @@ const HELP: &str = "fss-evaluate --labels LABELS.tsv --candidates CANDIDATES.tsv
 --pipeline-generation ID --model-generation ID --policy-generation ID \
 --max-false-alerts N --per-observed-ns N \
 [--early-tolerance-ns N] [--late-tolerance-ns N] \
-[--calibration-bins PPM,PPM,... --calibration-generation ID]\n\n\
+[--calibration-bins PPM,PPM,... --calibration-generation ID] \
+[--conformal-alpha-ppm PPM]\n\n\
 Read-only event evaluation; emits JSON to stdout. No threshold is activated.\n\
 With --calibration-bins (ascending score edges starting at 0) the report also carries a\n\
 score_calibration: per-bin true/false positive counts and log-likelihood-ratio intervals\n\
 (millibans, Wilson z=2, exact integer bounds) for fss-fuse; neutral and gap candidates\n\
 are excluded. It is valid only for the declared generation.\n\
+With --conformal-alpha-ppm (1..999999) the report also carries split_conformal: an exact\n\
+integer finite-sample split conformal false-alert threshold over observed false-positive\n\
+candidates (abstaining honestly when n < ceil((1-alpha)/alpha); no threshold is activated).\n\
 Labels header: fss-evaluation-labels.v1\n\
 Rows (TAB separated):\n\
   clip  CLIP_ID  DURATION_NS\n\
@@ -82,6 +86,7 @@ struct Options {
     identity: EvaluationIdentity,
     policy: EvaluationPolicy,
     calibration: Option<(String, Vec<u32>)>,
+    conformal_alpha_ppm: Option<u32>,
 }
 
 fn integer(value: &str) -> Result<u64> {
@@ -109,7 +114,7 @@ fn unicode(value: &OsStr) -> Result<&str> {
 fn parse_options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>> {
     let mut bounded = Vec::new();
     for arg in args {
-        if bounded.len() == 22 {
+        if bounded.len() == 24 {
             return Err(Failure::new("evaluation.cli.arguments_limit"));
         }
         bounded.push(arg);
@@ -134,6 +139,7 @@ fn parse_options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Opti
                 | "--late-tolerance-ns"
                 | "--calibration-bins"
                 | "--calibration-generation"
+                | "--conformal-alpha-ppm"
         ) {
             return Err(Failure::new("evaluation.cli.unknown_option"));
         }
@@ -187,12 +193,25 @@ fn parse_options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Opti
         }
         _ => return Err(Failure::new("evaluation.cli.calibration_options")),
     };
+    let conformal_alpha_ppm = match values.get("--conformal-alpha-ppm") {
+        None => None,
+        Some(raw) => {
+            let parsed = integer(unicode(raw)?)?;
+            let alpha = u32::try_from(parsed)
+                .map_err(|_| Failure::new("evaluation.cli.invalid_integer"))?;
+            if alpha == 0 || alpha >= 1_000_000 {
+                return Err(Failure::new("evaluation.cli.invalid_conformal_alpha"));
+            }
+            Some(alpha)
+        }
+    };
     Ok(Some(Options {
         labels: PathBuf::from(required(&values, "--labels")?),
         candidates: PathBuf::from(required(&values, "--candidates")?),
         identity,
         policy,
         calibration,
+        conformal_alpha_ppm,
     }))
 }
 
@@ -657,6 +676,65 @@ fn report_json(report: &EvaluationReport) -> String {
     ])
 }
 
+fn conformal_json(
+    generation: &str,
+    alpha_ppm: u32,
+    report: &EvaluationReport,
+    candidates: &CandidateSet,
+) -> Result<String> {
+    let fp_scores: Vec<u32> = calibration_outcomes(report, candidates)
+        .into_iter()
+        .filter_map(|(score, positive)| (!positive).then_some(score))
+        .collect();
+    let min_required = minimum_calibration_samples(alpha_ppm);
+    if fp_scores.is_empty() {
+        return Ok(object(&[
+            ("schema", text("fss.fusion.split_conformal.v1")),
+            ("generation", text(generation)),
+            ("calibration_basis", text("false_positive_candidate_scores")),
+            ("exchangeability_assumption", text("caller_declared")),
+            ("threshold_activated", "false".to_owned()),
+            ("alpha_ppm", alpha_ppm.to_string()),
+            ("target_coverage_ppm", (1_000_000 - alpha_ppm).to_string()),
+            ("sample_count", "0".to_owned()),
+            ("minimum_samples_required", min_required.to_string()),
+            ("state", text("abstained_no_false_positive_samples")),
+            ("threshold_ppm", "null".to_owned()),
+            ("digest", "null".to_owned()),
+        ]));
+    }
+    let calibrator = SplitConformalCalibrator::build(generation, alpha_ppm, &fp_scores)
+        .map_err(|error| Failure::new(error.stable_id()))?;
+    let state = if calibrator.quantile_ppm().is_some() {
+        "calibrated"
+    } else {
+        "abstained_insufficient_calibration"
+    };
+    Ok(object(&[
+        ("schema", text("fss.fusion.split_conformal.v1")),
+        ("generation", text(calibrator.generation())),
+        ("calibration_basis", text("false_positive_candidate_scores")),
+        ("exchangeability_assumption", text("caller_declared")),
+        ("threshold_activated", "false".to_owned()),
+        ("alpha_ppm", calibrator.alpha_ppm().to_string()),
+        (
+            "target_coverage_ppm",
+            calibrator.target_coverage_ppm().to_string(),
+        ),
+        ("sample_count", calibrator.sample_count().to_string()),
+        ("minimum_samples_required", min_required.to_string()),
+        ("order_rank", calibrator.order_rank().to_string()),
+        ("state", text(state)),
+        (
+            "threshold_ppm",
+            calibrator
+                .quantile_ppm()
+                .map_or_else(|| "null".to_owned(), |q| q.to_string()),
+        ),
+        ("digest", text(&calibrator.digest().to_string())),
+    ]))
+}
+
 fn run(args: impl IntoIterator<Item = OsString>) -> Result<String> {
     let mut args = args.into_iter().peekable();
     if args
@@ -672,25 +750,42 @@ fn run(args: impl IntoIterator<Item = OsString>) -> Result<String> {
     let labels = parse_labels(&read_input(&options.labels)?)?;
     let candidates = parse_candidates(&read_input(&options.candidates)?)?;
     let report = evaluate(&options.identity, &options.policy, &labels, &candidates)?;
-    let json = report_json(&report);
-    match options.calibration {
-        None => Ok(json),
-        Some((generation, edges)) => {
-            let calibration = ScoreCalibration::build(
-                &generation,
-                &edges,
-                &calibration_outcomes(&report, &candidates),
+    let mut json = report_json(&report);
+    let conformal_generation = options
+        .calibration
+        .as_ref()
+        .map(|(generation, _)| generation.clone())
+        .unwrap_or_else(|| {
+            format!(
+                "{}:{}:{}",
+                options.identity.pipeline_generation,
+                options.identity.model_generation,
+                options.identity.policy_generation
             )
-            .map_err(|error| Failure::new(error.stable_id()))?;
-            let body = json
-                .strip_suffix('}')
-                .ok_or_else(|| Failure::new("evaluation.cli.internal"))?;
-            Ok(format!(
-                "{body},\"score_calibration\":{}}}",
-                calibration_json(&calibration)
-            ))
-        }
+        });
+    if let Some((generation, edges)) = options.calibration {
+        let calibration = ScoreCalibration::build(
+            &generation,
+            &edges,
+            &calibration_outcomes(&report, &candidates),
+        )
+        .map_err(|error| Failure::new(error.stable_id()))?;
+        let body = json
+            .strip_suffix('}')
+            .ok_or_else(|| Failure::new("evaluation.cli.internal"))?;
+        json = format!(
+            "{body},\"score_calibration\":{}}}",
+            calibration_json(&calibration)
+        );
     }
+    if let Some(alpha_ppm) = options.conformal_alpha_ppm {
+        let conformal = conformal_json(&conformal_generation, alpha_ppm, &report, &candidates)?;
+        let body = json
+            .strip_suffix('}')
+            .ok_or_else(|| Failure::new("evaluation.cli.internal"))?;
+        json = format!("{body},\"split_conformal\":{conformal}}}");
+    }
+    Ok(json)
 }
 
 fn main() -> ExitCode {
@@ -851,5 +946,66 @@ mod tests {
         let oversized = format!("fss-evaluation-labels.v1\n#{}\n", "x".repeat(MAX_ROW_BYTES));
         assert!(parse_labels(&oversized).is_err());
         Ok(())
+    }
+
+    #[test]
+    fn split_conformal_abstains_honestly_on_small_sample_and_certifies_when_sufficient()
+    -> Result<()> {
+        // Default fixture has 1 observable false positive: at alpha = 10% (100_000 ppm),
+        // min_samples = 9, so conformal calibration MUST abstain honestly.
+        let report = score(LABELS, CANDIDATES)?;
+        let candidates = parse_candidates(CANDIDATES)?;
+        let abstained = conformal_json("gen:small", 100_000, &report, &candidates)?;
+        assert!(abstained.contains("\"state\":\"abstained_insufficient_calibration\""));
+        assert!(abstained.contains("\"threshold_ppm\":null"));
+        assert!(abstained.contains("\"minimum_samples_required\":9"));
+        assert!(abstained.contains("\"threshold_activated\":false"));
+
+        // With 10 observable false positives at alpha = 10% (100_000 ppm),
+        // ceil((10 + 1) * 0.9) = ceil(9.9) = 10 -> 10th smallest FP score (900_000 ppm).
+        let mut many_candidates =
+            String::from("fss-evaluation-candidates.v1\ncandidate\td\tc\tperson\t-\t110\t950000\n");
+        for idx in 1..=10_u32 {
+            many_candidates.push_str(&format!(
+                "candidate\tfp{idx}\tc\tperson\t-\t{}\t{}\n",
+                250 + idx,
+                idx * 90_000
+            ));
+        }
+        let many_report = score(LABELS, &many_candidates)?;
+        let many_parsed = parse_candidates(&many_candidates)?;
+        let certified = conformal_json("gen:sufficient", 100_000, &many_report, &many_parsed)?;
+        assert!(certified.contains("\"state\":\"calibrated\""));
+        assert!(certified.contains("\"sample_count\":10"));
+        assert!(certified.contains("\"order_rank\":10"));
+        assert!(certified.contains("\"threshold_ppm\":900000"));
+        assert!(certified.contains("\"digest\":\"sha256:"));
+        Ok(())
+    }
+
+    #[test]
+    fn split_conformal_rejects_invalid_alpha_ppm() {
+        for bad in ["0", "1000000", "abc"] {
+            let args = [
+                "--labels",
+                "l",
+                "--candidates",
+                "c",
+                "--pipeline-generation",
+                "p",
+                "--model-generation",
+                "m",
+                "--policy-generation",
+                "pol",
+                "--max-false-alerts",
+                "0",
+                "--per-observed-ns",
+                "1000",
+                "--conformal-alpha-ppm",
+                bad,
+            ]
+            .map(OsString::from);
+            assert!(parse_options(args).is_err(), "expected refusal for {bad}");
+        }
     }
 }

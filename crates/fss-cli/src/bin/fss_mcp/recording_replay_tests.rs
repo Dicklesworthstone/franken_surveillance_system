@@ -270,7 +270,8 @@ fn replay_schema_exposes_exact_closed_mode_without_client_source_authority() -> 
         .and_then(input::Value::array)
         .ok_or("query modes")?;
     for branch in branches {
-        let branch = query_branch(schema.object().ok_or("query object")?, branch).ok_or("query branch")?;
+        let branch =
+            query_branch(schema.object().ok_or("query object")?, branch).ok_or("query branch")?;
         let target = branch
             .get("properties")
             .and_then(|value| value.get("target"))
@@ -296,7 +297,8 @@ fn replay_schema_exposes_exact_closed_mode_without_client_source_authority() -> 
                 .ok_or("recording modes")?;
             let mut replay_modes = 0;
             for mode in modes {
-                let mode = query_branch(schema.object().ok_or("query object")?, mode).ok_or("recording branch")?;
+                let mode = query_branch(schema.object().ok_or("query object")?, mode)
+                    .ok_or("recording branch")?;
                 let required = mode
                     .get("required")
                     .and_then(input::Value::array)
@@ -326,10 +328,7 @@ fn replay_schema_exposes_exact_closed_mode_without_client_source_authority() -> 
                         "end_utc_ns",
                         "max_hydration_bytes",
                     ] {
-                        assert!(
-                            excludes_field(mode, field),
-                            "allowed mixed {field}"
-                        );
+                        assert!(excludes_field(mode, field), "allowed mixed {field}");
                     }
                 } else {
                     assert!(excludes_field(mode, "replay_root"));
@@ -409,7 +408,8 @@ fn retained_replay_schema_separates_payload_attempts_from_archive_syscalls() -> 
         .and_then(input::Value::array)
         .ok_or("branches")?;
     for branch in branches {
-        let branch = query_branch(schema.object().ok_or("query object")?, branch).ok_or("query branch")?;
+        let branch =
+            query_branch(schema.object().ok_or("query object")?, branch).ok_or("query branch")?;
         let target = branch
             .get("properties")
             .and_then(|v| v.get("target"))
@@ -424,7 +424,8 @@ fn retained_replay_schema_separates_payload_attempts_from_archive_syscalls() -> 
                 .ok_or("modes")?;
             let mut retained_modes = 0;
             for mode in modes {
-                let mode = query_branch(schema.object().ok_or("query object")?, mode).ok_or("recording branch")?;
+                let mode = query_branch(schema.object().ok_or("query object")?, mode)
+                    .ok_or("recording branch")?;
                 let retained = mode
                     .get("required")
                     .and_then(input::Value::array)

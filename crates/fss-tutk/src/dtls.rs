@@ -15,7 +15,7 @@
 //!   * PRF = TLS 1.2 SHA-256 (RFC 5246 §5); Finished verify_data = 12 B
 
 use crate::chacha::{aead_decrypt, aead_encrypt};
-use crate::digest::{hmac_sha256, Sha256};
+use crate::digest::{Sha256, hmac_sha256};
 use crate::x25519::{x25519, x25519_base};
 
 /// DTLS 1.2 version bytes (FE FD).
@@ -151,10 +151,27 @@ pub fn pack_handshake(msg_type: u8, message_seq: u16, body: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Reassembles (possibly fragmented) DTLS handshake messages.
+/// Maximum single DTLS handshake message size admitted by [`HandshakeReassembler`] (64 KiB).
+/// Bounds allocation against unauthenticated 24-bit `message_length` DoS packets (16 MiB).
+pub const MAX_HANDSHAKE_MSG_LEN: usize = 65_536;
+
+/// Maximum concurrent incomplete or unconsumed DTLS handshake messages retained.
+pub const MAX_PENDING_HANDSHAKE_MSGS: usize = 16;
+
+struct PartialHandshake {
+    mtype: u8,
+    mlen: usize,
+    buf: Vec<u8>,
+    received: Vec<bool>,
+    received_bytes: usize,
+}
+
+/// Reassembles (possibly fragmented) DTLS handshake messages with strict bounds
+/// and exact byte-coverage tracking (handling out-of-order, duplicate, and
+/// overlapping fragments safely without trusting unauthenticated 24-bit lengths).
 #[derive(Default)]
 pub struct HandshakeReassembler {
-    frags: std::collections::BTreeMap<u16, (u8, usize, std::collections::BTreeMap<usize, Vec<u8>>)>,
+    frags: std::collections::BTreeMap<u16, PartialHandshake>,
     done: std::collections::BTreeMap<u16, (u8, Vec<u8>)>,
 }
 
@@ -170,33 +187,72 @@ impl HandshakeReassembler {
         let mut off = 0;
         while off + 12 <= data.len() {
             let mtype = data[off];
-            let mlen = u32::from_be_bytes([0, data[off + 1], data[off + 2], data[off + 3]]) as usize;
+            let mlen =
+                u32::from_be_bytes([0, data[off + 1], data[off + 2], data[off + 3]]) as usize;
             let mseq = u16::from_be_bytes([data[off + 4], data[off + 5]]);
-            let foff = u32::from_be_bytes([0, data[off + 6], data[off + 7], data[off + 8]]) as usize;
-            let flen = u32::from_be_bytes([0, data[off + 9], data[off + 10], data[off + 11]]) as usize;
-            if off + 12 + flen > data.len() {
+            let foff =
+                u32::from_be_bytes([0, data[off + 6], data[off + 7], data[off + 8]]) as usize;
+            let flen =
+                u32::from_be_bytes([0, data[off + 9], data[off + 10], data[off + 11]]) as usize;
+            if mlen > MAX_HANDSHAKE_MSG_LEN {
+                return Err(DtlsError::Malformed(
+                    "handshake message exceeds maximum size",
+                ));
+            }
+            let end_in_data = off
+                .checked_add(12)
+                .and_then(|v| v.checked_add(flen))
+                .ok_or(DtlsError::Malformed("handshake fragment length overflow"))?;
+            if end_in_data > data.len() {
                 return Err(DtlsError::Malformed("truncated handshake fragment"));
             }
-            let frag = &data[off + 12..off + 12 + flen];
-            if foff + flen > mlen {
-                return Err(DtlsError::Malformed("handshake fragment overruns declared length"));
+            let frag = &data[off + 12..end_in_data];
+            let end_in_msg = foff
+                .checked_add(flen)
+                .ok_or(DtlsError::Malformed("handshake fragment offset overflow"))?;
+            if end_in_msg > mlen {
+                return Err(DtlsError::Malformed(
+                    "handshake fragment overruns declared length",
+                ));
             }
-            off += 12 + flen;
+            off = end_in_data;
             if self.done.contains_key(&mseq) {
                 continue;
             }
-            let slot = self.frags.entry(mseq).or_insert_with(|| (mtype, mlen, Default::default()));
-            if slot.0 != mtype || slot.1 != mlen {
-                return Err(DtlsError::Malformed("inconsistent handshake fragment header"));
+            if !self.frags.contains_key(&mseq)
+                && self.frags.len().saturating_add(self.done.len()) >= MAX_PENDING_HANDSHAKE_MSGS
+            {
+                return Err(DtlsError::Malformed("too many pending handshake messages"));
             }
-            slot.2.insert(foff, frag.to_vec());
-            if slot.2.values().map(Vec::len).sum::<usize>() == mlen {
-                let mut body = vec![0u8; mlen];
-                for (fo, part) in &slot.2 {
-                    body[*fo..*fo + part.len()].copy_from_slice(part);
+            let slot = self.frags.entry(mseq).or_insert_with(|| PartialHandshake {
+                mtype,
+                mlen,
+                buf: vec![0u8; mlen],
+                received: vec![false; mlen],
+                received_bytes: 0,
+            });
+            if slot.mtype != mtype || slot.mlen != mlen {
+                return Err(DtlsError::Malformed(
+                    "inconsistent handshake fragment header",
+                ));
+            }
+            for (i, &byte) in frag.iter().enumerate() {
+                let pos = foff + i;
+                if slot.received[pos] {
+                    if slot.buf[pos] != byte {
+                        return Err(DtlsError::Malformed(
+                            "conflicting overlapping handshake fragment",
+                        ));
+                    }
+                } else {
+                    slot.buf[pos] = byte;
+                    slot.received[pos] = true;
+                    slot.received_bytes += 1;
                 }
-                if let Some((t, _, _)) = self.frags.remove(&mseq) {
-                    self.done.insert(mseq, (t, body));
+            }
+            if slot.received_bytes == mlen {
+                if let Some(partial) = self.frags.remove(&mseq) {
+                    self.done.insert(mseq, (partial.mtype, partial.buf));
                 }
             }
         }
@@ -412,7 +468,9 @@ impl DtlsClient {
         let sid_len = body[34] as usize;
         let p = 35 + sid_len;
         if body.len() < p + 3 {
-            return Err(DtlsError::Malformed("ServerHello truncated after session id"));
+            return Err(DtlsError::Malformed(
+                "ServerHello truncated after session id",
+            ));
         }
         let cipher = u16::from_be_bytes([body[p], body[p + 1]]);
         if body[p + 2] != 0 {
@@ -466,8 +524,7 @@ impl DtlsClient {
             public.copy_from_slice(&b[4..4 + 32]);
             Ok(public)
         };
-        let public = parse_hint_first(body)
-            .or_else(|_| parse_params_first(body))?;
+        let public = parse_hint_first(body).or_else(|_| parse_params_first(body))?;
         Ok(ServerKeyExchange { public })
     }
 
@@ -523,7 +580,8 @@ impl DtlsClient {
                     return Ok(());
                 }
                 seen.insert(mseq);
-                self.transcript.extend_from_slice(&pack_handshake(mtype, mseq, &body));
+                self.transcript
+                    .extend_from_slice(&pack_handshake(mtype, mseq, &body));
                 match mtype {
                     HT_SERVER_HELLO => {
                         self.server_hello = Some(Self::parse_server_hello(&body)?);
@@ -581,8 +639,12 @@ impl DtlsClient {
         let cke_msg = pack_handshake(HT_CLIENT_KEY_EXCHANGE, 1, &cke_body);
         self.transcript.extend_from_slice(&cke_msg);
 
-        let client_verify = prf(&master, b"client finished",
-                                &Sha256::digest(&self.transcript), 12);
+        let client_verify = prf(
+            &master,
+            b"client finished",
+            &Sha256::digest(&self.transcript),
+            12,
+        );
         let fin_msg = pack_handshake(HT_FINISHED, 2, &client_verify);
 
         let cke_rec = pack_record(CT_HANDSHAKE, 0, self.epoch0_seq, &cke_msg);
@@ -638,7 +700,13 @@ impl DtlsClient {
                             Some(v) => v,
                             None => return Err(DtlsError::Malformed("no expected verify")),
                         };
-                        if &body != expected {
+                        let verify_ok = body.len() == expected.len()
+                            && body
+                                .iter()
+                                .zip(expected.iter())
+                                .fold(0u8, |acc, (&a, &b)| acc | (a ^ b))
+                                == 0;
+                        if !verify_ok {
                             self.state = State::Failed;
                             return Err(DtlsError::VerifyMismatch);
                         }
@@ -671,7 +739,11 @@ impl DtlsClient {
         for rec in parse_records(datagram)? {
             match rec.content_type {
                 CT_APPLICATION_DATA if rec.epoch == 1 => {
-                    app.extend_from_slice(&self.decrypt(CT_APPLICATION_DATA, rec.seq, &rec.payload)?);
+                    app.extend_from_slice(&self.decrypt(
+                        CT_APPLICATION_DATA,
+                        rec.seq,
+                        &rec.payload,
+                    )?);
                 }
                 CT_ALERT => {
                     let payload = if rec.epoch == 1 {
@@ -696,5 +768,85 @@ impl DtlsClient {
             let rec = self.encrypt(CT_ALERT, &[1, 0]);
             self.outgoing.push_back(rec);
         }
+    }
+}
+
+#[cfg(test)]
+mod reassembler_tests {
+    use super::*;
+
+    fn frag_packet(mtype: u8, mlen: usize, mseq: u16, foff: usize, payload: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(12 + payload.len());
+        out.push(mtype);
+        out.extend_from_slice(&mlen.to_be_bytes()[5..]);
+        out.extend_from_slice(&mseq.to_be_bytes());
+        out.extend_from_slice(&foff.to_be_bytes()[5..]);
+        out.extend_from_slice(&payload.len().to_be_bytes()[5..]);
+        out.extend_from_slice(payload);
+        out
+    }
+
+    #[test]
+    fn refuses_oversized_declared_handshake_length() {
+        let mut r = HandshakeReassembler::new();
+        let pkt = frag_packet(HT_SERVER_HELLO, MAX_HANDSHAKE_MSG_LEN + 1, 0, 0, b"abcd");
+        assert!(matches!(r.feed(&pkt), Err(DtlsError::Malformed(_))));
+        let dos = frag_packet(HT_SERVER_HELLO, 0x00FF_FFFF, 0, 0, b"x");
+        assert!(matches!(r.feed(&dos), Err(DtlsError::Malformed(_))));
+    }
+
+    #[test]
+    fn refuses_excessive_pending_handshake_messages() {
+        let mut r = HandshakeReassembler::new();
+        for seq in 0..MAX_PENDING_HANDSHAKE_MSGS as u16 {
+            let pkt = frag_packet(HT_SERVER_HELLO, 8, seq, 0, b"1234");
+            assert!(r.feed(&pkt).is_ok());
+        }
+        let extra = frag_packet(
+            HT_SERVER_HELLO,
+            8,
+            MAX_PENDING_HANDSHAKE_MSGS as u16,
+            0,
+            b"1234",
+        );
+        assert!(matches!(r.feed(&extra), Err(DtlsError::Malformed(_))));
+    }
+
+    #[test]
+    fn overlapping_fragments_do_not_falsely_complete_or_overwrite_with_zeros() {
+        let mut r = HandshakeReassembler::new();
+        let f1 = frag_packet(HT_SERVER_HELLO, 8, 1, 0, b"ABCD");
+        let f2 = frag_packet(HT_SERVER_HELLO, 8, 1, 2, b"CDEF");
+        assert!(r.feed(&f1).is_ok());
+        assert!(r.feed(&f2).is_ok());
+        // Bytes [6..8] are still missing even though 4 + 4 == 8!
+        assert!(r.complete_seqs().is_empty());
+        assert!(r.take(1).is_none());
+
+        // Sending the remaining tail completes the message with exact bytes.
+        let f3 = frag_packet(HT_SERVER_HELLO, 8, 1, 6, b"GH");
+        assert!(r.feed(&f3).is_ok());
+        assert_eq!(r.take(1), Some((HT_SERVER_HELLO, b"ABCDEFGH".to_vec())));
+    }
+
+    #[test]
+    fn conflicting_overlapping_fragment_is_refused() {
+        let mut r = HandshakeReassembler::new();
+        let f1 = frag_packet(HT_SERVER_HELLO, 8, 2, 0, b"ABCD");
+        let bad = frag_packet(HT_SERVER_HELLO, 8, 2, 2, b"XXEF");
+        assert!(r.feed(&f1).is_ok());
+        assert!(matches!(r.feed(&bad), Err(DtlsError::Malformed(_))));
+    }
+
+    #[test]
+    fn out_of_order_and_duplicate_fragments_reassemble_cleanly() {
+        let mut r = HandshakeReassembler::new();
+        let tail = frag_packet(HT_SERVER_HELLO, 6, 3, 3, b"DEF");
+        let head = frag_packet(HT_SERVER_HELLO, 6, 3, 0, b"ABC");
+        assert!(r.feed(&tail).is_ok());
+        assert!(r.feed(&tail).is_ok());
+        assert!(r.complete_seqs().is_empty());
+        assert!(r.feed(&head).is_ok());
+        assert_eq!(r.take(3), Some((HT_SERVER_HELLO, b"ABCDEF".to_vec())));
     }
 }

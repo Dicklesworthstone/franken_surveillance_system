@@ -164,27 +164,37 @@ impl ReconnectingRecovery {
     pub fn abort(&mut self) {
         self.tail.abort();
         self.previous.av.abort();
-        if let Some(parked) = self.parked.as_mut() { parked.abort(); }
+        if let Some(parked) = self.parked.as_mut() {
+            parked.abort();
+        }
     }
 
     /// Join the original tail worker and retain the exact completion.
     /// Repeated calls do not consume an already retained completion.
     pub async fn join_tail(&mut self) -> bool {
-        if self.tail_completion.is_some() { return true; }
+        if self.tail_completion.is_some() {
+            return true;
+        }
         if let Some(done) = self.tail.join().await {
             self.tail_completion = Some(done);
             true
-        } else { false }
+        } else {
+            false
+        }
     }
 
     /// Join the predecessor A/V worker and retain the exact completion.
     /// Repeated calls do not consume an already retained completion.
     pub async fn join_previous(&mut self) -> bool {
-        if self.previous_completion.is_some() { return true; }
+        if self.previous_completion.is_some() {
+            return true;
+        }
         if let Some(done) = self.previous.av.join().await {
             self.previous_completion = Some(done);
             true
-        } else { false }
+        } else {
+            false
+        }
     }
 }
 
@@ -396,28 +406,83 @@ impl<'scope, 'task, 'policy> Supervisor<'scope, 'task, 'policy> {
     /// Separate a reconnecting phase from its scoped listener and clocks.
     /// Other phases or inconsistent separate listener ownership are refused
     /// with the original supervisor intact. No work is drained or resumed.
-    pub fn detach_reconnecting(self: Box<Self>) -> Result<
-        (ReconnectingScope<'scope, 'task, 'policy>, Box<ReconnectingRecovery>), Box<Self>,
+    pub fn detach_reconnecting(
+        self: Box<Self>,
+    ) -> Result<
+        (
+            ReconnectingScope<'scope, 'task, 'policy>,
+            Box<ReconnectingRecovery>,
+        ),
+        Box<Self>,
     > {
-        if self.parts.listener.is_some() || !matches!(&self.parts.phase, Some(Phase::Reconnecting(_))) {
+        if self.parts.listener.is_some()
+            || !matches!(&self.parts.phase, Some(Phase::Reconnecting(_)))
+        {
             return Err(self);
         }
-        let Parts { phase, listener: _, parked, boundary, config, clock, eof_seen, accepted_ready,
-            bootstrap_ready, verification_ready, verification_blocked, reconnect_blocked,
-            reconnect_retryable, startup_blocked, park_stopped } = self.parts;
-        let Some(Phase::Reconnecting(transition)) = phase else { unreachable!("phase checked above") };
-        let reconnect::Parts { bridge, tail, previous, tail_finished, tail_fenced } = (*transition).into_parts();
+        let Parts {
+            phase,
+            listener: _,
+            parked,
+            boundary,
+            config,
+            clock,
+            eof_seen,
+            accepted_ready,
+            bootstrap_ready,
+            verification_ready,
+            verification_blocked,
+            reconnect_blocked,
+            reconnect_retryable,
+            startup_blocked,
+            park_stopped,
+        } = self.parts;
+        let Some(Phase::Reconnecting(transition)) = phase else {
+            unreachable!("phase checked above")
+        };
+        let reconnect::Parts {
+            bridge,
+            tail,
+            previous,
+            tail_finished,
+            tail_fenced,
+        } = (*transition).into_parts();
         let (listener, bridge) = bridge.into_parts().split_listener();
         let (parked_clock, parked) = match parked {
-            Some(parked) => { let (clock, detached) = parked.split_scope(); (Some(clock), Some(detached)) },
+            Some(parked) => {
+                let (clock, detached) = parked.split_scope();
+                (Some(clock), Some(detached))
+            }
             None => (None, None),
         };
-        Ok((ReconnectingScope { listener, clock, parked_clock }, Box::new(ReconnectingRecovery {
-            bridge, tail, previous, tail_finished, tail_fenced, parked, boundary, config, eof_seen,
-            accepted_ready, bootstrap_ready, verification_ready, verification_blocked,
-            reconnect_blocked, reconnect_retryable, startup_blocked, park_stopped,
-            tail_completion: None, previous_completion: None,
-        })))
+        Ok((
+            ReconnectingScope {
+                listener,
+                clock,
+                parked_clock,
+            },
+            Box::new(ReconnectingRecovery {
+                bridge,
+                tail,
+                previous,
+                tail_finished,
+                tail_fenced,
+                parked,
+                boundary,
+                config,
+                eof_seen,
+                accepted_ready,
+                bootstrap_ready,
+                verification_ready,
+                verification_blocked,
+                reconnect_blocked,
+                reconnect_retryable,
+                startup_blocked,
+                park_stopped,
+                tail_completion: None,
+                previous_completion: None,
+            }),
+        ))
     }
 
     /// Drive one bounded decision. Every returned event must be retained.

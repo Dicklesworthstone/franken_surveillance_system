@@ -22,9 +22,7 @@ use fss_publication::{
     LocalPublicationState, ROOT_REACHABILITY_FAMILY, SlotName, root_reachability_object_id,
 };
 
-use super::{
-    BoundedCommittedDeletionBeliefAuthority, DeletionBeliefLimits, DeletionBeliefUsage,
-};
+use super::{BoundedCommittedDeletionBeliefAuthority, DeletionBeliefLimits, DeletionBeliefUsage};
 use crate::hydration::{PublishedSourceReader, SourceObjectBinding};
 use crate::{ReferenceDeployment, ReferenceHydrationCatalog, SourceHydrationError};
 
@@ -179,7 +177,11 @@ impl<'a, C: Fn() -> bool + Sync> DeletionAwareSourceReader<'a, C> {
         }
     }
 
-    fn check_head(&self, pin: ContentDigest, head: ContentDigest) -> Result<(), DurableBeliefError> {
+    fn check_head(
+        &self,
+        pin: ContentDigest,
+        head: ContentDigest,
+    ) -> Result<(), DurableBeliefError> {
         self.checkpoint()?;
         let ledger = self.deployment.ledger();
         if ledger.store_pin() != Some(pin) || !ledger.store_pin_is_current() {
@@ -208,7 +210,9 @@ impl<'a, C: Fn() -> bool + Sync> DeletionAwareSourceReader<'a, C> {
         self.checkpoint()?;
         let ledger = self.deployment.ledger();
         let publisher = self.deployment.publisher();
-        let pin = ledger.store_pin().ok_or(DurableBeliefError::StoreIdentity)?;
+        let pin = ledger
+            .store_pin()
+            .ok_or(DurableBeliefError::StoreIdentity)?;
         let head = ledger.journal_root();
         self.check_head(pin, head)?;
 
@@ -225,10 +229,16 @@ impl<'a, C: Fn() -> bool + Sync> DeletionAwareSourceReader<'a, C> {
                 return Err(ObjectError::Tombstoned(digest).into());
             }
         }
-        let id = root_reachability_object_id(self.slot)
-            .map_err(|_| DurableBeliefError::Selection)?;
-        let revision = ledger.current().objects.get(&id).ok_or(DurableBeliefError::Selection)?;
-        let local = publisher.root(self.slot).ok_or(DurableBeliefError::Selection)?;
+        let id =
+            root_reachability_object_id(self.slot).map_err(|_| DurableBeliefError::Selection)?;
+        let revision = ledger
+            .current()
+            .objects
+            .get(&id)
+            .ok_or(DurableBeliefError::Selection)?;
+        let local = publisher
+            .root(self.slot)
+            .ok_or(DurableBeliefError::Selection)?;
         if revision.plane != Plane::Authority
             || revision.family != ROOT_REACHABILITY_FAMILY
             || revision.generation != 1
@@ -265,11 +275,14 @@ impl<'a, C: Fn() -> bool + Sync> DeletionAwareSourceReader<'a, C> {
             return Err(DurableBeliefError::AuthorityChanged.into());
         }
         let maximum = usize::try_from(ceiling).unwrap_or(usize::MAX);
-        let bytes = custody.read_belief_evidence(subject, maximum).map_err(|error| match error {
-            BeliefEvidenceReadError::Missing => SourceHydrationError::NotReachable,
-            BeliefEvidenceReadError::LimitExceeded => HydrationError::BudgetExceeded.into(),
-            _ => SourceHydrationError::SourceMismatch,
-        })?;
+        let bytes =
+            custody
+                .read_belief_evidence(subject, maximum)
+                .map_err(|error| match error {
+                    BeliefEvidenceReadError::Missing => SourceHydrationError::NotReachable,
+                    BeliefEvidenceReadError::LimitExceeded => HydrationError::BudgetExceeded.into(),
+                    _ => SourceHydrationError::SourceMismatch,
+                })?;
         self.check_head(pin, head)?;
         Ok(bytes)
     }
@@ -307,7 +320,9 @@ impl<C: Fn() -> bool + Sync> PublishedSourceReader for DeletionAwareSourceReader
             return Err(DurableBeliefError::Selection.into());
         }
         Ok(Some(DeploymentSourceAuthority {
-            store_pin: ledger.store_pin().ok_or(DurableBeliefError::StoreIdentity)?,
+            store_pin: ledger
+                .store_pin()
+                .ok_or(DurableBeliefError::StoreIdentity)?,
             journal_root: ledger.journal_root(),
             publication_record: local.record_digest,
         }))
@@ -332,13 +347,18 @@ impl ReferenceHydrationCatalog {
         descriptor_digest: ContentDigest,
         reader: &DeletionAwareSourceReader<'_, C>,
     ) -> Result<SourceObjectBinding, SourceHydrationError> {
-        let descriptor = self.descriptor(handle_id, descriptor_digest)
+        let descriptor = self
+            .descriptor(handle_id, descriptor_digest)
             .ok_or(HydrationError::DescriptorNotFound)?;
         if &descriptor.anchor != reader.anchor {
             return Err(DurableBeliefError::AuthorityChanged.into());
         }
-        let root = reader.deployment.publisher().root(reader.slot)
-            .ok_or(DurableBeliefError::Selection)?.root;
+        let root = reader
+            .deployment
+            .publisher()
+            .root(reader.slot)
+            .ok_or(DurableBeliefError::Selection)?
+            .root;
         self.bind_source_object(handle_id, descriptor_digest, root, reader)
     }
 

@@ -17,11 +17,11 @@ use std::time::{Duration, Instant};
 use fss_cli::ExitIdentity;
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{BudgetVector, OperationId, SensorId, StreamId};
+use fss_reference::ReferenceDeployment;
 use fss_reference::ReplayCx;
 use fss_reference::ingest::tutk::{
     AcquisitionState, AudioPolicy, TutkIngest, TutkIngestConfig, TutkIngestLimits,
 };
-use fss_reference::ReferenceDeployment;
 use fss_tutk::session::SessionConfig;
 
 const HELP: &str = "fss-capture-tutk --root ARCHIVE_DIR --cfg CAMERA_CFG [--secs N] [--site LINEAGE]\n\
@@ -45,10 +45,6 @@ struct Options {
     stream_id: String,
     principal: String,
     owner_authorized: bool,
-    identity: Option<String>,
-    psk_hex: Option<Vec<u8>>,
-    encoders: Option<Vec<u32>>,
-    k10000: Option<String>,
     ioctl: Option<u16>,
     payload: Option<Vec<u8>>,
     rtsp: Option<(String, String)>,
@@ -57,7 +53,10 @@ struct Options {
 }
 
 fn parse(args: &[OsString]) -> Result<Options, &'static str> {
-    if args.is_empty() || args.len() > MAX_ARGS || args.iter().any(|s| s.as_encoded_bytes().len() > 4096) {
+    if args.is_empty()
+        || args.len() > MAX_ARGS
+        || args.iter().any(|s| s.as_encoded_bytes().len() > 4096)
+    {
         return Err("invalid argument count or bound");
     }
     let mut o = Options {
@@ -69,10 +68,6 @@ fn parse(args: &[OsString]) -> Result<Options, &'static str> {
         stream_id: "stream:tutk:acquire:01".to_owned(),
         principal: "principal:operator:tutk-capture".to_owned(),
         owner_authorized: false,
-        identity: None,
-        psk_hex: None,
-        encoders: None,
-        k10000: None,
         ioctl: None,
         payload: None,
         rtsp: None,
@@ -92,7 +87,10 @@ fn parse(args: &[OsString]) -> Result<Options, &'static str> {
             "--cfg" => o.cfg = PathBuf::from(need_value(i)?),
             "--secs" => {
                 let v = need_value(i)?;
-                o.secs = v.to_str().and_then(|s| s.parse().ok()).ok_or("invalid --secs")?;
+                o.secs = v
+                    .to_str()
+                    .and_then(|s| s.parse().ok())
+                    .ok_or("invalid --secs")?;
                 if o.secs == 0 || o.secs > 86_400 {
                     return Err("--secs out of bounds");
                 }
@@ -101,31 +99,22 @@ fn parse(args: &[OsString]) -> Result<Options, &'static str> {
                 o.site = need_value(i)?.to_str().ok_or("invalid --site")?.to_owned();
             }
             "--sensor-id" => {
-                o.sensor_id = need_value(i)?.to_str().ok_or("invalid --sensor-id")?.to_owned();
+                o.sensor_id = need_value(i)?
+                    .to_str()
+                    .ok_or("invalid --sensor-id")?
+                    .to_owned();
             }
             "--stream-id" => {
-                o.stream_id = need_value(i)?.to_str().ok_or("invalid --stream-id")?.to_owned();
+                o.stream_id = need_value(i)?
+                    .to_str()
+                    .ok_or("invalid --stream-id")?
+                    .to_owned();
             }
             "--principal" => {
-                o.principal = need_value(i)?.to_str().ok_or("invalid --principal")?.to_owned();
-            }
-            "--identity" => {
-                o.identity = Some(need_value(i)?.to_str().ok_or("invalid --identity")?.to_owned());
-            }
-            "--psk-hex" => {
-                let v = need_value(i)?.to_str().ok_or("invalid --psk-hex")?;
-                o.psk_hex = Some(hex_bytes(v)?);
-            }
-            "--encoders" => {
-                let v = need_value(i)?.to_str().ok_or("invalid --encoders")?;
-                let mut out = Vec::new();
-                for part in v.split(',').filter(|p| !p.is_empty()) {
-                    out.push(part.trim().parse().map_err(|_| "invalid --encoders item")?);
-                }
-                o.encoders = Some(out);
-            }
-            "--k10000-file" => {
-                o.k10000 = Some(std::fs::read_to_string(need_value(i)?).map_err(|_| "read --k10000-file")?);
+                o.principal = need_value(i)?
+                    .to_str()
+                    .ok_or("invalid --principal")?
+                    .to_owned();
             }
             "--ioctl" => {
                 let v = need_value(i)?.to_str().ok_or("invalid --ioctl")?;
@@ -147,8 +136,11 @@ fn parse(args: &[OsString]) -> Result<Options, &'static str> {
                 o.rtsp = Some((u.to_owned(), p.to_owned()));
             }
             "--rtsp-mode" => {
-                let m: u8 = need_value(i)?.to_str().ok_or("invalid --rtsp-mode")?
-                    .parse().map_err(|_| "--rtsp-mode must be 1 or 2")?;
+                let m: u8 = need_value(i)?
+                    .to_str()
+                    .ok_or("invalid --rtsp-mode")?
+                    .parse()
+                    .map_err(|_| "--rtsp-mode must be 1 or 2")?;
                 if !(1..=2).contains(&m) {
                     return Err("--rtsp-mode must be 1 (plain) or 2 (self-signed TLS)");
                 }
@@ -178,18 +170,13 @@ fn parse(args: &[OsString]) -> Result<Options, &'static str> {
     Ok(o)
 }
 
-fn hex_bytes(s: &str) -> Result<Vec<u8>, &'static str> {
-    let compact: Vec<u8> = s.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
-    if compact.len() % 2 != 0 {
-        return Err("odd hex length");
-    }
-    let mut out = Vec::with_capacity(compact.len() / 2);
-    for pair in compact.chunks(2) {
-        let hi = (pair[0] as char).to_digit(16).ok_or("bad hex")?;
-        let lo = (pair[1] as char).to_digit(16).ok_or("bad hex")?;
-        out.push(((hi << 4) | lo) as u8);
-    }
-    Ok(out)
+fn read_os_entropy() -> Result<[u8; 32], &'static str> {
+    let mut entropy = [0u8; 32];
+    let mut rng =
+        std::fs::File::open("/dev/urandom").map_err(|_| "ERR-TUTK-CAPTURE-SESSION-002: csprng")?;
+    rng.read_exact(&mut entropy)
+        .map_err(|_| "ERR-TUTK-CAPTURE-SESSION-002: csprng")?;
+    Ok(entropy)
 }
 
 fn cfg_field(json: &str, key: &str) -> Option<String> {
@@ -205,7 +192,8 @@ fn cfg_field(json: &str, key: &str) -> Option<String> {
 }
 
 fn run(o: &Options) -> Result<String, &'static str> {
-    let raw = std::fs::read_to_string(&o.cfg).map_err(|_| "ERR-TUTK-CAPTURE-CONFIG-001: cannot read cfg")?;
+    let raw = std::fs::read_to_string(&o.cfg)
+        .map_err(|_| "ERR-TUTK-CAPTURE-CONFIG-001: cannot read cfg")?;
     let get = |k: &str| -> Result<String, &'static str> {
         cfg_field(&raw, k).ok_or("ERR-TUTK-CAPTURE-CONFIG-002: cfg missing required field")
     };
@@ -254,11 +242,11 @@ fn run(o: &Options) -> Result<String, &'static str> {
             .parse()
             .map_err(|_| "ERR-TUTK-CAPTURE-CONFIG-003: invalid camera address")?;
 
-        let seed = (std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| "ERR-TUTK-CAPTURE-SESSION-002: clock")?
-            .as_nanos() as u64)
-            | 1;
+        let entropy = read_os_entropy()?;
+        let seed = u64::from_be_bytes([
+            entropy[0], entropy[1], entropy[2], entropy[3], entropy[4], entropy[5], entropy[6],
+            entropy[7],
+        ]);
         let cfg = TutkIngestConfig {
             session: SessionConfig {
                 uid,
@@ -267,11 +255,8 @@ fn run(o: &Options) -> Result<String, &'static str> {
                 audio: false,
                 psk_truncated: false,
                 seed,
+                entropy: Some(entropy),
                 known_tuples: vec![("HL_CAM4".to_string(), "4.52.17.26".to_string())],
-                psk_identity: o.identity.clone(),
-                psk_override: o.psk_hex.clone(),
-                audio_encoder_list: o.encoders.clone(),
-                k10000_json: o.k10000.clone(),
             },
             sensor_id: SensorId::parse(&o.sensor_id)
                 .map_err(|_| "ERR-TUTK-CAPTURE-ARGUMENT-002: sensor id")?,
@@ -281,7 +266,6 @@ fn run(o: &Options) -> Result<String, &'static str> {
             audio: AudioPolicy::Disabled,
             limits: TutkIngestLimits::default(),
             known_tuples: vec![("HL_CAM4".to_string(), "4.52.17.26".to_string())],
-
         };
         let mut ing = TutkIngest::new(cfg).map_err(|_| "ERR-TUTK-CAPTURE-SESSION-003: config")?;
 
@@ -353,17 +337,14 @@ fn run(o: &Options) -> Result<String, &'static str> {
                                 peer.ip(),
                                 554
                             );
-                            rtsp_auth = stream
-                                .write_all(req.as_bytes())
-                                .ok()
-                                .and_then(|()| {
-                                    let mut head = [0u8; 32];
-                                    stream
-                                        .set_read_timeout(Some(Duration::from_millis(900)))
-                                        .ok()?;
-                                    let n = stream.read(&mut head).ok()?;
-                                    rtsp_status(&head[..n])
-                                });
+                            rtsp_auth = stream.write_all(req.as_bytes()).ok().and_then(|()| {
+                                let mut head = [0u8; 32];
+                                stream
+                                    .set_read_timeout(Some(Duration::from_millis(900)))
+                                    .ok()?;
+                                let n = stream.read(&mut head).ok()?;
+                                rtsp_status(&head[..n])
+                            });
                         }
                         println!(
                             "rtsp: 554 listening, DESCRIBE {}",
@@ -401,7 +382,8 @@ fn run(o: &Options) -> Result<String, &'static str> {
                 break;
             }
         }
-        ing.flush().map_err(|_| "ERR-TUTK-CAPTURE-SESSION-004: flush failed")?;
+        ing.flush()
+            .map_err(|_| "ERR-TUTK-CAPTURE-SESSION-004: flush failed")?;
 
         let stats = ing.stats();
         let sess = ing.session_stats();
@@ -528,7 +510,11 @@ mod tests {
 
     fn base_args() -> Vec<OsString> {
         [
-            "--root", "/tmp/x", "--cfg", "/tmp/c.json", "--owner-authorized",
+            "--root",
+            "/tmp/x",
+            "--cfg",
+            "/tmp/c.json",
+            "--owner-authorized",
         ]
         .into_iter()
         .map(OsString::from)
@@ -620,7 +606,10 @@ mod tests {
 
     #[test]
     fn rtsp_status_parses_the_code() {
-        assert_eq!(rtsp_status(b"RTSP/1.0 401 Unauthorized\r\nCSeq: 1\r\n"), Some(401));
+        assert_eq!(
+            rtsp_status(b"RTSP/1.0 401 Unauthorized\r\nCSeq: 1\r\n"),
+            Some(401)
+        );
         assert_eq!(rtsp_status(b"RTSP/1.0 200 OK\r\n"), Some(200));
         assert_eq!(rtsp_status(b"garbage"), None);
     }
@@ -636,5 +625,20 @@ mod tests {
         assert_eq!(cfg_field(j, "uid").as_deref(), Some("ABCDEFGH"));
         assert_eq!(cfg_field(j, "camera_port").as_deref(), Some("32761"));
         assert!(cfg_field(j, "missing").is_none());
+    }
+
+    #[test]
+    fn refuses_removed_cve_override_flags() {
+        for (flag, val) in [
+            ("--identity", "AUTHTKN_deadbeef"),
+            ("--psk-hex", "00112233"),
+            ("--encoders", "1,2,3"),
+            ("--k10000-file", "/tmp/x.json"),
+        ] {
+            let mut args = base_args();
+            args.push(OsString::from(flag));
+            args.push(OsString::from(val));
+            assert!(parse(&args).is_err(), "{flag} must be rejected");
+        }
     }
 }

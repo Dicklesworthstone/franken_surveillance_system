@@ -58,7 +58,10 @@ struct Options {
 }
 
 fn parse(args: &[OsString]) -> Result<Options, &'static str> {
-    if args.is_empty() || args.len() > MAX_ARGS || args.iter().any(|s| s.as_encoded_bytes().len() > 4096) {
+    if args.is_empty()
+        || args.len() > MAX_ARGS
+        || args.iter().any(|s| s.as_encoded_bytes().len() > 4096)
+    {
         return Err("invalid argument count or bound");
     }
     let mut o = Options {
@@ -80,7 +83,10 @@ fn parse(args: &[OsString]) -> Result<Options, &'static str> {
             "--cfg" => o.cfg = PathBuf::from(need_value(i)?),
             "--secs" => {
                 let v = need_value(i)?;
-                o.secs = v.to_str().and_then(|s| s.parse().ok()).ok_or("invalid --secs")?;
+                o.secs = v
+                    .to_str()
+                    .and_then(|s| s.parse().ok())
+                    .ok_or("invalid --secs")?;
                 if o.secs == 0 || o.secs > 86_400 {
                     return Err("--secs out of bounds");
                 }
@@ -146,21 +152,22 @@ fn hex_nibble(b: u8) -> Option<u8> {
     }
 }
 
-/// Fresh per-message client nonces / GCM IVs. A bounded capture opens ONE
-/// session with ONE session key; a seed-mixed, monotonically-increasing
-/// counter guarantees a unique (key, nonce) pair per frame within the run —
-/// the IV-reuse guarantee the wire core requires — without a runtime RNG.
+/// Fresh per-message client nonces / GCM IVs backed by 256-bit OS CSPRNG entropy.
+/// A bounded capture opens ONE session with ONE session key; a CSPRNG-keyed
+/// SHA-256 CTR-DRBG with a monotone counter guarantees unique, unpredictable
+/// (key, nonce) pairs across runs and frames without external crypto crates.
 struct Nonce {
-    seed: u64,
+    key: [u8; 32],
     counter: u64,
 }
 impl Nonce {
     fn new() -> Result<Self, &'static str> {
-        let seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| "ERR-TUYA-CAPTURE-SESSION-002: clock")?
-            .as_nanos() as u64;
-        Ok(Self { seed, counter: 0 })
+        let mut key = [0u8; 32];
+        let mut rng = std::fs::File::open("/dev/urandom")
+            .map_err(|_| "ERR-TUYA-CAPTURE-SESSION-002: csprng")?;
+        rng.read_exact(&mut key)
+            .map_err(|_| "ERR-TUYA-CAPTURE-SESSION-002: csprng")?;
+        Ok(Self { key, counter: 0 })
     }
     fn next12(&mut self) -> [u8; 12] {
         let h = self.derive();
@@ -176,9 +183,10 @@ impl Nonce {
     }
     fn derive(&mut self) -> [u8; 32] {
         self.counter = self.counter.wrapping_add(1);
-        let mut pre = [0u8; 16];
-        pre[..8].copy_from_slice(&self.seed.to_be_bytes());
-        pre[8..].copy_from_slice(&self.counter.to_be_bytes());
+        let mut pre = [0u8; 56];
+        pre[..16].copy_from_slice(b"fss.tuya.noncev1");
+        pre[16..48].copy_from_slice(&self.key);
+        pre[48..56].copy_from_slice(&self.counter.to_be_bytes());
         fss_core::sha256(&pre)
     }
 }
@@ -242,7 +250,12 @@ struct PumpOutcome {
 /// against the owner-authorized device, reading its live status (dps).
 /// Transport errors are recorded on the outcome, never panicked; a failed
 /// negotiation aborts (there is no session to hold).
-fn pump(stream: &mut TcpStream, local_key: [u8; 16], proto: Proto, budget: Duration) -> PumpOutcome {
+fn pump(
+    stream: &mut TcpStream,
+    local_key: [u8; 16],
+    proto: Proto,
+    budget: Duration,
+) -> PumpOutcome {
     let mut out = PumpOutcome::default();
     let mut nonce = match Nonce::new() {
         Ok(n) => n,
@@ -288,8 +301,10 @@ fn pump(stream: &mut TcpStream, local_key: [u8; 16], proto: Proto, budget: Durat
                         break;
                     }
                     Err(_) => {
-                        out.error =
-                            Some("negotiation rejected (wrong key, offline, or not a Tuya device)".to_owned());
+                        out.error = Some(
+                            "negotiation rejected (wrong key, offline, or not a Tuya device)"
+                                .to_owned(),
+                        );
                         return out;
                     }
                 }
@@ -331,7 +346,8 @@ fn pump(stream: &mut TcpStream, local_key: [u8; 16], proto: Proto, budget: Durat
                     if inbound.cmd == cmd::STATUS {
                         let dps = String::from_utf8_lossy(&inbound.payload).into_owned();
                         if !dps.is_empty() {
-                            out.status_reports.push((dps.clone(), t0.elapsed().as_nanos() as u64));
+                            out.status_reports
+                                .push((dps.clone(), t0.elapsed().as_nanos() as u64));
                             out.last_dps = Some(dps);
                         }
                     }
@@ -343,12 +359,15 @@ fn pump(stream: &mut TcpStream, local_key: [u8; 16], proto: Proto, budget: Durat
 }
 
 fn run(o: &Options) -> Result<String, &'static str> {
-    let raw = std::fs::read_to_string(&o.cfg).map_err(|_| "ERR-TUYA-CAPTURE-CONFIG-001: cannot read cfg")?;
+    let raw = std::fs::read_to_string(&o.cfg)
+        .map_err(|_| "ERR-TUYA-CAPTURE-CONFIG-001: cannot read cfg")?;
     let get = |k: &str| -> Result<String, &'static str> {
         cfg_field(&raw, k).ok_or("ERR-TUYA-CAPTURE-CONFIG-002: cfg missing required field")
     };
     let ip = get("ip")?;
-    let port: u16 = get("port")?.parse().map_err(|_| "ERR-TUYA-CAPTURE-CONFIG-003: invalid port")?;
+    let port: u16 = get("port")?
+        .parse()
+        .map_err(|_| "ERR-TUYA-CAPTURE-CONFIG-003: invalid port")?;
     let key_hex = get("local_key")?;
     let proto_str = cfg_field(&raw, "proto").unwrap_or_else(|| "3.5".to_owned());
     let proto = match proto_str.trim() {
@@ -356,15 +375,17 @@ fn run(o: &Options) -> Result<String, &'static str> {
         "3.5" | "v35" => Proto::V35,
         _ => return Err("ERR-TUYA-CAPTURE-CONFIG-004: proto must be 3.4 or 3.5"),
     };
-    let local_key =
-        parse_hex16(&key_hex).ok_or("ERR-TUYA-CAPTURE-CONFIG-005: local_key must be 32 hex chars")?;
+    let local_key = parse_hex16(&key_hex)
+        .ok_or("ERR-TUYA-CAPTURE-CONFIG-005: local_key must be 32 hex chars")?;
     let homebase = cfg_field(&raw, "homebase").unwrap_or_else(|| format!("h-{ip}"));
     let model = cfg_field(&raw, "model").unwrap_or_else(|| "unknown".to_owned());
 
-    let addr: SocketAddr =
-        format!("{ip}:{port}").parse().map_err(|_| "ERR-TUYA-CAPTURE-CONFIG-006: invalid ip:port")?;
-    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5))
-        .map_err(|_| "ERR-TUYA-CAPTURE-SESSION-001: tcp connect failed (unreachable or port closed)")?;
+    let addr: SocketAddr = format!("{ip}:{port}")
+        .parse()
+        .map_err(|_| "ERR-TUYA-CAPTURE-CONFIG-006: invalid ip:port")?;
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5)).map_err(
+        |_| "ERR-TUYA-CAPTURE-SESSION-001: tcp connect failed (unreachable or port closed)",
+    )?;
     stream
         .set_read_timeout(Some(Duration::from_millis(100)))
         .map_err(|_| "ERR-TUYA-CAPTURE-SESSION-001: socket options")?;
@@ -514,7 +535,16 @@ mod tests {
     use fss_tuya::sim::{HomebaseSim, SimConfig};
 
     fn base_args() -> Vec<OsString> {
-        ["--root", "/tmp/root", "--cfg", "/tmp/c.json", "--owner-authorized"].into_iter().map(OsString::from).collect()
+        [
+            "--root",
+            "/tmp/root",
+            "--cfg",
+            "/tmp/c.json",
+            "--owner-authorized",
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .collect()
     }
 
     #[test]
@@ -527,7 +557,10 @@ mod tests {
 
     #[test]
     fn refuses_missing_owner_attestation() {
-        let args: Vec<OsString> = ["--root", "/tmp/root", "--cfg", "/tmp/c.json"].into_iter().map(OsString::from).collect();
+        let args: Vec<OsString> = ["--root", "/tmp/root", "--cfg", "/tmp/c.json"]
+            .into_iter()
+            .map(OsString::from)
+            .collect();
         let e = parse(&args).unwrap_err();
         assert!(e.contains("owner-authorized"), "{e}");
     }
@@ -540,7 +573,10 @@ mod tests {
 
     #[test]
     fn refuses_missing_root() {
-        let args: Vec<OsString> = ["--cfg", "/tmp/c.json", "--owner-authorized"].into_iter().map(OsString::from).collect();
+        let args: Vec<OsString> = ["--cfg", "/tmp/c.json", "--owner-authorized"]
+            .into_iter()
+            .map(OsString::from)
+            .collect();
         let e = parse(&args).unwrap_err();
         assert!(e.contains("root"), "{e}");
     }
@@ -562,7 +598,10 @@ mod tests {
         let j = r#"{"ip":"192.0.2.10","port":6668,"local_key":"00112233445566778899aabbccddeeff","proto":"3.5"}"#;
         assert_eq!(cfg_field(j, "ip").as_deref(), Some("192.0.2.10"));
         assert_eq!(cfg_field(j, "port").as_deref(), Some("6668"));
-        assert_eq!(cfg_field(j, "local_key").as_deref(), Some("00112233445566778899aabbccddeeff"));
+        assert_eq!(
+            cfg_field(j, "local_key").as_deref(),
+            Some("00112233445566778899aabbccddeeff")
+        );
         assert_eq!(cfg_field(j, "proto").as_deref(), Some("3.5"));
         assert!(cfg_field(j, "missing").is_none());
     }
@@ -570,7 +609,12 @@ mod tests {
     #[test]
     fn hex16_roundtrip_and_rejects() {
         let b = parse_hex16("00112233445566778899aabbccddeeff").unwrap();
-        assert_eq!(b, [0, 17, 34, 51, 68, 85, 102, 119, 136, 153, 170, 187, 204, 221, 238, 255]);
+        assert_eq!(
+            b,
+            [
+                0, 17, 34, 51, 68, 85, 102, 119, 136, 153, 170, 187, 204, 221, 238, 255
+            ]
+        );
         // 31 hex chars, non-hex char, and a 0x-prefixed 32-char all handled.
         assert!(parse_hex16("00112233445566778899aabbccddeef").is_none());
         assert!(parse_hex16("zz112233445566778899aabbccddeeff").is_none());
@@ -616,7 +660,8 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let server = std::thread::spawn(move || {
             let (mut sock, _) = listener.accept().unwrap();
-            sock.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+            sock.set_read_timeout(Some(Duration::from_millis(100)))
+                .unwrap();
             let mut sim = HomebaseSim::new(SimConfig::v35_homebase());
             let mut buf: Vec<u8> = Vec::new();
             let mut tmp = [0u8; 8192];
@@ -642,19 +687,37 @@ mod tests {
         });
         let outcome = {
             let mut stream = TcpStream::connect(addr).unwrap();
-            stream.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_millis(100)))
+                .unwrap();
             pump(&mut stream, key, Proto::V35, Duration::from_secs(3))
         };
-        assert!(outcome.established, "session must establish against the sim: {:?}", outcome.error);
         assert!(
-            outcome.last_dps.as_deref().is_some_and(|d| d.contains("armed_away")),
+            outcome.established,
+            "session must establish against the sim: {:?}",
+            outcome.error
+        );
+        assert!(
+            outcome
+                .last_dps
+                .as_deref()
+                .is_some_and(|d| d.contains("armed_away")),
             "dp_query must return the sim's dps: {:?}",
             outcome.last_dps
         );
-        assert!(outcome.heartbeats >= 1, "at least one heartbeat in a 3s run");
-        assert!(!outcome.status_reports.is_empty(), "pump must record the sim's dps");
         assert!(
-            outcome.status_reports.iter().any(|(d, _)| d.contains("armed_away")),
+            outcome.heartbeats >= 1,
+            "at least one heartbeat in a 3s run"
+        );
+        assert!(
+            !outcome.status_reports.is_empty(),
+            "pump must record the sim's dps"
+        );
+        assert!(
+            outcome
+                .status_reports
+                .iter()
+                .any(|(d, _)| d.contains("armed_away")),
             "a captured dps report must carry the sim's state: {:?}",
             outcome.status_reports
         );
@@ -689,18 +752,26 @@ mod tests {
                 TimestampNs(*observed_ns as i128),
             )
             .unwrap();
-            mapper.map_device_state("fsssimhomebase00", dps, observed).unwrap();
+            mapper
+                .map_device_state("fsssimhomebase00", dps, observed)
+                .unwrap();
         }
         let seal = mapper.seal_to_deployment(&mut deployment, &cx).unwrap();
         cx.drain_and_finalize();
         let _ = std::fs::remove_dir_all(&root);
-        assert!(seal.batches_committed >= 1, "the committed dps must seal into the deployment");
+        assert!(
+            seal.batches_committed >= 1,
+            "the committed dps must seal into the deployment"
+        );
         assert!(!seal.batch_ids.is_empty());
         assert!(seal.payloads_staged >= 1);
         let committed = mapper.ledger().batches()[0].deltas[0].payload_digest;
         let text = String::from_utf8_lossy(mapper.custody(&committed).unwrap());
         assert!(text.contains("armed_away"), "raw dps preserved: {text}");
         assert!(text.contains("\"ground_truth\":false"), "{text}");
-        assert!(server.join().unwrap(), "sim must have established a session");
+        assert!(
+            server.join().unwrap(),
+            "sim must have established a session"
+        );
     }
 }

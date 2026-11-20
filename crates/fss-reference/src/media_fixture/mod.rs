@@ -149,32 +149,35 @@ pub fn verify_fixture_manifest(
     fixture_name: &str,
     fixture_bytes: &[u8],
 ) -> Result<(), MediaFixtureError> {
-    let name_needle = format!("\"name\": \"{fixture_name}\"");
-    let name_pos = manifest_json
-        .find(&name_needle)
-        .ok_or(MediaFixtureError::InvalidParam(
-            "fixture name not found in manifest",
-        ))?;
+    use fss_core::json_input::{Value, parse};
 
-    let after_name = &manifest_json[name_pos..];
-    let entry_end = match after_name.find('}') {
-        Some(pos) => pos,
-        None => after_name.len(),
-    };
-    let entry_scope = &after_name[..entry_end];
-
-    let sha_marker = "\"sha256\": \"";
-    let sha_pos = entry_scope
-        .find(sha_marker)
-        .ok_or(MediaFixtureError::InvalidParam(
-            "sha256 not found for fixture in manifest",
-        ))?;
-    let sha_start = sha_pos + sha_marker.len();
-    let after_sha = &entry_scope[sha_start..];
-    let sha_end = after_sha.find('"').ok_or(MediaFixtureError::InvalidParam(
-        "malformed sha256 string in manifest",
+    let manifest = parse(manifest_json)
+        .map_err(|_| MediaFixtureError::InvalidParam("invalid fixture manifest JSON"))?;
+    let fixtures = manifest
+        .object()
+        .and_then(|fields| fields.get("fixtures"))
+        .and_then(Value::array)
+        .ok_or(MediaFixtureError::InvalidParam("missing fixture array"))?;
+    let mut matches = fixtures
+        .iter()
+        .filter_map(Value::object)
+        .filter(|row| row.get("name").and_then(Value::text) == Some(fixture_name));
+    let entry = matches.next().ok_or(MediaFixtureError::InvalidParam(
+        "fixture name not found in manifest",
     ))?;
-    let expected_sha = &after_sha[..sha_end];
+    if matches.next().is_some() {
+        return Err(MediaFixtureError::InvalidParam("duplicate fixture name"));
+    }
+    let expected_sha = entry
+        .get("sha256")
+        .and_then(Value::text)
+        .filter(|sha| {
+            sha.len() == 64
+                && sha
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        })
+        .ok_or(MediaFixtureError::InvalidParam("invalid fixture sha256"))?;
 
     let digest = fss_core::ContentDigest::sha256(fixture_bytes);
     let mut actual_sha = String::with_capacity(64);

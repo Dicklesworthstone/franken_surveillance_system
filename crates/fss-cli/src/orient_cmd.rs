@@ -77,8 +77,11 @@ pub struct OrientArgs {
 /// One exact target for the existing explanation operation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ExplainTarget {
-    /// A committed event, optionally at an explicitly selected historical anchor.
+    /// A committed event, optionally at an explicitly selected historical anchor (`why`).
     Event(EventId),
+    /// A committed event explaining why corroboration, alert escalation, or absence certification
+    /// did not occur (`why_not`).
+    EventWhyNot(EventId),
     /// One exact current event revision and its immediately preceding committed revision.
     EventComparison {
         /// Event whose adjacent revision pair is selected.
@@ -391,7 +394,12 @@ pub fn parse_explain_args(tokens: &[ArgToken]) -> Result<ExplainArgs, CliError> 
         };
     let question = match take(&values, "--question") {
         None => "why",
-        Some((_, value, _)) if matches!(value.as_str(), "why" | "what_changed" | "what_if") => {
+        Some((_, value, _))
+            if matches!(
+                value.as_str(),
+                "why" | "why_not" | "what_changed" | "what_if"
+            ) =>
+        {
             value.as_str()
         }
         Some((_, value, index)) => {
@@ -399,7 +407,7 @@ pub fn parse_explain_args(tokens: &[ArgToken]) -> Result<ExplainArgs, CliError> 
                 "--question",
                 value,
                 *index,
-                "explain admits why, exact adjacent-revision what_changed, or explicit source-loss what_if",
+                "explain admits why, why_not, exact adjacent-revision what_changed, or explicit source-loss what_if",
             ));
         }
     };
@@ -508,6 +516,14 @@ pub fn parse_explain_args(tokens: &[ArgToken]) -> Result<ExplainArgs, CliError> 
             to_revision_digest: exact_digest("--to-revision-digest")?,
         }
     } else if let Some((_, raw, index)) = take(&values, "--learning-root") {
+        if question == "why_not" {
+            return Err(malformed(
+                "--question",
+                question,
+                *index,
+                "why_not applies to a committed event, not learning inspection",
+            ));
+        }
         for option in [
             "--event-id",
             "--at",
@@ -584,7 +600,11 @@ pub fn parse_explain_args(tokens: &[ArgToken]) -> Result<ExplainArgs, CliError> 
                 "event identity must be 1..128 characters of [A-Za-z0-9._:-]",
             )
         })?;
-        ExplainTarget::Event(event)
+        if question == "why_not" {
+            ExplainTarget::EventWhyNot(event)
+        } else {
+            ExplainTarget::Event(event)
+        }
     };
     let (score_calibration, fusion_policy) = fusion::parse(&values)?;
     Ok(ExplainArgs {
@@ -1241,8 +1261,9 @@ fn not_observable_domains(orientation: &DeploymentOrientation) -> String {
     agent_json::strings(domains)
 }
 
-/// Registered bound of the frame's `coverage.gaps`.
+/// Registered bound of the frame's `coverage.gaps` and `coverage.witnessIds`.
 const MAX_FRAME_GAPS: usize = 512;
+const MAX_FRAME_WITNESS_IDS: usize = 512;
 
 /// Every gap when they fit the registered bound; otherwise the first 511 and one explicit
 /// statement of how many more exist and where they hydrate (never a silent drop).
@@ -1292,19 +1313,25 @@ fn frame_coverage(orientation: &DeploymentOrientation) -> String {
     if domains.is_empty() {
         domains.push(capsule.anchor.site_lineage.clone());
     }
+    let mut witness_ids: Vec<String> = assessment
+        .witness_digests()
+        .into_iter()
+        .map(ContentDigest::to_text)
+        .collect();
+    let mut gaps = assessment.gaps();
+    if witness_ids.len() > MAX_FRAME_WITNESS_IDS {
+        let more = witness_ids.len() - MAX_FRAME_WITNESS_IDS;
+        witness_ids.truncate(MAX_FRAME_WITNESS_IDS);
+        gaps.push(format!(
+            "{more} further coverage witness digest(s) exceed the 512-entry frame witnessIds bound \
+             and remain bound in retained coverage_witness ledger records."
+        ));
+    }
     agent_json::object(&[
         ("status", agent_json::string(status)),
         ("domains", agent_json::strings(domains)),
-        (
-            "witnessIds",
-            agent_json::strings(
-                assessment
-                    .witness_digests()
-                    .into_iter()
-                    .map(ContentDigest::to_text),
-            ),
-        ),
-        ("gaps", agent_json::strings(bounded_gaps(assessment.gaps()))),
+        ("witnessIds", agent_json::strings(witness_ids)),
+        ("gaps", agent_json::strings(bounded_gaps(gaps))),
         ("absenceClaimsCertified", complete.to_string()),
     ])
 }
@@ -2533,14 +2560,15 @@ pub(crate) fn execute_explain_with_time(
     args: &ExplainArgs,
     clock: crate::session_time::Clock<'_>,
 ) -> (String, ExitIdentity) {
-    let event_id = match &args.target {
+    let (event_id, question) = match &args.target {
         ExplainTarget::Learning {
             session,
             publication_root,
         } => {
             return learning_explain::execute(args, session, *publication_root, clock);
         }
-        ExplainTarget::Event(event_id) => event_id,
+        ExplainTarget::Event(event_id) => (event_id, fss_core::ExplainQuestion::Why),
+        ExplainTarget::EventWhyNot(event_id) => (event_id, fss_core::ExplainQuestion::WhyNot),
         ExplainTarget::EventCounterfactual { event_id, scenario } => {
             return what_if::execute(args, event_id, scenario);
         }
@@ -2571,6 +2599,9 @@ pub(crate) fn execute_explain_with_time(
         };
     let request_digest = request_identity("fss.cli.explain.request.v1", |encoder| {
         encoder.text(event_id.as_str());
+        if question == fss_core::ExplainQuestion::WhyNot {
+            encoder.text("question=why_not");
+        }
         args.principal.encode_canonical(encoder);
         snapshot.anchor.encode_canonical(encoder);
         if let Some(scope) = &historical {
@@ -2629,7 +2660,12 @@ pub(crate) fn execute_explain_with_time(
             return internal_failure("explain", &args.root);
         }
     };
-    match explain_event(&snapshot, &orientation, event_id) {
+    match fss_reference::agent_orient::explain_event_with_question(
+        &snapshot,
+        &orientation,
+        event_id,
+        question,
+    ) {
         Ok(Some(explanation)) => {
             let mut support = match evidence::compile(
                 &snapshot,

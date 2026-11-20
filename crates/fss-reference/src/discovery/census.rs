@@ -201,15 +201,23 @@ pub fn parse_netstat_rn(output: &str) -> Vec<ArpRow> {
         else {
             continue;
         };
-        let Ok(ip) = ip.parse::<Ipv4Addr>() else { continue };
+        let Ok(ip) = ip.parse::<Ipv4Addr>() else {
+            continue;
+        };
         if !flags.contains('H') {
             continue;
         }
-        let Some(mac) = normalize_mac(mac) else { continue };
+        let Some(mac) = normalize_mac(mac) else {
+            continue;
+        };
         if mac == "ff:ff:ff:ff:ff:ff" || mac.starts_with("01:00:5e") {
             continue;
         }
-        rows.push(ArpRow { ip, mac, iface: iface.to_owned() });
+        rows.push(ArpRow {
+            ip,
+            mac,
+            iface: iface.to_owned(),
+        });
     }
     rows
 }
@@ -470,7 +478,10 @@ pub fn run_census(
             rows.len(),
             arp_a().len(),
             n.len(),
-            n.lines().filter(|l| l.contains("UHLW")).take(2).collect::<Vec<_>>()
+            n.lines()
+                .filter(|l| l.contains("UHLW"))
+                .take(2)
+                .collect::<Vec<_>>()
         );
     }
     let targets: Vec<Ipv4Addr> = rows

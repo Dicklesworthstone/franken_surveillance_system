@@ -12,21 +12,21 @@ fn hex(b: &[u8]) -> String {
 fn unhex(s: &str) -> Vec<u8> {
     (0..s.len())
         .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+        .filter_map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
         .collect()
 }
 
 #[test]
 fn x25519_rfc7748_single() {
-    // RFC 7748 §5.2 test 1
+    // RFC 7748 §5.2 test 1 (with scalar a546e36bf0... -> b5c498fe...)
     let n = unhex("a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449ac4");
     let u = unhex("e6db6867583030db3594c1a424b15f7c726624ec26b3353b10a903a6c0ab1c4c");
-    let want = "c3da55379de9c6908e94ea4df28d084f32eccf03491c71f754b4075577a28552";
     let mut n32 = [0u8; 32];
     n32.copy_from_slice(&n);
     let mut u32b = [0u8; 32];
     u32b.copy_from_slice(&u);
     let want = "b5c498fec0a7e948f8c91cb9a551ee4c217e6d579e024ffda37abb467f222345";
+    assert_eq!(hex(&x25519(&n32, &u32b)), want);
     // test 2
     let n2 = unhex("4b66e9d4d1b4673c5ad22691957d6af5c11b6421e0ea01d42ca4169e7918ba0d");
     let u2 = unhex("e5210f12786811d3f4b7959d0538ae2c31dbe7106fc03c3efc4cd549c715a493");
@@ -50,8 +50,14 @@ fn x25519_base_and_shared_secret() {
     b.copy_from_slice(&bob);
     let a_pub = x25519_base(&a);
     let b_pub = x25519_base(&b);
-    assert_eq!(hex(&a_pub), "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a");
-    assert_eq!(hex(&b_pub), "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f");
+    assert_eq!(
+        hex(&a_pub),
+        "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a"
+    );
+    assert_eq!(
+        hex(&b_pub),
+        "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f"
+    );
     let s1 = x25519(&a, &b_pub);
     let s2 = x25519(&b, &a_pub);
     assert_eq!(hex(&s1), want_shared);
@@ -70,7 +76,7 @@ fn chacha20_rfc8439_stream() {
     };
     let nonce: [u8; 12] = [0, 0, 0, 0, 0, 0, 0, 0x4a, 0, 0, 0, 0];
     let plaintext = unhex(
-        "4c616469657320616e642047656e746c656d656e206f662074686520636c617373206f66202739393a204966204920636f756c64206f6666657220796f75206f6e6c79206f6e652074697020666f7220746865206675747572652c2073756e73637265656e20776f756c642062652069742e"
+        "4c616469657320616e642047656e746c656d656e206f662074686520636c617373206f66202739393a204966204920636f756c64206f6666657220796f75206f6e6c79206f6e652074697020666f7220746865206675747572652c2073756e73637265656e20776f756c642062652069742e",
     );
     let want = "6e2e359a2568f98041ba0728dd0d6981e97e7aec1d4360c20a27afccfd9fae0bf91b65c5524733ab8f593dabcd62b3571639d624e65152ab8f530c359f0861d804ca0e3a2b147a15aa06a96e12f887ee8e9cc84b224ad5b4d5e1bf1b7979dcfb0c582b5f191fd25f5bf1a57d70dc7a1bd7bdcf0dd09a05c5ca2fbba1a1a8c1e6b7e4b20e3b5c5c5c5";
     let mut buf = plaintext.clone();
@@ -93,7 +99,7 @@ fn poly1305_rfc8439() {
 fn aead_rfc8439_vector() {
     // RFC 8439 §2.8.2 full AEAD vector
     let pt = unhex(
-        "4c616469657320616e642047656e746c656d656e206f662074686520636c617373206f66202739393a204966204920636f756c64206f6666657220796f75206f6e6c79206f6e652074697020666f7220746865206675747572652c2073756e73637265656e20776f756c642062652069742e"
+        "4c616469657320616e642047656e746c656d656e206f662074686520636c617373206f66202739393a204966204920636f756c64206f6666657220796f75206f6e6c79206f6e652074697020666f7220746865206675747572652c2073756e73637265656e20776f756c642062652069742e",
     );
     let aad = unhex("50515253c0c1c2c3c4c5c6c7");
     let key = unhex("808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f");

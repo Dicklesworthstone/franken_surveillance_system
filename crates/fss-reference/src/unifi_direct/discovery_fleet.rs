@@ -710,9 +710,15 @@ impl<'a> Fleet<'a> {
     /// The labels and scope are caller claims; this does not independently
     /// prove page coverage, freshness, peer identity, or setup authority.
     /// Original page evidence remains with the caller.
-    pub fn from_sweep(pages: &[SweepPage<'a>], inventory: &[Enrollment]) -> Result<Self, SweepError> {
+    pub fn from_sweep(
+        pages: &[SweepPage<'a>],
+        inventory: &[Enrollment],
+    ) -> Result<Self, SweepError> {
         let report = Report::combine_sweep_pages(pages).map_err(SweepError::Discovery)?;
-        let scope = pages.first().ok_or(SweepError::Discovery(CombineError::WindowCount))?.scope;
+        let scope = pages
+            .first()
+            .ok_or(SweepError::Discovery(CombineError::WindowCount))?
+            .scope;
         let mut fleet = Self::build(report, inventory).map_err(SweepError::Fleet)?;
         fleet.sweep_scope = Some(scope);
         Ok(fleet)
@@ -820,14 +826,18 @@ impl<'a> Fleet<'a> {
             return Err(SweepRefreshError::ScopeMismatch);
         }
         let report = Report::combine_sweep_pages(pages).map_err(SweepRefreshError::Discovery)?;
-        self.refresh_report(report).map_err(SweepRefreshError::Fleet)
+        self.refresh_report(report)
+            .map_err(SweepRefreshError::Fleet)
     }
 
     /// The caller supplies and owns the bounded scan; this does not scan,
     /// authenticate a peer, or authorize an automatic retry.
     pub fn refresh(&self, report: Report) -> Result<(), RefreshRefusal> {
         if self.sweep_scope.is_some() {
-            return Err(RefreshRefusal { reason: Error::SweepRequired, report });
+            return Err(RefreshRefusal {
+                reason: Error::SweepRequired,
+                report,
+            });
         }
         self.refresh_report(report)
     }
@@ -1048,7 +1058,11 @@ impl<'a> Fleet<'a> {
     // An automatic timer needs both the exact pre-effect attempt and an
     // explicitly classified transient error. Manual rearm remains separate.
     pub(super) fn automatic_retry_candidate(&self, index: usize) -> Option<(&OperationId, usize)> {
-        self.records.get(index)?.retry_automatically.get().then_some(())?;
+        self.records
+            .get(index)?
+            .retry_automatically
+            .get()
+            .then_some(())?;
         self.retry_candidate(index)
     }
 
@@ -1194,10 +1208,7 @@ impl<'a> Fleet<'a> {
     /// present only if the caller required profile preflight and setup kept
     /// the same selection through readback. It can become stale and is not
     /// identity, actual video properties, or permission to request a stream.
-    pub fn reported_video(
-        &self,
-        index: usize,
-    ) -> Option<(VideoChannel, camera_api::VideoProfile)> {
+    pub fn reported_video(&self, index: usize) -> Option<(VideoChannel, camera_api::VideoProfile)> {
         let record = self.records.get(index)?;
         if !record.route_ready.get() {
             return None;
@@ -1466,9 +1477,9 @@ impl<'a> Fleet<'a> {
                 && trace.has_precommit_deadline(),
         );
         record.retry_before_effect.set(pre_effect_failure);
-        record.retry_automatically.set(
-            pre_effect_failure && result.as_ref().err().is_some_and(transient_setup_error),
-        );
+        record
+            .retry_automatically
+            .set(pre_effect_failure && result.as_ref().err().is_some_and(transient_setup_error));
         let route_ready = match &result {
             Ok(setup::Outcome::AlreadyAssociated { .. }) => true,
             Ok(setup::Outcome::Observed {
@@ -1489,13 +1500,13 @@ impl<'a> Fleet<'a> {
         } && result
             .as_ref()
             .is_ok_and(|outcome| trace.reported_video_matches(outcome));
-        self.records[index]
-            .reported_video
-            .set(if route_ready {
-                trace.preflight_video().and_then(|selection| selection.selected)
-            } else {
-                None
-            });
+        self.records[index].reported_video.set(if route_ready {
+            trace
+                .preflight_video()
+                .and_then(|selection| selection.selected)
+        } else {
+            None
+        });
         self.records[index].route_ready.set(route_ready);
         let latest = self.latest.borrow();
         self.records[index].route_source.set(if route_ready {
@@ -1854,7 +1865,10 @@ mod tests {
         fleet.records[0].retry_before_effect.set(true);
         assert!(fleet.automatic_retry_candidate(0).is_none());
         fleet.records[0].retry_automatically.set(true);
-        assert_eq!(fleet.automatic_retry_candidate(0).map(|(op, _)| op), Some(&first));
+        assert_eq!(
+            fleet.automatic_retry_candidate(0).map(|(op, _)| op),
+            Some(&first)
+        );
         fleet.refresh(report(vec![])).unwrap();
         assert_eq!(fleet.rearm_before_effect(0), Ok(State::NotObserved));
         assert!(fleet.automatic_retry_candidate(0).is_none());

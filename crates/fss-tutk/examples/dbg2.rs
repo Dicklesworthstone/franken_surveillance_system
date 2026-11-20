@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-// Debug harness for field ops, chacha block, and poly1305 against known answers.
+//! Debug harness for X25519, ChaCha20, and Poly1305 against RFC 7748 / RFC 8439 vectors.
 use fss_tutk::chacha::{chacha20_xor, poly1305};
 use fss_tutk::x25519::{x25519, x25519_base};
 
@@ -10,7 +10,7 @@ fn hex(b: &[u8]) -> String {
 fn unhex(s: &str) -> Vec<u8> {
     (0..s.len())
         .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+        .filter_map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
         .collect()
 }
 
@@ -42,7 +42,10 @@ fn main() {
     let pkey = unhex("85d6be7857556d337f4452fe42d506a80103808afb0db2fd4abff6af4149f51b");
     let mut pk = [0u8; 32];
     pk.copy_from_slice(&pkey);
-    println!("poly      : {}", hex(&poly1305(&pk, b"Cryptographic Forum Research Group")));
+    println!(
+        "poly      : {}",
+        hex(&poly1305(&pk, b"Cryptographic Forum Research Group"))
+    );
     println!("poly want : a8061dc1305136c6c22b8baf0c0127a9");
 
     // --- x25519 base ---

@@ -4,9 +4,7 @@
 use super::*;
 use crate::agent_follow::snapshot_anchor_token;
 use crate::agent_orient::DeploymentSnapshot;
-use crate::agent_orient::historical_health::{
-    HistoricalHealthDeletion, HistoricalHealthMetadata,
-};
+use crate::agent_orient::historical_health::{HistoricalHealthDeletion, HistoricalHealthMetadata};
 use crate::retained_source::RetainedReadUsage;
 use fss_core::{
     AgentQueryPlan, AgentView, ContinuationCursor, ContinuationEntry, ContinuationPage,
@@ -104,7 +102,11 @@ impl DeploymentSourcesQuery {
                 statement: format!("Retained source metadata: {}", row_json(row)),
                 state: KnowledgeState::Known,
                 provenance: "derived".to_owned(),
-                evidence: row.capsule_metadata.iter().map(|digest| digest.to_text()).collect(),
+                evidence: row
+                    .capsule_metadata
+                    .iter()
+                    .map(|digest| digest.to_text())
+                    .collect(),
             });
         }
         EnvelopeEpistemic {
@@ -178,10 +180,18 @@ fn quote(value: &str) -> String {
 /// Source-byte totals and capture times are decimal strings, preserving u64/i128 precision.
 pub fn row_json(row: &SourcesQueryRow) -> String {
     let stream = &row.stream;
-    let clocks = stream.clock_bases.iter().map(|value| quote(value))
-        .collect::<Vec<_>>().join(",");
-    let handles = row.capsule_metadata.iter().map(|digest| quote(&digest.to_text()))
-        .collect::<Vec<_>>().join(",");
+    let clocks = stream
+        .clock_bases
+        .iter()
+        .map(|value| quote(value))
+        .collect::<Vec<_>>()
+        .join(",");
+    let handles = row
+        .capsule_metadata
+        .iter()
+        .map(|digest| quote(&digest.to_text()))
+        .collect::<Vec<_>>()
+        .join(",");
     format!(
         concat!(
             "{{\"sensor_id\":{},\"stream_id\":{},\"capsules\":{},\"recorded_gaps\":{},",
@@ -271,7 +281,10 @@ pub(super) fn compile(
     capsule_index: &[ContentDigest],
 ) -> Result<DeploymentSourcesQuery, SourcesQueryError> {
     let anchor_token = snapshot_anchor_token(&snapshot);
-    let selected: Vec<_> = ordered.iter().filter(|row| request.filter.matches(row)).collect();
+    let selected: Vec<_> = ordered
+        .iter()
+        .filter(|row| request.filter.matches(row))
+        .collect();
     let basis = reference_contract_basis();
     let mut encoder = CanonicalEncoder::new();
     encoder.text("fss.agent_sources.scope.v1");
@@ -303,14 +316,27 @@ pub(super) fn compile(
         .map_err(|_| SourcesQueryError::Contract)?;
     let allowance = limits.allowance()?;
     let admission = admit_query_read(
-        &basis, &snapshot.anchor, "query", request.max_entries, allowance,
-    ).map_err(|_| SourcesQueryError::Contract)?;
+        &basis,
+        &snapshot.anchor,
+        "query",
+        request.max_entries,
+        allowance,
+    )
+    .map_err(|_| SourcesQueryError::Contract)?;
     let interpretation_id = "interpretation:retained-source-inventory";
     let interpretation = QueryInterpretation::new(
-        interpretation_id, request.filter.description(), true, true, None,
-    ).map_err(|_| SourcesQueryError::Contract)?;
+        interpretation_id,
+        request.filter.description(),
+        true,
+        true,
+        None,
+    )
+    .map_err(|_| SourcesQueryError::Contract)?;
     let targets = if selected.len() <= 128 {
-        selected.iter().map(|row| format!("source:{}", hex(row.row_digest()))).collect()
+        selected
+            .iter()
+            .map(|row| format!("source:{}", hex(row.row_digest())))
+            .collect()
     } else {
         vec![format!("sources:{suffix}")]
     };
@@ -340,7 +366,8 @@ pub(super) fn compile(
         allowance,
         AgentView::Case.id(),
         snapshot.latest_evidence_time.0,
-    ).map_err(|_| SourcesQueryError::Contract)?;
+    )
+    .map_err(|_| SourcesQueryError::Contract)?;
     let mut encoder = CanonicalEncoder::new();
     encoder.text("fss.agent_sources.selection.v1");
     encoder.digest(scope);
@@ -356,15 +383,23 @@ pub(super) fn compile(
     }
     encode_diagnostics(&snapshot, &mut encoder);
     let selection_witness = ContentDigest::sha256(&encoder.finish());
-    let entries = selected.iter().enumerate().map(|(index, row)| {
-        ContinuationEntry::new(index as u64, "sensor_stream", row.row_digest(), true)
-    }).collect::<Result<Vec<_>, _>>().map_err(SourcesQueryError::Continuation)?;
+    let entries = selected
+        .iter()
+        .enumerate()
+        .map(|(index, row)| {
+            ContinuationEntry::new(index as u64, "sensor_stream", row.row_digest(), true)
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(SourcesQueryError::Continuation)?;
     let issued_at = snapshot.latest_evidence_time;
-    let expires_at = TimestampNs(issued_at.0
-        .checked_add(crate::agent_query::QUERY_CURSOR_LIFETIME_NS)
-        .ok_or(SourcesQueryError::InvalidRequest(
-            "source evidence clock cannot represent cursor expiry",
-        ))?);
+    let expires_at = TimestampNs(
+        issued_at
+            .0
+            .checked_add(crate::agent_query::QUERY_CURSOR_LIFETIME_NS)
+            .ok_or(SourcesQueryError::InvalidRequest(
+                "source evidence clock cannot represent cursor expiry",
+            ))?,
+    );
     let stream = ContinuationStream::publish(ContinuationStreamPublishParams {
         stream_id: format!("sources:{suffix}"),
         scope: ContinuationScope::Investigation,
@@ -377,19 +412,26 @@ pub(super) fn compile(
         selection_witness,
         issued_at,
         expires_at,
-    }).map_err(SourcesQueryError::Continuation)?;
+    })
+    .map_err(SourcesQueryError::Continuation)?;
     let cursor = match &request.continuation {
         None => stream.initial_cursor(),
         Some(token) => stream.cursor_for_token(token, issued_at),
-    }.map_err(SourcesQueryError::Continuation)?;
-    let page = stream.read_page(&cursor, issued_at).map_err(SourcesQueryError::Continuation)?;
+    }
+    .map_err(SourcesQueryError::Continuation)?;
+    let page = stream
+        .read_page(&cursor, issued_at)
+        .map_err(SourcesQueryError::Continuation)?;
     page.verify().map_err(SourcesQueryError::Continuation)?;
     let mut rows = Vec::with_capacity(page.entries.len());
     for entry in &page.entries {
-        let row = usize::try_from(entry.sequence).ok()
+        let row = usize::try_from(entry.sequence)
+            .ok()
             .and_then(|index| selected.get(index))
             .filter(|row| row.row_digest() == entry.payload_digest)
-            .ok_or(SourcesQueryError::Continuation(ContinuationError::OutOfRange))?;
+            .ok_or(SourcesQueryError::Continuation(
+                ContinuationError::OutOfRange,
+            ))?;
         rows.push((**row).clone());
     }
     let mut encoder = CanonicalEncoder::new();

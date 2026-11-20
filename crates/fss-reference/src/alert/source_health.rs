@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use fss_core::{
     CanonicalDecode, CanonicalEncode, ContentDigest, EventEvidence, EventHypothesis,
-    EvidenceDeltaBatch, EvidenceEdgeRelation, ObjectId, Plane, SensorCapsule, SensorId,
+    EvidenceDeltaBatch, ObjectId, Plane, SensorCapsule, SensorId,
 };
 use fss_ledger::DurableReferenceLedger;
 use fss_object::ObjectManifest;
@@ -139,7 +139,7 @@ where
     let mut supports = Vec::new();
     let mut identities = BTreeMap::new();
     for edge in &event.evidence {
-        if !edge.supports || edge.relation != EvidenceEdgeRelation::Supports {
+        if !edge.counts_as_support() {
             continue;
         }
         if let Some(capsule) = edge.capsule_digest {

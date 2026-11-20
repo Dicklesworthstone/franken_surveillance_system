@@ -1,22 +1,15 @@
 #![forbid(unsafe_code)]
 //! `session_probe` — drive one live TUTK-NEW session against one camera from
-//! the command line, with three interop/research knobs the production driver
-//! does not expose:
-//!
-//! * `--identity` — replace the DTLS PSK identity. An identity starting with
-//!   `AUTHTKN_` selects the legacy arbitrary-PSK path on unpatched firmware.
-//! * `--encoders` / `--encoders-count` / `--k10000-file` — control the
-//!   `audioEncoderList` array (the vendor parser's fixed-size stack array).
-//! * `--ioctl` + `--payload-file` — send one raw IOCTRL once streaming.
+//! the command line, with optional raw IOCTRL / frame capture for owner-authorized
+//! interoperability testing.
 //!
 //! Secrets (ENR) arrive on argv; the probe never persists them.
 //!
 //! Usage:
 //!   session_probe --ip IP --uid UID --enr ENR --mac MAC [options]
 //!
-//! Options: `--port N` (32761), `--secs N` (20), `--identity S`,
-//! `--psk-hex H`, `--encoders a,b,c`, `--encoders-count N`,
-//! `--k10000-file PATH`, `--ioctl N`, `--payload-file PATH`.
+//! Options: `--port N` (32761), `--secs N` (20), `--ioctl N`,
+//! `--payload-file PATH`, `--capture-dir DIR`.
 
 use std::net::UdpSocket;
 use std::process::ExitCode;
@@ -32,10 +25,6 @@ struct Args {
     enr: String,
     mac: String,
     secs: u64,
-    identity: Option<String>,
-    psk_hex: Option<Vec<u8>>,
-    encoders: Option<Vec<u32>>,
-    k10000: Option<String>,
     ioctl: Option<u16>,
     payload: Option<Vec<u8>>,
     capture: Option<String>,
@@ -44,7 +33,12 @@ struct Args {
 }
 
 fn parse() -> Result<Args, String> {
-    let mut a = Args { port: 32761, secs: 20, raw_wrap: true, ..Args::default() };
+    let mut a = Args {
+        port: 32761,
+        secs: 20,
+        raw_wrap: true,
+        ..Args::default()
+    };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
         let mut v = || it.next().ok_or_else(|| format!("{k} needs a value"));
@@ -55,24 +49,6 @@ fn parse() -> Result<Args, String> {
             "--enr" => a.enr = v()?,
             "--mac" => a.mac = v()?,
             "--secs" => a.secs = v()?.parse().map_err(|_| "bad --secs")?,
-            "--identity" => a.identity = Some(v()?),
-            "--psk-hex" => a.psk_hex = Some(hex(v()?.as_bytes())?),
-            "--encoders" => {
-                let s = v()?;
-                let mut out = Vec::new();
-                for p in s.split(',').filter(|p| !p.is_empty()) {
-                    out.push(p.trim().parse().map_err(|_| "bad --encoders item")?);
-                }
-                a.encoders = Some(out);
-            }
-            "--encoders-count" => {
-                let n: u32 = v()?.parse().map_err(|_| "bad --encoders-count")?;
-                a.encoders = Some((0..n).collect());
-            }
-            "--k10000-file" => {
-                let p = v()?;
-                a.k10000 = Some(std::fs::read_to_string(p).map_err(|_| "read k10000")?);
-            }
             "--ioctl" => {
                 let s = v()?;
                 a.ioctl = Some(parse_u16(&s)?);
@@ -80,7 +56,10 @@ fn parse() -> Result<Args, String> {
             "--capture-dir" => a.capture = Some(v()?),
             "--raw-wrap" => a.raw_wrap = true,
             "--no-raw-wrap" => a.raw_wrap = false,
-            "--raw-file" => { let p = v()?; a.raws.push(std::fs::read(p).map_err(|_| "read raw")?); }
+            "--raw-file" => {
+                let p = v()?;
+                a.raws.push(std::fs::read(p).map_err(|_| "read raw")?);
+            }
             "--payload-file" => {
                 let p = v()?;
                 a.payload = Some(std::fs::read(p).map_err(|_| "read payload")?);
@@ -103,22 +82,15 @@ fn parse() -> Result<Args, String> {
 
 fn parse_u16(s: &str) -> Result<u16, String> {
     let t = s.trim_start_matches("0x").trim_start_matches("0X");
-    u16::from_str_radix(t, if s.starts_with("0x") || s.starts_with("0X") { 16 } else { 10 })
-        .map_err(|_| "bad u16".to_string())
-}
-
-fn hex(s: &[u8]) -> Result<Vec<u8>, String> {
-    let s: Vec<u8> = s.iter().copied().filter(|c| !c.is_ascii_whitespace()).collect();
-    if s.len() % 2 != 0 {
-        return Err("odd hex length".into());
-    }
-    let mut out = Vec::with_capacity(s.len() / 2);
-    for c in s.chunks(2) {
-        let hi = (c[0] as char).to_digit(16).ok_or("bad hex")?;
-        let lo = (c[1] as char).to_digit(16).ok_or("bad hex")?;
-        out.push(((hi << 4) | lo) as u8);
-    }
-    Ok(out)
+    u16::from_str_radix(
+        t,
+        if s.starts_with("0x") || s.starts_with("0X") {
+            16
+        } else {
+            10
+        },
+    )
+    .map_err(|_| "bad u16".to_string())
 }
 
 fn main() -> ExitCode {
@@ -135,6 +107,16 @@ fn main() -> ExitCode {
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0xCC51_2026)
         | 1;
+    let mut entropy = [0u8; 32];
+    match std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut entropy))
+    {
+        Ok(()) => {}
+        Err(e) => {
+            eprintln!("session_probe: /dev/urandom entropy read failed: {e}");
+            return ExitCode::from(2);
+        }
+    }
     let cfg = SessionConfig {
         uid: a.uid.clone(),
         enr: a.enr.clone(),
@@ -142,14 +124,11 @@ fn main() -> ExitCode {
         audio: false,
         psk_truncated: false,
         seed,
+        entropy: Some(entropy),
         known_tuples: vec![
             ("HL_CAM4".into(), "4.52.17.26".into()),
             ("HL_CAM4".into(), "4.52.17.32".into()),
         ],
-        psk_identity: a.identity.clone(),
-        psk_override: a.psk_hex.clone(),
-        audio_encoder_list: a.encoders.clone(),
-        k10000_json: a.k10000.clone(),
     };
     let mut sess = match TutkSession::new(cfg) {
         Some(s) => s,
@@ -176,13 +155,8 @@ fn main() -> ExitCode {
     };
 
     println!(
-        "probe {} uid={} identity={} encoders={:?} ioctl={:?} secs={}",
-        peer,
-        a.uid,
-        a.identity.as_deref().unwrap_or("(default)"),
-        a.encoders.as_ref().map(Vec::len),
-        a.ioctl,
-        a.secs
+        "probe {} uid={} ioctl={:?} secs={}",
+        peer, a.uid, a.ioctl, a.secs
     );
 
     let t0 = Instant::now();
@@ -207,27 +181,49 @@ fn main() -> ExitCode {
         while let Some(ev) = sess.poll_event() {
             match &ev {
                 SessionEvent::DiscoveryComplete { ticket, .. } => {
-                    println!("[{}] discovery complete ticket={ticket}", t0.elapsed().as_millis())
+                    println!(
+                        "[{}] discovery complete ticket={ticket}",
+                        t0.elapsed().as_millis()
+                    )
                 }
-                SessionEvent::DtlsEstablished => println!("[{}] DTLS established", t0.elapsed().as_millis()),
-                SessionEvent::LoginAccepted { .. } => println!("[{}] login accepted", t0.elapsed().as_millis()),
+                SessionEvent::DtlsEstablished => {
+                    println!("[{}] DTLS established", t0.elapsed().as_millis())
+                }
+                SessionEvent::LoginAccepted { .. } => {
+                    println!("[{}] login accepted", t0.elapsed().as_millis())
+                }
                 SessionEvent::LoginRejected { response_type } => {
-                    println!("[{}] login REJECTED 0x{response_type:02x}", t0.elapsed().as_millis())
+                    println!(
+                        "[{}] login REJECTED 0x{response_type:02x}",
+                        t0.elapsed().as_millis()
+                    )
                 }
-                SessionEvent::KAuthComplete { camera_info } => println!(
-                    "[{}] K-auth ok: {}",
-                    t0.elapsed().as_millis(),
-                    camera_info
-                ),
+                SessionEvent::KAuthComplete { camera_info } => {
+                    println!("[{}] K-auth ok: {}", t0.elapsed().as_millis(), camera_info)
+                }
                 SessionEvent::KAuthRejected { connection_res } => {
-                    println!("[{}] K-auth rejected: {connection_res}", t0.elapsed().as_millis())
+                    println!(
+                        "[{}] K-auth rejected: {connection_res}",
+                        t0.elapsed().as_millis()
+                    )
                 }
-                SessionEvent::KAuthQuarantined { model, firmware, .. } => {
-                    println!("[{}] K-auth quarantined {model}/{firmware}", t0.elapsed().as_millis())
+                SessionEvent::KAuthQuarantined {
+                    model, firmware, ..
+                } => {
+                    println!(
+                        "[{}] K-auth quarantined {model}/{firmware}",
+                        t0.elapsed().as_millis()
+                    )
                 }
-                SessionEvent::StreamStarted { .. } => println!("[{}] STREAM STARTED", t0.elapsed().as_millis()),
+                SessionEvent::StreamStarted { .. } => {
+                    println!("[{}] STREAM STARTED", t0.elapsed().as_millis())
+                }
                 SessionEvent::Ioctl { cmd, payload } => {
-                    let hexs: String = payload.iter().take(64).map(|b| format!("{b:02x} ")).collect();
+                    let hexs: String = payload
+                        .iter()
+                        .take(64)
+                        .map(|b| format!("{b:02x} "))
+                        .collect();
                     println!(
                         "[{}] IOCTL from camera 0x{cmd:04x} {}B [{hexs}]",
                         t0.elapsed().as_millis(),

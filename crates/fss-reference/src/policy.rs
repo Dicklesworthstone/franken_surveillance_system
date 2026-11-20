@@ -866,3 +866,518 @@ pub(crate) fn zone_entry_decision_path(
         abstention_reason: None,
     }
 }
+
+/// Digest domain for the calibrated `fss-fusion`-backed unknown-presence decision path
+/// (`SCHEMA-DOMAIN-REFERENCE-CALIBRATED-PRESENCE-POLICY-001`).
+pub const CALIBRATED_UNKNOWN_PRESENCE_POLICY: &str =
+    "fss.reference_calibrated_unknown_presence_policy.v1";
+
+/// One retained model observation paired with optional measured `fss-fusion` likelihood calibration
+/// and any additional declared common-cause failure domains (e.g. shared UPS, network switch, or
+/// model family).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CalibratedModelObservation {
+    /// Underlying retained observation and primary sensor/deployment failure domain.
+    pub observation: ReferenceModelObservation,
+    /// Optional measured milliban LLR calibration; `None` fails closed as uncalibrated.
+    pub calibration: Option<fss_fusion::Calibration>,
+    /// Additional shared failure domains that must trigger common-cause hull clustering in
+    /// `fss-fusion` (the producing sensor and primary `failure_domain` are always included).
+    pub extra_failure_domains: Vec<String>,
+}
+
+impl CalibratedModelObservation {
+    /// Wraps an observation without calibration (fails closed in fusion as uncalibrated).
+    #[must_use]
+    pub fn uncalibrated(observation: ReferenceModelObservation) -> Self {
+        Self {
+            observation,
+            calibration: None,
+            extra_failure_domains: Vec::new(),
+        }
+    }
+
+    /// Wraps an observation with a measured calibration generation and milliban LLR interval.
+    #[must_use]
+    pub fn calibrated(
+        observation: ReferenceModelObservation,
+        generation: impl Into<String>,
+        llr: fss_fusion::LlrInterval,
+    ) -> Self {
+        Self {
+            observation,
+            calibration: Some(fss_fusion::Calibration::Calibrated {
+                generation: generation.into(),
+                llr,
+            }),
+            extra_failure_domains: Vec::new(),
+        }
+    }
+
+    /// Declares an additional shared failure domain (such as power, network, or model family).
+    #[must_use]
+    pub fn with_shared_domain(mut self, domain: impl Into<String>) -> Self {
+        self.extra_failure_domains.push(domain.into());
+        self
+    }
+}
+
+/// Canonical policy decision enriched with a certified `fss-fusion` calibrated posterior,
+/// common-cause dependency clusters, and leave-one-cluster-out counterfactuals.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CalibratedPolicyDecision {
+    /// Immutable event hypothesis and conservative action affordance.
+    pub decision: ReferencePolicyDecision,
+    /// Complete digest-bound `fss-fusion` outcome when evaluated.
+    pub fusion: fss_fusion::FusionOutcome,
+    /// True only when at least one calibrated, observed dependency cluster contributed to the
+    /// narrowed posterior probability interval; false means fail-closed `[0.0, 1.0]` fallback.
+    pub calibrated: bool,
+}
+
+/// Evaluates "is an unknown person present?" using `fss-fusion` calibrated milliban LLR intervals,
+/// common-cause failure-domain cluster hulls, and leave-one-cluster-out counterfactuals.
+///
+/// Safety and honesty invariants preserved on every path:
+/// - **Uncalibrated fail-closed:** When no observation carries an admitted calibration (or every
+///   calibrated observation is unobservable/abstained), `event.probability` remains `[0.0, 1.0]`,
+///   `calibrated` is `false`, and the action never upgrades beyond [`ReferencePolicyAction::Hold`].
+/// - **No common-cause double counting:** Observations sharing any declared failure domain (sensor,
+///   network, power, model family) collapse into one hull cluster in `fss-fusion` and count once.
+/// - **Coverage gap never certifies absence:** Under [`fss_fusion::Coverage::Gap`] or
+///   [`fss_fusion::Coverage::Degraded`], `fss-fusion` never emits `Reject`, and this function never
+///   downgrades the event to [`EventState::Rejected`].
+/// - **No authority escalation:** Structural corroboration checks (no unresolved abstentions, no
+///   open tamper, distinct sensors/capture roots/domains) and `fss-fusion` both must agree before
+///   [`ReferencePolicyAction::PrepareAlert`] is surfaced; `PrepareAlert` remains an affordance,
+///   never effect authority.
+pub fn evaluate_unknown_presence_calibrated(
+    event_id: EventId,
+    observations: Vec<CalibratedModelObservation>,
+    prior: fss_fusion::LlrInterval,
+    fusion_policy: fss_fusion::FusionPolicy,
+    coverage: fss_fusion::Coverage,
+    severity: fss_fusion::Severity,
+    looks: u32,
+    now_ns: u64,
+) -> Result<CalibratedPolicyDecision, ReferenceError> {
+    let raw_observations: Vec<ReferenceModelObservation> = observations
+        .iter()
+        .map(|entry| entry.observation.clone())
+        .collect();
+    let baseline = evaluate_unknown_presence(event_id.clone(), raw_observations)?;
+
+    let mut evidence_items = Vec::with_capacity(observations.len());
+    for entry in &observations {
+        let mut domains = BTreeSet::new();
+        domains.insert(entry.observation.failure_domain.clone());
+        for extra in &entry.extra_failure_domains {
+            domains.insert(extra.clone());
+        }
+        let observability = match &entry.observation.result {
+            ReferenceModelResult::Mock(mock) => match &mock.outcome {
+                MockModelOutcome::Finding {
+                    label: MockSemanticLabel::TamperLike,
+                    ..
+                } => fss_fusion::Observability::NotObservable {
+                    reason: "sensor_tamper:tamper_like".to_owned(),
+                },
+                MockModelOutcome::Finding { .. } | MockModelOutcome::NothingFound { .. } => {
+                    fss_fusion::Observability::Observed
+                }
+                MockModelOutcome::Abstained { reason } => {
+                    fss_fusion::Observability::NotObservable {
+                        reason: format!("model_abstention:{reason:?}"),
+                    }
+                }
+            },
+            ReferenceModelResult::ScalarExecutor(exec) => match &exec.outcome {
+                ExecutorModelOutcome::Activity { .. } | ExecutorModelOutcome::NoActivity { .. } => {
+                    fss_fusion::Observability::Observed
+                }
+                ExecutorModelOutcome::Abstained { reason, .. } => {
+                    fss_fusion::Observability::NotObservable {
+                        reason: format!("executor_abstention:{reason:?}"),
+                    }
+                }
+            },
+        };
+        let calibration =
+            entry
+                .calibration
+                .clone()
+                .unwrap_or_else(|| fss_fusion::Calibration::Uncalibrated {
+                    reason: "no_admitted_calibration".to_owned(),
+                });
+        evidence_items.push(fss_fusion::EvidenceItem {
+            id: entry.observation.result.object_digest().to_text(),
+            sensor: entry.observation.result.sensor_id().as_str().to_owned(),
+            failure_domains: domains,
+            calibration,
+            observability,
+        });
+    }
+
+    let query = fss_fusion::FusionQuery {
+        hypothesis: event_id.as_str().to_owned(),
+        kind: EventKind::UnknownPresence.as_str().to_owned(),
+        prior,
+        evidence: evidence_items,
+        coverage: coverage.clone(),
+        opportunities: Vec::new(),
+        probes: Vec::new(),
+        severity,
+        policy: fusion_policy,
+        looks,
+        now_ns,
+    };
+    let fusion = fss_fusion::fuse(&query)
+        .map_err(|_| ReferenceError::InvalidSpec("calibrated_fusion_query"))?;
+
+    let calibrated = !fusion.clusters.is_empty();
+    let probability = if calibrated {
+        let (lo_ppm, hi_ppm) = fusion.probability_ppm;
+        ProbabilityInterval::new(
+            f64::from(lo_ppm) / f64::from(fss_fusion::probability::PPM),
+            f64::from(hi_ppm) / f64::from(fss_fusion::probability::PPM),
+        )?
+    } else {
+        ProbabilityInterval::new(0.0, 1.0)?
+    };
+
+    let (state, action, uncertainty_reason) = if !calibrated {
+        (
+            baseline.event.state,
+            ReferencePolicyAction::Hold,
+            Some("uncalibrated_observations_failed_closed_to_unit_interval".to_owned()),
+        )
+    } else {
+        match &fusion.decision {
+            fss_fusion::Decision::Alert | fss_fusion::Decision::AlertDegradedCoverage
+                if baseline.event.state == EventState::Corroborated
+                    && fusion.supporting_clusters >= 2 =>
+            {
+                let note = if matches!(fusion.decision, fss_fusion::Decision::AlertDegradedCoverage)
+                {
+                    Some("calibrated_corroboration_under_degraded_or_gapped_coverage".to_owned())
+                } else {
+                    None
+                };
+                (
+                    EventState::Corroborated,
+                    ReferencePolicyAction::PrepareAlert,
+                    note,
+                )
+            }
+            fss_fusion::Decision::Reject
+                if matches!(coverage, fss_fusion::Coverage::Complete)
+                    && baseline.event.state != EventState::Corroborated
+                    && baseline.event.state != EventState::Witnessed =>
+            {
+                (EventState::Rejected, ReferencePolicyAction::Hold, None)
+            }
+            fss_fusion::Decision::AlertSingleDomainUnconfirmed
+            | fss_fusion::Decision::WaitForCorroboration { .. }
+            | fss_fusion::Decision::RequestObservation { .. }
+            | fss_fusion::Decision::RequestOperatorConfirmation
+            | fss_fusion::Decision::RetainSilently => {
+                let state = if baseline.event.state == EventState::Corroborated
+                    && fusion.supporting_clusters < 2
+                {
+                    // Common-cause hull clustering collapsed nominally distinct sensors into < 2
+                    // independent clusters: downgrade from Corroborated to Witnessed/Indeterminate!
+                    if fusion.supporting_clusters == 1 {
+                        EventState::Witnessed
+                    } else {
+                        EventState::Indeterminate
+                    }
+                } else {
+                    baseline.event.state
+                };
+                (
+                    state,
+                    ReferencePolicyAction::Hold,
+                    Some(format!(
+                        "calibrated_fusion_held:{}",
+                        fusion.decision.as_str()
+                    )),
+                )
+            }
+            _ => {
+                let state = if baseline.event.state == EventState::Rejected
+                    && !matches!(coverage, fss_fusion::Coverage::Complete)
+                {
+                    EventState::Indeterminate
+                } else if baseline.event.state == EventState::Corroborated {
+                    // Fusion did not support an alert (e.g. insufficient independent clusters or
+                    // below threshold): never expose PrepareAlert.
+                    if fusion.supporting_clusters >= 1 {
+                        EventState::Witnessed
+                    } else {
+                        EventState::Indeterminate
+                    }
+                } else {
+                    baseline.event.state
+                };
+                (
+                    state,
+                    ReferencePolicyAction::Hold,
+                    Some(format!(
+                        "calibrated_fusion_held:{}",
+                        fusion.decision.as_str()
+                    )),
+                )
+            }
+        }
+    };
+
+    let decision_path = calibrated_policy_decision_path(
+        &event_id,
+        &baseline.event.evidence,
+        state,
+        action,
+        fusion.decision_digest,
+        calibrated,
+    );
+    let event = EventHypothesis {
+        state,
+        uncertainty_reason,
+        probability,
+        decision_path,
+        ..baseline.event
+    };
+    event.validate()?;
+    Ok(CalibratedPolicyDecision {
+        decision: ReferencePolicyDecision { event, action },
+        fusion,
+        calibrated,
+    })
+}
+
+fn calibrated_policy_decision_path(
+    event_id: &EventId,
+    evidence: &[EventEvidence],
+    state: EventState,
+    action: ReferencePolicyAction,
+    fusion_decision_digest: ContentDigest,
+    calibrated: bool,
+) -> DecisionPath {
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text(CALIBRATED_UNKNOWN_PRESENCE_POLICY);
+    event_id.encode_canonical(&mut encoder);
+    encoder.text(state.as_str());
+    encoder.u8(match action {
+        ReferencePolicyAction::Hold => 1,
+        ReferencePolicyAction::PrepareAlert => 2,
+    });
+    encoder.digest(fusion_decision_digest);
+    encoder.bool(calibrated);
+    encoder.u64(evidence.len() as u64);
+    for edge in evidence {
+        edge.encode_canonical(&mut encoder);
+    }
+    DecisionPath {
+        policy_generation: ContentDigest::sha256(CALIBRATED_UNKNOWN_PRESENCE_POLICY.as_bytes()),
+        fingerprint: ContentDigest::sha256(&encoder.finish()),
+        abstained: !calibrated,
+        abstention_reason: if calibrated {
+            None
+        } else {
+            Some("uncalibrated_observations".to_owned())
+        },
+    }
+}
+
+#[cfg(test)]
+mod calibrated_fusion_tests {
+    use super::*;
+    use crate::{MockModelResult, MockSemanticLabel};
+    use fss_core::{SensorId, TimestampNs};
+
+    fn sample_policy() -> fss_fusion::FusionPolicy {
+        fss_fusion::FusionPolicy {
+            generation: "policy:unknown-presence:v1".to_owned(),
+            alert_threshold: 1_500,
+            retain_threshold: 0,
+            reject_threshold: -1_000,
+            min_independent_support: 2,
+            urgent_single_domain_threshold: None,
+            max_wait_ns: 0,
+            look_penalty_per_doubling: 0,
+            operator_confirmation_available: false,
+        }
+    }
+
+    fn sample_severity() -> fss_fusion::Severity {
+        fss_fusion::Severity {
+            expected_harm: 1_000,
+            false_alert_cost: 100,
+            delay_cost_per_second: 10,
+            reversible: true,
+        }
+    }
+
+    fn mock_person_observation(
+        sensor: &str,
+        domain: &str,
+        tag: &[u8],
+    ) -> Result<ReferenceModelObservation, Box<dyn std::error::Error>> {
+        let result = MockModelResult {
+            generation_id: "det:person:v1".to_owned(),
+            sensor_id: SensorId::parse(sensor)?,
+            model_spec_digest: ContentDigest::sha256(b"spec:det:person:v1"),
+            input_capture_root: ContentDigest::sha256(&[b"cap:", tag].concat()),
+            continuity_digest: ContentDigest::sha256(&[b"cont:", tag].concat()),
+            outcome: MockModelOutcome::Finding {
+                label: MockSemanticLabel::PersonLike,
+                probability: ProbabilityInterval::new(0.85, 0.95)?,
+            },
+        };
+        Ok(ReferenceModelObservation::new(
+            result,
+            domain,
+            CaptureInterval::new(TimestampNs(100), TimestampNs(200))?,
+        )?)
+    }
+
+    #[test]
+    fn two_independent_calibrated_domains_narrow_probability_and_prepare_alert()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let obs1 = CalibratedModelObservation::calibrated(
+            mock_person_observation("sensor:cam-front", "domain:cam-front", b"f1")?,
+            "cal:det-v1:front",
+            fss_fusion::LlrInterval::new(1_200, 1_400)?,
+        );
+        let obs2 = CalibratedModelObservation::calibrated(
+            mock_person_observation("sensor:cam-side", "domain:cam-side", b"s1")?,
+            "cal:det-v1:side",
+            fss_fusion::LlrInterval::new(1_100, 1_300)?,
+        );
+        let res = evaluate_unknown_presence_calibrated(
+            EventId::parse("event:cal-1")?,
+            vec![obs1, obs2],
+            fss_fusion::LlrInterval::new(-500, -400)?,
+            sample_policy(),
+            fss_fusion::Coverage::Complete,
+            sample_severity(),
+            1,
+            300,
+        )?;
+        assert!(res.calibrated);
+        assert_eq!(res.decision.event.state, EventState::Corroborated);
+        assert_eq!(res.decision.action, ReferencePolicyAction::PrepareAlert);
+        assert_eq!(res.fusion.supporting_clusters, 2);
+        assert_eq!(res.fusion.counterfactuals.len(), 2);
+        assert!(
+            res.decision.event.probability.lower > 0.90,
+            "calibrated posterior lower bound should be narrowed above 0.90, got {}",
+            res.decision.event.probability.lower
+        );
+        assert!(res.decision.event.probability.upper <= 1.0);
+        Ok(())
+    }
+
+    #[test]
+    fn shared_common_cause_domain_collapses_hull_and_blocks_corroboration()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let obs1 = CalibratedModelObservation::calibrated(
+            mock_person_observation("sensor:cam-front", "domain:cam-front", b"f2")?,
+            "cal:det-v1:front",
+            fss_fusion::LlrInterval::new(1_200, 1_400)?,
+        )
+        .with_shared_domain("power:ups-north");
+        let obs2 = CalibratedModelObservation::calibrated(
+            mock_person_observation("sensor:cam-side", "domain:cam-side", b"s2")?,
+            "cal:det-v1:side",
+            fss_fusion::LlrInterval::new(1_100, 1_300)?,
+        )
+        .with_shared_domain("power:ups-north");
+        let res = evaluate_unknown_presence_calibrated(
+            EventId::parse("event:cal-shared-ups")?,
+            vec![obs1, obs2],
+            fss_fusion::LlrInterval::new(-500, -400)?,
+            sample_policy(),
+            fss_fusion::Coverage::Complete,
+            sample_severity(),
+            1,
+            300,
+        )?;
+        assert!(res.calibrated);
+        assert_eq!(res.fusion.clusters.len(), 1);
+        assert_eq!(res.fusion.supporting_clusters, 1);
+        assert_eq!(res.decision.action, ReferencePolicyAction::Hold);
+        assert_eq!(res.decision.event.state, EventState::Witnessed);
+        Ok(())
+    }
+
+    #[test]
+    fn uncalibrated_observations_fail_closed_to_unit_interval_and_hold()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let obs1 = CalibratedModelObservation::uncalibrated(mock_person_observation(
+            "sensor:cam-front",
+            "domain:cam-front",
+            b"f3",
+        )?);
+        let obs2 = CalibratedModelObservation::uncalibrated(mock_person_observation(
+            "sensor:cam-side",
+            "domain:cam-side",
+            b"s3",
+        )?);
+        let res = evaluate_unknown_presence_calibrated(
+            EventId::parse("event:cal-none")?,
+            vec![obs1, obs2],
+            fss_fusion::LlrInterval::new(-500, -400)?,
+            sample_policy(),
+            fss_fusion::Coverage::Complete,
+            sample_severity(),
+            1,
+            300,
+        )?;
+        assert!(!res.calibrated);
+        assert_eq!(res.decision.action, ReferencePolicyAction::Hold);
+        assert_eq!(res.decision.event.probability.lower, 0.0);
+        assert_eq!(res.decision.event.probability.upper, 1.0);
+        assert!(res.decision.event.decision_path.abstained);
+        Ok(())
+    }
+
+    #[test]
+    fn coverage_gap_prevents_rejection_even_under_strong_negative_llr()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let obs = CalibratedModelObservation::calibrated(
+            ReferenceModelObservation::new(
+                MockModelResult {
+                    generation_id: "det:person:v1".to_owned(),
+                    sensor_id: SensorId::parse("sensor:cam-front")?,
+                    model_spec_digest: ContentDigest::sha256(b"spec:det:person:v1"),
+                    input_capture_root: ContentDigest::sha256(b"cap:gap"),
+                    continuity_digest: ContentDigest::sha256(b"cont:gap"),
+                    outcome: MockModelOutcome::NothingFound {
+                        analysed_capsule: ContentDigest::sha256(b"cap:gap"),
+                    },
+                },
+                "domain:cam-front",
+                CaptureInterval::new(TimestampNs(100), TimestampNs(200))?,
+            )?,
+            "cal:det-v1:front",
+            fss_fusion::LlrInterval::new(-2_500, -2_000)?,
+        );
+        let res = evaluate_unknown_presence_calibrated(
+            EventId::parse("event:cal-gap")?,
+            vec![obs],
+            fss_fusion::LlrInterval::new(-200, 0)?,
+            sample_policy(),
+            fss_fusion::Coverage::Gap {
+                reason: "camera_occlusion_gap".to_owned(),
+            },
+            sample_severity(),
+            1,
+            300,
+        )?;
+        assert!(res.calibrated);
+        assert_ne!(res.decision.event.state, EventState::Rejected);
+        assert_ne!(res.fusion.decision, fss_fusion::Decision::Reject);
+        assert_eq!(res.decision.action, ReferencePolicyAction::Hold);
+        Ok(())
+    }
+}

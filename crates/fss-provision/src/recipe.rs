@@ -558,7 +558,10 @@ const WYZE_STEPS: &[OnboardingStep] = &[
         StepKind::ServeOwnerCapsule,
         "serve the capsule over a TLS chain the stock cacert.pem validates",
     ),
-    OnboardingStep::new(StepKind::PowerOnForFlash, "power-cycle the unit so it resyncs"),
+    OnboardingStep::new(
+        StepKind::PowerOnForFlash,
+        "power-cycle the unit so it resyncs",
+    ),
     OnboardingStep::new(
         StepKind::VerifyPostFlash,
         "verify the installed generation and the tailnet endpoint after the reboot",

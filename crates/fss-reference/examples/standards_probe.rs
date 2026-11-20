@@ -16,7 +16,7 @@ fn main() {
     let iface: Ipv4Addr = args
         .get(1)
         .and_then(|s| s.parse().ok())
-        .unwrap_or(Ipv4Addr::new(192, 168, 4, 165));
+        .unwrap_or(Ipv4Addr::UNSPECIFIED);
     let seconds: u64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(8);
     let cancel = AtomicBool::new(false);
 

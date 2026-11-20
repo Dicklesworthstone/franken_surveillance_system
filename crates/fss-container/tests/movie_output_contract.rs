@@ -4,12 +4,16 @@
 //! filesystem durability or CLI process tests. Source/receipt pins below are test metadata;
 //! native pictures and the exercised production implementations are real, not codec stubs.
 
+#[allow(dead_code)]
 #[path = "movie_output_contract/matroska.rs"]
 mod matroska;
+#[allow(dead_code)]
 #[path = "../../fss-reference/src/review_media/render/output.rs"]
 mod movie_output;
+#[allow(dead_code)]
 #[path = "../../fss-cli/src/bin/fss-file/gray_matroska_stream/encoder.rs"]
 mod stream;
+#[allow(dead_code)]
 #[path = "../../fss-reference/src/ingest/recorded_decode/video_access_unit.rs"]
 mod video_access_unit;
 

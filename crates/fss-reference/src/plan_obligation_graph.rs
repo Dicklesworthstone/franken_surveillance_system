@@ -13,12 +13,12 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-use fss_core::{ControlPlan, ContractError, ContentDigest, GraphAlgorithmWitness};
+use fss_core::{ContentDigest, ContractError, ControlPlan, GraphAlgorithmWitness};
+use fss_graph_algorithms::GraphError;
 use fss_graph_algorithms::certified::Budget;
 use fss_graph_algorithms::dominators::{self, DominanceDirection, DominanceOutput};
 use fss_graph_algorithms::scc::{self, SccOutput};
 use fss_graph_algorithms::weighted::{WeightedGraph, WeightedGraphBuilder};
-use fss_graph_algorithms::{GraphError};
 
 /// Stable projection kind named by the graph registry.
 pub const PLAN_OBLIGATION_PROJECTION_KIND: &str = "PlanObligationGraph";
@@ -114,7 +114,10 @@ impl PlanObligationProjection {
         plan: &ControlPlan,
     ) -> Result<PlanSccReport, PlanObligationGraphError> {
         self.require_same_plan(plan)?;
-        let bound = scc::bound(self.graph.node_count() as u64, self.graph.arc_count() as u64);
+        let bound = scc::bound(
+            self.graph.node_count() as u64,
+            self.graph.arc_count() as u64,
+        );
         let run = scc::strongly_connected_components(&self.graph, Budget::registered(&bound))?;
         let witness = run.witness(&self.projection_id, plan.basis_anchor.clone())?;
         fss_graph_algorithms::certified::check_witness(&witness, &scc::IDENTITY, &bound)?;
@@ -138,7 +141,10 @@ impl PlanObligationProjection {
         if !self.entries.contains(entry) {
             return Err(PlanObligationGraphError::UndeclaredEntry(entry.to_owned()));
         }
-        let bound = dominators::bound(self.graph.node_count() as u64, self.graph.arc_count() as u64);
+        let bound = dominators::bound(
+            self.graph.node_count() as u64,
+            self.graph.arc_count() as u64,
+        );
         let run = dominators::dominators(
             &self.graph,
             entry,
@@ -147,11 +153,7 @@ impl PlanObligationProjection {
         )?;
         let projection_id = format!("{}:entry:{entry}", self.projection_id);
         let witness = run.witness(&projection_id, plan.basis_anchor.clone())?;
-        fss_graph_algorithms::certified::check_witness(
-            &witness,
-            &dominators::IDENTITY,
-            &bound,
-        )?;
+        fss_graph_algorithms::certified::check_witness(&witness, &dominators::IDENTITY, &bound)?;
         Ok(PlanDominatorReport {
             plan_digest: self.plan_digest,
             entry: entry.to_owned(),
@@ -218,14 +220,22 @@ impl fmt::Display for PlanObligationGraphError {
 impl std::error::Error for PlanObligationGraphError {}
 
 impl From<ContractError> for PlanObligationGraphError {
-    fn from(error: ContractError) -> Self { Self::Contract(error) }
+    fn from(error: ContractError) -> Self {
+        Self::Contract(error)
+    }
 }
 impl From<GraphError> for PlanObligationGraphError {
-    fn from(error: GraphError) -> Self { Self::Graph(error) }
+    fn from(error: GraphError) -> Self {
+        Self::Graph(error)
+    }
 }
 
 fn digest_hex(digest: ContentDigest) -> String {
-    digest.bytes().iter().map(|byte| format!("{byte:02x}")).collect()
+    digest
+        .bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 #[cfg(test)]
@@ -324,13 +334,29 @@ mod tests {
     #[test]
     fn dominators_identify_steps_on_every_path_from_declared_entry() -> TestResult {
         let plan = plan(
-            &[("entry", "gate"), ("gate", "left"), ("gate", "right"), ("left", "end"), ("right", "end")],
+            &[
+                ("entry", "gate"),
+                ("gate", "left"),
+                ("gate", "right"),
+                ("left", "end"),
+                ("right", "end"),
+            ],
             &["entry"],
         )?;
         let projection = PlanObligationProjection::build(&plan)?;
         let report = projection.dominators_from(&plan, "entry")?;
-        assert_eq!(report.output.chain("gate"), Some(vec!["entry".to_owned(), "gate".to_owned()]));
-        assert_eq!(report.output.chain("end"), Some(vec!["entry".to_owned(), "gate".to_owned(), "end".to_owned()]));
+        assert_eq!(
+            report.output.chain("gate"),
+            Some(vec!["entry".to_owned(), "gate".to_owned()])
+        );
+        assert_eq!(
+            report.output.chain("end"),
+            Some(vec![
+                "entry".to_owned(),
+                "gate".to_owned(),
+                "end".to_owned()
+            ])
+        );
         assert!(report.output.dominance.contains(&("gate".to_owned(), 3)));
         Ok(())
     }

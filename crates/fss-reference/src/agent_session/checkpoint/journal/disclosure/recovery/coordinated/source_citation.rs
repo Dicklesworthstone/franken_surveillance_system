@@ -17,9 +17,9 @@ use fss_core::HydrationRequest;
 fn preflight_error(error: DisclosureError) -> SourceCitationError {
     let cause = match error {
         DisclosureError::Durability(error) => DurableInvestigationError::Durability(error),
-        DisclosureError::Session(error) => DurableInvestigationError::Durability(
-            DurableSessionError::Session(error),
-        ),
+        DisclosureError::Session(error) => {
+            DurableInvestigationError::Durability(DurableSessionError::Session(error))
+        }
         // No private descriptor, cursor or source identity is exposed by catalog refusal.
         _ => DurableInvestigationError::Refused(InvestigationError::EvidenceRequired),
     };
@@ -55,21 +55,29 @@ impl DurableDisclosureStore {
         reader: &dyn PublishedSourceReader,
         now: TimestampNs,
     ) -> Result<SourceCitationReceipt, SourceCitationError> {
-        self.sessions.preflight()
+        self.sessions
+            .preflight()
             .map_err(|error| SourceCitationError::Preflight(error.into()))?;
-        self.synchronize_catalog(Some(now)).map_err(preflight_error)?;
+        self.synchronize_catalog(Some(now))
+            .map_err(preflight_error)?;
         // Resolve authenticated session/alias visibility on staged authority before inspecting
         // the private source requirement. Do not publish refusal-side preflight clocks.
         let mut admission = self.sessions.memory.clone();
-        admission.resolve(principal, alias, &self.catalog, now)
-            .map_err(|error| SourceCitationError::Preflight(
-                DurableInvestigationError::Durability(DurableSessionError::Session(error)),
-            ))?;
-        let binding = self.catalog.source_binding(
-            &request.handle_id, request.expected_descriptor_digest,
-        ).ok_or_else(|| SourceCitationError::Preflight(
-            DurableInvestigationError::Refused(InvestigationError::EvidenceRequired),
-        ))?;
+        admission
+            .resolve(principal, alias, &self.catalog, now)
+            .map_err(|error| {
+                SourceCitationError::Preflight(DurableInvestigationError::Durability(
+                    DurableSessionError::Session(error),
+                ))
+            })?;
+        let binding = self
+            .catalog
+            .source_binding(&request.handle_id, request.expected_descriptor_digest)
+            .ok_or_else(|| {
+                SourceCitationError::Preflight(DurableInvestigationError::Refused(
+                    InvestigationError::EvidenceRequired,
+                ))
+            })?;
         self.require_committed_source(request.expected_descriptor_digest, binding)
             .map_err(preflight_error)?;
         // The native case-facing hydrator charges session authority but deliberately does not
@@ -77,7 +85,13 @@ impl DurableDisclosureStore {
         // issuance/retirement escapes into the durable disclosure owner's live catalog.
         let mut staged_catalog = self.catalog.clone();
         self.sessions.cite_investigation_source(
-            principal, alias, target, request, &mut staged_catalog, reader, now,
+            principal,
+            alias,
+            target,
+            request,
+            &mut staged_catalog,
+            reader,
+            now,
         )
     }
 
@@ -105,7 +119,12 @@ impl DurableDisclosureStore {
         now: TimestampNs,
     ) -> Result<SourceCitationInspection, DurableInvestigationError> {
         self.sessions.inspect_source_citation(
-            principal, session, target, request, max_receipt_bytes, now,
+            principal,
+            session,
+            target,
+            request,
+            max_receipt_bytes,
+            now,
         )
     }
 
@@ -118,11 +137,17 @@ impl DurableDisclosureStore {
         if report.last_root() != self.committed_root() || report.incomplete_tail().is_some() {
             return Err(DurableSessionError::RootMismatch.into());
         }
-        let record = report.records().iter().rev().find(|record| {
-            record.kind() == SESSION_CHECKPOINT_RECORD_KIND
-                && source_registration::has_catalog_snapshot(record.payload())
-        }).ok_or(fss_core::HydrationError::LevelUnavailable)?;
-        let (bytes, _) = source_registration::catalog_snapshot(record.payload(), self.sessions.limits)?;
+        let record = report
+            .records()
+            .iter()
+            .rev()
+            .find(|record| {
+                record.kind() == SESSION_CHECKPOINT_RECORD_KIND
+                    && source_registration::has_catalog_snapshot(record.payload())
+            })
+            .ok_or(fss_core::HydrationError::LevelUnavailable)?;
+        let (bytes, _) =
+            source_registration::catalog_snapshot(record.payload(), self.sessions.limits)?;
         let checkpoint = CursorCheckpoint::decode(bytes, MAX_RECORD_BYTES, MAX_RECORDS)?;
         if !checkpoint.requires_source(descriptor, binding.custody_binding_digest()) {
             return Err(fss_core::HydrationError::LevelUnavailable.into());

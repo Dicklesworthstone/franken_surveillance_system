@@ -241,7 +241,9 @@ impl Retirement {
 
 impl Worker {
     /// Whether an admitted creation attempt still requires joining.
-    pub fn is_running(&self) -> bool { self.running.is_some() }
+    pub fn is_running(&self) -> bool {
+        self.running.is_some()
+    }
 
     /// Validate configuration without I/O or consuming inputs on refusal.
     pub fn new(inputs: Inputs) -> Result<Self, Inputs> {

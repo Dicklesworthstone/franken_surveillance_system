@@ -768,18 +768,34 @@ impl Retained {
             super::super::VideoChannel::Video2 => 2,
             super::super::VideoChannel::Video3 => 3,
         };
-        if channel != self.scope.channel || !valid_digest(claim.expected)
-            || !super::local_unicast(claim.peer) || claim.generation == 0
-            || super::request_digest(claim.peer, claim.forward, claim.generation, claim.forward_framing)
-                .map_err(|_| Error::Invalid)? != self.scope.request {
+        if channel != self.scope.channel
+            || !valid_digest(claim.expected)
+            || !super::local_unicast(claim.peer)
+            || claim.generation == 0
+            || super::request_digest(
+                claim.peer,
+                claim.forward,
+                claim.generation,
+                claim.forward_framing,
+            )
+            .map_err(|_| Error::Invalid)?
+                != self.scope.request
+        {
             return Err(Error::Invalid);
         }
         let matched = self.visit(cx, authority, |tracks, _| {
             let prior = tracks[usize::from(channel - 1)].ok_or(Error::Invalid)?;
-            let body = super::restore_body(claim.forward.channel, prior).map_err(|_| Error::Invalid)?;
+            let body =
+                super::restore_body(claim.forward.channel, prior).map_err(|_| Error::Invalid)?;
             let digest = super::request_digest_with_body(
-                claim.peer, claim.forward, claim.generation, claim.restore_framing, &body, Operation::Restore,
-            ).map_err(|_| Error::Invalid)?;
+                claim.peer,
+                claim.forward,
+                claim.generation,
+                claim.restore_framing,
+                &body,
+                Operation::Restore,
+            )
+            .map_err(|_| Error::Invalid)?;
             Ok::<bool, Error>(digest == claim.expected)
         })??;
         admit(cx, &self.scope, authority, Action::Inspect)?;

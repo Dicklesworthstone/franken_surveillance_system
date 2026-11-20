@@ -11,8 +11,8 @@ use fss_packet::extended_flv::stream::{Phase, RecordKind, SourceRecord, Unframed
 use fss_runtime::{execution::TaskCx, tcp_ingress::EndState};
 
 use super::{
-    av_worker, metered::MeteredClock, pipeline, recording::SourceDisposition,
-    source_batch, source_coordinator::ArchiveAdmission, source_worker,
+    av_worker, metered::MeteredClock, pipeline, recording::SourceDisposition, source_batch,
+    source_coordinator::ArchiveAdmission, source_worker,
 };
 
 /// Why a retirement could not be safely decomposed.
@@ -54,10 +54,16 @@ pub struct Batch {
     bytes: usize,
 }
 impl Batch {
-    pub(super) fn items(&self) -> &[Item] { &self.items }
-    pub(super) fn bytes(&self) -> usize { self.bytes }
+    pub(super) fn items(&self) -> &[Item] {
+        &self.items
+    }
+    pub(super) fn bytes(&self) -> usize {
+        self.bytes
+    }
     /// Borrow the exact original records retained by this batch in source order.
-    pub fn items_in_order(&self) -> impl ExactSizeIterator<Item = &Item> { self.items.iter() }
+    pub fn items_in_order(&self) -> impl ExactSizeIterator<Item = &Item> {
+        self.items.iter()
+    }
 }
 
 /// Ordered source custody and terminal facts, not a persistence receipt.
@@ -258,39 +264,73 @@ impl Plan {
         const MAX_COPIES: usize = 65_538;
         const MAX_COPY_BYTES: usize = 128 * 1024 * 1024;
         let count = collector.retained_source_records().count();
-        if count > MAX_COPIES { return Err(Error::Limit); }
-        if count == 0 { return Ok(0); }
+        if count > MAX_COPIES {
+            return Err(Error::Limit);
+        }
+        if count == 0 {
+            return Ok(0);
+        }
         let total = count.checked_add(self.items.len()).ok_or(Error::Limit)?;
-        if total > MAX_COPIES.saturating_mul(2).saturating_add(3) { return Err(Error::Limit); }
+        if total > MAX_COPIES.saturating_mul(2).saturating_add(3) {
+            return Err(Error::Limit);
+        }
         let mut ranges = Vec::new();
-        ranges.try_reserve_exact(total).map_err(|_| Error::Allocation)?;
+        ranges
+            .try_reserve_exact(total)
+            .map_err(|_| Error::Allocation)?;
         let mut copy_bytes = 0usize;
         for record in collector.retained_source_records() {
-            if record.bytes().is_empty() || matches!(record.kind(), RecordKind::Header | RecordKind::Unframed { .. }) {
+            if record.bytes().is_empty()
+                || matches!(
+                    record.kind(),
+                    RecordKind::Header | RecordKind::Unframed { .. }
+                )
+            {
                 return Err(Error::Record);
             }
-            copy_bytes = copy_bytes.checked_add(record.bytes().len()).ok_or(Error::Limit)?;
-            if copy_bytes > MAX_COPY_BYTES { return Err(Error::Limit); }
-            let end = record.offset().checked_add(u64::try_from(record.bytes().len()).map_err(|_| Error::Range)?)
+            copy_bytes = copy_bytes
+                .checked_add(record.bytes().len())
+                .ok_or(Error::Limit)?;
+            if copy_bytes > MAX_COPY_BYTES {
+                return Err(Error::Limit);
+            }
+            let end = record
+                .offset()
+                .checked_add(u64::try_from(record.bytes().len()).map_err(|_| Error::Range)?)
                 .ok_or(Error::Range)?;
-            if end > self.received { return Err(Error::Range); }
+            if end > self.received {
+                return Err(Error::Range);
+            }
             ranges.push((record.offset(), end));
         }
         for item in &self.items {
-            let end = item.record.offset().checked_add(u64::try_from(item.record.bytes().len()).map_err(|_| Error::Range)?)
+            let end = item
+                .record
+                .offset()
+                .checked_add(u64::try_from(item.record.bytes().len()).map_err(|_| Error::Range)?)
                 .ok_or(Error::Range)?;
             ranges.push((item.record.offset(), end));
         }
         ranges.sort_unstable();
-        if ranges.windows(2).any(|pair| pair[0].1 > pair[1].0) { return Err(Error::Range); }
-        let mut copies = Vec::new();
-        copies.try_reserve_exact(count).map_err(|_| Error::Allocation)?;
-        for record in collector.retained_source_records() {
-            copies.push(Item { record: record.try_duplicate().map_err(|_| Error::Allocation)?, disposition: SourceDisposition::BootstrapCopy });
+        if ranges.windows(2).any(|pair| pair[0].1 > pair[1].0) {
+            return Err(Error::Range);
         }
-        self.items.try_reserve_exact(count).map_err(|_| Error::Allocation)?;
+        let mut copies = Vec::new();
+        copies
+            .try_reserve_exact(count)
+            .map_err(|_| Error::Allocation)?;
+        for record in collector.retained_source_records() {
+            copies.push(Item {
+                record: record.try_duplicate().map_err(|_| Error::Allocation)?,
+                disposition: SourceDisposition::BootstrapCopy,
+            });
+        }
+        self.items
+            .try_reserve_exact(count)
+            .map_err(|_| Error::Allocation)?;
         self.items.extend(copies);
-        self.items.sort_unstable_by(|a, b| b.record.offset().cmp(&a.record.offset()));
+        self.items
+            .sort_unstable_by(|a, b| b.record.offset().cmp(&a.record.offset()));
         self.start = ranges.first().map(|range| range.0);
         self.end = ranges.last().map(|range| range.1);
         Ok(count)
@@ -301,21 +341,40 @@ impl Plan {
         let mut bytes = 0usize;
         let mut expected = None;
         for item in self.items_in_order().take(max_records) {
-            if expected.is_some_and(|offset| offset != item.record.offset()) { break; }
-            let next = bytes.checked_add(item.record.bytes().len()).ok_or(Error::Range)?;
-            if next > max_bytes { break; }
-            expected = Some(item.record.offset().checked_add(u64::try_from(item.record.bytes().len()).map_err(|_| Error::Range)?).ok_or(Error::Range)?);
+            if expected.is_some_and(|offset| offset != item.record.offset()) {
+                break;
+            }
+            let next = bytes
+                .checked_add(item.record.bytes().len())
+                .ok_or(Error::Range)?;
+            if next > max_bytes {
+                break;
+            }
+            expected = Some(
+                item.record
+                    .offset()
+                    .checked_add(
+                        u64::try_from(item.record.bytes().len()).map_err(|_| Error::Range)?,
+                    )
+                    .ok_or(Error::Range)?,
+            );
             count += 1;
             bytes = next;
         }
-        if count == 0 { return Ok(None); }
+        if count == 0 {
+            return Ok(None);
+        }
         let mut items = Vec::new();
-        items.try_reserve_exact(count).map_err(|_| Error::Allocation)?;
+        items
+            .try_reserve_exact(count)
+            .map_err(|_| Error::Allocation)?;
         for _ in 0..count {
             match self.items.pop() {
                 Some(item) => items.push(item),
                 None => {
-                    for item in items.into_iter().rev() { self.items.push(item); }
+                    for item in items.into_iter().rev() {
+                        self.items.push(item);
+                    }
                     return Err(Error::Range);
                 }
             }
@@ -325,7 +384,9 @@ impl Plan {
 
     fn restore_batch(&mut self, batch: Batch) {
         // Removing this prefix left enough capacity in the original vector.
-        for item in batch.items.into_iter().rev() { self.items.push(item); }
+        for item in batch.items.into_iter().rev() {
+            self.items.push(item);
+        }
     }
 
     /// Transfer the next held source in original connection order.
@@ -400,7 +461,9 @@ pub struct Driver {
 
 impl Driver {
     /// Whether a source-tail archive attempt still requires joining.
-    pub fn is_running(&self) -> bool { self.parts.worker.is_running() }
+    pub fn is_running(&self) -> bool {
+        self.parts.worker.is_running()
+    }
 
     /// Join an idle source worker to a checked retirement plan.
     pub fn begin(
@@ -435,9 +498,11 @@ impl Driver {
 
     /// Opt in to bounded source batching before an attempt is offered.
     pub fn enable_batching(&mut self, max_records: usize, max_bytes: usize) -> bool {
-        if self.parts.halted || self.parts.worker.status() != source_worker::Status::Idle
+        if self.parts.halted
+            || self.parts.worker.status() != source_worker::Status::Idle
             || !(1..=source_batch::MAX_RECORDS).contains(&max_records)
-            || !(1..=source_batch::MAX_BYTES).contains(&max_bytes) {
+            || !(1..=source_batch::MAX_BYTES).contains(&max_bytes)
+        {
             return false;
         }
         self.parts.batch_limits = Some((max_records, max_bytes));
@@ -517,11 +582,17 @@ impl Driver {
                             let len = batch.bytes;
                             let records = batch.items.len();
                             match self.parts.worker.offer(source_worker::Input::Batch {
-                                batch, key: self.parts.key, camera_claim: self.parts.camera_claim,
+                                batch,
+                                key: self.parts.key,
+                                camera_claim: self.parts.camera_claim,
                             }) {
                                 Ok(()) => {
                                     self.parts.armed = true;
-                                    return DriverStep::BatchOffered { offset, len, records };
+                                    return DriverStep::BatchOffered {
+                                        offset,
+                                        len,
+                                        records,
+                                    };
                                 }
                                 Err(refusal) => {
                                     let input = match refusal {

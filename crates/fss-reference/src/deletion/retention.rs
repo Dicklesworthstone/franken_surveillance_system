@@ -21,9 +21,9 @@ use fss_core::{
 use super::{CommitReceipt, DeletionError, DeletionIndex, DeletionPlan, DeletionScope, Finding};
 use crate::ingest::retained::MAX_RETAINED_MANIFEST_BYTES;
 use crate::ingest::{FileIngestError, RetainedFileImport, RetainedReadLimits};
-use fss_object::{CorruptionKind, SpoolError};
 use crate::reference_deployment::FAMILY_SENSOR_CAPSULE;
 use crate::{ReferenceDeployment, ReplayCx};
+use fss_object::{CorruptionKind, SpoolError};
 
 mod budget;
 pub use budget::RetentionByteAccounting;
@@ -643,11 +643,7 @@ fn charge(
     Ok(())
 }
 
-fn metadata_allowance(
-    used: u64,
-    maximum: u64,
-    per_record: usize,
-) -> Result<usize, DeletionError> {
+fn metadata_allowance(used: u64, maximum: u64, per_record: usize) -> Result<usize, DeletionError> {
     let remaining = maximum
         .checked_sub(used)
         .filter(|remaining| *remaining != 0)

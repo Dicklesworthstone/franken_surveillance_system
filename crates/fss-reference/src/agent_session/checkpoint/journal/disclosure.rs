@@ -31,9 +31,9 @@ use crate::hydration::cursor_checkpoint::{CursorCheckpoint, MAX_RECORDS};
 use crate::{BoundReferenceSituationPublication, PublishedSourceReader, ReferenceHydrationCatalog};
 
 // Workspace operations share this exclusive session owner, never a second handle.
-mod workspace;
-mod source_registration;
 mod recovery;
+mod source_registration;
+mod workspace;
 
 pub use source_registration::JournaledSourceBinding;
 
@@ -565,80 +565,81 @@ fn deliver_atomic<T>(
         }
     };
     match result {
-            Err(error) => {
-                // Preserve clock and expiry mutations, but never publish staged cursor state.
-                if checkpoint.digest() != sessions.checkpoint_digest {
-                    sessions.commit_candidate(PendingSession {
-                        memory,
-                        checkpoint,
-                        coordination: None,
-                        record: None,
-                    })?;
-                }
-                Err(error)
-            }
-            Ok((response, admission)) => {
-                let prepared = (|| -> Result<Vec<u8>, DisclosureError> {
-                    let cursors = catalog.checkpoint_cursors(now, MAX_RECORD_BYTES)?;
-                    let payload = encode(
-                        sessions.checkpoint_digest,
-                        checkpoint.as_bytes(),
-                        &cursors,
-                        &admission,
-                    )?;
-                    // Validate the same semantic reconstruction that cold recovery will use.
-                    let mut cursor_history = None;
-                    let report = read_report(sessions.path(), sessions.limits)?;
-                    if report.last_root() != sessions.committed_root()
-                        || report.incomplete_tail().is_some()
-                    {
-                        return Err(DurableSessionError::RootMismatch.into());
-                    }
-                    for record in report.records() {
-                        if record.kind() == SESSION_CHECKPOINT_RECORD_KIND
-                            && source_registration::has_catalog_snapshot(record.payload())
-                        {
-                            let (cursors, _) = source_registration::catalog_snapshot(
-                                record.payload(), sessions.limits,
-                            )?;
-                            cursor_history = Some(CursorCheckpoint::decode(
-                                cursors,
-                                MAX_RECORD_BYTES,
-                                MAX_RECORDS,
-                            )?);
-                        }
-                    }
-                    restore_record(
-                        &payload,
-                        ContentDigest::sha256(&payload),
-                        Some(&sessions.memory),
-                        &mut cursor_history,
-                        sessions.limits,
-                    )?;
-                    Ok(payload)
-                })();
-                let payload = match prepared {
-                    Ok(payload) => payload,
-                    Err(error) => {
-                        sessions.fenced = true;
-                        return Err(error);
-                    }
-                };
-                // Even a zero-token, same-clock disclosure gets a record: it can issue a cursor.
+        Err(error) => {
+            // Preserve clock and expiry mutations, but never publish staged cursor state.
+            if checkpoint.digest() != sessions.checkpoint_digest {
                 sessions.commit_candidate(PendingSession {
                     memory,
                     checkpoint,
                     coordination: None,
-                    record: Some((SESSION_CHECKPOINT_RECORD_KIND, payload)),
+                    record: None,
                 })?;
-                *current_catalog = catalog;
-                Ok(JournaledDisclosure {
-                    response,
-                    admission,
-                    committed_root: sessions.committed_root(),
-                })
             }
+            Err(error)
         }
+        Ok((response, admission)) => {
+            let prepared = (|| -> Result<Vec<u8>, DisclosureError> {
+                let cursors = catalog.checkpoint_cursors(now, MAX_RECORD_BYTES)?;
+                let payload = encode(
+                    sessions.checkpoint_digest,
+                    checkpoint.as_bytes(),
+                    &cursors,
+                    &admission,
+                )?;
+                // Validate the same semantic reconstruction that cold recovery will use.
+                let mut cursor_history = None;
+                let report = read_report(sessions.path(), sessions.limits)?;
+                if report.last_root() != sessions.committed_root()
+                    || report.incomplete_tail().is_some()
+                {
+                    return Err(DurableSessionError::RootMismatch.into());
+                }
+                for record in report.records() {
+                    if record.kind() == SESSION_CHECKPOINT_RECORD_KIND
+                        && source_registration::has_catalog_snapshot(record.payload())
+                    {
+                        let (cursors, _) = source_registration::catalog_snapshot(
+                            record.payload(),
+                            sessions.limits,
+                        )?;
+                        cursor_history = Some(CursorCheckpoint::decode(
+                            cursors,
+                            MAX_RECORD_BYTES,
+                            MAX_RECORDS,
+                        )?);
+                    }
+                }
+                restore_record(
+                    &payload,
+                    ContentDigest::sha256(&payload),
+                    Some(&sessions.memory),
+                    &mut cursor_history,
+                    sessions.limits,
+                )?;
+                Ok(payload)
+            })();
+            let payload = match prepared {
+                Ok(payload) => payload,
+                Err(error) => {
+                    sessions.fenced = true;
+                    return Err(error);
+                }
+            };
+            // Even a zero-token, same-clock disclosure gets a record: it can issue a cursor.
+            sessions.commit_candidate(PendingSession {
+                memory,
+                checkpoint,
+                coordination: None,
+                record: Some((SESSION_CHECKPOINT_RECORD_KIND, payload)),
+            })?;
+            *current_catalog = catalog;
+            Ok(JournaledDisclosure {
+                response,
+                admission,
+                committed_root: sessions.committed_root(),
+            })
+        }
+    }
 }
 
 fn admission(
@@ -776,7 +777,11 @@ pub(super) fn restore_record(
 ) -> Result<ReferenceSessionStore, DurableSessionError> {
     if source_registration::is_record(payload) {
         return source_registration::restore_record(
-            payload, payload_digest, previous, cursor_history, limits,
+            payload,
+            payload_digest,
+            previous,
+            cursor_history,
+            limits,
         );
     }
     if !is_record(payload) {

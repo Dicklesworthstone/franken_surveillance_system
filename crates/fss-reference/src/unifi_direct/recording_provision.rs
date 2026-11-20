@@ -22,9 +22,10 @@ use fss_object::{SpoolIo, effect_journal::EffectJournalLimits};
 use fss_runtime::execution::TaskCx;
 
 use super::{
-    av_rollover_generation, av_rollover_supplies, conversation, recording_session,
+    av_rollover_generation, av_rollover_supplies, conversation,
     metered::MeteredClock,
     recording_rollover::{ManagedSession, ManagedStep},
+    recording_session,
     source_coordinator::ArchiveAdmission,
 };
 use crate::ReplayCx;
@@ -192,7 +193,11 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> ProvisioningSession<'sco
     ) -> Result<Self, SelectedRefusal<'scope, 'task, IO>> {
         match recording_session::Session::begin_selected(selected) {
             Ok(session) => Ok(Self::from_plan(ManagedSession::new(session, audio), plan)),
-            Err(recording) => Err(SelectedRefusal { recording, audio, plan }),
+            Err(recording) => Err(SelectedRefusal {
+                recording,
+                audio,
+                plan,
+            }),
         }
     }
 
@@ -218,9 +223,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> ProvisioningSession<'sco
 
     /// Borrow the existing controller across recording and rollover stages.
     /// Cancellation permanently closes this driver's control access.
-    pub fn control(
-        &mut self,
-    ) -> Option<super::recording_session::Control<'_, 'scope, 'task, IO>> {
+    pub fn control(&mut self) -> Option<super::recording_session::Control<'_, 'scope, 'task, IO>> {
         if self.aborted.get() {
             return None;
         }

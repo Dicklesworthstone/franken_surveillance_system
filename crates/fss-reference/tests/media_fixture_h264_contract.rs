@@ -551,3 +551,26 @@ fn nal_list_matches_independent_start_code_scan_across_configs() -> Result<(), B
     }
     Ok(())
 }
+
+#[test]
+fn verify_manifest_binds_the_digest_to_one_named_row() -> Result<(), Box<dyn Error>> {
+    let hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    let row = format!(r#"{{"sha256":"{hash}","name":"clip"}}"#);
+    verify_fixture_manifest(&format!(r#"{{"fixtures":[{row}]}}"#), "clip", b"")?;
+    let invalid_manifests = [
+        format!(r#"{{"fixtures":[{row},{row}]}}"#),
+        format!(r#"{{"fixtures":[{{"name":"clip","metadata":{{"sha256":"{hash}"}}}}]}}"#),
+        format!(r#"{{"fixtures":[],"metadata":{row}}}"#),
+        format!(r#"{{"fixtures":[{{"name":"clip","sha256":"other","sha256":"{hash}"}}]}}"#),
+    ];
+    for invalid in &invalid_manifests {
+        assert!(matches!(
+            verify_fixture_manifest(invalid, "clip", b""),
+            Err(MediaFixtureError::InvalidParam(_))
+        ));
+    }
+    Record::new("media_fixture_h264_named_manifest_row")
+        .check("ambiguous_manifests_refused", 4_usize, invalid_manifests.len())
+        .emit();
+    Ok(())
+}

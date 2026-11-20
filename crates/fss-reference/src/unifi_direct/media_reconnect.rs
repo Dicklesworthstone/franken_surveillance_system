@@ -132,8 +132,28 @@ impl<'scope, 'task, 'policy> Parts<'scope, 'task, 'policy> {
     /// Separate the scoped listener from every non-scoped media owner.
     /// No work is drained and no retry is authorized by this transfer.
     pub fn split_listener(self) -> (listener::Listener<'scope, 'task, 'policy>, Detached) {
-        let Self { listener, active, retired, last, interrupted, attempts, max_attempts, max_retired } = self;
-        (listener, Detached { active, retired, last, interrupted, attempts, max_attempts, max_retired })
+        let Self {
+            listener,
+            active,
+            retired,
+            last,
+            interrupted,
+            attempts,
+            max_attempts,
+            max_retired,
+        } = self;
+        (
+            listener,
+            Detached {
+                active,
+                retired,
+                last,
+                interrupted,
+                attempts,
+                max_attempts,
+                max_retired,
+            },
+        )
     }
 }
 

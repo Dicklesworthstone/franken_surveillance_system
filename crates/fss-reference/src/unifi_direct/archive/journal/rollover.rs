@@ -334,15 +334,23 @@ impl WorkerCustody {
         journal: &UnknownTimeJournal,
         keeper: &UnknownTimeAnchorKeeper,
     ) -> bool {
-        let Some(confirmed) = journal.confirmed() else { return false; };
-        if journal.pending().is_some() || journal.replay_pin().is_some()
-            || keeper.target() != journal.anchor() || self.transitions.is_empty()
+        let Some(confirmed) = journal.confirmed() else {
+            return false;
+        };
+        if journal.pending().is_some()
+            || journal.replay_pin().is_some()
+            || keeper.target() != journal.anchor()
+            || self.transitions.is_empty()
         {
             return false;
         }
         self.startup_verification = Some(StartupVerification {
-            scope: journal.scope(), confirmed, journal: journal.anchor(), keeper: keeper.anchor(),
-            transitions: self.transitions.len(), binding: self.binding(),
+            scope: journal.scope(),
+            confirmed,
+            journal: journal.anchor(),
+            keeper: keeper.anchor(),
+            transitions: self.transitions.len(),
+            binding: self.binding(),
         });
         true
     }
@@ -356,11 +364,16 @@ impl WorkerCustody {
         self.startup_verification.is_some_and(|verified| {
             journal.scope() == verified.scope
                 && journal.confirmed() == Some(verified.confirmed)
-                && journal.pending().is_none() && journal.replay_pin().is_none()
-                && journal.anchor() == verified.journal && keeper.anchor() == verified.keeper
+                && journal.pending().is_none()
+                && journal.replay_pin().is_none()
+                && journal.anchor() == verified.journal
+                && keeper.anchor() == verified.keeper
                 && keeper.target() == verified.journal
                 && self.transitions.len() == verified.transitions
-                && self.transitions.last().is_some_and(|t| t.binding == verified.binding)
+                && self
+                    .transitions
+                    .last()
+                    .is_some_and(|t| t.binding == verified.binding)
         })
     }
 
@@ -462,7 +475,9 @@ impl WorkerCustody {
         work: &mut WorkBudget<'_>,
         cx: &ReplayCx,
     ) -> Result<UnknownTimePin, SettledAvError> {
-        self.verify_settled(journal, keeper, deployment, read, retain, limits, objects, work, cx, false)
+        self.verify_settled(
+            journal, keeper, deployment, read, retain, limits, objects, work, cx, false,
+        )
     }
 
     pub(crate) fn verify_settled_video(
@@ -477,7 +492,9 @@ impl WorkerCustody {
         work: &mut WorkBudget<'_>,
         cx: &ReplayCx,
     ) -> Result<UnknownTimePin, SettledAvError> {
-        self.verify_settled(journal, keeper, deployment, read, retain, limits, objects, work, cx, true)
+        self.verify_settled(
+            journal, keeper, deployment, read, retain, limits, objects, work, cx, true,
+        )
     }
 
     fn verify_settled(
@@ -493,7 +510,8 @@ impl WorkerCustody {
         cx: &ReplayCx,
         video_only: bool,
     ) -> Result<UnknownTimePin, SettledAvError> {
-        self.check(journal, keeper, cx).map_err(SettledAvError::History)?;
+        self.check(journal, keeper, cx)
+            .map_err(SettledAvError::History)?;
         let verify = if video_only {
             archive::verify_settled_unknown_time_video_anchored
         } else {
@@ -501,8 +519,10 @@ impl WorkerCustody {
         };
         let pin = verify(
             deployment, read, retain, limits, objects, work, cx, journal, keeper,
-        ).map_err(SettledAvError::Verification)?;
-        self.check(journal, keeper, cx).map_err(SettledAvError::History)?;
+        )
+        .map_err(SettledAvError::Verification)?;
+        self.check(journal, keeper, cx)
+            .map_err(SettledAvError::History)?;
         checkpoint(cx).map_err(SettledAvError::History)?;
         if !read.permits(pin.retention, pin.root) || !retain.permits(pin.retention, pin.root) {
             return Err(SettledAvError::Verification(
@@ -766,7 +786,10 @@ fn decode(bytes: &[u8]) -> Result<Binding, Error> {
     Ok(binding)
 }
 
-fn checked_switch(switch: &mut PinRetainedEffectJournal, cx: &ReplayCx) -> Result<SwitchObservation, Error> {
+fn checked_switch(
+    switch: &mut PinRetainedEffectJournal,
+    cx: &ReplayCx,
+) -> Result<SwitchObservation, Error> {
     checkpoint(cx)?;
     let head = switch.verify_retained_head().map_err(Error::Storage)?;
     if switch.records().len() != 1 || head.sequence != 1 {
@@ -792,13 +815,16 @@ pub fn inspect_switch(
     cx: &ReplayCx,
 ) -> Result<SwitchObservation, SwitchInspectionError> {
     checkpoint(cx).map_err(SwitchInspectionError::History)?;
-    if !valid_digest(expected_scope) || switch.records().len() != 1
+    if !valid_digest(expected_scope)
+        || switch.records().len() != 1
         || switch.records()[0].len() > MAX_SWITCH_BYTES
     {
         return Err(SwitchInspectionError::History(Error::Invalid));
     }
     let cost = u64::try_from(switch.records()[0].len())
-        .ok().and_then(|n| n.checked_mul(16)).and_then(|n| n.checked_add(130))
+        .ok()
+        .and_then(|n| n.checked_mul(16))
+        .and_then(|n| n.checked_add(130))
         .ok_or(SwitchInspectionError::History(Error::Invalid))?;
     work.charge(cost).map_err(SwitchInspectionError::Work)?;
     let observation = checked_switch(switch, cx).map_err(SwitchInspectionError::History)?;
@@ -806,7 +832,11 @@ pub fn inspect_switch(
         return Err(SwitchInspectionError::ScopeMismatch);
     }
     checkpoint(cx).map_err(SwitchInspectionError::History)?;
-    if switch.verify_retained_head().map_err(|e| SwitchInspectionError::History(Error::Storage(e)))? != observation.head {
+    if switch
+        .verify_retained_head()
+        .map_err(|e| SwitchInspectionError::History(Error::Storage(e)))?
+        != observation.head
+    {
         return Err(SwitchInspectionError::History(Error::Invalid));
     }
     checkpoint(cx).map_err(SwitchInspectionError::History)?;
@@ -832,9 +862,12 @@ pub fn select_successor_switch(
         return Err(SwitchSelectionError::Limit);
     }
     checkpoint(cx).map_err(SwitchSelectionError::History)?;
-    if !valid_digest(predecessor.scope) || !valid_digest(predecessor.confirmed.root)
-        || !valid_digest(predecessor.confirmed.retention) || predecessor.journal.sequence == 0
-        || predecessor.keeper.sequence == 0 || !valid_digest(predecessor.journal.root)
+    if !valid_digest(predecessor.scope)
+        || !valid_digest(predecessor.confirmed.root)
+        || !valid_digest(predecessor.confirmed.retention)
+        || predecessor.journal.sequence == 0
+        || predecessor.keeper.sequence == 0
+        || !valid_digest(predecessor.journal.root)
         || !valid_digest(predecessor.keeper.root)
     {
         return Err(SwitchSelectionError::History(Error::Invalid));
@@ -856,10 +889,14 @@ pub fn select_successor_switch(
     }
     if let Some(chosen) = selected {
         let observed = inspect_switch(&mut candidates[chosen.index], predecessor.scope, work, cx)
-            .map_err(|reason| SwitchSelectionError::Candidate { index: chosen.index, reason })?;
+            .map_err(|reason| SwitchSelectionError::Candidate {
+            index: chosen.index,
+            reason,
+        })?;
         if observed != chosen.observation {
             return Err(SwitchSelectionError::Candidate {
-                index: chosen.index, reason: SwitchInspectionError::History(Error::Invalid),
+                index: chosen.index,
+                reason: SwitchInspectionError::History(Error::Invalid),
             });
         }
     }
@@ -897,7 +934,10 @@ fn recover_inner(
     previous_replayed: bool,
 ) -> Result<Active, RecoveryRefusal> {
     let checked = (|| {
-        let SwitchObservation { binding, head: switch_head } = checked_switch(&mut switch, cx)?;
+        let SwitchObservation {
+            binding,
+            head: switch_head,
+        } = checked_switch(&mut switch, cx)?;
         let old = &previous.journal;
         let old_keeper = &previous.keeper;
         let new = &successor.journal;
@@ -981,7 +1021,8 @@ fn recover_inner(
 
 impl RecoveredLineage {
     pub(crate) fn checked_scope(&mut self, cx: &ReplayCx) -> Result<ContentDigest, Error> {
-        self.custody.check(&self.current.journal, &self.current.keeper, cx)?;
+        self.custody
+            .check(&self.current.journal, &self.current.keeper, cx)?;
         Ok(self.current.journal.scope())
     }
 
@@ -993,7 +1034,11 @@ impl RecoveredLineage {
         cx: &ReplayCx,
     ) -> Result<Self, LineageAttachmentRefusal> {
         if let Err(reason) = custody.check(&current.journal, &current.keeper, cx) {
-            return Err(LineageAttachmentRefusal { reason, current, custody });
+            return Err(LineageAttachmentRefusal {
+                reason,
+                current,
+                custody,
+            });
         }
         Ok(Self { current, custody })
     }
@@ -1017,8 +1062,15 @@ impl RecoveredLineage {
         cx: &ReplayCx,
     ) -> Result<UnknownTimePin, SettledAvError> {
         self.custody.verify_settled_av(
-            &self.current.journal, &self.current.keeper, deployment, read, retain,
-            limits, objects, work, cx,
+            &self.current.journal,
+            &self.current.keeper,
+            deployment,
+            read,
+            retain,
+            limits,
+            objects,
+            work,
+            cx,
         )
     }
 
@@ -1451,7 +1503,14 @@ impl Active {
             });
         }
         transitions.push(transition);
-        Ok((next_journal, next_keeper, WorkerCustody { transitions, startup_verification: None }))
+        Ok((
+            next_journal,
+            next_keeper,
+            WorkerCustody {
+                transitions,
+                startup_verification: None,
+            },
+        ))
     }
 
     /// Start a recovered lineage after the exact successor root was replayed.
@@ -1509,8 +1568,9 @@ impl Active {
         {
             return Err(SourceReplayError::History(Error::Invalid));
         }
-        let source = archive::read_unknown_time_source_graph(deployment, pin, read, limits, work, cx)
-            .map_err(SourceReplayError::Readback)?;
+        let source =
+            archive::read_unknown_time_source_graph(deployment, pin, read, limits, work, cx)
+                .map_err(SourceReplayError::Readback)?;
         let gate = SourceReplayGate { read, retain };
         let receipt = match source {
             archive::RecoveredSourceGraph::Single(source) => {
@@ -1522,8 +1582,14 @@ impl Active {
                     return Err(SourceReplayError::Readback(archive::Error::Mismatch));
                 }
                 archive::publish_unknown_time_source_anchored(
-                    &plan, deployment, &gate, limits, work, cx,
-                    &mut self.next_journal, &mut self.next_keeper,
+                    &plan,
+                    deployment,
+                    &gate,
+                    limits,
+                    work,
+                    cx,
+                    &mut self.next_journal,
+                    &mut self.next_keeper,
                 )
             }
             archive::RecoveredSourceGraph::Batch(source) => {
@@ -1536,11 +1602,18 @@ impl Active {
                     return Err(SourceReplayError::Readback(archive::Error::Mismatch));
                 }
                 archive::publish_unknown_time_source_batch_anchored(
-                    &plan, deployment, &gate, limits, work, cx,
-                    &mut self.next_journal, &mut self.next_keeper,
+                    &plan,
+                    deployment,
+                    &gate,
+                    limits,
+                    work,
+                    cx,
+                    &mut self.next_journal,
+                    &mut self.next_keeper,
                 )
             }
-        }.map_err(SourceReplayError::Publication)?;
+        }
+        .map_err(SourceReplayError::Publication)?;
         if receipt.outcome != RootLedgerOutcome::AlreadyLedgered {
             self.next_journal.inner.replay_pin = Some(pin.access_pin());
             return Err(SourceReplayError::UnexpectedReceipt(Box::new(receipt)));

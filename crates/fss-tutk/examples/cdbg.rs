@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! Debug harness for ChaCha20 stream and X25519 vectors.
 use fss_tutk::chacha::chacha20_xor;
 use fss_tutk::x25519::{x25519, x25519_base};
 
@@ -9,7 +10,7 @@ fn hex(b: &[u8]) -> String {
 fn unhex(s: &str) -> Vec<u8> {
     (0..s.len())
         .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+        .filter_map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
         .collect()
 }
 

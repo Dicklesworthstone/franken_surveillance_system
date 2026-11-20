@@ -107,7 +107,7 @@ pub fn decode_beacon(source: &str, data: &[u8]) -> Result<TuyaBeaconObs, tuya_wi
     let is_55aa = h.prefix == tuya_wire::PREFIX_55AA;
     let mut crc_good = false;
     let mut gcm_good = false;
-    let mut payload: &[u8] = &[];
+    let payload: &[u8];
     if is_55aa {
         // layout: header16 | retcode4 | payload | crc4 | suffix4
         let end_len = 8;

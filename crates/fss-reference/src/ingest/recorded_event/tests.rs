@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 use super::*;
+use crate::agent_orient::OrientLimits;
 use crate::ingest::analysis::{AnalysisFrame, AnalysisPlan};
 use crate::ingest::detections::{BoxEncoding, CoordinateSpace, DetectionSpec};
 use crate::ingest::inference::{RecordedInference, RecordedModel};
@@ -9,14 +10,13 @@ use crate::ingest::recorded_decode::{
 };
 use crate::ingest::tracking::TrackingConfig;
 use crate::ingest::{FileIngestAdapter, FileIngestRequest, RetainedReadLimits};
-use crate::{ExecBudget, ScalarExecCx};
-use crate::agent_orient::OrientLimits;
 use crate::retained_source::{ImmutableRetainedReadLimits, ImmutableRetainedSource};
-use std::sync::atomic::{AtomicBool, Ordering};
+use crate::{ExecBudget, ScalarExecCx};
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{BudgetVector, OperationId, SensorId, StreamId, TimestampNs};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn Error>>;
 const JPEG: &[u8] = include_bytes!("../../../../fss-cli/tests/fixtures/retained_file_8x8.jpg");
@@ -587,9 +587,8 @@ fn immutable_event_final_check_refuses_late_cancellation_and_changed_payload() -
     let root = f.directory.0.join("deployment");
     let cancelled = AtomicBool::new(false);
     let probe = || cancelled.load(Ordering::SeqCst);
-    let source = ImmutableRetainedSource::open_cancellable(
-        &root, immutable_limits(), &f.cx, &probe,
-    )?;
+    let source =
+        ImmutableRetainedSource::open_cancellable(&root, immutable_limits(), &f.cx, &probe)?;
     RecordedEvent::open(
         &source,
         &published.event().event_id,
@@ -611,7 +610,11 @@ fn immutable_event_final_check_refuses_late_cancellation_and_changed_payload() -
         &mut budget(),
         &f.cx,
     )?;
-    let path = f.deployment.publisher().spool().object_path(f.report.digest());
+    let path = f
+        .deployment
+        .publisher()
+        .spool()
+        .object_path(f.report.digest());
     let mut damaged = fs::read(&path)?;
     *damaged.last_mut().ok_or("empty retained analysis")? ^= 1;
     fs::write(path, damaged)?;

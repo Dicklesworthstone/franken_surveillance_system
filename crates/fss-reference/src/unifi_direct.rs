@@ -28,11 +28,11 @@ pub mod av_evidence;
 pub mod av_owned_sink;
 /// Transactional, source-preserving A/V fragment derivation.
 pub mod av_recording;
-mod av_rollover_preflight;
 /// Region-owned validation of recovered A/V archive custody before camera startup.
 pub mod av_recovered_startup;
 /// Bounded, deterministic planning of future rollover generations.
 pub mod av_rollover_generation;
+mod av_rollover_preflight;
 /// Region-owned creation of fresh successor journal stores.
 pub mod av_rollover_supplies;
 /// Region-owned storage work for an explicit A/V journal transition.
@@ -59,29 +59,33 @@ pub mod bluez_registry;
 pub mod camera_api;
 /// Task-scoped, bounded camera-local HTTP over an independently admitted transport.
 pub mod camera_http;
-/// Task-scoped, policy-admitted controller TCP listener.
-pub mod controller_listener;
 /// Bounded concurrent routed controller handshakes.
 pub mod controller_acceptor;
+/// Task-scoped, policy-admitted controller TCP listener.
+pub mod controller_listener;
 /// Routed controller transport and WebSocket upgrade composition.
 pub mod controller_upgrade;
 /// Experimental owned hello, agreement and stream-request conversation.
 pub mod conversation;
 /// Bounded owner-scoped UniFi LAN discovery.
 pub mod discovery;
-/// Source-preserving camera event observations and bounded interpretation.
-pub mod events;
 /// Exact source evidence for a camera event with unknown physical time.
 pub mod event_evidence;
 pub mod event_handoff;
 /// Cancellation-drained publication of one retained camera event.
 pub mod event_worker;
+/// Source-preserving camera event observations and bounded interpretation.
+pub mod events;
 /// Source-linked FLV segment evidence graph preparation.
 pub mod evidence;
 /// Inert, exact controller-address handoff planning.
 pub mod handoff;
 /// Inert, scoped planning for a camera-local HTTP serializer request.
 pub mod http_stream;
+/// Source-preserving TCP-to-extended-FLV ingress boundary.
+pub mod ingress;
+/// Exact inert stream-setting effect intent.
+pub mod intent;
 /// Experimental, bounded camera-local diagnostic IPC framing; no transport or authority.
 pub mod ipc_diagnostic;
 /// Task-owned, single-use transport for experimental diagnostic IPC.
@@ -89,15 +93,11 @@ pub mod ipc_diagnostic_io;
 /// Admitted same-host Unix transport for experimental diagnostic IPC.
 #[cfg(unix)]
 pub mod ipc_diagnostic_unix;
-/// Source-preserving TCP-to-extended-FLV ingress boundary.
-pub mod ingress;
-/// Exact inert stream-setting effect intent.
-pub mod intent;
 /// Bounded task-scoped media listener with caller-supplied peer admission.
 pub mod listener;
-pub mod media_reconnect;
 /// Exact inert controller-association and clock effect intent.
 pub mod management;
+pub mod media_reconnect;
 /// Task-scoped byte admission for controller transport I/O.
 pub mod metered;
 /// Inert, digest-bound motion-setting effect intent.
@@ -110,25 +110,25 @@ pub mod pipeline;
 pub mod receive;
 /// Bounded source-preserving FLV-to-MP4 segment owner.
 pub mod recording;
-/// Source-aware bridge for a bounded A/V journal rollover.
-pub mod recording_rollover;
 /// Region-owned provisioning alongside a managed recording session.
 pub mod recording_provision;
 /// Durable generation reservation for managed audio/video recording.
 pub mod recording_retained_provision;
+/// Source-aware bridge for a bounded A/V journal rollover.
+pub mod recording_rollover;
 /// Owns direct-camera bootstrap and recording as one task-scoped session.
 pub mod recording_session;
-/// Source custody for unfinished recorder and ingress tails.
-pub mod retirement_source;
 /// Fresh, task-authorized storage for a direct recording session.
 pub mod recording_storage;
+/// Source custody for unfinished recorder and ingress tails.
+pub mod retirement_source;
 /// Task-owned discovery-candidate handoff orchestration.
 pub mod setup;
+pub mod source_batch;
 /// Source-aware session and archive coordination.
 pub mod source_coordinator;
 /// Exact standalone source-record evidence for separately returned media.
 pub mod source_evidence;
-pub mod source_batch;
 /// Custody-preserving handoff from session events to standalone source storage.
 pub mod source_handoff;
 /// Task-owned durable publication of separately returned source records.
@@ -136,23 +136,23 @@ pub mod source_worker;
 pub mod supervisor;
 /// Bounded, untrusted camera WebSocket upgrade preparation.
 pub mod upgrade;
-/// Owned video-only archival without an AAC clock assumption.
-pub mod video_owned_sink;
 /// Bootstrap a video-only session from the connection's configuration.
 pub mod video_bootstrap;
-/// Source-preserving video-only camera session.
-pub mod video_session;
-/// Task-admitted, cancellation-drained video-only archival worker.
-pub mod video_worker;
-pub mod video_rollover_worker;
-pub mod video_rollover_preflight;
+/// Owned video-only archival without an AAC clock assumption.
+pub mod video_owned_sink;
 pub mod video_provision;
 /// Retained-generation reservation handoff for managed video sessions.
 pub mod video_retained_provision;
+pub mod video_rollover_preflight;
+pub mod video_rollover_worker;
+/// Source-preserving video-only camera session.
+pub mod video_session;
 /// Bounded full-resolution JPEG derivatives from decoded camera video.
 pub mod video_still;
 /// Region-owned, cancellation-drained archive-to-still work.
 pub mod video_still_worker;
+/// Task-admitted, cancellation-drained video-only archival worker.
+pub mod video_worker;
 
 /// Maximum incoming management message size before JSON parsing.
 pub const MAX_MESSAGE_BYTES: usize = 64 * 1024;

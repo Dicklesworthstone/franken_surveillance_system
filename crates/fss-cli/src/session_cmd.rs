@@ -520,7 +520,7 @@ fn open_response(opened: &OpenedSession) -> Result<String, Box<dyn std::error::E
 
 /// Reasons the handoff's not-applicable sentinels give.
 const NO_RETENTION_POLICY: &str = "no_retention_policy_retained";
-const NO_DELETION_CLOSURE: &str = "deletion_closure_not_implemented";
+const NO_DELETION_CLOSURE: &str = "no_deletion_committed";
 
 fn assumption_objects(record: &HandoffRecord) -> Vec<String> {
     record
@@ -721,10 +721,12 @@ fn handoff_payload(
         ),
         (
             "deletionClosureId",
-            agent_json::string(&agent_json::not_applicable_sentinel(
-                schema,
-                "deletionClosureId",
-                NO_DELETION_CLOSURE,
+            agent_json::string(orientation.latest_deletion_closure_id.as_deref().unwrap_or(
+                &agent_json::not_applicable_sentinel(
+                    schema,
+                    "deletionClosureId",
+                    NO_DELETION_CLOSURE,
+                ),
             )),
         ),
         (

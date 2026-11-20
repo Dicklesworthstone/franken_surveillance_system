@@ -140,7 +140,9 @@ impl Collector {
             _ => None,
         };
         self.video.iter().chain(audio).chain(
-            self.first_segment.iter().flat_map(|segment| segment.source().iter()),
+            self.first_segment
+                .iter()
+                .flat_map(|segment| segment.source().iter()),
         )
     }
 

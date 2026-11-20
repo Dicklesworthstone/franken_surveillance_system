@@ -379,14 +379,20 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
         selected: SelectedRecording<'scope, 'task, IO>,
     ) -> Result<Self, SelectedRefusal<'scope, 'task, IO>> {
         if selected.management.validate().is_err()
-            || !selected.storage.coordinator.matches_binding(
-                selected.pipeline.source_key(),
-                selected.management.camera,
-            )
+            || !selected
+                .storage
+                .coordinator
+                .matches_binding(selected.pipeline.source_key(), selected.management.camera)
         {
             return Err(SelectedRefusal::Binding(selected));
         }
-        let SelectedRecording { session, pipeline, management, storage, collector } = selected;
+        let SelectedRecording {
+            session,
+            pipeline,
+            management,
+            storage,
+            collector,
+        } = selected;
         let supervisor = supervisor::Supervisor::new(session, pipeline, management);
         Self::begin(supervisor, collector, storage.coordinator, storage.av)
             .map_err(SelectedRefusal::Begin)

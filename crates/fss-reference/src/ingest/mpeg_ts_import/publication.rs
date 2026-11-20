@@ -22,8 +22,10 @@ pub(super) fn publish(
     guard(destination, cx)?;
     // Finite reservation for reconstructed chunk hashing/copying and canonical payload setup.
     let metadata_work = (scan.capsules.len() as u64 + proof.original_chunks.len() as u64)
-        .checked_mul(1024).ok_or(MpegTsImportError::Invalid("publication work overflow"))?;
-    work.charge(media.len() as u64 + metadata_work).map_err(work_error)?;
+        .checked_mul(1024)
+        .ok_or(MpegTsImportError::Invalid("publication work overflow"))?;
+    work.charge(media.len() as u64 + metadata_work)
+        .map_err(work_error)?;
     let proof_bytes = proof.encode()?;
     let request = &proof.request;
     let extraction = &proof.receipt;
@@ -121,7 +123,11 @@ pub(super) fn publish(
     }
     let batches = file_adapter::plan_capsule_batches(
         entries,
-        request.file.limits.max_batch_deltas.min(destination.limits().batch_entries_max),
+        request
+            .file
+            .limits
+            .max_batch_deltas
+            .min(destination.limits().batch_entries_max),
         destination.limits().journal_record_max_bytes as usize,
         destination.current_anchor(),
         &hex,

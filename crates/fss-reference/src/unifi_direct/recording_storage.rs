@@ -155,12 +155,18 @@ pub struct LineageJoinRefusal {
 
 impl std::fmt::Debug for LineageJoinRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LineageJoinRefusal").field("reason", &self.reason).finish_non_exhaustive()
+        f.debug_struct("LineageJoinRefusal")
+            .field("reason", &self.reason)
+            .finish_non_exhaustive()
     }
 }
 impl std::fmt::Display for LineageJoinRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "UniFi source and rollover lineage join refused: {:?}", self.reason)
+        write!(
+            f,
+            "UniFi source and rollover lineage join refused: {:?}",
+            self.reason
+        )
     }
 }
 impl std::error::Error for LineageJoinRefusal {}
@@ -169,7 +175,13 @@ impl Recovered {
     /// Recover every archive owner, including any rollover chain.
     /// Retainer provenance must be established again before using these as a
     /// retained restart input.
-    pub fn into_histories(self) -> (RecoveredHistory, RecoveredHistory, Option<archive::journal::rollover::WorkerCustody>) {
+    pub fn into_histories(
+        self,
+    ) -> (
+        RecoveredHistory,
+        RecoveredHistory,
+        Option<archive::journal::rollover::WorkerCustody>,
+    ) {
         (self.source, self.av, self.av_rollover_custody)
     }
 }
@@ -400,12 +412,20 @@ fn create_inner<'task>(
         ),
         None => (None, None, None, None),
     };
-    let store = create_store(&cfg.root.join("source-intent"), source_journal, cfg.source_history_limits)?;
+    let store = create_store(
+        &cfg.root.join("source-intent"),
+        source_journal,
+        cfg.source_history_limits,
+    )?;
     let source_journal =
         archive::journal::UnknownTimeJournal::create(store, cfg.source_scope, &source_replay)
             .map_err(|_| Error::Storage)?;
     admit(task, cx, clock, resource, &source_replay)?;
-    let store = create_store(&cfg.root.join("source-anchor"), source_keeper, cfg.source_history_limits)?;
+    let store = create_store(
+        &cfg.root.join("source-anchor"),
+        source_keeper,
+        cfg.source_history_limits,
+    )?;
     let source_keeper =
         archive::journal::UnknownTimeAnchorKeeper::create(store, &source_journal, &source_replay)
             .map_err(|_| Error::Storage)?;
@@ -432,11 +452,19 @@ fn create_inner<'task>(
     )
     .map_err(|_| Error::Storage)?;
     admit(task, cx, clock, resource, &av_replay)?;
-    let store = create_store(&cfg.root.join("av-intent"), av_journal, cfg.av_history_limits)?;
+    let store = create_store(
+        &cfg.root.join("av-intent"),
+        av_journal,
+        cfg.av_history_limits,
+    )?;
     let av_journal = archive::journal::UnknownTimeJournal::create(store, cfg.av_scope, &av_replay)
         .map_err(|_| Error::Storage)?;
     admit(task, cx, clock, resource, &av_replay)?;
-    let store = create_store(&cfg.root.join("av-anchor"), av_keeper, cfg.av_history_limits)?;
+    let store = create_store(
+        &cfg.root.join("av-anchor"),
+        av_keeper,
+        cfg.av_history_limits,
+    )?;
     let av_keeper =
         archive::journal::UnknownTimeAnchorKeeper::create(store, &av_journal, &av_replay)
             .map_err(|_| Error::Storage)?;
@@ -460,9 +488,8 @@ fn create_store(
     retainer: Option<Box<dyn EffectPinRetainer>>,
     limits: EffectJournalLimits,
 ) -> Result<Box<dyn EffectJournalStore>, Error> {
-    let store =
-        FileEffectJournal::create(path, limits, Arc::new(HostSpoolIo))
-            .map_err(|_| Error::Storage)?;
+    let store = FileEffectJournal::create(path, limits, Arc::new(HostSpoolIo))
+        .map_err(|_| Error::Storage)?;
     match retainer {
         Some(retainer) => Ok(Box::new(
             PinRetainedEffectJournal::new(Box::new(store), retainer).map_err(|_| Error::Storage)?,
@@ -553,13 +580,24 @@ pub fn recover_source_retained<'task>(
     }
     let resource = cfg.root.to_str().ok_or(Error::Configuration)?;
     admit(task, cx, clock, resource, &source_replay)?;
-    if !std::fs::symlink_metadata(cfg.root).map_err(|_| Error::Recovery)?.is_dir() {
+    if !std::fs::symlink_metadata(cfg.root)
+        .map_err(|_| Error::Recovery)?
+        .is_dir()
+    {
         return Err(Error::Recovery);
     }
     let history = recover_one(
-        task, cx, clock, cfg.root, "source", cfg.source_scope,
-        cfg.source_history_limits, minimum, source_replay,
-        Some(retainers.journal), Some(retainers.keeper),
+        task,
+        cx,
+        clock,
+        cfg.root,
+        "source",
+        cfg.source_scope,
+        cfg.source_history_limits,
+        minimum,
+        source_replay,
+        Some(retainers.journal),
+        Some(retainers.keeper),
     )?;
     Ok(RetainedSourceHistory { history })
 }
@@ -585,12 +623,21 @@ pub fn join_source_and_av_lineage(
         }
     };
     if let Some(reason) = reason {
-        return Err(LineageJoinRefusal { reason, source, lineage, av_replay });
+        return Err(LineageJoinRefusal {
+            reason,
+            source,
+            lineage,
+            av_replay,
+        });
     }
     let (current, custody) = lineage.into_parts();
     Ok(Recovered {
         source: source.history,
-        av: RecoveredHistory { journal: current.journal, keeper: current.keeper, replay: av_replay },
+        av: RecoveredHistory {
+            journal: current.journal,
+            keeper: current.keeper,
+            replay: av_replay,
+        },
         retained: true,
         av_rollover_custody: Some(custody),
     })
@@ -684,8 +731,17 @@ pub fn resume_confirmed<'task>(
     retain_authority: Arc<dyn archive::RetainAuthority + Send + Sync>,
     object_limits: archive::StagedAvLimits,
 ) -> Result<Resumed, ResumeRefusal> {
-    resume_confirmed_inner(task, cx, clock, cfg, histories, read_authority,
-        retain_authority, object_limits, false)
+    resume_confirmed_inner(
+        task,
+        cx,
+        clock,
+        cfg,
+        histories,
+        read_authority,
+        retain_authority,
+        object_limits,
+        false,
+    )
 }
 
 /// Revalidate and resume an exclusively video-only confirmed graph.
@@ -703,8 +759,17 @@ pub fn resume_confirmed_video<'task>(
     retain_authority: Arc<dyn archive::RetainAuthority + Send + Sync>,
     object_limits: archive::StagedAvLimits,
 ) -> Result<Resumed, ResumeRefusal> {
-    resume_confirmed_inner(task, cx, clock, cfg, histories, read_authority,
-        retain_authority, object_limits, true)
+    resume_confirmed_inner(
+        task,
+        cx,
+        clock,
+        cfg,
+        histories,
+        read_authority,
+        retain_authority,
+        object_limits,
+        true,
+    )
 }
 
 fn resume_confirmed_inner<'task>(
@@ -791,14 +856,26 @@ fn resume_confirmed_inner<'task>(
         let previous = source.key();
         let claimed_source = if video_only {
             archive::read_unknown_time_video_clip(
-                &mut av_deployment, av_pin, read_authority, cfg.limits,
-                &mut fss_geometry::WorkBudget::new(cfg.work_limit), &histories.av.replay,
-            ).map_err(|_| Error::AvReadback)?.claimed_source()
+                &mut av_deployment,
+                av_pin,
+                read_authority,
+                cfg.limits,
+                &mut fss_geometry::WorkBudget::new(cfg.work_limit),
+                &histories.av.replay,
+            )
+            .map_err(|_| Error::AvReadback)?
+            .claimed_source()
         } else {
             archive::read_unknown_time_av_any(
-                &mut av_deployment, av_pin, read_authority, cfg.limits,
-                &mut fss_geometry::WorkBudget::new(cfg.work_limit), &histories.av.replay,
-            ).map_err(|_| Error::AvReadback)?.claimed_source()
+                &mut av_deployment,
+                av_pin,
+                read_authority,
+                cfg.limits,
+                &mut fss_geometry::WorkBudget::new(cfg.work_limit),
+                &histories.av.replay,
+            )
+            .map_err(|_| Error::AvReadback)?
+            .claimed_source()
         };
         if claimed_source != previous
             || (cfg.source.generation, cfg.source.connection)
@@ -831,7 +908,8 @@ fn resume_confirmed_inner<'task>(
             } else {
                 archive::journal::rollover::WorkerCustody::verify_settled_av
             };
-            let checked = verify(custody,
+            let checked = verify(
+                custody,
                 &histories.av.journal,
                 &histories.av.keeper,
                 &mut av_deployment,
@@ -841,7 +919,8 @@ fn resume_confirmed_inner<'task>(
                 object_limits,
                 &mut fss_geometry::WorkBudget::new(cfg.work_limit),
                 &histories.av.replay,
-            ).map_err(|_| Error::Reconciliation)?;
+            )
+            .map_err(|_| Error::Reconciliation)?;
             if checked != av_pin {
                 return Err(Error::Reconciliation);
             }
@@ -1131,12 +1210,14 @@ fn valid_configuration(cfg: &Configuration<'_>, source: &ReplayCx, av: &ReplayCx
         && (1..=262_144).contains(&cfg.limits.maximum_ledger_deltas)
         && (1..=64 * 1024 * 1024).contains(&cfg.max_source_bytes)
         && (1..=100_000_000_000).contains(&cfg.work_limit)
-        && [cfg.source_history_limits,cfg.av_history_limits].into_iter().all(|limits| {
-            (1..=65_536).contains(&limits.max_records)
-                && (1..=512 * 1024).contains(&limits.max_record_bytes)
-                && (1..=1024 * 1024 * 1024).contains(&limits.max_total_bytes)
-                && limits.max_read_bytes > 0
-        })
+        && [cfg.source_history_limits, cfg.av_history_limits]
+            .into_iter()
+            .all(|limits| {
+                (1..=65_536).contains(&limits.max_records)
+                    && (1..=512 * 1024).contains(&limits.max_record_bytes)
+                    && (1..=1024 * 1024 * 1024).contains(&limits.max_total_bytes)
+                    && limits.max_read_bytes > 0
+            })
         && [cfg.source_deployment_limits, cfg.av_deployment_limits]
             .into_iter()
             .all(|limits| {

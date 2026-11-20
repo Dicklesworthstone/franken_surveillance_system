@@ -189,7 +189,9 @@ fn verify_sample_index(
         VideoCodec::Hevc => "mkvhevc",
     };
     if manifest.format != format || manifest.segment_spans.len() != video.samples().len() {
-        return Err(invalid("Matroska track or count differs from retained segments"));
+        return Err(invalid(
+            "Matroska track or count differs from retained segments",
+        ));
     }
     for (index, (sample, segment)) in video
         .samples()
@@ -204,7 +206,9 @@ fn verify_sample_index(
             || sample.source.len() as u64 != segment.len
             || segment.gap_before
         {
-            return Err(invalid("Matroska sample index or range differs from retained segment"));
+            return Err(invalid(
+                "Matroska sample index or range differs from retained segment",
+            ));
         }
         let bytes = source
             .get(sample.source.clone())
@@ -224,11 +228,14 @@ fn verify_sample_index(
         }
     }
     if video.truncated_tail().is_some()
-        || manifest.omission_spans.iter().any(|span| {
-            span.reason == super::super::CONTAINER_TRUNCATED_TAIL_REASON
-        })
+        || manifest
+            .omission_spans
+            .iter()
+            .any(|span| span.reason == super::super::CONTAINER_TRUNCATED_TAIL_REASON)
     {
-        return Err(invalid("Matroska temporal selection requires a complete original"));
+        return Err(invalid(
+            "Matroska temporal selection requires a complete original",
+        ));
     }
     Ok(())
 }

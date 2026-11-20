@@ -1,6 +1,5 @@
 #![forbid(unsafe_code)]
-// Field-op level differential: gf mul/sqr/inv/pack vs python-computed vectors.
-// (uses only the crate's public x25519 path; prints for manual comparison)
+//! Field-op level differential helper for X25519 against RFC 7748 test vectors.
 
 use fss_tutk::x25519::{x25519, x25519_base};
 
@@ -11,7 +10,7 @@ fn hex(b: &[u8]) -> String {
 fn unhex(s: &str) -> Vec<u8> {
     (0..s.len())
         .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+        .filter_map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
         .collect()
 }
 

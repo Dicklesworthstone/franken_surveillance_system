@@ -12,10 +12,11 @@
 //! Bounded everything: event queue, pending frames, phase deadlines, retry
 //! counters. A drop is always counted and surfaced — never silent.
 
-use crate::av::{self, AvPacket, FrameInfo, FrameReassembler, CHANNEL_AUDIO};
+use crate::av::{self, AvPacket, CHANNEL_AUDIO, FrameInfo, FrameReassembler};
 use crate::av_stream::{AvStreamParser, StreamMsg};
+use crate::digest::Sha256;
 use crate::dtls::DtlsClient;
-use crate::wire::{self, NewProto, CHANNEL_MAIN, CMD_KEEPALIVE, MAGIC_NEWPROTO};
+use crate::wire::{self, CHANNEL_MAIN, CMD_KEEPALIVE, MAGIC_NEWPROTO, NewProto, ProtoError};
 
 /// Default per-phase deadline (10 s, matching the reference client).
 pub const PHASE_TIMEOUT_NS: u64 = 10_000_000_000;
@@ -58,31 +59,20 @@ pub struct SessionConfig {
     pub audio: bool,
     /// Use the NUL-truncated legacy PSK derivation (interop fallback).
     pub psk_truncated: bool,
-    /// Seed for the session's deterministic randomness (client random,
-    /// ephemeral key, session id). The owner picks this; it is never
-    /// derived from secrets.
+    /// Seed for the session's deterministic randomness in sans-IO tests.
+    /// Production callers should also supply 256-bit OS CSPRNG bytes in
+    /// [`Self::entropy`]. Never derived from device secrets.
     pub seed: u64,
+    /// Optional 256-bit OS CSPRNG entropy mixed into the session's SHA-256
+    /// CTR-DRBG for DTLS `client_random`, X25519 ephemeral private keys, and
+    /// discovery session IDs.
+    pub entropy: Option<[u8; 32]>,
     /// Known-good compatibility tuples `(model, firmware)` per plan §8.8.
     /// An unknown tuple — or a camera self-reporting a non-"normal"
     /// `cameraInfo.type` — fails closed at K-auth: quarantine event, terminal
     /// failure, and NO stream-start is ever dispatched. An empty list refuses
     /// every camera (default-deny).
     pub known_tuples: Vec<(String, String)>,
-    /// DTLS PSK identity override. `None` uses the normal TUTK AV identity
-    /// (`AUTHPWD_admin`). An `AUTHTKN_*` identity selects the legacy
-    /// arbitrary-PSK path that ignores the PSK value entirely
-    /// (CVE-2023-6324 shape): the caller may then pass an empty ENR and any
-    /// 32-byte `psk_override`.
-    pub psk_identity: Option<String>,
-    /// Explicit PSK override for the identity path above. `None` derives the
-    /// PSK from `enr` (`psk_truncated` still applies).
-    pub psk_override: Option<Vec<u8>>,
-    /// Override the K10000 `audioEncoderList` values. Long lists exercise the
-    /// vendor parser's fixed-size stack array.
-    pub audio_encoder_list: Option<Vec<u32>>,
-    /// Full override of the K10000 JSON body (wins over
-    /// `audio_encoder_list`). The body is the HL payload verbatim.
-    pub k10000_json: Option<String>,
 }
 
 /// A reassembled access unit with receive timing and continuity context.
@@ -213,25 +203,53 @@ pub struct SessionStats {
     pub events_dropped: u64,
     /// Bytes consumed by stream resync.
     pub resync_bytes: u64,
+    /// Incoming `0x1502` frames dropped because their outer HMAC-SHA1 did not verify.
+    pub outer_auth_dropped: u64,
 }
 
-/// Deterministic xorshift64* for session randomness.
-struct Rng(u64);
+/// Domain-separated SHA-256 CTR-DRBG for session randomness (replaces xorshift64*).
+///
+/// Each cryptographic purpose (`session_id`, `dtls_client_random`,
+/// `dtls_x25519_secret`) draws under a distinct domain tag so exposing public
+/// values such as `client_random` never reveals private key material.
+struct SessionDrbg {
+    key: [u8; 32],
+    counter: u64,
+}
 
-impl Rng {
-    fn next(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x >> 12;
-        x ^= x << 25;
-        x ^= x >> 27;
-        self.0 = x;
-        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+impl SessionDrbg {
+    fn new(seed: u64, entropy: Option<[u8; 32]>) -> Self {
+        let mut h = Sha256::new();
+        h.update(b"fss.tutk.drbg.init.v1");
+        h.update(&seed.to_be_bytes());
+        match entropy {
+            Some(bytes) => {
+                h.update(&[1]);
+                h.update(&bytes);
+            }
+            None => {
+                h.update(&[0]);
+            }
+        }
+        Self {
+            key: h.finish(),
+            counter: 0,
+        }
     }
 
-    fn bytes(&mut self, out: &mut [u8]) {
-        for chunk in out.chunks_mut(8) {
-            let v = self.next().to_le_bytes();
-            chunk.copy_from_slice(&v[..chunk.len()]);
+    fn derive_block(&mut self, domain: &[u8]) -> [u8; 32] {
+        self.counter = self.counter.wrapping_add(1);
+        let mut h = Sha256::new();
+        h.update(domain);
+        h.update(&self.key);
+        h.update(&self.counter.to_be_bytes());
+        h.finish()
+    }
+
+    fn fill(&mut self, domain: &[u8], out: &mut [u8]) {
+        for chunk in out.chunks_mut(32) {
+            let block = self.derive_block(domain);
+            chunk.copy_from_slice(&block[..chunk.len()]);
         }
     }
 }
@@ -251,7 +269,7 @@ enum Phase {
 pub struct TutkSession {
     cfg: SessionConfig,
     proto: NewProto,
-    rng: Rng,
+    drbg: SessionDrbg,
     phase: Phase,
     phase_deadline: u64,
     now_ns: u64,
@@ -295,14 +313,14 @@ impl TutkSession {
     #[must_use]
     pub fn new(cfg: SessionConfig) -> Option<Self> {
         let proto = NewProto::new(&cfg.uid, &cfg.enr, &cfg.mac)?;
-        let mut rng = Rng(cfg.seed | 1);
+        let mut drbg = SessionDrbg::new(cfg.seed, cfg.entropy);
         let mut r2 = [0u8; 2];
-        rng.bytes(&mut r2);
+        drbg.fill(b"fss.tutk.drbg.session_id.v1", &mut r2);
         let session_id = wire::new_session_id(r2);
         let mut s = Self {
             cfg,
             proto,
-            rng,
+            drbg,
             phase: Phase::Discovery,
             phase_deadline: 0,
             now_ns: 0,
@@ -416,10 +434,8 @@ impl TutkSession {
                     return;
                 }
                 if self.phase == Phase::Dtls
-                    && let (Some(next), false) = (
-                        self.dtls_flight_next_ns,
-                        self.dtls_flight.is_empty(),
-                    )
+                    && let (Some(next), false) =
+                        (self.dtls_flight_next_ns, self.dtls_flight.is_empty())
                     && now_ns >= next
                 {
                     if self.dtls_flight_retries >= DTLS_RESEND_MAX {
@@ -552,22 +568,18 @@ impl TutkSession {
     // -- dtls ---------------------------------------------------------------
 
     fn start_dtls(&mut self, now_ns: u64) {
-        let psk = match (&self.cfg.psk_override, self.cfg.psk_truncated) {
-            (Some(p), _) => p.clone(),
-            (None, true) => wire::derive_psk_truncated(&self.cfg.enr),
-            (None, false) => wire::derive_psk(&self.cfg.enr).to_vec(),
+        let psk = if self.cfg.psk_truncated {
+            wire::derive_psk_truncated(&self.cfg.enr)
+        } else {
+            wire::derive_psk(&self.cfg.enr).to_vec()
         };
         let mut cr = [0u8; 32];
-        self.rng.bytes(&mut cr);
+        self.drbg
+            .fill(b"fss.tutk.drbg.dtls_client_random.v1", &mut cr);
         let mut es = [0u8; 32];
-        self.rng.bytes(&mut es);
-        let identity = self
-            .cfg
-            .psk_identity
-            .as_deref()
-            .map(str::as_bytes)
-            .map(<[u8]>::to_vec);
-        match DtlsClient::with_identity(&psk, identity, cr, es) {
+        self.drbg
+            .fill(b"fss.tutk.drbg.dtls_x25519_secret.v1", &mut es);
+        match DtlsClient::with_identity(&psk, None, cr, es) {
             Some(mut c) => {
                 c.start();
                 self.dtls = Some(c);
@@ -580,8 +592,12 @@ impl TutkSession {
     }
 
     fn feed_dtls(&mut self, data: &[u8], now_ns: u64) {
-        let (payload, _auth_ok, _chan) = match self.proto.unwrap_dtls(data, false) {
+        let (payload, _auth_ok, _chan) = match self.proto.unwrap_dtls(data, true) {
             Ok(v) => v,
+            Err(ProtoError::AuthMismatch) => {
+                self.stats.outer_auth_dropped = self.stats.outer_auth_dropped.saturating_add(1);
+                return;
+            }
             Err(_) => return,
         };
         let dtls = match self.dtls.as_mut() {
@@ -634,8 +650,12 @@ impl TutkSession {
         {
             return;
         }
-        let (payload, _auth, _chan) = match self.proto.unwrap_dtls(data, false) {
+        let (payload, _auth, _chan) = match self.proto.unwrap_dtls(data, true) {
             Ok(v) => v,
+            Err(ProtoError::AuthMismatch) => {
+                self.stats.outer_auth_dropped = self.stats.outer_auth_dropped.saturating_add(1);
+                return;
+            }
             Err(_) => return,
         };
         let msgs = {
@@ -731,7 +751,7 @@ impl TutkSession {
                     }
                 };
                 let mut sid4 = [0u8; 4];
-                self.rng.bytes(&mut sid4);
+                self.drbg.fill(b"tutk.k10002_sid4.v1", &mut sid4);
                 let hl = av::build_k10002(&response, sid4, true, self.cfg.audio);
                 self.send_hl(hl);
             }
@@ -775,7 +795,8 @@ impl TutkSession {
                     self.fail("kauth", &format!("unknown tuple quarantined ({detail})"));
                     return;
                 }
-                self.events.push_back(SessionEvent::KAuthComplete { camera_info: info });
+                self.events
+                    .push_back(SessionEvent::KAuthComplete { camera_info: info });
                 self.phase = Phase::StreamStart;
                 self.phase_deadline = now_ns + PHASE_TIMEOUT_NS;
                 let hl = av::build_k10010(1, true);
@@ -797,7 +818,9 @@ impl TutkSession {
             self.send_hl(hl);
             return;
         }
-        self.events.push_back(SessionEvent::StreamStarted { payload: payload.to_vec() });
+        self.events.push_back(SessionEvent::StreamStarted {
+            payload: payload.to_vec(),
+        });
         self.phase = Phase::Streaming;
         // Silence budget starts at stream start: a camera that never sends
         // its first packet dies by the same clock as one that stops mid-stream.
@@ -917,14 +940,14 @@ impl TutkSession {
 
     fn send_login1(&mut self) {
         let mut rid = [0u8; 4];
-        self.rng.bytes(&mut rid);
+        self.drbg.fill(b"tutk.av_login1_rid.v1", &mut rid);
         let login1 = av::build_av_login1(&self.cfg.enr, rid);
         self.send_appdata(&login1);
     }
 
     fn send_login2(&mut self) {
         let mut rid = [0u8; 4];
-        self.rng.bytes(&mut rid);
+        self.drbg.fill(b"tutk.av_login2_rid.v1", &mut rid);
         let login1 = av::build_av_login1(&self.cfg.enr, rid);
         let login2 = av::build_av_login2(&login1);
         self.send_appdata(&login2);
@@ -940,15 +963,7 @@ impl TutkSession {
     }
 
     fn send_k10000(&mut self) {
-        let hl = match &self.cfg.k10000_json {
-            Some(json) => av::build_hl(10000, json.as_bytes()),
-            None => av::build_k10000_with(
-                self.cfg
-                    .audio_encoder_list
-                    .as_deref()
-                    .unwrap_or(&DEFAULT_AUDIO_ENCODERS),
-            ),
-        };
+        let hl = av::build_k10000_with(&DEFAULT_AUDIO_ENCODERS);
         self.send_hl(hl);
     }
 
@@ -979,9 +994,7 @@ fn extract_json_field(json: &str, field: &str) -> Option<String> {
         return Some(hex[..end].to_string());
     }
     // numeric / bare token
-    let end = rest
-        .find([',', '}', ']'])
-        .unwrap_or(rest.len());
+    let end = rest.find([',', '}', ']']).unwrap_or(rest.len());
     Some(rest[..end].trim().to_string())
 }
 
@@ -999,15 +1012,35 @@ mod tests {
     }
 
     #[test]
-    fn rng_is_deterministic() {
-        let mut a = Rng(7);
-        let mut b = Rng(7);
-        let mut x = [0u8; 32];
-        let mut y = [0u8; 32];
-        a.bytes(&mut x);
-        b.bytes(&mut y);
-        assert_eq!(x, y);
-        assert_ne!(x, [0u8; 32]);
+    fn drbg_is_deterministic_domain_separated_and_entropy_sensitive() {
+        let mut a = SessionDrbg::new(7, Some([0x11; 32]));
+        let mut b = SessionDrbg::new(7, Some([0x11; 32]));
+        let mut c = SessionDrbg::new(7, Some([0x22; 32]));
+        let mut cr_a = [0u8; 32];
+        let mut cr_b = [0u8; 32];
+        let mut cr_c = [0u8; 32];
+        let mut es_a = [0u8; 32];
+        a.fill(b"fss.tutk.drbg.dtls_client_random.v1", &mut cr_a);
+        b.fill(b"fss.tutk.drbg.dtls_client_random.v1", &mut cr_b);
+        c.fill(b"fss.tutk.drbg.dtls_client_random.v1", &mut cr_c);
+        a.fill(b"fss.tutk.drbg.dtls_x25519_secret.v1", &mut es_a);
+        assert_eq!(cr_a, cr_b);
+        assert_ne!(cr_a, [0u8; 32]);
+        assert_ne!(cr_a, cr_c);
+        assert_ne!(cr_a, es_a);
+    }
+
+    #[test]
+    fn forged_outer_dtls_hmac_is_dropped_and_counted() {
+        let (mut s, _) = session_in_dtls();
+        let mut forged =
+            s.proto
+                .wrap_dtls(&[0x16, 0xfe, 0xfd, 0, 0], 0x42, &s.session_id, CHANNEL_MAIN);
+        let last = forged.len() - 1;
+        forged[last] ^= 0xFF;
+        s.feed_datagram(&forged, 300_000_000);
+        assert_eq!(s.stats().outer_auth_dropped, 1);
+        assert!(matches!(s.phase(), PhaseName::Dtls));
     }
 
     fn test_cfg() -> SessionConfig {
@@ -1018,11 +1051,8 @@ mod tests {
             audio: false,
             psk_truncated: false,
             seed: 99,
+            entropy: Some([0xA5; 32]),
             known_tuples: vec![("SIM-CAM".to_string(), "9.99.0.SIM".to_string())],
-            psk_identity: None,
-            psk_override: None,
-            audio_encoder_list: None,
-            k10000_json: None,
         }
     }
 
@@ -1043,7 +1073,13 @@ mod tests {
         s.feed_datagram(&resp3, 200_000_000);
         assert!(matches!(s.phase(), PhaseName::Dtls));
         let ev = s.poll_event();
-        assert!(matches!(ev, Some(SessionEvent::DiscoveryComplete { ticket: 0x42, .. })), "{ev:?}");
+        assert!(
+            matches!(
+                ev,
+                Some(SessionEvent::DiscoveryComplete { ticket: 0x42, .. })
+            ),
+            "{ev:?}"
+        );
         // first DTLS flight (ClientHello) is queued, wrapped
         let mut dtls_dgrams = 0;
         let mut first_flight = Vec::new();
@@ -1066,13 +1102,19 @@ mod tests {
         let mut s = TutkSession::new(test_cfg()).unwrap();
         s.phase = Phase::Login;
         // Drive to streaming via the internal handler (unit scope).
-        s.handle_msg(StreamMsg::LoginResp(crate::av::parse_av_login_response(&{
-            let mut l = vec![0u8; 44];
-            l[0..2].copy_from_slice(&0x2100u16.to_le_bytes());
-            l[4] = 0x10;
-            l[16..20].copy_from_slice(&20u32.to_le_bytes());
-            l
-        }).unwrap()), 1_000);
+        s.handle_msg(
+            StreamMsg::LoginResp(
+                crate::av::parse_av_login_response(&{
+                    let mut l = vec![0u8; 44];
+                    l[0..2].copy_from_slice(&0x2100u16.to_le_bytes());
+                    l[4] = 0x10;
+                    l[16..20].copy_from_slice(&20u32.to_le_bytes());
+                    l
+                })
+                .unwrap(),
+            ),
+            1_000,
+        );
         s.handle_msg(StreamMsg::Ioctrl(10003, br#"{"connectionRes":"1","cameraInfo":{"basicInfo":{"model":"SIM-CAM","firmware":"9.99.0.SIM","type":"normal"}}}"#.to_vec(), 7), 1_100);
         s.handle_msg(StreamMsg::Ioctrl(10011, b"ok".to_vec(), 8), 1_200);
         assert!(matches!(s.phase(), PhaseName::Streaming));
@@ -1087,7 +1129,10 @@ mod tests {
             }
         }
         match failure {
-            Some(SessionEvent::Failed { stage: "stream", reason }) => {
+            Some(SessionEvent::Failed {
+                stage: "stream",
+                reason,
+            }) => {
                 assert!(reason.contains("silent"), "reason: {reason}");
             }
             other => panic!("expected stream-silence failure, got {other:?}"),
@@ -1095,13 +1140,19 @@ mod tests {
         // Within the budget it stays streaming (ACK ticker does not kill it).
         let mut s2 = TutkSession::new(test_cfg()).unwrap();
         s2.phase = Phase::Login;
-        s2.handle_msg(StreamMsg::LoginResp(crate::av::parse_av_login_response(&{
-            let mut l = vec![0u8; 44];
-            l[0..2].copy_from_slice(&0x2100u16.to_le_bytes());
-            l[4] = 0x10;
-            l[16..20].copy_from_slice(&20u32.to_le_bytes());
-            l
-        }).unwrap()), 1_000);
+        s2.handle_msg(
+            StreamMsg::LoginResp(
+                crate::av::parse_av_login_response(&{
+                    let mut l = vec![0u8; 44];
+                    l[0..2].copy_from_slice(&0x2100u16.to_le_bytes());
+                    l[4] = 0x10;
+                    l[16..20].copy_from_slice(&20u32.to_le_bytes());
+                    l
+                })
+                .unwrap(),
+            ),
+            1_000,
+        );
         s2.handle_msg(StreamMsg::Ioctrl(10003, br#"{"connectionRes":"1","cameraInfo":{"basicInfo":{"model":"SIM-CAM","firmware":"9.99.0.SIM","type":"normal"}}}"#.to_vec(), 7), 1_100);
         s2.handle_msg(StreamMsg::Ioctrl(10011, b"ok".to_vec(), 8), 1_200);
         s2.advance(1_200 + STREAM_SILENCE_TIMEOUT_NS - 1);
@@ -1128,7 +1179,12 @@ mod tests {
                 break;
             }
         }
-        assert_eq!(retransmits, DTLS_RESEND_MAX, "retransmits={retransmits} phase={:?}", s.phase());
+        assert_eq!(
+            retransmits,
+            DTLS_RESEND_MAX,
+            "retransmits={retransmits} phase={:?}",
+            s.phase()
+        );
         // budget exhausted: next resend point fails the session
         s.advance(200_000_000 + 7 * 1_000_000_000);
         assert!(matches!(s.phase(), PhaseName::Terminal));

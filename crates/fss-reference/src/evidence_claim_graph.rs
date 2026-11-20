@@ -68,7 +68,9 @@ impl fmt::Display for RetainedEvidenceClaimError {
 impl std::error::Error for RetainedEvidenceClaimError {}
 
 impl From<EvidenceProjectionError> for RetainedEvidenceClaimError {
-    fn from(error: EvidenceProjectionError) -> Self { Self::Projection(error) }
+    fn from(error: EvidenceProjectionError) -> Self {
+        Self::Projection(error)
+    }
 }
 
 /// Compile active support for the current heads selected from a verified snapshot.
@@ -135,7 +137,8 @@ pub fn read_retained_evidence_claims_selected(
     orient_limits: &OrientLimits,
     graph_limits: EvidenceProjectionLimits,
 ) -> Result<RetainedEvidenceClaimReport, RetainedEvidenceClaimError> {
-    let snapshot = read_deployment(root, orient_limits).map_err(RetainedEvidenceClaimError::Read)?;
+    let snapshot =
+        read_deployment(root, orient_limits).map_err(RetainedEvidenceClaimError::Read)?;
     if snapshot.site_lineage != site {
         return Err(RetainedEvidenceClaimError::SiteMismatch {
             expected: site.to_owned(),
@@ -190,7 +193,11 @@ mod tests {
         }
     }
 
-    fn event(name: &str, revision: u64, evidence: Vec<EventEvidence>) -> TestResult<EventHypothesis> {
+    fn event(
+        name: &str,
+        revision: u64,
+        evidence: Vec<EventEvidence>,
+    ) -> TestResult<EventHypothesis> {
         let policy = ContentDigest::sha256(b"policy");
         let event = EventHypothesis {
             schema: EventHypothesis::SCHEMA.to_owned(),
@@ -238,7 +245,11 @@ mod tests {
     #[test]
     fn retained_bridge_pins_exact_snapshot_anchor_and_current_heads() -> TestResult {
         let source = ContentDigest::sha256(b"retained source");
-        let a = event("event:a", 1, vec![edge(source, EvidenceEdgeRelation::Supports)])?;
+        let a = event(
+            "event:a",
+            1,
+            vec![edge(source, EvidenceEdgeRelation::Supports)],
+        )?;
         let b = event(
             "event:b",
             1,
@@ -285,7 +296,10 @@ mod tests {
             records.iter(),
             EvidenceProjectionLimits::default(),
         )?;
-        assert_eq!(report.projection.unexpanded_support(), &[old.revision_digest()]);
+        assert_eq!(
+            report.projection.unexpanded_support(),
+            &[old.revision_digest()]
+        );
         assert_ne!(
             object_node(old.revision_digest()),
             object_node(report.analysis.claims[0].revision)
@@ -301,12 +315,15 @@ mod tests {
             max_events: 0,
             ..EvidenceProjectionLimits::default()
         };
-        assert!(analyze_retained(
-            "site:retained-evidence",
-            &LedgerAnchor::genesis("site:retained-evidence"),
-            records.iter(),
-            limits,
-        ).is_err());
+        assert!(
+            analyze_retained(
+                "site:retained-evidence",
+                &LedgerAnchor::genesis("site:retained-evidence"),
+                records.iter(),
+                limits,
+            )
+            .is_err()
+        );
         Ok(())
     }
 }

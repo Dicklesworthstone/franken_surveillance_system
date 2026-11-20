@@ -645,7 +645,10 @@ impl Universe {
                         limit: "audit_retry_metadata_records",
                     });
                 }
-                let bytes = objects.get(&digest).ok_or(DeletionError::RecordMismatch)?.bytes;
+                let bytes = objects
+                    .get(&digest)
+                    .ok_or(DeletionError::RecordMismatch)?
+                    .bytes;
                 proposal_bytes = proposal_bytes
                     .checked_add(bytes)
                     .filter(|bytes| *bytes <= MAX_AUDIT_PROPOSAL_BYTES)
@@ -760,17 +763,25 @@ impl Universe {
     /// Current-basis candidates only. Historical proposals remain ordinary accounted content.
     pub(super) fn proposed_plans(&self) -> impl Iterator<Item = (ContentDigest, &DeletionPlan)> {
         self.proposed_plans.iter().filter_map(|(digest, plan)| {
-            (plan.basis_anchor == self.anchor && plan.effect_journal_root == self.effect_journal_root)
+            (plan.basis_anchor == self.anchor
+                && plan.effect_journal_root == self.effect_journal_root)
                 .then_some((*digest, plan))
         })
     }
 
     pub(super) fn proposed_policies(
         &self,
-    ) -> impl Iterator<Item = (ContentDigest, &super::retention::policy::RetentionPolicyRecord)> {
-        self.proposed_policies.iter().filter_map(|(digest, record)| {
-            (record.basis() == &self.anchor).then_some((*digest, record))
-        })
+    ) -> impl Iterator<
+        Item = (
+            ContentDigest,
+            &super::retention::policy::RetentionPolicyRecord,
+        ),
+    > {
+        self.proposed_policies
+            .iter()
+            .filter_map(|(digest, record)| {
+                (record.basis() == &self.anchor).then_some((*digest, record))
+            })
     }
 
     /// Provisional omission for independent semantic rederivation, never a caller exemption.

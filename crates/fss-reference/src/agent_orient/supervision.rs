@@ -37,7 +37,9 @@ pub(super) fn inventory_at(
 ) -> Vec<SupervisionInventoryEntry> {
     let mut projected = entries.to_vec();
     for entry in &mut projected {
-        entry.reservation_generations_current = entry.reservation.as_ref()
+        entry.reservation_generations_current = entry
+            .reservation
+            .as_ref()
             .map(|reservation| same_generations(reservation.anchor(), anchor));
         if let Some(pending) = &mut entry.pending {
             pending.generations_current = same_generations(&pending.anchor, anchor);
@@ -54,7 +56,9 @@ pub(super) fn project(
     binding: Option<&OrientSessionBinding>,
 ) -> Result<Projection, ContractError> {
     let mut result = Projection::default();
-    let Some(binding) = binding else { return Ok(result); };
+    let Some(binding) = binding else {
+        return Ok(result);
+    };
     let Some(entries) = &binding.supervisions else {
         result.unknown.push(
             "Durable supervision inventory is unavailable in this projection; no absence of pending work is established."
@@ -62,13 +66,17 @@ pub(super) fn project(
         );
         return Ok(result);
     };
-    if entries.is_empty() { return Ok(result); }
+    if entries.is_empty() {
+        return Ok(result);
+    }
     if entries.len() > crate::agent_session::checkpoint::journal::supervision::MAX_SESSION_SUPERVISION_SUBSCRIPTIONS {
         return Err(ContractError::BudgetExhausted);
     }
     // Workspace unknowns are conserved across transitions. Keep this boundary stable; exact
     // pending receipts and changing counters belong to the protected current-state summaries.
-    result.unknown.push("Current validity of retained supervision report sources is unverified.".to_owned());
+    result
+        .unknown
+        .push("Current validity of retained supervision report sources is unverified.".to_owned());
     // This derived metadata root binds every immutable state root and the current authority
     // comparisons. It deliberately excludes the enclosing journal root: ordinary reads and
     // workspace publication must not create a perpetual semantic change at a fixed state.
@@ -93,15 +101,31 @@ pub(super) fn project(
     for entry in entries {
         let mut status = format!(
             "Supervision {}: {}/{} attempts reserved ({} remain), {} bytes/{} reads charged",
-            entry.subscription_id, entry.attempts_reserved, entry.maximum_attempts,
-            entry.maximum_attempts.saturating_sub(entry.attempts_reserved),
-            entry.reserved_bytes, entry.reserved_read_attempts,
+            entry.subscription_id,
+            entry.attempts_reserved,
+            entry.maximum_attempts,
+            entry
+                .maximum_attempts
+                .saturating_sub(entry.attempts_reserved),
+            entry.reserved_bytes,
+            entry.reserved_read_attempts,
         );
         if let Some(schedule) = &entry.schedule {
-            status.push_str(&format!(", window {}/{}", schedule.active_window_count(), schedule.total_windows()));
+            status.push_str(&format!(
+                ", window {}/{}",
+                schedule.active_window_count(),
+                schedule.total_windows()
+            ));
             if let Some(receipt) = schedule.resolved_receipt() {
-                status.push_str(&format!(", {} {}",
-                    if schedule.resolved_acknowledged() == Some(true) { "ACK" } else { "discard" }, receipt));
+                status.push_str(&format!(
+                    ", {} {}",
+                    if schedule.resolved_acknowledged() == Some(true) {
+                        "ACK"
+                    } else {
+                        "discard"
+                    },
+                    receipt
+                ));
             }
         }
         if let Some(pending) = &entry.pending {
@@ -111,13 +135,18 @@ pub(super) fn project(
             }
         }
         if let Some(reservation) = &entry.reservation {
-            status.push_str(&format!(", unfinished charged attempt {}", reservation.ordinal()));
+            status.push_str(&format!(
+                ", unfinished charged attempt {}",
+                reservation.ordinal()
+            ));
             if !same_generations(reservation.anchor(), &snapshot.anchor) {
                 status.push_str(" (historical reservation generations differ)");
             }
         }
         if !entry.authority_current {
-            status.push_str(", original authority differs; existing work is not executable under these grants");
+            status.push_str(
+                ", original authority differs; existing work is not executable under these grants",
+            );
         }
         status.push('.');
         // The normal selector treats risks as critical. Pending work, receipts, progress and
@@ -126,10 +155,15 @@ pub(super) fn project(
         summaries.push(status);
     }
     result.cells.push(cell(KnowledgeCellParams {
-        claim_id: CLAIM.to_owned(), statement: summaries.join(" "),
-        knowledge_state: KnowledgeState::Known, provenance: ProvenanceClass::Derived,
-        hypothesis: None, evidence: vec![root], contradictions: Vec::new(),
-        valid_until: None, state_basis: None,
+        claim_id: CLAIM.to_owned(),
+        statement: summaries.join(" "),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Derived,
+        hypothesis: None,
+        evidence: vec![root],
+        contradictions: Vec::new(),
+        valid_until: None,
+        state_basis: None,
     })?);
     result.warnings.push(
         "Supervision metadata is current session state; retained reports remain historical. Listing and handoff do not validate sources, acknowledge reports, advance windows, refund charges or grant effects."

@@ -24,8 +24,7 @@ use crate::agent_orient::{
 };
 use crate::ingest::FileIngestError;
 use crate::retained_source::{
-    ImmutableRetainedReadLimits, ImmutableRetainedSource, RetainedReadUsage,
-    verify_event_lineage,
+    ImmutableRetainedReadLimits, ImmutableRetainedSource, RetainedReadUsage, verify_event_lineage,
 };
 
 /// Complete comparison projection, independent of the existing frozen event-record schema.

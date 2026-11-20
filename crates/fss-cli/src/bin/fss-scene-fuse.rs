@@ -25,6 +25,8 @@ mod retained_matching;
 #[cfg(test)]
 #[path = "fss-scene-fuse/tests.rs"]
 mod tests;
+#[path = "fss-scene-fuse/world_forecast.rs"]
+mod world_forecast;
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -74,7 +76,8 @@ For joint matching across 3-8 retained cameras, use fss-scene-fuse retained-mult
 For a reusable localization atlas from retained scene matches, use fss-scene-fuse retained-atlas --help.\n\
 For automatic moving-feature reconstruction across frames, use fss-scene-fuse retained-motion-match --help.\n\
 For reconstruction using currently adopted camera geometry, use fss-scene-fuse retained-calibrated-match --help.\n\
-For localization atlases built with adopted cameras, use fss-scene-fuse retained-calibrated-atlas --help.\n";
+For localization atlases built with adopted cameras, use fss-scene-fuse retained-calibrated-atlas --help.\n\
+For 3D world tracking, route priors and next-camera handoff forecasts, use fss-scene-fuse world-forecast --help.\n";
 
 #[derive(Debug)]
 struct Failure {
@@ -383,6 +386,8 @@ fn main() -> ExitCode {
         retained_matching::run(&args[1..], &mut io::stdout().lock())
     } else if args.first().and_then(|arg| arg.to_str()) == Some("match") {
         matching::run(&args[1..], &mut io::stdout().lock())
+    } else if args.first().and_then(|arg| arg.to_str()) == Some("world-forecast") {
+        world_forecast::run(&args[1..], &mut io::stdout().lock())
     } else {
         options(args).and_then(|value| match value {
             None => {

@@ -54,10 +54,10 @@ pub mod long_sentinel;
 /// Whole-recording zone-entry observation over the native streaming perception pipeline.
 pub mod long_watch;
 pub mod mjpeg;
-/// Finite native MPEG-TS import with original transport custody and exact reconstructed AVC/HEVC.
-pub mod mpeg_ts_import;
 /// Offline source-preserving conversion of exact tensor weights into recorded models.
 pub mod model_import;
+/// Finite native MPEG-TS import with original transport custody and exact reconstructed AVC/HEVC.
+pub mod mpeg_ts_import;
 /// Source-preserving offline ONNX import into verified RGB detector packages.
 pub mod onnx_package;
 /// Bounded, source-gap-aware pixel-change measurements over recorded frames.

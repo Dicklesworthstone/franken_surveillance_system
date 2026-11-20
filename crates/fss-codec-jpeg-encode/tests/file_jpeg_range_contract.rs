@@ -7,6 +7,7 @@ extern crate self as fss_container;
 pub mod matroska_gray;
 #[path = "../../fss-cli/src/bin/fss-file/frame_range.rs"]
 mod range;
+#[allow(dead_code)]
 #[path = "../../fss-cli/src/bin/fss-file/gray_matroska_stream/encoder.rs"]
 mod stream;
 #[path = "../../fss-reference/src/ingest/recorded_decode/window.rs"]

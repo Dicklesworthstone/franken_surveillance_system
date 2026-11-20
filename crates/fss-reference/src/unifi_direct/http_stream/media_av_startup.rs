@@ -8,17 +8,24 @@
 
 use std::time::Duration;
 
-use asupersync::{Cx, io::{AsyncRead, AsyncWrite}, time::timeout_at};
+use asupersync::{
+    Cx,
+    io::{AsyncRead, AsyncWrite},
+    time::timeout_at,
+};
 use fss_container::flv_avc::SourceKey;
 use fss_core::{ContentDigest, DigestAlgorithm};
 use fss_runtime::{effect::CommittedEffect, execution::TaskCx};
 
 use super::{media, media_av_archive, media_av_bootstrap};
 use crate::unifi_direct::{
-    AudioCodec, VideoCodec, av_owned_sink, av_unknown_worker_guard::BootstrapResources, av_worker,
-    camera_http, listener,
-    metered::MeteredClock, pipeline, recording, recording_storage, retirement_source,
-    source_coordinator::{ArchiveAdmission, Coordinator}, source_worker,
+    AudioCodec, VideoCodec, av_owned_sink,
+    av_unknown_worker_guard::BootstrapResources,
+    av_worker, camera_http, listener,
+    metered::MeteredClock,
+    pipeline, recording, recording_storage, retirement_source,
+    source_coordinator::{ArchiveAdmission, Coordinator},
+    source_worker,
 };
 
 /// A rejected attachment retains all original owners and inputs.
@@ -103,7 +110,8 @@ fn valid_policy(retention: ContentDigest, policy: av_owned_sink::BootstrapPolicy
         && policy.evidence_limits.validate().is_ok()
         && policy.max_separation_ms < (1 << 31)
         && policy.jitter_ms <= 100
-        && (1..=fss_packet::extended_flv::aac_clock::MAX_EPOCH_FRAMES).contains(&policy.max_epoch_frames)
+        && (1..=fss_packet::extended_flv::aac_clock::MAX_EPOCH_FRAMES)
+            .contains(&policy.max_epoch_frames)
         && (1..=policy.media_limits.max_samples).contains(&policy.max_audio_frames)
 }
 
@@ -123,7 +131,18 @@ pub async fn start<'a, 'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
     permit: CommittedEffect,
     authorize_observation: impl Fn(std::net::Ipv4Addr, u64) -> bool,
 ) -> Result<Driver, Box<StartRefusal<'a>>> {
-    Box::pin(start_with_response(task, cx, clock, http, listener, inputs, permit, authorize_observation, &mut |_, _| Ok(()))).await
+    Box::pin(start_with_response(
+        task,
+        cx,
+        clock,
+        http,
+        listener,
+        inputs,
+        permit,
+        authorize_observation,
+        &mut |_, _| Ok(()),
+    ))
+    .await
 }
 
 /// Start A/V capture with caller-owned custody of the untrusted response.
@@ -152,25 +171,44 @@ pub async fn start_with_response<'a, 'scope, 'task, IO: AsyncRead + AsyncWrite +
         || inputs.request.plan.start.video != VideoCodec::H264
         || inputs.request.plan.start.audio != AudioCodec::Aac
         || inputs.request.current.listener != listener.local_addr()
-        || !listener::valid_accept_config(inputs.request.chunk_bytes, inputs.request.max_bytes, inputs.request.wait)
-        || key.connection == 0 || key.generation == 0
+        || !listener::valid_accept_config(
+            inputs.request.chunk_bytes,
+            inputs.request.max_bytes,
+            inputs.request.wait,
+        )
+        || key.connection == 0
+        || key.generation == 0
         || !inputs.storage.coordinator.matches_binding(key, camera)
         || inputs.storage.coordinator.source_status() != source_worker::Status::Idle
         || !inputs.storage.coordinator.ready_for_start()
         || !(1..=100_000_000_000).contains(&av.work_limit)
-        || av.journal.pending().is_some() || av.journal.replay_pin().is_some()
+        || av.journal.pending().is_some()
+        || av.journal.replay_pin().is_some()
         || av.keeper.target() != av.journal.anchor()
-        || av.journal.confirmed().is_some_and(|pin| pin.retention != inputs.retention)
-        || av.rollover_custody.as_ref().is_some_and(|custody| !custody.startup_verified(&av.journal, &av.keeper))
+        || av
+            .journal
+            .confirmed()
+            .is_some_and(|pin| pin.retention != inputs.retention)
+        || av
+            .rollover_custody
+            .as_ref()
+            .is_some_and(|custody| !custody.startup_verified(&av.journal, &av.keeper))
         || av.deployment.publisher().is_poisoned()
     {
         Some(StartPreflight::Binding)
     } else if !valid_policy(inputs.retention, inputs.policy)
-        || !media_av_bootstrap::valid_supplied_audio(inputs.supplied_unverified_audio, inputs.policy)
-        || !inputs.storage.coordinator.matches_retention(inputs.retention)
+        || !media_av_bootstrap::valid_supplied_audio(
+            inputs.supplied_unverified_audio,
+            inputs.policy,
+        )
+        || !inputs
+            .storage
+            .coordinator
+            .matches_retention(inputs.retention)
         || !(1024..=64 * 1024 * 1024).contains(&av.limits.maximum_spool_object_bytes)
         || !(1..=262_144).contains(&av.limits.maximum_ledger_deltas)
-        || av.deployment.publisher().limits().spool.max_object_bytes > av.limits.maximum_spool_object_bytes
+        || av.deployment.publisher().limits().spool.max_object_bytes
+            > av.limits.maximum_spool_object_bytes
     {
         Some(StartPreflight::Policy)
     } else if cx.blocking_pool_handle().is_none() {
@@ -179,14 +217,49 @@ pub async fn start_with_response<'a, 'scope, 'task, IO: AsyncRead + AsyncWrite +
         None
     };
     if let Some(reason) = reason {
-        return Err(Box::new(StartRefusal::Preflight { reason, inputs, permit }));
+        return Err(Box::new(StartRefusal::Preflight {
+            reason,
+            inputs,
+            permit,
+        }));
     }
-    let Start { request, storage, retention, policy, supplied_unverified_audio } = *inputs;
-    let connected = match Box::pin(media::start_with_response(http, listener, request, permit, authorize_observation, record_response)).await {
+    let Start {
+        request,
+        storage,
+        retention,
+        policy,
+        supplied_unverified_audio,
+    } = *inputs;
+    let connected = match Box::pin(media::start_with_response(
+        http,
+        listener,
+        request,
+        permit,
+        authorize_observation,
+        record_response,
+    ))
+    .await
+    {
         Ok(connected) => connected,
-        Err(refusal) => return Err(Box::new(StartRefusal::Media { refusal, storage, retention, policy, supplied_unverified_audio })),
+        Err(refusal) => {
+            return Err(Box::new(StartRefusal::Media {
+                refusal,
+                storage,
+                retention,
+                policy,
+                supplied_unverified_audio,
+            }));
+        }
     };
-    Driver::attach_with_unverified_audio(connected, storage, retention, policy, camera, supplied_unverified_audio).map_err(|refusal| Box::new(StartRefusal::Attach(refusal)))
+    Driver::attach_with_unverified_audio(
+        connected,
+        storage,
+        retention,
+        policy,
+        camera,
+        supplied_unverified_audio,
+    )
+    .map_err(|refusal| Box::new(StartRefusal::Attach(refusal)))
 }
 
 /// A bootstrap decision or source archival result.
@@ -254,13 +327,21 @@ impl Step {
     /// permits attempting retirement after the source worker has drained.
     /// Collector inputs remain separately owned and are not thereby archived.
     pub fn has_retirable_tail(&self) -> bool {
-        matches!(self, Self::Eof | Self::LimitReached
-            | Self::MediaError(pipeline::Error::Ingress(crate::unifi_direct::ingress::Error::Source(
-                fss_runtime::tcp_ingress::IngressError::BudgetExhausted
-            )))
-            | Self::MediaError(pipeline::Error::Ingress(crate::unifi_direct::ingress::Error::Framing(
-                fss_packet::extended_flv::stream::Error::TrailerPolicyMismatch
-            ))))
+        matches!(
+            self,
+            Self::Eof
+                | Self::LimitReached
+                | Self::MediaError(pipeline::Error::Ingress(
+                    crate::unifi_direct::ingress::Error::Source(
+                        fss_runtime::tcp_ingress::IngressError::BudgetExhausted
+                    )
+                ))
+                | Self::MediaError(pipeline::Error::Ingress(
+                    crate::unifi_direct::ingress::Error::Framing(
+                        fss_packet::extended_flv::stream::Error::TrailerPolicyMismatch
+                    )
+                ))
+        )
     }
 }
 
@@ -353,33 +434,63 @@ impl Parts {
     /// No I/O occurs. The collector retains its originals; a prepared plan
     /// is not a publication receipt and does not assert gap-free capture.
     pub fn prepare_tail_retirement(self) -> Result<Retired, RetirementRefusal> {
-        if !self.halted || self.source_armed || self.source.status() != source_worker::Status::Idle
+        if !self.halted
+            || self.source_armed
+            || self.source.status() != source_worker::Status::Idle
             || self.bootstrap.source_key() != self.key
             || self.bootstrap.camera_claim() != self.camera_claim
         {
             return Err(RetirementRefusal::NotDrained(self));
         }
-        let Parts { bootstrap, source, av, key, camera_claim, .. } = self;
+        let Parts {
+            bootstrap,
+            source,
+            av,
+            key,
+            camera_claim,
+            ..
+        } = self;
         let bootstrap = bootstrap.into_parts();
         let detached = bootstrap.connected.into_parts();
         let assets = RetirementAssets {
-            camera_claim, permit: detached.permit, readback: detached.readback,
-            comparison: detached.comparison, collector: bootstrap.collector,
-            av, fenced: bootstrap.fenced,
+            camera_claim,
+            permit: detached.permit,
+            readback: detached.readback,
+            comparison: detached.comparison,
+            collector: bootstrap.collector,
+            av,
+            fenced: bootstrap.fenced,
         };
         let mut plan = match retirement_source::Plan::new(detached.pipeline.retire()) {
             Ok(plan) => plan,
-            Err(refusal) => return Err(RetirementRefusal::TailPlan { assets, source, refusal }),
+            Err(refusal) => {
+                return Err(RetirementRefusal::TailPlan {
+                    assets,
+                    source,
+                    refusal,
+                });
+            }
         };
         let collector_copies = match plan.include_collector_copies(&assets.collector) {
             Ok(count) => count,
-            Err(reason) => return Err(RetirementRefusal::CollectorPlan { assets, source, plan, reason }),
+            Err(reason) => {
+                return Err(RetirementRefusal::CollectorPlan {
+                    assets,
+                    source,
+                    plan,
+                    reason,
+                });
+            }
         };
         let tail = match retirement_source::Driver::begin(source, plan, key, camera_claim) {
             Ok(tail) => tail,
             Err(parts) => return Err(RetirementRefusal::TailDriver { assets, parts }),
         };
-        Ok(Retired { assets, collector_copies, tail })
+        Ok(Retired {
+            assets,
+            collector_copies,
+            tail,
+        })
     }
 }
 
@@ -441,15 +552,20 @@ pub enum TransitionRefusal {
 
 impl Driver {
     /// Whether a bootstrap source archive attempt still requires joining.
-    pub fn is_source_running(&self) -> bool { self.parts.source.is_running() }
+    pub fn is_source_running(&self) -> bool {
+        self.parts.source.is_running()
+    }
 
     /// Install a bounded stream-name probe before bootstrap or source work.
     /// A match is an untrusted source claim, not camera authentication.
     pub fn begin_name_probe(
-        &mut self, probe: fss_packet::extended_flv::stream::NameProbeOwner,
+        &mut self,
+        probe: fss_packet::extended_flv::stream::NameProbeOwner,
     ) -> Result<(), fss_packet::extended_flv::stream::NameProbeOwner> {
-        if self.parts.halted || self.parts.source_armed
-            || self.parts.source.status() != source_worker::Status::Idle {
+        if self.parts.halted
+            || self.parts.source_armed
+            || self.parts.source.status() != source_worker::Status::Idle
+        {
             return Err(probe);
         }
         self.parts.bootstrap.begin_name_probe(probe)
@@ -457,9 +573,14 @@ impl Driver {
 
     /// Advance the installed probe without consuming bootstrap source records.
     pub async fn probe_name_step(
-        &mut self, task: &TaskCx<'_>, cx: &Cx, now: fss_core::TimestampNs,
+        &mut self,
+        task: &TaskCx<'_>,
+        cx: &Cx,
+        now: fss_core::TimestampNs,
     ) -> Result<crate::unifi_direct::ingress::NameProbeStep, pipeline::NameProbeError> {
-        if self.parts.halted { return Err(pipeline::NameProbeError::NotFresh); }
+        if self.parts.halted {
+            return Err(pipeline::NameProbeError::NotFresh);
+        }
         self.parts.bootstrap.probe_name_step(task, cx, now).await
     }
 
@@ -476,7 +597,14 @@ impl Driver {
         policy: av_owned_sink::BootstrapPolicy,
         camera_claim: ContentDigest,
     ) -> Result<Self, Box<AttachRefusal>> {
-        Self::attach_with_unverified_audio(connected, storage, retention, policy, camera_claim, None)
+        Self::attach_with_unverified_audio(
+            connected,
+            storage,
+            retention,
+            policy,
+            camera_claim,
+            None,
+        )
     }
 
     /// Attach an explicit, unverified AAC configuration to this connection.
@@ -490,7 +618,8 @@ impl Driver {
         supplied_unverified_audio: Option<[u8; 2]>,
     ) -> Result<Self, Box<AttachRefusal>> {
         let key = connected.pipeline.source_key();
-        if key.connection == 0 || key.generation == 0
+        if key.connection == 0
+            || key.generation == 0
             || connected.camera_claim() != camera_claim
             || !storage.coordinator.matches_binding(key, camera_claim)
             || storage.coordinator.source_status() != source_worker::Status::Idle
@@ -500,26 +629,57 @@ impl Driver {
             || !media_av_bootstrap::valid_supplied_audio(supplied_unverified_audio, policy)
             || !(1..=100_000_000_000).contains(&storage.av.work_limit)
         {
-            return Err(Box::new(AttachRefusal { connected, storage, retention, policy, camera_claim, supplied_unverified_audio }));
+            return Err(Box::new(AttachRefusal {
+                connected,
+                storage,
+                retention,
+                policy,
+                camera_claim,
+                supplied_unverified_audio,
+            }));
         }
-        let bootstrap = match media_av_bootstrap::Driver::attach_with_unverified_audio(connected, retention, policy, supplied_unverified_audio) {
+        let bootstrap = match media_av_bootstrap::Driver::attach_with_unverified_audio(
+            connected,
+            retention,
+            policy,
+            supplied_unverified_audio,
+        ) {
             Ok(bootstrap) => bootstrap,
-            Err(refusal) => return Err(Box::new(AttachRefusal {
-                connected: refusal.connected, storage, retention, policy, camera_claim, supplied_unverified_audio: refusal.supplied_unverified_audio,
-            })),
+            Err(refusal) => {
+                return Err(Box::new(AttachRefusal {
+                    connected: refusal.connected,
+                    storage,
+                    retention,
+                    policy,
+                    camera_claim,
+                    supplied_unverified_audio: refusal.supplied_unverified_audio,
+                }));
+            }
         };
-        Ok(Self { parts: Parts {
-            bootstrap, source: storage.coordinator.into_worker(), av: storage.av,
-            key, camera_claim, source_armed: false, halted: false,
-        } })
+        Ok(Self {
+            parts: Parts {
+                bootstrap,
+                source: storage.coordinator.into_worker(),
+                av: storage.av,
+                key,
+                camera_claim,
+                source_armed: false,
+                halted: false,
+            },
+        })
     }
 
     /// Authorize one more attempt for an already retained source.
     pub fn authorize_source_retry(&mut self) -> bool {
-        if !self.parts.halted && !self.parts.source_armed && self.parts.source.status() == source_worker::Status::Pending {
+        if !self.parts.halted
+            && !self.parts.source_armed
+            && self.parts.source.status() == source_worker::Status::Pending
+        {
             self.parts.source_armed = true;
             true
-        } else { false }
+        } else {
+            false
+        }
     }
 
     /// Stop media admission and request cancellation of the source attempt.
@@ -536,35 +696,68 @@ impl Driver {
 
     /// Recover every owner after source work has drained.
     pub fn into_parts(self) -> Result<Parts, Self> {
-        if self.parts.source.is_running() { Err(self) } else { Ok(self.parts) }
+        if self.parts.source.is_running() {
+            Err(self)
+        } else {
+            Ok(self.parts)
+        }
     }
 
     /// Construct the post-bootstrap driver after all accepted prefix records drain.
     pub fn finish(self) -> Result<media_av_archive::Driver, Box<TransitionRefusal>> {
-        if self.parts.halted || self.parts.source.status() != source_worker::Status::Idle
+        if self.parts.halted
+            || self.parts.source.status() != source_worker::Status::Idle
             || !self.parts.bootstrap.is_ready()
         {
             return Err(Box::new(TransitionRefusal::NotReady(self)));
         }
-        let Parts { bootstrap, source, av, key, camera_claim, .. } = self.parts;
+        let Parts {
+            bootstrap,
+            source,
+            av,
+            key,
+            camera_claim,
+            ..
+        } = self.parts;
         let handoff = match bootstrap.bootstrap() {
             Ok(handoff) => handoff,
-            Err(refusal) => return Err(Box::new(TransitionRefusal::Bootstrap { refusal, source, av, key, camera_claim })),
+            Err(refusal) => {
+                return Err(Box::new(TransitionRefusal::Bootstrap {
+                    refusal,
+                    source,
+                    av,
+                    key,
+                    camera_claim,
+                }));
+            }
         };
         let handoff = match handoff.into_archive(*av) {
             Ok(handoff) => handoff,
-            Err(refusal) => return Err(Box::new(TransitionRefusal::Archive { refusal, source, key, camera_claim })),
+            Err(refusal) => {
+                return Err(Box::new(TransitionRefusal::Archive {
+                    refusal,
+                    source,
+                    key,
+                    camera_claim,
+                }));
+            }
         };
-        let mut driver = media_av_archive::Driver::attach(handoff, Coordinator::new(source, key, camera_claim))
-            .map_err(|refusal| Box::new(TransitionRefusal::Attach(refusal)))?;
-        if !driver.seal_prefix() { return Err(Box::new(TransitionRefusal::Seal(driver))); }
+        let mut driver =
+            media_av_archive::Driver::attach(handoff, Coordinator::new(source, key, camera_claim))
+                .map_err(|refusal| Box::new(TransitionRefusal::Attach(refusal)))?;
+        if !driver.seal_prefix() {
+            return Err(Box::new(TransitionRefusal::Seal(driver)));
+        }
         Ok(driver)
     }
 
     /// Finish the same transition in bounded, separately stacked phases.
     /// Every refusal has the same owner-custody semantics as `finish`.
-    pub fn finish_boxed(self: Box<Self>) -> Result<Box<media_av_archive::Driver>, Box<TransitionRefusal>> {
-        if self.parts.halted || self.parts.source.status() != source_worker::Status::Idle
+    pub fn finish_boxed(
+        self: Box<Self>,
+    ) -> Result<Box<media_av_archive::Driver>, Box<TransitionRefusal>> {
+        if self.parts.halted
+            || self.parts.source.status() != source_worker::Status::Idle
             || !self.parts.bootstrap.is_ready()
         {
             return Err(Box::new(TransitionRefusal::NotReady(*self)));
@@ -575,29 +768,78 @@ impl Driver {
     }
 
     #[inline(never)]
-    fn boxed_bootstrap(driver: Box<Self>) -> Result<Box<BoxedBootstrapHandoff>, Box<TransitionRefusal>> {
-        let Parts { bootstrap, source, av, key, camera_claim, .. } = driver.parts;
+    fn boxed_bootstrap(
+        driver: Box<Self>,
+    ) -> Result<Box<BoxedBootstrapHandoff>, Box<TransitionRefusal>> {
+        let Parts {
+            bootstrap,
+            source,
+            av,
+            key,
+            camera_claim,
+            ..
+        } = driver.parts;
         match bootstrap.bootstrap() {
-            Ok(handoff) => Ok(Box::new(BoxedBootstrapHandoff { handoff, source, av, key, camera_claim })),
-            Err(refusal) => Err(Box::new(TransitionRefusal::Bootstrap { refusal, source, av, key, camera_claim })),
+            Ok(handoff) => Ok(Box::new(BoxedBootstrapHandoff {
+                handoff,
+                source,
+                av,
+                key,
+                camera_claim,
+            })),
+            Err(refusal) => Err(Box::new(TransitionRefusal::Bootstrap {
+                refusal,
+                source,
+                av,
+                key,
+                camera_claim,
+            })),
         }
     }
 
     #[inline(never)]
-    fn boxed_archive(stage: Box<BoxedBootstrapHandoff>) -> Result<Box<BoxedArchiveHandoff>, Box<TransitionRefusal>> {
-        let BoxedBootstrapHandoff { handoff, source, av, key, camera_claim } = *stage;
+    fn boxed_archive(
+        stage: Box<BoxedBootstrapHandoff>,
+    ) -> Result<Box<BoxedArchiveHandoff>, Box<TransitionRefusal>> {
+        let BoxedBootstrapHandoff {
+            handoff,
+            source,
+            av,
+            key,
+            camera_claim,
+        } = *stage;
         match handoff.into_archive(*av) {
-            Ok(handoff) => Ok(Box::new(BoxedArchiveHandoff { handoff, source, key, camera_claim })),
-            Err(refusal) => Err(Box::new(TransitionRefusal::Archive { refusal, source, key, camera_claim })),
+            Ok(handoff) => Ok(Box::new(BoxedArchiveHandoff {
+                handoff,
+                source,
+                key,
+                camera_claim,
+            })),
+            Err(refusal) => Err(Box::new(TransitionRefusal::Archive {
+                refusal,
+                source,
+                key,
+                camera_claim,
+            })),
         }
     }
 
     #[inline(never)]
-    fn boxed_attach(stage: Box<BoxedArchiveHandoff>) -> Result<Box<media_av_archive::Driver>, Box<TransitionRefusal>> {
-        let BoxedArchiveHandoff { handoff, source, key, camera_claim } = *stage;
-        let mut driver = media_av_archive::Driver::attach(handoff, Coordinator::new(source, key, camera_claim))
-            .map_err(|refusal| Box::new(TransitionRefusal::Attach(refusal)))?;
-        if !driver.seal_prefix() { return Err(Box::new(TransitionRefusal::Seal(driver))); }
+    fn boxed_attach(
+        stage: Box<BoxedArchiveHandoff>,
+    ) -> Result<Box<media_av_archive::Driver>, Box<TransitionRefusal>> {
+        let BoxedArchiveHandoff {
+            handoff,
+            source,
+            key,
+            camera_claim,
+        } = *stage;
+        let mut driver =
+            media_av_archive::Driver::attach(handoff, Coordinator::new(source, key, camera_claim))
+                .map_err(|refusal| Box::new(TransitionRefusal::Attach(refusal)))?;
+        if !driver.seal_prefix() {
+            return Err(Box::new(TransitionRefusal::Seal(driver)));
+        }
         Ok(Box::new(driver))
     }
 
@@ -610,52 +852,111 @@ impl Driver {
         wait: Duration,
         source_archive: ArchiveAdmission<'_>,
     ) -> Step {
-        if self.parts.halted { return Step::Halted; }
-        if wait.is_zero() || wait > Duration::from_secs(30) || !clock.matches(task, cx)
-            || !self.parts.bootstrap.is_bound_to_task(task) {
+        if self.parts.halted {
+            return Step::Halted;
+        }
+        if wait.is_zero()
+            || wait > Duration::from_secs(30)
+            || !clock.matches(task, cx)
+            || !self.parts.bootstrap.is_bound_to_task(task)
+        {
             return Step::Configuration;
         }
-        if cx.checkpoint().is_err() { self.abort(); return Step::Halted; }
+        if cx.checkpoint().is_err() {
+            self.abort();
+            return Step::Halted;
+        }
         match self.parts.source.status() {
-            source_worker::Status::Running => return match timeout_at(cx.now() + wait, self.parts.source.join()).await {
-                Ok(Some(done)) => Step::SourceCompleted(done), Ok(None) => Step::SourceUnavailable, Err(_) => Step::SourceRunning,
-            },
+            source_worker::Status::Running => {
+                return match timeout_at(cx.now() + wait, self.parts.source.join()).await {
+                    Ok(Some(done)) => Step::SourceCompleted(done),
+                    Ok(None) => Step::SourceUnavailable,
+                    Err(_) => Step::SourceRunning,
+                };
+            }
             source_worker::Status::Pending if self.parts.source_armed => {
                 self.parts.source_armed = false;
-                return match self.parts.source.start(task, cx, clock, source_archive.resource, source_archive.cost) {
-                    Ok(()) => Step::SourceStarted, Err(error) => Step::StartRefused(error),
+                return match self.parts.source.start(
+                    task,
+                    cx,
+                    clock,
+                    source_archive.resource,
+                    source_archive.cost,
+                ) {
+                    Ok(()) => Step::SourceStarted,
+                    Err(error) => Step::StartRefused(error),
                 };
             }
             source_worker::Status::Pending => return Step::SourceRetryRequired,
-            source_worker::Status::Fenced | source_worker::Status::Unavailable => return Step::SourceUnavailable,
+            source_worker::Status::Fenced | source_worker::Status::Unavailable => {
+                return Step::SourceUnavailable;
+            }
             source_worker::Status::Idle => (),
         }
         match self.parts.bootstrap.step(task, cx, clock, wait).await {
             media_av_bootstrap::Step::Retained => Step::Retained,
             media_av_bootstrap::Step::Forward { push, audio } => {
-                if matches!(&push, recording::Push::Source { disposition: recording::SourceDisposition::Configuration, .. })
-                    || matches!(audio.as_ref(), Some(pipeline::AudioEvent::Fenced(_)) | Some(pipeline::AudioEvent::Observed(fss_packet::extended_flv::aac_track::Observation::Configuration { .. }))) {
+                if matches!(
+                    &push,
+                    recording::Push::Source {
+                        disposition: recording::SourceDisposition::Configuration,
+                        ..
+                    }
+                ) || matches!(
+                    audio.as_ref(),
+                    Some(pipeline::AudioEvent::Fenced(_))
+                        | Some(pipeline::AudioEvent::Observed(
+                            fss_packet::extended_flv::aac_track::Observation::Configuration { .. }
+                        ))
+                ) {
                     self.parts.halted = true;
                     return Step::Forward { push, audio };
                 }
                 match push {
-                    recording::Push::Source { record, disposition } => match self.parts.source.offer(source_worker::Input::Original {
-                        record, key: self.parts.key, disposition, camera_claim: self.parts.camera_claim,
+                    recording::Push::Source {
+                        record,
+                        disposition,
+                    } => match self.parts.source.offer(source_worker::Input::Original {
+                        record,
+                        key: self.parts.key,
+                        disposition,
+                        camera_claim: self.parts.camera_claim,
                     }) {
-                        Ok(()) => { self.parts.source_armed = true; Step::SourceOffered { disposition, audio } },
-                        Err(refusal) => { self.parts.halted = true; Step::SourceRefused { refusal, audio } },
+                        Ok(()) => {
+                            self.parts.source_armed = true;
+                            Step::SourceOffered { disposition, audio }
+                        }
+                        Err(refusal) => {
+                            self.parts.halted = true;
+                            Step::SourceRefused { refusal, audio }
+                        }
                     },
                     recording::Push::Buffered => Step::Buffered(audio),
-                    push => { self.parts.halted = true; Step::Forward { push, audio } },
+                    push => {
+                        self.parts.halted = true;
+                        Step::Forward { push, audio }
+                    }
                 }
             }
             media_av_bootstrap::Step::Progress => Step::Progress,
             media_av_bootstrap::Step::Idle => Step::Idle,
             media_av_bootstrap::Step::Ready => Step::Ready,
-            media_av_bootstrap::Step::Eof => { self.parts.halted = true; Step::Eof },
-            media_av_bootstrap::Step::LimitReached => { self.parts.halted = true; Step::LimitReached },
-            media_av_bootstrap::Step::MediaError(error) => { self.parts.halted = true; Step::MediaError(error) },
-            media_av_bootstrap::Step::Fenced => { self.parts.halted = true; Step::Fenced },
+            media_av_bootstrap::Step::Eof => {
+                self.parts.halted = true;
+                Step::Eof
+            }
+            media_av_bootstrap::Step::LimitReached => {
+                self.parts.halted = true;
+                Step::LimitReached
+            }
+            media_av_bootstrap::Step::MediaError(error) => {
+                self.parts.halted = true;
+                Step::MediaError(error)
+            }
+            media_av_bootstrap::Step::Fenced => {
+                self.parts.halted = true;
+                Step::Fenced
+            }
             media_av_bootstrap::Step::Configuration => Step::Configuration,
         }
     }

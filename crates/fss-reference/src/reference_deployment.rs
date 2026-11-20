@@ -187,7 +187,8 @@ fn reserved_family_entry_point(family: &str) -> Option<&'static str> {
         FAMILY_CALIBRATION_INVALIDATION => Some("ingest::calibration_invalidation::invalidate"),
         FAMILY_EVENT_REVISION | FAMILY_SENSOR_TAMPER_STATUS => Some("publish_event"),
         crate::evidence_export::FAMILY_EVIDENCE_EXPORT => Some("evidence_export::commit_export"),
-        crate::review_media::FAMILY_REVIEW_MEDIA | crate::review_media::FAMILY_REVIEW_REVOCATION => {
+        crate::review_media::FAMILY_REVIEW_MEDIA
+        | crate::review_media::FAMILY_REVIEW_REVOCATION => {
             Some("review_media::commit_review_media/revoke_review_media")
         }
         crate::review_media::delivery::FAMILY_REVIEW_DELIVERY_STARTED

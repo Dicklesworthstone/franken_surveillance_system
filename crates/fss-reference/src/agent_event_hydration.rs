@@ -14,11 +14,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use fss_core::{
-    BudgetVector, Completeness, ContentDigest, ContractError, EventId, Generation, H0Identity,
-    H1ContentSpec, H1SemanticSynopsis, HandleAvailability, HydrationArtifact, HydrationError,
-    HydrationLevel, KnowledgeState, LaboratoryAccess, OmissionReason, ProvenanceClass,
-    SemanticHandle, SemanticHandleSpec, SynopsisClassification, SynopsisQuality, TimestampNs,
-    WorldFact, WorldFactKind, reference_contract_basis,
+    BudgetVector, CanonicalEncoder, Completeness, ContentDigest, ContractError,
+    DecisionArtifactKind, EventId, Generation, GraphNeighborhoodArtifact, H0Identity,
+    H1ContentSpec, H1SemanticSynopsis, H2DecisionArtifact, H2DecisionArtifactParams,
+    H2PrivacyClass, HandleAvailability, HydrationArtifact, HydrationError, HydrationLevel,
+    KnowledgeState, LaboratoryAccess, OmissionReason, ProvenanceClass, RedactionTransform,
+    RetainedProvenance, SemanticHandle, SemanticHandleSpec, SynopsisClassification,
+    SynopsisQuality, TimestampNs, WorldFact, WorldFactKind, reference_contract_basis,
 };
 
 use crate::agent_follow::snapshot_anchor_token;
@@ -39,10 +41,14 @@ pub const MAX_EVENT_HYDRATION_READ_OBJECTS: usize = 65_536;
 pub const EVENT_HYDRATION_H0_TOKENS: u64 = 5_000;
 /// Fixed H1 disclosure price, matching the existing forensic-view token ceiling.
 pub const EVENT_HYDRATION_H1_TOKENS: u64 = 16_000;
+/// Fixed H2 decision-artifact disclosure price for redacted graph neighborhoods.
+pub const EVENT_HYDRATION_H2_TOKENS: u64 = 32_000;
 /// Maximum complete canonical H0 identity bytes.
 pub const MAX_EVENT_HYDRATION_H0_BYTES: usize = 8 * 1024;
 /// Maximum complete canonical H1 metadata synopsis bytes; no truncation is permitted.
 pub const MAX_EVENT_HYDRATION_H1_BYTES: usize = 64 * 1024;
+/// Maximum complete canonical H2 graph-neighborhood payload bytes; no truncation is permitted.
+pub const MAX_EVENT_HYDRATION_H2_BYTES: usize = 64 * 1024;
 
 /// Pure metadata compilation failed. Display messages omit event IDs and retained text.
 #[derive(Debug)]
@@ -514,4 +520,123 @@ impl MetadataFacts<'_> {
         }
         Ok(())
     }
+}
+
+/// Builds and round-trip verifies an authorized, privacy-redacted H2 decision artifact
+/// (`DecisionArtifactKind::GraphNeighborhood`) for one exact committed event revision.
+///
+/// The neighborhood payload carries only the redacted structural evidence-graph neighborhood
+/// (node/edge counts, failure-domain labels, relation counts, and subgraph digest) — never raw
+/// pixels, raw sensor media, or unredacted operator notes. Every proof root is bound to the
+/// deployment's retained event publication root and verified through
+/// [`H2DecisionArtifact::decode_verified`].
+///
+/// # Errors
+///
+/// Returns [`EventHydrationBuildError`] if basis/custody/deletion/expiration/grant validation fails
+/// or the serialized neighborhood exceeds [`MAX_EVENT_HYDRATION_H2_BYTES`].
+pub fn build_event_h2_graph_neighborhood(
+    snapshot: &DeploymentSnapshot,
+    orientation: &DeploymentOrientation,
+    event_id: &EventId,
+    expected_revision: ContentDigest,
+    authorization_grant_id: &str,
+    retention_until: TimestampNs,
+) -> Result<H2DecisionArtifact, EventHydrationBuildError> {
+    if authorization_grant_id.trim().is_empty() {
+        return Err(EventHydrationBuildError::Contract(
+            ContractError::InvalidIdentifier,
+        ));
+    }
+    let catalog = build_event_hydration_catalog(
+        snapshot,
+        orientation,
+        event_id,
+        expected_revision,
+        retention_until,
+    )?;
+    let retained = &catalog.explanation.event;
+    let projection = crate::evidence_claim_graph::retained_evidence_projection(
+        snapshot.events.iter(),
+        Default::default(),
+    )
+    .map_err(|_| EventHydrationBuildError::Limit)?;
+    let graph = projection.graph();
+    let node_count =
+        u32::try_from(graph.node_count().max(1)).map_err(|_| EventHydrationBuildError::Limit)?;
+    let edge_count =
+        u32::try_from(graph.arc_count()).map_err(|_| EventHydrationBuildError::Limit)?;
+    let subgraph_digest = graph.digest();
+
+    // Canonical redacted neighborhood payload: structural counts and domain names only.
+    let mut payload_encoder = CanonicalEncoder::new();
+    payload_encoder.text("fss.h2_decision_artifact.v1");
+    payload_encoder.text(event_id.as_str());
+    payload_encoder.digest(expected_revision);
+    payload_encoder.digest(subgraph_digest);
+    payload_encoder.u32(node_count);
+    payload_encoder.u32(edge_count);
+    let domains = retained.failure_domains();
+    payload_encoder.u64(domains.len() as u64);
+    for domain in &domains {
+        payload_encoder.text(domain);
+    }
+    let payload = payload_encoder.finish();
+    if payload.len() > MAX_EVENT_HYDRATION_H2_BYTES {
+        return Err(EventHydrationBuildError::Limit);
+    }
+
+    let masked_attributes: BTreeSet<String> = [
+        "raw_media_bytes".to_owned(),
+        "operator_notes".to_owned(),
+        "unredacted_frame_pixels".to_owned(),
+    ]
+    .into();
+    let neighborhood = GraphNeighborhoodArtifact::new(
+        event_id.as_str(),
+        2,
+        node_count,
+        edge_count,
+        subgraph_digest,
+        masked_attributes,
+    )?;
+
+    let payload_digest = ContentDigest::sha256(&payload);
+    let retained_provenance = RetainedProvenance::new([retained.event_root])?;
+    let mut proof_roots = BTreeSet::new();
+    proof_roots.insert(payload_digest);
+    proof_roots.insert(expected_revision);
+    proof_roots.insert(retained.event_root);
+
+    let estimated_cost = BudgetVector::builder()
+        .tokens(EVENT_HYDRATION_H2_TOKENS)
+        .bytes(MAX_EVENT_HYDRATION_H2_BYTES as u64)
+        .storage_operations(MAX_EVENT_HYDRATION_READ_OBJECTS as u64)
+        .build()
+        .map_err(|error| EventHydrationBuildError::Contract(error.into()))?;
+
+    let artifact = H2DecisionArtifact::new(H2DecisionArtifactParams {
+        handle_id: catalog.descriptor.handle_id.clone(),
+        subject_id: catalog.event_handle.clone(),
+        subject_digest: expected_revision,
+        artifact_kind: DecisionArtifactKind::GraphNeighborhood(neighborhood),
+        payload,
+        proof_roots,
+        retained_provenance: retained_provenance.clone(),
+        completeness: Completeness::Complete,
+        privacy_class: H2PrivacyClass::PrivateProperty.as_str().to_owned(),
+        applied_redaction_transform: RedactionTransform::GraphNeighborhoodRedact
+            .as_str()
+            .to_owned(),
+        authorization_grant_id: authorization_grant_id.to_owned(),
+        anchor: snapshot.anchor.clone(),
+        contract_basis: reference_contract_basis(),
+        estimated_cost,
+        published_at: snapshot.latest_evidence_time,
+        retention_until,
+    })?;
+    // Fail-closed round-trip verification against retained provenance before returning.
+    let encoded = artifact.to_canonical_bytes()?;
+    let verified = H2DecisionArtifact::decode_verified(&encoded, &retained_provenance)?;
+    Ok(verified)
 }

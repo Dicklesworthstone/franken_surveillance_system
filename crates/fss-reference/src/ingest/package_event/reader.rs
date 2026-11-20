@@ -239,7 +239,11 @@ fn verify_provenance(
 ) -> Result<()> {
     checkpoint(cx, "package_event:read_provenance")?;
     deployment
-        .check_publication(&proof.slot, proof.manifest.root(), proof.manifest.children().len())
+        .check_publication(
+            &proof.slot,
+            proof.manifest.root(),
+            proof.manifest.children().len(),
+        )
         .map_err(RecordedDecodeError::from)?;
     if read_verified(deployment, proof.manifest.root())? != proof.manifest.canonical_bytes() {
         return Err(PackageEventError::Mismatch);

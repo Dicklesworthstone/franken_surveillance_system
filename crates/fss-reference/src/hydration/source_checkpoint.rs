@@ -53,13 +53,18 @@ pub(super) fn validate_successor(
     next: &SourceBindingPins,
     prior: &SourceBindingPins,
 ) -> Result<(), HydrationError> {
-    if prior.iter().any(|(descriptor, pin)| next.get(descriptor) != Some(pin)) {
+    if prior
+        .iter()
+        .any(|(descriptor, pin)| next.get(descriptor) != Some(pin))
+    {
         return Err(ContractError::DigestMismatch.into());
     }
     Ok(())
 }
 
-pub(super) fn decode(decoder: &mut CanonicalDecoder<'_>) -> Result<SourceBindingPins, HydrationError> {
+pub(super) fn decode(
+    decoder: &mut CanonicalDecoder<'_>,
+) -> Result<SourceBindingPins, HydrationError> {
     let count = usize::try_from(decoder.u64()?).map_err(|_| HydrationError::CapacityExceeded)?;
     // Two algorithm-qualified fixed-width digests per entry. Check before map allocation.
     if count == 0 || count > MAX_SOURCE_BINDINGS || count > decoder.remaining() / 66 {
@@ -123,7 +128,10 @@ impl ReferenceHydrationCatalog {
         }
         validate_successor(pins, &self.source_requirements)?;
         for ((_, descriptor), binding) in &self.source_bindings {
-            if pins.get(descriptor).is_some_and(|pin| *pin != binding.custody_binding_digest()) {
+            if pins
+                .get(descriptor)
+                .is_some_and(|pin| *pin != binding.custody_binding_digest())
+            {
                 return Err(ContractError::DigestMismatch.into());
             }
         }
@@ -147,12 +155,22 @@ impl ReferenceHydrationCatalog {
             if *expected != profile_digest(root, subject, authority) {
                 return Err(ContractError::DigestMismatch.into());
             }
-        } else if !self.source_bindings.keys().any(|(_, digest)| *digest == descriptor) {
+        } else if !self
+            .source_bindings
+            .keys()
+            .any(|(_, digest)| *digest == descriptor)
+        {
             // Missing historical bindings retain their slots. A new binding may not bypass the
             // cumulative recovery-metadata ceiling by waiting until the next disclosure commit.
-            let unpinned = self.source_bindings.keys()
-                .filter(|(_, digest)| !self.source_requirements.contains_key(digest)).count();
-            let used = self.source_requirements.len().checked_add(unpinned)
+            let unpinned = self
+                .source_bindings
+                .keys()
+                .filter(|(_, digest)| !self.source_requirements.contains_key(digest))
+                .count();
+            let used = self
+                .source_requirements
+                .len()
+                .checked_add(unpinned)
                 .ok_or(HydrationError::CapacityExceeded)?;
             if used >= self.limits.max_descriptors.min(MAX_SOURCE_BINDINGS) {
                 return Err(HydrationError::CapacityExceeded);

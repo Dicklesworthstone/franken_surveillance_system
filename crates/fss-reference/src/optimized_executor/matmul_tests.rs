@@ -18,12 +18,7 @@ const G: Generation = Generation(1);
 
 fn graph(a: &[usize], b: &[usize], alias: bool) -> Result<ModelIrGraph> {
     let a = TensorPort::new("a", DType::F32, Shape::new(a)?, G)?;
-    let b = TensorPort::new(
-        if alias { "a" } else { "b" },
-        DType::F32,
-        Shape::new(b)?,
-        G,
-    )?;
+    let b = TensorPort::new(if alias { "a" } else { "b" }, DType::F32, Shape::new(b)?, G)?;
     let outputs = infer_operator_outputs(
         "matmul",
         OpCode::MatMul,
@@ -131,7 +126,10 @@ fn differential(a: &[usize], b: &[usize], special: bool, constant: usize) -> Res
     assert_eq!(oracle.allocated_bytes(), actual.allocated_bytes());
     assert_eq!(oracle.nodes_executed(), actual.nodes_executed());
     same(
-        &oracle.get_output("y").ok_or("oracle output")?.to_vec::<f32>()?,
+        &oracle
+            .get_output("y")
+            .ok_or("oracle output")?
+            .to_vec::<f32>()?,
         &actual
             .get_output("y")
             .ok_or("optimized output")?
@@ -154,12 +152,7 @@ fn tiled_matmul_matches_scalar_for_uneven_tiles_and_reduction_checkpoints() -> R
     for m in [1, 3, 4, 5, 9] {
         for n in [1, 7, 8, 9, 17] {
             for k in [1, 7, 256, 257] {
-                differential(
-                    &[m, k],
-                    &[k, n],
-                    (m + n + k) % 2 == 0,
-                    (m + n + k) % 4,
-                )?;
+                differential(&[m, k], &[k, n], (m + n + k) % 2 == 0, (m + n + k) % 4)?;
             }
         }
     }
@@ -173,10 +166,7 @@ fn batch_broadcast_and_shared_operands_preserve_exact_reference_results() -> Res
         (vec![4, 3, 7], vec![7, 11]),
         (vec![5, 7], vec![2, 3, 7, 9]),
         (vec![2, 1, 3, 1, 5, 7], vec![1, 4, 1, 2, 7, 9]),
-        (
-            vec![1, 2, 1, 1, 1, 1, 4, 3],
-            vec![2, 1, 1, 1, 1, 1, 3, 8],
-        ),
+        (vec![1, 2, 1, 1, 1, 1, 4, 3], vec![2, 1, 1, 1, 1, 1, 3, 8]),
     ];
     for (a, b) in shapes {
         for constant in 0..4 {
@@ -192,11 +182,7 @@ fn broadcast_batch_positions_match_an_independent_hand_computed_example() -> Res
     let inputs = vec![
         (
             "a",
-            Tensor::from_values(
-                Shape::new([2, 1, 1, 2])?,
-                &[1.0_f32, 2.0, 3.0, 4.0],
-                G,
-            )?,
+            Tensor::from_values(Shape::new([2, 1, 1, 2])?, &[1.0_f32, 2.0, 3.0, 4.0], G)?,
         ),
         (
             "b",
@@ -310,8 +296,7 @@ fn profile_matmul_same_binary() -> Result {
         let start = Instant::now();
         let plan = OptimizedGraph::prepare(&graph, &BTreeMap::new(), &cx)?;
         let prepare_ns = start.elapsed().as_nanos();
-        let reference =
-            ScalarExecutor::run(&graph, &inputs, ExecBudget::unlimited(), &cx)?;
+        let reference = ScalarExecutor::run(&graph, &inputs, ExecBudget::unlimited(), &cx)?;
         let (warm, report) = plan.run_with_report(&inputs, ExecBudget::unlimited(), &cx)?;
         let expected = reference.get_output("y").ok_or("oracle")?.to_vec::<f32>()?;
         same(

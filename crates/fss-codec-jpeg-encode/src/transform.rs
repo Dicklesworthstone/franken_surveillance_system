@@ -31,7 +31,11 @@ pub(crate) fn rgb_to_ycbcr(rgb: &[u8]) -> [u8; 3] {
     let y = (19595 * r + 38470 * g + 7471 * b + 32768) >> 16;
     let cb = (-11059 * r - 21709 * g + 32768 * b + (128 << 16) + 32768) >> 16;
     let cr = (32768 * r - 27439 * g - 5329 * b + (128 << 16) + 32768) >> 16;
-    [y.clamp(0, 255) as u8, cb.clamp(0, 255) as u8, cr.clamp(0, 255) as u8]
+    [
+        y.clamp(0, 255) as u8,
+        cb.clamp(0, 255) as u8,
+        cr.clamp(0, 255) as u8,
+    ]
 }
 
 /// The exact Q14 matrix product, factored by even/odd symmetry without rounding.
@@ -88,7 +92,11 @@ pub(crate) fn quantized(
     }
     // DC is exactly sum(level-shifted pixels)/8. Do not let the approximate Q14
     // sqrt(1/2) basis perturb a quantization tie. No intermediate pass rounds.
-    let dc = pixels.iter().map(|value| i64::from(*value) - 128).sum::<i64>() << 27;
+    let dc = pixels
+        .iter()
+        .map(|value| i64::from(*value) - 128)
+        .sum::<i64>()
+        << 27;
     let mut result = [0_i16; 64];
     for u in 0..8 {
         let column = transformed(std::array::from_fn(|y| rows[y][u]));
@@ -102,7 +110,11 @@ pub(crate) fn quantized(
             let value = if sum < 0 { -magnitude } else { magnitude };
             // Baseline eight-bit sequential DCT: DC is 11-bit differential;
             // AC coefficients require categories no larger than ten.
-            let allowed = if u == 0 && v == 0 { -1024..=1023 } else { -1023..=1023 };
+            let allowed = if u == 0 && v == 0 {
+                -1024..=1023
+            } else {
+                -1023..=1023
+            };
             if !allowed.contains(&value) {
                 return Err(EncodeError::CoefficientRange);
             }
@@ -141,7 +153,11 @@ mod tests {
                 if u == 0 && v == 0 {
                     // DC is exactly sum(level-shifted pixels)/8. Do not let the
                     // approximate Q14 sqrt(1/2) basis perturb a quantization tie.
-                    sum = pixels.iter().map(|value| i64::from(*value) - 128).sum::<i64>() << 27;
+                    sum = pixels
+                        .iter()
+                        .map(|value| i64::from(*value) - 128)
+                        .sum::<i64>()
+                        << 27;
                 }
                 let divisor = i64::from(quantizers[v * 8 + u]) << 30;
                 if divisor == 0 {
@@ -151,7 +167,11 @@ mod tests {
                 let value = if sum < 0 { -magnitude } else { magnitude };
                 // Baseline eight-bit sequential DCT: DC is 11-bit differential;
                 // AC coefficients require categories no larger than ten.
-                let allowed = if u == 0 && v == 0 { -1024..=1023 } else { -1023..=1023 };
+                let allowed = if u == 0 && v == 0 {
+                    -1024..=1023
+                } else {
+                    -1023..=1023
+                };
                 if !allowed.contains(&value) {
                     return Err(EncodeError::CoefficientRange);
                 }
@@ -160,7 +180,6 @@ mod tests {
         }
         Ok(result)
     }
-    
 
     #[test]
     fn factored_pass_matches_each_original_matrix_basis_exactly() {
@@ -184,7 +203,10 @@ mod tests {
                 let quantizers = crate::tables::quantizers(table, quality);
                 for value in 0..=255 {
                     let pixels = [value; 64];
-                    assert_eq!(quantized(&pixels, &quantizers), quantized_reference(&pixels, &quantizers));
+                    assert_eq!(
+                        quantized(&pixels, &quantizers),
+                        quantized_reference(&pixels, &quantizers)
+                    );
                 }
             }
         }
@@ -195,7 +217,10 @@ mod tests {
                 pixels[position] = value;
                 for divisor in [1, 2, 3, 16, 127, 255] {
                     let quantizers = [divisor; 64];
-                    assert_eq!(quantized(&pixels, &quantizers), quantized_reference(&pixels, &quantizers));
+                    assert_eq!(
+                        quantized(&pixels, &quantizers),
+                        quantized_reference(&pixels, &quantizers)
+                    );
                 }
             }
         }
@@ -215,9 +240,15 @@ mod tests {
                 state ^= state << 17;
                 (state % 255 + 1) as u8
             });
-            assert_eq!(quantized(&pixels, &quantizers), quantized_reference(&pixels, &quantizers));
+            assert_eq!(
+                quantized(&pixels, &quantizers),
+                quantized_reference(&pixels, &quantizers)
+            );
         }
-        assert_eq!(quantized(&[128; 64], &[0; 64]), Err(EncodeError::CoefficientRange));
+        assert_eq!(
+            quantized(&[128; 64], &[0; 64]),
+            Err(EncodeError::CoefficientRange)
+        );
     }
 
     #[test]
@@ -225,7 +256,11 @@ mod tests {
         for value in [0_u8, 1, 64, 127, 128, 129, 192, 254, 255] {
             let coefficients = quantized(&[value; 64], &[1; 64])?;
             assert_eq!(coefficients[0], 8 * (i16::from(value) - 128));
-            assert!(coefficients[1..].iter().all(|coefficient| *coefficient == 0));
+            assert!(
+                coefficients[1..]
+                    .iter()
+                    .all(|coefficient| *coefficient == 0)
+            );
         }
         Ok(())
     }
@@ -248,7 +283,12 @@ mod tests {
         let coefficients = quantized(&pixels, &[1; 64])?;
         assert_eq!(coefficients[0], -4);
         assert_eq!(coefficients[36], 1020);
-        assert!(coefficients.iter().enumerate().all(|(i, value)| i == 0 || i == 36 || *value == 0));
+        assert!(
+            coefficients
+                .iter()
+                .enumerate()
+                .all(|(i, value)| i == 0 || i == 36 || *value == 0)
+        );
         Ok(())
     }
 

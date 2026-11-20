@@ -11,24 +11,24 @@
 pub mod checkpoint;
 /// Bounded HTTP serializer startup into a native owned media listener.
 pub mod media;
-/// Preserve HTTP effect custody across an explicitly supervised media reaccept.
-pub mod media_reaccept;
-/// Pair direct HTTP media with in-band AAC observations for A/V bootstrap.
-pub mod media_av_bootstrap;
+/// Connect an HTTP-started media stream to the native video archive owners.
+pub mod media_archive;
 /// Bounded archival scheduling for an HTTP-started audio/video stream.
 pub mod media_av_archive;
+/// Pair direct HTTP media with in-band AAC observations for A/V bootstrap.
+pub mod media_av_bootstrap;
 /// Finite automatic successor provisioning for HTTP-started A/V.
 pub mod media_av_managed;
 /// Preserve and archive a stopped A/V source before accepting its successor.
 pub mod media_av_reconnect;
-/// Drive recording, EOF reconnection and managed A/V startup as one owner.
-pub mod media_av_supervisor;
 /// Transfer every supervisor phase into scoped bindings and owned recovery custody.
 pub mod media_av_recovery;
 /// Archive source records during HTTP audio/video bootstrap.
 pub mod media_av_startup;
-/// Connect an HTTP-started media stream to the native video archive owners.
-pub mod media_archive;
+/// Drive recording, EOF reconnection and managed A/V startup as one owner.
+pub mod media_av_supervisor;
+/// Preserve HTTP effect custody across an explicitly supervised media reaccept.
+pub mod media_reaccept;
 
 use super::{
     AudioCodec, StreamStart, VideoCodec, camera_api::VideoSerializers, handoff::Framing, intent,
@@ -520,7 +520,12 @@ fn restore_body(channel: super::VideoChannel, prior: &Value) -> Result<PrivateBo
         channel.wire_name()
     ));
     super::events::write_json(prior, &mut out.0).map_err(|_| Error::Encoding)?;
-    if out.0.len().checked_add(4).is_none_or(|n| n > super::MAX_MESSAGE_BYTES) {
+    if out
+        .0
+        .len()
+        .checked_add(4)
+        .is_none_or(|n| n > super::MAX_MESSAGE_BYTES)
+    {
         return Err(Error::Encoding);
     }
     out.0.try_reserve(4).map_err(|_| Error::Encoding)?;

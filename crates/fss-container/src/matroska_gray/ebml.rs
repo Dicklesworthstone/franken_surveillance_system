@@ -11,7 +11,10 @@ pub(super) struct Buffer<const N: usize> {
 
 impl<const N: usize> Buffer<N> {
     pub(super) const fn new() -> Self {
-        Self { bytes: [0; N], length: 0 }
+        Self {
+            bytes: [0; N],
+            length: 0,
+        }
     }
 
     pub(super) fn bytes(&self) -> &[u8] {
@@ -19,8 +22,13 @@ impl<const N: usize> Buffer<N> {
     }
 
     pub(super) fn append(&mut self, bytes: &[u8]) -> Result<(), MatroskaGrayError> {
-        let end = self.length.checked_add(bytes.len()).ok_or(MatroskaGrayError::Layout)?;
-        self.bytes.get_mut(self.length..end).ok_or(MatroskaGrayError::Layout)?
+        let end = self
+            .length
+            .checked_add(bytes.len())
+            .ok_or(MatroskaGrayError::Layout)?;
+        self.bytes
+            .get_mut(self.length..end)
+            .ok_or(MatroskaGrayError::Layout)?
             .copy_from_slice(bytes);
         self.length = end;
         Ok(())
@@ -46,7 +54,9 @@ impl<const N: usize> Buffer<N> {
 }
 
 fn integer_width(value: u64) -> usize {
-    ((u64::BITS - value.leading_zeros()) as usize).div_ceil(8).max(1)
+    ((u64::BITS - value.leading_zeros()) as usize)
+        .div_ceil(8)
+        .max(1)
 }
 
 fn size_width(size: usize) -> Result<usize, MatroskaGrayError> {
@@ -61,8 +71,10 @@ fn size_width(size: usize) -> Result<usize, MatroskaGrayError> {
 }
 
 pub(super) fn element_len(id_bytes: usize, payload: usize) -> Result<usize, MatroskaGrayError> {
-    id_bytes.checked_add(size_width(payload)?)
-        .and_then(|size| size.checked_add(payload)).ok_or(MatroskaGrayError::Layout)
+    id_bytes
+        .checked_add(size_width(payload)?)
+        .and_then(|size| size.checked_add(payload))
+        .ok_or(MatroskaGrayError::Layout)
 }
 
 pub(super) fn unsigned_len(id_bytes: usize, value: u64) -> Result<usize, MatroskaGrayError> {
@@ -97,12 +109,16 @@ mod tests {
     }
 
     #[test]
-    fn fixed_storage_and_unsigned_integer_boundaries_are_checked() -> Result<(), MatroskaGrayError> {
+    fn fixed_storage_and_unsigned_integer_boundaries_are_checked() -> Result<(), MatroskaGrayError>
+    {
         for (value, expected) in [
             (0, &[0xe7, 0x81, 0x00][..]),
             (255, &[0xe7, 0x81, 0xff][..]),
             (256, &[0xe7, 0x82, 0x01, 0x00][..]),
-            (u64::MAX, &[0xe7, 0x88, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff][..]),
+            (
+                u64::MAX,
+                &[0xe7, 0x88, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff][..],
+            ),
         ] {
             let mut buffer = Buffer::<10>::new();
             buffer.unsigned(&[0xe7], value)?;

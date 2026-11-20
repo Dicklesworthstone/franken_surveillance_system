@@ -5,7 +5,11 @@ use super::*;
 
 impl CursorCheckpoint {
     /// Query validated checkpoint metadata, not a possibly uncommitted live catalog binding.
-    pub(crate) fn requires_source(&self, descriptor: ContentDigest, binding: ContentDigest) -> bool {
+    pub(crate) fn requires_source(
+        &self,
+        descriptor: ContentDigest,
+        binding: ContentDigest,
+    ) -> bool {
         self.source_requirements.get(&descriptor) == Some(&binding)
     }
 
@@ -67,11 +71,17 @@ mod tests {
     use super::*;
     type Value = Result<(), Box<dyn std::error::Error>>;
 
-    fn digest(text: &[u8]) -> ContentDigest { ContentDigest::sha256(text) }
+    fn digest(text: &[u8]) -> ContentDigest {
+        ContentDigest::sha256(text)
+    }
 
     fn checkpoint() -> Result<CursorCheckpoint, HydrationError> {
         let bytes = CursorCheckpoint::register_source(
-            None, digest(b"descriptor"), digest(b"binding"), TimestampNs(10), 4096,
+            None,
+            digest(b"descriptor"),
+            digest(b"binding"),
+            TimestampNs(10),
+            4096,
         )?;
         CursorCheckpoint::decode(&bytes, 4096, 8)
     }
@@ -84,7 +94,11 @@ mod tests {
         assert!(!prior.requires_source(digest(b"descriptor"), digest(b"other")));
         assert!(!prior.requires_source(digest(b"absent"), digest(b"binding")));
         let encoded = CursorCheckpoint::register_source(
-            Some(&prior), digest(b"descriptor"), digest(b"binding"), TimestampNs(11), 4096,
+            Some(&prior),
+            digest(b"descriptor"),
+            digest(b"binding"),
+            TimestampNs(11),
+            4096,
         )?;
         let next = CursorCheckpoint::decode(&encoded, 4096, 8)?;
         next.validate_source_registration(Some(&prior), digest(b"descriptor"), digest(b"binding"))?;
@@ -99,21 +113,50 @@ mod tests {
         let prior = checkpoint()?;
         let descriptor = digest(b"second descriptor");
         let binding = digest(b"second binding");
-        let bytes = CursorCheckpoint::register_source(Some(&prior), descriptor, binding, TimestampNs(20), 4096)?;
+        let bytes = CursorCheckpoint::register_source(
+            Some(&prior),
+            descriptor,
+            binding,
+            TimestampNs(20),
+            4096,
+        )?;
         let next = CursorCheckpoint::decode(&bytes, 4096, 8)?;
         for case in 0..4 {
             let mut forged = next.clone();
             match case {
-                0 => { forged.source_requirements.remove(&digest(b"descriptor")); }
-                1 => { forged.source_requirements.insert(digest(b"descriptor"), binding); }
-                2 => { forged.source_requirements.insert(digest(b"third descriptor"), binding); }
-                _ => { forged.source_requirements.remove(&descriptor); }
+                0 => {
+                    forged.source_requirements.remove(&digest(b"descriptor"));
+                }
+                1 => {
+                    forged
+                        .source_requirements
+                        .insert(digest(b"descriptor"), binding);
+                }
+                2 => {
+                    forged
+                        .source_requirements
+                        .insert(digest(b"third descriptor"), binding);
+                }
+                _ => {
+                    forged.source_requirements.remove(&descriptor);
+                }
             }
-            assert!(forged.validate_source_registration(Some(&prior), descriptor, binding).is_err());
+            assert!(
+                forged
+                    .validate_source_registration(Some(&prior), descriptor, binding)
+                    .is_err()
+            );
         }
-        assert!(CursorCheckpoint::register_source(
-            Some(&prior), digest(b"descriptor"), binding, TimestampNs(20), 4096,
-        ).is_err());
+        assert!(
+            CursorCheckpoint::register_source(
+                Some(&prior),
+                digest(b"descriptor"),
+                binding,
+                TimestampNs(20),
+                4096,
+            )
+            .is_err()
+        );
         Ok(())
     }
 
@@ -121,33 +164,55 @@ mod tests {
     fn registration_cannot_issue_consume_or_retire_even_expired_cursors() -> Value {
         let mut prior = checkpoint()?;
         let cursor = digest(b"cursor");
-        prior.records.insert(cursor, IssuedCursorRecord {
-            cursor_digest: cursor,
-            session_id: SessionId::parse("session:registration")?,
-            handle_id: "handle:registration".to_owned(),
-            expires_at: TimestampNs(11),
-            next_ordinal: 3,
-            consumed: false,
-        });
+        prior.records.insert(
+            cursor,
+            IssuedCursorRecord {
+                cursor_digest: cursor,
+                session_id: SessionId::parse("session:registration")?,
+                handle_id: "handle:registration".to_owned(),
+                expires_at: TimestampNs(11),
+                next_ordinal: 3,
+                consumed: false,
+            },
+        );
         let bytes = CursorCheckpoint::register_source(
-            Some(&prior), digest(b"descriptor"), digest(b"binding"), TimestampNs(20), 4096,
+            Some(&prior),
+            digest(b"descriptor"),
+            digest(b"binding"),
+            TimestampNs(20),
+            4096,
         )?;
         let next = CursorCheckpoint::decode(&bytes, 4096, 8)?;
         next.validate_source_registration(Some(&prior), digest(b"descriptor"), digest(b"binding"))?;
         for case in 0..3 {
             let mut forged = next.clone();
             match case {
-                0 => { forged.records.clear(); }
-                1 => { forged.records.get_mut(&cursor).ok_or("no cursor")?.consumed = true; }
+                0 => {
+                    forged.records.clear();
+                }
+                1 => {
+                    forged.records.get_mut(&cursor).ok_or("no cursor")?.consumed = true;
+                }
                 _ => {
                     let mut extra = forged.records.get(&cursor).ok_or("no cursor")?.clone();
                     extra.cursor_digest = digest(b"extra");
                     forged.records.insert(extra.cursor_digest, extra);
                 }
             }
-            assert!(forged.validate_source_registration(Some(&prior), digest(b"descriptor"), digest(b"binding")).is_err());
+            assert!(
+                forged
+                    .validate_source_registration(
+                        Some(&prior),
+                        digest(b"descriptor"),
+                        digest(b"binding")
+                    )
+                    .is_err()
+            );
         }
-        assert!(next.validate_source_registration(None, digest(b"descriptor"), digest(b"binding")).is_err());
+        assert!(
+            next.validate_source_registration(None, digest(b"descriptor"), digest(b"binding"))
+                .is_err()
+        );
         Ok(())
     }
 
@@ -156,17 +221,42 @@ mod tests {
         let prior = checkpoint()?;
         let before = prior.clone();
         let bytes = CursorCheckpoint::register_source(
-            Some(&prior), digest(b"descriptor"), digest(b"binding"), TimestampNs(20), 4096,
+            Some(&prior),
+            digest(b"descriptor"),
+            digest(b"binding"),
+            TimestampNs(20),
+            4096,
         )?;
-        assert!(CursorCheckpoint::register_source(
-            Some(&prior), digest(b"descriptor"), digest(b"binding"), TimestampNs(20), bytes.len() - 1,
-        ).is_err());
-        assert_eq!(CursorCheckpoint::register_source(
-            Some(&prior), digest(b"descriptor"), digest(b"binding"), TimestampNs(20), bytes.len(),
-        )?, bytes);
-        assert!(CursorCheckpoint::register_source(
-            Some(&prior), digest(b"descriptor"), digest(b"binding"), TimestampNs(9), 4096,
-        ).is_err());
+        assert!(
+            CursorCheckpoint::register_source(
+                Some(&prior),
+                digest(b"descriptor"),
+                digest(b"binding"),
+                TimestampNs(20),
+                bytes.len() - 1,
+            )
+            .is_err()
+        );
+        assert_eq!(
+            CursorCheckpoint::register_source(
+                Some(&prior),
+                digest(b"descriptor"),
+                digest(b"binding"),
+                TimestampNs(20),
+                bytes.len(),
+            )?,
+            bytes
+        );
+        assert!(
+            CursorCheckpoint::register_source(
+                Some(&prior),
+                digest(b"descriptor"),
+                digest(b"binding"),
+                TimestampNs(9),
+                4096,
+            )
+            .is_err()
+        );
         assert_eq!(prior, before);
         Ok(())
     }

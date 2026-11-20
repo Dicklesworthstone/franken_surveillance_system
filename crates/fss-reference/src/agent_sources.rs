@@ -367,5 +367,9 @@ pub fn query_sources(
 }
 
 fn hex(digest: ContentDigest) -> String {
-    digest.bytes().iter().map(|byte| format!("{byte:02x}")).collect()
+    digest
+        .bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }

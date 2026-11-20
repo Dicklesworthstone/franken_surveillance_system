@@ -4,7 +4,7 @@
 //! Layouts are live-proven against owner cameras and corrected against go2rtc
 //! (see crate-level docs for the reference-doc errors this module avoids).
 
-use crate::digest::{hmac_sha1, Sha256};
+use crate::digest::{Sha256, hmac_sha1};
 
 /// Protocol magic (little-endian on the wire).
 pub const MAGIC_NEWPROTO: u16 = 0xCC51;
@@ -251,11 +251,13 @@ impl NewProto {
         out
     }
 
-
     /// Parse a `0x1002` discovery packet.
     pub fn parse_discovery(&self, data: &[u8]) -> Result<DiscoveryPacket, ProtoError> {
         if data.len() != DISCOVERY_PACKET_SIZE {
-            return Err(ProtoError::BadLength { what: "discovery", got: data.len() });
+            return Err(ProtoError::BadLength {
+                what: "discovery",
+                got: data.len(),
+            });
         }
         if get_u16(&data[0..2]) != MAGIC_NEWPROTO {
             return Err(ProtoError::BadField("magic"));
@@ -307,9 +309,16 @@ impl NewProto {
 
     /// Extract (payload, auth_ok, channel) from a `0x1502` frame.
     /// `strict=true` turns an HMAC mismatch into an error.
-    pub fn unwrap_dtls<'a>(&self, data: &'a [u8], strict: bool) -> Result<(&'a [u8], bool, u16), ProtoError> {
+    pub fn unwrap_dtls<'a>(
+        &self,
+        data: &'a [u8],
+        strict: bool,
+    ) -> Result<(&'a [u8], bool, u16), ProtoError> {
         if data.len() < DTLS_HEADER_SIZE + AUTH_SIZE {
-            return Err(ProtoError::BadLength { what: "dtls frame", got: data.len() });
+            return Err(ProtoError::BadLength {
+                what: "dtls frame",
+                got: data.len(),
+            });
         }
         if get_u16(&data[0..2]) != MAGIC_NEWPROTO {
             return Err(ProtoError::BadField("magic"));
@@ -322,17 +331,30 @@ impl NewProto {
             return Err(ProtoError::BadField("payload size"));
         }
         let channel = get_u16(&data[12..14]) >> 8;
-        let auth_ok = hmac_sha1(&self.key, &data[..DTLS_HEADER_SIZE]) == data[data.len() - AUTH_SIZE..];
+        let expected_auth = hmac_sha1(&self.key, &data[..DTLS_HEADER_SIZE]);
+        let actual_auth = &data[data.len() - AUTH_SIZE..];
+        let mut diff = 0u8;
+        for (&a, &b) in expected_auth.iter().zip(actual_auth.iter()) {
+            diff |= a ^ b;
+        }
+        let auth_ok = diff == 0;
         if strict && !auth_ok {
             return Err(ProtoError::AuthMismatch);
         }
-        Ok((&data[DTLS_HEADER_SIZE..data.len() - AUTH_SIZE], auth_ok, channel))
+        Ok((
+            &data[DTLS_HEADER_SIZE..data.len() - AUTH_SIZE],
+            auth_ok,
+            channel,
+        ))
     }
 
     /// Parse a `0x1202` keepalive. Returns (counter, session_id, auth_ok).
     pub fn parse_keepalive(&self, data: &[u8]) -> Result<(u32, [u8; 8], bool), ProtoError> {
         if data.len() != KEEPALIVE_PACKET_SIZE {
-            return Err(ProtoError::BadLength { what: "keepalive", got: data.len() });
+            return Err(ProtoError::BadLength {
+                what: "keepalive",
+                got: data.len(),
+            });
         }
         if get_u16(&data[0..2]) != MAGIC_NEWPROTO {
             return Err(ProtoError::BadField("magic"));
@@ -351,7 +373,11 @@ impl NewProto {
 
     /// Build a keepalive echo (client -> camera, direction request).
     #[must_use]
-    pub fn build_keepalive_echo(&self, counter: u32, session_id: &[u8; 8]) -> [u8; KEEPALIVE_PACKET_SIZE] {
+    pub fn build_keepalive_echo(
+        &self,
+        counter: u32,
+        session_id: &[u8; 8],
+    ) -> [u8; KEEPALIVE_PACKET_SIZE] {
         let mut out = [0u8; KEEPALIVE_PACKET_SIZE];
         put_u16(&mut out[0..2], MAGIC_NEWPROTO);
         put_u16(&mut out[2..4], 0);

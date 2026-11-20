@@ -137,26 +137,56 @@ fn replay_frozen_history(
     let limits = DurableSessionLimits::default();
     let checkpoint = memory.checkpoint(limits.max_checkpoint_bytes)?.digest();
     for step in STEPS {
-        assert_eq!(state.digest(), digest_hex(step.before)?, "{} before", step.name);
+        assert_eq!(
+            state.digest(),
+            digest_hex(step.before)?,
+            "{} before",
+            step.name
+        );
         let bytes = frozen_record(step.body, checkpoint, step.before, step.after)?;
         replay_command(&bytes, memory, state, limits)?;
-        assert_eq!(state.digest(), digest_hex(step.after)?, "{} after", step.name);
+        assert_eq!(
+            state.digest(),
+            digest_hex(step.after)?,
+            "{} after",
+            step.name
+        );
         let retained = state.retained();
         assert_eq!(retained.len(), 1, "{} inventory", step.name);
         let current = &retained[0];
-        assert_eq!(current.digest(), digest_hex(step.state)?, "{} state", step.name);
+        assert_eq!(
+            current.digest(),
+            digest_hex(step.state)?,
+            "{} state",
+            step.name
+        );
         assert_eq!(current.authority_digest, digest_hex(AUTHORITY_HEX)?);
         assert_eq!(current.revision, step.revision);
         assert_eq!(current.attempts_reserved(), step.attempts);
         assert_eq!(current.reserved_bytes(), u64::from(step.attempts) * 10_000);
-        assert_eq!(current.reserved_read_attempts(), u64::from(step.attempts) * 100);
-        assert!(current.schedule.is_none(), "v1 history must not acquire a schedule");
-        assert_eq!(current.registration().configuration.as_slice(), CONFIGURATION);
+        assert_eq!(
+            current.reserved_read_attempts(),
+            u64::from(step.attempts) * 100
+        );
+        assert!(
+            current.schedule.is_none(),
+            "v1 history must not acquire a schedule"
+        );
+        assert_eq!(
+            current.registration().configuration.as_slice(),
+            CONFIGURATION
+        );
         assert_eq!(current.registration().maximum_attempts, 16);
         assert_eq!(current.registration().max_read_bytes, 10_000);
         assert_eq!(current.registration().max_read_attempts, 100);
-        assert_eq!(current.reservation().map(SupervisionReservation::receipt), optional_hex(step.reservation)?);
-        assert_eq!(current.pending().map(PendingSupervisionDelivery::receipt), optional_hex(step.pending)?);
+        assert_eq!(
+            current.reservation().map(SupervisionReservation::receipt),
+            optional_hex(step.reservation)?
+        );
+        assert_eq!(
+            current.pending().map(PendingSupervisionDelivery::receipt),
+            optional_hex(step.pending)?
+        );
         assert_eq!(current.last_acknowledged(), optional_hex(step.ack)?);
         assert_eq!(current.last_discarded(), optional_hex(step.discard)?);
         if let Some(pending) = current.pending() {
@@ -165,9 +195,15 @@ fn replay_frozen_history(
             assert_eq!(pending.payload_digest(), ContentDigest::sha256(PAYLOAD));
             let mut encoded = CanonicalEncoder::new();
             pending.encode_descriptor(&mut encoded);
-            assert_eq!(ContentDigest::sha256(&encoded.finish()), digest_hex(DESCRIPTOR_HEX)?);
+            assert_eq!(
+                ContentDigest::sha256(&encoded.finish()),
+                digest_hex(DESCRIPTOR_HEX)?
+            );
         }
-        assert_eq!(memory.checkpoint(limits.max_checkpoint_bytes)?.digest(), checkpoint);
+        assert_eq!(
+            memory.checkpoint(limits.max_checkpoint_bytes)?.digest(),
+            checkpoint
+        );
     }
     Ok(())
 }
@@ -175,8 +211,18 @@ fn replay_frozen_history(
 #[test]
 fn frozen_v1_command_records_decode_and_reencode_byte_for_byte() -> TestResult {
     for step in STEPS {
-        let bytes = frozen_record(step.body, digest_hex(CHECKPOINT_HEX)?, step.before, step.after)?;
-        assert_eq!(ContentDigest::sha256(&bytes), digest_hex(step.record_digest)?, "{} frozen bytes", step.name);
+        let bytes = frozen_record(
+            step.body,
+            digest_hex(CHECKPOINT_HEX)?,
+            step.before,
+            step.after,
+        )?;
+        assert_eq!(
+            ContentDigest::sha256(&bytes),
+            digest_hex(step.record_digest)?,
+            "{} frozen bytes",
+            step.name
+        );
         let decoded = codec::decode_record(&bytes)?;
         assert_eq!(decoded.principal.as_str(), PRINCIPAL);
         assert_eq!(decoded.session.as_str(), SESSION);
@@ -184,7 +230,12 @@ fn frozen_v1_command_records_decode_and_reencode_byte_for_byte() -> TestResult {
         assert_eq!(decoded.session_digest, digest_hex(CHECKPOINT_HEX)?);
         assert_eq!(decoded.before_state, digest_hex(step.before)?);
         assert_eq!(decoded.after_state, digest_hex(step.after)?);
-        assert_eq!(codec::encode_record(&decoded)?, bytes, "{} wire compatibility", step.name);
+        assert_eq!(
+            codec::encode_record(&decoded)?,
+            bytes,
+            "{} wire compatibility",
+            step.name
+        );
     }
     Ok(())
 }
@@ -196,20 +247,39 @@ fn frozen_v1_history_preserves_unscheduled_state_and_all_delivery_receipts() -> 
 }
 
 #[test]
-fn frozen_v1_ack_without_reservation_remains_a_retry_and_never_a_history_transition() -> TestResult {
+fn frozen_v1_ack_without_reservation_remains_a_retry_and_never_a_history_transition() -> TestResult
+{
     let (mut memory, session) = fixture()?;
     let mut state = SupervisionState::default();
     replay_frozen_history(&mut memory, &mut state)?;
     let last = STEPS.last().ok_or("missing frozen history")?;
-    let bytes = frozen_record(ACK_RETRY_BODY, digest_hex(CHECKPOINT_HEX)?, last.after, last.after)?;
-    assert_eq!(ContentDigest::sha256(&bytes), digest_hex(ACK_RETRY_RECORD_HEX)?);
+    let bytes = frozen_record(
+        ACK_RETRY_BODY,
+        digest_hex(CHECKPOINT_HEX)?,
+        last.after,
+        last.after,
+    )?;
+    assert_eq!(
+        ContentDigest::sha256(&bytes),
+        digest_hex(ACK_RETRY_RECORD_HEX)?
+    );
     let decoded = codec::decode_record(&bytes)?;
-    assert!(matches!(&decoded.command, Command::Acknowledge { reservation: None, .. }));
+    assert!(matches!(
+        &decoded.command,
+        Command::Acknowledge {
+            reservation: None,
+            ..
+        }
+    ));
     assert_eq!(codec::encode_record(&decoded)?, bytes);
     let before = state.retained();
     let retried = apply(
-        &mut memory, &mut state, &session.principal_id, &session.session_id,
-        &decoded.command, TimestampNs(10),
+        &mut memory,
+        &mut state,
+        &session.principal_id,
+        &session.session_id,
+        &decoded.command,
+        TimestampNs(10),
     )?;
     assert_eq!(state.retained(), before);
     assert_eq!(retried, before[0]);
@@ -433,4 +503,5 @@ const ACK_RETRY_BODY: &str = concat!(
     "653a6c65676163792d636f6d706174000000000000000300000000000000050000000000000007000000000000000b00",
     "0000000000000d000000000000001101745ca5a08c1edfc6333893fbfec5d2eda168518d51f5f89c8d27d106e79cc56c",
 );
-const ACK_RETRY_RECORD_HEX: &str = "e232f7a88659cae1fe2faddb9a0da358cd6eb15deddd298003fbb1fcf0cc57b7";
+const ACK_RETRY_RECORD_HEX: &str =
+    "e232f7a88659cae1fe2faddb9a0da358cd6eb15deddd298003fbb1fcf0cc57b7";

@@ -23,7 +23,9 @@ use super::{
     media_reaccept,
 };
 use crate::unifi_direct::{
-    av_owned_sink, av_recovered_startup, av_unknown_worker_guard::BootstrapResources, av_worker, listener, media_reconnect,
+    av_owned_sink, av_recovered_startup,
+    av_unknown_worker_guard::BootstrapResources,
+    av_worker, listener, media_reconnect,
     metered::MeteredClock,
     recording, recording_storage, retirement_source,
     source_coordinator::{ArchiveAdmission, Coordinator},
@@ -263,9 +265,27 @@ fn retirement_from_resources(
     resources: Box<BootstrapResources>,
     fenced: bool,
 ) -> Box<av_worker::UnknownTimeRetirement> {
-    let BootstrapResources { deployment, journal, keeper, replay, authority, limits, work_limit, rollover_custody } = *resources;
+    let BootstrapResources {
+        deployment,
+        journal,
+        keeper,
+        replay,
+        authority,
+        limits,
+        work_limit,
+        rollover_custody,
+    } = *resources;
     Box::new(av_worker::UnknownTimeRetirement {
-        parts: av_worker::UnknownTimeParts { sink, deployment, journal, keeper, replay, authority, limits, work_limit },
+        parts: av_worker::UnknownTimeParts {
+            sink,
+            deployment,
+            journal,
+            keeper,
+            replay,
+            authority,
+            limits,
+            work_limit,
+        },
         fenced,
         rollover_custody,
     })
@@ -274,10 +294,32 @@ fn retirement_from_resources(
 impl<'scope, 'task, 'policy> ReuseVerification<'scope, 'task, 'policy> {
     /// Recover all owners, including an active blocking attempt.
     pub fn into_parts(self: Box<Self>) -> VerificationParts<'scope, 'task, 'policy> {
-        let Self { bridge, tail, sink, origin, key, camera_claim, worker, started,
-            start_refused, verified, stopped } = *self;
-        VerificationParts { bridge, tail, sink, origin, key, camera_claim, worker,
-            started, start_refused, verified, stopped }
+        let Self {
+            bridge,
+            tail,
+            sink,
+            origin,
+            key,
+            camera_claim,
+            worker,
+            started,
+            start_refused,
+            verified,
+            stopped,
+        } = *self;
+        VerificationParts {
+            bridge,
+            tail,
+            sink,
+            origin,
+            key,
+            camera_claim,
+            worker,
+            started,
+            start_refused,
+            verified,
+            stopped,
+        }
     }
 
     /// Explicitly permit a new admission after a definite start refusal.
@@ -285,33 +327,62 @@ impl<'scope, 'task, 'policy> ReuseVerification<'scope, 'task, 'policy> {
         if self.start_refused && !self.started && !self.stopped && !self.verified {
             self.start_refused = false;
             true
-        } else { false }
+        } else {
+            false
+        }
     }
 
     /// Request cancellation; the running worker must still be joined.
-    pub fn abort(&self) { self.worker.abort(); }
+    pub fn abort(&self) {
+        self.worker.abort();
+    }
 
     /// Start or join exactly one verification without blocking the async task.
     pub async fn step<'s, 't>(
-        &mut self, task: &'s TaskCx<'t>, cx: &'s Cx, clock: MeteredClock<'s, 't>,
-        wait: Duration, admission: ArchiveAdmission<'_>,
+        &mut self,
+        task: &'s TaskCx<'t>,
+        cx: &'s Cx,
+        clock: MeteredClock<'s, 't>,
+        wait: Duration,
+        admission: ArchiveAdmission<'_>,
     ) -> VerifyStep {
-        if wait.is_zero() || wait > Duration::from_secs(30)
-            || !self.bridge.matches_context(task, cx, clock) { return VerifyStep::Configuration; }
-        if self.stopped || self.start_refused { return VerifyStep::Stopped; }
-        if self.verified { return VerifyStep::Ready; }
+        if wait.is_zero()
+            || wait > Duration::from_secs(30)
+            || !self.bridge.matches_context(task, cx, clock)
+        {
+            return VerifyStep::Configuration;
+        }
+        if self.stopped || self.start_refused {
+            return VerifyStep::Stopped;
+        }
+        if self.verified {
+            return VerifyStep::Ready;
+        }
         if !self.started {
-            return match self.worker.start(task, cx, clock, admission.resource, admission.cost) {
-                Ok(()) => { self.started = true; VerifyStep::Started },
-                Err(error) => { self.start_refused = true; VerifyStep::StartRefused(error) },
+            return match self
+                .worker
+                .start(task, cx, clock, admission.resource, admission.cost)
+            {
+                Ok(()) => {
+                    self.started = true;
+                    VerifyStep::Started
+                }
+                Err(error) => {
+                    self.start_refused = true;
+                    VerifyStep::StartRefused(error)
+                }
             };
         }
         match timeout_at(cx.now() + wait, self.worker.join()).await {
             Err(_) => VerifyStep::Running,
-            Ok(None) => { self.stopped = true; VerifyStep::Stopped },
+            Ok(None) => {
+                self.stopped = true;
+                VerifyStep::Stopped
+            }
             Ok(Some(done)) => {
                 self.started = false;
-                self.verified = done.runtime.is_ok() && matches!(&done.outcome, av_recovered_startup::Outcome::Verified);
+                self.verified = done.runtime.is_ok()
+                    && matches!(&done.outcome, av_recovered_startup::Outcome::Verified);
                 self.stopped = !self.verified;
                 VerifyStep::Completed(done)
             }
@@ -321,29 +392,79 @@ impl<'scope, 'task, 'policy> ReuseVerification<'scope, 'task, 'policy> {
     /// Transfer only an observed, drained verification to successor bootstrap.
     #[inline(never)]
     pub fn finish(
-        self: Box<Self>, retention: ContentDigest, policy: av_owned_sink::BootstrapPolicy,
+        self: Box<Self>,
+        retention: ContentDigest,
+        policy: av_owned_sink::BootstrapPolicy,
         supplied_unverified_audio: Option<[u8; 2]>,
-    ) -> Result<Box<ReusedReady<'scope, 'task, 'policy>>, Box<VerifyFinishRefusal<'scope, 'task, 'policy>>> {
+    ) -> Result<
+        Box<ReusedReady<'scope, 'task, 'policy>>,
+        Box<VerifyFinishRefusal<'scope, 'task, 'policy>>,
+    > {
         if !self.verified || self.started || self.stopped || self.start_refused {
             return Err(Box::new(VerifyFinishRefusal::NotReady(self)));
         }
-        let Self { bridge, tail, sink, origin, key, camera_claim, worker, started,
-            start_refused, verified, stopped } = *self;
+        let Self {
+            bridge,
+            tail,
+            sink,
+            origin,
+            key,
+            camera_claim,
+            worker,
+            started,
+            start_refused,
+            verified,
+            stopped,
+        } = *self;
         let retirement = match worker.retire() {
             Ok(retirement) => retirement,
-            Err(worker) => return Err(Box::new(VerifyFinishRefusal::NotReady(Box::new(Self {
-                bridge, tail, sink, origin, key, camera_claim, worker, started, start_refused, verified, stopped,
-            })))),
+            Err(worker) => {
+                return Err(Box::new(VerifyFinishRefusal::NotReady(Box::new(Self {
+                    bridge,
+                    tail,
+                    sink,
+                    origin,
+                    key,
+                    camera_claim,
+                    worker,
+                    started,
+                    start_refused,
+                    verified,
+                    stopped,
+                }))));
+            }
         };
         let av = retirement_from_resources(sink, retirement.resources, retirement.fenced);
-        if av.fenced || av.rollover_custody.as_ref().is_none_or(|custody|
-            !custody.startup_verified(&av.parts.journal, &av.parts.keeper)) {
-            return Err(Box::new(VerifyFinishRefusal::Reuse(Box::new(ReuseRefusal::AvUnsettled {
-                bridge, tail, av, origin, key, camera_claim,
-            }))));
+        if av.fenced
+            || av.rollover_custody.as_ref().is_none_or(|custody| {
+                !custody.startup_verified(&av.parts.journal, &av.parts.keeper)
+            })
+        {
+            return Err(Box::new(VerifyFinishRefusal::Reuse(Box::new(
+                ReuseRefusal::AvUnsettled {
+                    bridge,
+                    tail,
+                    av,
+                    origin,
+                    key,
+                    camera_claim,
+                },
+            ))));
         }
-        Transition::attach_reused(Box::new(PreparedReuse { bridge, tail, av, origin, key, camera_claim }),
-            retention, policy, supplied_unverified_audio).map_err(|refusal| Box::new(VerifyFinishRefusal::Reuse(refusal)))
+        Transition::attach_reused(
+            Box::new(PreparedReuse {
+                bridge,
+                tail,
+                av,
+                origin,
+                key,
+                camera_claim,
+            }),
+            retention,
+            policy,
+            supplied_unverified_audio,
+        )
+        .map_err(|refusal| Box::new(VerifyFinishRefusal::Reuse(refusal)))
     }
 }
 
@@ -843,13 +964,16 @@ impl<'scope, 'task, 'policy> Transition<'scope, 'task, 'policy> {
     /// custody exists. No new storage or camera write is performed here.
     #[inline(never)]
     pub fn begin_reusing(
-        self: Box<Self>, retention: ContentDigest, policy: av_owned_sink::BootstrapPolicy,
+        self: Box<Self>,
+        retention: ContentDigest,
+        policy: av_owned_sink::BootstrapPolicy,
         supplied_unverified_audio: Option<[u8; 2]>,
     ) -> Result<BeginReuse<'scope, 'task, 'policy>, Box<ReuseRefusal<'scope, 'task, 'policy>>> {
         let source = self.prepare_reuse_source(retention)?;
         let prepared = Self::retire_reuse_av(source, retention, true)?;
         if prepared.av.rollover_custody.is_none() {
-            return Self::attach_reused(prepared, retention, policy, supplied_unverified_audio).map(BeginReuse::Ready);
+            return Self::attach_reused(prepared, retention, policy, supplied_unverified_audio)
+                .map(BeginReuse::Ready);
         }
         Self::prepare_custody_verification(prepared).map(BeginReuse::Verify)
     }
@@ -857,19 +981,69 @@ impl<'scope, 'task, 'policy> Transition<'scope, 'task, 'policy> {
     #[inline(never)]
     fn prepare_custody_verification(
         prepared: Box<PreparedReuse<'scope, 'task, 'policy>>,
-    ) -> Result<Box<ReuseVerification<'scope, 'task, 'policy>>, Box<ReuseRefusal<'scope, 'task, 'policy>>> {
-        let PreparedReuse { bridge, tail, av, origin, key, camera_claim } = *prepared;
-        let av_worker::UnknownTimeRetirement { parts, fenced, rollover_custody } = *av;
-        let av_worker::UnknownTimeParts { sink, deployment, journal, keeper, replay, authority, limits, work_limit } = parts;
-        let resources = Box::new(BootstrapResources { deployment, journal, keeper, replay, authority, limits, work_limit, rollover_custody });
+    ) -> Result<
+        Box<ReuseVerification<'scope, 'task, 'policy>>,
+        Box<ReuseRefusal<'scope, 'task, 'policy>>,
+    > {
+        let PreparedReuse {
+            bridge,
+            tail,
+            av,
+            origin,
+            key,
+            camera_claim,
+        } = *prepared;
+        let av_worker::UnknownTimeRetirement {
+            parts,
+            fenced,
+            rollover_custody,
+        } = *av;
+        let av_worker::UnknownTimeParts {
+            sink,
+            deployment,
+            journal,
+            keeper,
+            replay,
+            authority,
+            limits,
+            work_limit,
+        } = parts;
+        let resources = Box::new(BootstrapResources {
+            deployment,
+            journal,
+            keeper,
+            replay,
+            authority,
+            limits,
+            work_limit,
+            rollover_custody,
+        });
         let worker = match av_recovered_startup::Worker::new(resources) {
             Ok(worker) => worker,
-            Err(resources) => return Err(Box::new(ReuseRefusal::AvUnsettled {
-                bridge, tail, av: retirement_from_resources(sink, resources, fenced), origin, key, camera_claim,
-            })),
+            Err(resources) => {
+                return Err(Box::new(ReuseRefusal::AvUnsettled {
+                    bridge,
+                    tail,
+                    av: retirement_from_resources(sink, resources, fenced),
+                    origin,
+                    key,
+                    camera_claim,
+                }));
+            }
         };
-        Ok(Box::new(ReuseVerification { bridge, tail, sink, origin, key, camera_claim, worker,
-            started: false, start_refused: false, verified: false, stopped: false }))
+        Ok(Box::new(ReuseVerification {
+            bridge,
+            tail,
+            sink,
+            origin,
+            key,
+            camera_claim,
+            worker,
+            started: false,
+            start_refused: false,
+            verified: false,
+            stopped: false,
+        }))
     }
 
     #[inline(never)]
@@ -1033,7 +1207,11 @@ impl<'scope, 'task, 'policy> Transition<'scope, 'task, 'policy> {
             plan: source_plan,
             ..
         } = tail;
-        let av_worker::UnknownTimeRetirement { parts, rollover_custody, .. } = *av;
+        let av_worker::UnknownTimeRetirement {
+            parts,
+            rollover_custody,
+            ..
+        } = *av;
         let av_worker::UnknownTimeParts {
             sink,
             deployment,

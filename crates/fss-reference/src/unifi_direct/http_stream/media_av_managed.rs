@@ -186,7 +186,9 @@ impl DetachedParked {
     /// cancelled and retained instead of being silently discarded.
     pub fn abort(&mut self) {
         self.parts.aborted = true;
-        if let Some(creator) = &self.parts.creator { creator.abort(); }
+        if let Some(creator) = &self.parts.creator {
+            creator.abort();
+        }
         match self.parts.owner.as_mut() {
             Some(Owner::Recording(driver)) => driver.abort(),
             Some(Owner::Preflight(worker, _)) => worker.abort(),
@@ -198,13 +200,21 @@ impl DetachedParked {
     /// Join the admitted creator and retain its exact completion in `parts`.
     /// A false result does not itself prove that no work remains.
     pub async fn join_creator(&mut self) -> bool {
-        if self.parts.creator_completion.is_some() { return true; }
-        if !self.parts.creator_started { return false; }
-        let Some(worker) = self.parts.creator.as_mut() else { return false; };
+        if self.parts.creator_completion.is_some() {
+            return true;
+        }
+        if !self.parts.creator_started {
+            return false;
+        }
+        let Some(worker) = self.parts.creator.as_mut() else {
+            return false;
+        };
         if let Some(done) = worker.join().await {
             self.parts.creator_completion = Some(done);
             true
-        } else { false }
+        } else {
+            false
+        }
     }
 }
 
@@ -212,8 +222,22 @@ impl<'scope, 'task> Parked<'scope, 'task> {
     /// Separate the scoped clock while retaining all policy and worker state.
     /// This does not cancel, join, or authorize resumption of any work.
     pub fn split_scope(self: Box<Self>) -> (MeteredClock<'scope, 'task>, Box<DetachedParked>) {
-        let Self { parts, custody_limit, previous_key, camera_claim, clock } = *self;
-        (clock, Box::new(DetachedParked { parts, custody_limit, previous_key, camera_claim }))
+        let Self {
+            parts,
+            custody_limit,
+            previous_key,
+            camera_claim,
+            clock,
+        } = *self;
+        (
+            clock,
+            Box::new(DetachedParked {
+                parts,
+                custody_limit,
+                previous_key,
+                camera_claim,
+            }),
+        )
     }
 
     /// Recover every retained non-recording owner without starting work.
@@ -248,7 +272,10 @@ impl<'scope, 'task> Parked<'scope, 'task> {
             return Err((self, driver));
         }
         self.parts.owner = Some(Owner::Recording(driver));
-        Ok(Box::new(Managed { parts: self.parts, custody_limit: self.custody_limit }))
+        Ok(Box::new(Managed {
+            parts: self.parts,
+            custody_limit: self.custody_limit,
+        }))
     }
 }
 
@@ -265,7 +292,10 @@ impl Managed {
 
     /// Whether a creator or rollover attempt still requires joining.
     pub fn is_background_running(&self) -> bool {
-        self.parts.creator.as_ref().is_some_and(|worker| worker.is_running())
+        self.parts
+            .creator
+            .as_ref()
+            .is_some_and(|worker| worker.is_running())
             || match &self.parts.owner {
                 Some(Owner::Preflight(worker, _)) => worker.is_running(),
                 Some(Owner::Switching(worker, _)) => worker.is_running(),
@@ -273,8 +303,12 @@ impl Managed {
             }
     }
 
-    pub(super) fn matches_listener(&self, listener: &crate::unifi_direct::listener::Listener<'_, '_, '_>) -> bool {
-        !self.parts.aborted && matches!(self.parts.owner.as_ref(), Some(Owner::Recording(driver))
+    pub(super) fn matches_listener(
+        &self,
+        listener: &crate::unifi_direct::listener::Listener<'_, '_, '_>,
+    ) -> bool {
+        !self.parts.aborted
+            && matches!(self.parts.owner.as_ref(), Some(Owner::Recording(driver))
             if !driver.is_halted() && driver.matches_listener(listener))
     }
 
@@ -292,7 +326,8 @@ impl Managed {
         cx: &Cx,
         clock: MeteredClock<'scope, 'task>,
     ) -> Result<(Box<Parked<'scope, 'task>>, Box<archive::Parts>), Box<Self>> {
-        if self.parts.aborted || !clock.matches(task, cx)
+        if self.parts.aborted
+            || !clock.matches(task, cx)
             || !matches!(self.parts.owner.as_ref(), Some(Owner::Recording(driver)) if driver.is_halted() && driver.bound_to_task(task))
         {
             return Err(self);
@@ -445,7 +480,9 @@ impl Managed {
     }
 
     /// Join only the active A/V attempt; the caller owns any completion.
-    pub async fn join_recording_av(&mut self) -> Option<crate::unifi_direct::av_worker::UnknownTimeCompletion> {
+    pub async fn join_recording_av(
+        &mut self,
+    ) -> Option<crate::unifi_direct::av_worker::UnknownTimeCompletion> {
         match self.parts.owner.as_mut() {
             Some(Owner::Recording(driver)) => driver.join_av().await,
             _ => None,
@@ -510,7 +547,8 @@ impl Managed {
         // A stopped source must not start or plan additional archive work.
         // Any already-admitted creator remains owned and can be joined via
         // `join_creator`; this check does not assert quiescence or recovery.
-        if matches!(self.parts.owner.as_ref(), Some(Owner::Recording(driver)) if driver.is_halted()) {
+        if matches!(self.parts.owner.as_ref(), Some(Owner::Recording(driver)) if driver.is_halted())
+        {
             return Step::Recording(archive::AllowanceStep::Recording(archive::Step::Halted));
         }
 
@@ -709,21 +747,42 @@ impl Managed {
                 return Step::OwnershipUnavailable;
             }
         };
-        let Created { root, replay, io, journal_limits, switch_custody, supplies } = created;
+        let Created {
+            root,
+            replay,
+            io,
+            journal_limits,
+            switch_custody,
+            supplies,
+        } = created;
         match archive::RolloverPreflight::prepare(*driver, supplies) {
             Ok(preflight) => {
                 self.parts.custody.push_back(Custody {
                     identity,
-                    storage: SupplyCustody { root, replay, io, journal_limits, switch_custody },
+                    storage: SupplyCustody {
+                        root,
+                        replay,
+                        io,
+                        journal_limits,
+                        switch_custody,
+                    },
                 });
                 self.parts.owner = Some(Owner::Preflight(Box::new(preflight), false));
                 Step::PreflightPrepared
             }
             Err(refusal) => {
                 self.parts.owner = Some(Owner::Recording(Box::new(refusal.driver)));
-                self.parts.ready = Some((identity, Created {
-                    root, replay, io, journal_limits, switch_custody, supplies: refusal.supplies,
-                }));
+                self.parts.ready = Some((
+                    identity,
+                    Created {
+                        root,
+                        replay,
+                        io,
+                        journal_limits,
+                        switch_custody,
+                        supplies: refusal.supplies,
+                    },
+                ));
                 self.parts.rollover_refused = true;
                 Step::InterventionRequired
             }
@@ -739,14 +798,14 @@ impl Managed {
         match owner {
             Owner::Preflight(worker, started) => match worker.finish_boxed() {
                 Ok(result) => match *result {
-                archive::RolloverPreflightResult::Ready(worker) => {
-                    self.parts.owner = Some(Owner::Switching(Box::new(worker), false));
-                    Step::PreflightReady
-                }
-                stopped => {
-                    self.parts.owner = Some(Owner::PreflightStopped(Box::new(stopped)));
-                    Step::RolloverStopped
-                }
+                    archive::RolloverPreflightResult::Ready(worker) => {
+                        self.parts.owner = Some(Owner::Switching(Box::new(worker), false));
+                        Step::PreflightReady
+                    }
+                    stopped => {
+                        self.parts.owner = Some(Owner::PreflightStopped(Box::new(stopped)));
+                        Step::RolloverStopped
+                    }
                 },
                 Err(worker) => {
                     self.parts.owner = Some(Owner::Preflight(worker, started));
@@ -755,14 +814,14 @@ impl Managed {
             },
             Owner::Switching(worker, started) => match worker.finish_boxed() {
                 Ok(result) => match *result {
-                archive::RolloverResult::Resumed { driver, receipt } => {
-                    self.parts.owner = Some(Owner::Recording(Box::new(driver)));
-                    Step::Resumed(receipt)
-                }
-                stopped => {
-                    self.parts.owner = Some(Owner::SwitchStopped(Box::new(stopped)));
-                    Step::RolloverStopped
-                }
+                    archive::RolloverResult::Resumed { driver, receipt } => {
+                        self.parts.owner = Some(Owner::Recording(Box::new(driver)));
+                        Step::Resumed(receipt)
+                    }
+                    stopped => {
+                        self.parts.owner = Some(Owner::SwitchStopped(Box::new(stopped)));
+                        Step::RolloverStopped
+                    }
                 },
                 Err(worker) => {
                     self.parts.owner = Some(Owner::Switching(worker, started));

@@ -32,11 +32,14 @@ pub struct Fixture {
     pub extras: Vec<ContentDigest>,
 }
 impl Fixture {
-    pub fn new(label: &str) -> TestResult<Self> { Self::with_extra(label, 0) }
+    pub fn new(label: &str) -> TestResult<Self> {
+        Self::with_extra(label, 0)
+    }
     pub fn with_extra(label: &str, extra: usize) -> TestResult<Self> {
         for attempt in 0..32 {
             let directory = std::env::temp_dir().join(format!(
-                "fss-agent-custody-{label}-{}-{attempt}", std::process::id(),
+                "fss-agent-custody-{label}-{}-{attempt}",
+                std::process::id(),
             ));
             match fs::create_dir(&directory) {
                 Ok(()) => return Self::populate(directory, extra),
@@ -52,7 +55,9 @@ impl Fixture {
         let mut deployment = ReferenceDeployment::open(&root, SITE, &cx)?;
         let interval = CaptureInterval::new(TimestampNs(0), TimestampNs(1))?;
         let slot = SlotName::parse("custody-source")?;
-        let extra_bytes: Vec<_> = (0..extra).map(|n| format!("private additional source {n}").into_bytes()).collect();
+        let extra_bytes: Vec<_> = (0..extra)
+            .map(|n| format!("private additional source {n}").into_bytes())
+            .collect();
         let mut objects = vec![SOURCE, COUNTER];
         objects.extend(extra_bytes.iter().map(Vec::as_slice));
         let staged = deployment.stage_and_publish(&slot, &objects, &cx)?;
@@ -61,39 +66,75 @@ impl Fixture {
         let counter = ContentDigest::sha256(COUNTER);
         let policy = ContentDigest::sha256(b"uncalibrated synthetic custody fixture");
         let edge = |digest, relation: EvidenceEdgeRelation| EventEvidence {
-            digest, class: EvidenceClass::Observed, failure_domain: "sensor:custody".to_owned(),
-            supports: relation.required_supports_flag(), relation,
-            capsule_digest: None, identity_digest: None,
+            digest,
+            class: EvidenceClass::Observed,
+            failure_domain: "sensor:custody".to_owned(),
+            supports: relation.required_supports_flag(),
+            relation,
+            capsule_digest: None,
+            identity_digest: None,
         };
         let event = EventHypothesis {
-            schema: EventHypothesis::SCHEMA.to_owned(), event_id: EventId::parse(EVENT)?,
-            revision: 1, supersedes: None, state: EventState::Indeterminate,
-            kind: EventKind::Unclassified, interval,
+            schema: EventHypothesis::SCHEMA.to_owned(),
+            event_id: EventId::parse(EVENT)?,
+            revision: 1,
+            supersedes: None,
+            state: EventState::Indeterminate,
+            kind: EventKind::Unclassified,
+            interval,
             uncertainty_reason: Some("custody does not adjudicate either observation".to_owned()),
-            zone_ids: vec!["fixture-zone".to_owned()], track_ids: vec![],
-            probability: ProbabilityInterval { lower: 0.0, upper: 1.0, calibration_generation: None },
-            evidence: vec![edge(source, EvidenceEdgeRelation::Supports), edge(counter, EvidenceEdgeRelation::Contradicts)],
+            zone_ids: vec!["fixture-zone".to_owned()],
+            track_ids: vec![],
+            probability: ProbabilityInterval {
+                lower: 0.0,
+                upper: 1.0,
+                calibration_generation: None,
+            },
+            evidence: vec![
+                edge(source, EvidenceEdgeRelation::Supports),
+                edge(counter, EvidenceEdgeRelation::Contradicts),
+            ],
             model_receipts: vec![staged.root],
             decision_path: DecisionPath {
-                policy_generation: policy, fingerprint: policy, abstained: true,
+                policy_generation: policy,
+                fingerprint: policy,
+                abstained: true,
                 abstention_reason: Some("uncalibrated reference fixture".to_owned()),
             },
         };
         event.verify()?;
-        let receipt = deployment.publish_event(&ReferencePolicyDecision {
-            event: event.clone(), action: ReferencePolicyAction::Hold,
-        }, &cx)?;
+        let receipt = deployment.publish_event(
+            &ReferencePolicyDecision {
+                event: event.clone(),
+                action: ReferencePolicyAction::Hold,
+            },
+            &cx,
+        )?;
         drop(deployment);
-        Ok(Self { directory, root, event, event_root: receipt.event_root,
-            provenance: staged.root, source, counter,
-            extras: extra_bytes.iter().map(|b| ContentDigest::sha256(b)).collect() })
+        Ok(Self {
+            directory,
+            root,
+            event,
+            event_root: receipt.event_root,
+            provenance: staged.root,
+            source,
+            counter,
+            extras: extra_bytes
+                .iter()
+                .map(|b| ContentDigest::sha256(b))
+                .collect(),
+        })
     }
     pub fn object_path(&self, digest: ContentDigest) -> PathBuf {
-        self.root.join("objects/spool/objects").join(digest.to_text().trim_start_matches("sha256:"))
+        self.root
+            .join("objects/spool/objects")
+            .join(digest.to_text().trim_start_matches("sha256:"))
     }
 }
 impl Drop for Fixture {
-    fn drop(&mut self) { let _ = fs::remove_dir_all(&self.directory); }
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.directory);
+    }
 }
 
 pub fn context(directory: &Path) -> TestResult<ReplayCx> {
@@ -101,12 +142,19 @@ pub fn context(directory: &Path) -> TestResult<ReplayCx> {
         trace_id: "trace:agent-custody".to_owned(),
         operation_id: OperationId::parse("operation:agent-custody")?,
         principal: "operator:agent-custody".to_owned(),
-        capabilities: vec![ADP_REPLAY_ROW_ID.to_owned()], deadline: None, priority: 10,
-        budgets: BudgetVector::default(), privacy_scope: "privacy:internal".to_owned(),
+        capabilities: vec![ADP_REPLAY_ROW_ID.to_owned()],
+        deadline: None,
+        priority: 10,
+        budgets: BudgetVector::default(),
+        privacy_scope: "privacy:internal".to_owned(),
         retention_scope: "retention:ephemeral".to_owned(),
-        anchor_universe: ContentDigest::sha256(b"agent-custody"), generation: 1,
+        anchor_universe: ContentDigest::sha256(b"agent-custody"),
+        generation: 1,
     })?;
-    Ok(ReplayCx::new(ReplayIoAuthority::from_context_authority(&authority, directory.join("cx"))?))
+    Ok(ReplayCx::new(ReplayIoAuthority::from_context_authority(
+        &authority,
+        directory.join("cx"),
+    )?))
 }
 
 pub fn inventory(root: &Path) -> TestResult<BTreeMap<PathBuf, Vec<u8>>> {
@@ -115,8 +163,11 @@ pub fn inventory(root: &Path) -> TestResult<BTreeMap<PathBuf, Vec<u8>>> {
     while let Some(dir) = pending.pop() {
         for entry in fs::read_dir(dir)? {
             let entry = entry?;
-            if entry.file_type()?.is_dir() { pending.push(entry.path()); }
-            else { result.insert(entry.path(), fs::read(entry.path())?); }
+            if entry.file_type()?.is_dir() {
+                pending.push(entry.path());
+            } else {
+                result.insert(entry.path(), fs::read(entry.path())?);
+            }
         }
     }
     Ok(result)

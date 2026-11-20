@@ -18,6 +18,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Instant;
 
+use fss_core::json_input::{Value, parse as parse_json};
 use fss_core::{BudgetVector, ContentDigest, ContextAuthority, OperationId, RootAuthoritySpec};
 use fss_reference::ingest::mjpeg::{
     JpegFinding, JpegFrameSpan, JpegScan, JpegSplitError, MjpegLimits, OmissionReason,
@@ -236,220 +237,6 @@ fn named_outcomes_json(named: &[(&str, Outcome)]) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Pure-Rust minimal JSON parser for fixture manifest validation
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, PartialEq)]
-enum JsonVal {
-    Null,
-    Bool(bool),
-    Number(i64),
-    String(String),
-    Array(Vec<JsonVal>),
-    Object(Vec<(String, JsonVal)>),
-}
-
-impl JsonVal {
-    fn as_str(&self) -> Option<&str> {
-        match self {
-            Self::String(s) => Some(s.as_str()),
-            _ => None,
-        }
-    }
-
-    fn as_i64(&self) -> Option<i64> {
-        match self {
-            Self::Number(n) => Some(*n),
-            _ => None,
-        }
-    }
-
-    fn as_array(&self) -> Option<&[JsonVal]> {
-        match self {
-            Self::Array(arr) => Some(arr.as_slice()),
-            _ => None,
-        }
-    }
-
-    fn get(&self, key: &str) -> Option<&JsonVal> {
-        match self {
-            Self::Object(entries) => {
-                for (k, v) in entries {
-                    if k == key {
-                        return Some(v);
-                    }
-                }
-                None
-            }
-            _ => None,
-        }
-    }
-}
-
-struct JsonParser<'a> {
-    chars: &'a [u8],
-    pos: usize,
-}
-
-impl<'a> JsonParser<'a> {
-    fn new(chars: &'a [u8]) -> Self {
-        Self { chars, pos: 0 }
-    }
-
-    fn skip_ws(&mut self) {
-        while self.pos < self.chars.len()
-            && matches!(self.chars[self.pos], b' ' | b'\t' | b'\r' | b'\n')
-        {
-            self.pos += 1;
-        }
-    }
-
-    fn parse_val(&mut self) -> Result<JsonVal, Box<dyn Error>> {
-        self.skip_ws();
-        if self.pos >= self.chars.len() {
-            return Err("unexpected EOF in json".into());
-        }
-        match self.chars[self.pos] {
-            b'n' => {
-                if self.chars[self.pos..].starts_with(b"null") {
-                    self.pos += 4;
-                    Ok(JsonVal::Null)
-                } else {
-                    Err("expected null".into())
-                }
-            }
-            b't' => {
-                if self.chars[self.pos..].starts_with(b"true") {
-                    self.pos += 4;
-                    Ok(JsonVal::Bool(true))
-                } else {
-                    Err("expected true".into())
-                }
-            }
-            b'f' => {
-                if self.chars[self.pos..].starts_with(b"false") {
-                    self.pos += 5;
-                    Ok(JsonVal::Bool(false))
-                } else {
-                    Err("expected false".into())
-                }
-            }
-            b'"' => self.parse_str().map(JsonVal::String),
-            b'[' => self.parse_arr(),
-            b'{' => self.parse_obj(),
-            b'-' | b'0'..=b'9' => self.parse_num(),
-            other => Err(format!("unexpected char in json: {}", other as char).into()),
-        }
-    }
-
-    fn parse_str(&mut self) -> Result<String, Box<dyn Error>> {
-        self.pos += 1; // skip opening quote
-        let mut s = String::new();
-        while self.pos < self.chars.len() {
-            let b = self.chars[self.pos];
-            self.pos += 1;
-            if b == b'"' {
-                return Ok(s);
-            }
-            if b == b'\\' {
-                if self.pos >= self.chars.len() {
-                    return Err("unexpected EOF after escape".into());
-                }
-                let esc = self.chars[self.pos];
-                self.pos += 1;
-                match esc {
-                    b'"' => s.push('"'),
-                    b'\\' => s.push('\\'),
-                    b'/' => s.push('/'),
-                    b'b' => s.push('\x08'),
-                    b'f' => s.push('\x0c'),
-                    b'n' => s.push('\n'),
-                    b'r' => s.push('\r'),
-                    b't' => s.push('\t'),
-                    _ => s.push(esc as char),
-                }
-            } else {
-                s.push(b as char);
-            }
-        }
-        Err("unterminated string".into())
-    }
-
-    fn parse_num(&mut self) -> Result<JsonVal, Box<dyn Error>> {
-        let start = self.pos;
-        if self.pos < self.chars.len() && self.chars[self.pos] == b'-' {
-            self.pos += 1;
-        }
-        while self.pos < self.chars.len() && self.chars[self.pos].is_ascii_digit() {
-            self.pos += 1;
-        }
-        let s = std::str::from_utf8(&self.chars[start..self.pos])?;
-        let n: i64 = s.parse()?;
-        Ok(JsonVal::Number(n))
-    }
-
-    fn parse_arr(&mut self) -> Result<JsonVal, Box<dyn Error>> {
-        self.pos += 1; // skip [
-        let mut arr = Vec::new();
-        loop {
-            self.skip_ws();
-            if self.pos < self.chars.len() && self.chars[self.pos] == b']' {
-                self.pos += 1;
-                return Ok(JsonVal::Array(arr));
-            }
-            let item = self.parse_val()?;
-            arr.push(item);
-            self.skip_ws();
-            if self.pos < self.chars.len() && self.chars[self.pos] == b',' {
-                self.pos += 1;
-            } else if self.pos < self.chars.len() && self.chars[self.pos] == b']' {
-                self.pos += 1;
-                return Ok(JsonVal::Array(arr));
-            } else {
-                return Err("expected , or ] in array".into());
-            }
-        }
-    }
-
-    fn parse_obj(&mut self) -> Result<JsonVal, Box<dyn Error>> {
-        self.pos += 1; // skip {
-        let mut fields = Vec::new();
-        loop {
-            self.skip_ws();
-            if self.pos < self.chars.len() && self.chars[self.pos] == b'}' {
-                self.pos += 1;
-                return Ok(JsonVal::Object(fields));
-            }
-            if self.pos >= self.chars.len() || self.chars[self.pos] != b'"' {
-                return Err("expected string key in object".into());
-            }
-            let key = self.parse_str()?;
-            self.skip_ws();
-            if self.pos >= self.chars.len() || self.chars[self.pos] != b':' {
-                return Err("expected : after object key".into());
-            }
-            self.pos += 1; // skip :
-            let val = self.parse_val()?;
-            fields.push((key, val));
-            self.skip_ws();
-            if self.pos < self.chars.len() && self.chars[self.pos] == b',' {
-                self.pos += 1;
-            } else if self.pos < self.chars.len() && self.chars[self.pos] == b'}' {
-                self.pos += 1;
-                return Ok(JsonVal::Object(fields));
-            } else {
-                return Err("expected , or } in object".into());
-            }
-        }
-    }
-}
-
-fn parse_json(input: &[u8]) -> Result<JsonVal, Box<dyn Error>> {
-    let mut parser = JsonParser::new(input);
-    parser.parse_val()
-}
-
-// ---------------------------------------------------------------------------
 // Helpers for building valid test JPEG structures
 // ---------------------------------------------------------------------------
 
@@ -572,6 +359,87 @@ fn test_cancellation_checkpoints() -> Result<(), Box<dyn Error>> {
         duration_ms,
     );
     assert_eq!(res, Err(JpegSplitError::CancellationRequested));
+    Ok(())
+}
+
+#[test]
+fn marker_search_across_blocks_preserves_frames_and_observes_cancellation()
+-> Result<(), Box<dyn Error>> {
+    let started = Instant::now();
+    let jpeg = include_bytes!("../../../tests/fixtures/media/jpeg/gray_16x16_flat.jpg");
+    let block = 64 * 1024;
+    let limits = MjpegLimits::default();
+    let mut bytes = vec![0; block - 1];
+    bytes.extend_from_slice(jpeg);
+    let second_start = bytes.len() + block;
+    bytes.resize(second_start, 0xff);
+    bytes.extend_from_slice(jpeg);
+    let scan = split_jpeg_stream(&bytes, &limits, None)?;
+    let spans: Vec<_> = scan
+        .frames
+        .iter()
+        .map(|f| (f.start_offset, f.len()))
+        .collect();
+    let omissions: Vec<_> = scan
+        .omissions
+        .iter()
+        .map(|o| (o.start_offset, o.end_offset))
+        .collect();
+    let search = test_cx("search-block")?;
+    search.set_cancel_at_checkpoint_occurrence("split_jpeg_stream.find_soi", 3);
+    let interrupted = split_jpeg_stream(&bytes, &limits, Some(&search));
+    let empty = test_cx("cancel-empty")?;
+    empty.request_cancellation();
+    let empty_result = split_jpeg_stream(&[], &limits, Some(&empty));
+
+    // JPEG marker fill is allowed immediately before EOI, including inside scan data.
+    let mut fill = jpeg[..jpeg.len() - 2].to_vec();
+    fill.resize(fill.len() + block * 2, 0xff);
+    fill.extend_from_slice(&[0xff, 0xd9]);
+    let padded = split_jpeg_stream(&fill, &limits, None)?;
+    let padding = test_cx("cancel-fill")?;
+    padding.set_cancel_at_checkpoint("split_jpeg_stream.marker_run");
+    let fill_result = split_jpeg_stream(&fill, &limits, Some(&padding));
+    let record = caplog_support::Record::new("marker_search_across_blocks")
+        .check(
+            "spans",
+            [(block - 1, jpeg.len()), (second_start, jpeg.len())],
+            spans,
+        )
+        .check(
+            "omissions",
+            [(0, block - 1), (block - 1 + jpeg.len(), second_start)],
+            omissions,
+        )
+        .check(
+            "exact_jpegs",
+            true,
+            scan.frames
+                .iter()
+                .all(|f| f.slice(&bytes) == Some(jpeg.as_slice())),
+        )
+        .check("padded_complete", 1_usize, padded.valid_frame_count())
+        .check(
+            "padded_length",
+            Some(fill.len()),
+            padded.frames.first().map(JpegFrameSpan::len),
+        )
+        .check(
+            "cancellation_refused",
+            [true; 3],
+            [interrupted, empty_result, fill_result]
+                .map(|r| r == Err(JpegSplitError::CancellationRequested)),
+        )
+        .check(
+            "drained",
+            [true; 3],
+            [&search, &empty, &padding].map(ReplayCx::is_drain_completed),
+        );
+    assert!(
+        record.emit(started.elapsed().as_millis().max(1)),
+        "{}",
+        record.observed_json()
+    );
     Ok(())
 }
 
@@ -1148,223 +1016,261 @@ fn test_synthetic_stream_variants() -> Result<(), Box<dyn Error>> {
 // Step 9: Fixture manifest equality and delegated JPEG fixtures
 // ---------------------------------------------------------------------------
 
+fn manifest_field<'a>(row: &'a Value, key: &str) -> Option<&'a Value> {
+    row.object()?.get(key)
+}
+
+fn manifest_number(row: &Value, key: &str) -> Result<usize, String> {
+    manifest_field(row, key)
+        .and_then(|v| match v {
+            Value::Number(n) => n.parse().ok(),
+            _ => None,
+        })
+        .ok_or_else(|| format!("missing or invalid {key}"))
+}
+
+fn manifest_text<'a>(row: &'a Value, key: &str) -> Result<&'a str, String> {
+    manifest_field(row, key)
+        .and_then(Value::text)
+        .ok_or_else(|| format!("missing {key}"))
+}
+
+fn check_recorded_fixture(
+    dir: &std::path::Path,
+    jpeg: bool,
+    row: &Value,
+) -> Result<(), Box<dyn Error>> {
+    let start = Instant::now();
+    let name = manifest_text(row, "name")?;
+    let bytes = fs::read(dir.join(name))?;
+    let file_size = manifest_number(row, "file_size")?;
+    let file_sha = manifest_text(row, "file_sha256")?;
+    let frame_rows = if jpeg {
+        std::slice::from_ref(row)
+    } else {
+        manifest_field(row, "frames")
+            .and_then(Value::array)
+            .ok_or("missing frames")?
+    };
+    let frame_count = if jpeg {
+        1
+    } else {
+        manifest_number(row, "frame_count")?
+    };
+    let truncated_last =
+        manifest_field(row, "variant").and_then(Value::text) == Some("truncated_last");
+    let mut spans = Vec::new();
+    let mut dimensions = Vec::new();
+    let mut digests = Vec::new();
+    let mut completion = Vec::new();
+    let mut findings = Vec::new();
+    let mut omissions = Vec::new();
+    let mut previous_end = 0;
+    for (i, frame) in frame_rows.iter().enumerate() {
+        let (index, offset, length, hash) = if jpeg {
+            (0, 0, file_size, file_sha)
+        } else {
+            (
+                manifest_number(frame, "index")?,
+                manifest_number(frame, "offset")?,
+                manifest_number(frame, "length")?,
+                manifest_text(frame, "frame_sha256")?,
+            )
+        };
+        if i != index || offset < previous_end {
+            return Err(format!("{name}: unordered manifest frame {index}").into());
+        }
+        if offset > previous_end {
+            omissions.push((previous_end, offset));
+            let gap = if i == 0 {
+                JpegFinding::GarbageBeforeFirstSoi {
+                    start_offset: 0,
+                    end_offset: offset,
+                }
+            } else {
+                JpegFinding::GarbageBetweenFrames {
+                    preceding_frame_index: i - 1,
+                    start_offset: previous_end,
+                    end_offset: offset,
+                }
+            };
+            findings.push(gap);
+        }
+        previous_end = offset.checked_add(length).ok_or("invalid manifest span")?;
+        let truncated = truncated_last && i + 1 == frame_rows.len();
+        if truncated {
+            findings.push(JpegFinding::TruncatedFrame {
+                frame_index: i,
+                start_offset: offset,
+                end_offset: previous_end,
+            });
+        }
+        spans.push((index, (offset, length)));
+        dimensions.push(Some((
+            manifest_number(frame, "width")?,
+            manifest_number(frame, "height")?,
+        )));
+        digests.push(hash);
+        completion.push((!truncated, truncated));
+    }
+    if !spans.is_empty() && previous_end < file_size {
+        omissions.push((previous_end, file_size));
+        findings.push(JpegFinding::TrailingGarbage {
+            start_offset: previous_end,
+            end_offset: file_size,
+        });
+    }
+
+    let limits = MjpegLimits::default();
+    let result = split_jpeg_stream(&bytes, &limits, None);
+    let frames = result
+        .as_ref()
+        .map_or(&[][..], |scan| scan.frames.as_slice());
+    let observed_findings = result
+        .as_ref()
+        .map_or(&[][..], |scan| scan.findings.as_slice());
+    let mut record = caplog_support::Record::new(&format!("fixture_{name}"))
+        .check("file_bytes", file_size, bytes.len())
+        .check("file_sha256", file_sha, sha256_hex(&bytes))
+        .check("frame_count", frame_count, frames.len())
+        .check(
+            "scanned_bytes",
+            (file_size > 0).then_some(file_size),
+            result.as_ref().ok().map(|scan| scan.total_bytes_scanned),
+        )
+        .check(
+            "omission_spans",
+            omissions,
+            result
+                .iter()
+                .flat_map(|scan| {
+                    scan.omissions
+                        .iter()
+                        .map(|o| (o.start_offset, o.end_offset))
+                })
+                .collect::<Vec<_>>(),
+        )
+        .check(
+            "spans",
+            spans,
+            frames
+                .iter()
+                .map(|f| (f.frame_index, (f.start_offset, f.len())))
+                .collect::<Vec<_>>(),
+        )
+        .check(
+            "dimensions",
+            dimensions,
+            frames
+                .iter()
+                .map(|f| {
+                    f.sof
+                        .as_ref()
+                        .map(|s| (usize::from(s.width), usize::from(s.height)))
+                })
+                .collect::<Vec<_>>(),
+        )
+        .check(
+            "frame_sha256",
+            digests,
+            frames
+                .iter()
+                .map(|f| f.slice(&bytes).map(sha256_hex))
+                .collect::<Vec<_>>(),
+        )
+        .check(
+            "eoi_truncated",
+            completion,
+            frames
+                .iter()
+                .map(|f| (f.has_eoi, f.is_truncated))
+                .collect::<Vec<_>>(),
+        )
+        .check(
+            "findings",
+            findings
+                .iter()
+                .map(|f| format!("{f:?}"))
+                .collect::<Vec<_>>(),
+            observed_findings
+                .iter()
+                .map(|f| format!("{f:?}"))
+                .collect::<Vec<_>>(),
+        )
+        .check(
+            "error",
+            (file_size == 0).then_some("NoSoi"),
+            result.as_ref().err().map(|e| format!("{e:?}")),
+        )
+        .check(
+            "repeatable",
+            true,
+            result == split_jpeg_stream(&bytes, &limits, None),
+        );
+    if jpeg {
+        record = record
+            .check(
+                "components",
+                manifest_number(row, "channels")?,
+                frames
+                    .first()
+                    .and_then(|f| f.sof.as_ref())
+                    .map(|sof| sof.components),
+            )
+            .check(
+                "restart_interval",
+                manifest_number(row, "restart_interval")?,
+                frames.first().map(|f| f.restart_interval),
+            );
+    }
+    assert!(
+        record.emit(start.elapsed().as_millis().max(1)),
+        "fixture {name}: {}",
+        record.observed_json()
+    );
+    Ok(())
+}
+
 #[test]
 fn test_fixture_manifest_equality() -> Result<(), Box<dyn Error>> {
-    let start = Instant::now();
-    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(|p| p.parent())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-
-    let manifest_path = repo_root.join("tests/fixtures/media/mjpeg/fixture_manifest.json");
-    if !manifest_path.exists() {
-        let duration_ms = start.elapsed().as_millis().max(1);
-        let expected = r#"{"fixture_manifest_available":true}"#;
-        let observed = r#"{"fixture_manifest_available":false,"reason":"fixtures from fss-2h5zq.5 not present"}"#;
-        emit_caplog(
-            "fixture_manifest_equality",
-            "skip",
-            0,
-            expected,
-            observed,
-            duration_ms,
+    let media = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/media");
+    for (family, extension) in [("jpeg", "jpg"), ("mjpeg", "mjpeg")] {
+        let dir = media.join(family);
+        let manifest = parse_json(&fs::read_to_string(dir.join("fixture_manifest.json"))?)?;
+        assert_eq!(
+            manifest_text(&manifest, "schema")?,
+            format!("fss.{family}_fixture_manifest.v1")
         );
-        return Ok(());
-    }
-
-    let manifest_bytes = match fs::read(&manifest_path) {
-        Ok(b) => b,
-        Err(e) => {
-            let duration_ms = start.elapsed().as_millis().max(1);
-            let observed = format!(r#"{{"error":"{}"}}"#, escape_json_str(&e.to_string()));
-            emit_caplog(
-                "fixture_manifest_equality",
-                "fail",
-                1,
-                r#"{"fixture_manifest_available":true}"#,
-                &observed,
-                duration_ms,
-            );
-            return Err(Box::new(e));
+        let fixtures = manifest_field(&manifest, "fixtures")
+            .and_then(Value::array)
+            .ok_or("missing fixture rows")?;
+        let mut listed: Vec<&str> = fixtures
+            .iter()
+            .map(|f| manifest_text(f, "name"))
+            .collect::<Result<_, _>>()?;
+        listed.sort_unstable();
+        let mut present = Vec::new();
+        for path in fs::read_dir(&dir)? {
+            let path = path?.path();
+            if path.extension().is_some_and(|ext| ext == extension) {
+                present.push(
+                    path.file_name()
+                        .and_then(|s| s.to_str())
+                        .ok_or("non-UTF8 fixture name")?
+                        .to_owned(),
+                );
+            }
         }
-    };
-    let manifest_val = match parse_json(&manifest_bytes) {
-        Ok(v) => v,
-        Err(e) => {
-            let duration_ms = start.elapsed().as_millis().max(1);
-            let observed = format!(r#"{{"error":"{}"}}"#, escape_json_str(&e.to_string()));
-            emit_caplog(
-                "fixture_manifest_equality",
-                "fail",
-                1,
-                r#"{"fixture_manifest_available":true}"#,
-                &observed,
-                duration_ms,
-            );
-            return Err(e);
+        present.sort_unstable();
+        assert!(!listed.is_empty());
+        assert_eq!(
+            listed, present,
+            "{family} manifest and fixture directory differ"
+        );
+        for fixture in fixtures {
+            check_recorded_fixture(&dir, family == "jpeg", fixture)?;
         }
-    };
-    let mut failures: Vec<String> = Vec::new();
-    let schema_ok = manifest_val.get("schema").and_then(|s| s.as_str())
-        == Some("fss.mjpeg_fixture_manifest.v1");
-    if !schema_ok {
-        failures.push("manifest schema mismatch".to_string());
     }
-
-    let fixtures_opt = manifest_val.get("fixtures").and_then(|f| f.as_array());
-    let mjpeg_dir = repo_root.join("tests/fixtures/media/mjpeg");
-    let limits = MjpegLimits::default();
-    let mut verified_count = 0;
-    let total_fixtures = fixtures_opt.map_or(0, |arr| arr.len());
-
-    if let Some(fixtures) = fixtures_opt {
-        for f in fixtures {
-            let name = match f.get("name").and_then(|s| s.as_str()) {
-                Some(n) => n,
-                None => {
-                    failures.push("fixture entry missing name".to_string());
-                    continue;
-                }
-            };
-            let expected_frame_count = match f.get("frame_count").and_then(|n| n.as_i64()) {
-                Some(n) => n as usize,
-                None => {
-                    failures.push(format!("{name}: missing frame_count"));
-                    continue;
-                }
-            };
-            let expected_file_sha = match f.get("file_sha256").and_then(|s| s.as_str()) {
-                Some(s) => s,
-                None => {
-                    failures.push(format!("{name}: missing file_sha256"));
-                    continue;
-                }
-            };
-            let expected_file_size = match f.get("file_size").and_then(|n| n.as_i64()) {
-                Some(n) => n as usize,
-                None => {
-                    failures.push(format!("{name}: missing file_size"));
-                    continue;
-                }
-            };
-
-            let file_path = mjpeg_dir.join(name);
-            let bytes = match fs::read(&file_path) {
-                Ok(b) => b,
-                Err(e) => {
-                    failures.push(format!("{name}: read error {e}"));
-                    continue;
-                }
-            };
-            if bytes.len() != expected_file_size {
-                failures.push(format!(
-                    "{name}: size mismatch {} != {expected_file_size}",
-                    bytes.len()
-                ));
-                continue;
-            }
-
-            let actual_sha = sha256_hex(&bytes);
-            if actual_sha != expected_file_sha {
-                failures.push(format!(
-                    "{name}: sha256 mismatch {actual_sha} != {expected_file_sha}"
-                ));
-                continue;
-            }
-
-            if expected_file_size == 0 {
-                let res = split_jpeg_stream(&bytes, &limits, None);
-                if res != Err(JpegSplitError::NoSoi) {
-                    failures.push(format!("{name}: zero-size expected NoSoi, got {res:?}"));
-                } else {
-                    verified_count += 1;
-                }
-                continue;
-            }
-
-            let scan = match split_jpeg_stream(&bytes, &limits, None) {
-                Ok(s) => s,
-                Err(e) => {
-                    failures.push(format!("{name}: split error {e:?}"));
-                    continue;
-                }
-            };
-            if scan.frame_count() != expected_frame_count {
-                failures.push(format!(
-                    "{name}: frame_count mismatch {} != {expected_frame_count}",
-                    scan.frame_count()
-                ));
-                continue;
-            }
-
-            if expected_frame_count > 0 {
-                let expected_frames = match f.get("frames").and_then(|fr| fr.as_array()) {
-                    Some(ef) => ef,
-                    None => {
-                        failures.push(format!("{name}: missing frames array in fixture"));
-                        continue;
-                    }
-                };
-                if scan.frames.len() != expected_frames.len() {
-                    failures.push(format!(
-                        "{name}: frames len {} != {}",
-                        scan.frames.len(),
-                        expected_frames.len()
-                    ));
-                    continue;
-                }
-                let mut frames_ok = true;
-                for (idx, ef) in expected_frames.iter().enumerate() {
-                    let exp_w = ef.get("width").and_then(|n| n.as_i64()).unwrap_or(0) as u16;
-                    let exp_h = ef.get("height").and_then(|n| n.as_i64()).unwrap_or(0) as u16;
-                    let sof = match scan.frames.get(idx).and_then(|fr| fr.sof.as_ref()) {
-                        Some(s) => s,
-                        None => {
-                            failures.push(format!("{name} frame {idx}: missing SOF"));
-                            frames_ok = false;
-                            break;
-                        }
-                    };
-                    if sof.width != exp_w || sof.height != exp_h {
-                        failures.push(format!(
-                            "{name} frame {idx}: dimensions mismatch ({},{}) != ({exp_w},{exp_h})",
-                            sof.width, sof.height
-                        ));
-                        frames_ok = false;
-                        break;
-                    }
-                }
-                if !frames_ok {
-                    continue;
-                }
-            }
-            verified_count += 1;
-        }
-    } else {
-        failures.push("manifest missing fixtures array".to_string());
-    }
-
-    let duration_ms = start.elapsed().as_millis().max(1);
-    let passed = failures.is_empty() && total_fixtures > 0 && verified_count == total_fixtures;
-    // The record carries exactly the compared values: its verdict equals `passed`.
-    caplog_support::Record::new("fixture_manifest_equality")
-        .check("fixtures_listed", true, total_fixtures > 0)
-        .check("verified_fixtures", total_fixtures, verified_count)
-        .check("failures", Vec::<String>::new(), failures.clone())
-        .emit(duration_ms);
-
-    assert!(
-        passed,
-        "fixture manifest: {verified_count}/{total_fixtures} verified, failures {failures:?}"
-    );
-    assert!(
-        failures.is_empty(),
-        "Manifest verification failed: {failures:?}"
-    );
-    assert!(total_fixtures > 0, "manifest lists no fixtures");
-    assert_eq!(verified_count, total_fixtures);
-    assert!(schema_ok);
     Ok(())
 }
 

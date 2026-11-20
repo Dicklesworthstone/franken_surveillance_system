@@ -348,7 +348,9 @@ pub(in crate::ingest) fn encode_package(e: &mut CanonicalEncoder, limits: &Packa
         e.u64(value);
     }
 }
-pub(in crate::ingest) fn decode_package(d: &mut CanonicalDecoder<'_>) -> Result<PackageDetectLimits> {
+pub(in crate::ingest) fn decode_package(
+    d: &mut CanonicalDecoder<'_>,
+) -> Result<PackageDetectLimits> {
     let codecs = decode_limits(d)?;
     let expected = LongWatchLimits::default();
     if codecs.maximum_source_chunk_bytes != expected.maximum_source_chunk_bytes

@@ -91,10 +91,7 @@ impl ReplayTimestamp {
     /// calendar normalization, leap-second guess, or ambient input is consulted.
     pub fn parse(value: &str) -> Result<Self, ReplayError> {
         let bytes = value.as_bytes();
-        if !(16..=26).contains(&bytes.len())
-            || bytes[8] != b'T'
-            || bytes.last() != Some(&b'Z')
-        {
+        if !(16..=26).contains(&bytes.len()) || bytes[8] != b'T' || bytes.last() != Some(&b'Z') {
             return Err(ReplayError::Timestamp);
         }
         let year = decimal(&bytes[..4])? as u16;
@@ -143,8 +140,7 @@ impl ReplayTimestamp {
         for month in 1..self.month {
             days += u64::from(month_days(self.year, month));
         }
-        let seconds = ((days * 24 + u64::from(self.hour)) * 60 + u64::from(self.minute))
-            * 60
+        let seconds = ((days * 24 + u64::from(self.hour)) * 60 + u64::from(self.minute)) * 60
             + u64::from(self.second);
         u128::from(seconds) * NANOS_PER_SECOND + u128::from(self.nanosecond)
     }
@@ -277,23 +273,25 @@ fn decimal(bytes: &[u8]) -> Result<u32, ReplayError> {
     if bytes.is_empty() || !bytes.iter().all(u8::is_ascii_digit) {
         return Err(ReplayError::Timestamp);
     }
-    Ok(bytes.iter().fold(0, |value, byte| value * 10 + u32::from(byte - b'0')))
+    Ok(bytes
+        .iter()
+        .fold(0, |value, byte| value * 10 + u32::from(byte - b'0')))
 }
 
 fn month_days(year: u16, month: u8) -> u8 {
     match month {
-        2 if year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400)) => 29,
+        2 if year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400)) => {
+            29
+        }
         2 => 28,
         4 | 6 | 9 | 11 => 30,
         _ => 31,
     }
 }
 
-pub(super) fn validate_response_policy(
-    headers: &super::RtspHeaders,
-) -> Result<(), ReplayError> {
-    let rate_control = super::singleton(headers, "Rate-Control")
-        .map_err(|_| ReplayError::ResponsePolicy)?;
+pub(super) fn validate_response_policy(headers: &super::RtspHeaders) -> Result<(), ReplayError> {
+    let rate_control =
+        super::singleton(headers, "Rate-Control").map_err(|_| ReplayError::ResponsePolicy)?;
     let scale = super::singleton(headers, "Scale").map_err(|_| ReplayError::ResponsePolicy)?;
     // ONVIF does not require these echoes. A present contradictory assertion
     // cannot be treated as acceptance of our unpaced, forward request.
@@ -311,9 +309,9 @@ fn unit_scale(value: &str) -> bool {
         return false;
     }
     let value = value.strip_prefix('+').unwrap_or(value);
-    let (whole, fraction) = value.split_once('.').map_or((value, None), |(whole, fraction)| {
-        (whole, Some(fraction))
-    });
+    let (whole, fraction) = value
+        .split_once('.')
+        .map_or((value, None), |(whole, fraction)| (whole, Some(fraction)));
     !whole.is_empty()
         && whole.bytes().all(|byte| byte.is_ascii_digit())
         && whole.trim_start_matches('0') == "1"

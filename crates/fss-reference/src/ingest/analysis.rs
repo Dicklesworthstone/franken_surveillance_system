@@ -19,8 +19,8 @@ use super::recorded_decode::{ComponentInterpretation, DecodeLimits, RecordedDeco
 use super::tracking::{
     AssociationBudget, LocalBoxTracker, TrackingConfig, TrackingError, TrackingUpdate,
 };
-use crate::retained_source::RetainedSource;
 use crate::ReplayCx;
+use crate::retained_source::RetainedSource;
 
 /// Hard ceiling for one complete, non-truncated report.
 pub const MAX_ANALYSIS_FRAMES: usize = 256;

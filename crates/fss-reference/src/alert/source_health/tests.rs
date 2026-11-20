@@ -5,7 +5,7 @@ use super::*;
 use crate::{ReferencePolicyAction, policy_decision_path};
 use fss_core::{
     BatchId, CaptureInterval, EventId, EventKind, EventState, EvidenceClass, EvidenceDelta,
-    ProbabilityInterval, TimestampNs,
+    EvidenceEdgeRelation, ProbabilityInterval, TimestampNs,
 };
 use fss_ledger::IncompleteTailPolicy;
 use std::cell::Cell;

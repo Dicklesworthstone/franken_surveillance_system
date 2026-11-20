@@ -22,7 +22,13 @@ use super::{
     CreatorObservation, Identity, OpenSwitchesError, OpenSwitchesRefusal, OpenedSwitches,
     ReservationError, ReservationRefusal, ReservedPlan, Worker,
 };
-use crate::{ReplayCx, unifi_direct::{archive::journal::rollover::{SelectedSwitch, SwitchPredecessor}, metered::MeteredClock}};
+use crate::{
+    ReplayCx,
+    unifi_direct::{
+        archive::journal::rollover::{SelectedSwitch, SwitchPredecessor},
+        metered::MeteredClock,
+    },
+};
 
 /// A single, explicitly selected operation. An evidence digest is a caller
 /// assertion, not proof that the underlying creator has been reconciled.
@@ -214,7 +220,8 @@ impl ReservationWorker {
                         ReservationRequest::ObservedCreator(observation) => {
                             state.inputs.plan.pending() == Some(observation.identity())
                         }
-                        ReservationRequest::Reserve | ReservationRequest::InspectSwitches { .. } => false,
+                        ReservationRequest::Reserve
+                        | ReservationRequest::InspectSwitches { .. } => false,
                     }
             })
     }
@@ -279,10 +286,21 @@ impl ReservationWorker {
                 .map_err(ReservationStartError::Task)?;
             task.checkpoint_for(RuntimeGrant::ObjectStage, custody, now, &BudgetVector::ZERO)
                 .map_err(ReservationStartError::Task)?;
-            if matches!(&state.inputs.request, ReservationRequest::InspectSwitches { .. }) {
-                for root in [state.inputs.journal_replay.root_dir(), state.inputs.custody_replay.root_dir()] {
-                    task.checkpoint_for(RuntimeGrant::ObjectStage, root.to_str().ok_or(ReservationStartError::Context)?, now, &BudgetVector::ZERO)
-                        .map_err(ReservationStartError::Task)?;
+            if matches!(
+                &state.inputs.request,
+                ReservationRequest::InspectSwitches { .. }
+            ) {
+                for root in [
+                    state.inputs.journal_replay.root_dir(),
+                    state.inputs.custody_replay.root_dir(),
+                ] {
+                    task.checkpoint_for(
+                        RuntimeGrant::ObjectStage,
+                        root.to_str().ok_or(ReservationStartError::Context)?,
+                        now,
+                        &BudgetVector::ZERO,
+                    )
+                    .map_err(ReservationStartError::Task)?;
                 }
             }
             state
@@ -335,9 +353,12 @@ impl ReservationWorker {
                 ReservationRequest::ObservedCreator(observation) => {
                     Action::Observed(observation.identity().clone())
                 }
-                ReservationRequest::InspectSwitches { predecessor, max_candidates, max_records, work_limit } => {
-                    Action::Inspect(*predecessor, *max_candidates, *max_records, *work_limit)
-                }
+                ReservationRequest::InspectSwitches {
+                    predecessor,
+                    max_candidates,
+                    max_records,
+                    work_limit,
+                } => Action::Inspect(*predecessor, *max_candidates, *max_records, *work_limit),
             };
             let outcome = match result {
                 Action::Reserve => {
@@ -366,15 +387,36 @@ impl ReservationWorker {
                     Err(error) => ReservationOutcome::ReconciliationRefused(error),
                 },
                 Action::Inspect(predecessor, max_candidates, max_records, work_limit) => {
-                    let cancelled = || aborted.load(Ordering::Acquire) || child.is_cancel_requested();
-                    let mut work = fss_geometry::WorkBudget::with_cancellation_probe(work_limit, &cancelled);
-                    match state.inputs.plan.open_switches_trusting_custody(max_candidates, max_records, &mut work, &journal) {
+                    let cancelled =
+                        || aborted.load(Ordering::Acquire) || child.is_cancel_requested();
+                    let mut work =
+                        fss_geometry::WorkBudget::with_cancellation_probe(work_limit, &cancelled);
+                    match state.inputs.plan.open_switches_trusting_custody(
+                        max_candidates,
+                        max_records,
+                        &mut work,
+                        &journal,
+                    ) {
                         Err(refusal) => ReservationOutcome::SwitchOpeningRefused(refusal),
-                        Ok(opened) if guard().is_err() => ReservationOutcome::SwitchInspectionCancelled(opened),
-                        Ok(mut opened) => match opened.select(&mut state.inputs.plan, predecessor, max_records, &mut work, &journal) {
-                            Ok(_) if guard().is_err() => ReservationOutcome::SwitchInspectionCancelled(opened),
-                            Ok(selected) => ReservationOutcome::SwitchesInspected { opened, selected },
-                            Err(error) => ReservationOutcome::SwitchSelectionRefused { opened, error },
+                        Ok(opened) if guard().is_err() => {
+                            ReservationOutcome::SwitchInspectionCancelled(opened)
+                        }
+                        Ok(mut opened) => match opened.select(
+                            &mut state.inputs.plan,
+                            predecessor,
+                            max_records,
+                            &mut work,
+                            &journal,
+                        ) {
+                            Ok(_) if guard().is_err() => {
+                                ReservationOutcome::SwitchInspectionCancelled(opened)
+                            }
+                            Ok(selected) => {
+                                ReservationOutcome::SwitchesInspected { opened, selected }
+                            }
+                            Err(error) => {
+                                ReservationOutcome::SwitchSelectionRefused { opened, error }
+                            }
                         },
                     }
                 }

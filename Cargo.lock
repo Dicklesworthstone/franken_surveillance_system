@@ -565,7 +565,6 @@ name = "fss-codec-mjpeg"
 version = "0.0.1"
 dependencies = [
  "fss-core",
- "fss-geometry",
  "fss-object",
  "fss-packet",
  "fss-publication",
@@ -662,6 +661,7 @@ dependencies = [
  "fss-codec-mjpeg",
  "fss-container",
  "fss-core",
+ "fss-fusion",
  "fss-geometry",
  "fss-graph-algorithms",
  "fss-ledger",

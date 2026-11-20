@@ -54,12 +54,7 @@ pub(super) fn derive<T: Projection>(
     for digest in candidates {
         checkpoint(cx)?;
         let projected = universe.with_proposals_omitted(&[digest], &evaluate)?;
-        if projected
-            .deletion()
-            .map(DeletionPlan::digest)
-            .transpose()?
-            == Some(digest)
-        {
+        if projected.deletion().map(DeletionPlan::digest).transpose()? == Some(digest) {
             if verified.is_some() {
                 return Err(DeletionError::RecordMismatch);
             }

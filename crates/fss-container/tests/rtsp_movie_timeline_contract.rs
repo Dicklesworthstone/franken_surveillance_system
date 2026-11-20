@@ -3,13 +3,17 @@
 //! This target proves component behavior, not retained custody, privacy authority, runtime,
 //! filesystem durability or CLI execution. Import/receipt pins are explicit fixture metadata.
 
+#[allow(dead_code)]
 #[path = "../../fss-reference/src/review_media/render/output.rs"]
 mod movie_output;
+#[allow(dead_code)]
 #[path = "../../fss-reference/src/review_media/render/timing.rs"]
 mod movie_timing;
 mod rtsp_movie_support;
+#[allow(dead_code)]
 #[path = "../../fss-cli/src/bin/fss-file/gray_matroska_stream/encoder.rs"]
 mod stream;
+#[allow(dead_code)]
 #[path = "../../fss-reference/src/ingest/recorded_decode/video_access_unit.rs"]
 mod video_access_unit;
 

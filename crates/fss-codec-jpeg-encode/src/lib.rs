@@ -16,6 +16,7 @@ mod tables;
 mod transform;
 
 use fss_core::{ContentDigest, Sha256Hasher};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Maximum admitted coded dimension on either axis.
@@ -50,10 +51,16 @@ impl PixelFormat {
     /// Stable, non-localized format name for receipts and operator projections.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
-        match self { Self::Grayscale => "grayscale", Self::Rgb => "rgb" }
+        match self {
+            Self::Grayscale => "grayscale",
+            Self::Rgb => "rgb",
+        }
     }
     const fn channels(self) -> usize {
-        match self { Self::Grayscale => 1, Self::Rgb => 3 }
+        match self {
+            Self::Grayscale => 1,
+            Self::Rgb => 3,
+        }
     }
 }
 
@@ -110,7 +117,9 @@ impl EncodeLimits {
             .saturating_add(14 * u64::from(self.maximum_dimension))
             .saturating_add(49)
             .div_ceil(64);
-        let profile = SOURCES.iter().fold(0_u64, |n, bytes| n.saturating_add(bytes.len() as u64));
+        let profile = SOURCES
+            .iter()
+            .fold(0_u64, |n, bytes| n.saturating_add(bytes.len() as u64));
         256_u64
             .saturating_add(profile)
             .saturating_add(ENCODER_PROFILE.len() as u64)
@@ -171,7 +180,10 @@ impl std::fmt::Debug for EncodeBudget<'_> {
         f.debug_struct("EncodeBudget")
             .field("remaining", &self.remaining)
             .field("used", &self.used)
-            .field("cancellable", &(self.cancellation.is_some() || self.probe.is_some()))
+            .field(
+                "cancellable",
+                &(self.cancellation.is_some() || self.probe.is_some()),
+            )
             .finish()
     }
 }
@@ -179,16 +191,27 @@ impl EncodeBudget<'_> {
     /// Reserve an explicit local allowance; construction starts no clock, worker or I/O.
     #[must_use]
     pub const fn new(limit: u64) -> Self {
-        Self { remaining: limit, used: 0, cancellation: None, probe: None }
+        Self {
+            remaining: limit,
+            used: 0,
+            cancellation: None,
+            probe: None,
+        }
     }
     /// All work charged across successful and unsuccessful calls using this budget.
     #[must_use]
-    pub const fn used(&self) -> u64 { self.used }
+    pub const fn used(&self) -> u64 {
+        self.used
+    }
     /// Remaining allowance; a codec call never replenishes it.
     #[must_use]
-    pub const fn remaining(&self) -> u64 { self.remaining }
+    pub const fn remaining(&self) -> u64 {
+        self.remaining
+    }
     pub(crate) fn charge(&mut self, units: u64) -> Result<(), EncodeError> {
-        if self.cancellation.is_some_and(|flag| flag.load(Ordering::Acquire))
+        if self
+            .cancellation
+            .is_some_and(|flag| flag.load(Ordering::Acquire))
             || self.probe.is_some_and(|probe| probe())
         {
             return Err(EncodeError::Cancelled);
@@ -206,12 +229,22 @@ impl<'a> EncodeBudget<'a> {
     /// Borrow the existing owner's cancellation flag; no detached task is created.
     #[must_use]
     pub const fn with_cancellation(limit: u64, flag: &'a AtomicBool) -> Self {
-        Self { remaining: limit, used: 0, cancellation: Some(flag), probe: None }
+        Self {
+            remaining: limit,
+            used: 0,
+            cancellation: Some(flag),
+            probe: None,
+        }
     }
     /// Borrow a cheap synchronous cancellation/deadline probe, checked at every work charge.
     #[must_use]
     pub fn with_cancellation_probe(limit: u64, probe: &'a (dyn Fn() -> bool + Sync)) -> Self {
-        Self { remaining: limit, used: 0, cancellation: None, probe: Some(probe) }
+        Self {
+            remaining: limit,
+            used: 0,
+            cancellation: None,
+            probe: Some(probe),
+        }
     }
 }
 
@@ -254,9 +287,20 @@ impl EncodeReceipt {
         bytes[96..128].copy_from_slice(&self.encoder);
         bytes[128..132].copy_from_slice(&self.dimensions[0].to_be_bytes());
         bytes[132..136].copy_from_slice(&self.dimensions[1].to_be_bytes());
-        bytes[136] = match self.format { PixelFormat::Grayscale => 0, PixelFormat::Rgb => 1 };
+        bytes[136] = match self.format {
+            PixelFormat::Grayscale => 0,
+            PixelFormat::Rgb => 1,
+        };
         bytes[137] = self.quality;
-        for (index, value) in [self.output_bytes as u64, self.mcus as u64, self.entropy_blocks as u64, self.work_units].into_iter().enumerate() {
+        for (index, value) in [
+            self.output_bytes as u64,
+            self.mcus as u64,
+            self.entropy_blocks as u64,
+            self.work_units,
+        ]
+        .into_iter()
+        .enumerate()
+        {
             bytes[138 + index * 8..146 + index * 8].copy_from_slice(&value.to_be_bytes());
         }
         ContentDigest::sha256(&bytes)
@@ -280,27 +324,34 @@ impl std::fmt::Debug for EncodedJpeg {
 impl EncodedJpeg {
     /// Exact JPEG bytes. No original metadata or other frame is embedded.
     #[must_use]
-    pub fn bytes(&self) -> &[u8] { &self.bytes }
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
     /// Transfer ownership of the complete compressed image without another allocation.
     #[must_use]
-    pub fn into_bytes(self) -> Vec<u8> { self.bytes }
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.bytes
+    }
     /// Exact transform and cost record. This grants no publication or disclosure authority.
     #[must_use]
-    pub const fn receipt(&self) -> EncodeReceipt { self.receipt }
+    pub const fn receipt(&self) -> EncodeReceipt {
+        self.receipt
+    }
 }
 
-/// Source-bound encoder identity, with no heap allocation or ambient I/O.
-///
-/// This hashes a bounded set of compile-time source bytes. The encoding path performs the
-/// same construction once per call under its supplied work and cancellation allowance.
+/// Source-bound encoder identity, computed once from the immutable compile-time source bytes.
 #[must_use]
 pub fn encoder_identity() -> [u8; 32] {
-    let mut hashes = [0_u8; 160];
-    hashes[..32].copy_from_slice(&ContentDigest::sha256(ENCODER_PROFILE.as_bytes()).bytes());
-    for (index, source) in SOURCES.iter().enumerate() {
-        hashes[32 + index * 32..64 + index * 32].copy_from_slice(&ContentDigest::sha256(source).bytes());
-    }
-    ContentDigest::sha256(&hashes).bytes()
+    static CACHED: OnceLock<[u8; 32]> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        let mut hashes = [0_u8; 160];
+        hashes[..32].copy_from_slice(&ContentDigest::sha256(ENCODER_PROFILE.as_bytes()).bytes());
+        for (index, source) in SOURCES.iter().enumerate() {
+            hashes[32 + index * 32..64 + index * 32]
+                .copy_from_slice(&ContentDigest::sha256(source).bytes());
+        }
+        ContentDigest::sha256(&hashes).bytes()
+    })
 }
 
 fn hash(bytes: &[u8], budget: &mut EncodeBudget<'_>) -> Result<[u8; 32], EncodeError> {
@@ -315,12 +366,8 @@ fn hash(bytes: &[u8], budget: &mut EncodeBudget<'_>) -> Result<[u8; 32], EncodeE
 }
 
 fn identity(budget: &mut EncodeBudget<'_>) -> Result<[u8; 32], EncodeError> {
-    let mut hashes = [0_u8; 160];
-    hashes[..32].copy_from_slice(&hash(ENCODER_PROFILE.as_bytes(), budget)?);
-    for (index, source) in SOURCES.iter().enumerate() {
-        hashes[32 + index * 32..64 + index * 32].copy_from_slice(&hash(source, budget)?);
-    }
-    hash(&hashes, budget)
+    budget.charge(128)?;
+    Ok(encoder_identity())
 }
 
 /// Encode one complete source-bound frame under explicit shape, output, work and cancellation
@@ -356,7 +403,9 @@ pub fn encode_jpeg(
     }
     let width_usize = width as usize;
     let height_usize = height as usize;
-    let count = width_usize.checked_mul(height_usize).ok_or(EncodeError::Limit)?;
+    let count = width_usize
+        .checked_mul(height_usize)
+        .ok_or(EncodeError::Limit)?;
     if count > limits.maximum_pixels {
         return Err(EncodeError::Limit);
     }
@@ -377,7 +426,13 @@ pub fn encode_jpeg(
     let luma = tables::quantizers(&tables::LUMA_QUANT, config.quality);
     let chroma = tables::quantizers(&tables::CHROMA_QUANT, config.quality);
     let mut output = entropy::Output::new(limits.maximum_output_bytes);
-    header(&mut output, [width as u16, height as u16], channels, [&luma, &chroma], budget)?;
+    header(
+        &mut output,
+        [width as u16, height as u16],
+        channels,
+        [&luma, &chroma],
+        budget,
+    )?;
     let columns = width_usize.div_ceil(8);
     let rows = height_usize.div_ceil(8);
     let mut previous_dc = [0_i16; 3];
@@ -404,7 +459,12 @@ pub fn encode_jpeg(
                 budget.charge(BLOCK_WORK)?;
                 let quantizers = if component == 0 { &luma } else { &chroma };
                 let coefficients = transform::quantized(&blocks[component], quantizers)?;
-                output.block(&coefficients, &mut previous_dc[component], component != 0, budget)?;
+                output.block(
+                    &coefficients,
+                    &mut previous_dc[component],
+                    component != 0,
+                    budget,
+                )?;
             }
         }
     }
@@ -450,18 +510,39 @@ fn header(
     frame[5] = channels as u8;
     for component in 0..channels {
         frame[6 + component * 3..9 + component * 3].copy_from_slice(&[
-            component as u8 + 1, 0x11, u8::from(component != 0),
+            component as u8 + 1,
+            0x11,
+            u8::from(component != 0),
         ]);
     }
     output.segment(0xc0, &frame[..6 + channels * 3], budget)?;
     let mut huffman = [0_u8; 416];
     let mut at = 0;
     for (id, counts, values) in [
-        (0x00, &tables::LUMA_DC_COUNTS, tables::LUMA_DC_VALUES.as_slice()),
-        (0x10, &tables::LUMA_AC_COUNTS, tables::LUMA_AC_VALUES.as_slice()),
-        (0x01, &tables::CHROMA_DC_COUNTS, tables::CHROMA_DC_VALUES.as_slice()),
-        (0x11, &tables::CHROMA_AC_COUNTS, tables::CHROMA_AC_VALUES.as_slice()),
-    ].into_iter().take(count * 2) {
+        (
+            0x00,
+            &tables::LUMA_DC_COUNTS,
+            tables::LUMA_DC_VALUES.as_slice(),
+        ),
+        (
+            0x10,
+            &tables::LUMA_AC_COUNTS,
+            tables::LUMA_AC_VALUES.as_slice(),
+        ),
+        (
+            0x01,
+            &tables::CHROMA_DC_COUNTS,
+            tables::CHROMA_DC_VALUES.as_slice(),
+        ),
+        (
+            0x11,
+            &tables::CHROMA_AC_COUNTS,
+            tables::CHROMA_AC_VALUES.as_slice(),
+        ),
+    ]
+    .into_iter()
+    .take(count * 2)
+    {
         huffman[at] = id;
         huffman[at + 1..at + 17].copy_from_slice(counts);
         huffman[at + 17..at + 17 + values.len()].copy_from_slice(values);
@@ -471,9 +552,8 @@ fn header(
     let mut scan = [0_u8; 10];
     scan[0] = channels as u8;
     for component in 0..channels {
-        scan[1 + component * 2..3 + component * 2].copy_from_slice(&[
-            component as u8 + 1, if component == 0 { 0 } else { 0x11 },
-        ]);
+        scan[1 + component * 2..3 + component * 2]
+            .copy_from_slice(&[component as u8 + 1, if component == 0 { 0 } else { 0x11 }]);
     }
     scan[1 + channels * 2..4 + channels * 2].copy_from_slice(&[0, 63, 0]);
     output.segment(0xda, &scan[..4 + channels * 2], budget)

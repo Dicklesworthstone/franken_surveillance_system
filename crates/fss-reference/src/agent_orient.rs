@@ -50,8 +50,8 @@ use fss_core::{
     ActionAffordance, AffordanceClass, AgentView, BudgetVector, CanonicalDecode, CanonicalEncode,
     CanonicalEncoder, Completeness, CompressionLossClass, CompressionTransform,
     CompressionTransformKind, ContentDigest, ContractError, EffectState, EventHypothesis, EventId,
-    EventState, EvidenceDeltaBatch, ExpansionHandle, ExplainQuestion, ExplainReceipt,
-    IndeterminateEffectReason, KnowledgeCell, KnowledgeCellParams, KnowledgeState,
+    EventState, EvidenceDeltaBatch, EvidenceEdgeRelation, ExpansionHandle, ExplainQuestion,
+    ExplainReceipt, IndeterminateEffectReason, KnowledgeCell, KnowledgeCellParams, KnowledgeState,
     KnowledgeStateBasis, LedgerAnchor, MissionId, ObjectiveContract, ObjectiveContractParams,
     ObjectiveScope, Obligation, ObligationId, ObligationState, OperationId, OperationReceipt,
     OrientBudget, OrientProjection, PossibleWorld, PrincipalId, ProvenanceClass, ResourcePressure,
@@ -1761,6 +1761,9 @@ pub struct DeploymentOrientation {
     pub aggregated_world_count: usize,
     /// Privacy policy generation the answer is projected under (the anchor's privacy epoch).
     pub privacy_generation_id: String,
+    /// Plan digest of the latest committed deletion closure (`FSS-037`) in this snapshot, or
+    /// `None` when no deletion closure has been committed at this anchor.
+    pub latest_deletion_closure_id: Option<String>,
     /// Reusable anchor token of the committed position this orientation is pinned to: the
     /// `--since` argument of `fss follow` (see [`crate::agent_follow::AnchorToken`]).
     pub anchor_token: String,
@@ -2449,7 +2452,7 @@ fn compile_capsule(
             valid_until: None,
             state_basis: None,
         })?,
-        site_coverage_cell(coverage.as_ref())?,
+        site_coverage_cell(coverage.as_ref(), ledger_evidence)?,
     ];
     cells.extend(mission_context.cells);
     if let Some(assessment) = &coverage {
@@ -3094,11 +3097,66 @@ fn assess_coverage(
     )
 }
 
+/// Maximum inline gap statements or byte span in a single coverage knowledge cell before
+/// compacting to a lossless summary pointing at `situationFrame.coverage.gaps` and the committed
+/// `coverage_witness` ledger records. Keeps critical epistemic-boundary items well below
+/// `SemanticContextPack`'s 16 KiB item ceiling and within `brief`/`epistemic_map` token budgets.
+const MAX_INLINE_COVERAGE_GAPS: usize = 3;
+const MAX_INLINE_COVERAGE_TEXT_BYTES: usize = 1024;
+const MAX_SINGLE_INLINE_GAP_BYTES: usize = 320;
+const MAX_INLINE_COVERAGE_WITNESS_DIGESTS: usize = 16;
+
+fn clip_utf8_bytes(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text.to_owned();
+    }
+    let mut end = max_bytes.saturating_sub(3);
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...", &text[..end])
+}
+
+fn summarize_coverage_list(
+    items: &[String],
+    separator: &str,
+    overflow_noun: &str,
+    hydration_hint: &str,
+) -> String {
+    if items.is_empty() {
+        return String::new();
+    }
+    let joined_len = items.iter().map(String::len).sum::<usize>().saturating_add(
+        separator
+            .len()
+            .saturating_mul(items.len().saturating_sub(1)),
+    );
+    if items.len() <= MAX_INLINE_COVERAGE_GAPS && joined_len <= MAX_INLINE_COVERAGE_TEXT_BYTES {
+        return items.join(separator);
+    }
+    let shown = items.len().min(2);
+    let preview: Vec<String> = items
+        .iter()
+        .take(shown)
+        .map(|item| clip_utf8_bytes(item, MAX_SINGLE_INLINE_GAP_BYTES))
+        .collect();
+    let remaining = items.len().saturating_sub(shown);
+    if remaining == 0 {
+        preview.join(separator)
+    } else {
+        format!(
+            "{}{separator}(+{remaining} further {overflow_noun} omitted from this cell summary; {hydration_hint}.)",
+            preview.join(separator)
+        )
+    }
+}
+
 /// The site coverage cell: `not_observable` without retained coverage or while any objective
 /// zone is not covered; `known` only when every objective zone is covered over its declared
 /// window (the declared domain; activity elsewhere stays unobserved and protected).
 fn site_coverage_cell(
     coverage: Option<&CoverageAssessment>,
+    ledger_evidence: ContentDigest,
 ) -> Result<KnowledgeCell, ContractError> {
     let Some(assessment) = coverage else {
         return cell(KnowledgeCellParams {
@@ -3122,14 +3180,37 @@ fn site_coverage_cell(
         .count();
     let total = assessment.zones.len();
     let complete = assessment.complete();
+    let witness_digests = assessment.witness_digests();
+    let compact_witness_basis = witness_digests.len() > MAX_INLINE_COVERAGE_WITNESS_DIGESTS;
+    let evidence = if compact_witness_basis {
+        vec![ledger_evidence]
+    } else {
+        witness_digests.clone()
+    };
+    let witness_note = if compact_witness_basis {
+        format!(
+            " {} retained witness(es) are indexed in situationFrame.coverage.witnessIds and \
+             bound by the committed authority ledger.",
+            witness_digests.len()
+        )
+    } else {
+        String::new()
+    };
+    let domains = assessment.declared_domains();
+    let domains_summary = summarize_coverage_list(
+        &domains,
+        "; ",
+        "covered zone domain(s)",
+        "inspect situationFrame.coverage.domains and per-zone coverage cells",
+    );
     cell(KnowledgeCellParams {
         claim_id: CLAIM_COVERAGE.to_owned(),
         statement: if complete {
             format!(
                 "Retained CoverageWitness records cover all {total} objective zone(s) over their \
-                 declared windows ({}); absence of confirmed zone entries is certified only there, \
-                 and activity outside those zones and windows remains unobserved. Provenance: {}.",
-                assessment.declared_domains().join("; "),
+                 declared windows ({domains_summary}); absence of confirmed zone entries is \
+                 certified only there, and activity outside those zones and windows remains \
+                 unobserved. Provenance: {}.{witness_note}",
                 assessment
                     .zones
                     .iter()
@@ -3143,7 +3224,7 @@ fn site_coverage_cell(
             format!(
                 "{covered} of {total} objective zone(s) are covered by retained CoverageWitness \
                  records; the rest are not observable or stale, and a missing event there is not \
-                 absence."
+                 absence.{witness_note}"
             )
         },
         knowledge_state: if complete {
@@ -3153,7 +3234,7 @@ fn site_coverage_cell(
         },
         provenance: ProvenanceClass::Derived,
         hypothesis: None,
-        evidence: assessment.witness_digests(),
+        evidence,
         contradictions: assessment
             .health_contradictions()
             .into_iter()
@@ -3213,34 +3294,51 @@ fn zone_coverage_cell(
             "{} is {}: {}",
             zone.label(),
             state.as_str(),
-            zone.gaps.join(" ")
+            summarize_coverage_list(
+                &zone.gaps,
+                " ",
+                "coverage gap(s)",
+                "inspect situationFrame.coverage.gaps and retained coverage_witness records"
+            )
         ),
     };
     let statement = if zone.state == ZoneCoverageState::Covered && !zone.health_conflicts.is_empty()
     {
+        let conflict_descriptions: Vec<String> = zone
+            .health_conflicts
+            .iter()
+            .map(|conflict| conflict.describe(&zone.label()))
+            .collect();
         format!(
             "{statement} {} source-exact health conflict(s) withheld other witnesses; the \
              declared window rests only on the independent unaffected witnesses listed here. {}",
             zone.health_conflicts.len(),
-            zone.health_conflicts
-                .iter()
-                .map(|conflict| conflict.describe(&zone.label()))
-                .collect::<Vec<_>>()
-                .join(" ")
+            summarize_coverage_list(
+                &conflict_descriptions,
+                " ",
+                "health conflict detail(s)",
+                "inspect situationFrame.coverage.gaps and retained health diagnostics"
+            )
         )
     } else {
         statement
     };
     let statement =
         if zone.state == ZoneCoverageState::Covered && !zone.calibration_invalidations.is_empty() {
+            let invalidations: Vec<String> = zone
+                .calibration_invalidations
+                .iter()
+                .map(ToString::to_string)
+                .collect();
             format!(
                 "{statement} Calibration invalidation(s) {} withdrew other historical witnesses; \
              this window uses only the unaffected witnesses listed here.",
-                zone.calibration_invalidations
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", "),
+                summarize_coverage_list(
+                    &invalidations,
+                    ", ",
+                    "calibration invalidation digest(s)",
+                    "inspect retained calibration invalidation records"
+                ),
             )
         } else {
             statement
@@ -4381,6 +4479,11 @@ fn orient_deployment_for_with_advisories(
         candidate_world_count: compiled.candidate_world_count,
         aggregated_world_count: compiled.aggregated_world_count,
         privacy_generation_id: format!("privacy-epoch:{}", snapshot.anchor.privacy_epoch),
+        latest_deletion_closure_id: snapshot
+            .deletions
+            .entries()
+            .last()
+            .map(|entry| entry.plan_digest.to_text()),
         anchor_token: compiled.anchor_token,
         coverage: compiled.coverage,
         active_investigations: cases.iter().map(|case| case.case_id.clone()).collect(),
@@ -4438,6 +4541,20 @@ pub fn explain_event(
     snapshot: &DeploymentSnapshot,
     orientation: &DeploymentOrientation,
     event_id: &EventId,
+) -> Result<Option<EventExplanation>, OrientError> {
+    explain_event_with_question(snapshot, orientation, event_id, ExplainQuestion::Why)
+}
+
+/// Explains one published event for an explicit registered [`ExplainQuestion`] (`Why` or `WhyNot`).
+///
+/// For [`ExplainQuestion::WhyNot`], the explanation binds an `ExplainQuestion::WhyNot` receipt and
+/// enumerates every exact evidence/policy/coverage/tamper blocker explaining why the event was not
+/// corroborated, alerted, rejected, or certified absent.
+pub fn explain_event_with_question(
+    snapshot: &DeploymentSnapshot,
+    orientation: &DeploymentOrientation,
+    event_id: &EventId,
+    question: ExplainQuestion,
 ) -> Result<Option<EventExplanation>, OrientError> {
     let Some(retained) = snapshot.event(event_id) else {
         return Ok(None);
@@ -4507,13 +4624,80 @@ pub fn explain_event(
                 .to_owned(),
         );
     }
-    let assumptions = vec![
+    let mut assumptions = vec![
         format!(
             "Revision {} is the latest committed revision at commit {}.",
             event.revision, capsule.anchor.commit_sequence
         ),
         "Failure domains are independent only when their names differ.".to_owned(),
     ];
+    let mut warnings = section.warnings;
+    warnings.extend(deleted_evidence_warnings(snapshot, retained));
+
+    if question == ExplainQuestion::WhyNot {
+        let supporting_domains: BTreeSet<&str> = event
+            .evidence
+            .iter()
+            .filter(|edge| edge.counts_as_support() && !edge.failure_domain.is_empty())
+            .map(|edge| edge.failure_domain.as_str())
+            .collect();
+        let contradiction_count = event
+            .evidence
+            .iter()
+            .filter(|edge| edge.relation == EvidenceEdgeRelation::Contradicts)
+            .count();
+        if !retained.corroborated() {
+            would_change.insert(
+                0,
+                format!(
+                    "Why not corroborated: event {} has {} distinct supporting failure domain(s) ([{}]), state is '{}'; independent corroboration requires >= 2 distinct supporting sensors, capture roots, and failure domains without contradictions or open tamper.",
+                    event_id.as_str(),
+                    supporting_domains.len(),
+                    supporting_domains
+                        .iter()
+                        .copied()
+                        .collect::<Vec<_>>()
+                        .join(","),
+                    event.state.as_str(),
+                ),
+            );
+        }
+        if retained.tamper.has_open_tamper() {
+            would_change.insert(
+                0,
+                format!(
+                    "Why not alert-eligible: {} open sensor-tamper record(s) veto corroboration and alert dispatch until evidenced integrity restoration is committed.",
+                    retained.tamper.open_tamper_records.len(),
+                ),
+            );
+        }
+        if contradiction_count > 0 {
+            would_change.insert(
+                0,
+                format!(
+                    "Why not escalated: {} contradicting evidence edge(s) keep the presence hypothesis conflicted.",
+                    contradiction_count,
+                ),
+            );
+        }
+        if snapshot.retained_absences.get(event_id.as_str()).is_none() {
+            would_change.push(
+                "Why not certified absent: no complete continuous certifying CoverageWitness backs an absence ruling for this event revision."
+                    .to_owned(),
+            );
+        }
+        if event.probability.lower == 0.0 && event.probability.upper == 1.0 {
+            would_change.push(
+                "Why not narrowed to a calibrated probability: the committed revision carries the maximally conservative [0, 1] unit interval with no bound score calibration."
+                    .to_owned(),
+            );
+        }
+        assumptions.push(
+            "Non-occurrence diagnostics (`why_not`) reflect only committed metadata at this anchor; unretained observations or external actions outside the ledger are not asserted absent."
+                .to_owned(),
+        );
+    }
+
     let mut subgraph = vec![retained.event_root, retained.revision_digest];
     subgraph.extend(event.evidence.iter().map(|edge| edge.digest));
     subgraph.extend(event.model_receipts.iter().copied());
@@ -4521,13 +4705,8 @@ pub fn explain_event(
         hydration.handle.clone(),
         format!("fss://event/{}/coverage", event_id.as_str()),
     ];
-    let receipt = ExplainReceipt::compile(
-        ExplainQuestion::Why,
-        retained.revision_digest,
-        subgraph,
-        handles,
-        16,
-    )?;
+    let receipt =
+        ExplainReceipt::compile(question, retained.revision_digest, subgraph, handles, 16)?;
     Ok(Some(EventExplanation {
         event: retained.clone(),
         receipt,
@@ -4538,11 +4717,7 @@ pub fn explain_event(
         next_actions,
         would_change,
         assumptions,
-        warnings: {
-            let mut warnings = section.warnings;
-            warnings.extend(deleted_evidence_warnings(snapshot, retained));
-            warnings
-        },
+        warnings,
         hydration,
     }))
 }

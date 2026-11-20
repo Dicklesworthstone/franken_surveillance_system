@@ -2,14 +2,14 @@
 //! Real retained JPEG/native screening, exact independent authority and cold custody behavior.
 
 use super::*;
-use crate::ingest::long_watch::LongWatchReport;
 use crate::agent_orient::OrientLimits;
-use crate::retained_source::{ImmutableRetainedReadLimits, ImmutableRetainedSource};
+use crate::ingest::long_watch::LongWatchReport;
 use crate::ingest::privacy_mask::{declare_mask, preview_mask};
 use crate::ingest::recorded_decode::ComponentInterpretation;
 use crate::ingest::recorded_watch::{WatchDetectorConfig, WatchTrackerConfig, WatchZone};
 use crate::ingest::{CaptureHint, FileIngestAdapter, FileIngestLimits, FileIngestRequest};
 use crate::media_fixture::jpeg::{JpegConfig, Subsampling, encode_jpeg};
+use crate::retained_source::{ImmutableRetainedReadLimits, ImmutableRetainedSource};
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{BudgetVector, OperationId, TimestampNs};
 use std::fs;

@@ -105,18 +105,22 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> ManagedSession<'scope, '
 
     /// Borrow the existing controller without transferring the recording or
     /// storage owners. Control is unavailable after a halted transition.
-    pub fn control(
-        &mut self,
-    ) -> Option<super::recording_session::Control<'_, 'scope, 'task, IO>> {
+    pub fn control(&mut self) -> Option<super::recording_session::Control<'_, 'scope, 'task, IO>> {
         match self.owner.as_mut()? {
             ManagedOwners::Session(session) => session.control(),
             ManagedOwners::Rollover(rollover) => {
                 let supervisor = match rollover.stage.as_mut()? {
-                    AutomaticOwners::Preflight(preflight) => preflight.deferred.control_supervisor(),
+                    AutomaticOwners::Preflight(preflight) => {
+                        preflight.deferred.control_supervisor()
+                    }
                     AutomaticOwners::Rollover(rollover) => rollover.background.control_supervisor(),
-                    AutomaticOwners::PreflightHalted(_) | AutomaticOwners::Finished(_) => return None,
+                    AutomaticOwners::PreflightHalted(_) | AutomaticOwners::Finished(_) => {
+                        return None;
+                    }
                 };
-                Some(super::recording_session::Control::from_supervisor(supervisor))
+                Some(super::recording_session::Control::from_supervisor(
+                    supervisor,
+                ))
             }
             ManagedOwners::Halted(_) => None,
         }

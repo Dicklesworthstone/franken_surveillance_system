@@ -149,11 +149,7 @@ impl PreparedMatMul {
     ) -> Result<(), ExecError> {
         check("optimized:matmul")?;
         if a.len() != self.a_len || b.len() != self.b_len || out.len() != self.output_len {
-            return Err(super::mismatch(
-                "matmul",
-                "OP-MATMUL-001",
-                "payload length",
-            ));
+            return Err(super::mismatch("matmul", "OP-MATMUL-001", "payload length"));
         }
         let matrix = self.m * self.n;
         for (ordinal, output) in out.chunks_exact_mut(matrix).enumerate() {
@@ -210,24 +206,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn long_single_output_reduction_checks_cancellation_before_finishing() -> Result<(), ExecError> {
+    fn long_single_output_reduction_checks_cancellation_before_finishing() -> Result<(), ExecError>
+    {
         let plan = PreparedMatMul::prepare(&[1, 1025], &[1025, 1], &[1, 1])?
             .ok_or_else(|| super::super::mismatch("test", "OP-MATMUL-001", "missing plan"))?;
         let mut checks = 0;
         let mut out = [71.0];
-        let result = plan.run_with_checkpoint(
-            &vec![1.0; 1025],
-            &vec![2.0; 1025],
-            &mut out,
-            &mut |stage| {
+        let result =
+            plan.run_with_checkpoint(&vec![1.0; 1025], &vec![2.0; 1025], &mut out, &mut |stage| {
                 checks += 1;
                 if checks == 4 {
                     Err(ExecError::CancellationRequested { stage })
                 } else {
                     Ok(())
                 }
-            },
-        );
+            });
         assert!(matches!(
             result,
             Err(ExecError::CancellationRequested { .. })

@@ -47,7 +47,9 @@ mod host_plan_tests {
                             assert!(window.len() <= 64);
                             assert_eq!(*window[0].ip(), Ipv4Addr::from(last));
                             assert!(window.iter().all(|target| target.port() == 12345));
-                            if limited { assert_eq!(*window[1].ip(), Ipv4Addr::BROADCAST); }
+                            if limited {
+                                assert_eq!(*window[1].ip(), Ipv4Addr::BROADCAST);
+                            }
                             for target in window.iter().skip(1 + usize::from(limited)) {
                                 let address = u32::from(*target.ip());
                                 assert!(address > base && address < last && address != own);
@@ -93,14 +95,19 @@ pub fn host_plans(
         return Err(Error::Configuration);
     }
     let mut pages = Vec::new();
-    pages.try_reserve_exact(page_count).map_err(|_| Error::Allocation)?;
+    pages
+        .try_reserve_exact(page_count)
+        .map_err(|_| Error::Allocation)?;
     for start in (0..count).step_by(per_page) {
         let end = (start + per_page).min(count);
         let mut page = Vec::new();
-        page.try_reserve_exact((end - start).div_ceil(capacity)).map_err(|_| Error::Allocation)?;
+        page.try_reserve_exact((end - start).div_ceil(capacity))
+            .map_err(|_| Error::Allocation)?;
         for first in (start..end).step_by(capacity) {
             let mut targets = Vec::new();
-            targets.try_reserve_exact(super::MAX_TARGETS).map_err(|_| Error::Allocation)?;
+            targets
+                .try_reserve_exact(super::MAX_TARGETS)
+                .map_err(|_| Error::Allocation)?;
             targets.push(SocketAddrV4::new(Ipv4Addr::from(base | host_mask), port));
             if limited_broadcast {
                 targets.push(SocketAddrV4::new(Ipv4Addr::BROADCAST, port));

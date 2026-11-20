@@ -1196,7 +1196,9 @@ fn classify_unknown_time(
 
 impl UnknownTimeWorker {
     /// Whether an admitted A/V attempt still requires joining.
-    pub fn is_running(&self) -> bool { self.running.is_some() }
+    pub fn is_running(&self) -> bool {
+        self.running.is_some()
+    }
 
     /// Inspect the existing epoch allowance without blocking archive work.
     pub fn remaining_audio_frames(&mut self) -> Result<u64, AudioAllowanceError> {
@@ -1323,13 +1325,20 @@ impl UnknownTimeWorker {
     ) -> Result<Self, (UnknownTimeParts, archive::journal::rollover::WorkerCustody)> {
         if !(1..=100_000_000_000).contains(&parts.work_limit)
             || parts.sink.pending_publication().is_some()
-            || parts.journal.confirmed().is_none_or(|pin| pin.retention != parts.sink.retention())
+            || parts
+                .journal
+                .confirmed()
+                .is_none_or(|pin| pin.retention != parts.sink.retention())
             || !custody.take_startup_verification(&parts.journal, &parts.keeper)
         {
             return Err((parts, custody));
         }
         Ok(Self {
-            state: Arc::new(Mutex::new(UnknownTimeState { parts, report: None, rollover_custody: Some(custody) })),
+            state: Arc::new(Mutex::new(UnknownTimeState {
+                parts,
+                report: None,
+                rollover_custody: Some(custody),
+            })),
             running: None,
             fenced: false,
         })

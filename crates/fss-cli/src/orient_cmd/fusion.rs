@@ -136,48 +136,34 @@ struct LoadedCalibration {
     domain_scores_ppm: BTreeMap<String, u32>,
 }
 
-fn field<'a>(
-    map: &'a BTreeMap<String, Value>,
-    key: &str,
-) -> Result<&'a Value, FusionExplainError> {
-    map.get(key)
-        .ok_or(FusionExplainError::InvalidCalibration(
-            "score calibration missing required field",
-        ))
+fn field<'a>(map: &'a BTreeMap<String, Value>, key: &str) -> Result<&'a Value, FusionExplainError> {
+    map.get(key).ok_or(FusionExplainError::InvalidCalibration(
+        "score calibration missing required field",
+    ))
 }
 
 fn as_text<'a>(value: &'a Value) -> Result<&'a str, FusionExplainError> {
-    value
-        .text()
-        .ok_or(FusionExplainError::InvalidCalibration(
-            "score calibration expected string field",
-        ))
+    value.text().ok_or(FusionExplainError::InvalidCalibration(
+        "score calibration expected string field",
+    ))
 }
 
 fn as_u32(value: &Value) -> Result<u32, FusionExplainError> {
-    value
-        .integer()
-        .and_then(|v| u32::try_from(v).ok())
-        .ok_or(FusionExplainError::InvalidCalibration(
-            "score calibration expected u32 integer",
-        ))
+    value.integer().and_then(|v| u32::try_from(v).ok()).ok_or(
+        FusionExplainError::InvalidCalibration("score calibration expected u32 integer"),
+    )
 }
 
 fn as_u64(value: &Value) -> Result<u64, FusionExplainError> {
-    value
-        .integer()
-        .and_then(|v| u64::try_from(v).ok())
-        .ok_or(FusionExplainError::InvalidCalibration(
-            "score calibration expected u64 integer",
-        ))
+    value.integer().and_then(|v| u64::try_from(v).ok()).ok_or(
+        FusionExplainError::InvalidCalibration("score calibration expected u64 integer"),
+    )
 }
 
 fn load_score_calibration(path: &Path) -> Result<LoadedCalibration, FusionExplainError> {
-    let path_str = path
-        .to_str()
-        .ok_or(FusionExplainError::InvalidCalibration(
-            "score calibration path requires UTF-8",
-        ))?;
+    let path_str = path.to_str().ok_or(FusionExplainError::InvalidCalibration(
+        "score calibration path requires UTF-8",
+    ))?;
     let document = read_document(path_str).map_err(|_| {
         FusionExplainError::InvalidCalibration(
             "score calibration file is unreadable or malformed JSON",
@@ -234,12 +220,11 @@ fn load_score_calibration(path: &Path) -> Result<LoadedCalibration, FusionExplai
     let mut domain_scores_ppm = BTreeMap::new();
     for map_key in ["domain_scores_ppm", "camera_scores_ppm"] {
         if let Some(scores_val) = top.get(map_key) {
-            let scores_obj =
-                scores_val
-                    .object()
-                    .ok_or(FusionExplainError::InvalidCalibration(
-                        "scores_ppm map must be an object",
-                    ))?;
+            let scores_obj = scores_val
+                .object()
+                .ok_or(FusionExplainError::InvalidCalibration(
+                    "scores_ppm map must be an object",
+                ))?;
             for (k, score_val) in scores_obj {
                 let ppm = as_u32(score_val)?;
                 if ppm > 1_000_000 {
@@ -282,7 +267,10 @@ fn disposition_label(outcome: &FusionOutcome) -> &'static str {
             .contains(&Reason::InsufficientIndependentSupport)
     {
         "SharedCalibrationOnly"
-    } else if matches!(outcome.decision, Decision::Reject | Decision::RetainSilently) {
+    } else if matches!(
+        outcome.decision,
+        Decision::Reject | Decision::RetainSilently
+    ) {
         "BelowCallerThreshold"
     } else {
         "AbstainCorroborate"
@@ -326,15 +314,22 @@ pub(super) fn augment(
     let contributing_domains: BTreeSet<&str> = event
         .evidence
         .iter()
-        .filter(|edge| matches!(
-            edge.relation,
-            EvidenceEdgeRelation::Supports | EvidenceEdgeRelation::Contradicts
-        ))
+        .filter(|edge| {
+            matches!(
+                edge.relation,
+                EvidenceEdgeRelation::Supports | EvidenceEdgeRelation::Contradicts
+            )
+        })
         .map(|edge| edge.failure_domain.as_str())
         .collect();
     if contributing_domains.is_empty()
-        || contributing_domains.iter().any(|domain| !loaded.domain_scores_ppm.contains_key(*domain))
-        || loaded.domain_scores_ppm.keys().any(|domain| !contributing_domains.contains(domain.as_str()))
+        || contributing_domains
+            .iter()
+            .any(|domain| !loaded.domain_scores_ppm.contains_key(*domain))
+        || loaded
+            .domain_scores_ppm
+            .keys()
+            .any(|domain| !contributing_domains.contains(domain.as_str()))
     {
         return Err(FusionExplainError::InvalidCalibration(
             "every contributing failure domain requires one explicit score and no extra mappings",
@@ -350,11 +345,10 @@ pub(super) fn augment(
         assumptions.text(domain);
         assumptions.u32(*score);
     }
-    let assumptions_digest = ContentDigest::sha256(
-        &assumptions.finish_checked().map_err(|_| {
+    let assumptions_digest =
+        ContentDigest::sha256(&assumptions.finish_checked().map_err(|_| {
             FusionExplainError::InvalidCalibration("score-assumption encoding bounds exceeded")
-        })?,
-    );
+        })?);
     let shared_calibration = format!("calibration:{}", loaded.calibration.digest);
     let mut evidence_items = Vec::new();
     for (idx, edge) in event.evidence.iter().enumerate() {
@@ -427,42 +421,52 @@ pub(super) fn augment(
     } else {
         KnowledgeState::Indeterminate
     };
-    let raw_scores = loaded.domain_scores_ppm.iter().map(|(domain, score)| {
-        format!("{}:{score}", crate::json_output::string(domain))
-    }).collect::<Vec<_>>().join(",");
-    let mut new_propositions = vec![EnvelopeProposition {
-        id: format!("claim:event-fusion:{target}:caller-assumptions"),
-        statement: format!(
-            "Hypothetical numerical sensitivity from caller-declared scores: {{{raw_scores}}}. Support/contradiction labels did not supply measured scores. The one supplied calibration is a shared failure domain and the sensor field is one synthetic event-evidence grouping, not a physical sensor identity. coverage=gap: no current physical coverage witness was supplied. This is not replay of the original event decision, current custody verification or evidence of physical absence."
-        ),
-        state: KnowledgeState::Estimated,
-        provenance: "derived".to_owned(),
-        evidence: vec![target.to_text(), loaded.calibration.digest.to_text(), assumptions_digest.to_text()],
-    }, EnvelopeProposition {
-        id: format!("claim:event-fusion:{target}:posterior-llr"),
-        statement: format!(
-            "Hypothetical calibrated assessment from caller-declared scores (generation {}, digest {}): posterior_llr_mban=[{}, {}], probability_ppm=[{}, {}], disposition={}, decision={}, supporting_clusters={}, contradicting_clusters={}, reasons=[{}].",
-            loaded.calibration.generation,
-            loaded.calibration.digest,
-            outcome.posterior.lo(),
-            outcome.posterior.hi(),
-            outcome.probability_ppm.0,
-            outcome.probability_ppm.1,
-            disposition_label(&outcome),
-            outcome.decision.as_str(),
-            outcome.supporting_clusters,
-            outcome.contradicting_clusters,
-            reasons_str.join(","),
-        ),
-        state: fusion_state,
-        provenance: "derived".to_owned(),
-        evidence: vec![
-            loaded.calibration.digest.to_text(),
-            assumptions_digest.to_text(),
-            outcome.query_digest.to_text(),
-            outcome.decision_digest.to_text(),
-        ],
-    }];
+    let raw_scores = loaded
+        .domain_scores_ppm
+        .iter()
+        .map(|(domain, score)| format!("{}:{score}", crate::json_output::string(domain)))
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut new_propositions = vec![
+        EnvelopeProposition {
+            id: format!("claim:event-fusion:{target}:caller-assumptions"),
+            statement: format!(
+                "Hypothetical numerical sensitivity from caller-declared scores: {{{raw_scores}}}. Support/contradiction labels did not supply measured scores. The one supplied calibration is a shared failure domain and the sensor field is one synthetic event-evidence grouping, not a physical sensor identity. coverage=gap: no current physical coverage witness was supplied. This is not replay of the original event decision, current custody verification or evidence of physical absence."
+            ),
+            state: KnowledgeState::Estimated,
+            provenance: "derived".to_owned(),
+            evidence: vec![
+                target.to_text(),
+                loaded.calibration.digest.to_text(),
+                assumptions_digest.to_text(),
+            ],
+        },
+        EnvelopeProposition {
+            id: format!("claim:event-fusion:{target}:posterior-llr"),
+            statement: format!(
+                "Hypothetical calibrated assessment from caller-declared scores (generation {}, digest {}): posterior_llr_mban=[{}, {}], probability_ppm=[{}, {}], disposition={}, decision={}, supporting_clusters={}, contradicting_clusters={}, reasons=[{}].",
+                loaded.calibration.generation,
+                loaded.calibration.digest,
+                outcome.posterior.lo(),
+                outcome.posterior.hi(),
+                outcome.probability_ppm.0,
+                outcome.probability_ppm.1,
+                disposition_label(&outcome),
+                outcome.decision.as_str(),
+                outcome.supporting_clusters,
+                outcome.contradicting_clusters,
+                reasons_str.join(","),
+            ),
+            state: fusion_state,
+            provenance: "derived".to_owned(),
+            evidence: vec![
+                loaded.calibration.digest.to_text(),
+                assumptions_digest.to_text(),
+                outcome.query_digest.to_text(),
+                outcome.decision_digest.to_text(),
+            ],
+        },
+    ];
 
     for cluster in &outcome.clusters {
         let domains: Vec<&str> = cluster.failure_domains.iter().map(String::as_str).collect();

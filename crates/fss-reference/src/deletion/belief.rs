@@ -18,11 +18,11 @@ use fss_core::ContentDigest;
 use fss_core::belief_verification::RegisteredBeliefDeriver;
 use fss_ledger::DurableReferenceLedger;
 use fss_object::SpoolIo;
-use fss_publication::{LocalRootPublisher, SlotName};
 use fss_publication::custody_audit::belief_snapshot::durable::{
     DurableBeliefDeletionAuthority, DurableBeliefError, DurableBeliefRequest,
     VerifiedDurableBelief, verify_durable_belief_with_deletion_authority,
 };
+use fss_publication::{LocalRootPublisher, SlotName};
 
 use crate::ReferenceDeployment;
 

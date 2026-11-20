@@ -93,18 +93,24 @@ mod tests {
             .with_firmware_version("2.1.0");
 
         let plan = planner.plan(&observation);
-        let plan = match plan {
-            Ok(p) => p,
-            Err(_) => return,
+        assert!(
+            plan.is_ok(),
+            "reference Yi observation must produce a verified onboarding plan: {plan:?}"
+        );
+        let Ok(plan) = plan else {
+            return;
         };
         assert!(plan.verify());
         assert!(plan.image().is_some_and(|i| i.verify()));
 
         // A second plan of the same observation is byte-identical.
         let again = planner.plan(&observation);
-        let again = match again {
-            Ok(p) => p,
-            Err(_) => return,
+        assert!(
+            again.is_ok(),
+            "second Yi observation plan must succeed: {again:?}"
+        );
+        let Ok(again) = again else {
+            return;
         };
         assert_eq!(plan.plan_digest(), again.plan_digest());
     }

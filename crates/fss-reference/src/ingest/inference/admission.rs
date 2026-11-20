@@ -48,13 +48,19 @@ impl std::error::Error for ModelAdmissionError {
     }
 }
 impl From<ModelPackageError> for ModelAdmissionError {
-    fn from(error: ModelPackageError) -> Self { Self::Package(error) }
+    fn from(error: ModelPackageError) -> Self {
+        Self::Package(error)
+    }
 }
 impl From<ModelLicensePolicyError> for ModelAdmissionError {
-    fn from(error: ModelLicensePolicyError) -> Self { Self::License(error) }
+    fn from(error: ModelLicensePolicyError) -> Self {
+        Self::License(error)
+    }
 }
 impl From<ModelRunError> for ModelAdmissionError {
-    fn from(error: ModelRunError) -> Self { Self::Execution(error) }
+    fn from(error: ModelRunError) -> Self {
+        Self::Execution(error)
+    }
 }
 
 /// Exact package/license proof for one executable recorded model.
@@ -78,7 +84,9 @@ impl AdmittedRecordedModel {
         }
         package.verify_contents()?;
         package.validate(limits)?;
-        let manifest_digest = package.manifest.manifest_digest()
+        let manifest_digest = package
+            .manifest
+            .manifest_digest()
             .map_err(ModelPackageError::from)?;
         let decision = policy.check_manifest(&package.manifest)?;
         if decision.target_profile() != &ModelUseProfile::SurveillanceMonitoring
@@ -89,10 +97,17 @@ impl AdmittedRecordedModel {
             return Err(ModelAdmissionError::IdentityMismatch);
         }
         let model_digest = model.digest();
-        if !package.manifest.license().artifact_digests().contains(&model_digest) {
+        if !package
+            .manifest
+            .license()
+            .artifact_digests()
+            .contains(&model_digest)
+        {
             return Err(ModelAdmissionError::RuntimeModelNotProvenanced);
         }
-        let artifact = package.artifacts.get(&model_digest)
+        let artifact = package
+            .artifacts
+            .get(&model_digest)
             .ok_or(ModelAdmissionError::RuntimeModelNotProvenanced)?;
         if artifact.digest != model_digest
             || artifact.payload.as_slice() != model.encoded()
@@ -101,16 +116,29 @@ impl AdmittedRecordedModel {
             return Err(ModelAdmissionError::IdentityMismatch);
         }
         let package_digest = ContentDigest::sha256(&package.to_archive_bytes()?);
-        Ok(Self { model, manifest_digest, package_digest, license_decision: decision })
+        Ok(Self {
+            model,
+            manifest_digest,
+            package_digest,
+            license_decision: decision,
+        })
     }
     #[must_use]
-    pub const fn model(&self) -> &RecordedModel { &self.model }
+    pub const fn model(&self) -> &RecordedModel {
+        &self.model
+    }
     #[must_use]
-    pub const fn manifest_digest(&self) -> ContentDigest { self.manifest_digest }
+    pub const fn manifest_digest(&self) -> ContentDigest {
+        self.manifest_digest
+    }
     #[must_use]
-    pub const fn package_digest(&self) -> ContentDigest { self.package_digest }
+    pub const fn package_digest(&self) -> ContentDigest {
+        self.package_digest
+    }
     #[must_use]
-    pub const fn license_decision(&self) -> &ModelLicenseDecision { &self.license_decision }
+    pub const fn license_decision(&self) -> &ModelLicenseDecision {
+        &self.license_decision
+    }
 }
 
 /// Retained numeric result accompanied by the exact admission that authorized this path.
@@ -131,7 +159,12 @@ impl AdmittedRecordedInference {
         cx: &ReplayCx,
     ) -> Result<Self, ModelAdmissionError> {
         let run = RecordedInference::run_and_publish(
-            deployment, source, admitted.model(), budget, exec_cx, cx,
+            deployment,
+            source,
+            admitted.model(),
+            budget,
+            exec_cx,
+            cx,
         )?;
         Self::bind(run, admitted)
     }
@@ -162,13 +195,21 @@ impl AdmittedRecordedInference {
         })
     }
     #[must_use]
-    pub const fn run(&self) -> &RecordedInference { &self.run }
+    pub const fn run(&self) -> &RecordedInference {
+        &self.run
+    }
     #[must_use]
-    pub const fn manifest_digest(&self) -> ContentDigest { self.manifest_digest }
+    pub const fn manifest_digest(&self) -> ContentDigest {
+        self.manifest_digest
+    }
     #[must_use]
-    pub const fn package_digest(&self) -> ContentDigest { self.package_digest }
+    pub const fn package_digest(&self) -> ContentDigest {
+        self.package_digest
+    }
     #[must_use]
-    pub const fn license_decision_digest(&self) -> ContentDigest { self.license_decision_digest }
+    pub const fn license_decision_digest(&self) -> ContentDigest {
+        self.license_decision_digest
+    }
     pub fn verify_by_replay(
         &self,
         deployment: &ReferenceDeployment,
@@ -177,7 +218,8 @@ impl AdmittedRecordedInference {
         exec_cx: &ScalarExecCx,
         cx: &ReplayCx,
     ) -> Result<(), ModelAdmissionError> {
-        self.run.verify_by_replay(deployment, source, budget, exec_cx, cx)?;
+        self.run
+            .verify_by_replay(deployment, source, budget, exec_cx, cx)?;
         Ok(())
     }
 }
@@ -186,9 +228,7 @@ impl AdmittedRecordedInference {
 mod tests {
     use super::*;
     use fss_core::{CalibrationGeneration, Generation, ModelGeneration, SchemaId};
-    use fss_model_ir::{
-        AttributeMap, GraphNode, ModelIrGraph, ModelIrVersion, OpCode, TensorPort,
-    };
+    use fss_model_ir::{AttributeMap, GraphNode, ModelIrGraph, ModelIrVersion, OpCode, TensorPort};
     use fss_object::{ModelId, ModelLicenseRecord, ModelManifestV1, ModelPackageArtifact};
     use fss_tensor::{DType, Shape};
     use std::collections::BTreeMap;
@@ -197,20 +237,27 @@ mod tests {
     fn model(value: f32) -> TestResult<RecordedModel> {
         let shape = Shape::new(vec![1, 1, 2, 2])?;
         let graph = ModelIrGraph::new_validated(
-            "model:admission-test", ModelIrVersion::V1, Generation(7),
+            "model:admission-test",
+            ModelIrVersion::V1,
+            Generation(7),
             vec![
                 TensorPort::new("image", DType::F32, shape.clone(), Generation(7))?,
                 TensorPort::new("parameter", DType::F32, Shape::new(vec![1])?, Generation(7))?,
             ],
             vec![TensorPort::new("result", DType::F32, shape, Generation(7))?],
             vec![GraphNode::new(
-                "node:0", OpCode::Add, "admission fixture",
-                vec!["image".into(), "parameter".into()], vec!["result".into()],
+                "node:0",
+                OpCode::Add,
+                "admission fixture",
+                vec!["image".into(), "parameter".into()],
+                vec!["result".into()],
                 AttributeMap::new(),
             )?],
         )?;
         Ok(RecordedModel::publish(
-            &graph, "image", true,
+            &graph,
+            "image",
+            true,
             BTreeMap::from([("parameter".to_owned(), vec![value])]),
         )?)
     }
@@ -232,8 +279,12 @@ mod tests {
         };
         let provenance_digest = ContentDigest::sha256(&provenance);
         let record = ModelLicenseRecord::new(
-            license, Some(license_digest), true, restrictions,
-            "https://example.invalid/model-source", vec![provenance_digest],
+            license,
+            Some(license_digest),
+            true,
+            restrictions,
+            "https://example.invalid/model-source",
+            vec![provenance_digest],
             Some("immutable-revision-1".to_owned()),
         )?;
         let manifest = ModelManifestV1::new(
@@ -267,10 +318,16 @@ mod tests {
         let runtime = model(0.25)?;
         let package = package(&runtime, true, "Apache-2.0", vec![])?;
         let admitted = AdmittedRecordedModel::admit(
-            runtime.clone(), &package, &surveillance_policy(), &ModelPackageLimits::default(),
+            runtime.clone(),
+            &package,
+            &surveillance_policy(),
+            &ModelPackageLimits::default(),
         )?;
         assert_eq!(admitted.model().digest(), runtime.digest());
-        assert_eq!(admitted.manifest_digest(), package.manifest.manifest_digest()?);
+        assert_eq!(
+            admitted.manifest_digest(),
+            package.manifest.manifest_digest()?
+        );
         assert_eq!(
             admitted.license_decision().target_profile(),
             &ModelUseProfile::SurveillanceMonitoring
@@ -289,7 +346,10 @@ mod tests {
         let policy = ModelLicensePolicy::default_for_profile(ModelUseProfile::InternalEvaluation);
         assert!(matches!(
             AdmittedRecordedModel::admit(
-                runtime, &package, &policy, &ModelPackageLimits::default()
+                runtime,
+                &package,
+                &policy,
+                &ModelPackageLimits::default()
             ),
             Err(ModelAdmissionError::WrongUseProfile)
         ));
@@ -303,7 +363,10 @@ mod tests {
         let other = model(0.5)?;
         assert!(matches!(
             AdmittedRecordedModel::admit(
-                other, &package, &surveillance_policy(), &ModelPackageLimits::default()
+                other,
+                &package,
+                &surveillance_policy(),
+                &ModelPackageLimits::default()
             ),
             Err(ModelAdmissionError::RuntimeModelNotProvenanced)
         ));
@@ -316,7 +379,10 @@ mod tests {
         let package = package(&runtime, false, "Apache-2.0", vec![])?;
         assert!(matches!(
             AdmittedRecordedModel::admit(
-                runtime, &package, &surveillance_policy(), &ModelPackageLimits::default()
+                runtime,
+                &package,
+                &surveillance_policy(),
+                &ModelPackageLimits::default()
             ),
             Err(ModelAdmissionError::RuntimeModelNotProvenanced)
         ));
@@ -327,11 +393,17 @@ mod tests {
     fn surveillance_forbidden_license_never_reaches_execution_admission() -> TestResult {
         let runtime = model(0.25)?;
         let package = package(
-            &runtime, true, "OpenRAIL-M", vec!["no_surveillance".to_owned()],
+            &runtime,
+            true,
+            "OpenRAIL-M",
+            vec!["no_surveillance".to_owned()],
         )?;
         assert!(matches!(
             AdmittedRecordedModel::admit(
-                runtime, &package, &surveillance_policy(), &ModelPackageLimits::default()
+                runtime,
+                &package,
+                &surveillance_policy(),
+                &ModelPackageLimits::default()
             ),
             Err(ModelAdmissionError::License(_))
         ));

@@ -360,7 +360,9 @@ impl Report {
     // out-of-scope datagrams. Other valid datagrams need not be candidates.
     fn valid_counts(&self, limit: usize) -> bool {
         self.datagrams <= limit
-            && self.malformed.checked_add(self.out_of_scope)
+            && self
+                .malformed
+                .checked_add(self.out_of_scope)
                 .and_then(|count| count.checked_add(self.cameras.len()))
                 .is_some_and(|count| count <= self.datagrams)
     }
@@ -382,9 +384,14 @@ impl Report {
         if !self.valid_completed() {
             return Err(SelectionError::IncompleteReport);
         }
-        let mut matches = self.cameras.iter().enumerate().filter(|(_, c)| c.mac == Some(mac));
+        let mut matches = self
+            .cameras
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.mac == Some(mac));
         let (index, _) = matches.next().ok_or(SelectionError::NotObserved)?;
-        if matches.next().is_some() || self.assess_claims(index) != Some(ClaimAssessment::default()) {
+        if matches.next().is_some() || self.assess_claims(index) != Some(ClaimAssessment::default())
+        {
             return Err(SelectionError::Conflicted);
         }
         Ok(index)
@@ -451,14 +458,23 @@ impl Report {
         }
         let mut seen = [false; MAX_SWEEP_PAGES];
         let mut combined = Self {
-            cameras: Vec::new(), datagrams: 0, malformed: 0, out_of_scope: 0,
+            cameras: Vec::new(),
+            datagrams: 0,
+            malformed: 0,
+            out_of_scope: 0,
             stop: Stop::WindowElapsed,
         };
-        combined.cameras.try_reserve_exact(MAX_SWEEP_CANDIDATES)
+        combined
+            .cameras
+            .try_reserve_exact(MAX_SWEEP_CANDIDATES)
             .map_err(|_| CombineError::Allocation)?;
         for page in pages {
             let index = usize::from(page.index);
-            if page.scope != first.scope || page.count != first.count || index >= pages.len() || seen[index] {
+            if page.scope != first.scope
+                || page.count != first.count
+                || index >= pages.len()
+                || seen[index]
+            {
                 return Err(CombineError::PageMismatch);
             }
             seen[index] = true;
@@ -466,10 +482,14 @@ impl Report {
         // Input delivery order is not the page order; use page numbers so
         // candidate indices and fleet planning remain deterministic.
         for index in 0..pages.len() {
-            let page = pages.iter().find(|page| usize::from(page.index) == index)
+            let page = pages
+                .iter()
+                .find(|page| usize::from(page.index) == index)
                 .ok_or(CombineError::PageMismatch)?;
             let report = page.report;
-            if report.stop != Stop::WindowElapsed { return Err(CombineError::Incomplete); }
+            if report.stop != Stop::WindowElapsed {
+                return Err(CombineError::Incomplete);
+            }
             if !report.valid_counts(MAX_PACKETS * MAX_COMBINED_WINDOWS) {
                 return Err(CombineError::InvalidReport);
             }
@@ -561,7 +581,11 @@ async fn authorized_io<F: Future>(
         let current = match clock.now() {
             Ok(current) => current,
             Err(_) => {
-                return Poll::Ready(Err(cancellation_or(owner, runtime_cx, Stop::AuthorityStopped)));
+                return Poll::Ready(Err(cancellation_or(
+                    owner,
+                    runtime_cx,
+                    Stop::AuthorityStopped,
+                )));
             }
         };
         if let Err(error) = owner.checkpoint_for(
@@ -869,32 +893,65 @@ mod tests {
             stop: Stop::WindowElapsed,
         };
         assert_eq!(report.select_mac_claim(mac), Ok(0));
-        assert_eq!(report.select_mac_claim([0; 6]), Err(SelectionError::InvalidMac));
-        assert_eq!(report.select_mac_claim([1, 2, 3, 4, 5, 6]), Err(SelectionError::InvalidMac));
-        assert_eq!(report.select_mac_claim([0x12, 2, 3, 4, 5, 6]), Err(SelectionError::NotObserved));
+        assert_eq!(
+            report.select_mac_claim([0; 6]),
+            Err(SelectionError::InvalidMac)
+        );
+        assert_eq!(
+            report.select_mac_claim([1, 2, 3, 4, 5, 6]),
+            Err(SelectionError::InvalidMac)
+        );
+        assert_eq!(
+            report.select_mac_claim([0x12, 2, 3, 4, 5, 6]),
+            Err(SelectionError::NotObserved)
+        );
         report.stop = Stop::PacketLimit;
-        assert_eq!(report.select_mac_claim(mac), Err(SelectionError::IncompleteReport));
+        assert_eq!(
+            report.select_mac_claim(mac),
+            Err(SelectionError::IncompleteReport)
+        );
         report.stop = Stop::WindowElapsed;
         report.datagrams = 0;
-        assert_eq!(report.select_mac_claim(mac), Err(SelectionError::IncompleteReport));
+        assert_eq!(
+            report.select_mac_claim(mac),
+            Err(SelectionError::IncompleteReport)
+        );
         report.datagrams = 1;
         report.malformed = 1;
-        assert_eq!(report.select_mac_claim(mac), Err(SelectionError::IncompleteReport));
-        assert_eq!(Report::combine_completed(&[&report]).unwrap_err(), CombineError::InvalidReport);
+        assert_eq!(
+            report.select_mac_claim(mac),
+            Err(SelectionError::IncompleteReport)
+        );
+        assert_eq!(
+            Report::combine_completed(&[&report]).unwrap_err(),
+            CombineError::InvalidReport
+        );
         report.malformed = usize::MAX;
         report.out_of_scope = 1;
-        assert_eq!(report.select_mac_claim(mac), Err(SelectionError::IncompleteReport));
+        assert_eq!(
+            report.select_mac_claim(mac),
+            Err(SelectionError::IncompleteReport)
+        );
         report.malformed = 0;
         report.out_of_scope = 0;
         report.datagrams = 2;
         report.cameras.push(candidate(5, Some(mac), true));
-        assert_eq!(report.select_mac_claim(mac), Err(SelectionError::Conflicted));
+        assert_eq!(
+            report.select_mac_claim(mac),
+            Err(SelectionError::Conflicted)
+        );
         report.cameras[1] = candidate(4, None, true);
-        assert_eq!(report.select_mac_claim(mac), Err(SelectionError::Conflicted));
+        assert_eq!(
+            report.select_mac_claim(mac),
+            Err(SelectionError::Conflicted)
+        );
         report.cameras[1] = candidate(5, Some([0x12, 2, 3, 4, 5, 6]), true);
         assert_eq!(report.select_mac_claim(mac), Ok(0));
         report.cameras[0].source_advertised = false;
-        assert_eq!(report.select_mac_claim(mac), Err(SelectionError::Conflicted));
+        assert_eq!(
+            report.select_mac_claim(mac),
+            Err(SelectionError::Conflicted)
+        );
     }
 
     #[test]

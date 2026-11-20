@@ -10,11 +10,11 @@ use super::{
     SessionId, TimestampNs, WorkClaimLimits, recover_profile,
 };
 use crate::agent_session::checkpoint::journal::DurableSessionError;
-use crate::agent_session::checkpoint::journal::coordination::{
-    CoordinationCommand, SessionRecoveryReceipt,
-};
 use crate::agent_session::checkpoint::journal::coordination::investigations::{
     DurableInvestigationError, InvestigationCommand, InvestigationLimits, InvestigationRevision,
+};
+use crate::agent_session::checkpoint::journal::coordination::{
+    CoordinationCommand, SessionRecoveryReceipt,
 };
 use crate::agent_session::work_claims::WorkClaimRevision;
 
@@ -36,7 +36,10 @@ impl DurableDisclosureStore {
         catalog: ReferenceHydrationCatalog,
     ) -> Result<Self, DisclosureError> {
         let sessions = DurableSessionStore::open_existing_with_coordination(
-            path, expected_root, limits, claim_ceilings,
+            path,
+            expected_root,
+            limits,
+            claim_ceilings,
         )?;
         let mut owner = Self { sessions, catalog };
         owner.synchronize_catalog(None)?;
@@ -59,13 +62,21 @@ impl DurableDisclosureStore {
         catalog: ReferenceHydrationCatalog,
     ) -> Result<(Self, SessionRecoveryReceipt), DisclosureError> {
         recover_profile(
-            path.as_ref(), expected_root, limits, Some(claim_ceilings), policy, catalog,
+            path.as_ref(),
+            expected_root,
+            limits,
+            Some(claim_ceilings),
+            policy,
+            catalog,
         )
     }
 
     /// Explicit one-way initialization through the same writer that owns disclosure charges.
     /// This administrative operation does not grant an agent a work capability or change cursors.
-    pub fn enable_coordination(&mut self, limits: WorkClaimLimits) -> Result<(), DurableSessionError> {
+    pub fn enable_coordination(
+        &mut self,
+        limits: WorkClaimLimits,
+    ) -> Result<(), DurableSessionError> {
         self.sessions.enable_coordination(limits)
     }
 

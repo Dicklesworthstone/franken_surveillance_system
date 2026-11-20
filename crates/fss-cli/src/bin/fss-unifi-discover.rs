@@ -537,13 +537,24 @@ fn auto_sweep_page(
         return Err("sweep requires exactly one eligible interface address");
     };
     let mut plans = fss_reference::unifi_direct::discovery::sweep::host_plans(
-        interface.address, interface.prefix, 10001, limited_broadcast,
-    ).map_err(|_| "invalid sweep scope or allocation")?;
+        interface.address,
+        interface.prefix,
+        10001,
+        limited_broadcast,
+    )
+    .map_err(|_| "invalid sweep scope or allocation")?;
     let pages = plans.len();
     if usize::from(page) >= pages {
         return Err("sweep page is outside the selected interface scope");
     }
-    Ok((pages, plans.swap_remove(usize::from(page)).into_iter().map(|targets| (*interface, targets)).collect()))
+    Ok((
+        pages,
+        plans
+            .swap_remove(usize::from(page))
+            .into_iter()
+            .map(|targets| (*interface, targets))
+            .collect(),
+    ))
 }
 
 fn elapsed(start: Instant) -> TimestampNs {

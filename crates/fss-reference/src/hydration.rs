@@ -215,7 +215,8 @@ impl ReferenceHydrationCatalog {
         }
         if artifact.level == HydrationLevel::H3
             && (self.source_requirements.contains_key(&descriptor_digest)
-                || self.source_bindings
+                || self
+                    .source_bindings
                     .contains_key(&(handle_id.to_owned(), descriptor_digest)))
         {
             // Source custody cannot be bypassed by installing a separately retained payload.

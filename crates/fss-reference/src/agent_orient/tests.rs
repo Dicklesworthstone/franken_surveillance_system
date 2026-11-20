@@ -8,16 +8,18 @@ use std::path::PathBuf;
 
 use fss_core::{
     AffordanceClass, AgentView, BudgetVector, CanonicalEncode, CapsuleId, CaptureInterval,
-    ClockBasis, ContentDigest, ContextAuthority, EventId, KnowledgeState, LedgerAnchor,
-    OperationId, PrincipalId, RootAuthoritySpec, SensorCapsule, SensorId, SensorSourceBytesSpec,
-    StreamId, TimestampNs,
+    ClockBasis, ContentDigest, ContextAuthority, DecisionPath, EventEvidence, EventHypothesis,
+    EventId, EventKind, EventState, EvidenceClass, EvidenceEdgeRelation, ExplainQuestion,
+    KnowledgeState, LedgerAnchor, OperationId, PrincipalId, ProbabilityInterval, RootAuthoritySpec,
+    SensorCapsule, SensorId, SensorSourceBytesSpec, SensorTamperStatus, StreamId, TimestampNs,
 };
 
 use super::{
     AFFORDANCE_PLAN, AFFORDANCE_REORIENT, CLAIM_COVERAGE, CLAIM_LEDGER_HEAD, DeploymentReadError,
     MetadataReadBudget, OrientError, OrientLimits, OrientRequest, RECORDED_COVERAGE_PROVENANCE,
-    Reader, RetainedSourceCoverage, SOURCE_COVERAGE_PROVENANCE, WORLD_UNOBSERVED_ACTIVITY,
-    ZoneCoverageState, explain_event, orient_deployment, read_deployment,
+    Reader, RetainedEvent, RetainedSourceCoverage, SOURCE_COVERAGE_PROVENANCE,
+    WORLD_UNOBSERVED_ACTIVITY, ZoneCoverageState, explain_event, explain_event_with_question,
+    orient_deployment, read_deployment,
 };
 use crate::ingest::source_coverage::{
     RetainedAbsence, RetainedCoverageRefusal, SourceCoverageInput, SourceCoverageRecord,
@@ -1001,6 +1003,234 @@ fn reader_refuses_event_count_before_attempting_event_object_hydration() -> Test
         Err(DeploymentReadError::Unreadable { reason })
             if reason == "complete event catalogue has 1 events, above the read bound 0"
     ));
+    fs::remove_dir_all(&root)?;
+    Ok(())
+}
+
+#[test]
+fn orient_succeeds_after_retaining_many_coverage_witnesses_across_five_sensors() -> TestResult {
+    use crate::agent_orient::RetainedCoverage;
+    use crate::ingest::recorded_coverage::{
+        CoverageRecord, CoverageSource, UncoveredInterval, UncoveredReason, ZoneCoverage,
+        ZoneWitness,
+    };
+    use fss_core::{Completeness, CoverageContinuity, CoverageStopReason, CoverageWitness};
+
+    let root = empty_deployment("many-coverage-witnesses")?;
+    let mut snapshot = read_deployment(&root, &OrientLimits::default())?;
+    let anchor = snapshot.anchor.clone();
+    let pipeline_generation = ContentDigest::sha256(b"pipeline:five-cam-regression");
+
+    // Reproduces the 5-camera intrusion coverage shape (36 + 12 + 11 + 19 + 27 = 105 witnesses
+    // with >100 uncovered intervals and >20 KiB of gap text per camera).
+    let counts = [
+        ("sensor:gate", 36_u64),
+        ("sensor:driveway", 12_u64),
+        ("sensor:doorbell", 11_u64),
+        ("sensor:porch", 19_u64),
+        ("sensor:entry", 27_u64),
+    ];
+    let mut committed_sequence = 10_u64;
+    for (sensor, witness_count) in counts {
+        let mut witnesses = Vec::new();
+        let mut uncovered = Vec::new();
+        for idx in 0..witness_count {
+            let start_ns = i128::from(idx * 2_000_000_000);
+            let mid_ns = start_ns + 1_000_000_000;
+            let gap_end_ns = start_ns + 1_800_000_000;
+            let covered = CaptureInterval::new(TimestampNs(start_ns), TimestampNs(mid_ns))?;
+            let witness = CoverageWitness {
+                anchor: anchor.clone(),
+                negative_predicate: "no_unknown_person_entry".to_owned(),
+                authorized_domain: BTreeSet::from([format!("{sensor}:zone:yard")]),
+                observed_domain: BTreeSet::from([format!("{sensor}:zone:yard")]),
+                excluded_domain: BTreeSet::new(),
+                authorized_generation: 1,
+                observed_generation: 1,
+                continuity: CoverageContinuity::Continuous,
+                completeness: Completeness::Complete,
+                stop_reason: CoverageStopReason::Complete,
+            };
+            witnesses.push(ZoneWitness {
+                first_segment: idx * 10,
+                last_segment: idx * 10 + 5,
+                frames: 6,
+                outer: covered,
+                covered,
+                witness,
+            });
+            uncovered.push(UncoveredInterval {
+                first_segment: idx * 10 + 6,
+                last_segment: idx * 10 + 9,
+                capture: Some(CaptureInterval::new(
+                    TimestampNs(mid_ns),
+                    TimestampNs(gap_end_ns),
+                )?),
+                reason: UncoveredReason::ConfirmationLatency,
+            });
+        }
+        let analysed = CaptureInterval::new(
+            TimestampNs(0),
+            TimestampNs(i128::from(witness_count * 2_000_000_000)),
+        )?;
+        let record = CoverageRecord {
+            source: CoverageSource::Watch,
+            import_identity: ContentDigest::sha256(format!("import:{sensor}").as_bytes()),
+            import_root: ContentDigest::sha256(format!("root:{sensor}").as_bytes()),
+            sensor_id: sensor.to_owned(),
+            analysis_digest: ContentDigest::sha256(format!("analysis:{sensor}").as_bytes()),
+            basis: anchor.clone(),
+            capture_time_label: "operator_assumption".to_owned(),
+            first_segment: 0,
+            last_segment: witness_count * 10,
+            analysed,
+            zones: vec![ZoneCoverage {
+                scope: "zone:yard".to_owned(),
+                zone_id: "yard".to_owned(),
+                geometry: "0,0,640,480".to_owned(),
+                pipeline_generation,
+                witnesses,
+                uncovered,
+                visibility: None,
+                pose_robustness: None,
+            }],
+            pose_provenance: None,
+            pose_uncertainty: None,
+            sensor_health: None,
+        };
+        committed_sequence += 1;
+        snapshot.coverage.push(RetainedCoverage {
+            payload_digest: ContentDigest::sha256(format!("cov-rec:{sensor}").as_bytes()),
+            record,
+            committed_sequence,
+            privacy_policy_digest: None,
+            privacy_generation: None,
+            calibration_invalidation: None,
+        });
+    }
+
+    for view in [AgentView::Brief, AgentView::EpistemicMap] {
+        let orientation = orient_deployment(&snapshot, &request(view)?, &OrientLimits::default())?;
+        assert_eq!(orientation.epistemic_state, KnowledgeState::NotObservable);
+        let coverage = orientation.coverage.as_ref().ok_or("missing coverage")?;
+        assert_eq!(coverage.zones.len(), 5);
+        assert!(coverage.gaps().len() >= 105);
+        // Every critical coverage cell stays well below SemanticContextPack's 16 KiB limit
+        // while preserving explicit overflow counts and hydration hints.
+        let gate_cell = orientation
+            .capsule()
+            .frame
+            .knowledge_cells
+            .iter()
+            .find(|c| c.statement().contains("sensor:gate zone:yard"))
+            .ok_or("missing gate zone coverage cell")?;
+        assert_eq!(gate_cell.knowledge_state(), KnowledgeState::NotObservable);
+        assert!(gate_cell.statement().len() < 2048);
+        assert!(gate_cell.statement().contains("further coverage gap(s)"));
+        assert!(
+            gate_cell
+                .statement()
+                .contains("situationFrame.coverage.gaps")
+        );
+    }
+    fs::remove_dir_all(&root)?;
+    Ok(())
+}
+
+#[test]
+fn why_not_explanation_and_h2_graph_neighborhood_work_end_to_end() -> TestResult {
+    let root = empty_deployment("why-not-and-h2")?;
+    let limits = OrientLimits::default();
+    let mut snapshot = read_deployment(&root, &limits)?;
+    let event_id = EventId::parse("event:why-not-single-domain")?;
+    let evidence_digest = ContentDigest::sha256(b"single-domain-evidence");
+    let event = EventHypothesis {
+        schema: EventHypothesis::SCHEMA.to_owned(),
+        event_id: event_id.clone(),
+        revision: 1,
+        supersedes: None,
+        state: EventState::Witnessed,
+        kind: EventKind::UnknownPresence,
+        interval: CaptureInterval::new(TimestampNs(1_000), TimestampNs(2_000))?,
+        uncertainty_reason: Some("single_sensor_only".to_owned()),
+        zone_ids: vec!["zone:porch".to_owned()],
+        track_ids: Vec::new(),
+        probability: ProbabilityInterval::new(0.0, 1.0)?,
+        evidence: vec![EventEvidence {
+            digest: evidence_digest,
+            class: EvidenceClass::Derived,
+            failure_domain: "domain:porch-cam".to_owned(),
+            supports: true,
+            relation: EvidenceEdgeRelation::Supports,
+            capsule_digest: Some(ContentDigest::sha256(b"cap:porch:1")),
+            identity_digest: None,
+        }],
+        model_receipts: vec![evidence_digest],
+        decision_path: DecisionPath {
+            policy_generation: ContentDigest::sha256(b"policy:test:v1"),
+            fingerprint: ContentDigest::sha256(b"fp:test:1"),
+            abstained: false,
+            abstention_reason: None,
+        },
+    };
+    event.validate()?;
+    let revision_digest = event.revision_digest();
+    let event_root = ContentDigest::sha256(b"root:event:why-not-single-domain");
+    snapshot.latest_evidence_time = TimestampNs(2_000);
+    snapshot.events.push(RetainedEvent {
+        event: event.clone(),
+        revisions: vec![event],
+        event_root,
+        revision_digest,
+        committed_sequence: 1,
+        tamper: SensorTamperStatus::default(),
+        object_bytes: 256,
+        object_reads: 2,
+    });
+
+    let orientation = orient_deployment(&snapshot, &request(AgentView::Brief)?, &limits)?;
+    let why_not =
+        explain_event_with_question(&snapshot, &orientation, &event_id, ExplainQuestion::WhyNot)?
+            .ok_or("expected why_not explanation")?;
+    assert_eq!(why_not.receipt.question(), ExplainQuestion::WhyNot);
+    assert!(
+        why_not
+            .would_change
+            .iter()
+            .any(|line| line.contains("Why not corroborated"))
+    );
+    assert!(
+        why_not
+            .would_change
+            .iter()
+            .any(|line| line.contains("Why not certified absent"))
+    );
+    assert!(
+        why_not
+            .would_change
+            .iter()
+            .any(|line| line.contains("Why not narrowed to a calibrated probability"))
+    );
+
+    let h2 = crate::agent_event_hydration::build_event_h2_graph_neighborhood(
+        &snapshot,
+        &orientation,
+        &event_id,
+        revision_digest,
+        "grant:agent-h2-neighborhood:1",
+        TimestampNs(10_000),
+    )?;
+    assert_eq!(h2.subject_digest(), revision_digest);
+    assert_eq!(h2.privacy_class(), "private:property");
+    assert_eq!(
+        h2.applied_redaction_transform(),
+        "transform:graph_neighborhood_redact"
+    );
+    assert!(matches!(
+        h2.artifact_kind(),
+        fss_core::DecisionArtifactKind::GraphNeighborhood(_)
+    ));
+
     fs::remove_dir_all(&root)?;
     Ok(())
 }

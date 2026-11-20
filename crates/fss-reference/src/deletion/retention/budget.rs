@@ -12,9 +12,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use fss_core::{CanonicalDecoder, CanonicalEncoder, ContentDigest, DigestAlgorithm};
 
 use super::{
-    DeletionError, DeletionPlan, DeletionScope, MAX_BLOCKER_TEXT_BYTES,
-    MAX_RETENTION_BLOCKERS, ReferenceDeployment, ReplayCx, RetentionAssessment, RetentionCandidate,
-    RetentionDisposition, RetentionPlan, RetentionSelection, SelectionVersion, cohort_checkpoint,
+    DeletionError, DeletionPlan, DeletionScope, MAX_BLOCKER_TEXT_BYTES, MAX_RETENTION_BLOCKERS,
+    ReferenceDeployment, ReplayCx, RetentionAssessment, RetentionCandidate, RetentionDisposition,
+    RetentionPlan, RetentionSelection, SelectionVersion, cohort_checkpoint,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]

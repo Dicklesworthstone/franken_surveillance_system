@@ -2,9 +2,7 @@
 //! Exercise admission through real completed imports, including aggregate exhaustion.
 
 use super::*;
-use crate::ingest::{
-    CaptureHint, FileFormatHint, FileIngestAdapter, FileIngestRequest,
-};
+use crate::ingest::{CaptureHint, FileFormatHint, FileIngestAdapter, FileIngestRequest};
 use crate::media_fixture::jpeg::{JpegConfig, Subsampling, encode_jpeg};
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{BudgetVector, OperationId, StreamId};
@@ -134,7 +132,11 @@ fn smaller_manifest_allowance_and_zero_budget_refuse_before_followup_reads() -> 
     )?;
     let manifest_bytes = retained.manifest().canonical_bytes().len();
     let anchor = f.deployment.current_anchor().clone();
-    let state = f.deployment.publisher().spool().state(retained.manifest_digest());
+    let state = f
+        .deployment
+        .publisher()
+        .spool()
+        .state(retained.manifest_digest());
     f.deployment
         .publisher_mut()
         .tighten_read_budget(u64::MAX, u64::MAX)?;
@@ -163,7 +165,13 @@ fn smaller_manifest_allowance_and_zero_budget_refuse_before_followup_reads() -> 
 
     // Refusal neither rewrites authority nor poisons a valid object's ordinary read.
     assert_eq!(f.deployment.current_anchor(), &anchor);
-    assert_eq!(f.deployment.publisher().spool().state(retained.manifest_digest()), state);
+    assert_eq!(
+        f.deployment
+            .publisher()
+            .spool()
+            .state(retained.manifest_digest()),
+        state
+    );
     let (again, actual_bytes) = RetainedFileImport::open_with_manifest_limit(
         &f.deployment,
         identity,
@@ -210,10 +218,7 @@ fn cumulative_limit_covers_every_import_and_bounds_the_last_capsule_read() -> Te
     );
     // Both assessments reach the same final capsule. The refused attempt reserves one byte
     // less before I/O; charging only after an ordinary full read would spend identical bytes.
-    assert_eq!(
-        second.used_bytes - first.used_bytes + 1,
-        first.used_bytes,
-    );
+    assert_eq!(second.used_bytes - first.used_bytes + 1, first.used_bytes,);
     assert_eq!(
         assess_age_retention(&f.deployment, &request, &f.cx)?,
         baseline,

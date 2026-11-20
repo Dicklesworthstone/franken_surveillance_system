@@ -56,7 +56,9 @@ impl DurableDisclosureStore {
             0,
             self.sessions.limits,
         )?;
-        let descriptor = self.catalog.current_descriptor(handle)
+        let descriptor = self
+            .catalog
+            .current_descriptor(handle)
             .filter(|descriptor| descriptor.descriptor_digest == descriptor_digest)
             .ok_or(HydrationError::DescriptorNotFound)?;
         if now < descriptor.published_at {
@@ -68,18 +70,23 @@ impl DurableDisclosureStore {
 
         let mut prior = self.catalog_history()?;
         let mut catalog = self.catalog.clone();
-        let binding = catalog.bind_source_object(
-            handle, descriptor_digest, publication_root, reader,
-        ).map_err(|error| DisclosureError::Source(SessionSourceHydrationError::Source(error)))?;
+        let binding = catalog
+            .bind_source_object(handle, descriptor_digest, publication_root, reader)
+            .map_err(|error| DisclosureError::Source(SessionSourceHydrationError::Source(error)))?;
         let binding_digest = binding.custody_binding_digest();
         let cursors = CursorCheckpoint::register_source(
-            prior.as_ref(), descriptor_digest, binding_digest, now, MAX_RECORD_BYTES,
+            prior.as_ref(),
+            descriptor_digest,
+            binding_digest,
+            now,
+            MAX_RECORD_BYTES,
         )?;
         // This also applies the catalog's own metadata ceiling and checks reconstructed sources.
         // It is staged; none of these requirements or bindings escape if persistence fails.
         catalog.restore_cursor_checkpoint(&cursors, MAX_RECORD_BYTES, now)?;
         let memory = self.sessions.memory.clone();
-        let checkpoint = memory.checkpoint(self.sessions.limits.max_checkpoint_bytes)
+        let checkpoint = memory
+            .checkpoint(self.sessions.limits.max_checkpoint_bytes)
             .map_err(DurableSessionError::from)?;
         let payload = encode_registration(
             self.sessions.checkpoint_digest,
@@ -90,8 +97,11 @@ impl DurableDisclosureStore {
             now,
         )?;
         restore_record(
-            &payload, ContentDigest::sha256(&payload), Some(&memory),
-            &mut prior, self.sessions.limits,
+            &payload,
+            ContentDigest::sha256(&payload),
+            Some(&memory),
+            &mut prior,
+            self.sessions.limits,
         )?;
         self.sessions.commit_candidate(PendingSession {
             memory,
@@ -114,12 +124,17 @@ impl DurableDisclosureStore {
             return Err(DurableSessionError::RootMismatch.into());
         }
         let record = report.records().iter().rev().find(|record| {
-            record.kind() == SESSION_CHECKPOINT_RECORD_KIND && has_catalog_snapshot(record.payload())
+            record.kind() == SESSION_CHECKPOINT_RECORD_KIND
+                && has_catalog_snapshot(record.payload())
         });
         match record {
             Some(record) => {
                 let (bytes, _) = catalog_snapshot(record.payload(), self.sessions.limits)?;
-                Ok(Some(CursorCheckpoint::decode(bytes, MAX_RECORD_BYTES, MAX_RECORDS)?))
+                Ok(Some(CursorCheckpoint::decode(
+                    bytes,
+                    MAX_RECORD_BYTES,
+                    MAX_RECORDS,
+                )?))
             }
             None => Ok(None),
         }
@@ -208,7 +223,14 @@ fn decode_registration(
     let binding = decoder.digest()?;
     let observed_at = TimestampNs(decoder.i128()?);
     decoder.ensure_finished()?;
-    Ok(SavedRegistration { before, session_checkpoint, cursors, descriptor, binding, observed_at })
+    Ok(SavedRegistration {
+        before,
+        session_checkpoint,
+        cursors,
+        descriptor,
+        binding,
+        observed_at,
+    })
 }
 
 pub(super) fn restore_record(
@@ -234,7 +256,8 @@ pub(super) fn restore_record(
     if cursors.captured_at != saved.observed_at {
         return Err(DurableSessionError::InvalidHistory);
     }
-    cursors.validate_source_registration(cursor_history.as_ref(), saved.descriptor, saved.binding)
+    cursors
+        .validate_source_registration(cursor_history.as_ref(), saved.descriptor, saved.binding)
         .map_err(|_| DurableSessionError::InvalidHistory)?;
     *cursor_history = Some(cursors);
     Ok(previous.clone())

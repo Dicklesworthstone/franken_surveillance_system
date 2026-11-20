@@ -46,7 +46,13 @@ fn recover_profile(
     claim_ceilings: Option<WorkClaimLimits>,
     policy: IncompleteTailPolicy,
     mut catalog: ReferenceHydrationCatalog,
-) -> Result<(DurableDisclosureStore, super::super::coordination::SessionRecoveryReceipt), DisclosureError> {
+) -> Result<
+    (
+        DurableDisclosureStore,
+        super::super::coordination::SessionRecoveryReceipt,
+    ),
+    DisclosureError,
+> {
     let report = read_report(path, limits)?;
     if report.last_root() != expected_root {
         return Err(DurableSessionError::RootMismatch.into());
@@ -63,7 +69,11 @@ fn recover_profile(
     drop(report);
     let (sessions, receipt) = match claim_ceilings {
         Some(ceilings) => DurableSessionStore::recover_existing_with_coordination(
-            path, expected_root, limits, ceilings, policy,
+            path,
+            expected_root,
+            limits,
+            ceilings,
+            policy,
         )?,
         None => DurableSessionStore::recover_existing(path, expected_root, limits, policy)?,
     };
@@ -88,7 +98,9 @@ pub(super) fn restore_catalog(
         let (cursors, observed_at) =
             source_registration::catalog_snapshot(record.payload(), limits)?;
         if now.is_some_and(|now| now < observed_at) {
-            return Err(DisclosureError::Session(ReferenceSessionError::ClockRegression));
+            return Err(DisclosureError::Session(
+                ReferenceSessionError::ClockRegression,
+            ));
         }
         catalog.restore_cursor_checkpoint(cursors, MAX_RECORD_BYTES, observed_at)?;
     } else if catalog.issued_cursor_count() != 0 {

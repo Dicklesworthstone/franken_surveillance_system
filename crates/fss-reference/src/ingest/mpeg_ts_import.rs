@@ -14,10 +14,10 @@ use std::fmt;
 use std::fs;
 use std::io::Read;
 
+use fss_container::demux::VideoCodec;
 use fss_container::mpeg_ts::{
     MpegTsVideo, TsError, TsLimits, TsSelection, receipt::TsExtractionReceipt,
 };
-use fss_container::demux::VideoCodec;
 use fss_core::{CanonicalEncoder, ContentDigest, ContractError, TimestampNs};
 use fss_geometry::WorkBudget;
 
@@ -26,7 +26,9 @@ use super::file_adapter::{
 };
 use crate::{ReferenceDeployment, ReplayCx};
 
-pub(crate) use provenance::{OriginCache, verify_membership, verify_originals, verify_range_budgeted};
+pub(crate) use provenance::{
+    OriginCache, verify_membership, verify_originals, verify_range_budgeted,
+};
 
 /// Explicit reconstructed-media adapter; ordinary file-import identities remain unchanged.
 pub const ADAPTER: &str = "ADP-MPEGTS-FILE-001";
@@ -65,13 +67,21 @@ impl MpegTsImportRequest {
             max_elementary_bytes: MAX_BYTES as usize,
             ..TsLimits::default()
         };
-        Self { file, selection: TsSelection::default(), transport_limits }
+        Self {
+            file,
+            selection: TsSelection::default(),
+            transport_limits,
+        }
     }
 
     fn validate(&self) -> Result<(), MpegTsImportError> {
-        self.transport_limits.validate().map_err(MpegTsImportError::Transport)?;
+        self.transport_limits
+            .validate()
+            .map_err(MpegTsImportError::Transport)?;
         let file = &self.file;
-        let receive = file.receive_time.ok_or(FileIngestError::MissingReceiveTime {})?;
+        let receive = file
+            .receive_time
+            .ok_or(FileIngestError::MissingReceiveTime {})?;
         if file.format_hint.is_some()
             || file.rtp_binding.is_some()
             || receive.0 < 0
@@ -138,9 +148,13 @@ impl MpegTsImportRequest {
         e.u64(limits.mjpeg_limits.max_marker_segments_per_frame as u64);
         e.u64(u64::from(limits.mjpeg_limits.max_dimension));
         e.bool(self.selection.program.is_some());
-        if let Some(value) = self.selection.program { e.u64(u64::from(value)); }
+        if let Some(value) = self.selection.program {
+            e.u64(u64::from(value));
+        }
         e.bool(self.selection.video_pid.is_some());
-        if let Some(value) = self.selection.video_pid { e.u64(u64::from(value)); }
+        if let Some(value) = self.selection.video_pid {
+            e.u64(u64::from(value));
+        }
         let t = self.transport_limits;
         e.u64(t.max_input_bytes as u64);
         e.u64(t.max_packets as u64);
@@ -161,7 +175,11 @@ impl MpegTsImportRequest {
     }
 
     fn time_label(&self) -> &'static str {
-        if self.file.capture_hint.is_some() { "operator_assumption" } else { "unknown" }
+        if self.file.capture_hint.is_some() {
+            "operator_assumption"
+        } else {
+            "unknown"
+        }
     }
 
     fn scan(
@@ -170,13 +188,17 @@ impl MpegTsImportRequest {
         media: &[u8],
         cx: &ReplayCx,
     ) -> Result<ScannedSegments, FileIngestError> {
-        let identity = self.identity(receipt.source_digest()).map_err(|_| corrupt("identity"))?;
+        let identity = self
+            .identity(receipt.source_digest())
+            .map_err(|_| corrupt("identity"))?;
         let scan = FileIngestAdapter::scan_media(
             media,
             format(receipt.codec()),
             &self.file,
             &hex(identity),
-            self.file.receive_time.ok_or(FileIngestError::MissingReceiveTime {})?,
+            self.file
+                .receive_time
+                .ok_or(FileIngestError::MissingReceiveTime {})?,
             cx,
         )?;
         if scan.segment_spans.is_empty()
@@ -217,10 +239,14 @@ impl fmt::Display for MpegTsImportError {
 }
 impl std::error::Error for MpegTsImportError {}
 impl From<FileIngestError> for MpegTsImportError {
-    fn from(error: FileIngestError) -> Self { Self::Import(Box::new(error)) }
+    fn from(error: FileIngestError) -> Self {
+        Self::Import(Box::new(error))
+    }
 }
 impl From<ContractError> for MpegTsImportError {
-    fn from(error: ContractError) -> Self { FileIngestError::from(error).into() }
+    fn from(error: ContractError) -> Self {
+        FileIngestError::from(error).into()
+    }
 }
 fn storage_error(error: impl Into<FileIngestError>) -> MpegTsImportError {
     MpegTsImportError::Import(Box::new(error.into()))
@@ -229,11 +255,15 @@ fn work_error(error: impl fmt::Debug) -> MpegTsImportError {
     corrupt(&format!("aggregate work refused: {error:?}")).into()
 }
 fn corrupt(reason: &str) -> FileIngestError {
-    FileIngestError::CorruptSegment { detail: format!("MPEG-TS import origin: {reason}") }
+    FileIngestError::CorruptSegment {
+        detail: format!("MPEG-TS import origin: {reason}"),
+    }
 }
 fn checkpoint(cx: &ReplayCx) -> Result<(), FileIngestError> {
     cx.checkpoint(STAGE_MPEGTS_IMPORT)
-        .map_err(|_| FileIngestError::CancellationRequested { stage: STAGE_MPEGTS_IMPORT })
+        .map_err(|_| FileIngestError::CancellationRequested {
+            stage: STAGE_MPEGTS_IMPORT,
+        })
 }
 fn hex(digest: ContentDigest) -> String {
     digest.bytes().iter().map(|b| format!("{b:02x}")).collect()
@@ -246,7 +276,9 @@ fn format(codec: VideoCodec) -> DetectedFileFormat {
 }
 fn guard(destination: &ReferenceDeployment, cx: &ReplayCx) -> Result<(), MpegTsImportError> {
     if cx.root_dir() != destination.root() || !cx.io_authority().is_valid() {
-        return Err(MpegTsImportError::Invalid("destination context or I/O authority"));
+        return Err(MpegTsImportError::Invalid(
+            "destination context or I/O authority",
+        ));
     }
     checkpoint(cx)?;
     Ok(())
@@ -295,31 +327,51 @@ pub fn import_mpeg_ts_file(
 ) -> Result<MpegTsImportReceipt, MpegTsImportError> {
     guard(destination, cx)?;
     request.validate()?;
-    let bound = destination.limits().spool_object_max_bytes.min(
-        destination.publisher().spool().limits().max_object_bytes as u64,
-    );
+    let bound = destination
+        .limits()
+        .spool_object_max_bytes
+        .min(destination.publisher().spool().limits().max_object_bytes as u64);
     if request.file.limits.chunk_bytes > bound {
-        return Err(MpegTsImportError::Invalid("chunk exceeds spool object bound"));
+        return Err(MpegTsImportError::Invalid(
+            "chunk exceeds spool object bound",
+        ));
     }
-    let maximum = request.file.limits.max_file_bytes.min(request.transport_limits.max_input_bytes as u64);
+    let maximum = request
+        .file
+        .limits
+        .max_file_bytes
+        .min(request.transport_limits.max_input_bytes as u64);
     let metadata = fs::symlink_metadata(&request.file.path).map_err(FileIngestError::Io)?;
     if metadata.file_type().is_symlink() {
-        return Err(FileIngestError::SymlinkNotAllowed { path: request.file.path.clone() }.into());
+        return Err(FileIngestError::SymlinkNotAllowed {
+            path: request.file.path.clone(),
+        }
+        .into());
     }
     if !metadata.file_type().is_file() {
-        return Err(FileIngestError::NotRegularFile { path: request.file.path.clone() }.into());
+        return Err(FileIngestError::NotRegularFile {
+            path: request.file.path.clone(),
+        }
+        .into());
     }
     if metadata.len() == 0 {
-        return Err(FileIngestError::EmptyFile { path: request.file.path.clone() }.into());
+        return Err(FileIngestError::EmptyFile {
+            path: request.file.path.clone(),
+        }
+        .into());
     }
     if metadata.len() > maximum {
         return Err(FileIngestError::FileTooLarge {
-            path: request.file.path.clone(), len: metadata.len(), max: maximum,
-        }.into());
+            path: request.file.path.clone(),
+            len: metadata.len(),
+            max: maximum,
+        }
+        .into());
     }
     let file = super::file_adapter::open_admitted_source(cx, &request.file.path, &metadata)?;
     let mut original = Vec::new();
-    original.try_reserve_exact(metadata.len() as usize)
+    original
+        .try_reserve_exact(metadata.len() as usize)
         .map_err(|_| MpegTsImportError::Invalid("original allocation"))?;
     let mut handle = (&file).take(maximum);
     let mut expected_len = metadata.len();
@@ -327,53 +379,82 @@ pub fn import_mpeg_ts_file(
     loop {
         guard(destination, cx)?;
         let remaining = maximum - original.len() as u64;
-        if remaining == 0 { break; }
+        if remaining == 0 {
+            break;
+        }
         // The admitted length guides finite reads. At its end, one charged byte probes EOF;
         // observed growth is restatted and stays under the same non-replenishing ceiling.
         let expected_remaining = expected_len.saturating_sub(original.len() as u64);
-        let requested = expected_remaining.max(1).min(remaining).min(buffer.len() as u64) as usize;
+        let requested = expected_remaining
+            .max(1)
+            .min(remaining)
+            .min(buffer.len() as u64) as usize;
         work.charge(requested as u64).map_err(work_error)?;
-        let n = handle.read(&mut buffer[..requested]).map_err(FileIngestError::Io)?;
-        if n == 0 { break; }
+        let n = handle
+            .read(&mut buffer[..requested])
+            .map_err(FileIngestError::Io)?;
+        if n == 0 {
+            break;
+        }
         original.extend_from_slice(&buffer[..n]);
         if n as u64 >= expected_remaining {
             expected_len = file.metadata().map_err(FileIngestError::Io)?.len();
             if expected_len > maximum {
                 return Err(FileIngestError::FileTooLarge {
-                    path: request.file.path.clone(), len: expected_len, max: maximum,
-                }.into());
+                    path: request.file.path.clone(),
+                    len: expected_len,
+                    max: maximum,
+                }
+                .into());
             }
         }
     }
     let current_len = file.metadata().map_err(FileIngestError::Io)?.len();
     if current_len > maximum {
         return Err(FileIngestError::FileTooLarge {
-            path: request.file.path.clone(), len: current_len, max: maximum,
-        }.into());
+            path: request.file.path.clone(),
+            len: current_len,
+            max: maximum,
+        }
+        .into());
     }
     if original.is_empty() {
-        return Err(FileIngestError::EmptyFile { path: request.file.path.clone() }.into());
+        return Err(FileIngestError::EmptyFile {
+            path: request.file.path.clone(),
+        }
+        .into());
     }
     guard(destination, cx)?;
     work.charge(original.len() as u64).map_err(work_error)?;
     let video = MpegTsVideo::parse_with_checkpoint(
-        &original, request.selection, request.transport_limits,
+        &original,
+        request.selection,
+        request.transport_limits,
         &mut || checkpoint(cx).map_err(|_| TsError::Cancelled),
-    ).map_err(MpegTsImportError::Transport)?;
+    )
+    .map_err(MpegTsImportError::Transport)?;
     work.charge(original.len() as u64 + video.elementary_stream().len() as u64)
         .map_err(work_error)?;
-    let receipt = TsExtractionReceipt::from_extraction_with_checkpoint(
-        &video, &mut || checkpoint(cx).map_err(|_| TsError::Cancelled),
-    ).map_err(MpegTsImportError::Transport)?;
-    work.charge(video.elementary_stream().len() as u64).map_err(work_error)?;
+    let receipt = TsExtractionReceipt::from_extraction_with_checkpoint(&video, &mut || {
+        checkpoint(cx).map_err(|_| TsError::Cancelled)
+    })
+    .map_err(MpegTsImportError::Transport)?;
+    work.charge(video.elementary_stream().len() as u64)
+        .map_err(work_error)?;
     let scan = request.scan(&receipt, video.elementary_stream(), cx)?;
-    if original.len().div_ceil(request.file.limits.chunk_bytes as usize) > MAX_OBJECTS {
+    if original
+        .len()
+        .div_ceil(request.file.limits.chunk_bytes as usize)
+        > MAX_OBJECTS
+    {
         return Err(MpegTsImportError::Invalid("original chunk count"));
     }
     // Reserve bounded source hashing/copying and native-map metadata work before preparation.
     let metadata_work = (scan.segment_spans.len() as u64 + scan.omission_spans.len() as u64)
-        .checked_mul(1024).ok_or(MpegTsImportError::Invalid("metadata work overflow"))?;
-    work.charge(original.len() as u64 + metadata_work).map_err(work_error)?;
+        .checked_mul(1024)
+        .ok_or(MpegTsImportError::Invalid("metadata work overflow"))?;
+    work.charge(original.len() as u64 + metadata_work)
+        .map_err(work_error)?;
     let mut payloads = BTreeMap::new();
     let mut original_chunks = Vec::new();
     for bytes in original.chunks(request.file.limits.chunk_bytes as usize) {
@@ -389,7 +470,19 @@ pub fn import_mpeg_ts_file(
         request: request.clone(),
         receipt,
         original_chunks,
-        scan_digest: provenance::scan_digest(&scan.segment_spans, &scan.omission_spans, &scan.capsules),
+        scan_digest: provenance::scan_digest(
+            &scan.segment_spans,
+            &scan.omission_spans,
+            &scan.capsules,
+        ),
     };
-    publication::publish(destination, cx, work, proof, video.into_elementary_stream(), scan, payloads)
+    publication::publish(
+        destination,
+        cx,
+        work,
+        proof,
+        video.into_elementary_stream(),
+        scan,
+        payloads,
+    )
 }

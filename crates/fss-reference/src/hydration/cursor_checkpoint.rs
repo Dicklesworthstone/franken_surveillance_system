@@ -2,12 +2,12 @@
 
 use fss_core::{CanonicalDecoder, CanonicalEncoder};
 
+use super::source_checkpoint::{self, MAX_SOURCE_BINDINGS, SourceBindingPins};
 use super::{
     ContentDigest, ContractError, HydrationError, IssuedCursorRecord, ReferenceHydrationCatalog,
     SessionId, TimestampNs,
 };
 use std::collections::BTreeMap;
-use super::source_checkpoint::{self, MAX_SOURCE_BINDINGS, SourceBindingPins};
 
 mod source_registration;
 
@@ -84,15 +84,24 @@ impl CursorCheckpoint {
             BTreeMap::new()
         };
         decoder.ensure_finished()?;
-        Ok(Self { captured_at, records, source_requirements })
+        Ok(Self {
+            captured_at,
+            records,
+            source_requirements,
+        })
     }
 
     fn encode(&self, max_bytes: usize) -> Result<Vec<u8>, HydrationError> {
         let ceiling = max_bytes.min(MAX_BYTES);
         // Account for both length prefixes, time, count, and the checksum before allocation.
-        let domain = if self.source_requirements.is_empty() { DOMAIN } else { BOUND_DOMAIN };
+        let domain = if self.source_requirements.is_empty() {
+            DOMAIN
+        } else {
+            BOUND_DOMAIN
+        };
         let mut length = 8 + 8 + domain.len() + 16 + 8 + 33;
-        if self.records.len() > MAX_RECORDS || self.source_requirements.len() > MAX_SOURCE_BINDINGS {
+        if self.records.len() > MAX_RECORDS || self.source_requirements.len() > MAX_SOURCE_BINDINGS
+        {
             return Err(HydrationError::CapacityExceeded);
         }
         for record in self.records.values() {
@@ -107,7 +116,10 @@ impl CursorCheckpoint {
                 .ok_or(HydrationError::CapacityExceeded)?;
         }
         if !self.source_requirements.is_empty() {
-            length = self.source_requirements.len().checked_mul(66)
+            length = self
+                .source_requirements
+                .len()
+                .checked_mul(66)
                 .and_then(|bytes| bytes.checked_add(8))
                 .and_then(|bytes| length.checked_add(bytes))
                 .ok_or(HydrationError::CapacityExceeded)?;
@@ -191,7 +203,10 @@ impl CursorCheckpoint {
         if self.captured_at < prior.captured_at {
             return Err(ContractError::StaleAnchor.into());
         }
-        source_checkpoint::validate_successor(&self.source_requirements, &prior.source_requirements)?;
+        source_checkpoint::validate_successor(
+            &self.source_requirements,
+            &prior.source_requirements,
+        )?;
         self.validate_resident(&prior.records)
     }
 

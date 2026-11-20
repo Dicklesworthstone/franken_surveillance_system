@@ -373,7 +373,9 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Shutdown<'scope, 'task, 
 
 impl Coordinator {
     /// Whether a source archive attempt still requires joining.
-    pub fn is_running(&self) -> bool { self.worker.is_running() }
+    pub fn is_running(&self) -> bool {
+        self.worker.is_running()
+    }
 
     /// Stop future source admission and request cancellation of any attempt.
     /// The caller must still join and account for the exact result.

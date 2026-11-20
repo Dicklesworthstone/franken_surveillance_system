@@ -861,11 +861,8 @@ mod tests {
                 audio: matches!(audio, AudioPolicy::Enabled),
                 psk_truncated: false,
                 seed: 42,
+                entropy: None,
                 known_tuples: vec![("SIM-CAM".to_string(), "9.99.0.SIM".to_string())],
-                psk_identity: None,
-                psk_override: None,
-                audio_encoder_list: None,
-                k10000_json: None,
             },
             sensor_id: SensorId::parse("sensor:tutk:sim:01").unwrap(),
             stream_id: StreamId::parse("stream:tutk:sim:01").unwrap(),
@@ -873,7 +870,6 @@ mod tests {
             audio,
             limits: TutkIngestLimits::default(),
             known_tuples: vec![("SIM-CAM".to_string(), "9.99.0.SIM".to_string())],
-
         }
     }
     #[test]

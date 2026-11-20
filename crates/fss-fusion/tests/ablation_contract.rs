@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! Contract tests for counterfactual evidence ablation in `fss-fusion`.
 
 use std::collections::BTreeSet;
 

@@ -103,8 +103,13 @@ pub fn get_media2_stream_uri_request(profile_token: &str) -> Result<SoapRequest,
 /// No match in a valid inventory is explicit `None`; an empty/malformed response
 /// cannot be converted into an unsupported-service absence claim.
 pub fn parse_media2_service(bytes: &[u8]) -> Result<Option<Media2Service>, WireError> {
-    Ok(parse_services(bytes)?.into_iter().find(|service| service.namespace == MEDIA2_NS)
-        .map(|service| Media2Service { xaddr: service.xaddr, version: service.version }))
+    Ok(parse_services(bytes)?
+        .into_iter()
+        .find(|service| service.namespace == MEDIA2_NS)
+        .map(|service| Media2Service {
+            xaddr: service.xaddr,
+            version: service.version,
+        }))
 }
 
 pub(super) struct ServiceAdvertisement {

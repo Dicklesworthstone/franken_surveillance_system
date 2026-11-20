@@ -7,12 +7,14 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
+use crate::event_counterfactual::{EventCounterfactual, EventCounterfactualRequest};
 use fss_core::json_input::{self, Value};
 use fss_core::{
-    ActionAffordance, AgentCognitiveEnvelope, AgentView, BudgetVector, CognitiveAnswerClass, Completeness,
-    ContentDigest, ContextAuthority, EnvelopeBudget, EnvelopeCoverage, EnvelopeEpistemic,
-    EnvelopeProposition, EventId, ExplainQuestion, KnowledgeCell, KnowledgeState, LedgerAnchor, OperationId,
-    ResponseOutcome, ResponseSafeRetry, RootAuthoritySpec, TimestampNs,
+    ActionAffordance, AgentCognitiveEnvelope, AgentView, BudgetVector, CognitiveAnswerClass,
+    Completeness, ContentDigest, ContextAuthority, EnvelopeBudget, EnvelopeCoverage,
+    EnvelopeEpistemic, EnvelopeProposition, EventId, ExplainQuestion, KnowledgeCell,
+    KnowledgeState, LedgerAnchor, OperationId, ResponseOutcome, ResponseSafeRetry,
+    RootAuthoritySpec, TimestampNs,
 };
 use fss_reference::ReplayCx;
 use fss_reference::agent_event_changes::EventChangesLimits as MetadataLimits;
@@ -24,7 +26,6 @@ use fss_reference::agent_orient::{
 use fss_reference::retained_source::{
     ImmutableRetainedSource, RetainedReadUsage, verify_event_lineage,
 };
-use crate::event_counterfactual::{EventCounterfactual, EventCounterfactualRequest};
 
 use super::{
     CAPABILITY_EXPLAIN, CognitiveParts, ERR_AGENT_CONTEXT_INCOMPLETE, ExplainArgs, RenderError,
@@ -90,7 +91,12 @@ fn artifact_rows(
         match value {
             Value::Object(fields) if !fields.is_empty() => {
                 for (name, value) in fields {
-                    artifact_rows(out, &format!("{pointer}/{}", pointer_segment(name)), value, proof)?;
+                    artifact_rows(
+                        out,
+                        &format!("{pointer}/{}", pointer_segment(name)),
+                        value,
+                        proof,
+                    )?;
                 }
                 return Ok(());
             }
@@ -120,11 +126,18 @@ fn artifact_rows(
 fn counterfactual_rows(report: &EventCounterfactual) -> Result<Vec<EnvelopeProposition>> {
     let complete = report.to_json()?;
     let value = json_input::parse(&complete)?;
-    let fields = value.object().ok_or(RenderError("complete counterfactual object"))?;
+    let fields = value
+        .object()
+        .ok_or(RenderError("complete counterfactual object"))?;
     let proof = vec![report.digest().to_text()];
     let mut rows = Vec::new();
     for (name, value) in fields {
-        artifact_rows(&mut rows, &format!("/{}", pointer_segment(name)), value, &proof)?;
+        artifact_rows(
+            &mut rows,
+            &format!("/{}", pointer_segment(name)),
+            value,
+            &proof,
+        )?;
     }
     Ok(rows)
 }
@@ -269,7 +282,8 @@ impl Plan {
         warnings.push("The complete numerical baseline, projected query, results and caller assumptions are present alongside the original event. Current metadata custody is verified; original source and model payloads are not read. Every derived scenario is hypothetical and supplies no new physical claim or authority.".to_owned());
         let mut proofs = support.proof_pointers.clone();
         proofs.extend(
-            read.report.receipt()
+            read.report
+                .receipt()
                 .evidence_subgraph()
                 .iter()
                 .map(|digest| digest.to_text()),
@@ -282,13 +296,16 @@ impl Plan {
         proofs.sort();
         proofs.dedup();
         let frame_digest = capsule.frame.frame_digest()?;
-        let decision = request_identity("fss.cli.event_counterfactual.context_decision.v1", |encoder| {
-            encoder.digest(read.request_digest);
-            encoder.digest(read.report.digest());
-            encoder.digest(read.report.receipt().receipt_digest());
-            encoder.digest(support.receipt.receipt_digest());
-            encoder.digest(frame_digest);
-        });
+        let decision = request_identity(
+            "fss.cli.event_counterfactual.context_decision.v1",
+            |encoder| {
+                encoder.digest(read.request_digest);
+                encoder.digest(read.report.digest());
+                encoder.digest(read.report.receipt().receipt_digest());
+                encoder.digest(support.receipt.receipt_digest());
+                encoder.digest(frame_digest);
+            },
+        );
         let mut requested = limits.allowance()?;
         requested.tokens = token_limit;
         let mut consumed = support.consumed;
@@ -388,7 +405,9 @@ impl Plan {
         consumed.storage_operations = read.read_usage.read_objects;
         let event = &read.explanation.event.event;
         let handles = vec![format!(
-            "fss://event/{}/revision/{}", event.event_id.as_str(), event.revision
+            "fss://event/{}/revision/{}",
+            event.event_id.as_str(),
+            event.revision
         )];
         let (payload, actions, action_objects) = cognitive_payload_with_budget(
             &read.orientation, read.request_digest, "explain", args.view,
@@ -465,7 +484,12 @@ pub(super) fn execute(
         || super::explain_options::limit(args.view, args.budget_tokens).is_none()
     {
         return (
-            execution_diagnostic("explain", &args.root, "ERR-AGENT-PROTOCOL-001", ExitIdentity::AGENT_REFUSED),
+            execution_diagnostic(
+                "explain",
+                &args.root,
+                "ERR-AGENT-PROTOCOL-001",
+                ExitIdentity::AGENT_REFUSED,
+            ),
             ExitIdentity::AGENT_REFUSED,
         );
     }
@@ -473,7 +497,12 @@ pub(super) fn execute(
         Ok(request) => request,
         Err(error) => {
             return (
-                execution_diagnostic("explain", &args.root, error.stable_id(), ExitIdentity::AGENT_REFUSED),
+                execution_diagnostic(
+                    "explain",
+                    &args.root,
+                    error.stable_id(),
+                    ExitIdentity::AGENT_REFUSED,
+                ),
                 ExitIdentity::AGENT_REFUSED,
             );
         }
@@ -520,16 +549,22 @@ pub(super) fn execute(
     };
     let started = Instant::now();
     let cancelled = || authority.cancellation_reason.is_some() || started.elapsed() >= DEADLINE;
-    let owner = match ImmutableRetainedSource::open_cancellable(&args.root, limits.read, &cx, &cancelled) {
-        Ok(owner) => owner,
-        Err(_) => {
-            cx.drain_and_finalize();
-            return (
-                execution_diagnostic("explain", &args.root, ERR_AGENT_CONTEXT_INCOMPLETE, ExitIdentity::AGENT_REFUSED),
-                ExitIdentity::AGENT_REFUSED,
-            );
-        }
-    };
+    let owner =
+        match ImmutableRetainedSource::open_cancellable(&args.root, limits.read, &cx, &cancelled) {
+            Ok(owner) => owner,
+            Err(_) => {
+                cx.drain_and_finalize();
+                return (
+                    execution_diagnostic(
+                        "explain",
+                        &args.root,
+                        ERR_AGENT_CONTEXT_INCOMPLETE,
+                        ExitIdentity::AGENT_REFUSED,
+                    ),
+                    ExitIdentity::AGENT_REFUSED,
+                );
+            }
+        };
     let mut observation = Observation {
         anchor: owner.snapshot().anchor.clone(),
         observed_at: owner.snapshot().latest_evidence_time,
@@ -560,7 +595,8 @@ pub(super) fn execute(
                 ERR_AGENT_CONTEXT_INCOMPLETE,
                 "Current event publication metadata could not be verified under this allowance.",
             ))?;
-            if publications.last().copied() != Some((retained.event_root, retained.committed_sequence))
+            if publications.last().copied()
+                != Some((retained.event_root, retained.committed_sequence))
                 || retained.revision_digest != retained.event.revision_digest()
                 || retained.revisions.last() != Some(&retained.event)
             {
@@ -571,7 +607,10 @@ pub(super) fn execute(
             }
         }
         if cancelled() || cx.checkpoint("event_counterfactual:compile").is_err() {
-            return Err(("ERR-AUTH-DENIED-001", "The immutable metadata deadline or authority expired."));
+            return Err((
+                "ERR-AUTH-DENIED-001",
+                "The immutable metadata deadline or authority expired.",
+            ));
         }
         let mut snapshot = owner.snapshot().clone();
         snapshot.bytes_read = owner.usage().read_bytes;
@@ -581,40 +620,63 @@ pub(super) fn execute(
             &OrientRequest {
                 view: AgentView::Brief,
                 principal: args.principal.clone(),
-                budget_tokens: args.budget_tokens.map(|tokens| tokens.min(u64::from(AgentView::Brief.maximum_tokens()))),
+                budget_tokens: args
+                    .budget_tokens
+                    .map(|tokens| tokens.min(u64::from(AgentView::Brief.maximum_tokens()))),
             },
             &limits.read.snapshot,
-        ).map_err(|_| (
-            ERR_AGENT_CONTEXT_INCOMPLETE,
-            "The protected current orientation cannot fit the selected allowance.",
-        ))?;
+        )
+        .map_err(|_| {
+            (
+                ERR_AGENT_CONTEXT_INCOMPLETE,
+                "The protected current orientation cannot fit the selected allowance.",
+            )
+        })?;
         let explanation = explain_event(&snapshot, &orientation, event_id)
-            .map_err(|_| (ERR_AGENT_CONTEXT_INCOMPLETE, "The complete current explanation is unavailable."))?
-            .ok_or(("ERR-AGENT-EVENT-NOT-FOUND-001", "The exact current event explanation is unavailable."))?;
+            .map_err(|_| {
+                (
+                    ERR_AGENT_CONTEXT_INCOMPLETE,
+                    "The complete current explanation is unavailable.",
+                )
+            })?
+            .ok_or((
+                "ERR-AGENT-EVENT-NOT-FOUND-001",
+                "The exact current event explanation is unavailable.",
+            ))?;
         let report = request.compute(&explanation).map_err(|error| (
             error.stable_id(),
             "The complete hypothetical request does not match the retained event or exceeds its numerical bounds.",
         ))?;
         let token = snapshot_anchor_token(&snapshot);
-        let request_digest = request_identity("fss.cli.event_counterfactual.request.v1", |encoder| {
-            encoder.digest(input);
-            encoder.text(&token);
-            encoder.u64(limits.read.max_read_bytes as u64);
-            encoder.u64(limits.read.max_read_objects as u64);
-        });
+        let request_digest =
+            request_identity("fss.cli.event_counterfactual.request.v1", |encoder| {
+                encoder.digest(input);
+                encoder.text(&token);
+                encoder.u64(limits.read.max_read_bytes as u64);
+                encoder.u64(limits.read.max_read_objects as u64);
+            });
         let mut read = CounterfactualRead {
-            snapshot, orientation, explanation, report, request_digest, read_usage: owner.usage(),
+            snapshot,
+            orientation,
+            explanation,
+            report,
+            request_digest,
+            read_usage: owner.usage(),
         };
         let plan = Plan::compile(args, &read, limits).map_err(|_| (
             ERR_AGENT_CONTEXT_INCOMPLETE,
             "The whole hypothetical artifact and protected current context do not fit the selected allowance.",
         ))?;
         match plan.render(args, &read) {
-            Ok(output) if output.len().saturating_add(1) <= evidence::MAX_RESPONSE_BYTES && !cancelled() => {}
-            _ => return Err((
-                ERR_AGENT_CONTEXT_INCOMPLETE,
-                "The complete output exceeds its byte/context allowance or cooperative deadline.",
-            )),
+            Ok(output)
+                if output.len().saturating_add(1) <= evidence::MAX_RESPONSE_BYTES
+                    && !cancelled() => {}
+            _ => {
+                return Err((
+                    ERR_AGENT_CONTEXT_INCOMPLETE,
+                    "The complete output exceeds its byte/context allowance or cooperative deadline.",
+                ));
+            }
         }
         owner.revalidate_snapshot_metadata().map_err(|_| (
             ERR_AGENT_CONTEXT_INCOMPLETE,
@@ -641,7 +703,10 @@ pub(super) fn execute(
                 (output, ExitIdentity::SUCCESS)
             }
             _ => refused(
-                args, read.request_digest, &observation, ERR_AGENT_CONTEXT_INCOMPLETE,
+                args,
+                read.request_digest,
+                &observation,
+                ERR_AGENT_CONTEXT_INCOMPLETE,
                 "The complete final response exceeds its registered bounds; no hypothetical prefix was delivered.",
             ),
         },

@@ -172,24 +172,45 @@ impl OpenedSwitches {
         max_records: usize,
         work: &mut WorkBudget<'_>,
         cx: &ReplayCx,
-    ) -> Result<Option<crate::unifi_direct::archive::journal::rollover::SelectedSwitch>, OpenSwitchesError> {
+    ) -> Result<
+        Option<crate::unifi_direct::archive::journal::rollover::SelectedSwitch>,
+        OpenSwitchesError,
+    > {
         let limit = self.entries.len().max(1);
-        let before = plan.inventory_page(None, limit, max_records, work, cx).map_err(OpenSwitchesError::Inventory)?;
-        if before.snapshot != self.snapshot || before.entries != self.entries || before.next.is_some() {
+        let before = plan
+            .inventory_page(None, limit, max_records, work, cx)
+            .map_err(OpenSwitchesError::Inventory)?;
+        if before.snapshot != self.snapshot
+            || before.entries != self.entries
+            || before.next.is_some()
+        {
             return Err(OpenSwitchesError::Stale);
         }
         let selected = crate::unifi_direct::archive::journal::rollover::select_successor_switch(
-            predecessor, &mut self.switches, work, cx,
-        ).map_err(OpenSwitchesError::Selection)?;
-        let after = plan.inventory_page(None, limit, max_records, work, cx).map_err(OpenSwitchesError::Inventory)?;
-        if after.snapshot != self.snapshot || after.entries != self.entries || after.next.is_some() {
+            predecessor,
+            &mut self.switches,
+            work,
+            cx,
+        )
+        .map_err(OpenSwitchesError::Selection)?;
+        let after = plan
+            .inventory_page(None, limit, max_records, work, cx)
+            .map_err(OpenSwitchesError::Inventory)?;
+        if after.snapshot != self.snapshot || after.entries != self.entries || after.next.is_some()
+        {
             return Err(OpenSwitchesError::Stale);
         }
         Ok(selected)
     }
 
     /// Return the exact inventory snapshot and all switch owners in order.
-    pub fn into_parts(self) -> (EffectJournalPin, Vec<InventoryEntry>, Vec<PinRetainedEffectJournal>) {
+    pub fn into_parts(
+        self,
+    ) -> (
+        EffectJournalPin,
+        Vec<InventoryEntry>,
+        Vec<PinRetainedEffectJournal>,
+    ) {
         (self.snapshot, self.entries, self.switches)
     }
 }
@@ -388,7 +409,11 @@ impl ReservedPlan {
         self.fenced = true;
     }
 
-    pub(crate) fn uses_replays(&self, journal: &std::sync::Arc<ReplayCx>, pin: &std::sync::Arc<ReplayCx>) -> bool {
+    pub(crate) fn uses_replays(
+        &self,
+        journal: &std::sync::Arc<ReplayCx>,
+        pin: &std::sync::Arc<ReplayCx>,
+    ) -> bool {
         std::sync::Arc::ptr_eq(&self.plan.config.journal_replay, journal)
             && std::sync::Arc::ptr_eq(&self.plan.config.pin_replay, pin)
     }
@@ -501,41 +526,63 @@ impl ReservedPlan {
                 if record.len() > MAX_RECORD_BYTES {
                     return Err(DiscoverError::Invalid);
                 }
-                let cost = u64::try_from(record.len()).map_err(|_| DiscoverError::Limit)?
-                    .checked_mul(16).and_then(|n| n.checked_add(130)).ok_or(DiscoverError::Limit)?;
+                let cost = u64::try_from(record.len())
+                    .map_err(|_| DiscoverError::Limit)?
+                    .checked_mul(16)
+                    .and_then(|n| n.checked_add(130))
+                    .ok_or(DiscoverError::Limit)?;
                 work.charge(cost).map_err(DiscoverError::Work)?;
             }
-            let retained = journal.verify_retained_head().map_err(DiscoverError::Storage)?;
+            let retained = journal
+                .verify_retained_head()
+                .map_err(DiscoverError::Storage)?;
             let expected_scope = scope(&plan).map_err(|_| DiscoverError::Invalid)?;
             let records = journal.records();
-            let (header_scope, kind, first, marker) = decode(records.first().ok_or(DiscoverError::Invalid)?)
-                .map_err(|_| DiscoverError::Invalid)?;
-            if header_scope != expected_scope || kind != 0 || first == 0
-                || marker != expected_scope || first != plan.config.first
+            let (header_scope, kind, first, marker) =
+                decode(records.first().ok_or(DiscoverError::Invalid)?)
+                    .map_err(|_| DiscoverError::Invalid)?;
+            if header_scope != expected_scope
+                || kind != 0
+                || first == 0
+                || marker != expected_scope
+                || first != plan.config.first
             {
                 return Err(DiscoverError::Invalid);
             }
             let next = if records.len() == 1 {
                 first
             } else {
-                let (record_scope, kind, generation, _) = decode(records.last().ok_or(DiscoverError::Invalid)?)
-                    .map_err(|_| DiscoverError::Invalid)?;
-                if record_scope != expected_scope || !(1..=3).contains(&kind) || generation < first {
+                let (record_scope, kind, generation, _) =
+                    decode(records.last().ok_or(DiscoverError::Invalid)?)
+                        .map_err(|_| DiscoverError::Invalid)?;
+                if record_scope != expected_scope || !(1..=3).contains(&kind) || generation < first
+                {
                     return Err(DiscoverError::Invalid);
                 }
                 generation.checked_add(1).ok_or(DiscoverError::Limit)?
             };
-            next.checked_add(plan.config.count - 1).ok_or(DiscoverError::Limit)?;
+            next.checked_add(plan.config.count - 1)
+                .ok_or(DiscoverError::Limit)?;
             guard().map_err(DiscoverError::Bind)?;
             checkpoint(cx).map_err(|_| DiscoverError::Cancelled)?;
-            if journal.verify_retained_head().map_err(DiscoverError::Storage)? != retained {
+            if journal
+                .verify_retained_head()
+                .map_err(DiscoverError::Storage)?
+                != retained
+            {
                 return Err(DiscoverError::Invalid);
             }
             Ok(next)
         })();
         let next = match result {
             Ok(next) => next,
-            Err(reason) => return Err(DiscoverRefusal { reason, plan, journal }),
+            Err(reason) => {
+                return Err(DiscoverRefusal {
+                    reason,
+                    plan,
+                    journal,
+                });
+            }
         };
         plan.next = next;
         plan.config.first = next;
@@ -728,7 +775,8 @@ impl ReservedPlan {
         if self.fenced {
             return Err(InventoryError::Fenced);
         }
-        if !(1..=128).contains(&limit) || !(1..=65_536).contains(&max_records)
+        if !(1..=128).contains(&limit)
+            || !(1..=65_536).contains(&max_records)
             || self.journal.records().len() > max_records
         {
             return Err(InventoryError::Limit);
@@ -744,8 +792,11 @@ impl ReservedPlan {
             if record.len() > MAX_RECORD_BYTES {
                 return Err(InventoryError::Invalid);
             }
-            let cost = u64::try_from(record.len()).map_err(|_| InventoryError::Limit)?
-                .checked_mul(8).and_then(|n| n.checked_add(65)).ok_or(InventoryError::Limit)?;
+            let cost = u64::try_from(record.len())
+                .map_err(|_| InventoryError::Limit)?
+                .checked_mul(8)
+                .and_then(|n| n.checked_add(65))
+                .ok_or(InventoryError::Limit)?;
             work.charge(cost).map_err(InventoryError::Work)?;
         }
         let retained = match self.journal.verify_retained_head() {
@@ -760,13 +811,16 @@ impl ReservedPlan {
             return Err(InventoryError::Invalid);
         }
         let mut records = self.journal.records().iter();
-        let (header_scope, kind, first, marker) = decode(records.next().ok_or(InventoryError::Invalid)?)
-            .map_err(|_| InventoryError::Invalid)?;
+        let (header_scope, kind, first, marker) =
+            decode(records.next().ok_or(InventoryError::Invalid)?)
+                .map_err(|_| InventoryError::Invalid)?;
         if header_scope != self.scope || kind != 0 || first == 0 || marker != self.scope {
             return Err(InventoryError::Invalid);
         }
         let mut entries = Vec::new();
-        entries.try_reserve_exact(limit).map_err(|_| InventoryError::Limit)?;
+        entries
+            .try_reserve_exact(limit)
+            .map_err(|_| InventoryError::Limit)?;
         let mut has_more = false;
         let after = cursor.map(|value| value.after_generation);
         let mut expected = Some(first);
@@ -774,7 +828,10 @@ impl ReservedPlan {
         let mut emit = |identity: Identity, disposition: InventoryDisposition| {
             if after.is_none_or(|generation| identity.generation > generation) {
                 if entries.len() < limit {
-                    entries.push(InventoryEntry { identity, disposition });
+                    entries.push(InventoryEntry {
+                        identity,
+                        disposition,
+                    });
                 } else {
                     has_more = true;
                 }
@@ -782,26 +839,42 @@ impl ReservedPlan {
         };
         for record in records {
             checkpoint(cx).map_err(|_| InventoryError::Cancelled)?;
-            let (scope, kind, generation, digest) = decode(record).map_err(|_| InventoryError::Invalid)?;
+            let (scope, kind, generation, digest) =
+                decode(record).map_err(|_| InventoryError::Invalid)?;
             if scope != self.scope {
                 return Err(InventoryError::Invalid);
             }
             match kind {
                 1 if pending.is_none() && Some(generation) == expected => {
-                    let identity = self.plan.identity_for(generation).map_err(|_| InventoryError::Invalid)?;
+                    let identity = self
+                        .plan
+                        .identity_for(generation)
+                        .map_err(|_| InventoryError::Invalid)?;
                     if identity_digest(&identity).map_err(|_| InventoryError::Invalid)? != digest {
                         return Err(InventoryError::Invalid);
                     }
                     expected = generation.checked_add(1);
                     pending = Some(identity);
                 }
-                2 if pending.as_ref().is_some_and(|value| value.generation == generation)
-                    && valid_evidence(digest) => {
-                    emit(pending.take().ok_or(InventoryError::Invalid)?, InventoryDisposition::Reconciled(digest));
+                2 if pending
+                    .as_ref()
+                    .is_some_and(|value| value.generation == generation)
+                    && valid_evidence(digest) =>
+                {
+                    emit(
+                        pending.take().ok_or(InventoryError::Invalid)?,
+                        InventoryDisposition::Reconciled(digest),
+                    );
                 }
-                3 if pending.as_ref().is_some_and(|value| value.generation == generation
-                    && identity_digest(value).is_ok_and(|expected| expected == digest)) => {
-                    emit(pending.take().ok_or(InventoryError::Invalid)?, InventoryDisposition::CreatorObserved);
+                3 if pending.as_ref().is_some_and(|value| {
+                    value.generation == generation
+                        && identity_digest(value).is_ok_and(|expected| expected == digest)
+                }) =>
+                {
+                    emit(
+                        pending.take().ok_or(InventoryError::Invalid)?,
+                        InventoryDisposition::CreatorObserved,
+                    );
                 }
                 _ => return Err(InventoryError::Invalid),
             }
@@ -825,11 +898,22 @@ impl ReservedPlan {
             return Err(InventoryError::Invalid);
         }
         let next = if has_more {
-            Some(InventoryCursor { snapshot, after_generation: entries.last().ok_or(InventoryError::Invalid)?.identity.generation })
+            Some(InventoryCursor {
+                snapshot,
+                after_generation: entries
+                    .last()
+                    .ok_or(InventoryError::Invalid)?
+                    .identity
+                    .generation,
+            })
         } else {
             None
         };
-        Ok(InventoryPage { snapshot, entries, next })
+        Ok(InventoryPage {
+            snapshot,
+            entries,
+            next,
+        })
     }
 
     /// Open every switch in one complete, bounded reservation inventory.
@@ -850,7 +934,12 @@ impl ReservedPlan {
         let mut opened = Vec::new();
         macro_rules! refuse {
             ($reason:expr, $journal:expr, $retainer:expr) => {
-                return Err(OpenSwitchesRefusal { reason: $reason, opened, journal: $journal, retainer: $retainer })
+                return Err(OpenSwitchesRefusal {
+                    reason: $reason,
+                    opened,
+                    journal: $journal,
+                    retainer: $retainer,
+                })
             };
         }
         if !(1..=128).contains(&max_candidates) {
@@ -865,54 +954,92 @@ impl ReservedPlan {
         }
         let config = &self.plan.config;
         for (index, entry) in page.entries.iter().enumerate() {
-            if checkpoint(cx).is_err() || checkpoint(&config.journal_replay).is_err()
+            if checkpoint(cx).is_err()
+                || checkpoint(&config.journal_replay).is_err()
                 || checkpoint(&config.pin_replay).is_err()
             {
                 refuse!(OpenSwitchesError::Cancelled, None, None);
             }
-            let allowance = match config.journal_limits.max_read_bytes.checked_add(config.pin_limits.max_read_bytes) {
+            let allowance = match config
+                .journal_limits
+                .max_read_bytes
+                .checked_add(config.pin_limits.max_read_bytes)
+            {
                 Some(value) => value,
                 None => refuse!(OpenSwitchesError::Incomplete, None, None),
             };
             if let Err(error) = work.charge(allowance) {
                 refuse!(OpenSwitchesError::Work(error), None, None);
             }
-            let mut retainer: Box<dyn EffectPinRetainer> = match FileTrustedRootPinRetainer::open_trusting_storage(
-                &entry.identity.pin_root, config.pin_limits, config.pin_io.clone(), entry.identity.pin_scope,
-            ) {
-                Ok(value) => Box::new(value),
-                Err(error) => refuse!(OpenSwitchesError::Storage { index, error }, None, None),
-            };
+            let mut retainer: Box<dyn EffectPinRetainer> =
+                match FileTrustedRootPinRetainer::open_trusting_storage(
+                    &entry.identity.pin_root,
+                    config.pin_limits,
+                    config.pin_io.clone(),
+                    entry.identity.pin_scope,
+                ) {
+                    Ok(value) => Box::new(value),
+                    Err(error) => refuse!(OpenSwitchesError::Storage { index, error }, None, None),
+                };
             if checkpoint(cx).is_err() || checkpoint(&config.pin_replay).is_err() {
                 refuse!(OpenSwitchesError::Cancelled, None, Some(retainer));
             }
             let pin = match retainer.retained_pin() {
                 Ok(Some(pin)) => pin,
-                Ok(None) => refuse!(OpenSwitchesError::MissingPin { index }, None, Some(retainer)),
-                Err(error) => refuse!(OpenSwitchesError::Storage { index, error }, None, Some(retainer)),
+                Ok(None) => refuse!(
+                    OpenSwitchesError::MissingPin { index },
+                    None,
+                    Some(retainer)
+                ),
+                Err(error) => refuse!(
+                    OpenSwitchesError::Storage { index, error },
+                    None,
+                    Some(retainer)
+                ),
             };
             let journal: Box<dyn EffectJournalStore> = match FileEffectJournal::open(
-                entry.identity.journal_root.join("switch"), config.journal_limits, config.journal_io.clone(), pin,
+                entry.identity.journal_root.join("switch"),
+                config.journal_limits,
+                config.journal_io.clone(),
+                pin,
             ) {
                 Ok(value) => Box::new(value),
-                Err(error) => refuse!(OpenSwitchesError::Storage { index, error }, None, Some(retainer)),
+                Err(error) => refuse!(
+                    OpenSwitchesError::Storage { index, error },
+                    None,
+                    Some(retainer)
+                ),
             };
             if checkpoint(cx).is_err() || checkpoint(&config.journal_replay).is_err() {
                 refuse!(OpenSwitchesError::Cancelled, Some(journal), Some(retainer));
             }
             match PinRetainedEffectJournal::try_for_reconciliation(journal, retainer) {
                 Ok(value) => opened.push(value),
-                Err(refusal) => refuse!(OpenSwitchesError::Storage { index, error: refusal.error }, Some(refusal.journal), Some(refusal.retainer)),
+                Err(refusal) => refuse!(
+                    OpenSwitchesError::Storage {
+                        index,
+                        error: refusal.error
+                    },
+                    Some(refusal.journal),
+                    Some(refusal.retainer)
+                ),
             }
         }
         let refreshed = match self.inventory_page(None, max_candidates, max_records, work, cx) {
             Ok(value) => value,
             Err(error) => refuse!(OpenSwitchesError::Inventory(error), None, None),
         };
-        if refreshed.snapshot != page.snapshot || refreshed.entries != page.entries || refreshed.next.is_some() {
+        if refreshed.snapshot != page.snapshot
+            || refreshed.entries != page.entries
+            || refreshed.next.is_some()
+        {
             refuse!(OpenSwitchesError::Stale, None, None);
         }
-        Ok(OpenedSwitches { snapshot: page.snapshot, entries: page.entries, switches: opened })
+        Ok(OpenedSwitches {
+            snapshot: page.snapshot,
+            entries: page.entries,
+            switches: opened,
+        })
     }
 
     /// Unreserved generations in the caller's current finite plan.

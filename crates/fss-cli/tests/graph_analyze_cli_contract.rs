@@ -113,9 +113,10 @@ fn import(
         .args(["--sensor", sensor, "--stream", &format!("stream:{sensor}")])
         .args(["--receive-time-ns", RECEIVE_NS, "--media-format", "mjpeg"]);
     if timed {
-        command.args(["--capture-start-ns", "1000000000"])
-        .args(["--capture-uncertainty-ns", "1000000"])
-        .args(["--assumed-fps", "10"]);
+        command
+            .args(["--capture-start-ns", "1000000000"])
+            .args(["--capture-uncertainty-ns", "1000000"])
+            .args(["--assumed-fps", "10"]);
     }
     let import_out = command.output()?;
     success(&import_out);
@@ -237,9 +238,18 @@ fn registered_deployment_pairs_preserve_current_evidence_and_refuse_invalid_requ
     );
     assert!(evidence.graph().arc_count() > 0);
 
-    let support_node = evidence.graph().ids().iter().find(|id| id.starts_with("support:"))
+    let support_node = evidence
+        .graph()
+        .ids()
+        .iter()
+        .find(|id| id.starts_with("support:"))
         .ok_or("missing current support incidence")?;
-    run_analyze(&directory, "EvidenceClaimGraph", "ALG-PPR-001", &["--seed", support_node])?;
+    run_analyze(
+        &directory,
+        "EvidenceClaimGraph",
+        "ALG-PPR-001",
+        &["--seed", support_node],
+    )?;
 
     for (projection, algorithms) in [
         (
@@ -396,5 +406,189 @@ fn cold_graph_uses_only_positive_retained_zone_witnesses() -> TestResult {
         let device = run_analyze(&directory, "DeviceFailureGraph", "ALG-ZSET-001", &[])?;
         assert_eq!(get(&device, "edge_count")?, get(&after, "edge_count")?);
     }
+    Ok(())
+}
+
+#[test]
+fn all_seven_newly_wired_algorithms_and_incremental_zset_work_end_to_end() -> TestResult {
+    let directory = OwnedDirectory::new("wired-seven-and-incremental-zset")?;
+    let east_id = import(&directory, "sensor:east", true, true)?;
+    let west_id = import(&directory, "sensor:west", true, true)?;
+
+    // Retain positive coverage on both sensors so SensorCoverageGraph has plane -> sensor -> zone edges.
+    for import_id in [&east_id, &west_id] {
+        let preview = Command::new(env!("CARGO_BIN_EXE_fss-event"))
+            .args(["watch", "--root"])
+            .arg(directory.root())
+            .args([
+                "--site",
+                SITE,
+                "--import-id",
+                import_id,
+                "--interpretation",
+                "gray",
+                "--zone",
+                DOOR,
+            ])
+            .output()?;
+        success(&preview);
+        let doc = parse(std::str::from_utf8(&preview.stdout)?)?;
+        let approval = get(get(&doc, "coverage")?, "approval_digest")?
+            .text()
+            .ok_or("missing coverage approval")?;
+        let retain = Command::new(env!("CARGO_BIN_EXE_fss-event"))
+            .args(["watch", "--root"])
+            .arg(directory.root())
+            .args([
+                "--site",
+                SITE,
+                "--import-id",
+                import_id,
+                "--interpretation",
+                "gray",
+                "--zone",
+                DOOR,
+                "--retain-coverage",
+                approval,
+            ])
+            .output()?;
+        success(&retain);
+    }
+
+    // Also corroborate an event so EvidenceClaimGraph, DeviceFailureGraph, ArchiveObjectGraph have rich edges.
+    let corr_args = [
+        "--camera".to_owned(),
+        format!("east:{east_id}"),
+        "--camera".to_owned(),
+        format!("west:{west_id}"),
+        "--ground".to_owned(),
+        format!("east:{IDENTITY}"),
+        "--ground".to_owned(),
+        format!("west:{IDENTITY}"),
+        "--interpretation".to_owned(),
+        "gray".to_owned(),
+        "--time-gate-ns".to_owned(),
+        "250000000".to_owned(),
+        "--distance-gate".to_owned(),
+        "16".to_owned(),
+        "--failure-domain".to_owned(),
+        "power:circuit-a=east".to_owned(),
+        "--failure-domain".to_owned(),
+        "power:circuit-b=west".to_owned(),
+    ];
+    let prepared = Command::new(env!("CARGO_BIN_EXE_fss-event"))
+        .args(["corroborate", "--root"])
+        .arg(directory.root())
+        .args(["--site", SITE, "--zone", DOOR])
+        .args(&corr_args)
+        .output()?;
+    success(&prepared);
+    let prep_text = String::from_utf8(prepared.stdout)?;
+    let proposal = prep_text
+        .split("\"proposal_digest\":\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .ok_or("missing proposal_digest")?;
+    let corr_out = Command::new(env!("CARGO_BIN_EXE_fss-event"))
+        .args(["corroborate", "--root"])
+        .arg(directory.root())
+        .args(["--site", SITE, "--zone", DOOR])
+        .args(&corr_args)
+        .args(["--approve", proposal])
+        .output()?;
+    success(&corr_out);
+
+    // 1. ALG-DYNCONN-001 on SensorCoverageGraph (with live edge deletion batch)
+    let dynconn = run_analyze(
+        &directory,
+        "SensorCoverageGraph",
+        "ALG-DYNCONN-001",
+        &["--update", "-sensor/sensor:east,zone/zone:door"],
+    )?;
+    assert!(
+        get(get(&dynconn, "result")?, "component_counts")?
+            .array()
+            .is_some()
+    );
+
+    // 2. ALG-GH-001 (Gomory-Hu min-cut tree) on SensorCoverageGraph
+    let gh = run_analyze(&directory, "SensorCoverageGraph", "ALG-GH-001", &[])?;
+    assert!(get(get(&gh, "result")?, "tree")?.array().is_some());
+
+    // 3. ALG-SP-001 (Shortest path) on ArchiveObjectGraph
+    let sp = run_analyze(
+        &directory,
+        "ArchiveObjectGraph",
+        "ALG-SP-001",
+        &["--source", "root:deployment"],
+    )?;
+    assert!(get(get(&sp, "result")?, "reachable")?.array().is_some());
+
+    // 4. ALG-MSD-001 (Multi-source distance) on SensorCoverageGraph
+    let msd = run_analyze(
+        &directory,
+        "SensorCoverageGraph",
+        "ALG-MSD-001",
+        &[
+            "--source",
+            "sensor/sensor:east",
+            "--source",
+            "sensor/sensor:west",
+        ],
+    )?;
+    assert!(get(get(&msd, "result")?, "reachable")?.array().is_some());
+
+    // 5. ALG-KSP-001 (k shortest diverse paths) on ArchiveObjectGraph
+    let ksp_doc = run_analyze(
+        &directory,
+        "ArchiveObjectGraph",
+        "ALG-KSP-001",
+        &["--source", "root:deployment", "--k", "2"],
+    )?;
+    assert!(get(get(&ksp_doc, "result")?, "paths")?.array().is_some());
+
+    // 6. ALG-SUBMOD-001 (Budgeted weighted coverage) on SensorCoverageGraph
+    let submod = run_analyze(
+        &directory,
+        "SensorCoverageGraph",
+        "ALG-SUBMOD-001",
+        &["--budget", "1"],
+    )?;
+    assert_eq!(
+        get(get(&submod, "result")?, "cost_units")?.integer(),
+        Some(1)
+    );
+
+    // 7. ALG-FACTOR-001 (Factorized free join) on EvidenceClaimGraph
+    let factor = run_analyze(&directory, "EvidenceClaimGraph", "ALG-FACTOR-001", &[])?;
+    assert!(
+        get(get(&factor, "result")?, "complete_bindings")?
+            .integer()
+            .is_some()
+    );
+
+    // 8. True incremental ALG-ZSET-001 across committed ledger revisions
+    let zset_inc = run_analyze(&directory, "ArchiveObjectGraph", "ALG-ZSET-001", &[])?;
+    let zres = get(&zset_inc, "result")?;
+    assert_eq!(get(zres, "incremental")?.boolean(), Some(true));
+    let base_seq = get(zres, "base_commit_sequence")?
+        .integer()
+        .ok_or("missing base_commit_sequence")?;
+    let head_seq = get(zres, "head_commit_sequence")?
+        .integer()
+        .ok_or("missing head_commit_sequence")?;
+    assert!(base_seq > 0 && base_seq < head_seq);
+
+    // Explicit --from-commit 0 runs full cold-start baseline for comparison.
+    let zset_cold = run_analyze(
+        &directory,
+        "ArchiveObjectGraph",
+        "ALG-ZSET-001",
+        &["--from-commit", "0"],
+    )?;
+    assert_eq!(
+        get(get(&zset_cold, "result")?, "incremental")?.boolean(),
+        Some(false)
+    );
     Ok(())
 }
