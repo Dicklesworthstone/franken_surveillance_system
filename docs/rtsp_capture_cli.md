@@ -64,15 +64,20 @@ reordered pictures or historical replay. Timestamp spacing does not prove that
 frames were not lost, establish exposure time, or prove the no-reordering claim.
 
 For a server that chooses its RTP sender ID per session, use `--ssrc auto` for
-single AVC/HEVC recording. The preview reports the sender as unresolved. SETUP's
+single AVC/HEVC recording or a finite reconnect/campaign plan. The preview reports
+each session's sender as unresolved. SETUP's
 SSRC, or the first structurally valid RTP packet on the negotiated channel with
 the expected payload type, binds it once. Original RTP and recorded source keys
 retain that actual value, including zero; a later sender switch terminates the
 attempt. The terminal report's `source_binding` distinguishes an observed sender
 from an attempt that ended before binding. Automatic selection has its own
 approval and decode-clock identity and never changes the peer, channels, payload,
-ingress or generation. Reconnect and `retain-source` currently require a numeric
-SSRC. Numeric zero remains an exact pin rather than an automatic-selection marker.
+ingress or generation. Each approved reconnect attempt starts fresh sender
+selection; a sender change within an attempt stops the run without a retry.
+The outer reconnect approval binds this policy and every possible child attempt.
+`retain-source` still requires a numeric SSRC. Numeric zero remains an exact pin
+rather than an automatic-selection marker. See the
+[reconnect guide](rtsp_reconnect_cli.md#sender-selection-across-attempts).
 
 For Protect stream tokens, use the [private UniFi selection handoff](UNIFI_PROTECT.md)
 instead of placing the stream URI in command-line arguments. It selects the exact

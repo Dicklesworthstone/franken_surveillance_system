@@ -37,6 +37,11 @@ no-auth-protocol-budget-authority-or-storage-retry:no-automatic-recovery:v1";
 const SUPERVISED_POLICY: &str = "bounded-owner-approved-attempts:literal-peer-only:fresh-generation-and-clocks:\
 new-independent-destinations:retry-typed-connect-io-drained-eof-or-supervised-stall:\
 no-auth-protocol-budget-authority-or-storage-retry:no-automatic-recovery:v2";
+// A finite grant still enumerates every child capture. The sender is observed independently
+// inside each approved session; learning it never authorizes migration within that session.
+const AUTOMATIC_SSRC_POLICY: &str = "fss.rtsp_reconnect_ssrc.v1:learn-once-per-approved-attempt:\
+setup-or-selected-rtp:fresh-generation-and-clocks:no-mid-session-migration:\
+no-source-retention-no-new-attempts-no-budget-refund";
 // A new outer grant, never an enlargement of any child capture's authority.
 const INTERRUPTION_POLICY: &str = "fss.rtsp_interrupted_prefix_retry.v1:\
 read-reset-aborted-broken-pipe-unexpected-eof-not-connected-only:\
@@ -66,7 +71,11 @@ pub(super) const HELP: &str = "fss-capture-rtsp reconnect [ordinary capture opti
 \n\
 Without --approve: pure JSON preview of EVERY possible attempt and aggregate ceilings.\n\
 Approve the outer plan, not an individual attempt. The ordinary single-attempt mode is unchanged.\n\
-Retries use exactly the same peer, codec, SSRC, media selection, timing evidence and auth policy.\n\
+Retries use exactly the same peer, codec, media selection, timing evidence and auth policy.\n\
+Numeric --ssrc pins the same sender in every attempt. --ssrc auto learns once per AVC/HEVC\n\
+attempt from SETUP or selected RTP; a sender change inside that attempt stops without retry.\n\
+Each actual sender is retained in original RTP and the native terminal source_binding report.\n\
+Automatic selection needs its own outer approval and cannot be combined with --source-root.\n\
 Each starts generation + attempt_index with fresh receive/decode clocks and journal identity.\n\
 --root and --pins are path prefixes: actual new sibling directories are PREFIX.attempt-0001,\n\
 PREFIX.attempt-0002, etc. Their parents must exist. All prior directories are preserved.\n\
@@ -389,11 +398,6 @@ impl ReconnectPlan {
         if base.replay.is_some() {
             return Err("recorder replay currently requires a single capture without reconnect");
         }
-        if base.binding().ssrc_policy() != fss_reference::rtsp::tcp::SsrcPolicy::Pinned {
-            return Err(
-                "automatic SSRC selection currently requires a single capture; reconnect needs an explicitly pinned SSRC",
-            );
-        }
         if let Some(source) = &source_arguments {
             source.validate(&values)?;
         }
@@ -548,6 +552,12 @@ impl ReconnectPlan {
         }
     }
 
+    fn automatic_ssrc(&self) -> bool {
+        self.attempts.first().is_some_and(|attempt| {
+            attempt.binding().ssrc_policy() == fss_reference::rtsp::tcp::SsrcPolicy::LearnOnce
+        })
+    }
+
     fn supervision(
         &self,
         approval: ContentDigest,
@@ -575,6 +585,11 @@ impl ReconnectPlan {
         let mut e = CanonicalEncoder::new();
         e.text("fss.rtsp_reconnect_cli_plan.v1");
         e.text(self.policy());
+        // Numeric plans retain their exact historical bytes. No numeric or single-session
+        // approval can admit automatic binding across a finite reconnect/campaign schedule.
+        if self.automatic_ssrc() {
+            e.text(AUTOMATIC_SSRC_POLICY);
+        }
         if self.continue_after_success {
             e.text(CAMPAIGN_POLICY);
         }
@@ -704,6 +719,13 @@ impl ReconnectPlan {
             ("attempts", format!("[{}]", children.join(","))),
             ("effects", string("none-until-exact-outer-approval")),
         ];
+        if self.automatic_ssrc() {
+            fields.extend([
+                ("ssrc_selection", string("learn_once_per_attempt")),
+                ("ssrc_policy", string(AUTOMATIC_SSRC_POLICY)),
+                ("mid_session_sender_change_retry", "false".into()),
+            ]);
+        }
         if let Some(sources) = &self.sources {
             fields.push(("datagram_source_custody", sources.report(&self.attempts)?));
         }

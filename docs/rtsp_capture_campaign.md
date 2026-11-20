@@ -46,6 +46,13 @@ approval cannot authorize these additional sessions. Omitting the new option kee
 legacy reconnect approval bytes and stop-after-first-success behavior unchanged.
 Only the explicit value `yes` is accepted.
 
+For cameras that choose a sender for each session, replace `--ssrc 7` with
+`--ssrc auto` and obtain the new outer approval. Each finite AVC/HEVC attempt
+independently learns its sender; a switch within an attempt stops the campaign.
+The actual sender, including zero, remains in original RTP and terminal receipts.
+The [reconnect sender policy](rtsp_reconnect_cli.md#sender-selection-across-attempts)
+keeps all attempt and resource limits, and excludes source-datagram retention.
+
 The example creates these independent destinations as each attempt starts:
 
 ```text

@@ -1,6 +1,9 @@
 #![forbid(unsafe_code)]
 //! Real native-process reconnects against an owned loopback camera. No mocked capture owner.
 
+#[path = "capture_rtsp_cli/reconnect_ssrc.rs"]
+mod automatic_ssrc;
+
 use fss_cli::json_input::{Value, parse};
 use fss_core::ContentDigest;
 use std::ffi::OsString;

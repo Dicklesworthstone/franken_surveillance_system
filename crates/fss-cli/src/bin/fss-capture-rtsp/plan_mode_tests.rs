@@ -4,7 +4,7 @@
 use super::plan::tests::{args, set};
 
 #[test]
-fn automatic_ssrc_cannot_enter_unimplemented_source_retention_or_reconnect_identity_paths() {
+fn automatic_ssrc_uses_finite_reconnect_but_cannot_enter_source_retention() {
     let mut source = args();
     set(&mut source, "--source-root", "/owner/private/datagrams");
     set(
@@ -25,13 +25,21 @@ fn automatic_ssrc_cannot_enter_unimplemented_source_retention_or_reconnect_ident
     set(&mut reconnect, "--retry-max-delay-ms", "2");
     assert!(super::reconnect::ReconnectPlan::parse(&reconnect).is_ok());
     set(&mut reconnect, "--ssrc", "auto");
+    assert!(super::reconnect::ReconnectPlan::parse(&reconnect).is_ok());
+    set(&mut reconnect, "--continue-after-success", "yes");
+    assert!(super::reconnect::ReconnectPlan::parse(&reconnect).is_ok());
+    set(&mut reconnect, "--source-root", "/owner/private/datagrams");
+    set(
+        &mut reconnect,
+        "--source-retention-evidence",
+        "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+    );
     assert!(
         super::reconnect::ReconnectPlan::parse(&reconnect)
             .err()
             .is_some_and(|error| error.contains("automatic SSRC"))
     );
 }
-
 
 #[test]
 fn recorder_replay_cannot_enter_wrapped_live_capture_or_recovery_paths() {

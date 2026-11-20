@@ -243,10 +243,12 @@ The peer, channel, payload, ingress, and generation remain independently
 constrained. A later sender change terminates the attempt; no rebinding occurs.
 This establishes stream identity, not authentication of the camera.
 
-Automatic SSRC selection is supported only for single AVC/HEVC capture. It is
-refused for reconnect and source-first `retain-source` modes. For those modes,
-provide the independently known numeric SSRC. A numeric `--ssrc N`, including
-zero, remains an exact pin and is never interpreted as automatic selection.
+Automatic SSRC selection supports single AVC/HEVC capture and finite reconnect
+or campaign plans. Every explicitly approved attempt independently binds its
+sender; a sender change inside a session stops the run. Source-first
+`retain-source` still requires an independently known numeric SSRC. A numeric
+`--ssrc N`, including zero, remains an exact pin and is never interpreted as
+automatic selection.
 
 ### Package views, HEVC, and frame timing
 
@@ -286,7 +288,8 @@ not provided by this recording handoff.
 
 `--capture-mode reconnect` delegates to the existing bounded reconnect owner
 with its explicit attempt, duration, watchdog, retry, and retention options.
-It requires a numeric SSRC and the wrapper's own outer approval. See
+It accepts a numeric SSRC or per-attempt `--ssrc auto` and requires the wrapper's
+own outer approval. Source-datagram retention still requires a numeric SSRC. See
 `fss-capture-rtsp reconnect --help` for the exact options and independently
 bounded attempt paths. Recovery uses the existing separately approved
 recovery protocol; it never resumes camera capture. Changing the private

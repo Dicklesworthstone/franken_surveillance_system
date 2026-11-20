@@ -4,6 +4,32 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Per-session senders in bounded RTSP reconnect — 2026-11-20
+
+`fss-capture-rtsp reconnect --ssrc auto` now admits finite AVC/HEVC reconnects
+and campaigns through the existing native per-session owner. Each explicitly
+enumerated attempt learns its sender once from SETUP or selected RTP and retains
+that actual identity, including zero, in original packets and terminal reports.
+No packet state, clock baseline or continuity claim crosses attempts. A sender
+switch within a session stops the run without a successor.
+
+The outer plan binds an explicit automatic-sender policy. Numeric plans preserve
+their historical approval bytes; numeric, child and changed-limit approvals
+cannot authorize automatic reconnect. Source-datagram retention continues to
+require a numeric sender. Attempt ceilings, retry admission, archive settlement,
+history and separately approved offline recovery keep their existing owners.
+This advances FSS-049 without closing the broader VIT-021 standing-envelope/VFR
+scope or the D7 standing-recorder decision.
+
+Four native process contracts exercise exact approval before effects, two-session
+AVC/HEVC reconnect and campaign capture with different senders, numeric zero,
+retained RTP reopening, history/recovery, mid-session refusal and unresolved
+senders at the exact attempt limit. Planner tests preserve source-retention
+exclusion. Source review, scoped pinned formatting and integrity checks passed;
+the new executable contracts remain unverified because of the execution-host
+and dependency-compilation limits recorded in this status. No device or release
+qualification is claimed.
+
 ## Corroboration advice delivery during capture — 2026-11-20
 
 Whole-recording immutable corroboration now uses the same strict final advice

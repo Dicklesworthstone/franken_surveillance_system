@@ -144,9 +144,7 @@ impl SourcePlan {
             return Err("recorder replay currently requires single capture without retain-source");
         }
         if capture.binding().ssrc_policy() != fss_reference::rtsp::tcp::SsrcPolicy::Pinned {
-            return Err(
-                "automatic SSRC selection currently requires single recording capture without retain-source",
-            );
+            return Err("automatic SSRC selection is unavailable with retain-source");
         }
         let root = absolute(
             values

@@ -77,8 +77,8 @@ Only a literal IP peer is contacted. No DNS, redirects, TLS or reconnect.\n\
 --ssrc auto binds once within this same session: SETUP's SSRC or the first valid\n\
 RTP packet on the selected channel and payload. Actual recorded keys retain that SSRC.\n\
 It is not authentication; a changed sender closes the attempt. Integer SSRCs (including\n\
-zero) stay exact pins. Auto is supported for single AVC/HEVC capture, not reconnect\n\
-or retain-source mode. Its policy has a distinct approval and decode-clock identity.\n\
+zero) stay exact pins. Auto supports single AVC/HEVC capture and finite reconnect\n\
+attempts, but not retain-source. Its policy has a distinct approval and decode-clock identity.\n\
 By default an authentication challenge stops capture without sending Authorization.\n\
 Linux Digest opt-in: --credential-file /PRIVATE_FILE --auth-realm EXACT_REALM\n\
 The private regular file contains exactly username LF password LF (bounded printable ASCII).\n\

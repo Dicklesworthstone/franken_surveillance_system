@@ -30,12 +30,40 @@ are never deleted, overwritten or automatically recovered.
 ## Reconnect boundaries
 
 Every retry increments the owner generation, keeping the exact ingress, peer,
-SSRC, selected payload and codec. Receive-clock and journal identities are derived
+sender-selection policy, selected payload and codec. Receive-clock and journal identities are derived
 separately for each attempt; the native decode clock and archive namespace bind
 those changes. A new native receiver starts fresh probation and IDR selection.
 No packet, prediction state, timing baseline or source-continuity claim crosses
-into the next attempt. A camera changing its SSRC still needs a new owner plan;
-this command does not guess an alternative source or codec.
+into the next attempt. Numeric SSRCs remain pinned across all attempts; automatic
+selection follows the explicitly approved policy below. Neither mode selects an
+alternative peer, payload or codec.
+
+## Sender selection across attempts
+
+Use `--ssrc auto` when an AVC/HEVC camera chooses a different RTP sender ID for
+each RTSP session. Every enumerated attempt learns its sender once from SETUP,
+or from the first structurally valid RTP packet on the selected channel with
+the approved payload type. An observed zero is a valid sender ID; a session
+that ends before observing a sender remains explicitly unresolved.
+
+The preview reports `ssrc_selection: "learn_once_per_attempt"` and binds that
+policy into a distinct outer approval. Numeric, single-session, changed-limit
+and prior-policy approvals cannot authorize the automatic reconnect plan.
+Existing numeric plans retain their canonical approval bytes. The same policy
+works with finite `--continue-after-success yes` campaigns and optional campaign
+history, with every original attempt and resource reservation preserved.
+
+Native terminal `source_binding` reports and retained original RTP preserve the
+actual observed sender. A sender switch within an attempt stops without a
+successor, including when interrupted-stream retry was requested. It never
+refunds budget or creates another authorized attempt. Exact, separately approved
+offline recovery reopens the retained identities and does not contact the camera.
+This establishes stream identity; it does not authenticate the camera.
+
+Automatic selection remains unavailable with `--source-root`/`retain-source`.
+These finite plans grant no standing or renewable capture authority.
+
+## Retry admission
 
 Only typed transient AVC/HEVC connection I/O failures and observed native source
 end with settled storage admit another attempt. HEVC may observe a codec EOB
@@ -93,5 +121,8 @@ owned loopback RTSP camera: EOF then successful capture in a new generation,
 finite AVC/HEVC connection refusals, authentication-at-EOF, malformed RTP, pure
 approval and preservation of existing destinations. It checks both independent
 native terminal streams and outer retry rows, without mocking capture or storage.
+The automatic-sender contracts additionally exercise SETUP-selected and
+packet-selected senders across AVC/HEVC attempts, numeric zero, original RTP
+reopening, history and offline recovery, mid-session refusal and exact exhaustion.
 These are wiring contracts, not controlled-host qualification. This implementation was source-reviewed in an
 offline editing environment; native execution and rustfmt were not available.
