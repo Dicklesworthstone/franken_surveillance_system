@@ -4,7 +4,7 @@
 use super::*;
 use crate::ingest::historical_health::exposure::HealthExposureState;
 use crate::ingest::package_zones::{PackageZoneReport, checkpoint, storage};
-use crate::{ReferenceDeployment, ReplayCx};
+use crate::{ReplayCx, RetainedSource};
 
 impl PackageOccupancyReport {
     /// Reopen and exactly reconstruct a retained zone report, project all sampled counts,
@@ -13,7 +13,7 @@ impl PackageOccupancyReport {
     /// retained native owner. The source report's finite screening allowances remain shared
     /// across initial reconstruction and final revalidation.
     pub fn open(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         report_digest: ContentDigest,
         cx: &ReplayCx,
     ) -> Result<Self> {

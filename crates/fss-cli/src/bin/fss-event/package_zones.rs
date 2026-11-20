@@ -5,8 +5,9 @@ use std::collections::BTreeMap;
 use std::error::Error;
 use std::ffi::OsString;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Instant;
 
 use fss_cli::{ERR_CLI_MALFORMED_VALUE, ERR_CLI_RUNTIME_FAILURE, ExitIdentity};
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
@@ -16,7 +17,10 @@ use fss_reference::ingest::package_zones::occupancy::PackageOccupancyReport;
 use fss_reference::ingest::package_zones::{
     PackageZone, PackageZoneConfig, PackageZoneDwell, PackageZoneOperation, PackageZoneReport,
 };
-use fss_reference::{ReferenceDeployment, ReplayCx};
+use fss_reference::retained_source::{
+    ImmutableRetainedReadLimits, ImmutableRetainedSource, RetainedReadUsage,
+};
+use fss_reference::{ReferenceDeployment, ReplayCx, RetainedSource};
 
 type Run<T> = Result<T, Box<dyn Error>>;
 const HELP: &str = "fss-event package-zones analyze --root EXISTING_DIR --site SITE\n\
@@ -25,16 +29,24 @@ const HELP: &str = "fss-event package-zones analyze --root EXISTING_DIR --site S
   [--dwell-ns N --minimum-observations N] [--require-health-screening yes]\n\
   [--confirmation-hits N --maximum-missed-frames N --minimum-iou-ppm N]\n\
   [--retain sha256:EXACT_APPROVAL] [--principal ID]\n\
+  [--max-read-bytes N --max-read-objects N] (unapproved previews only)\n\
 fss-event package-zones read --root EXISTING_DIR --site SITE\n\
   --report-digest sha256:RETAINED_ZONE_REPORT [--principal ID]\n\
+  [--max-read-bytes N --max-read-objects N]\n\
 fss-event package-zones occupancy --root EXISTING_DIR --site SITE\n\
   --report-digest sha256:RETAINED_ZONE_REPORT [--principal ID]\n\
+  [--max-read-bytes N --max-read-objects N]\n\
 Occupancy returns every source frame and zone with confirmed class-selected counts,\n\
 supporting track identities and explicit tentative, boundary, missing, privacy and health\n\
 exclusions. It reopens retained custody and revalidates current source/privacy/deletion\n\
 before return. Zero is no positive observation, never absence; null is an unavailable count.\n\
 It neither re-runs inference nor retains a new report. Output is bounded to 4 MiB.\n\
-The command uses normal exclusive deployment startup and durability recovery.\n\
+Reads and unapproved previews use immutable retained custody while capture owns the writer.\n\
+No publisher lock, recovery, initialization or effect reconciliation runs on these paths.\n\
+One cumulative allowance includes final source, privacy, authority and payload checks:\n\
+1 GiB and 1,000,000 payload read attempts by default, at most 4 GiB and 4,000,000 attempts.\n\
+The 60-second deadline is cooperative; complete output is withheld on any final refusal.\n\
+Approved retention keeps the exclusive publisher and its ordinary recovery contract.\n\
 Analyze reopens fss-infer package-detect --retain yes custody and selects exactly one\n\
 package vocabulary label. It does not run inference, decode media or use foreground tracks.\n\
 The full output includes source frames, every track/zone/frame cell, actual assigned boxes\n\
@@ -67,11 +79,23 @@ enum Action {
     Read(ContentDigest),
     Occupancy(ContentDigest),
 }
+impl Action {
+    fn requires_publisher(&self) -> bool {
+        matches!(
+            self,
+            Self::Analyze {
+                approval: Some(_),
+                ..
+            }
+        )
+    }
+}
 struct Options {
     root: PathBuf,
     site: String,
     principal: String,
     action: Action,
+    read_limits: ImmutableRetainedReadLimits,
 }
 fn text<'a>(values: &'a BTreeMap<String, OsString>, key: &str) -> Result<&'a str, String> {
     values
@@ -133,7 +157,13 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
     let mut zones = Vec::new();
     for pair in args[1..].chunks(2) {
         let key = pair[0].to_str().ok_or("option names require UTF-8")?;
-        let common = ["--root", "--site", "--principal"];
+        let common = [
+            "--root",
+            "--site",
+            "--principal",
+            "--max-read-bytes",
+            "--max-read-objects",
+        ];
         let analysis = [
             "--package-report",
             "--label",
@@ -239,30 +269,65 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
     } else {
         Action::Read(digest(text(&values, "--report-digest")?)?)
     };
+    if action.requires_publisher()
+        && (values.contains_key("--max-read-bytes") || values.contains_key("--max-read-objects"))
+    {
+        return Err("immutable read allowances cannot accompany --retain".into());
+    }
+    let read_limits = super::retained_read::parse_limits(&values)?;
     Ok(Options {
         root,
         site,
         principal,
         action,
+        read_limits,
     })
 }
 fn run(options: Options) -> Run<String> {
+    let publishing = options.action.requires_publisher();
     let authority = ContextAuthority::new_root(RootAuthoritySpec {
         trace_id: "trace:package-zones-cli".into(),
         operation_id: OperationId::parse("operation:package-zones-cli")?,
         principal: options.principal.clone(),
-        capabilities: vec!["ADP-REPLAY-001".into()],
+        capabilities: if publishing {
+            vec!["ADP-REPLAY-001".into()]
+        } else {
+            vec!["ADP-REPLAY-001".into(), "CAP-READ-MEDIA-001".into()]
+        },
         deadline: None,
         priority: 10,
         budgets: BudgetVector::builder()
-            .bytes(512 * 1024 * 1024)
-            .storage_operations(65_536)
+            .bytes(if publishing {
+                512 * 1024 * 1024
+            } else {
+                options.read_limits.max_read_bytes as u64
+            })
+            .storage_operations(if publishing {
+                65_536
+            } else {
+                options.read_limits.max_read_objects as u64
+            })
             .build()?,
         privacy_scope: "privacy:current-deployment-policy".into(),
         retention_scope: "retention:approved-derived-report".into(),
         anchor_universe: ContentDigest::sha256(options.site.as_bytes()),
         generation: 1,
     })?;
+    if !publishing {
+        if !std::fs::symlink_metadata(&options.root)?
+            .file_type()
+            .is_dir()
+        {
+            return Err("existing non-symlink deployment required".into());
+        }
+        let root = std::fs::canonicalize(&options.root)?;
+        let cx = ReplayCx::from_context_authority_read_only(&authority, root.clone())?;
+        let started = Instant::now();
+        let cancelled = || started.elapsed() >= super::retained_read::DEADLINE;
+        let result = run_immutable_with(&options, &root, &cx, &cancelled);
+        cx.drain_and_finalize();
+        return result.map(|(json, _)| json);
+    }
     let root = super::replay::preflight(&options.root, &options.site, &authority)?;
     let cx = ReplayCx::from_context_authority(&authority, root.clone())?;
     let result = (|| -> Run<String> {
@@ -313,6 +378,80 @@ fn run(options: Options) -> Run<String> {
     cx.drain_and_finalize();
     result
 }
+
+fn run_immutable_with(
+    options: &Options,
+    root: &Path,
+    cx: &ReplayCx,
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> Run<(String, RetainedReadUsage)> {
+    if options.action.requires_publisher() {
+        return Err("immutable package zones require a read or unapproved preview".into());
+    }
+    let source =
+        ImmutableRetainedSource::open_cancellable(root, options.read_limits, cx, cancelled)?;
+    if source.site_lineage() != options.site {
+        return Err("retained package-zone site lineage mismatch".into());
+    }
+    let json = match &options.action {
+        Action::Occupancy(digest) => {
+            // This native owner renders and revalidates the exact retained zone report,
+            // sharing the same source, health and immutable-read allowances.
+            PackageOccupancyReport::open(&source, *digest, cx)?
+                .to_json()
+                .to_owned()
+        }
+        action => {
+            let (mut report, operation) = match action {
+                Action::Read(digest) => (
+                    PackageZoneReport::open(&source, *digest, cx)?,
+                    PackageZoneOperation::ReadVerified,
+                ),
+                Action::Analyze {
+                    package,
+                    label,
+                    tracking,
+                    config,
+                    screened,
+                    ..
+                } => {
+                    let report = if *screened {
+                        PackageZoneReport::analyze_screened(
+                            &source, *package, label, *tracking, config.clone(),
+                            fss_reference::ingest::historical_health::exposure::HealthExposureLimits::default(),
+                            cx,
+                        )?
+                    } else {
+                        PackageZoneReport::analyze(
+                            &source,
+                            *package,
+                            label,
+                            *tracking,
+                            config.clone(),
+                            cx,
+                        )?
+                    };
+                    report.admit_retention_json()?;
+                    (report, PackageZoneOperation::Analyzed)
+                }
+                Action::Occupancy(_) => return Err("invalid package-zone read routing".into()),
+            };
+            // Admit the complete projection before final source verification. Screened
+            // revalidation adds catalog/trace work to this operation's cost receipt, so
+            // render again afterwards rather than returning the earlier counters.
+            report.to_json(operation)?;
+            cx.checkpoint("package_zones_preview:source_revalidation")?;
+            report.revalidate(&source, cx)?;
+            report.to_json(operation)?
+        }
+    };
+    // The complete report is still private. Quiet samples and health-excluded findings
+    // must retain the same final metadata, source, publication and authority guarantees.
+    cx.checkpoint("package_zones_preview:delivery")?;
+    source.revalidate_snapshot_metadata()?;
+    source.revalidate()?;
+    Ok((json, source.usage()))
+}
 pub(super) fn main(args: &[OsString]) -> ExitCode {
     if args.is_empty() || args.iter().any(|v| v == "--help" || v == "help") {
         return match super::replay::emit(&mut io::stdout().lock(), HELP.as_bytes()) {
@@ -341,6 +480,10 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "package_zones/immutable_tests.rs"]
+mod immutable_tests;
 
 #[cfg(test)]
 mod occupancy_tests {

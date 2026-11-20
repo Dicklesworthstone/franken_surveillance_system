@@ -331,7 +331,7 @@ impl PackageZoneReport {
     /// The source owner reads original retained bytes once per admitted analysis, never once
     /// per track/zone. No neural execution, foreground detection or loose-file input is used.
     pub fn analyze(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         package_report: ContentDigest,
         label: &str,
         tracking: PackageTrackingConfig,
@@ -352,7 +352,7 @@ impl PackageZoneReport {
     /// Unknown, incomplete and finding-bearing samples keep their raw assignments but interrupt
     /// transitions and dwell. This never certifies present camera health or absence.
     pub fn analyze_screened(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         package_report: ContentDigest,
         label: &str,
         tracking: PackageTrackingConfig,

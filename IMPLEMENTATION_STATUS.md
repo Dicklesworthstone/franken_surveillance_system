@@ -1,8 +1,51 @@
 # Implementation status
 
-**As of:** 2026-11-17 UTC (dated feature sections retain their original verification scope)
+**As of:** 2026-11-20 UTC (dated feature sections retain their original verification scope)
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
+
+## Immutable complete-recording analysis and trained-zone reads — 2026-11-20
+
+Unapproved whole-recording two-camera corroboration now uses the same sealed
+immutable retained source as short previews. Both recordings, retained geometry
+and model custody, quiet capsules and final checks share one nonrenewing read
+allowance. Native analysis and rendering remain shared with the publication path,
+including entries beyond the short window and MJPEG/AVC/HEVC execution. Historical
+health diagnostics remain readable while derived advice and publication keep
+their strict health gates.
+
+`fss-event verify` now replays retained watch, dwell and corroborated events without
+acquiring the capture writer or running restart recovery. Exact revision/provenance
+pins and explicit native execution admission remain mandatory. Complete analyses
+and the committed event must match, followed by source, snapshot and registered
+payload validation. Emitted verification commands preserve the aggregate read
+allowances and accept both create-only exports.
+
+Unapproved `package-zones analyze`, retained `read` and `occupancy` also use the
+immutable owner. Their canonical report and approval identities remain unchanged;
+screened operation-cost receipts include the final native revalidation pass.
+Queries leave unresolved effects and recovery artifacts untouched. Approved
+retention and publication retain the exclusive writer and existing authority.
+
+All three paths can coexist with an open writer but refuse an authority advance
+during their pinned read; callers retry against a stable committed snapshot.
+Responses remain private until complete final checks pass. The default shared
+allowance is 1 GiB / 1,000,000 read attempts, bounded by 4 GiB / 4,000,000 attempts,
+with a cooperative 60-second deadline at retained-read admissions.
+
+Independent source reviews and per-batch pinned formatting completed. The integrated
+production `fss-event` graph passed pinned-nightly Cargo checking before the final
+package health-cost rendering correction. New and expanded contracts cover
+active-writer parity, complete native replay, exact final-read budgets, cancellation,
+late source/capsule/event damage, privacy drift and torn journals. Their executable
+runs remain unverified: dependency code generation was killed, and the later native
+test-target metadata check was interrupted after approximately eleven minutes under
+shared host pressure without a compiler diagnostic. A final production recheck
+also stalled before producing output. No new runtime test-pass or release claim
+is made. Broad fusion, tracker and VIT-012 beads remain open. See the
+[session handoff](docs/SESSION_HANDOFF_2026-11-20_IMMUTABLE_ANALYSIS.json) for exact
+continuations, including fresh unretained detector/sentinel previews that still
+acquire the writer.
 
 ## Native event preparation and local agent rehearsal — 2026-11-17
 

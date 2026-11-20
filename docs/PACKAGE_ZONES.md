@@ -49,6 +49,33 @@ analysis, rebuilds tracking and zone/dwell derivation, and compares every canoni
 It needs no original media path, loose package file, report file or new inference allowance.
 There is no metadata-only success mode and no automatic repair of missing custody.
 
+## Analyze and inspect while capture is running
+
+Unapproved `analyze`, retained `read` and
+[`occupancy`](PACKAGE_ZONE_OCCUPANCY.md) use one sealed immutable retained source.
+They can run while capture holds the deployment writer. They do not acquire a publisher
+lock, initialize a deployment, recover journals, remove temporary files or reconcile
+unresolved effects. Both the unscreened v1 and historically screened v2 recipes keep
+their existing canonical report and approval identities.
+
+The complete result stays private until the native source/privacy/deletion checks,
+snapshot metadata reconstruction, selected payload rereads, publication checks and final
+authority observation all succeed. A changed head, privacy generation, selected object or
+journal tail refuses the operation with no JSON result. If capture changes the authority
+position during the read, retry against a new stable snapshot. No damaged custody is repaired.
+
+These read paths accept `--max-read-bytes N` and `--max-read-objects N`. The defaults are
+**1 GiB** of aggregate payload bytes and **1,000,000** payload read attempts; the maximum
+values are **4 GiB** and **4,000,000**. Attempts count repeated reads of the same object,
+not distinct objects. Initial metadata reads, retained source and diagnostic reads, native
+reconstruction and all final verification passes share the same allowance. Failure cannot
+refill it. The 60-second deadline is cooperative and is checked at read admissions; it is
+not an interruptible filesystem timeout. Derivation and complete JSON size bounds still apply.
+
+Approved `analyze --retain` continues to use the exclusive publisher and ordinary recovery
+contract. The immutable read switches are rejected with `--retain`; they do not replace
+the separate retention allowance described below.
+
 ## What the report establishes
 
 Both the v1 and v2 package-zone outputs include source/package/model-generation and
@@ -187,6 +214,12 @@ privacy, source deletion, wrong approvals, root-prefix cancellation and exact co
 The CLI test validates actual analyze/retain/retry/read JSON against the registered schema.
 The existing tracker lifecycle is independently compared over missing-observation patterns
 to the sample-confirmation accessor; existing v2 analysis encoding is unchanged.
+
+The immutable CLI contracts compare complete native results while a writer remains open,
+including screened operation-cost receipts after source revalidation. They check unchanged
+deployment bytes and unresolved effect states, exact cumulative byte/read allowances,
+cancellation on the final admission, late original-source/capsule/report damage and torn
+journal tails. Approved retention remains on the publisher route.
 
 The v2 native contract adds real clear, unknown, partially screened, incomplete and frozen
 source fixtures; later relevant diagnostics; exact pin/trace corruption; changed privacy;

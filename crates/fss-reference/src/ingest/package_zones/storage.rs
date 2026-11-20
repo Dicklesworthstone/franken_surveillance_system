@@ -265,11 +265,13 @@ impl PackageZoneReport {
         }
         Ok(report)
     }
-    pub(super) fn revalidate(
-        &mut self,
-        deployment: &dyn RetainedSource,
-        cx: &ReplayCx,
-    ) -> Result<()> {
+    /// Reconstruct this proposal through its exact original source, current privacy,
+    /// deletion and historical screening owners. Repeated work consumes the original
+    /// screening allowance and does not change report or approval identities.
+    ///
+    /// Immutable callers must also finish the retained owner's snapshot and payload
+    /// revalidation before releasing output; this method grants no publishing authority.
+    pub fn revalidate(&mut self, deployment: &dyn RetainedSource, cx: &ReplayCx) -> Result<()> {
         check_scope(deployment, cx)?;
         if self.root.as_path() != deployment.root()
             || self.site != deployment.site_lineage()

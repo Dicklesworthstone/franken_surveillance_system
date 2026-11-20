@@ -1,0 +1,100 @@
+{
+  "format": "engineering-session-handoff",
+  "date_utc": "2026-11-20",
+  "mission": "Implement the most important remaining functional gaps after reading the comprehensive plan and Beads; commit meaningful batches directly to main without pull requests.",
+  "basis": {
+    "started_at": "f4e08fc41ad95148f9276a94505880a48e3d90f8",
+    "plan": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+    "backlog": ".beads/issues.jsonl",
+    "prior_continuation": "docs/SESSION_HANDOFF_2026-11-16_IMMUTABLE_CORROBORATION.json"
+  },
+  "authority": {
+    "repository": "User authorized direct main commits through GitHub; no PRs.",
+    "operational": "No live device, network, alert, retention, privacy, model or identity policy changes. Publication and approved retention retain their existing exclusive owner."
+  },
+  "findings": [
+    "Open umbrella Beads lag existing fusion and tracked/QSR observation implementations; missing code cannot be inferred from a title alone.",
+    "Whole-recording corroboration, native event verification and trained package-zone reads still acquired the deployment writer and could run recovery despite being read-only requests."
+  ],
+  "delivered": [
+    {
+      "feature": "Whole-recording immutable two-camera previews",
+      "commit": "b2895cec19cd043f98e2f3757eb82f719f6c10b3",
+      "scope": "Shared native analysis/rendering, both-source cumulative reads and final custody/privacy/geometry/snapshot validation; health-degraded diagnostics remain readable without relaxing publication or class-advice gates."
+    },
+    {
+      "feature": "Immutable native event verification",
+      "commit": "244cf30cbb4c6c901da464bd71d3e2a02323478f",
+      "scope": "Explicitly admitted, exact-pinned watch/dwell/two-camera replay while the writer remains open, complete native equality and final custody checks; aggregate allowances preserved in executable verification commands."
+    },
+    {
+      "feature": "Immutable trained zone analysis, retained read and occupancy",
+      "commit": "this_commit",
+      "scope": "Retained native detection/tracking derivation without recovery or effect reconciliation; final source, metadata and payload checks; historical-health operation costs include final native revalidation."
+    }
+  ],
+  "validation": {
+    "toolchain": "nightly-2026-08-31",
+    "production_check": "Integrated cargo check -p fss-cli --bin fss-event --locked --offline -j1 passed before the final package health-cost rendering correction.",
+    "independent_review": "Whole corroboration, native replay and package-zone source reviews completed without remaining correctness blockers.",
+    "formatting": "Per-batch changed Rust owners formatted with the pinned compiler and whitespace checks passed; a later aggregate formatting recheck stalled with toolchain startup.",
+    "execution": "No new runtime test pass claimed. Initial native test build was killed during Asupersync code generation before any test ran. Native test-target checking was interrupted after approximately eleven minutes without compiler diagnostics and before reaching the test target. A final production recheck was interrupted after several silent minutes. Even direct pinned cargo --version timed out.",
+    "qualification": "No full-workspace, real-device, detection-quality or release qualification claimed. No dependency, toolchain pin or acceptance gate weakened.",
+    "checks": [
+      {
+        "command": "cargo +nightly-2026-08-31 check -p fss-cli --bin fss-event --locked --offline -j1",
+        "result": "passed before the final package health-cost rendering correction",
+        "seconds": 44.45
+      },
+      {
+        "command": "cargo +nightly-2026-08-31 test -p fss-reference --test long_event_replay_immutable_contract --locked --offline -j1",
+        "result": "asupersync dependency code generation SIGKILL; no tests executed",
+        "profile": "dev/test debug information disabled"
+      },
+      {
+        "command": "cargo +nightly-2026-08-31 check -p fss-reference --test long_event_replay_immutable_contract --locked --offline -j1",
+        "result": "interrupted after approximately eleven minutes; test target not reached; no compiler diagnostic",
+        "exit_code": 130
+      },
+      {
+        "command": "final cargo +nightly-2026-08-31 check -p fss-cli --bin fss-event --locked --offline -j1",
+        "result": "interrupted after several minutes without output; not a pass",
+        "exit_code": 130
+      },
+      {
+        "command": "timeout 15s <pinned-toolchain>/bin/cargo --version",
+        "result": "direct toolchain startup timed out without output",
+        "exit_code": 124
+      }
+    ]
+  },
+  "budgets": {
+    "immutable_defaults": "1 GiB and 1,000,000 retained-read attempts for the entire operation including final verification",
+    "immutable_maxima": "4 GiB and 4,000,000 retained-read attempts",
+    "deadline": "Cooperative 60 seconds at retained-read admissions",
+    "computation": "Existing native codec, per-camera scan, model and health limits remain additional independent bounds."
+  },
+  "invalidations": [
+    "An open capture writer is supported, but any committed authority advance during a pinned read requires a fresh snapshot.",
+    "Changed source, capsule, model, privacy, calibration, publication or journal custody refuses complete output; failed reads do not recover or repair deployment state."
+  ],
+  "related_open_beads": [
+    "fss-808pm",
+    "fss-x4a.15.2",
+    "fss-vit-je36t.12"
+  ],
+  "continuations": [
+    {
+      "state": "open",
+      "work": "Complete focused executable validation on a host with sufficient memory: native long_event_replay_immutable_contract, fss-event unit contracts for corroborate::immutable::tests, package_zones and replay, and actual-process long_event_replay_cli."
+    },
+    {
+      "state": "open",
+      "work": "Fresh unretained detector and sentinel previews still acquire the capture writer in crates/fss-cli/src/bin/fss-infer/package_cli.rs::run. Extend package_detect::run_package_detection and package_detect/sentinel::run_sentinel_detection through the sealed retained source with final source validation and whole-operation budgets, retaining the exclusive publisher for --retain yes. Whole-recording sentinel already has a retained-source core."
+    },
+    {
+      "state": "open",
+      "work": "Broad fusion, tracker and VIT-012 acceptance still requires the registered quality, coverage and qualification contracts; this functional integration does not close those Beads."
+    }
+  ]
+}

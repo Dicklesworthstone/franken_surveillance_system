@@ -38,6 +38,11 @@ The command accepts `--principal` in the same way as `package-zones read`. Class
 zone and health-policy overrides are refused: they require another native analysis and
 its own retained report. An unretained preview is not a valid input.
 
+It also accepts `--max-read-bytes N` and `--max-read-objects N`. These bound one complete
+read, including final verification; the defaults are 1 GiB and 1,000,000 payload read
+attempts, with maximum values of 4 GiB and 4,000,000 attempts. Reading an object again
+uses another attempt and consumes its bytes again.
+
 Output uses `fss.package_zone_occupancy.v1`. The source section binds the exact zone report
 and provenance root, native analysis, retained detection report, import and original root,
 sensor, package, model identity and generation, detection contract, selected class, privacy
@@ -105,6 +110,13 @@ proof. Historical-health allowances are shared across initial reconstruction and
 revalidation. Cancellation or any changed/unavailable proof returns no successful projection;
 the reader never repairs or publishes missing custody.
 
+One sealed immutable retained source owns the initial snapshot, all source and diagnostic
+reads, metadata revalidation, selected payload rereads and final publication/authority
+checks. They share the original aggregate allowance. Output remains private until every
+check succeeds. A changed head, privacy generation, selected object or journal tail refuses
+the complete result; a later retry opens a new snapshot. The 60-second deadline is
+cooperative at read admissions, rather than an interruptible filesystem timeout.
+
 Limits apply to the complete result: at most 64 source frames, 16 zones, 8,192
 track/zone/frame cells, 1,024 output rows and 4 MiB of JSON. A duplicate or missing cell,
 foreign track, inconsistent assignment, or multiple tracks claiming the same detector row
@@ -112,13 +124,11 @@ within a frame/zone is refused. No selection, ranking or silent truncation makes
 result fit. The projection creates no new report; source retention and deletion policy
 remain with their existing owners.
 
-The command uses the normal exclusive deployment-opening lifecycle: it verifies and
-replays journals, recovers publication state and fsyncs its directories. Startup can remove
-redundant temporary files, complete legacy verification-hold migration, and mark previously
-committed effects without a recoverable provider record `Indeterminate`. The occupancy
-projection itself does not publish reports, append canonical events or dispatch effects.
-An observational query therefore still performs the existing deployment recovery; the
-command does not promise an unchanged filesystem.
+The command can run while capture holds the deployment writer. It does not acquire a
+publisher lock, initialize a deployment, recover publication state, remove temporary files
+or reconcile effects. Successful reads and refusals leave deployment contents unchanged.
+Approved source-report retention remains a separate operation with its existing exclusive
+publisher and recovery contract.
 
 ## Verification scope
 
@@ -129,6 +139,11 @@ Native integration cases use the existing first-party numeric FMPK/JPEG fixture,
 retained detector/zone owners, cold reopen and source/privacy/deletion withdrawal. CLI cases
 extend the existing subprocess fixture and validate the new schema. The numeric fixture
 tests semantics and custody; it supplies no detection-quality evaluation.
+
+The shared immutable package-zone contracts additionally keep a writer open throughout
+the read, compare the complete native projection, preserve unresolved effects and recovery
+artifacts, enforce exact aggregate allowances and withhold output on final cancellation,
+late selected-report corruption or torn journals.
 
 Queue/wait definitions, register-role interpretation, vehicle stage sequencing, continuous
 coverage witnesses, population calibration and FLDT consumption remain outside this slice.
