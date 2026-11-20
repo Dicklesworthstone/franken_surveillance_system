@@ -428,7 +428,7 @@ fn compact_sizes(r: &mut Reader<'_, '_>, stz2: &BoxRef) -> Result<Vec<u32>, Demu
         _ => count.checked_mul(2).ok_or(DemuxError::Limit)?,
     };
     exact_table(b, 12, packed_bytes, 1)?;
-    if field == 4 && count % 2 != 0 && b.last().is_some_and(|byte| byte & 15 != 0) {
+    if field == 4 && !count.is_multiple_of(2) && b.last().is_some_and(|byte| byte & 15 != 0) {
         return Err(DemuxError::Layout);
     }
     r.entries(count)?;

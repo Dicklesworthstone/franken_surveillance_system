@@ -517,12 +517,11 @@ impl Muxer {
             let (tag, _, end) = source_tag(record)?;
             expected = end;
             if tag.kind() == 9 {
-                if video_index < samples.len() && std::ptr::eq(*record, samples[video_index].record)
-                {
-                    video_index += 1;
-                } else if video_index == samples.len()
-                    && index + 1 == coverage.len()
-                    && std::ptr::eq(*record, lookahead)
+                if (video_index < samples.len()
+                    && std::ptr::eq(*record, samples[video_index].record))
+                    || (video_index == samples.len()
+                        && index + 1 == coverage.len()
+                        && std::ptr::eq(*record, lookahead))
                 {
                     video_index += 1;
                 } else {

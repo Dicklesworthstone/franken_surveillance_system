@@ -17,8 +17,8 @@ result than expected. A failed experiment is not deleted when a new candidate ap
 
 ## Entries
 
-No implementation experiments have been run. The architecture research already records these
-negative constraints:
+Architecture-research constraints (`NEG-001`–`NEG-003`) and live interoperability/implementation
+experiments (`NEG-004`–`NEG-010`) are retained below. Stable IDs are never renumbered.
 
 ### NEG-001 — Do not make DJI Flip SDK support an architectural dependency
 
@@ -116,7 +116,7 @@ negative constraints:
 - **Revival:** provisioning the device through the vendor app (which the owner controls),
   or a firmware generation that ships with the SOAP listener open.
 
-## NEG-006 — Wyze Cam v4 4.52.17.26 (2026-10-22, GrayBadger)
+## NEG-006 (Wyze Cam v4 — duplicate ID preserved without renumbering) — Wyze Cam v4 4.52.17.26 (2026-10-22, GrayBadger)
 
 **Hypothesis.** The published v3 TUTK chain still works on the v4, giving root over the LAN.
 

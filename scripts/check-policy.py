@@ -61,7 +61,7 @@ def included(path: Path) -> bool:
     relative = path.relative_to(ROOT)
     if relative in MANIFEST_FILES:
         return False
-    if path.name == ".DS_Store" or "__pycache__" in relative.parts or path.suffix in {".pyc", ".pyo"}:
+    if path.name == ".DS_Store" or "__pycache__" in relative.parts or "node_modules" in relative.parts or ".next" in relative.parts or path.suffix in {".pyc", ".pyo"}:
         return False
     if relative.parts and relative.parts[0] in EXCLUDED_TOP_LEVEL:
         return False

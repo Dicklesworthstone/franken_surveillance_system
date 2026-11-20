@@ -695,7 +695,7 @@ fn parse_pat(section: &[u8], selection: TsSelection) -> Result<Pat, TsError> {
     let mut selected = None;
     let mut programs = [0u16; 253];
     let mut pids = [0u16; 253];
-    for (index, entry) in entries.chunks_exact(4).enumerate() {
+    for (index, entry) in entries.as_chunks::<4>().0.iter().enumerate() {
         let program = u16::from_be_bytes([entry[0], entry[1]]);
         let pid = (u16::from(entry[2] & 0x1f) << 8) | u16::from(entry[3]);
         if entry[2] & 0xe0 != 0xe0

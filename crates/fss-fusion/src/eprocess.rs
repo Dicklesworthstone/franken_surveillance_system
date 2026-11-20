@@ -485,11 +485,11 @@ mod tests {
         Calibration, Coverage, EvidenceItem, FusionPolicy, Observability, Severity,
     };
 
-    fn base_query(evidence: Vec<EvidenceItem>) -> FusionQuery {
-        FusionQuery {
+    fn base_query(evidence: Vec<EvidenceItem>) -> Result<FusionQuery, Box<dyn std::error::Error>> {
+        Ok(FusionQuery {
             hypothesis: "hyp:entry-door".to_owned(),
             kind: "zone_entry".to_owned(),
-            prior: LlrInterval::point(0).unwrap(),
+            prior: LlrInterval::point(0)?,
             evidence,
             coverage: Coverage::Complete,
             opportunities: Vec::new(),
@@ -513,20 +513,25 @@ mod tests {
             },
             looks: 1,
             now_ns: 1_000_000_000,
-        }
+        })
     }
 
-    fn calibrated_item(id: &str, sensor: &str, lo: i64, hi: i64) -> EvidenceItem {
-        EvidenceItem {
+    fn calibrated_item(
+        id: &str,
+        sensor: &str,
+        lo: i64,
+        hi: i64,
+    ) -> Result<EvidenceItem, Box<dyn std::error::Error>> {
+        Ok(EvidenceItem {
             id: id.to_owned(),
             sensor: sensor.to_owned(),
             failure_domains: [format!("sensor:{sensor}")].into_iter().collect(),
             calibration: Calibration::Calibrated {
                 generation: "cal:v1".to_owned(),
-                llr: LlrInterval::new(lo, hi).unwrap(),
+                llr: LlrInterval::new(lo, hi)?,
             },
             observability: Observability::Observed,
-        }
+        })
     }
 
     #[test]
@@ -545,16 +550,17 @@ mod tests {
     }
 
     #[test]
-    fn single_camera_repeated_windows_never_corroborate_neg_004() {
-        let mut ep = SequentialEProcess::new("hyp:entry-door", EProcessConfig::default()).unwrap();
+    fn single_camera_repeated_windows_never_corroborate_neg_004()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut ep = SequentialEProcess::new("hyp:entry-door", EProcessConfig::default())?;
         for step in 0..4 {
             let q = base_query(vec![calibrated_item(
                 &format!("obs:east:{step}"),
                 "east",
                 700,
                 900,
-            )]);
-            let (_, out) = ep.observe_step(&q).unwrap();
+            )?])?;
+            let (_, out) = ep.observe_step(&q)?;
             assert_eq!(out.independent_supporting_clusters, 1);
             assert!(
                 !out.crossed_alert_threshold,
@@ -562,11 +568,13 @@ mod tests {
             );
         }
         assert_eq!(ep.accumulated_llr().lo(), 2_800);
+        Ok(())
     }
 
     #[test]
-    fn two_independent_cameras_corroborate_while_occluded_camera_is_neutral_neg_005() {
-        let mut ep = SequentialEProcess::new("hyp:entry-door", EProcessConfig::default()).unwrap();
+    fn two_independent_cameras_corroborate_while_occluded_camera_is_neutral_neg_005()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut ep = SequentialEProcess::new("hyp:entry-door", EProcessConfig::default())?;
         // Step 1: east camera + occluded south camera
         let occluded_south = EvidenceItem {
             id: "obs:south:0".to_owned(),
@@ -579,43 +587,39 @@ mod tests {
                 reason: "lens_occluded".to_owned(),
             },
         };
-        let (_, s1) = ep
-            .observe_step(&base_query(vec![
-                calibrated_item("obs:east:0", "east", 1_000, 1_200),
-                occluded_south,
-            ]))
-            .unwrap();
+        let (_, s1) = ep.observe_step(&base_query(vec![
+            calibrated_item("obs:east:0", "east", 1_000, 1_200)?,
+            occluded_south,
+        ])?)?;
         assert_eq!(s1.accumulated_llr.lo(), 1_000);
         assert_eq!(s1.independent_supporting_clusters, 1);
         assert!(!s1.crossed_alert_threshold);
 
         // Step 2: independent west camera corroborates
-        let (_, s2) = ep
-            .observe_step(&base_query(vec![calibrated_item(
-                "obs:west:1",
-                "west",
-                950,
-                1_150,
-            )]))
-            .unwrap();
+        let (_, s2) = ep.observe_step(&base_query(vec![calibrated_item(
+            "obs:west:1",
+            "west",
+            950,
+            1_150,
+        )?])?)?;
         assert_eq!(s2.accumulated_llr.lo(), 1_950);
         assert_eq!(s2.independent_supporting_clusters, 2);
         assert!(s2.crossed_alert_threshold);
         assert_eq!(s2.threshold_ville_bound_ppm, 15_849);
         assert!(s2.ville_false_alarm_bound_ppm <= s2.threshold_ville_bound_ppm);
+        Ok(())
     }
 
     #[test]
-    fn regime_reset_clears_accumulator_and_increments_epoch() {
-        let mut ep = SequentialEProcess::new("hyp:entry-door", EProcessConfig::default()).unwrap();
-        let (_, s1) = ep
-            .observe_step(&base_query(vec![calibrated_item(
-                "obs:east:0",
-                "east",
-                1_100,
-                1_300,
-            )]))
-            .unwrap();
+    fn regime_reset_clears_accumulator_and_increments_epoch()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut ep = SequentialEProcess::new("hyp:entry-door", EProcessConfig::default())?;
+        let (_, s1) = ep.observe_step(&base_query(vec![calibrated_item(
+            "obs:east:0",
+            "east",
+            1_100,
+            1_300,
+        )?])?)?;
         assert_eq!(s1.accumulated_llr.lo(), 1_100);
         let reset = ep.reset_regime(RegimeResetReason::SensorHealthDegraded {
             sensor: "east".to_owned(),
@@ -625,5 +629,6 @@ mod tests {
         assert_eq!(reset.accumulated_llr.lo(), 0);
         assert_eq!(reset.independent_supporting_clusters, 0);
         assert!(!reset.crossed_alert_threshold);
+        Ok(())
     }
 }
