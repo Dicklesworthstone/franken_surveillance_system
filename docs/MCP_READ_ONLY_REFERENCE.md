@@ -348,6 +348,20 @@ finish their ordinary bounded native path. No operation is preemptively terminat
 and cancellation never supplies a new grant, renews a deadline, acknowledges a page
 or issues the application-level `cancel` tool.
 
+Ordinary and durable follow parks request sleeps in slices of at most 25 ms,
+checking the same request owner between slices. This preserves the 250 ms interval
+between native read admissions and the original wait deadline. A cancellation
+returns a native denial rather than a successful shortened park; already admitted
+bounded filesystem work still finishes cooperatively.
+
+At session-time admission, cancellation is checked before the underlying clock is
+sampled, so it cannot advance that clock's watermark. When a real deployment head
+is available, interruption returns the existing native `cancelled` envelope with
+no clock-uncertainty error and no claim that earlier durable work was rolled back.
+A bounded refusal read supplies the response anchor. If no authentic head can be
+read, the existing unanchored diagnostic remains. Durable follow also preserves
+any acknowledgement already committed before the interrupted checkpoint.
+
 The actual native response survives a cancellation race: a completed session write,
 charged hydration result or effect result is returned unchanged, including its exit
 identity. Cancellation is not rollback. An unknown or already retired request ID

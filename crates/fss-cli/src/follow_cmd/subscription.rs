@@ -218,9 +218,10 @@ impl FollowWaitControl for LocalControl<'_, '_> {
             return Err(FollowWaitDenial::Unauthorized);
         }
         let remaining = binding.wait_ms().saturating_sub(now);
-        if remaining > 0 {
-            std::thread::sleep(Duration::from_millis(delay_ms.min(remaining)));
-        }
+        super::wait::park_cancellable(
+            Duration::from_millis(delay_ms.min(remaining)),
+            self.request_control,
+        )?;
         self.checkpoint(binding, FollowWaitBoundary::Park)?;
         Ok(())
     }
@@ -460,6 +461,14 @@ fn classify(error: &FollowSessionError) -> FailureClass {
         | FollowSessionError::Session(DeploymentSessionError::SessionStale(_)) => {
             class.error = Some(session_cmd::ERR_AGENT_SESSION_STALE);
             class.resnapshot = true;
+        }
+        FollowSessionError::Session(DeploymentSessionError::Time(
+            fss_reference::deployment_session::SessionTimeError::Cancelled,
+        )) => {
+            class.error = None;
+            class.outcome = ResponseOutcome::Cancelled;
+            class.retry = ResponseSafeRetry::YesSameRequest;
+            class.recovery = "safe_read_retry";
         }
         FollowSessionError::Denied(reason)
         | FollowSessionError::Replay(ReplayError::Denied(reason)) => {
@@ -716,21 +725,32 @@ mod tests {
         progress.elapsed_ms = 500;
         progress.consumed.bytes = 42;
         progress.source_reserved_bytes = 71;
-        for (denial, outcome, error) in [
+        for (failure_error, outcome, error) in [
             (
-                ReplayDenial::Deadline,
+                FollowSessionError::Denied(ReplayDenial::Deadline),
                 "partial",
                 Some(session_cmd::ERR_OP_TIMEOUT),
             ),
-            (ReplayDenial::Cancelled, "cancelled", None),
             (
-                ReplayDenial::Budget,
+                FollowSessionError::Denied(ReplayDenial::Cancelled),
+                "cancelled",
+                None,
+            ),
+            (
+                FollowSessionError::Session(DeploymentSessionError::Time(
+                    fss_reference::deployment_session::SessionTimeError::Cancelled,
+                )),
+                "cancelled",
+                None,
+            ),
+            (
+                FollowSessionError::Denied(ReplayDenial::Budget),
                 "partial",
                 Some(session_cmd::ERR_BUDGET_EXHAUSTED),
             ),
         ] {
             let failure = FollowSessionFailure {
-                error: FollowSessionError::Denied(denial),
+                error: failure_error,
                 head: Some(FollowSessionHead {
                     anchor: fss_core::LedgerAnchor::genesis("site:wait-render"),
                     token: token.clone(),

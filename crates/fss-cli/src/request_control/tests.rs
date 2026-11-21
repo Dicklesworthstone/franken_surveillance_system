@@ -258,3 +258,42 @@ fn borrowed_control_observes_the_same_live_owner_signal() {
     assert!(control.is_cancelled());
     assert!(!RequestControl::uncancelled().is_cancelled());
 }
+
+#[test]
+fn session_time_cancellation_preserves_native_cancelled_outcome_without_rollback() -> Test {
+    use crate::session_cmd::{SessionCommand, SessionOpenArgs};
+
+    let scratch = Scratch::new("session-clock")?;
+    let (deployment, cx) = scratch.initialize()?;
+    let before = tree(&scratch.root())?;
+    let observations = AtomicUsize::new(0);
+    let probe = || observations.fetch_add(1, Ordering::AcqRel) != 0;
+    let command = FssCommand::Session(SessionCommand::Open(SessionOpenArgs {
+        root: scratch.root(),
+        mission: "Inspect the owned test deployment".to_owned(),
+        objective: "Exercise the session authority cancellation boundary".to_owned(),
+        principal: PrincipalId::parse("principal:request-control")?,
+        view: fss_core::AgentView::Brief,
+        budget_tokens: 4096,
+    }));
+    let (body, exit) = execute_live_fss_with_control(command, &RequestControl::new(&probe))
+        .ok_or("a started session lost its native cancellation")?;
+    assert_eq!(exit, ExitIdentity::AGENT_REFUSED, "{body}");
+    let value = crate::json_input::parse(&body)?;
+    let fields = value.object().ok_or("cancelled response object")?;
+    assert_eq!(
+        fields
+            .get("outcome")
+            .and_then(crate::json_input::Value::text),
+        Some("cancelled")
+    );
+    assert_eq!(fields.get("errorId"), Some(&crate::json_input::Value::Null));
+    assert_eq!(fields.get("payload"), Some(&crate::json_input::Value::Null));
+    assert!(!body.contains(crate::session_cmd::ERR_CLOCK_UNCERTAIN));
+    assert!(body.contains("not rolled back"));
+    assert_eq!(tree(&scratch.root())?, before);
+    assert!(observations.load(Ordering::Acquire) >= 2);
+    drop(deployment);
+    cx.drain_and_finalize();
+    Ok(())
+}

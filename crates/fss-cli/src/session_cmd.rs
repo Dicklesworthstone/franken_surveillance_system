@@ -1075,6 +1075,9 @@ pub(crate) struct Refusal {
 
 pub(crate) fn classify(error: DeploymentSessionError) -> Result<Refusal, DeploymentSessionError> {
     Ok(match error {
+        error @ DeploymentSessionError::Time(
+            fss_reference::deployment_session::SessionTimeError::Cancelled,
+        ) => return Err(error),
         DeploymentSessionError::Time(reason) => Refusal {
             error_id: if reason == fss_reference::deployment_session::SessionTimeError::Denied {
                 ERR_AUTH_DENIED
@@ -1497,6 +1500,9 @@ pub(crate) fn refuse(
     error: DeploymentSessionError,
 ) -> (String, ExitIdentity) {
     let refusal = match error {
+        DeploymentSessionError::Time(
+            fss_reference::deployment_session::SessionTimeError::Cancelled,
+        ) => return cancelled_response(operation),
         DeploymentSessionError::Read(read) => {
             return read_refusal(operation.command, &operation.root, &read);
         }
@@ -1506,6 +1512,80 @@ pub(crate) fn refuse(
         },
     };
     refuse_typed(operation, refusal, ExitIdentity::AGENT_REFUSED)
+}
+
+/// Preserve interruption as an outcome, without treating it as clock uncertainty or rollback.
+/// Like the existing refusal renderer, this bounded read supplies a real response anchor;
+/// it never continues the cancelled command or writes a session/effect transition.
+fn cancelled_response(operation: &Operation) -> (String, ExitIdentity) {
+    let snapshot = match read_deployment(&operation.root, &OrientLimits::default()) {
+        Ok(snapshot) => snapshot,
+        Err(error) => return read_refusal(operation.command, &operation.root, &error),
+    };
+    let request_digest = crate::orient_cmd::request_identity(operation.name, |encoder| {
+        encoder.bytes(&operation.request);
+        operation.principal.encode_canonical(encoder);
+        snapshot.anchor.encode_canonical(encoder);
+    });
+    rendered(
+        build_response(ResponseParts {
+            operation: operation.name,
+            request_digest,
+            principal: operation.principal.clone(),
+            session_id: None,
+            mission_id: None,
+            anchor: snapshot.anchor.clone(),
+            view: operation.view,
+            capability: operation.capability,
+            outcome: ResponseOutcome::Cancelled,
+            error_id: None,
+            payload_schema: operation.payload_schema,
+            payload_json: "null".to_owned(),
+            epistemic_state: KnowledgeState::Unknown,
+            completeness: Completeness::Partial,
+            warnings: Vec::new(),
+            contradictions: Vec::new(),
+            degradation: vec![
+                "The caller cancelled at a session authority checkpoint. Earlier durable work \
+                 is not rolled back; inspect committed state before deciding whether to retry."
+                    .to_owned(),
+                "The bounded refusal read supplies this anchor. Failed-call work is not fully \
+                 metered; zero budget placeholders do not claim zero work."
+                    .to_owned(),
+            ],
+            budgets_json: agent_json::budget_summary(&BudgetVector::ZERO, &BudgetVector::ZERO),
+            proof_pointers: vec![snapshot.anchor.state_root.to_text()],
+            affordances: Vec::new(),
+            affordance_objects: Vec::new(),
+            decision_fingerprint: request_digest,
+            compression_receipt_id: None,
+            continuation: None,
+            recovery_class: "operator_action_required",
+            safe_retry: ResponseSafeRetry::No,
+            boundary: fss_core::ExecutionBoundary {
+                completed: vec![
+                    "Observed caller cancellation at the native session authority checkpoint."
+                        .to_owned(),
+                ],
+                not_started: Vec::new(),
+                possibly_occurred: vec![
+                    "Session-owned admission or other durable work before the cancellation \
+                     checkpoint may already be committed."
+                        .to_owned(),
+                ],
+                preserved_truth: vec![
+                    "Existing durable state and effect outcomes were not rolled back.".to_owned(),
+                ],
+                invalidated: Vec::new(),
+            },
+            created_at_ns: snapshot.latest_evidence_time.0,
+            workspace_revision: None,
+            idempotency_key: None,
+        }),
+        ExitIdentity::AGENT_REFUSED,
+        operation.command,
+        &operation.root,
+    )
 }
 
 /// Renders one already-classified refusal as an envelope at the deployment's committed anchor.

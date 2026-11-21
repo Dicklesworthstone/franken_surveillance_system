@@ -136,3 +136,70 @@ fn explicit_control_entrypoint_never_falls_through_to_ambient_io()
     assert_eq!(control.checkpoints, 1);
     Ok(())
 }
+
+#[test]
+fn caller_cancellation_keeps_exact_follow_scope_and_interrupts_a_park()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    let args = parse(&["--wait-ms", "1000"])?;
+    let admitted = binding(&args).map_err(|_| "follow wait binding")?;
+    let cancelled = AtomicBool::new(false);
+    let probe = || cancelled.load(Ordering::SeqCst);
+    let request_control = crate::RequestControl::new(&probe);
+    let mut control = LocalControl {
+        admitted: admitted.clone(),
+        started: Instant::now(),
+        request_control: &request_control,
+    };
+    assert!(
+        control
+            .checkpoint(&admitted, FollowWaitBoundary::Read)
+            .is_ok()
+    );
+    cancelled.store(true, Ordering::SeqCst);
+    for boundary in [
+        FollowWaitBoundary::Read,
+        FollowWaitBoundary::Hydrate,
+        FollowWaitBoundary::Source,
+        FollowWaitBoundary::Park,
+        FollowWaitBoundary::Observe,
+    ] {
+        assert_eq!(
+            control.checkpoint(&admitted, boundary),
+            Err(FollowWaitDenial::Cancelled)
+        );
+    }
+    let mut foreign = args.clone();
+    foreign.root = "/another-unopened-follow-root".into();
+    let foreign = binding(&foreign).map_err(|_| "foreign follow wait binding")?;
+    assert_eq!(
+        control.checkpoint(&foreign, FollowWaitBoundary::Read),
+        Err(FollowWaitDenial::Unauthorized),
+        "a cancellation probe cannot admit another root"
+    );
+    assert_eq!(
+        control.park(&admitted, 25),
+        Err(FollowWaitDenial::Cancelled)
+    );
+
+    // First admission and the first slice are allowed; cancellation arrives at the next
+    // slice. The engine receives a denial rather than a successful, too-short native park.
+    let checkpoints = AtomicUsize::new(0);
+    let during_park = || checkpoints.fetch_add(1, Ordering::SeqCst) >= 2;
+    let request_control = crate::RequestControl::new(&during_park);
+    let mut control = LocalControl {
+        admitted: admitted.clone(),
+        started: Instant::now(),
+        request_control: &request_control,
+    };
+    assert_eq!(
+        control.park(
+            &admitted,
+            fss_reference::agent_follow::wait::FOLLOW_WAIT_POLL_MS
+        ),
+        Err(FollowWaitDenial::Cancelled)
+    );
+    assert_eq!(checkpoints.load(Ordering::SeqCst), 3);
+    Ok(())
+}

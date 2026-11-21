@@ -50,11 +50,31 @@ impl FollowWaitControl for LocalControl<'_, '_> {
         // Time may advance between the engine's checkpoint and this boundary. Shorten only
         // toward the already fixed deadline; never restart or extend the requested wait.
         let remaining = binding.wait_ms().saturating_sub(now);
-        if remaining > 0 {
-            std::thread::sleep(Duration::from_millis(delay_ms.min(remaining)));
-        }
+        park_cancellable(
+            Duration::from_millis(delay_ms.min(remaining)),
+            self.request_control,
+        )?;
         self.checkpoint(binding, FollowWaitBoundary::Park)?;
         Ok(())
+    }
+}
+
+/// Keep the native read-poll interval while checking request cancellation during a park.
+/// No new read is admitted between these slices, and the original interval is never restarted.
+pub(super) fn park_cancellable(
+    duration: Duration,
+    control: &crate::RequestControl<'_>,
+) -> Result<(), FollowWaitDenial> {
+    let started = Instant::now();
+    loop {
+        if control.is_cancelled() {
+            return Err(FollowWaitDenial::Cancelled);
+        }
+        let remaining = duration.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return Ok(());
+        }
+        std::thread::sleep(remaining.min(Duration::from_millis(25)));
     }
 }
 

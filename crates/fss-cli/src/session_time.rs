@@ -148,4 +148,32 @@ mod tests {
         assert_eq!(clock.previous.get(), None);
         assert_eq!(clock.observe_sample(UNIX_EPOCH), Ok(TimestampNs(0)));
     }
+
+    #[test]
+    fn cancelled_host_observation_does_not_establish_or_advance_its_watermark()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let host = HostSessionTime::default();
+        let control = crate::RequestControl::new(&|| true);
+        let clock = ControlledSessionTime {
+            clock: &host,
+            control: &control,
+        };
+        let principal = PrincipalId::parse("principal:cancelled-clock")?;
+        let root = Path::new("/owned-session-root");
+        assert_eq!(
+            clock.observe(root, &principal),
+            Err(SessionTimeError::Cancelled)
+        );
+        assert_eq!(host.previous.get(), None);
+        assert_eq!(
+            host.observe_sample(UNIX_EPOCH + Duration::from_nanos(42)),
+            Ok(TimestampNs(42))
+        );
+        assert_eq!(
+            clock.observe(root, &principal),
+            Err(SessionTimeError::Cancelled)
+        );
+        assert_eq!(host.previous.get(), Some(42));
+        Ok(())
+    }
 }
