@@ -44,6 +44,8 @@ mod detector;
 mod graph;
 #[path = "fss-event/health.rs"]
 mod health;
+#[path = "fss-event/optical_health.rs"]
+mod optical_health;
 #[path = "fss-event/package_zones.rs"]
 mod package_zones;
 #[path = "fss-event/privacy_mask.rs"]
@@ -164,6 +166,12 @@ const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corrobor
     does not prove health, tamper absence, or physical absence. Exact approval reruns retain\n\
     the option. With --stream-dwell the existing whole-scan publication gate applies instead;\n\
     short non-stream dwell with sensor-health screening is unsupported and refused.\n\
+    --sensor-health conservative-optical-v1 additionally screens short watch/corroboration\n\
+    for severe blur and localized highlight glare. Optional exact policy thresholds:\n\
+    --min-laplacian-variance-x1000 N --glare-luma-min N (0..255) --max-glare-ppm N (0..1000000).\n\
+    Findings remove candidate support and coverage; recovery restarts background/tracker warm-up.\n\
+    Thresholds and measured optical work are bound into provenance and exact approval reruns.\n\
+    This policy is opt-in; stream/dwell use is refused, and a clear result never certifies health.\n\
     Historical diagnostics: whole-recording screened watch/dwell previews also contain an\n\
     independent historical_health approval. --retain-health sha256:APPROVAL retains its\n\
     source-bound receipt and exact native scan recipe even when no event exists or health\n\

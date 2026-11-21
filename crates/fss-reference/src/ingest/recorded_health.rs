@@ -15,16 +15,19 @@ use fss_core::{
 
 use super::sensor_health::{
     HealthError, HealthFinding, HealthFrame, HealthObservation, HealthScreen, MAX_HEALTH_FRAMES,
-    MAX_HEALTH_PIXELS, POLICY_NAME, policy_digest,
+    MAX_HEALTH_PIXELS, OpticalQualityMetrics, OpticalThresholds, POLICY_NAME, policy_digest,
+    screen_optical_quality,
 };
 use crate::ReplayCx;
 
 mod coverage;
+mod optical;
 pub use coverage::RecordedHealthCoverageReceipt;
 
 /// Maximum bytes admitted for one complete 128-frame measurement receipt.
 pub const MAX_RECORDED_HEALTH_BYTES: usize = 128 * 1024;
 const DOMAIN: &str = "fss.recorded_sensor_health.v1";
+const OPTICAL_DOMAIN: &str = "fss.recorded_sensor_health.v2";
 const ADMISSION_POLICY: &str = concat!(
     "whole-qualifying-run:discard-touched-tracks:withdraw-touched-track-spans:",
     "restart-background-and-tracker:v1",
@@ -35,6 +38,42 @@ const ADMISSION_POLICY: &str = concat!(
 pub enum RecordedHealthPolicy {
     /// Fixed conservative-v1 measurements and complete-run withdrawal; no health certification.
     ConservativeV1,
+    /// Conservative temporal screening plus explicit per-frame blur/glare admission thresholds.
+    /// Optical findings withhold tracking and coverage; a clear screen never certifies health.
+    ConservativeOpticalV1(OpticalThresholds),
+}
+
+impl RecordedHealthPolicy {
+    /// Stable policy name, independent of the separately retained exact threshold values.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::ConservativeV1 => POLICY_NAME,
+            Self::ConservativeOpticalV1(_) => "conservative-optical-v1",
+        }
+    }
+
+    /// Exact admission policy, including all optical thresholds when explicitly enabled.
+    #[must_use]
+    pub fn to_bytes(self) -> Vec<u8> {
+        match self {
+            Self::ConservativeV1 => super::sensor_health::policy_bytes().to_vec(),
+            Self::ConservativeOpticalV1(thresholds) => optical::policy_bytes(thresholds),
+        }
+    }
+
+    /// Immutable policy identity; changing any threshold changes this identity.
+    #[must_use]
+    pub fn digest(self) -> ContentDigest {
+        ContentDigest::sha256(&self.to_bytes())
+    }
+
+    const fn optical_thresholds(self) -> Option<OpticalThresholds> {
+        match self {
+            Self::ConservativeV1 => None,
+            Self::ConservativeOpticalV1(thresholds) => Some(thresholds),
+        }
+    }
 }
 
 /// Preserve existing identities unless the caller explicitly enables screening.
@@ -44,11 +83,11 @@ pub(crate) fn screened_plan_digest(
 ) -> ContentDigest {
     match policy {
         None => plan,
-        Some(RecordedHealthPolicy::ConservativeV1) => {
+        Some(policy) => {
             let mut e = CanonicalEncoder::new();
             e.text("fss.recorded_sensor_health_plan.v1");
             e.digest(plan);
-            e.digest(policy_digest());
+            e.digest(policy.digest());
             e.text(ADMISSION_POLICY);
             ContentDigest::sha256(&e.finish())
         }
@@ -59,6 +98,7 @@ pub(crate) fn screened_plan_digest(
 /// A clear summary only means this screen found no qualifying degradation pattern.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecordedHealthSummary {
+    policy: RecordedHealthPolicy,
     import_identity: ContentDigest,
     import_root: ContentDigest,
     sensor_digest: ContentDigest,
@@ -69,6 +109,8 @@ pub struct RecordedHealthSummary {
     affected_segments: BTreeSet<u64>,
     withdrawn_track_segments: BTreeSet<u64>,
     samples_used: u64,
+    optical_observations: Vec<OpticalQualityMetrics>,
+    optical_sample_reads: u64,
 }
 
 impl RecordedHealthSummary {
@@ -107,11 +149,19 @@ impl RecordedHealthSummary {
     pub(crate) fn tracking_restart_segments(&self) -> BTreeSet<u64> {
         let mut restarts = self.decoder_restart_segments.clone();
         for pair in self.observations.windows(2) {
-            if !pair[0].findings.is_empty() && pair[1].findings.is_empty() {
+            if self.degraded_at_observation(&pair[0]) && !self.degraded_at_observation(&pair[1]) {
                 restarts.insert(pair[1].segment);
             }
         }
         restarts
+    }
+
+    fn degraded_at_observation(&self, frame: &HealthObservation) -> bool {
+        !frame.findings.is_empty()
+            || self
+                .optical_observations
+                .iter()
+                .any(|metric| metric.segment == frame.segment && !metric.findings.is_empty())
     }
 
     /// Complete frame spans of tracks discarded because they touched a degradation run.
@@ -162,6 +212,31 @@ impl RecordedHealthSummary {
         &self.observations
     }
 
+    /// Complete optical measurements in the same source/display order as conservative frames.
+    /// Empty for legacy conservative-v1; never raw image bytes or health certification.
+    #[must_use]
+    pub fn optical_observations(&self) -> &[OpticalQualityMetrics] {
+        &self.optical_observations
+    }
+
+    /// Additional scalar sample reads charged for glare, Laplacian and optical luma hashing.
+    #[must_use]
+    pub const fn optical_sample_reads(&self) -> u64 {
+        self.optical_sample_reads
+    }
+
+    /// Explicit policy and thresholds used for both candidate and coverage admission.
+    #[must_use]
+    pub const fn policy(&self) -> RecordedHealthPolicy {
+        self.policy
+    }
+
+    /// Exact policy object to retain beside this summary and its conservative measurements.
+    #[must_use]
+    pub fn policy_bytes(&self) -> Vec<u8> {
+        self.policy.to_bytes()
+    }
+
     /// Every segment in a complete qualifying degradation run.
     #[must_use]
     pub fn affected_segments(&self) -> &BTreeSet<u64> {
@@ -180,10 +255,10 @@ impl RecordedHealthSummary {
         self.samples_used
     }
 
-    /// Fixed measurement policy identity.
+    /// Exact admission policy identity, including explicit optical thresholds when enabled.
     #[must_use]
     pub fn policy_digest(&self) -> ContentDigest {
-        policy_digest()
+        self.policy.digest()
     }
 
     /// Canonical receipt identity, binding measurements, continuity and withdrawn segments.
@@ -196,9 +271,16 @@ impl RecordedHealthSummary {
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut e = CanonicalEncoder::new();
-        e.text(DOMAIN);
-        e.digest(policy_digest());
+        e.text(if self.policy.optical_thresholds().is_some() {
+            OPTICAL_DOMAIN
+        } else {
+            DOMAIN
+        });
+        e.digest(self.policy_digest());
         e.text(ADMISSION_POLICY);
+        if let Some(thresholds) = self.policy.optical_thresholds() {
+            optical::encode_thresholds(&mut e, thresholds);
+        }
         e.digest(self.import_identity);
         e.digest(self.import_root);
         e.digest(self.sensor_digest);
@@ -224,6 +306,13 @@ impl RecordedHealthSummary {
         for segment in &self.withdrawn_track_segments {
             e.u64(*segment);
         }
+        if self.policy.optical_thresholds().is_some() {
+            e.u64(self.optical_sample_reads);
+            e.u64(self.optical_observations.len() as u64);
+            for metric in &self.optical_observations {
+                e.bytes(&metric.canonical_bytes());
+            }
+        }
         e.finish()
     }
 
@@ -234,7 +323,20 @@ impl RecordedHealthSummary {
             return Err(ContractError::BudgetExhausted);
         }
         let mut d = CanonicalDecoder::new(bytes);
-        if d.text()? != DOMAIN || d.digest()? != policy_digest() || d.text()? != ADMISSION_POLICY {
+        let domain = d.text()?;
+        if domain != DOMAIN && domain != OPTICAL_DOMAIN {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        let digest = d.digest()?;
+        if d.text()? != ADMISSION_POLICY {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        let policy = if domain == OPTICAL_DOMAIN {
+            RecordedHealthPolicy::ConservativeOpticalV1(optical::decode_thresholds(&mut d)?)
+        } else {
+            RecordedHealthPolicy::ConservativeV1
+        };
+        if digest != policy.digest() {
             return Err(ContractError::InvalidIdentifier);
         }
         let import_identity = d.digest()?;
@@ -257,8 +359,21 @@ impl RecordedHealthSummary {
             }
         }
         let withdrawn_track_segments = decode_segments(&mut d)?;
+        let mut optical_observations = Vec::new();
+        let optical_sample_reads = if policy.optical_thresholds().is_some() {
+            let used = d.u64()?;
+            let count = bounded_count(d.u64()?)?;
+            optical_observations.reserve(count);
+            for _ in 0..count {
+                optical_observations.push(optical::decode_metric(d.bytes()?)?);
+            }
+            used
+        } else {
+            0
+        };
         d.ensure_finished()?;
         let summary = Self {
+            policy,
             import_identity,
             import_root,
             sensor_digest,
@@ -269,6 +384,8 @@ impl RecordedHealthSummary {
             affected_segments,
             withdrawn_track_segments,
             samples_used,
+            optical_observations,
+            optical_sample_reads,
         };
         summary.validate()?;
         if summary.to_bytes() != bytes {
@@ -280,7 +397,8 @@ impl RecordedHealthSummary {
     /// Verify decoder order, frame bounds, chained predecessors, exact temporal counters and
     /// findings, cumulative work, and the complete affected-run set.
     pub fn validate(&self) -> Result<(), ContractError> {
-        let affected = affected_segments(&self.observations)?;
+        let mut affected = affected_segments(&self.observations)?;
+        optical::validate_summary(self, &mut affected)?;
         if self.observations[0].source_generation != self.source_generation
             || self.source_gap_segments.len() > MAX_HEALTH_FRAMES
             || self.decoder_restart_segments.len() > MAX_HEALTH_FRAMES
@@ -411,7 +529,7 @@ impl RecordedHealthSummary {
                 )
             })
             .collect::<Vec<_>>();
-        format!(
+        let mut json = format!(
             concat!(
                 "{{\"policy\":\"{}\",\"policy_digest\":\"{}\",\"digest\":\"{}\",",
                 "\"status\":\"{}\",\"frames_screened\":{},\"samples_used\":{},",
@@ -421,8 +539,8 @@ impl RecordedHealthSummary {
                 "\"source_generation\":\"{}\",\"source_gap_segments\":[{}],",
                 "\"decoder_restart_segments\":[{}],\"observations\":[{}]}}"
             ),
-            POLICY_NAME,
-            policy_digest(),
+            self.policy.name(),
+            self.policy_digest(),
             self.digest(),
             if self.affected_segments.is_empty() {
                 "clear_screen_not_health_evidence"
@@ -440,7 +558,13 @@ impl RecordedHealthSummary {
             gaps.join(","),
             restarts.join(","),
             observations.join(","),
-        )
+        );
+        if let Some(thresholds) = self.policy.optical_thresholds() {
+            json.pop();
+            json.push_str(&optical::json_fields(self, thresholds));
+            json.push('}');
+        }
+        json
     }
 }
 
@@ -610,6 +734,7 @@ fn affected_segments(observations: &[HealthObservation]) -> Result<BTreeSet<u64>
 
 /// One screen per complete analysis: decode/health recovery never replenishes this budget.
 pub(crate) struct RecordedHealthScreen {
+    policy: RecordedHealthPolicy,
     import_identity: ContentDigest,
     import_root: ContentDigest,
     sensor_digest: ContentDigest,
@@ -618,9 +743,13 @@ pub(crate) struct RecordedHealthScreen {
     screen: HealthScreen,
     maximum_frames: usize,
     observations: Vec<HealthObservation>,
+    optical_observations: Vec<OpticalQualityMetrics>,
+    maximum_optical_sample_reads: u64,
+    optical_sample_reads: u64,
 }
 
 impl RecordedHealthScreen {
+    #[cfg(test)]
     pub(crate) fn new(
         frames: usize,
         import_identity: ContentDigest,
@@ -629,12 +758,39 @@ impl RecordedHealthScreen {
         source_generation: ContentDigest,
         source_gap_segments: BTreeSet<u64>,
     ) -> Result<Self, HealthError> {
+        Self::with_policy(
+            frames,
+            import_identity,
+            import_root,
+            sensor,
+            source_generation,
+            source_gap_segments,
+            RecordedHealthPolicy::ConservativeV1,
+        )
+    }
+
+    pub(crate) fn with_policy(
+        frames: usize,
+        import_identity: ContentDigest,
+        import_root: ContentDigest,
+        sensor: &str,
+        source_generation: ContentDigest,
+        source_gap_segments: BTreeSet<u64>,
+        policy: RecordedHealthPolicy,
+    ) -> Result<Self, HealthError> {
         if !(1..=MAX_HEALTH_FRAMES).contains(&frames)
             || source_gap_segments.len() > MAX_HEALTH_FRAMES
         {
             return Err(HealthError::Limit);
         }
+        if policy
+            .optical_thresholds()
+            .is_some_and(|thresholds| thresholds.max_glare_ppm > 1_000_000)
+        {
+            return Err(HealthError::InvalidImage);
+        }
         Ok(Self {
+            policy,
             import_identity,
             import_root,
             sensor_digest: ContentDigest::sha256(sensor.as_bytes()),
@@ -646,6 +802,15 @@ impl RecordedHealthScreen {
             )?,
             maximum_frames: frames,
             observations: Vec::with_capacity(frames),
+            optical_observations: if policy.optical_thresholds().is_some() {
+                Vec::with_capacity(frames)
+            } else {
+                Vec::new()
+            },
+            // Glare and luma hashing read every sample; each interior Laplacian reads five.
+            // This one whole-analysis allowance is never replenished by recovery or gaps.
+            maximum_optical_sample_reads: frames as u64 * 7 * MAX_HEALTH_PIXELS as u64,
+            optical_sample_reads: 0,
         })
     }
 
@@ -666,9 +831,30 @@ impl RecordedHealthScreen {
         }) {
             return Err(HealthError::ReplayedSource);
         }
+        let optical = if let Some(thresholds) = self.policy.optical_thresholds() {
+            let cost =
+                optical::sample_reads(frame.dimensions).map_err(|_| HealthError::InvalidImage)?;
+            let used = self
+                .optical_sample_reads
+                .checked_add(cost)
+                .filter(|used| *used <= self.maximum_optical_sample_reads)
+                .ok_or(HealthError::Limit)?;
+            // Reserve before traversing pixels. Cancellation keeps its spent reservation and
+            // prevents a partial prefix from being materialized as a complete receipt.
+            self.optical_sample_reads = used;
+            Some(screen_optical_quality(frame, thresholds, cx)?)
+        } else {
+            None
+        };
         let observation = self.screen.observe(frame, cx)?;
-        let degraded = !observation.findings.is_empty();
+        let degraded = !observation.findings.is_empty()
+            || optical
+                .as_ref()
+                .is_some_and(|metric| !metric.findings.is_empty());
         self.observations.push(observation);
+        if let Some(metric) = optical {
+            self.optical_observations.push(metric);
+        }
         Ok(degraded)
     }
 
@@ -679,7 +865,15 @@ impl RecordedHealthScreen {
         if decoder_restarts.len() > MAX_HEALTH_FRAMES {
             return Err(ContractError::BudgetExhausted);
         }
+        let mut affected = affected_segments(&self.observations)?;
+        affected.extend(
+            self.optical_observations
+                .iter()
+                .filter(|metric| !metric.findings.is_empty())
+                .map(|metric| metric.segment),
+        );
         let summary = RecordedHealthSummary {
+            policy: self.policy,
             import_identity: self.import_identity,
             import_root: self.import_root,
             sensor_digest: self.sensor_digest,
@@ -689,10 +883,12 @@ impl RecordedHealthScreen {
                 .iter()
                 .map(|segment| *segment as u64)
                 .collect(),
-            affected_segments: affected_segments(&self.observations)?,
+            affected_segments: affected,
             withdrawn_track_segments: BTreeSet::new(),
             observations: self.observations,
             samples_used: self.screen.samples_used(),
+            optical_observations: self.optical_observations,
+            optical_sample_reads: self.optical_sample_reads,
         };
         summary.validate()?;
         Ok(summary)

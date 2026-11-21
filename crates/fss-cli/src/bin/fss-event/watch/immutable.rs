@@ -60,20 +60,31 @@ fn run_with(
         )
         .into());
     }
+    super::super::optical_health::short_only(
+        action.health_screen.then_some(action.health_policy),
+        action.stream_watch.is_some() || action.stream_dwell.is_some() || action.dwell.is_some(),
+    )?;
     super::super::detector::check_watch_fusion_mode(action.cascade.as_ref(), true, false)?;
     // Load pinned external models and profiles before opening any retained recording.
     let inputs = match (&action.stream_watch, &action.stream_dwell) {
         (Some(_), None) => PreviewInputs::Whole(whole::Inputs::load(
-            action, whole::Scope::Watch, cx, scalar,
+            action,
+            whole::Scope::Watch,
+            cx,
+            scalar,
         )?),
         (None, Some(_)) => PreviewInputs::Whole(whole::Inputs::load(
-            action, whole::Scope::Dwell, cx, scalar,
+            action,
+            whole::Scope::Dwell,
+            cx,
+            scalar,
         )?),
         (None, None) => {
             if action.health_screen && action.dwell.is_some() {
                 return Err(WatchError::InvalidPlan(
                     "short dwell sensor-health screening is unsupported",
-                ).into());
+                )
+                .into());
             }
             let (profile, package) = load_short_inputs(action, cx, scalar)?;
             PreviewInputs::Short { profile, package }
@@ -90,7 +101,11 @@ fn run_with(
             if let Some(limits) = &action.stream_watch {
                 let (report, fusion) = inputs.watch(action, &source, limits, cx, scalar)?;
                 let json = whole::render_watch(
-                    action, &report, source.current_anchor().commit_sequence, None, fusion.as_ref(),
+                    action,
+                    &report,
+                    source.current_anchor().commit_sequence,
+                    None,
+                    fusion.as_ref(),
                 )?;
                 // Diagnostic previews remain readable when health blocks publication.
                 // Fusion and the publishing owner retain their stricter health gates.
@@ -102,7 +117,11 @@ fn run_with(
                 ))?;
                 let (report, fusion) = inputs.dwell(action, &source, limits, cx, scalar)?;
                 let json = whole::render_dwell(
-                    action, &report, source.current_anchor().commit_sequence, None, fusion.as_ref(),
+                    action,
+                    &report,
+                    source.current_anchor().commit_sequence,
+                    None,
+                    fusion.as_ref(),
                 )?;
                 report.revalidate_preview_source(&source, cx)?;
                 json
@@ -113,7 +132,13 @@ fn run_with(
             let plan = short_plan(action, &source, cx)?;
             if let Some(rule) = action.dwell {
                 let report = DwellReport::analyze(
-                    &source, &plan, rule, &action.limits, cascade.as_mut(), action.options, cx,
+                    &source,
+                    &plan,
+                    rule,
+                    &action.limits,
+                    cascade.as_mut(),
+                    action.options,
+                    cx,
                 )?;
                 let fusion = match (&profile, cascade.as_ref()) {
                     (Some(profile), Some(cascade)) => Some(EventFusionReport::dwell(
@@ -123,7 +148,10 @@ fn run_with(
                     _ => return Err(EventFusionError::Scope.into()),
                 };
                 let json = render_short_dwell(
-                    action, &report, source.current_anchor().commit_sequence, fusion.as_ref(),
+                    action,
+                    &report,
+                    source.current_anchor().commit_sequence,
+                    fusion.as_ref(),
                 )?;
                 report.revalidate_derived_source(&source, cx)?;
                 json
@@ -134,7 +162,7 @@ fn run_with(
                     &action.limits,
                     cascade.as_mut(),
                     action.options,
-                    action.health_screen.then_some(RecordedHealthPolicy::ConservativeV1),
+                    action.health_screen.then_some(action.health_policy),
                     cx,
                 )?;
                 let fusion = match (&profile, cascade.as_ref()) {
@@ -145,7 +173,10 @@ fn run_with(
                     _ => return Err(EventFusionError::Scope.into()),
                 };
                 let json = render_short_watch(
-                    action, &report, &report, source.current_anchor().commit_sequence,
+                    action,
+                    &report,
+                    &report,
+                    source.current_anchor().commit_sequence,
                     fusion.as_ref(),
                 )?;
                 report.revalidate_derived_source(&source, cx)?;

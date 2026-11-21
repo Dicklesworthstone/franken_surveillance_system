@@ -60,6 +60,7 @@ fn run_with(
         )
         .into());
     }
+    super::super::optical_health::short_only(action.health_screen, action.streaming.is_some())?;
     super::super::detector::check_fusion_mode(action.cascade.as_ref(), true, false)?;
     let source =
         ImmutableRetainedSource::open_cancellable(root, action.read_limits, cx, cancelled)?;

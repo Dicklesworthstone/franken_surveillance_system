@@ -423,7 +423,13 @@ fn read_allowances_cover_temporal_previews_but_never_mutation_or_checkpoints() -
         vec![],
         vec!["--stream-watch"],
         vec!["--dwell-for-ns", "100", "--dwell-max-gap-ns", "200"],
-        vec!["--stream-dwell", "--dwell-for-ns", "100", "--dwell-max-gap-ns", "200"],
+        vec![
+            "--stream-dwell",
+            "--dwell-for-ns",
+            "100",
+            "--dwell-max-gap-ns",
+            "200",
+        ],
     ] {
         let mut args = preview.clone();
         args.extend(suffix.iter().map(|value| OsString::from(*value)));
@@ -441,12 +447,20 @@ fn read_allowances_cover_temporal_previews_but_never_mutation_or_checkpoints() -
         vec!["--approve", approval.as_str()],
         vec!["--retain-coverage", approval.as_str()],
         vec![
-            "--stream-watch", "--sensor-health", "conservative-v1",
-            "--retain-health", approval.as_str(),
+            "--stream-watch",
+            "--sensor-health",
+            "conservative-v1",
+            "--retain-health",
+            approval.as_str(),
         ],
         vec![
-            "--stream-dwell", "--dwell-for-ns", "100", "--dwell-max-gap-ns", "200",
-            "--dwell-step-frames", "4",
+            "--stream-dwell",
+            "--dwell-for-ns",
+            "100",
+            "--dwell-max-gap-ns",
+            "200",
+            "--dwell-step-frames",
+            "4",
         ],
     ] {
         let mut legacy = base.clone();
@@ -466,3 +480,83 @@ fn read_allowances_cover_temporal_previews_but_never_mutation_or_checkpoints() -
 
 #[path = "immutable_temporal_tests.rs"]
 mod temporal;
+
+#[test]
+fn optical_watch_preserves_exact_policy_and_native_report_beside_capture() -> Test {
+    let mut fixture = Fixture::new("immutable-watch-optical")?;
+    let root = fixture.deployment.root().to_path_buf();
+    let import = fixture.ingest(
+        "sensor:immutable-optical",
+        &scene()?,
+        FileFormatHint::JpegStream,
+        None,
+    )?;
+    let before = tree(&root)?;
+    let scalar = ScalarExecCx::new();
+    let mut args = request_args(&root, import, "gray", "door:64,0,32,32");
+    args.extend([
+        "--sensor-health".into(),
+        "conservative-optical-v1".into(),
+        "--min-laplacian-variance-x1000".into(),
+        u64::MAX.to_string().into(),
+        "--glare-luma-min".into(),
+        "239".into(),
+        "--max-glare-ppm".into(),
+        "75000".into(),
+    ]);
+    let action = super::super::parse(&args)?;
+    let mut native = Vec::new();
+    super::super::run_with(
+        &action,
+        &mut fixture.deployment,
+        &root,
+        &fixture.cx,
+        &scalar,
+        &mut native,
+    )?;
+    let report = std::str::from_utf8(&native)?;
+    for expected in [
+        "\"policy\":\"conservative-optical-v1\"",
+        "severe_blur",
+        "\"glare_luma_min\":239",
+        "\"max_glare_ppm\":75000",
+        "sensor_health_degraded",
+    ] {
+        assert!(report.contains(expected), "missing {expected}: {report}");
+    }
+    assert!(action.rerun.contains("conservative-optical-v1"));
+    assert!(action.rerun.contains("--min-laplacian-variance-x1000"));
+    assert!(action.rerun.contains(&u64::MAX.to_string()));
+    args.insert(0, "watch".into());
+    let options = crate::parse(&args)?.ok_or("watch unexpectedly parsed as help")?;
+    let mut preview = Vec::new();
+    crate::run(options, &mut preview)?;
+    assert_eq!(preview, native);
+    assert_eq!(
+        tree(&root)?,
+        before,
+        "optical preview mutated active capture state"
+    );
+    fixture.deployment.drain()?;
+    Ok(())
+}
+
+#[test]
+fn optical_watch_cannot_silently_downgrade_in_stream_or_dwell_modes() -> Test {
+    let root = Path::new("/optical-policy-parse-only");
+    let import = ContentDigest::sha256(b"parse-only-optical-import");
+    for extra in [
+        vec!["--stream-watch"],
+        vec!["--stream-dwell"],
+        vec!["--dwell-for-ns", "1000000", "--dwell-max-gap-ns", "1000000"],
+    ] {
+        let mut args = request_args(root, import, "gray", "door:64,0,32,32");
+        args.extend(["--sensor-health".into(), "conservative-optical-v1".into()]);
+        args.extend(extra.into_iter().map(OsString::from));
+        let error = super::super::parse(&args).expect_err("unsupported optical mode");
+        assert!(
+            error.contains("requires short entry watch or short corroboration"),
+            "{error}"
+        );
+    }
+}

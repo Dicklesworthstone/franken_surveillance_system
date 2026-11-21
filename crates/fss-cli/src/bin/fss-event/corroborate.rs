@@ -49,6 +49,9 @@
 //! budget failures still abort, as does a detector cascade over a gapped range. Recovery is kept
 //! in every exact approval rerun and in the post-publication coverage reanalysis.
 //! `--sensor-health conservative-v1` screens each camera's masked decoded pixels separately.
+//! The opt-in `conservative-optical-v1` policy also withholds short-range camera support and
+//! coverage on severe blur or localized glare; exact optical thresholds remain in provenance.
+//! Whole-recording corroboration refuses this optical policy instead of downgrading it.
 //! Suspect visual-degradation runs lose candidate and coverage support; a clear screen does not
 //! establish camera health. Screening is retained in proposal identities and approval reruns.
 //! Whole-recording screening also proposes an independent historical diagnostic per camera.
@@ -102,7 +105,6 @@ use fss_reference::ingest::recorded_coverage::{GenerationCurrency, PoseProvenanc
 use fss_reference::ingest::recorded_decode::ComponentInterpretation;
 use fss_reference::ingest::recorded_health::RecordedHealthPolicy;
 use fss_reference::ingest::recorded_watch::{WatchDetectorConfig, WatchLimits, WatchTrackerConfig};
-use fss_reference::ingest::sensor_health::POLICY_NAME as HEALTH_POLICY_NAME;
 use fss_reference::ingest::site_calibration::{
     MAX_CALIBRATION_BYTES, SiteCalibration, SiteCalibrationError,
 };
@@ -484,6 +486,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
             _ if !OPTIONS.contains(&key)
                 && !super::detector::OPTIONS.contains(&key)
                 && !super::detector::FUSION_OPTIONS.contains(&key)
+                && !super::optical_health::OPTIONS.contains(&key)
                 && !streaming::BUDGET_OPTIONS.contains(&key) =>
             {
                 return Err("unknown or inapplicable option".to_owned());
@@ -523,15 +526,8 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
                 || key.starts_with("--scene-")
                 || key.starts_with("--calibration")
         });
-    let health_screen = match find(&values, "--sensor-health") {
-        Some(HEALTH_POLICY_NAME) => Some(RecordedHealthPolicy::ConservativeV1),
-        Some(_) => {
-            return Err(format!(
-                "--sensor-health requires policy {HEALTH_POLICY_NAME}"
-            ));
-        }
-        None => None,
-    };
+    let health_screen = super::optical_health::parse(&values)?;
+    super::optical_health::short_only(health_screen, stream_corroborate)?;
     let retain_health = find(&values, "--retain-health")
         .map(|value| digest(value, "--retain-health"))
         .transpose()?;
@@ -1062,6 +1058,7 @@ fn run_with(
     scalar: &ScalarExecCx,
     out: &mut impl Write,
 ) -> RunResult<()> {
+    super::optical_health::short_only(action.health_screen, action.streaming.is_some())?;
     super::detector::check_fusion_mode(
         action.cascade.as_ref(),
         true, // Runtime admission repeats the parser's read-only gate for both scopes.

@@ -34,6 +34,9 @@
 //! `--sensor-health conservative-v1` additionally screens the same masked pixels in entry
 //! mode. Suspect runs cannot contribute candidates or coverage witnesses. Whole-recording
 //! `--stream-dwell` uses its existing whole-scan publication gate instead; short dwell is refused.
+//! `--sensor-health conservative-optical-v1` also gates short entry watch on blur and glare.
+//! Exact optional optical thresholds are part of policy custody and approval reruns. Stream
+//! and dwell modes refuse this policy until they can preserve its full semantics.
 //! `--stream-watch` instead scans one whole bounded recording for actual confirmed zone entries,
 //! preserving tracker state across the old 128-frame boundary. It uses its own approval identity,
 //! aggregate `--stream-*` budgets, and the same optional whole-scan health gate. It has no dwell
@@ -72,7 +75,6 @@ use fss_reference::ingest::recorded_watch::{
     WatchPlan, WatchReport, WatchTrackerConfig, WatchZone,
 };
 use fss_reference::ingest::rgb_package::RgbDetectorPackage;
-use fss_reference::ingest::sensor_health::POLICY_NAME as HEALTH_POLICY_NAME;
 use fss_reference::ingest::zone_dwell::DwellPolicy;
 use fss_reference::retained_source::ImmutableRetainedReadLimits;
 use fss_reference::{ReferenceDeployment, ReplayCx, RetainedSource, ScalarExecCx};
@@ -170,6 +172,7 @@ pub(super) struct WatchAction {
     stream_dwell: Option<LongDwellLimits>,
     stream_watch: Option<LongWatchLimits>,
     health_screen: bool,
+    health_policy: RecordedHealthPolicy,
     incremental: Option<incremental::StepOptions>,
     rerun: String,
 }
@@ -317,6 +320,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
         } else if !OPTIONS.contains(&key)
             && !super::detector::OPTIONS.contains(&key)
             && !super::detector::FUSION_OPTIONS.contains(&key)
+            && !super::optical_health::OPTIONS.contains(&key)
         {
             return Err("unknown or inapplicable option".to_owned());
         } else if values.iter().any(|(k, _)| k == key) {
@@ -359,15 +363,17 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
             ["--approve", "--retain-coverage", "--retain-health"].contains(&key.as_str())
         }),
     )?;
-    let health_screen = match text(&values, "--sensor-health") {
-        Ok(value) if value != HEALTH_POLICY_NAME => {
-            return Err(format!(
-                "--sensor-health requires policy {HEALTH_POLICY_NAME}"
-            ));
-        }
-        Ok(_) => true,
-        Err(_) => false,
-    };
+    let selected_health = super::optical_health::parse(&values)?;
+    super::optical_health::short_only(
+        selected_health,
+        stream_watch
+            || stream_dwell
+            || values
+                .iter()
+                .any(|(key, _)| matches!(key.as_str(), "--dwell-for-ns" | "--dwell-step-frames")),
+    )?;
+    let health_screen = selected_health.is_some();
+    let health_policy = selected_health.unwrap_or(RecordedHealthPolicy::ConservativeV1);
     let retain_health = match text(&values, "--retain-health") {
         Ok(value) => Some(digest(value, "--retain-health")?),
         Err(_) => None,
@@ -533,6 +539,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
         stream_dwell,
         stream_watch,
         health_screen,
+        health_policy,
         incremental,
         rerun,
     };
@@ -567,6 +574,10 @@ pub(super) fn run(
     cx: &ReplayCx,
     out: &mut impl Write,
 ) -> RunResult<()> {
+    super::optical_health::short_only(
+        action.health_screen.then_some(action.health_policy),
+        action.stream_watch.is_some() || action.stream_dwell.is_some() || action.dwell.is_some(),
+    )?;
     super::detector::check_watch_fusion_mode(
         action.cascade.as_ref(),
         action
@@ -854,9 +865,7 @@ fn run_with(
         &action.limits,
         cascade.as_mut(),
         action.options,
-        action
-            .health_screen
-            .then_some(RecordedHealthPolicy::ConservativeV1),
+        action.health_screen.then_some(action.health_policy),
         cx,
     )?;
     let fusion = match (&fusion_profile, cascade.as_ref()) {
@@ -888,9 +897,7 @@ fn run_with(
             &action.limits,
             cascade.as_mut(),
             action.options,
-            action
-                .health_screen
-                .then_some(RecordedHealthPolicy::ConservativeV1),
+            action.health_screen.then_some(action.health_policy),
             cx,
         )?)
     } else {

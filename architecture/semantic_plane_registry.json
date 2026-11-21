@@ -101,6 +101,7 @@
     "crates/fss-cli/src/orient_cmd/what_if.rs"
   ],
   "module_declarations": {
+    "crates/fss-cli/src/bin/fss-event/optical_health.rs": "support",
     "crates/fss-reference/src/agent_qsr.rs": "ambiguous",
     "crates/fss-reference/src/agent_qsr/projection.rs": "cognition",
     "crates/fss-reference/tests/agent_qsr_contract.rs": "support",
@@ -639,6 +640,8 @@
     "crates/fss-reference/src/ingest/recorded_event/tests.rs": "support",
     "crates/fss-reference/src/ingest/recorded_health.rs": "support",
     "crates/fss-reference/src/ingest/recorded_health/coverage.rs": "support",
+    "crates/fss-reference/src/ingest/recorded_health/optical.rs": "support",
+    "crates/fss-reference/src/ingest/recorded_health/optical/tests.rs": "support",
     "crates/fss-reference/src/ingest/recorded_health/tests.rs": "support",
     "crates/fss-reference/src/ingest/recorded_watch.rs": "support",
     "crates/fss-reference/src/ingest/recorded_watch/publication.rs": "support",

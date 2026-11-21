@@ -786,9 +786,11 @@ impl WatchReport {
         Self::analyze_with_health(deployment, plan, limits, detector, options, None, cx)
     }
 
-    /// Analyse with an optional conservative visual health screen. Findings withdraw the whole
-    /// qualifying run, discard every track touching it, and restart foreground and tracking
-    /// after it. A clear screen is never evidence of sensor health. `None` preserves all
+    /// Analyse with an optional visual health screen, with optical blur/glare screening only
+    /// under explicit thresholds. Temporal findings withdraw their whole qualifying run;
+    /// optical findings immediately withhold the affected frame. Both discard touched tracks
+    /// and restart foreground and tracking after degradation. A clear screen is never evidence
+    /// of sensor health. `None` preserves all
     /// existing analysis, candidate, report and coverage bytes.
     pub fn analyze_with_health(
         deployment: &dyn RetainedSource,
@@ -896,8 +898,8 @@ impl WatchReport {
         };
         let plan_digest = screened_plan_digest(masked_plan_digest(plan.digest(), &privacy), health);
         let mut health_screen = health
-            .map(|_| {
-                RecordedHealthScreen::new(
+            .map(|policy| {
+                RecordedHealthScreen::with_policy(
                     plan.segment_count,
                     plan.import_identity,
                     import_root,
@@ -911,6 +913,7 @@ impl WatchReport {
                         .filter(|(_, gap)| **gap)
                         .map(|(segment, _)| segment as u64)
                         .collect(),
+                    policy,
                 )
             })
             .transpose()?;
@@ -2159,6 +2162,7 @@ fn provenance(
     }
     if let Some(summary) = sensor_health {
         insert(&mut objects, super::sensor_health::policy_bytes().to_vec());
+        insert(&mut objects, summary.policy_bytes());
         let digest = insert(&mut objects, summary.to_bytes());
         children.extend(
             summary

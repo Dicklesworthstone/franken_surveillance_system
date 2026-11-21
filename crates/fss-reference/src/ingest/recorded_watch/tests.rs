@@ -238,6 +238,163 @@ fn motion_outside_zones_and_static_scenes_yield_no_candidate() -> TestResult {
 }
 
 #[test]
+fn optical_watch_policy_withholds_candidates_and_negative_coverage_before_publication() -> TestResult
+{
+    use crate::ingest::sensor_health::{OpticalFinding, OpticalThresholds};
+    let f = fixture("optical-gate", &scene(true)?)?;
+    let plan = plan(f.identity, door());
+    let limits = WatchLimits::default();
+    let before = f.deployment.current_anchor().clone();
+    let legacy = WatchReport::analyze_with_health(
+        &f.deployment,
+        &plan,
+        &limits,
+        None,
+        WatchOptions::default(),
+        Some(RecordedHealthPolicy::ConservativeV1),
+        &f.cx,
+    )?;
+    assert_eq!(legacy.candidates().len(), 1);
+    assert!(
+        legacy
+            .sensor_health()
+            .ok_or("legacy health")?
+            .affected_segments()
+            .is_empty()
+    );
+
+    // An explicit stricter sharpness floor must affect the actual event pipeline and bind its
+    // generation, rather than changing only a side-channel diagnostic report.
+    let policy = RecordedHealthPolicy::ConservativeOpticalV1(OpticalThresholds {
+        min_laplacian_variance_x1000: u64::MAX,
+        ..OpticalThresholds::default()
+    });
+    let report = WatchReport::analyze_with_health(
+        &f.deployment,
+        &plan,
+        &limits,
+        None,
+        WatchOptions::default(),
+        Some(policy),
+        &f.cx,
+    )?;
+    assert_eq!(report.frames().len(), FRAMES);
+    assert!(report.frames().iter().all(|frame| frame.boxes.is_empty()));
+    assert!(report.candidates().is_empty());
+    assert!(report.coverage().witnesses().next().is_none());
+    let health = report.sensor_health().ok_or("optical health")?;
+    assert_eq!(health.affected_segments().len(), FRAMES);
+    assert!(
+        health
+            .optical_observations()
+            .iter()
+            .all(|frame| frame.findings.contains(&OpticalFinding::SevereBlur))
+    );
+    assert_ne!(
+        health.source_generation(),
+        legacy
+            .sensor_health()
+            .ok_or("legacy health")?
+            .source_generation()
+    );
+    assert_eq!(health.policy(), policy);
+    assert_eq!(
+        CoverageRecord::from_bytes(&report.coverage().to_bytes(), report.coverage().digest())?,
+        *report.coverage(),
+    );
+    assert_eq!(*f.deployment.current_anchor(), before);
+
+    // Cancellation in the additional scalar pass leaves no partially admitted report or event.
+    f.cx.set_cancel_at_checkpoint("sensor_health:optical_laplacian_row");
+    assert!(matches!(
+        WatchReport::analyze_with_health(
+            &f.deployment,
+            &plan,
+            &limits,
+            None,
+            WatchOptions::default(),
+            Some(policy),
+            &f.cx,
+        ),
+        Err(WatchError::Health(HealthError::Cancelled)),
+    ));
+    assert_eq!(*f.deployment.current_anchor(), before);
+    Ok(())
+}
+
+#[test]
+fn optical_watch_clear_frames_retain_exact_policy_and_measurements_with_candidate() -> TestResult {
+    use crate::ingest::sensor_health::OpticalThresholds;
+    let mut f = fixture("optical-provenance", &scene(true)?)?;
+    let plan = plan(f.identity, door());
+    let limits = WatchLimits::default();
+    let policy = RecordedHealthPolicy::ConservativeOpticalV1(OpticalThresholds {
+        // The smooth static background in this synthetic fixture is explicitly admitted.
+        min_laplacian_variance_x1000: 0,
+        ..OpticalThresholds::default()
+    });
+    let mut report = WatchReport::analyze_with_health(
+        &f.deployment,
+        &plan,
+        &limits,
+        None,
+        WatchOptions::default(),
+        Some(policy),
+        &f.cx,
+    )?;
+    assert_eq!(report.candidates().len(), 1);
+    let health = report.sensor_health().ok_or("optical summary")?;
+    assert!(health.affected_segments().is_empty());
+    assert!(
+        health
+            .optical_observations()
+            .iter()
+            .all(|frame| frame.findings.is_empty())
+    );
+    let summary_digest = health.digest();
+    let summary_bytes = health.to_bytes();
+    assert!(
+        report.candidates()[0]
+            .event()
+            .evidence
+            .iter()
+            .any(|evidence| {
+                evidence.digest == summary_digest
+                    && evidence.relation == EvidenceEdgeRelation::RequiredBy
+                    && !evidence.supports
+            })
+    );
+    let proposal = report.candidates()[0].proposal_digest();
+    assert_eq!(
+        report.publish(&mut f.deployment, &BTreeSet::from([proposal]), &f.cx)?,
+        1
+    );
+    assert_eq!(
+        f.deployment.publisher().spool().read(policy.digest())?,
+        policy.to_bytes()
+    );
+    assert_eq!(
+        f.deployment.publisher().spool().read(summary_digest)?,
+        summary_bytes
+    );
+    let rerun = WatchReport::analyze_with_health(
+        &f.deployment,
+        &plan,
+        &limits,
+        None,
+        WatchOptions::default(),
+        Some(policy),
+        &f.cx,
+    )?;
+    assert_eq!(
+        rerun.candidates()[0].status(),
+        WatchStatus::AlreadyPublished
+    );
+    assert_eq!(rerun.candidates()[0].proposal_digest(), proposal);
+    Ok(())
+}
+
+#[test]
 fn invalid_plans_are_typed_refusals() -> TestResult {
     let f = fixture("plan", &scene(false)?)?;
     let mut too_long = plan(f.identity, door());

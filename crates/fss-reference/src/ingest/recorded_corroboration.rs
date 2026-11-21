@@ -2301,6 +2301,7 @@ fn prepare_candidate_with_encoding(
         children.insert(entry.capsule_digest);
         if let Some(summary) = &camera.sensor_health {
             insert(super::sensor_health::policy_bytes().to_vec());
+            insert(summary.policy_bytes());
             let digest = insert(summary.to_bytes());
             children.extend(
                 summary
