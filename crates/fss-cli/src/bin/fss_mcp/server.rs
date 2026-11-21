@@ -2,7 +2,7 @@
 //! Bounded MCP decoding and canonical native admission, independent of request execution.
 //! Unix transport owns asynchronous work; the synchronous adapter remains for other platforms.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 #[cfg(any(not(unix), test))]
 use std::io::{self, BufRead, Write};
@@ -82,7 +82,7 @@ enum Phase {
 
 /// Identity never passes through floating point. Numeric `-0` and `0` identify the same request;
 /// the separate wire spelling preserves the exact ID in its response.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(super) enum RequestKey {
     Integer(i64),
     Text(String),
@@ -128,10 +128,24 @@ impl RequestId {
 /// Parsing and native admission finish on the transport owner; execution is an owned handoff.
 pub(super) enum Dispatch {
     Ignore,
-    Reply { id: Option<RequestId>, text: String },
-    Tool { id: RequestId, command: FssCommand },
+    Reply {
+        id: Option<RequestId>,
+        text: String,
+    },
+    Tool {
+        id: RequestId,
+        command: FssCommand,
+    },
     Cancel(RequestId),
+    /// Stop accepting input, then drain already accepted native work and replies.
+    Exhausted {
+        id: RequestId,
+        text: String,
+    },
 }
+
+/// Permanent request identity retention is bounded for one live transport session.
+pub(super) const MAX_SESSION_REQUESTS: usize = 4096;
 
 pub(super) struct Server {
     root: OsString,
@@ -141,6 +155,7 @@ pub(super) struct Server {
     allow_qsr_source_verification: bool,
     allow_tracks_source_verification: bool,
     phase: Phase,
+    request_ids: Option<BTreeSet<RequestKey>>,
 }
 
 impl Server {
@@ -153,7 +168,15 @@ impl Server {
             allow_qsr_source_verification: false,
             allow_tracks_source_verification: false,
             phase: Phase::New,
+            request_ids: None,
         }
+    }
+
+    /// Enable the live owner's bounded, permanent request ID reservation.
+    /// Repeated enablement never permits a retired ID to identify new work.
+    #[cfg(unix)]
+    pub(super) fn enable_request_tracking(&mut self) {
+        self.request_ids.get_or_insert_with(BTreeSet::new);
     }
 
     /// The launcher canonicalizes this existing directory before serving requests.
@@ -195,7 +218,7 @@ impl Server {
     ) -> Option<String> {
         match self.dispatch(text) {
             Dispatch::Ignore | Dispatch::Cancel(_) => None,
-            Dispatch::Reply { text, .. } => Some(text),
+            Dispatch::Reply { text, .. } | Dispatch::Exhausted { text, .. } => Some(text),
             Dispatch::Tool { id, command } => {
                 let (output, exit) = execute(command);
                 Some(id.tool_result(&output, exit))
@@ -242,6 +265,7 @@ impl Server {
                     self.phase = Phase::Ready;
                 }
                 if method == "notifications/cancelled"
+                    && self.phase == Phase::Ready
                     && let Ok(p) = params(request)
                     && only(p, &["requestId", "reason", "_meta"])
                     && p.get("reason")
@@ -260,6 +284,25 @@ impl Server {
         if reserved(&id.key) {
             // Do not let a duplicate refusal masquerade as the original completion.
             return invalid(-32600, "Request id is already in flight");
+        }
+        if let Some(seen) = &mut self.request_ids {
+            if seen.contains(&id.key) {
+                // A duplicate refusal must never impersonate the original request's reply.
+                return Dispatch::Reply {
+                    id: None,
+                    text: duplicate_request_error(),
+                };
+            }
+            if seen.len() >= MAX_SESSION_REQUESTS {
+                let text = id.error(
+                    -32000,
+                    "Session request budget exhausted; restart the transport",
+                );
+                return Dispatch::Exhausted { id, text };
+            }
+            // Invalid parameters, initialization phase refusals and completed requests still
+            // consume their identity. A late cancellation cannot target replacement work.
+            seen.insert(id.key.clone());
         }
         let p = match params(request) {
             Ok(p) => p,
@@ -326,8 +369,13 @@ impl Server {
             return Err((-32602, "Expected clientInfo name and version"));
         }
         self.phase = Phase::AwaitingInitialized;
+        let identity_policy = if self.request_ids.is_some() {
+            " Request IDs cannot be reused in this session; restart after 4096 requests."
+        } else {
+            ""
+        };
         Ok(format!(
-            "{{\"protocolVersion\":\"{PROTOCOL_VERSION}\",\"capabilities\":{{\"tools\":{{\"listChanged\":false}}}},\"serverInfo\":{{\"name\":\"fss-mcp\",\"version\":\"{}\"}},\"instructions\":\"Local reference adapter, not production-qualified. The launching operator fixes the deployment root, optional native archive root and principal audit label. Recording queries require that archive binding and exact source/catalog pins; they disclose metadata only. Tool results retain existing FSS evidence and uncertainty semantics. Sessions, investigations, claims, findings and explicit durable follow update agent continuity state. Session-bound reads also persist host-clock admission or expiry; evidence, workspaces and effects remain unchanged by those clock records. Alert controls require native exact approval; plans and recommendations grant no effect authority. After response loss inspect retained operations with wait and follow native reconciliation guidance before acting again. Unix stdio supports cooperative request cancellation and drains native work before retirement; other platforms retain synchronous stdio. Cancellation never implies rollback of completed native state or effects. No remote authentication is implemented.\"}}",
+            "{{\"protocolVersion\":\"{PROTOCOL_VERSION}\",\"capabilities\":{{\"tools\":{{\"listChanged\":false}}}},\"serverInfo\":{{\"name\":\"fss-mcp\",\"version\":\"{}\"}},\"instructions\":\"Local reference adapter, not production-qualified. The launching operator fixes the deployment root, optional native archive root and principal audit label. Recording queries require that archive binding and exact source/catalog pins; they disclose metadata only. Tool results retain existing FSS evidence and uncertainty semantics. Sessions, investigations, claims, findings and explicit durable follow update agent continuity state. Session-bound reads also persist host-clock admission or expiry; evidence, workspaces and effects remain unchanged by those clock records. Alert controls require native exact approval; plans and recommendations grant no effect authority. After response loss inspect retained operations with wait and follow native reconciliation guidance before acting again. Unix stdio supports cooperative request cancellation and drains native work before retirement; other platforms retain synchronous stdio. Cancellation never implies rollback of completed native state or effects.{identity_policy} No remote authentication is implemented.\"}}",
             env!("CARGO_PKG_VERSION")
         ))
     }
@@ -921,6 +969,15 @@ fn integer_id(text: &str) -> bool {
 
 fn quote(text: &str) -> String {
     format!("\"{}\"", escape_json_str(text))
+}
+
+/// A duplicate refusal has no request correlation, preserving the original terminal reply.
+pub(super) fn duplicate_request_error() -> String {
+    error(
+        "null",
+        -32600,
+        "Request id was already used in this session",
+    )
 }
 
 pub(super) fn error(id: &str, code: i32, message: &str) -> String {
@@ -3103,3 +3160,7 @@ mod onvif_tests;
 #[cfg(test)]
 #[path = "qsr_tests.rs"]
 mod qsr_tests;
+
+#[cfg(all(test, unix))]
+#[path = "server/request_identity_tests.rs"]
+mod request_identity_tests;

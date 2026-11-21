@@ -1,8 +1,31 @@
 # Implementation status
 
-**As of:** 2026-11-20 UTC (dated feature sections retain their original verification scope)
+**As of:** 2026-11-21 UTC (dated feature sections retain their original verification scope)
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
+
+## Permanent MCP request identities — 2026-11-21
+
+Live Unix MCP sessions now retain up to 4096 exact request identities across protocol
+refusals, native execution and complete response delivery. Reusing an ID returns an
+uncorrelated `-32600` error, so a late cancellation cannot acquire authority over a
+replacement request. Valid IDs consume their reservation before parameter or phase
+checks; numeric and string identities remain distinct. The next new ID at the ceiling
+receives an owned `-32000` refusal, seals input admission and drains already accepted
+native commands and replies without executing the refused command.
+
+Eight identity contracts and one controller exhaustion/drain contract are retained.
+Two output/initialization contracts now check refusal after flush, and the real native
+follow cancellation contract also rejects a retired ID before attempting a session
+write, then verifies late cancellation and responsive ping leave the deployment tree
+unchanged. The current output allocation accounting, native-result reservation,
+shared stdio ownership and synchronous reference adapter are preserved.
+
+These additions have source review only; their integrated compilation and execution
+remain unobserved after the dependency build was killed in unchanged `asupersync`
+before reaching edited FSS crates. No test pass or production qualification is claimed.
+This advances `fss-x4a.25.2` / FSS-177; request-region/deadline ownership and full
+transport qualification remain open.
 
 ## Native request cancellation and MCP response ownership — 2026-11-20
 

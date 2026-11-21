@@ -213,10 +213,19 @@ fn ping_and_exact_request_cancellation_remain_live_during_native_quiet_wait() ->
     assert_eq!(body.get("outcome")?.text()?, "cancelled");
     assert_eq!(body.get("payload")?, &Json::Null);
     assert_eq!(body.get("resnapshotRequired")?, &Json::Bool(false));
-    process.send(&format!("{}\n{}", cancel("2"), ping(6)))?;
+    // A completed request ID cannot be rebound to a new session write: a late
+    // cancellation must never acquire authority over replacement work.
+    process.send(&forbidden_open(2))?;
+    let retired_duplicate = process.response()?;
+    assert_eq!(retired_duplicate.get("id")?, &Json::Null);
+    assert_eq!(
+        retired_duplicate.path(&["error", "code"])?,
+        &Json::Number("-32600".to_owned())
+    );
+    process.send(&format!("{}\n{}", cancel("2"), ping(7)))?;
     assert_eq!(
         process.response()?.get("id")?.number()?,
-        6,
+        7,
         "late cancellation must produce no reply or native effect"
     );
     drop(process.input.take());

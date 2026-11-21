@@ -320,12 +320,21 @@ Input is limited to 64 KiB including the newline, 32 nesting levels, 4096 values
 and 16 KiB per decoded string. Duplicate keys, malformed Unicode, invalid JSON
 numbers and unrecognized fields are refused. Integer request IDs preserve their
 exact spelling and must fit signed 64-bit range; string IDs are at most 128 bytes.
-Request IDs remain owned while queued, running, awaiting output or awaiting flush.
-Duplicate IDs are refused before protocol-state changes or native execution, with
-an invalid-request error using `id: null` so it cannot be mistaken for completion
-of the original request. An ID becomes reusable only after its full reply is delivered.
-Numeric and string IDs remain distinct; numeric `-0` and `0` identify the same
-request. There is no floating-point ID conversion.
+In live Unix stdio, request IDs remain reserved for the entire transport session,
+including after native completion and complete output/flush. A duplicate is refused
+before protocol-state changes or native execution with JSON-RPC `-32600` and
+`id: null`, so it cannot masquerade as the original completion. A late cancellation
+therefore cannot target replacement work under a retired ID. Numeric and string IDs
+remain distinct; numeric `-0` and `0` identify the same request. There is no
+floating-point ID conversion.
+
+The live session retains at most 4096 distinct request identities. This includes
+initialization, protocol queries and native calls; valid IDs are consumed even when
+parameters, initialization state or command admission are refused. Notifications do
+not consume identities. A request with a new ID after that ceiling receives
+JSON-RPC `-32000` under its own ID, and input admission closes. Already accepted
+native commands and queued replies drain in FIFO order as at ordinary EOF; the
+refused command never executes. Start a new transport session before further work.
 
 ### Request ownership and cancellation on Unix
 
@@ -333,7 +342,7 @@ One Asupersync runtime owns one native blocking-pool worker. Up to sixteen furth
 native requests can wait in its bounded FIFO. This preserves serial native mutation
 ordering while `ping`, `tools/list` and cancellation notifications remain responsive.
 A full native queue returns JSON-RPC `-32003` without invoking the new command;
-duplicate live IDs return `-32600` with `id: null`. The transport never runs a refused
+duplicate session IDs return `-32600` with `id: null`. The transport never runs a refused
 command inline. Before starting a native worker, it reserves one reply slot and
 enough bytes for the largest permitted escaped native result. Protocol/control
 replies cannot consume that reservation. Earlier output must drain before another
@@ -447,8 +456,13 @@ command and principal clamps, notification nonexecution, unchanged
 semantic payloads, framing and output ceilings. Request-owner contracts cover queued
 cancellation and pressure, exact IDs, responsive ping, preserving a completed native
 result after cancellation, EOF drain, and draining a started worker on malformed input.
+Eight session-identity contracts cover permanent retention, exact integer/string IDs,
+phase and parameter refusals, the 4096-ID ceiling, closed notifications and native
+scope clamps. A controller contract proves exhaustion seals input while accepted
+native work drains. Output-pressure contracts retain IDs across partial writes and
+flush, then prove session-level refusal persists after output ownership retires.
 Unix process contracts use retained certified-quiet coverage to exercise native follow
-cancellation, cancellation of an unstarted session write, duplicate IDs, late
+cancellation, cancellation of an unstarted session write, live and retired duplicate IDs, late
 cancellation, broken output with stdin still open, framing failure and ordinary EOF.
 The prepared-effect process contract cancels a native receipt wait and verifies that
 the returned prepared receipt and proof pointers survive while all three journals

@@ -54,6 +54,7 @@ struct Scheduler {
     active: Option<Active>,
     replies: Replies,
     execute: Executor,
+    stop_admission: bool,
 }
 
 impl Scheduler {
@@ -63,6 +64,7 @@ impl Scheduler {
             active: None,
             replies: Replies::default(),
             execute,
+            stop_admission: false,
         }
     }
 
@@ -101,8 +103,15 @@ impl Scheduler {
     }
 
     fn accept(&mut self, request: Dispatch) -> io::Result<()> {
+        if self.stop_admission {
+            return Err(io::Error::other("MCP request admission is closed"));
+        }
         match request {
             Dispatch::Ignore => Ok(()),
+            Dispatch::Exhausted { id, text } => {
+                self.stop_admission = true;
+                self.reply(Some(id), text)
+            }
             Dispatch::Reply { id, text } => {
                 if id.as_ref().is_some_and(|id| self.owns(&id.key)) {
                     self.duplicate()
@@ -214,6 +223,7 @@ impl Scheduler {
     }
 
     async fn cancel_and_drain(&mut self) {
+        self.stop_admission = true;
         self.pending.clear();
         self.replies.clear();
         if let Some(active) = &mut self.active {
@@ -396,6 +406,7 @@ async fn serve_owned(
     execute: Executor,
     stall_limit: Duration,
 ) -> io::Result<()> {
+    server.enable_request_tracking();
     let mut scheduler = Scheduler::new(execute);
     let mut frames = Frames::default();
     let mut eof = false;
@@ -403,6 +414,7 @@ async fn serve_owned(
         loop {
             scheduler.retire_ready().await?;
             scheduler.replies.pump(output, stall_limit)?;
+            eof |= scheduler.stop_admission;
             if !eof {
                 for _ in 0..FRAMES_PER_TURN {
                     match frames.read(input)? {
@@ -415,6 +427,10 @@ async fn serve_owned(
                                 },
                             };
                             scheduler.accept(request)?;
+                            if scheduler.stop_admission {
+                                eof = true;
+                                break;
+                            }
                             scheduler.start_next(cx)?;
                         }
                         Input::Pending => break,
@@ -425,7 +441,7 @@ async fn serve_owned(
                     }
                 }
             }
-            // EOF drains every admitted request, preserving ordinary piped-client exchanges.
+            // EOF and the session request ceiling both drain every admitted request.
             scheduler.start_next(cx)?;
             scheduler.replies.pump(output, stall_limit)?;
             if eof
