@@ -33,8 +33,9 @@ use crate::ReferenceDeployment;
 use crate::ingest::privacy_mask::{MaskBinding, binding_digest, current_mask, encode_marker};
 use crate::ingest::retained::SourceReadBudget;
 use crate::ingest::{
-    MKV_PARAMETER_SET_REASON_PREFIX, MP4_AVC_INBAND_ENTRY_REASON_PREFIX,
-    MP4_PARAMETER_SET_REASON_PREFIX, RetainedFileImport, RetainedReadLimits, VerifiedChunkCache,
+    FLV_PARAMETER_SET_REASON_PREFIX, MKV_PARAMETER_SET_REASON_PREFIX,
+    MP4_AVC_INBAND_ENTRY_REASON_PREFIX, MP4_PARAMETER_SET_REASON_PREFIX, RetainedFileImport,
+    RetainedReadLimits, VerifiedChunkCache,
 };
 use crate::{ReplayCx, RetainedSource};
 
@@ -544,11 +545,11 @@ impl<const LEGACY: bool> ProfiledRecordedH264Range<LEGACY> {
             RetainedFileImport::open(deployment, request.import_identity, request.read_limits, cx)?;
         let (framing, parameter_sets, inband_entry) = match retained.manifest().format.as_str() {
             "annexb" => (Framing::AnnexB, Vec::new(), None),
-            format @ ("mp4avc" | "mkvavc") => {
-                let prefix = if format == "mp4avc" {
-                    MP4_PARAMETER_SET_REASON_PREFIX
-                } else {
-                    MKV_PARAMETER_SET_REASON_PREFIX
+            format @ ("mp4avc" | "mkvavc" | "flvavc") => {
+                let prefix = match format {
+                    "mp4avc" => MP4_PARAMETER_SET_REASON_PREFIX,
+                    "flvavc" => FLV_PARAMETER_SET_REASON_PREFIX,
+                    _ => MKV_PARAMETER_SET_REASON_PREFIX,
                 };
                 let entry = if format == "mp4avc" {
                     super::mp4_inband_entry(&retained, MP4_AVC_INBAND_ENTRY_REASON_PREFIX, LEGACY)?

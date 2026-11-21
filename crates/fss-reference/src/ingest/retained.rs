@@ -254,7 +254,14 @@ impl FileImportManifest {
             self.adapter_generation == ADP_FILE_GENERATION
                 && matches!(
                     self.format.as_str(),
-                    "annexb" | "hevc" | "mjpeg" | "mp4avc" | "mp4hevc" | "mkvavc" | "mkvhevc"
+                    "annexb"
+                        | "hevc"
+                        | "mjpeg"
+                        | "mp4avc"
+                        | "mp4hevc"
+                        | "mkvavc"
+                        | "mkvhevc"
+                        | "flvavc"
                 )
         } else if self.adapter_id == "ADP-WYZE-V4-LAB-001" {
             matches!(self.format.as_str(), "annexb" | "hevc")
@@ -395,6 +402,7 @@ impl FileImportManifest {
         let structure_prefix = match self.format.as_str() {
             "mp4avc" | "mp4hevc" => Some(super::MP4_STRUCTURE_REASON_PREFIX),
             "mkvavc" | "mkvhevc" => Some(super::MKV_STRUCTURE_REASON_PREFIX),
+            "flvavc" => Some(super::FLV_STRUCTURE_REASON_PREFIX),
             _ => None,
         };
         let container = structure_prefix.is_some();

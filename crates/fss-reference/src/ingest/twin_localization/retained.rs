@@ -172,7 +172,9 @@ fn admit_source(
     let format = retained.manifest().format.as_str();
     let compatible = match source {
         RecordedLocalizationSource::Jpeg(_) => format == "mjpeg",
-        RecordedLocalizationSource::H264 { .. } => matches!(format, "annexb" | "mp4avc" | "mkvavc"),
+        RecordedLocalizationSource::H264 { .. } => {
+            matches!(format, "annexb" | "mp4avc" | "mkvavc" | "flvavc")
+        }
         RecordedLocalizationSource::H265 { .. } => matches!(format, "hevc" | "mp4hevc" | "mkvhevc"),
     };
     if !compatible {

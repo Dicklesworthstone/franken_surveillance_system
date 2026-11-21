@@ -469,7 +469,7 @@ pub(crate) fn run(plan: &Plan, out: &mut impl Write) -> Result<()> {
                 let admitted = match plan.codec {
                     Codec::Avc => matches!(
                         retained.manifest().format.as_str(),
-                        "annexb" | "mp4avc" | "mkvavc"
+                        "annexb" | "mp4avc" | "mkvavc" | "flvavc"
                     ),
                     Codec::Hevc => matches!(
                         retained.manifest().format.as_str(),

@@ -197,7 +197,7 @@ pub fn run_long_sentinel_detection(
             }
             usage.source_chunk_bytes = cursor.bytes_read();
         }
-        "annexb" | "mp4avc" | "mkvavc" | "hevc" | "mp4hevc" | "mkvhevc" => {
+        "annexb" | "mp4avc" | "mkvavc" | "flvavc" | "hevc" | "mp4hevc" | "mkvhevc" => {
             // The tolerant source is an existing streaming primitive, but this operation admits
             // no recovery. Refuse known gaps before decoding and every runtime Break below.
             if let Some(segment) = (first + 1..end)

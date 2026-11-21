@@ -403,7 +403,7 @@ fn preflight_views_with_clock<T>(
             input::Source::Jpeg { .. } => retained.manifest().format == "mjpeg",
             input::Source::H264 { .. } => matches!(
                 retained.manifest().format.as_str(),
-                "annexb" | "mp4avc" | "mkvavc"
+                "annexb" | "mp4avc" | "mkvavc" | "flvavc"
             ),
             input::Source::H265 { .. } => matches!(
                 retained.manifest().format.as_str(),

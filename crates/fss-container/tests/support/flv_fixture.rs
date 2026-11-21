@@ -30,7 +30,13 @@ pub fn configuration(bytes: &mut Vec<u8>, record: &[u8]) -> Range<usize> {
     tag(bytes, 9, 0, &payload)
 }
 
-pub fn sample(bytes: &mut Vec<u8>, source: &[u8], dts: u32, cts: i32, keyframe: bool) -> Range<usize> {
+pub fn sample(
+    bytes: &mut Vec<u8>,
+    source: &[u8],
+    dts: u32,
+    cts: i32,
+    keyframe: bool,
+) -> Range<usize> {
     let mut payload = vec![if keyframe { 0x17 } else { 0x27 }, 1];
     payload.extend_from_slice(&cts.to_be_bytes()[1..]);
     payload.extend_from_slice(source);
@@ -39,7 +45,14 @@ pub fn sample(bytes: &mut Vec<u8>, source: &[u8], dts: u32, cts: i32, keyframe: 
 
 /// The fixtures contain one avcC marker. Check the surrounding original box length.
 pub fn avcc(mp4: &[u8]) -> Result<&[u8], Box<dyn std::error::Error>> {
-    let at = mp4.windows(4).position(|bytes| bytes == b"avcC").ok_or("missing fixture avcC")?;
-    let size = u32::from_be_bytes(mp4.get(at - 4..at).ok_or("fixture avcC header")?.try_into()?) as usize;
+    let at = mp4
+        .windows(4)
+        .position(|bytes| bytes == b"avcC")
+        .ok_or("missing fixture avcC")?;
+    let size = u32::from_be_bytes(
+        mp4.get(at - 4..at)
+            .ok_or("fixture avcC header")?
+            .try_into()?,
+    ) as usize;
     Ok(mp4.get(at + 4..at - 4 + size).ok_or("fixture avcC body")?)
 }

@@ -19,8 +19,8 @@ mod reader;
 use reader::{Reader, full, one, optional};
 mod tables;
 use tables::*;
-mod fragments;
 mod flv;
+mod fragments;
 pub use flv::{FlvSample, FlvTag, FlvVideo};
 mod inband;
 pub use inband::{

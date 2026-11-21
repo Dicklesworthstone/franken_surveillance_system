@@ -184,6 +184,8 @@ pub enum DetectedFileFormat {
     MkvAvc,
     /// Matroska or WebM file whose one video track is `V_MPEGH/ISO/HEVC` (H.265).
     MkvHevc,
+    /// Standard FLV file with one immutable AVC sequence-header configuration.
+    FlvAvc,
 }
 
 impl DetectedFileFormat {
@@ -199,6 +201,7 @@ impl DetectedFileFormat {
             Self::Mp4Hevc => "mp4hevc",
             Self::MkvAvc => "mkvavc",
             Self::MkvHevc => "mkvhevc",
+            Self::FlvAvc => "flvavc",
         }
     }
 
@@ -214,6 +217,7 @@ impl DetectedFileFormat {
             Self::Mp4Hevc => FileFormatHint::Mp4Hevc,
             Self::MkvAvc => FileFormatHint::MkvAvc,
             Self::MkvHevc => FileFormatHint::MkvHevc,
+            Self::FlvAvc => FileFormatHint::FlvAvc,
         }
     }
 }
@@ -238,6 +242,8 @@ pub enum FileFormatHint {
     MkvAvc,
     /// Expected format is a Matroska/WebM file with one H.265 (`V_MPEGH/ISO/HEVC`) video track.
     MkvHevc,
+    /// Expected format is standard AVC FLV, with exact tag framing and fixed parameter sets.
+    FlvAvc,
 }
 
 impl FileFormatHint {
@@ -253,6 +259,7 @@ impl FileFormatHint {
             Self::Mp4Hevc => "mp4hevc",
             Self::MkvAvc => "mkvavc",
             Self::MkvHevc => "mkvhevc",
+            Self::FlvAvc => "flvavc",
         }
     }
 }
@@ -525,6 +532,11 @@ pub const MKV_PARAMETER_SET_REASON_PREFIX: &str = "mkv_avc_parameter_set:nal_len
 /// completed by `nal_length_bytes=N`.
 pub const MKV_HEVC_PARAMETER_SET_REASON_PREFIX: &str = "mkv_hevc_parameter_set:nal_length_bytes=";
 
+/// Omission reason prefix of FLV header/tag structure and opaque audio or script payloads.
+pub const FLV_STRUCTURE_REASON_PREFIX: &str = "flv_";
+/// Exact original AVC sequence-header parameter payload, followed by its NAL length width.
+pub const FLV_PARAMETER_SET_REASON_PREFIX: &str = "flv_avc_parameter_set:nal_length_bytes=";
+
 /// Omission reason of the unread tail of a fragmented MP4 or Matroska recording its writer never
 /// finished (power loss, a crashed recorder): lost source bytes after the last complete fragment,
 /// Cluster or block, never container structure. At most one, ending the file.
@@ -537,6 +549,7 @@ impl FileOmissionSpan {
     pub fn is_container_structure(&self) -> bool {
         self.reason.starts_with(MP4_STRUCTURE_REASON_PREFIX)
             || self.reason.starts_with(MKV_STRUCTURE_REASON_PREFIX)
+            || self.reason.starts_with(FLV_STRUCTURE_REASON_PREFIX)
     }
 }
 
@@ -775,6 +788,11 @@ pub enum FileIngestError {
     /// framing, or a bound). Nothing is retained.
     MatroskaRefused {
         /// The demuxer's typed, non-disclosing refusal.
+        refusal: fss_container::demux::DemuxError,
+    },
+    /// The strict standard AVC FLV parser refused framing, configuration, timing or bounds.
+    FlvRefused {
+        /// Non-disclosing native container refusal; no partial import is published.
         refusal: fss_container::demux::DemuxError,
     },
     /// Detected format is not supported by this entrypoint (recorded RTP through
@@ -1052,6 +1070,7 @@ impl std::fmt::Display for FileIngestError {
             Self::MatroskaRefused { refusal } => {
                 write!(f, "Matroska demux refused the file: {refusal:?}")
             }
+            Self::FlvRefused { refusal } => write!(f, "FLV demux refused the file: {refusal:?}"),
             Self::Mjpeg(e) => write!(f, "MJPEG error: {:?}", e),
             Self::LocalPublication(e) => write!(f, "local publication error: {}", e),
             Self::Spool(e) => write!(f, "spool error: {}", e),
@@ -1072,6 +1091,7 @@ impl FileIngestError {
             Self::FormatConflict { .. } => Some("ERR-INGEST-FORMAT-CONFLICT-001"),
             Self::Mp4Refused { .. } => Some("ERR-INGEST-MP4-REFUSED-001"),
             Self::MatroskaRefused { .. } => Some("ERR-INGEST-MKV-REFUSED-001"),
+            Self::FlvRefused { .. } => Some("ERR-INGEST-FLV-REFUSED-001"),
             Self::EvidenceDeleted { .. } => Some("ERR-EVIDENCE-DELETED-001"),
             Self::CaptureHintAfterReceive { .. } | Self::CaptureHintLatestAfterReceive { .. } => {
                 Some("ERR-INGEST-CAPTURE-HINT-AFTER-RECEIVE-001")
@@ -1208,6 +1228,7 @@ fn box_kind_text(kind: [u8; 4]) -> String {
 enum ContainerFamily {
     Mp4,
     Matroska,
+    Flv,
 }
 
 /// One demuxed MP4 or Matroska video selection, as the importer custodies it.
@@ -1237,7 +1258,7 @@ impl ContainerVideo {
         request: &FileIngestRequest,
         cx: &ReplayCx,
     ) -> Result<Self, FileIngestError> {
-        use fss_container::demux::{AvcMp4, MatroskaVideo, VideoCodec};
+        use fss_container::demux::{AvcMp4, FlvVideo, MatroskaVideo, VideoCodec};
         let limits = mp4_demux_limits(request.limits.max_segments);
         let mut check = || {
             cx.checkpoint(STAGE_SPLIT)
@@ -1246,6 +1267,7 @@ impl ContainerVideo {
         let family = match format {
             DetectedFileFormat::Mp4Avc | DetectedFileFormat::Mp4Hevc => ContainerFamily::Mp4,
             DetectedFileFormat::MkvAvc | DetectedFileFormat::MkvHevc => ContainerFamily::Matroska,
+            DetectedFileFormat::FlvAvc => ContainerFamily::Flv,
             format => return Err(FileIngestError::UnsupportedFormat { format }),
         };
         let refuse = |refusal| match refusal {
@@ -1326,15 +1348,50 @@ impl ContainerVideo {
                     tail: mkv.truncated_tail().unwrap_or(file_bytes.len()),
                 }
             }
+            ContainerFamily::Flv => {
+                let flv = FlvVideo::parse_with_checkpoint(file_bytes, limits, &mut check)
+                    .map_err(refuse)?;
+                Self {
+                    family,
+                    parameter_prefix: FLV_PARAMETER_SET_REASON_PREFIX,
+                    nal_length_bytes: flv.nal_length_bytes(),
+                    parameter_sets: flv.parameter_sets().to_vec(),
+                    samples: flv
+                        .samples()
+                        .iter()
+                        .map(|sample| {
+                            (
+                                sample.index,
+                                sample.source.clone(),
+                                i128::from(sample.presentation_time_ms()),
+                            )
+                        })
+                        .collect(),
+                    tick_ns: (1_000_000, 1),
+                    regions: flv
+                        .tags()
+                        .iter()
+                        .map(|tag| {
+                            (
+                                tag.range.start,
+                                tag.range.end,
+                                format!("flv_tag:{}", tag.name),
+                            )
+                        })
+                        .collect(),
+                    tail: file_bytes.len(),
+                }
+            }
         };
         let declared_avc = matches!(
             format,
-            DetectedFileFormat::Mp4Avc | DetectedFileFormat::MkvAvc
+            DetectedFileFormat::Mp4Avc | DetectedFileFormat::MkvAvc | DetectedFileFormat::FlvAvc
         );
         let demuxed_avc = matches!(
             video.parameter_prefix,
             MP4_PARAMETER_SET_REASON_PREFIX
                 | MKV_PARAMETER_SET_REASON_PREFIX
+                | FLV_PARAMETER_SET_REASON_PREFIX
                 | MP4_AVC_INBAND_ENTRY_REASON_PREFIX
         );
         if declared_avc != demuxed_avc {
@@ -1347,6 +1404,7 @@ impl ContainerVideo {
         match family {
             ContainerFamily::Mp4 => FileIngestError::Mp4Refused { refusal },
             ContainerFamily::Matroska => FileIngestError::MatroskaRefused { refusal },
+            ContainerFamily::Flv => FileIngestError::FlvRefused { refusal },
         }
     }
 
@@ -1429,6 +1487,12 @@ pub fn sniff_format_with_hint(
         return Ok((DetectedFileFormat::RtpPlay, "rtpplay_magic"));
     }
 
+    // Standard FLV is admitted whole through exact framing. No extended-FLV candidate search
+    // or configuration-prefix probe substitutes for full sample validation.
+    if bytes.starts_with(b"FLV") {
+        return sniff_flv(bytes, usize::MAX, &mut || Ok(()));
+    }
+
     // ISO-BMFF: the first box is `ftyp`. The demuxer, not the sniffer, decides support and
     // the codec (from the one video sample entry); a refused file is refused here, whole.
     if bytes.get(4..8) == Some(b"ftyp".as_slice()) {
@@ -1477,6 +1541,25 @@ pub fn sniff_format_with_hint(
     Err(FileIngestError::UnknownFormat {
         path: PathBuf::new(),
     })
+}
+
+/// Shared complete-file admission. Imports supply their actual sample bound and cancellation
+/// context even during detection; the standalone pure sniffer retains its historical API.
+fn sniff_flv(
+    bytes: &[u8],
+    maximum_samples: usize,
+    check: &mut dyn FnMut() -> Result<(), DemuxError>,
+) -> Result<(DetectedFileFormat, &'static str), FileIngestError> {
+    fss_container::demux::FlvVideo::parse_with_checkpoint(
+        bytes,
+        mp4_demux_limits(maximum_samples),
+        check,
+    )
+    .map_err(|refusal| match refusal {
+        DemuxError::Cancelled => FileIngestError::CancellationRequested { stage: STAGE_SPLIT },
+        refusal => FileIngestError::FlvRefused { refusal },
+    })?;
+    Ok((DetectedFileFormat::FlvAvc, "flv_header"))
 }
 
 fn resolve_annexb_codec(
@@ -2146,16 +2229,23 @@ impl FileIngestAdapter {
         let input_sha256 = ContentDigest::sha256(&file_bytes);
 
         // Step 3: Format sniffing
-        let (detected_format, detector_evidence) =
-            match sniff_format_with_hint(&file_bytes, request.format_hint) {
-                Ok(res) => res,
-                Err(FileIngestError::UnknownFormat { .. }) => {
-                    return Err(FileIngestError::UnknownFormat {
-                        path: request.path.clone(),
-                    });
-                }
-                Err(e) => return Err(e),
-            };
+        let sniffed = if file_bytes.starts_with(b"FLV") {
+            sniff_flv(&file_bytes, request.limits.max_segments, &mut || {
+                cx.checkpoint(STAGE_SPLIT)
+                    .map_err(|_| DemuxError::Cancelled)
+            })
+        } else {
+            sniff_format_with_hint(&file_bytes, request.format_hint)
+        };
+        let (detected_format, detector_evidence) = match sniffed {
+            Ok(res) => res,
+            Err(FileIngestError::UnknownFormat { .. }) => {
+                return Err(FileIngestError::UnknownFormat {
+                    path: request.path.clone(),
+                });
+            }
+            Err(e) => return Err(e),
+        };
 
         if detected_format == DetectedFileFormat::RtpPlay {
             if rtp == RtpRoute::Refuse {
@@ -2849,7 +2939,8 @@ impl FileIngestAdapter {
             DetectedFileFormat::Mp4Avc
             | DetectedFileFormat::Mp4Hevc
             | DetectedFileFormat::MkvAvc
-            | DetectedFileFormat::MkvHevc => {
+            | DetectedFileFormat::MkvHevc
+            | DetectedFileFormat::FlvAvc => {
                 return Self::container_segments(
                     file_bytes,
                     format,

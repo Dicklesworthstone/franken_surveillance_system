@@ -356,7 +356,7 @@ fn source(a: &Action, format: &str) -> RunResult<RecordedLocalizationSource> {
         .count
         .ok_or_else(|| std::io::Error::other("missing video range length"))?;
     Ok(match format {
-        "annexb" | "mp4avc" | "mkvavc" => RecordedLocalizationSource::H264 {
+        "annexb" | "mp4avc" | "mkvavc" | "flvavc" => RecordedLocalizationSource::H264 {
             segment: a.segment,
             request: RecordedH264Request {
                 import_identity: a.identity,
@@ -794,7 +794,7 @@ mod tests {
             source(&action, "mjpeg").is_err(),
             "JPEG cannot ignore video range bounds"
         );
-        for format in ["annexb", "mp4avc", "mkvavc"] {
+        for format in ["annexb", "mp4avc", "mkvavc", "flvavc"] {
             let RecordedLocalizationSource::H264 { request, segment } =
                 source(&action, format).expect("AVC range dispatch")
             else {

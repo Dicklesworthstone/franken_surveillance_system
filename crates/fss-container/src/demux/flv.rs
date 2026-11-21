@@ -103,7 +103,10 @@ impl FlvVideo {
         if metadata > limits.maximum_metadata_bytes {
             return Err(DemuxError::Limit);
         }
-        let mut tags = vec![FlvTag { range: 0..at, name: "header" }];
+        let mut tags = vec![FlvTag {
+            range: 0..at,
+            name: "header",
+        }];
         let mut configuration: Option<Range<usize>> = None;
         let mut length = 0;
         let mut parameters = Vec::new();
@@ -127,7 +130,9 @@ impl FlvVideo {
                 Parse::Complete(tag) => tag,
                 Parse::NeedMore => return Err(DemuxError::Truncated),
             };
-            let end = at.checked_add(tag.wire_bytes().len()).ok_or(DemuxError::Limit)?;
+            let end = at
+                .checked_add(tag.wire_bytes().len())
+                .ok_or(DemuxError::Limit)?;
             let mut selected_bytes = 0;
             if kind == 9 {
                 if ended {
@@ -152,9 +157,14 @@ impl FlvVideo {
                                 return Err(DemuxError::Unsupported);
                             }
                         } else {
-                            (length, parameters) = tables::avc_configuration(&mut reader, &BoxRef {
-                                kind: *b"avcC", start: body.start, body: body.clone(),
-                            })?;
+                            (length, parameters) = tables::avc_configuration(
+                                &mut reader,
+                                &BoxRef {
+                                    kind: *b"avcC",
+                                    start: body.start,
+                                    body: body.clone(),
+                                },
+                            )?;
                             configuration = Some(body);
                         }
                     }
@@ -167,22 +177,31 @@ impl FlvVideo {
                         }
                         reader.entries(1)?;
                         let mut sample = FlvSample {
-                            index: samples.len(), source: body.clone(), tag: at..end,
+                            index: samples.len(),
+                            source: body.clone(),
+                            tag: at..end,
                             decode_time_ms: video.timestamp_ms(),
                             composition_offset_ms: video.composition_offset_ms(),
-                            duration_ms: None, keyframe: video.frame_type() == 1,
-                            contains_idr: false, nals: Vec::new(),
+                            duration_ms: None,
+                            keyframe: video.frame_type() == 1,
+                            contains_idr: false,
+                            nals: Vec::new(),
                         };
                         let mut picture = false;
                         tables::nals(source, body.clone(), length, &mut |range| {
                             reader.checkpoint()?;
-                            reader.nals = reader.nals.checked_add(1)
+                            reader.nals = reader
+                                .nals
+                                .checked_add(1)
                                 .filter(|count| *count <= limits.maximum_nals)
                                 .ok_or(DemuxError::Limit)?;
                             let bytes = &source[range.clone()];
                             let kind = tables::nal_kind(bytes)?;
-                            if matches!(kind, 7 | 8 | 13) && !parameters.iter()
-                                .any(|parameter| source[parameter.clone()] == *bytes) {
+                            if matches!(kind, 7 | 8 | 13)
+                                && !parameters
+                                    .iter()
+                                    .any(|parameter| source[parameter.clone()] == *bytes)
+                            {
                                 return Err(DemuxError::Unsupported);
                             }
                             picture |= matches!(kind, 1 | 5);
@@ -194,17 +213,24 @@ impl FlvVideo {
                             return Err(DemuxError::Nal);
                         }
                         if let Some(previous) = samples.last_mut() {
-                            previous.duration_ms = Some(sample.decode_time_ms
-                                .checked_sub(previous.decode_time_ms)
-                                .filter(|duration| *duration != 0)
-                                .ok_or(DemuxError::Timeline)?);
+                            previous.duration_ms = Some(
+                                sample
+                                    .decode_time_ms
+                                    .checked_sub(previous.decode_time_ms)
+                                    .filter(|duration| *duration != 0)
+                                    .ok_or(DemuxError::Timeline)?,
+                            );
                         }
                         selected_bytes = body.len();
                         samples.push(sample);
                     }
                     avc::PacketType::EndOfSequence => {
-                        if configuration.is_none() || samples.is_empty() || !body.is_empty()
-                            || video.frame_type() != 1 || video.composition_offset_ms() != 0 {
+                        if configuration.is_none()
+                            || samples.is_empty()
+                            || !body.is_empty()
+                            || video.frame_type() != 1
+                            || video.composition_offset_ms() != 0
+                        {
                             return Err(DemuxError::Layout);
                         }
                         // An end marker is not another observed picture or a duration witness.
@@ -212,12 +238,17 @@ impl FlvVideo {
                     }
                 }
             }
-            metadata = metadata.checked_add(end - at - selected_bytes)
+            metadata = metadata
+                .checked_add(end - at - selected_bytes)
                 .filter(|bytes| *bytes <= limits.maximum_metadata_bytes)
                 .ok_or(DemuxError::Limit)?;
             tags.push(FlvTag {
                 range: at..end,
-                name: match kind { 8 => "audio", 9 => "video", _ => "script" },
+                name: match kind {
+                    8 => "audio",
+                    9 => "video",
+                    _ => "script",
+                },
             });
             at = end;
         }
@@ -225,26 +256,41 @@ impl FlvVideo {
             return Err(DemuxError::TrackSelection);
         }
         reader.checkpoint()?;
-        Ok(Self { length, parameters, samples, tags })
+        Ok(Self {
+            length,
+            parameters,
+            samples,
+            tags,
+        })
     }
 
     /// Original AVC sample length-field width, one, two or four bytes.
     #[must_use]
-    pub fn nal_length_bytes(&self) -> usize { self.length }
+    pub fn nal_length_bytes(&self) -> usize {
+        self.length
+    }
     /// Exact original configuration SPS/PPS and optional SPS-extension ranges.
     #[must_use]
-    pub fn parameter_sets(&self) -> &[Range<usize>] { &self.parameters }
+    pub fn parameter_sets(&self) -> &[Range<usize>] {
+        &self.parameters
+    }
     /// Complete decoding-order video sample index.
     #[must_use]
-    pub fn samples(&self) -> &[FlvSample] { &self.samples }
+    pub fn samples(&self) -> &[FlvSample] {
+        &self.samples
+    }
     /// Complete file tiling, including unselected audio/script bytes.
     #[must_use]
-    pub fn tags(&self) -> &[FlvTag] { &self.tags }
+    pub fn tags(&self) -> &[FlvTag] {
+        &self.tags
+    }
 }
 
 fn visit(reader: &mut Reader<'_, '_>) -> Result<(), DemuxError> {
     reader.checkpoint()?;
-    reader.boxes = reader.boxes.checked_add(1)
+    reader.boxes = reader
+        .boxes
+        .checked_add(1)
         .filter(|count| *count <= reader.limits.maximum_boxes)
         .ok_or(DemuxError::Limit)?;
     reader.entries(1)

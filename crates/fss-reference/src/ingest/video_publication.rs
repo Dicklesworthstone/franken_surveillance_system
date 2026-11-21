@@ -241,7 +241,9 @@ impl Binding {
             RetainedFileImport::open(deployment, self.import_identity, limits.source, cx)?;
         let format = retained.manifest().format.as_str();
         let admitted = match self.codec {
-            PublishedVideoCodec::H264 => matches!(format, "annexb" | "mp4avc" | "mkvavc"),
+            PublishedVideoCodec::H264 => {
+                matches!(format, "annexb" | "mp4avc" | "mkvavc" | "flvavc")
+            }
             PublishedVideoCodec::H265 => matches!(format, "hevc" | "mp4hevc" | "mkvhevc"),
         };
         if !admitted

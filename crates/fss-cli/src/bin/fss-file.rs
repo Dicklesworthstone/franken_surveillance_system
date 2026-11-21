@@ -53,9 +53,11 @@ const HELP: &str = "fss-file <import|import-ts|inspect|verify|extract|select-mov
   Query retained recorder timestamps without the archive: fss-file query-replay-utc --help.\n\
   Source commands also accept --manifest-out FILE.\n\
   import: --input FILE --sensor ID --stream ID --receive-time-ns N\n\
-          [--media-format auto|mjpeg|annexb|hevc|mp4avc|mp4hevc|mkvavc|mkvhevc|rtpplay]\n\
+          [--media-format auto|mjpeg|annexb|hevc|mp4avc|mp4hevc|mkvavc|mkvhevc|flvavc|rtpplay]\n\
           (annexb is H.264, hevc is H.265, mp4avc/mp4hevc an MP4/MOV with one H.264 avc1 /\n\
           H.265 hvc1 track, mkvavc/mkvhevc a Matroska/WebM file with one H.264 / H.265 track;\n\
+          flvavc is strict standard AVC FLV with one immutable configuration and observed\n\
+          millisecond timestamps, without inferred UTC or a final-frame duration;\n\
           auto reads the container's video track and refuses an Annex-B stream whose first NAL\n\
           header fits both codecs)\n\
           [--capture-start-ns N --capture-uncertainty-ns N --assumed-fps F]\n\
@@ -139,7 +141,7 @@ const HELP: &str = "fss-file <import|import-ts|inspect|verify|extract|select-mov
           Every requested frame is checked, including frames excluded by an output window;\n\
           decode retains/reuses each frame's own receipt. A late refusal cannot complete a clip.\n\
           --receipt-out requires one frame; use per-frame receipt/root report fields for ranges.\n\
-  decode of an H.264 (annexb/mp4avc/mkvavc) or H.265 (hevc/mp4hevc/mkvhevc) import:\n\
+  decode of an H.264 (annexb/mp4avc/mkvavc/flvavc) or H.265 (hevc/mp4hevc/mkvhevc) import:\n\
           --segment N must be an IDR access unit (H.265: IDR,\n\
           CRA or BLA) and [--segment-count M] (1..1024) decodes N..N+M in display order;\n\
           RASL pictures of a leading CRA/BLA are skipped and listed; --interpretation ycbcr;\n\
@@ -419,9 +421,10 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
                 "mp4hevc" => Some(FileFormatHint::Mp4Hevc),
                 "mkvavc" => Some(FileFormatHint::MkvAvc),
                 "mkvhevc" => Some(FileFormatHint::MkvHevc),
+                "flvavc" => Some(FileFormatHint::FlvAvc),
                 _ => {
                     return Err(malformed(
-                        "media format must be auto, mjpeg, annexb, hevc, mp4avc, mp4hevc, mkvavc, mkvhevc or rtpplay",
+                        "media format must be auto, mjpeg, annexb, hevc, mp4avc, mp4hevc, mkvavc, mkvhevc, flvavc or rtpplay",
                     ));
                 }
             };

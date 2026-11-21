@@ -302,7 +302,7 @@ pub(super) fn run(
         Action::Frame(action)
             if matches!(
                 retained.manifest().format.as_str(),
-                "annexb" | "mp4avc" | "mkvavc"
+                "annexb" | "mp4avc" | "mkvavc" | "flvavc"
             ) =>
         {
             run_video_decode(action, retained, false, deployment, root, cx, out)
@@ -1238,7 +1238,7 @@ fn run_motion(
     }
     if matches!(
         retained.manifest().format.as_str(),
-        "annexb" | "mp4avc" | "mkvavc" | "hevc" | "mp4hevc" | "mkvhevc"
+        "annexb" | "mp4avc" | "mkvavc" | "flvavc" | "hevc" | "mp4hevc" | "mkvhevc"
     ) {
         return run_video_motion(action, retained, deployment, root, cx, out);
     }
@@ -1336,7 +1336,7 @@ impl MotionVideoRange {
     ) -> Result<Self, RecordedDecodeError> {
         let limits = action.request.decode_limits;
         match retained.manifest().format.as_str() {
-            "annexb" | "mp4avc" | "mkvavc" => {
+            "annexb" | "mp4avc" | "mkvavc" | "flvavc" => {
                 // Round down: a caller's pixel or dimension ceiling must never be widened to
                 // the next macroblock. The codec checks coded dimensions before allocation.
                 let decoder_limits = DecoderLimits {

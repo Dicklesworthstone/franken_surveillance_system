@@ -8,7 +8,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use fss_container::demux::{AvcMp4, DemuxLimits};
 use fss_core::ContentDigest;
+
+#[path = "../../fss-container/tests/support/flv_fixture.rs"]
+mod flv_wire;
 
 /// 176x144, twelve pictures, one IDR then P pictures with three reference frames.
 const STREAM: &[u8] =
@@ -311,6 +315,121 @@ fn mp4_and_matroska_imports_are_sniffed_retained_and_decode_bit_exact() -> TestR
             success(&output);
             assert_eq!(field(&output, "omission_count")?, "1");
         }
+    }
+    Ok(())
+}
+
+fn flv_source() -> TestResult<Vec<u8>> {
+    let movie = AvcMp4::parse(MP4, None, DemuxLimits::default())?;
+    let mut bytes = flv_wire::header(true);
+    flv_wire::tag(&mut bytes, 18, 0, b"opaque metadata");
+    flv_wire::configuration(&mut bytes, flv_wire::avcc(MP4)?);
+    for sample in movie.samples() {
+        let dts = u32::try_from(sample.decode_time * 1000 / u64::from(movie.timescale()))?;
+        let cts = i32::try_from(sample.composition_offset * 1000 / i64::from(movie.timescale()))?;
+        flv_wire::sample(
+            &mut bytes,
+            &MP4[sample.source.clone()],
+            dts,
+            cts,
+            sample.contains_idr,
+        );
+        flv_wire::tag(&mut bytes, 8, dts, &[0xaf, 1, 0, 3, 9]);
+    }
+    Ok(bytes)
+}
+
+#[test]
+fn flv_auto_and_explicit_imports_reopen_verify_and_decode_the_original_avc() -> TestResult {
+    let bytes = flv_source()?;
+    let expected: Vec<String> = MP4_ORACLE
+        .lines()
+        .filter(|line| !line.starts_with('#') && !line.trim().is_empty())
+        .filter_map(|line| line.split_whitespace().nth(2))
+        .map(|digest| format!("sha256:{digest}"))
+        .collect();
+    for format in ["auto", "flvavc"] {
+        let directory = OwnedDirectory::new("flv-cold")?;
+        let root = directory.0.join("deployment");
+        let input = directory.0.join("camera.flv");
+        fs::write(&input, &bytes)?;
+        let imported = command(&root, "import")
+            .arg("--input")
+            .arg(&input)
+            .args([
+                "--sensor",
+                "sensor:h264-cli",
+                "--stream",
+                "stream:h264-cli",
+                "--receive-time-ns",
+                "30000000000",
+                "--media-format",
+                format,
+                "--chunk-bytes",
+                "512",
+            ])
+            .output()?;
+        success(&imported);
+        assert_eq!(field(&imported, "media_format")?, "flvavc");
+        assert_eq!(field(&imported, "omission_count")?, "0");
+        assert_ne!(field(&imported, "container_structure_count")?, "0");
+        let id = field(&imported, "import_identity")?;
+        fs::remove_file(input)?;
+        success(
+            &command(&root, "inspect")
+                .args(["--import-id", &id])
+                .output()?,
+        );
+        success(
+            &command(&root, "verify")
+                .args(["--import-id", &id])
+                .output()?,
+        );
+        let decoded = decode(&root, &id, "0", "10").output()?;
+        success(&decoded);
+        assert_eq!(values(&decoded, "frame_i420_sha256")?, expected);
+        assert_eq!(field(&decoded, "h264_frames_decoded")?, "10");
+        assert_eq!(field(&decoded, "decode_complete")?, "true");
+        assert_eq!(field(&decoded, "absence_certifiable")?, "false");
+        let predicted = decode(&root, &id, "1", "2").output()?;
+        assert!(!predicted.status.success());
+        assert_eq!(refusal(&predicted), "ERR-DECODE-H264-RANGE-NOT-IDR-001");
+    }
+    Ok(())
+}
+
+#[test]
+fn flv_cut_tags_and_changed_decoder_configuration_have_stable_cli_refusals() -> TestResult {
+    let directory = OwnedDirectory::new("flv-refusal")?;
+    let root = directory.0.join("deployment");
+    let original = flv_source()?;
+    let mut cut = original.clone();
+    cut.pop();
+    let mut changed = original;
+    let mut configuration = flv_wire::avcc(MP4)?.to_vec();
+    let last = configuration.len() - 1;
+    configuration[last] ^= 1;
+    flv_wire::configuration(&mut changed, &configuration);
+    for (index, bytes) in [cut, changed].iter().enumerate() {
+        let input = directory.0.join(format!("refused-{index}.flv"));
+        fs::write(&input, bytes)?;
+        let output = command(&root, "import")
+            .arg("--input")
+            .arg(&input)
+            .args([
+                "--sensor",
+                "sensor:h264-cli",
+                "--stream",
+                "stream:h264-cli",
+                "--receive-time-ns",
+                "30000000000",
+                "--media-format",
+                "flvavc",
+            ])
+            .output()?;
+        assert!(!output.status.success());
+        assert_eq!(refusal(&output), "ERR-INGEST-FLV-REFUSED-001");
+        assert!(values(&output, "import_identity")?.is_empty());
     }
     Ok(())
 }

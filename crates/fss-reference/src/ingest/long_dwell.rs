@@ -695,7 +695,7 @@ impl Scan<'_, '_> {
                 pixels: pixels.to_vec(),
             })
         };
-        if matches!(format, "annexb" | "mp4avc" | "mkvavc") {
+        if matches!(format, "annexb" | "mp4avc" | "mkvavc" | "flvavc") {
             let request = RecordedH264Request {
                 import_identity: plan.import_identity,
                 first_segment: plan.first_segment,
@@ -1184,7 +1184,7 @@ fn prepare_scan(
     let source = retained.manifest();
     let inter = match source.format.as_str() {
         "mjpeg" => false,
-        "annexb" | "hevc" | "mp4avc" | "mp4hevc" | "mkvavc" | "mkvhevc" => true,
+        "annexb" | "hevc" | "mp4avc" | "mp4hevc" | "mkvavc" | "flvavc" | "mkvhevc" => true,
         _ => return Err(RecordedDecodeError::UnsupportedMedia.into()),
     };
     if source.capture_time_label != "operator_assumption" {

@@ -98,7 +98,7 @@ impl DwellVideoProgress {
 
 pub(super) fn codec(format: &str) -> Result<&'static str> {
     match format {
-        "annexb" | "mp4avc" | "mkvavc" => Ok("h264"),
+        "annexb" | "mp4avc" | "mkvavc" | "flvavc" => Ok("h264"),
         "hevc" | "mp4hevc" | "mkvhevc" => Ok("h265"),
         _ => Err(WatchError::InvalidPlan(
             "unsupported incremental video format",

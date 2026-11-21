@@ -14,9 +14,9 @@ use fss_codec_mjpeg::{DecodeBudget, decode_luma};
 use fss_core::{CanonicalEncoder, ContentDigest, SensorCapsule};
 
 use super::{
-    HealthError, HealthFinding, HealthFrame, HealthObservation, HealthScreen, OPTICAL_QUALITY_DOMAIN,
-    OpticalFinding, OpticalQualityMetrics, OpticalThresholds, POLICY_NAME, policy_digest,
-    screen_optical_quality,
+    HealthError, HealthFinding, HealthFrame, HealthObservation, HealthScreen,
+    OPTICAL_QUALITY_DOMAIN, OpticalFinding, OpticalQualityMetrics, OpticalThresholds, POLICY_NAME,
+    policy_digest, screen_optical_quality,
 };
 use crate::ingest::RetainedFileImport;
 use crate::ingest::privacy_mask::current_mask;
@@ -222,7 +222,7 @@ impl ScreeningReport {
                     )?;
                 }
             }
-            "annexb" | "mp4avc" | "mkvavc" => {
+            "annexb" | "mp4avc" | "mkvavc" | "flvavc" => {
                 let mut source = RecordedH264Range::open(
                     deployment,
                     RecordedH264Request {
@@ -764,7 +764,11 @@ mod optical_retained_tests {
         assert!(report.admitted());
         assert!(report.optical_admitted());
         assert!(!report.has_optical_findings());
-        assert!(report.to_optical_json().contains("\"optical_admitted\":true"));
+        assert!(
+            report
+                .to_optical_json()
+                .contains("\"optical_admitted\":true")
+        );
         Ok(())
     }
 }

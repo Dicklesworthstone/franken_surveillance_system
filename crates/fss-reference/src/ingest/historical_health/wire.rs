@@ -204,7 +204,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<HistoricalHealthRecord> {
     let media_format = bounded_text(&mut d, 16)?;
     if !matches!(
         media_format.as_str(),
-        "mjpeg" | "annexb" | "hevc" | "mp4avc" | "mp4hevc" | "mkvavc" | "mkvhevc"
+        "mjpeg" | "annexb" | "hevc" | "mp4avc" | "mp4hevc" | "mkvavc" | "flvavc" | "mkvhevc"
     ) {
         return Err(HistoricalHealthError::InvalidRecord);
     }

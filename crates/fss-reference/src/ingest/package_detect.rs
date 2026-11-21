@@ -543,7 +543,7 @@ fn run_selected_detection<T>(
                 )?)?);
             }
         }
-        "annexb" | "mp4avc" | "mkvavc" => {
+        "annexb" | "mp4avc" | "mkvavc" | "flvavc" => {
             let h264 = DecoderLimits {
                 max_pictures: request.segment_count as u64,
                 ..limits.h264

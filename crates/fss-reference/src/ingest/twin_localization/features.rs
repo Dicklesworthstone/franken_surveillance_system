@@ -271,7 +271,7 @@ impl RecordedFeatures {
         }
         if matches!(
             retained.manifest().format.as_str(),
-            "mp4avc" | "mp4hevc" | "mkvavc" | "mkvhevc"
+            "mp4avc" | "mp4hevc" | "mkvavc" | "flvavc" | "mkvhevc"
         ) {
             // This is deliberately conservative: all bounded structural spans are checked,
             // so neither out-of-band parameter sets nor in-band bootstrap entry metadata can
