@@ -570,10 +570,12 @@ fn load(
         return Err(LongEventReplayError::UnsupportedProfile);
     }
     // The shared canonical reader independently binds the complete committed lineage, exact
-    // event manifest and revision witness. Reserve its selected root/payload rereads before
-    // entering it; an immutable source also charges these to its one aggregate allowance.
+    // event manifest and revision witness. Reserve its selected root/payload rereads and
+    // distinct witness before entering it; an immutable source also charges these to its one
+    // aggregate allowance.
     reader.reserve_owner_read(event_root_bytes.len())?;
     reader.reserve_owner_read(bytes.len())?;
+    reader.reserve_owner_read(crate::alert::event_revision_encoding(&parsed).len())?;
     let publications = verify_event_lineage(
         deployment,
         std::slice::from_ref(&parsed),

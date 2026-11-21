@@ -21,9 +21,16 @@ fss-export event --root "$ROOT" --site "$SITE" --event-id "$EVENT" \
 
 Preview publishes no new export. Review the returned `package`, `export_root`, and
 `approval_digest`. Repeat the exact command with `--approve "$APPROVAL"` to commit. This
-prepare/commit path keeps its existing operational deployment open, including exclusive writer
-ownership and normal restart reconciliation. Use `show` below to inspect an existing export
-while ingestion is active.
+preview uses one immutable retained owner and can run while capture holds the writer. It
+does not initialize a deployment, acquire its writer lock, repair journals or reconcile effects.
+It verifies the complete canonical event lineage, including revision-witness custody, without
+opening original media or model payloads. Missing or incomplete authority/effect journals refuse
+the preview; they are never reconstructed by this read path.
+
+The complete response, including the approval digest, remains buffered until the opening snapshot,
+selected payloads, publications and deletion state have been revalidated. A concurrent authority
+advance or custody change refuses the result; retry against a stable committed snapshot. Approved
+publication retains the existing exclusive writer, restart reconciliation and exact-approval checks.
 
 The fixed profile `event-summary-redacted-v1` includes event lifecycle state/class, conservative
 capture interval and uncertainty text, probability bounds, evidence/model digests, hashed failure
@@ -52,7 +59,7 @@ can remain open. Missing roots, incomplete journals, deleted custody, and missin
 altered or noncanonical records are refused without partial output. Raw evidence and model
 payloads remain unopened; their unavailability does not prevent redacted export inspection.
 
-The optional read bounds apply to `show`:
+The optional read bounds apply to `show` and unapproved `event` previews:
 
 | Option | Default | Maximum |
 |---|---:|---:|
@@ -61,9 +68,9 @@ The optional read bounds apply to `show`:
 | `--timeout-ms` | `30000` | `600000` |
 
 Values must be positive decimal integers without signs or leading zeros. One nonrenewing
-allowance covers deployment metadata, redacted manifest/record payloads, publication records and
-all final rereads. Object counts measure payload read attempts, not filesystem syscalls. The
-cooperative deadline is checked at native read boundaries.
+allowance covers deployment metadata, canonical event lineage or redacted export payloads,
+publication records and all final rereads. Object counts measure payload read attempts, not
+filesystem syscalls. The cooperative deadline is checked at native read boundaries.
 
 Before releasing the complete JSON report, `show` rehashes the selected objects, checks publication
 and deletion state again, and verifies that the layout and both journal roots still match the
@@ -72,9 +79,9 @@ report is at most 1 MiB and includes `deployment_mutated: false`, `payload_read_
 `payload_read_attempts`; the usage includes final revalidation. The export root, record digest,
 redaction profile and canonical package bytes are unchanged.
 
-The immutable read flags do not change `fss-export event` preparation/commit or
-[`fss-export-package pack`](portable_export_packages.md). Those commands retain their existing
-approval and operational publication/recovery paths.
+Approved `event` requests reject these preview-only flags. Both paths keep the same canonical
+record, export root and approval identity. [`fss-export-package pack`](portable_export_packages.md)
+has its own immutable preview controls; its approved file copy keeps the exclusive publication path.
 
 ## Authority and recovery
 
@@ -99,6 +106,12 @@ cargo test -p fss-reference --test evidence_export_contract
 cargo test -p fss-cli --bin fss-export
 cargo test -p fss-cli --test export_package_cli show::
 ```
+
+Fresh-preview regressions cover exact native approval/report parity beside a held writer,
+prepare-only authority, unavailable source/model payloads, complete cumulative budgets,
+late metadata/witness/custody changes, cancellation and refusal without journal repair.
+Reviewed whole-source exports also reserve every canonical lineage and witness reread
+before returning their export pins.
 
 These are reference contracts over synthetic event evidence. They do not establish detection
 quality, production chain-of-custody controls, legal sufficiency, or remote-recipient security.

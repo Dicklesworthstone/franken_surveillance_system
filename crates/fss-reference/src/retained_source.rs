@@ -587,8 +587,9 @@ impl RetainedSource for ImmutableRetainedSource<'_> {
 
 /// Verify and retain one complete committed event lineage under this owner's read allowance.
 ///
-/// Only event manifests and canonical revision metadata are opened. Their declared model,
-/// evidence and source children remain metadata handles, without new read authority.
+/// Only event manifests, canonical revision metadata and their exact canonical witnesses are
+/// opened. Declared model, evidence and source children remain metadata handles, without new
+/// read authority.
 /// On an immutable owner, every selected payload and witness is registered for the caller's
 /// final `revalidate` pass; operational readers use the same canonical lineage checks.
 /// Returned rows are publication-root/commit-sequence pairs in canonical revision order.
@@ -648,9 +649,17 @@ pub fn verify_event_lineage(
             if retained != revision.canonical_bytes() {
                 return Err(corrupt("event lineage canonical metadata differs"));
             }
-            // The witness is independently bound by the canonical record and committed delta.
-            // It is a metadata handle, never permission to open model or source children.
-            owner.check_object_available(revision.revision_digest())?;
+            // Publication retains a distinct domain-bound canonical witness. Checking only its
+            // tombstone would not verify those bytes or register them for immutable final reads.
+            // This remains event metadata; model and source children are never followed.
+            let expected_witness = crate::alert::event_revision_encoding(revision);
+            let witness = owner.read_object_bounded(
+                revision.revision_digest(),
+                maximum.min(expected_witness.len()),
+            )?;
+            if witness != expected_witness {
+                return Err(corrupt("event lineage canonical witness differs"));
+            }
             publications.push((delta.payload_digest, batch.new_anchor.commit_sequence));
         }
     }

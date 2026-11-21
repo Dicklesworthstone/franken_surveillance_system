@@ -5,6 +5,7 @@
 //! zone/track identifiers, model tensors, and live archive roots are never manifest children.
 //! Existing event/source custody is referenced by digest text only.
 
+use crate::event_review::{ReviewError, read_current_event_metadata};
 use crate::ingest::FileIngestError;
 use crate::retained_source::RetainedSource;
 use crate::{ReferenceDeployment, ReferenceError, ReplayCx};
@@ -586,7 +587,23 @@ fn authorize(
 }
 fn read_error(error: FileIngestError) -> ExportError {
     match error {
+        FileIngestError::Reference(error) => error.into(),
+        FileIngestError::Spool(error) => error.into(),
         FileIngestError::CancellationRequested { .. } => ExportError::Cancelled,
+        _ => ExportError::CustodyMismatch,
+    }
+}
+fn event_read_error(error: ReviewError) -> ExportError {
+    match error {
+        ReviewError::Unauthorized => ExportError::Unauthorized,
+        ReviewError::StaleRevision => ExportError::StaleRevision,
+        ReviewError::Limit => ExportError::Limit,
+        ReviewError::Cancelled => ExportError::Cancelled,
+        ReviewError::Contract(error) => error.into(),
+        ReviewError::Transition(error) => error.into(),
+        ReviewError::Reference(error) => ExportError::Reference(error),
+        ReviewError::Object(error) => error.into(),
+        ReviewError::Spool(error) => error.into(),
         _ => ExportError::CustodyMismatch,
     }
 }
@@ -605,15 +622,21 @@ fn verify_custody(d: &dyn RetainedSource, record: &EventExportRecord) -> Result<
 }
 
 /// Read-only preview of an export of the current exact event revision.
+///
+/// The shared metadata owner verifies the complete canonical event lineage without opening
+/// source media or model payloads. An immutable caller must finish its original owner's
+/// snapshot and payload revalidation before exposing the preview or approval digest.
 pub fn preview_export(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     request: &EventExportRequest,
     authority: &ContextAuthority,
     cx: &ReplayCx,
 ) -> Result<EventExportPreview, ExportError> {
     authorize(deployment, authority, cx, CAP_EXPORT_PREPARE)?;
     request.validate()?;
-    let (event, receipt) = deployment.current_event_authority(&request.event_id)?;
+    deployment.verify_read_head().map_err(read_error)?;
+    let (event, receipt) =
+        read_current_event_metadata(deployment, &request.event_id, cx).map_err(event_read_error)?;
     if event.revision_digest() != request.expected_revision {
         return Err(ExportError::StaleRevision);
     }
@@ -679,6 +702,7 @@ pub fn preview_export(
         Some(_) => return Err(ExportError::CustodyMismatch),
     };
     checkpoint(cx, "evidence_export:prepared")?;
+    deployment.verify_read_head().map_err(read_error)?;
     Ok(EventExportPreview {
         record,
         root,

@@ -539,6 +539,21 @@ pub fn read_review_event(
     cx: &ReplayCx,
 ) -> Result<(EventHypothesis, ReferenceEventReceipt), ReviewError> {
     authorize(deployment, authority, cx, CAP_REVIEW_PREPARE)?;
+    read_current_event_metadata(deployment, event, cx)
+}
+
+/// Shared canonical metadata reader for separately authorized review and export owners.
+/// Callers must check their own capability before entering this internal boundary. This
+/// reads the complete event lineage, never source media or model payloads, and grants no
+/// review, publication or effect authority.
+pub(crate) fn read_current_event_metadata(
+    deployment: &dyn RetainedSource,
+    event: &EventId,
+    cx: &ReplayCx,
+) -> Result<(EventHypothesis, ReferenceEventReceipt), ReviewError> {
+    if cx.root_dir() != deployment.root() {
+        return Err(ReviewError::Unauthorized);
+    }
     if event.as_str().len() > MAX_EVENT_ID_LEN
         || deployment.ledger().batches().len() > MAX_REVIEW_LEDGER_BATCHES
     {

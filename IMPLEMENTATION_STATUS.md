@@ -4,6 +4,52 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Detector and export previews alongside capture — 2026-11-20
+
+Fresh `fss-infer package-detect` previews use the sealed immutable retained owner for
+ordinary detection, short sentinel bursts and whole-recording sentinel analysis. The same
+native codecs, trained package, privacy masking and canonical reports are used while the
+deployment writer remains held. Explicit `--retain yes` still requires the exclusive owner.
+The concurrent detector hardening described below is preserved.
+
+Unapproved `fss-export event` and `fss-export-package pack` requests also use immutable
+readers. They preserve exact redacted records, package bytes and approval identities without
+initialization, lock acquisition, recovery or effect reconciliation. Event previews require
+only export-prepare authority and do not hydrate source media or model children. Portable
+packages keep the committed export's existing principal, recipient, expiry and capability
+checks. Approved publication and approved file copies retain their operational owners.
+
+Each complete response remains buffered until snapshot, journal, publication, deletion and
+selected-payload checks pass under one nonrenewing allowance. Opening metadata and final
+rereads consume the same budget. An open writer is supported; a concurrent authority or
+privacy change refuses the result and requires a new snapshot. Missing or torn histories
+are refused without repair. Preview-only limits cannot change approved-write semantics.
+
+The shared event-lineage verifier now reads and checks each separately retained canonical
+revision witness, registering it for immutable final revalidation. Previously it checked
+availability without hashing the witness bytes. Reviewed whole-source exports reserve all
+shared lineage and witness rereads within their existing 64 MiB bound. Native long-event
+replay also reserves its additional witness read. The existing review test's private
+authority-field access was corrected through supported capability narrowing.
+
+Twenty-six new regressions cover native parity, JPEG/AVC/HEVC modes, active writers, exact
+approval publication after releasing the writer, source/model independence for redacted
+previews, complete read allowances, late custody/privacy/authority changes, cancellation and
+no-repair behavior. An existing native replay budget regression was strengthened.
+Independent source reviews, scoped pinned formatting and whitespace checks completed before
+the executor failed. The final replay-budget refinement could not complete its formatting
+recheck. Focused executable verification remains pending: all three serialized checks ended
+in unchanged `asupersync 0.5.0` with rustc SIGKILL before reaching the edited crates. The last
+check exited 101 after 186.445 seconds, with 1,216,820 KiB reported peak child RSS and no
+source diagnostic. No new Rust runtime tests executed.
+
+Reviewed source was preserved through GitHub after the executor became unavailable. Changed
+source digests are registered; the interrupted full-worktree integrity audit is not claimed
+as passed. No detection-quality, real-device, full-workspace or release qualification is
+claimed, and broad FSS-076/FSS-078/DOC-012 Beads remain open. See the
+[session handoff](docs/SESSION_HANDOFF_2026-11-20_IMMUTABLE_PREVIEWS.json) for exact checkpoints,
+negative build evidence and next functional work.
+
 ## Detector preview custody and FLV initialization — 2026-11-20
 
 Fresh unretained package detection, short sentinel bursts and whole-recording

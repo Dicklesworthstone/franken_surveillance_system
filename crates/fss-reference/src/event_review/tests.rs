@@ -446,6 +446,75 @@ fn investigation_then_resolution_keeps_tamper_and_full_lineage() -> Test {
 }
 
 #[test]
+fn reviewed_export_lineage_reserves_every_summary_reread_before_returning_pins() -> Test {
+    let mut f = Fixture::new("export-lineage-budget", false)?;
+    let original = f.event.clone();
+    let mut statement_bytes = 0;
+    for disposition in [ReviewDisposition::Investigate, ReviewDisposition::Resolve] {
+        let request = f.request(disposition);
+        let preview = preview_review(&f.deployment, &request, &f.authority, &f.cx)?;
+        let receipt = commit_review(
+            &mut f.deployment,
+            &request,
+            preview.approval(),
+            &f.authority,
+            &f.cx,
+        )?;
+        let spool = f.deployment.publisher().spool();
+        statement_bytes += spool.read(receipt.review.provenance_root())?.len();
+        statement_bytes += spool.read(receipt.review.record().digest())?.len();
+        f.event = receipt.review.event().clone();
+    }
+    // Price the real retained bytes independently of the lineage owner's reservations. Every
+    // metadata pass rereads all three manifests and payloads, even when children are shared.
+    // The shared verifier also reads the independently staged canonical revision witnesses.
+    let revisions = history(&f.deployment, &f.event.event_id, &f.cx)?;
+    assert_eq!(revisions.len(), 3);
+    let spool = f.deployment.publisher().spool();
+    let mut history_bytes = 0;
+    let mut current_bytes = 0;
+    let mut witness_bytes = 0;
+    for revision in &revisions {
+        let manifest_bytes = spool.read(revision.root)?;
+        let manifest = ObjectManifest::from_canonical_bytes(&manifest_bytes)?;
+        let payload = manifest.metadata_digest().ok_or("missing event metadata")?;
+        current_bytes = manifest_bytes.len() + spool.read(payload)?.len();
+        history_bytes += current_bytes;
+        witness_bytes += spool.read(revision.event.revision_digest())?.len();
+    }
+    let inspected = history_bytes + statement_bytes;
+    let current_owner = history_bytes + current_bytes;
+    let export_owner = 2 * history_bytes + witness_bytes;
+    let exact = inspected + current_owner + export_owner;
+    let legacy = inspected + 2 * current_owner;
+    assert!(legacy < exact);
+    let before = f.snapshot()?;
+    for maximum in [legacy, exact - witness_bytes, exact - 1] {
+        assert!(matches!(
+            lineage::inspect_review_lineage_with_limit(
+                &f.deployment,
+                &f.event.event_id,
+                &f.cx,
+                maximum,
+            ),
+            Err(ReviewError::Limit)
+        ));
+        assert_eq!(f.snapshot()?, before);
+    }
+    let verified =
+        lineage::inspect_review_lineage_with_limit(&f.deployment, &f.event.event_id, &f.cx, exact)?;
+    assert_eq!(verified.original(), &original);
+    assert_eq!(verified.current(), &f.event);
+    assert_eq!(verified.links().len(), 2);
+    assert_eq!(
+        read_current_event_metadata(&f.deployment, &f.event.event_id, &f.cx)?.0,
+        f.event
+    );
+    assert_eq!(f.snapshot()?, before);
+    Ok(())
+}
+
+#[test]
 fn record_roundtrip_truncation_tamper_and_approval_binding() -> Test {
     let f = Fixture::new("codec", false)?;
     let preview = preview_review(

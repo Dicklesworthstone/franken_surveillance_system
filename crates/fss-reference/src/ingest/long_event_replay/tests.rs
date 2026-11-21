@@ -314,6 +314,52 @@ fn screened_recipe_and_every_retained_scan_reservation_survive_cold_reconstructi
     };
     assert!(recipe.screened());
     assert_eq!(verified.frames_replayed(), 40);
+    // Independently count the event-prefix payloads from custody, then add the native
+    // profile reader's own work. The shared lineage verifier reads a distinct domain-bound
+    // revision witness; omitting that reservation must not understate the reported total.
+    let (current, receipt) = f.deployment.current_event_authority(&event)?;
+    let spool = f.deployment.publisher().spool();
+    let root_bytes = spool.read(receipt.event_root)?;
+    let manifest = ObjectManifest::from_canonical_bytes(&root_bytes)?;
+    let metadata = manifest.metadata_digest().ok_or("event metadata")?;
+    let payload_bytes = spool.read(metadata)?.len();
+    let witness_bytes = spool.read(current.revision_digest())?.len();
+    let mut prefix_bytes = 2 * (root_bytes.len() + payload_bytes) + witness_bytes;
+    for &child in manifest.children() {
+        prefix_bytes += spool.read(child)?.len();
+    }
+    let limits = LongEventReplayLimits::default();
+    let profile = load_native_profile(
+        &f.deployment,
+        current,
+        receipt.event_root,
+        None,
+        &limits,
+        MetadataReader {
+            remaining: limits.maximum_metadata_bytes,
+            used: 0,
+            objects: 0,
+        },
+        f.deployment.current_anchor().clone(),
+        &f.cx,
+    )?;
+    let exact_bytes = prefix_bytes + profile.metadata_bytes_read();
+    assert_eq!(verified.inspection().metadata_bytes_read(), exact_bytes);
+    let exact = LongEventReplayLimits {
+        maximum_metadata_bytes: exact_bytes,
+        ..limits
+    };
+    assert_eq!(
+        inspect_long_event(&f.deployment, &event, &exact, &f.cx)?.metadata_bytes_read(),
+        exact_bytes,
+    );
+    for maximum_metadata_bytes in [exact_bytes - 1, exact_bytes - witness_bytes] {
+        let short = LongEventReplayLimits {
+            maximum_metadata_bytes,
+            ..limits
+        };
+        assert!(inspect_long_event(&f.deployment, &event, &short, &f.cx).is_err());
+    }
     for index in 0..6 {
         let mut limits = LongEventReplayLimits::default();
         match index {

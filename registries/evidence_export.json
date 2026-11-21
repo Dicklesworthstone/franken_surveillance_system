@@ -12,7 +12,8 @@
     "live_archive_namespace_exposed": false
   },
   "authority": {
-    "prepare": "read-only exact current event revision",
+    "prepare": "read-only exact current event lineage and canonical witness custody; prepare capability only",
+    "cli_preview": "immutable owner without writer or recovery; complete authority/effect history required; final snapshot and payload revalidation before delivery",
     "commit": "strong exact approval; root-last export then reserved authority delta",
     "external_transport": false
   },
@@ -28,6 +29,13 @@
   "limits": {
     "record_bytes": 65536,
     "recipient_bytes": 256,
-    "purpose_bytes": 512
+    "purpose_bytes": 512,
+    "preview_report_bytes": 1048576,
+    "preview_read_bytes_default": 67108864,
+    "preview_read_bytes_maximum": 1073741824,
+    "preview_read_attempts_default": 65536,
+    "preview_read_attempts_maximum": 1000000,
+    "preview_timeout_ms_default": 30000,
+    "preview_timeout_ms_maximum": 600000
   }
 }

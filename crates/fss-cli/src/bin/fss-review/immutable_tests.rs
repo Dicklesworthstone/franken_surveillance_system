@@ -4,6 +4,7 @@
 use super::*;
 use std::path::Path;
 
+use fss_core::region::ContextNarrowingSpec;
 use fss_core::{
     CaptureInterval, DecisionPath, EffectIntent, EventEvidence, EventHypothesis, EventKind,
     EventState, EvidenceClass, EvidenceEdgeRelation, IdempotencyKey, ObligationId,
@@ -206,10 +207,24 @@ fn active_writer_show_and_preview_preserve_exact_json_approval_and_tamper_histor
         }
         assert_eq!(tree(f.deployment.root())?, before);
     }
-    let mut denied = f.authority.clone();
-    denied
-        .capabilities
-        .retain(|capability| capability != CAP_REVIEW_PREPARE);
+    let denied = f.authority.narrow(ContextNarrowingSpec {
+        operation_id: OperationId::parse("operation:immutable-review-denied")?,
+        capabilities: f
+            .authority
+            .capabilities()
+            .iter()
+            .filter(|capability| capability.as_str() != CAP_REVIEW_PREPARE)
+            .cloned()
+            .collect(),
+        deadline: f.authority.deadline,
+        priority: f.authority.priority,
+        budgets: f.authority.budgets,
+        privacy_scope: f.authority.privacy_scope.clone(),
+        retention_scope: f.authority.retention_scope.clone(),
+        lease_fence: None,
+        idempotency_key: None,
+        lab_controls: None,
+    })?;
     assert!(matches!(
         run_with(&f.options("show")?, &denied, &f.cx, &|| false)
             .unwrap_err()

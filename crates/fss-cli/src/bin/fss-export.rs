@@ -18,8 +18,8 @@ use fss_core::{
 };
 use fss_reference::agent_orient::OrientLimits;
 use fss_reference::evidence_export::{
-    CAP_EXPORT_COMMIT, CAP_EXPORT_PREPARE, EventExportRequest, ExportError, commit_export,
-    preview_export, read_export,
+    CAP_EXPORT_COMMIT, CAP_EXPORT_PREPARE, EventExportPreview, EventExportRequest, ExportError,
+    commit_export, preview_export, read_export,
 };
 use fss_reference::retained_source::{ImmutableRetainedReadLimits, ImmutableRetainedSource};
 use fss_reference::{ReferenceDeployment, ReplayCx};
@@ -28,6 +28,9 @@ use fss_reference::{ReferenceDeployment, ReplayCx};
 mod media;
 #[path = "fss-export/review.rs"]
 mod review;
+#[cfg(test)]
+#[path = "fss-export/immutable_tests.rs"]
+mod immutable_tests;
 
 const DEFAULT_SHOW_READ_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_SHOW_READ_BYTES: u64 = 1024 * 1024 * 1024;
@@ -39,6 +42,9 @@ const HELP: &str = "fss-export event --root DIR --site SITE --event-id ID \
   --expected-revision sha256:HEX --recipient ID --purpose TEXT --expires-at-ns I128 \
   [--principal ID] [--approve sha256:HEX]\n\
 Without --approve this is a read-only preview. Review approval_digest, export_root and package.\n\
+Preview works during capture without locking, recovery, publication or source-media reads.\n\
+Preview-only --max-read-bytes, --max-read-objects and --timeout-ms use the show limits below.\n\
+The complete response is withheld until final canonical metadata and custody checks pass.\n\
 Repeat the exact request with --approve to publish the redacted export root and authority record.\n\
 The fixed profile exports event state/class/time, evidence/model digests and decision fingerprints.\n\
 It never exports raw media, source/device identities, zone/track IDs, failure-domain plaintext,\n\
@@ -63,6 +69,8 @@ struct Options {
     principal: String,
     request: EventExportRequest,
     approval: Option<ContentDigest>,
+    read_limits: ImmutableRetainedReadLimits,
+    timeout: Duration,
 }
 
 #[derive(Debug)]
@@ -90,7 +98,7 @@ fn digest(value: &str) -> Result<ContentDigest, String> {
     Ok(digest)
 }
 fn parse(args: &[OsString]) -> Result<Options, String> {
-    if args.len() > 19 || args.first().and_then(|v| v.to_str()) != Some("event") {
+    if args.len() > 25 || args.first().and_then(|v| v.to_str()) != Some("event") {
         return Err("expected bounded 'event' export command".into());
     }
     let allowed = [
@@ -103,6 +111,9 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
         "--purpose",
         "--expires-at-ns",
         "--approve",
+        "--max-read-bytes",
+        "--max-read-objects",
+        "--timeout-ms",
     ];
     let mut values = BTreeMap::new();
     let mut index = 1;
@@ -114,7 +125,10 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
         let value = args
             .get(index + 1)
             .ok_or_else(|| format!("missing value for {key}"))?;
-        if value.is_empty() || value.to_str().is_some_and(|v| v.starts_with("--")) {
+        if value.is_empty()
+            || value.len() > 4096
+            || value.to_str().is_some_and(|v| v.starts_with("--"))
+        {
             return Err(format!("missing value for {key}"));
         }
         if values.insert(key.to_owned(), value.clone()).is_some() {
@@ -151,12 +165,22 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
         .get("--approve")
         .map(|_| text(&values, "--approve").and_then(digest))
         .transpose()?;
+    if approval.is_some()
+        && ["--max-read-bytes", "--max-read-objects", "--timeout-ms"]
+            .iter()
+            .any(|key| values.contains_key(*key))
+    {
+        return Err("read allowances and timeout apply only to unapproved previews".into());
+    }
+    let (read_limits, timeout) = read_options(&values)?;
     Ok(Options {
         root,
         site,
         principal,
         request,
         approval,
+        read_limits,
+        timeout,
     })
 }
 
@@ -205,6 +229,20 @@ fn parse_show(args: &[OsString]) -> Result<ShowOptions, String> {
         .unwrap_or("principal:local-operator")
         .to_owned();
     PrincipalId::parse(&principal).map_err(|_| "invalid principal")?;
+    let (read_limits, timeout) = read_options(&values)?;
+    Ok(ShowOptions {
+        root,
+        site,
+        principal,
+        export_root: digest(text(&values, "--export-root")?)?,
+        read_limits,
+        timeout,
+    })
+}
+
+fn read_options(
+    values: &BTreeMap<String, OsString>,
+) -> Result<(ImmutableRetainedReadLimits, Duration), String> {
     let limit = |key: &str, default: u64, maximum: u64| -> Result<u64, String> {
         let Some(value) = values.get(key) else {
             return Ok(default);
@@ -218,12 +256,8 @@ fn parse_show(args: &[OsString]) -> Result<ShowOptions, String> {
         }
         Ok(parsed)
     };
-    Ok(ShowOptions {
-        root,
-        site,
-        principal,
-        export_root: digest(text(&values, "--export-root")?)?,
-        read_limits: ImmutableRetainedReadLimits {
+    Ok((
+        ImmutableRetainedReadLimits {
             snapshot: OrientLimits::default(),
             max_read_bytes: usize::try_from(limit(
                 "--max-read-bytes",
@@ -238,8 +272,8 @@ fn parse_show(args: &[OsString]) -> Result<ShowOptions, String> {
             )?)
             .map_err(|_| "read attempt allowance exceeds address range")?,
         },
-        timeout: Duration::from_millis(limit("--timeout-ms", 30_000, 600_000)?),
-    })
+        Duration::from_millis(limit("--timeout-ms", 30_000, 600_000)?),
+    ))
 }
 
 fn run_show(options: &ShowOptions) -> RunResult<String> {
@@ -333,8 +367,8 @@ fn run(options: &Options) -> RunResult<String> {
         deadline: None,
         priority: 10,
         budgets: BudgetVector::builder()
-            .bytes(64 * 1024 * 1024)
-            .storage_operations(65_536)
+            .bytes(options.read_limits.max_read_bytes as u64)
+            .storage_operations(options.read_limits.max_read_objects as u64)
             .build()?,
         privacy_scope: "privacy:redacted-event-export-v1".into(),
         retention_scope: "retention:existing-deployment-policy".into(),
@@ -342,59 +376,96 @@ fn run(options: &Options) -> RunResult<String> {
         generation: 1,
     })?;
     authority.validate()?;
-    let cx = ReplayCx::from_context_authority(&authority, options.root.clone())?;
+    let root = fs::canonicalize(&options.root)?;
+    let cx = if options.approval.is_none() {
+        ReplayCx::from_context_authority_read_only(&authority, root)?
+    } else {
+        ReplayCx::from_context_authority(&authority, root)?
+    };
     let result = run_with(options, &authority, &cx);
     cx.drain_and_finalize();
     result
 }
 fn run_with(options: &Options, authority: &ContextAuthority, cx: &ReplayCx) -> RunResult<String> {
-    let mut deployment = ReferenceDeployment::open(&options.root, &options.site, cx)?;
-    let (status, published, approval, root, record_digest, package, commit_anchor) =
-        match options.approval {
-            None => {
-                let preview = preview_export(&deployment, &options.request, authority, cx)?;
-                (
-                    if preview.already_committed() {
-                        "already_committed"
-                    } else {
-                        "proposed"
-                    },
-                    false,
-                    preview.approval(),
-                    preview.root(),
-                    preview.record().digest(),
-                    preview.record().to_redacted_json(),
-                    deployment.current_anchor().clone(),
-                )
-            }
-            Some(approval) => {
-                let receipt =
-                    commit_export(&mut deployment, &options.request, approval, authority, cx)?;
-                (
-                    if receipt.published {
-                        "published"
-                    } else {
-                        "already_committed"
-                    },
-                    receipt.published,
-                    receipt.preview.approval(),
-                    receipt.preview.root(),
-                    receipt.preview.record().digest(),
-                    receipt.preview.record().to_redacted_json(),
-                    receipt.anchor,
-                )
-            }
-        };
-    Ok(object(&[
+    let Some(approval) = options.approval else {
+        let start = Instant::now();
+        return run_preview_with(options, authority, cx, &|| {
+            start.elapsed() >= options.timeout
+        });
+    };
+    let mut deployment = ReferenceDeployment::open(cx.root_dir(), &options.site, cx)?;
+    let receipt = commit_export(&mut deployment, &options.request, approval, authority, cx)?;
+    event_report(
+        options,
+        &receipt.preview,
+        receipt.published,
+        &receipt.anchor,
+    )
+}
+
+fn run_preview_with(
+    options: &Options,
+    authority: &ContextAuthority,
+    cx: &ReplayCx,
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> RunResult<String> {
+    if options.approval.is_some() {
+        return Err(ExportError::Unauthorized.into());
+    }
+    let read_error = |error: fss_reference::ingest::FileIngestError| match error {
+        fss_reference::ingest::FileIngestError::CancellationRequested { .. } => {
+            ExportError::Cancelled
+        }
+        _ => ExportError::CustodyMismatch,
+    };
+    let deployment = ImmutableRetainedSource::open_cancellable(
+        cx.root_dir(),
+        options.read_limits,
+        cx,
+        cancelled,
+    )
+    .map_err(read_error)?;
+    if deployment.history().site_lineage() != options.site {
+        return Err(ExportError::Unauthorized.into());
+    }
+    if !deployment.snapshot().effect_journal_present {
+        return Err(ExportError::CustodyMismatch.into());
+    }
+    let preview = preview_export(&deployment, &options.request, authority, cx)?;
+    let report = event_report(options, &preview, false, &deployment.snapshot().anchor)?;
+    deployment
+        .revalidate_snapshot_metadata()
+        .map_err(read_error)?;
+    deployment.revalidate().map_err(read_error)?;
+    Ok(report)
+}
+
+fn event_report(
+    options: &Options,
+    preview: &EventExportPreview,
+    published: bool,
+    commit_anchor: &fss_core::LedgerAnchor,
+) -> RunResult<String> {
+    let status = if published {
+        "published"
+    } else if preview.already_committed() {
+        "already_committed"
+    } else {
+        "proposed"
+    };
+    let report = object(&[
         ("format", string("fss.evidence_export_cli.v1")),
         ("site", string(&options.site)),
         ("status", string(status)),
         ("published", published.to_string()),
-        ("approval_digest", string(&approval.to_text())),
-        ("export_root", string(&root.to_text())),
-        ("record_digest", string(&record_digest.to_text())),
-        ("authority_anchor", evidence_anchor(&commit_anchor)),
-        ("package", package),
+        ("approval_digest", string(&preview.approval().to_text())),
+        ("export_root", string(&preview.root().to_text())),
+        (
+            "record_digest",
+            string(&preview.record().digest().to_text()),
+        ),
+        ("authority_anchor", evidence_anchor(commit_anchor)),
+        ("package", preview.record().to_redacted_json()),
         ("external_transport_performed", "false".into()),
         ("raw_media_read", "false".into()),
         (
@@ -402,7 +473,11 @@ fn run_with(options: &Options, authority: &ContextAuthority, cx: &ReplayCx) -> R
             string("metadata_only_no_trusted_clock"),
         ),
         ("qualification", string("implemented_not_qualified")),
-    ]))
+    ]);
+    if report.len() > MAX_SHOW_REPORT_BYTES {
+        return Err(ExportError::Limit.into());
+    }
+    Ok(report)
 }
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).collect();

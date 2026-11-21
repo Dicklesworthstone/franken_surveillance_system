@@ -1,0 +1,165 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-20",
+  "date_timezone": "America/New_York",
+  "mission": "Read the comprehensive plan and Beads, implement the most important remaining functional gaps, and checkpoint meaningful changes directly to main through GitHub without PRs.",
+  "basis": {
+    "started_at": "906956c2dd8a5a34e902d2263d4dc9b735001a08",
+    "plan": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+    "backlog": ".beads/issues.jsonl",
+    "prior_continuations": [
+      "docs/SESSION_HANDOFF_2026-11-20_IMMUTABLE_ANALYSIS.json",
+      "docs/SESSION_HANDOFF_2026-11-20_REVIEW_RECONNECT.json"
+    ],
+    "concurrent_commits_preserved": [
+      "4bbe69a53d673c5c851fea74f9c564d78351c93c",
+      "db0d4e5c31ef6f10f955d2e59be3a25f738d898e",
+      "d957e9bb9f69c31f18e8f8d3bf9698be22ab8e86"
+    ]
+  },
+  "authority": {
+    "repository": "Explicit user authorization for direct main commits using GitHub; no PRs.",
+    "operational": "No live-device actions or changes to alert, retention, privacy, identity or model policy. Approved retention/publication/file copies retain their existing exclusive owners."
+  },
+  "findings": [
+    "Broad open detector/sentinel and export Beads already contain substantial implementations; their titles alone do not identify missing code.",
+    "Fresh unretained detector/sentinel, redacted-event export and portable-package previews still acquired the capture writer and could enter recovery; current handoffs identified these concrete functional gaps.",
+    "Canonical event witnesses were checked for availability but were not read or registered for final immutable payload verification.",
+    "The stronger shared event reader required additional reservations in reviewed whole-source export and native long-event replay to preserve their existing read bounds."
+  ],
+  "delivered": [
+    {
+      "feature": "Immutable portable-package previews",
+      "commit": "f207264a27d31777fa12241020ffb3af840ea411",
+      "scope": "One bounded immutable source, exact canonical package and approval parity, final custody/deletion/history checks, held-writer support; approved-copy semantics preserved.",
+      "documentation": "docs/portable_export_packages.md"
+    },
+    {
+      "feature": "Immutable fresh detector and sentinel previews",
+      "commit": "6fa86d18d580a83e46a11f1df7a8f4bd2888d5c0",
+      "scope": "Ordinary package detection, short sentinel and whole-recording sentinel reuse native codec/model/privacy/report semantics with aggregate opening-through-final budgets. Explicit retention remains exclusive.",
+      "documentation": "docs/SENTINEL_DETECTION.md",
+      "concurrent_extension": "d957e9bb9f69c31f18e8f8d3bf9698be22ab8e86 strengthens source-root ownership, scalar cancellation, opening metadata revalidation and delivery size limits; preserved intact."
+    },
+    {
+      "feature": "Immutable redacted-event preparation and canonical witness custody",
+      "commit": "this_commit",
+      "scope": "Prepare-only metadata projection while writer held, exact report/approval identity, missing-history refusal, final validation before delivery, canonical witness bytes verified and reread; native reviewed export and long-event replay reserve every added witness read.",
+      "documentation": "docs/EVIDENCE_EXPORT.md"
+    }
+  ],
+  "validation": {
+    "toolchain": "nightly-2026-08-31; rustc 1.100.0-nightly (908501772 2026-08-30)",
+    "independent_review": "Detector, portable-package, event-export, witness-custody and cross-caller read-budget paths independently reviewed; concrete findings corrected.",
+    "formatting": "Scoped exact pinned rustfmt and whitespace checks completed before executor loss. Final long-event replay reservation/test refinement could not finish its formatting recheck.",
+    "new_regressions": 26,
+    "existing_regressions_strengthened": [
+      "native long-event replay metadata byte boundary",
+      "review CLI denial fixture using supported capability narrowing"
+    ],
+    "execution": "All three serialized compiler attempts ended in unchanged asupersync 0.5.0 with rustc SIGKILL before reaching edited FSS crates. No new runtime test executed. The final attempt used a fully restored exact pinned toolchain and locked offline cache.",
+    "final_check": {
+      "command": "cargo check -p fss-cli --bin fss-export --bin fss-export-package --bin fss-infer --bin fss-review --locked --offline -j1",
+      "exit_code": 101,
+      "dependency": "asupersync 0.5.0",
+      "termination": "rustc signal 9 / SIGKILL",
+      "edited_crates_reached": false,
+      "wall_seconds": 186.445,
+      "peak_child_rss_kib": 1216820,
+      "user_cpu_seconds": 5.79,
+      "system_cpu_seconds": 39.23,
+      "profile": "dev/test debug info disabled; incremental off; one Cargo job; exact pinned real binaries",
+      "cause": "No observable cgroup memory limit or OOM counter; SIGKILL cause not proven."
+    },
+    "source_preservation": "Executor later failed its initialization handshake. Final reviewed edits were reconstructed from exact GitHub base blobs and captured patches, with captured code lengths and available prior Git blob identities checked before publication.",
+    "integrity": "Changed paths have updated SHA-256 manifest rows. The full local worktree audit was interrupted by executor loss; no aggregate pass claimed.",
+    "hosted_workflows": "Supplementary runs queued/pending at observation; no hosted pass claimed.",
+    "qualification": "No full-workspace, real-device, detection-quality or release qualification. No project dependency, toolchain pin or acceptance gate weakened.",
+    "commands": [
+      "cargo test -p fss-cli --bin fss-infer package_cli:: --locked --offline -j1",
+      "cargo test -p fss-reference --lib export_package::tests --locked --offline -j1",
+      "cargo test -p fss-cli --test export_package_cli --locked --offline -j1",
+      "cargo test -p fss-reference --test evidence_export_contract --locked --offline -j1",
+      "cargo test -p fss-cli --bin fss-export immutable_tests:: --locked --offline -j1",
+      "cargo test -p fss-reference --lib event_review::tests::reviewed_export_lineage_reserves_every_summary_reread_before_returning_pins --locked --offline -j1",
+      "cargo test -p fss-reference --lib ingest::long_event_replay::tests::screened_recipe_and_every_retained_scan_reservation_survive_cold_reconstruction --locked --offline -j1"
+    ]
+  },
+  "budgets": {
+    "detector_preview": {
+      "default_read_bytes": 1073741824,
+      "maximum_read_bytes": 4294967296,
+      "default_read_attempts": 1000000,
+      "maximum_read_attempts": 4000000,
+      "cooperative_timeout_ms": 60000
+    },
+    "event_and_portable_preview": {
+      "default_read_bytes": 67108864,
+      "maximum_read_bytes": 1073741824,
+      "default_read_attempts": 65536,
+      "maximum_read_attempts": 1000000,
+      "default_timeout_ms": 30000,
+      "maximum_timeout_ms": 600000
+    },
+    "reviewed_media_lineage": "Existing 64 MiB ceiling; downstream reservation is H+C+2H+W, with H all event manifest/payload bytes, C the current pair and W all canonical witness bytes."
+  },
+  "invalidations": [
+    "Holding the capture writer does not itself block previews. Authority advancement during a pinned read requires a new snapshot.",
+    "Changed source, capsule, privacy, model, canonical witness, publication, tombstone or journal state refuses complete output. Failed reads never repair deployment state.",
+    "Cooperative read deadlines bound admissions; they are not a trusted wall clock or preemptive interrupts during pure computation."
+  ],
+  "related_beads": [
+    {
+      "id": "fss-q4ngj",
+      "status": "closed",
+      "scope": "Existing trained-package admission; this session extends non-retained reader integration."
+    },
+    {
+      "id": "fss-x4a.15.1",
+      "external_ref": "FSS-076",
+      "status": "open"
+    },
+    {
+      "id": "fss-x4a.15.3",
+      "external_ref": "FSS-078",
+      "status": "open"
+    },
+    {
+      "id": "fss-x4a.5.12",
+      "external_ref": "DOC-012",
+      "status": "open"
+    },
+    {
+      "id": "fss-x4a.30.86.18",
+      "external_ref": "CAP-EXPORT-PREPARE-001",
+      "status": "closed",
+      "scope": "Existing export capability; immutable CLI integration extended without broad requirement closure."
+    }
+  ],
+  "continuations": [
+    {
+      "state": "open",
+      "priority": "first",
+      "work": "Execute focused contracts above on a functioning host with sufficient compiler capacity. Preserve pinned dependencies and acceptance gates; added tests are not release qualification."
+    },
+    {
+      "state": "open",
+      "bead": "fss-x4a.25.2",
+      "external_ref": "FSS-177",
+      "work": "Implement request-owned MCP execution/cancellation so notifications can be handled while native operations run. Current synchronous stdin handling can block cancellation for a long operation; use existing Asupersync ownership, bounded admission and drain/finalize with cancellation/concurrency contracts."
+    },
+    {
+      "state": "open",
+      "work": "Broad detector/sentinel quality and graph-complete export/deletion/hold acceptance still require registered evidence and qualification contracts."
+    },
+    {
+      "state": "blocked_by_existing_product_decision",
+      "work": "Standing always-on recorder remains gated by the recorded D7 doctrine decision; do not silently grant indefinite capture authority."
+    }
+  ],
+  "obligations": [
+    "Implemented slices checkpointed directly to main through GitHub in meaningful batches; no PRs.",
+    "Focused executable validation remains open with exact commands and negative evidence recorded here.",
+    "Broad Beads remain open pending registered evidence and qualification."
+  ]
+}

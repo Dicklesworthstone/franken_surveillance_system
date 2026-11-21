@@ -5,7 +5,7 @@
 use super::*;
 use fss_core::ObjectId;
 
-/// Includes the bounded history, every review statement, and the current-event owner's rereads.
+/// Includes history, review statements, current-event rereads and export-summary verification.
 const MAX_LINEAGE_READ_BYTES: usize = 64 * 1024 * 1024;
 const MAX_REVIEW_MANIFEST_BYTES: usize = 1024;
 
@@ -81,6 +81,16 @@ pub(crate) fn inspect_review_lineage(
     event_id: &EventId,
     cx: &ReplayCx,
 ) -> Result<VerifiedReviewLineage, ReviewError> {
+    inspect_review_lineage_with_limit(deployment, event_id, cx, MAX_LINEAGE_READ_BYTES)
+}
+
+/// A smaller allowance preserves the same complete proof and cannot raise the fixed ceiling.
+pub(super) fn inspect_review_lineage_with_limit(
+    deployment: &ReferenceDeployment,
+    event_id: &EventId,
+    cx: &ReplayCx,
+    maximum: usize,
+) -> Result<VerifiedReviewLineage, ReviewError> {
     checkpoint(cx, "event_review:lineage")?;
     if cx.root_dir() != deployment.root() {
         return Err(ReviewError::Unauthorized);
@@ -89,7 +99,7 @@ pub(crate) fn inspect_review_lineage(
         return Err(ReviewError::Limit);
     }
     let basis = deployment.current_anchor().clone();
-    let mut reader = ReviewReadBudget::new(MAX_LINEAGE_READ_BYTES);
+    let mut reader = ReviewReadBudget::new(maximum.min(MAX_LINEAGE_READ_BYTES));
     let mut revisions = history_budgeted(deployment, event_id, cx, &mut reader)?;
     if !(2..=MAX_LINEAGE_DEPTH).contains(&revisions.len()) {
         return Err(ReviewError::CustodyMismatch);
@@ -195,12 +205,18 @@ pub(crate) fn inspect_review_lineage(
         Some(ContentDigest::sha256(&last.event.canonical_bytes())),
     )?;
     // The guarded current owner rereads every history root/payload and the current pair once
-    // more. Reserve its already verified exact lengths for this call and for the export summary
-    // owner's later read, before either owner can allocate those history payloads.
+    // more. The later export summary reads the whole history twice: reconstruction, then
+    // canonical lineage verification including each distinct revision witness. Reserve both
+    // owners' complete reads before either can allocate those payloads; reserving the current
+    // pair twice would undercount older revisions and omit witness custody.
+    reader.reserve(history_bytes)?;
+    reader.reserve(last_manifest.canonical_bytes().len())?;
+    reader.reserve(last.event.canonical_bytes().len())?;
     for _ in 0..2 {
         reader.reserve(history_bytes)?;
-        reader.reserve(last_manifest.canonical_bytes().len())?;
-        reader.reserve(last.event.canonical_bytes().len())?;
+    }
+    for revision in &revisions {
+        reader.reserve(crate::alert::event_revision_encoding(&revision.event).len())?;
     }
     let (current, receipt) = deployment.current_event_authority(event_id)?;
     if current != last.event
