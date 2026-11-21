@@ -12,7 +12,10 @@ The home page plays one staged take on a single clock: the camera films, a model
 | `evidence.js` | The weights behind the staged assessment. |
 | `native.js` | Reduces `native.json` to the figures the measured panels print. |
 | `load.js` | Server side. Reads the published take at build time. |
+| `retained.mjs` | Server side. Reads the tools' retained reports by their SHA-256, checks the summary in `native.json` against them, and computes the digest that ties the rendered page to its inputs. |
 | `fusion-excerpt.mjs` | Server side. Reads the edited two-camera fusion replay and refuses it unless it matches the scene file, the films and its own recorded digests. |
+| `relay-replay.mjs` | Server side. Reads the alert relay comparison and refuses it unless it matches the fusion replay it was made from and the captured run it is pinned to. |
+| `delivery-dropout.mjs` | Server side. Reads the porch recording with two seconds missing and refuses it unless every file matches its recorded digest and the tool's coverage records stop at the gap. |
 
 Components are in `components/site/`, styles in `app/styles/`.
 
@@ -26,11 +29,13 @@ Everything for the take is in `public/watch/intrusion/`.
 
 `native.json` (`fss.website.watch_native.v1`) and `native-boxes.json` are the output of the project's own binaries run on the film files by `scripts/watch-evidence.py`, with the tools' own reports beside them in `native/objects/`. The page marks anything from these files as measured. Without them the measured panels are left out.
 
-Two facts are read from the tools' reports directly, because the published `native.json` was written by an earlier driver that got them wrong: whether absence is certified inside the coverage witnesses, and the ledger's position at the end of the run. The driver has since been corrected and a new run carries both itself.
+Two facts are read from the tools' reports directly (`fromReports` in `retained.mjs`), because the published `native.json` was written by an earlier driver that got them wrong: whether absence is certified inside the coverage witnesses, and the ledger's position at the end of the run. The driver has since been corrected and a new run carries both itself.
 
 The tools do not know where the staged people were. `load.js` compares every cross-camera match with the scripted positions, using the tools' own distance gate, and the page says for each match whether it landed on a person. A match on nobody within a second and a half after the floodlights come on is flagged as coinciding with them. The page states the timing and does not claim a cause.
 
 `hero.mp4` is the loop behind the headline and `hero-still.jpg` the frame shown before it plays and when the visitor asks for reduced motion. `plates/` holds the wide still between the console and the walk-through, cut from `stills/floods.jpg`. `CREDITS.txt` lists every third-party asset, its licence and what was changed.
+
+A second, separate recording is in `public/watch/delivery-dropout/`: eight seconds from a porch camera at the same fictional house, once complete and once with two seconds removed, with the tools' import, presentation and coverage reports for both. The walk-through step on coverage shows it.
 
 ## Sources of each figure
 

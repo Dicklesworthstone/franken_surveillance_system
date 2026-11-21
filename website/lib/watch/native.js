@@ -248,6 +248,7 @@ export function distill(native) {
       compression: s.compression ?? null,
     },
     // The driver's free-text notes are left out on purpose. In the published run one of them
-    // says no absence is certified, which the tool's own reports contradict (see load.js).
+    // says no absence is certified, which the tool's own reports contradict (see fromReports
+    // in retained.mjs).
   };
 }
