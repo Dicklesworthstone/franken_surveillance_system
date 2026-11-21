@@ -88,17 +88,29 @@ fn indexed_length_bounds_reads_without_trusting_later_file_changes() -> TestResu
     let before = io.call_count(SpoolIoCall::Read);
     assert_eq!(spool.indexed_payload_len(digest)?, payload.len() as u64);
     assert_eq!(spool.indexed_payload_len(empty)?, 0);
-    assert!(matches!(spool.indexed_payload_len(ContentDigest::sha256(b"absent")), Err(SpoolError::Missing(_))));
+    assert!(matches!(
+        spool.indexed_payload_len(ContentDigest::sha256(b"absent")),
+        Err(SpoolError::Missing(_))
+    ));
     assert_eq!(io.call_count(SpoolIoCall::Read), before);
     assert_eq!(spool.read_bounded(digest, payload.len())?, payload);
     assert_eq!(spool.read_bounded(empty, 0)?, b"");
 
-    fs::OpenOptions::new().append(true).open(spool.object_path(digest))?.write_all(b"x")?;
+    fs::OpenOptions::new()
+        .append(true)
+        .open(spool.object_path(digest))?
+        .write_all(b"x")?;
     assert_eq!(spool.indexed_payload_len(digest)?, payload.len() as u64);
-    assert!(matches!(spool.read_bounded(digest, payload.len()), Err(SpoolError::Corrupt { .. })));
+    assert!(matches!(
+        spool.read_bounded(digest, payload.len()),
+        Err(SpoolError::Corrupt { .. })
+    ));
     drop(spool);
     let reopened = StagingSpool::open(&directory.0, limits())?;
-    assert!(matches!(reopened.indexed_payload_len(digest), Err(SpoolError::Corrupt { .. })));
+    assert!(matches!(
+        reopened.indexed_payload_len(digest),
+        Err(SpoolError::Corrupt { .. })
+    ));
     Ok(())
 }
 
