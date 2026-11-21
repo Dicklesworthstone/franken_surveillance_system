@@ -20,6 +20,8 @@ use reader::{Reader, full, one, optional};
 mod tables;
 use tables::*;
 mod fragments;
+mod flv;
+pub use flv::{FlvSample, FlvTag, FlvVideo};
 mod inband;
 pub use inband::{
     InbandBootstrap, InbandConfiguration, InbandSampleEntry, InbandSampleParameters,

@@ -165,7 +165,34 @@ deterministic byte mutations and accepted-prefix tail noninterference.
 
 **Executed component verification (2026-11-15; predates the FLV increment):** the pinned nightly-2026-08-31 toolchain compiled the core, packet and container libraries and both affected unit-test targets directly with `rustc` in Rust 2024 mode. The complete container library unit target passed **117 tests**, including all 12 new Matroska contracts and the existing MP4/Annex-B/demux regressions; the `fss-probe` unit target passed **16 tests**. A separately compiled `fss-probe` binary also passed 15 subprocess checks across the retained AVC, HEVC and live Matroska fixtures: successful metadata, exact prefix boundaries, short observed EOF and byte/NAL exhaustion. Pinned `rustfmt` and `git diff --check` also passed. These component results do not establish full Cargo/workspace CI or media qualification.
 
-**FLV increment validation (2026-11-20):** independent source review, pinned formatting and whitespace checks completed. Executable validation is pending: the shared build environment disconnected repeatedly, and a serial no-debug Cargo attempt was killed during unchanged dependency compilation before tests ran. This increment makes no new passing-test or qualification claim.
+**FLV component verification (2026-11-20):** the pinned nightly-2026-08-31 toolchain rebuilt the current core, packet and container components directly with `rustc` in Rust 2024 mode. The full container unit target passed **163 tests**, including all 11 FLV parameter-probe contracts; the `fss-probe` unit target passed **16 tests**, and the actual CLI passed **13 FLV subprocess checks** for successful metadata, exact bounds, short EOF, malformed framing and unsupported forms. After adding the complete-file AVC FLV demuxer described below, the full container unit target passed **170 tests**. These are executed component results on source based at `7e336b8e457e11cffaf132b2176f78cf3da48371`; later unrelated core changes and the broader reference/Cargo workspace were not executed. The recovered demux source received independent source and byte-integrity review after the executor disconnected; no full-workspace or media qualification claim is made.
+
+## Complete-file AVC FLV indexing
+
+The native `fss_container::demux::FlvVideo` reader now indexes a complete standard
+FLV v1 AVC file independently of the bounded parameter-prefix probe. It retains
+the original header and every tag as a complete source tiling, exact sample and
+NAL ranges, original AVC configuration ranges, raw decoding timestamps and signed
+composition offsets. Audio and script tags remain opaque retained source bytes.
+
+The reader requires complete tag framing and matching previous-tag sizes, one
+stable AVC configuration, strictly increasing observed decoding coordinates and
+agreement between each sender keyframe flag and IDR NAL presence. A change of
+configuration, filtered/vendor tag, truncated tail, timestamp wrap or unsupported
+video form refuses the whole index. Independent source, tag, metadata, sample and
+NAL limits and cooperative cancellation bound traversal. No partial index escapes
+on refusal.
+
+A sample's `duration_ms` is only the positive difference to the next observed
+decoding coordinate; the final sample remains `None`. Neither those deltas nor an
+end-of-sequence tag establish exposure duration, capture continuity, UTC or scene
+coverage. Indexing performs no decoding, capture, ledger write or authority grant.
+Retained ingestion and native pixel decoding are separate consumers.
+
+Seven focused contracts cover exact source tiling and NAL custody, signed
+composition offsets and unknown final duration, every truncated prefix,
+configuration/framing/timestamp contradictions, independent limit exhaustion and
+cancellation, unsupported forms, and deterministic mutations.
 
 ## Qualification
 
