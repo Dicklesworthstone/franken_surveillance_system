@@ -1721,19 +1721,20 @@ impl H2DecisionArtifact {
         self.estimated_cost.fits_within(*budget)
     }
 
-    /// Converts this typed decision artifact into the universal [`HydrationArtifact`] container, re-validating all invariants.
+    /// Converts a verified typed decision artifact into the universal hydration container.
+    ///
+    /// The two envelopes have distinct canonical bodies and digest domains. The universal
+    /// artifact is sealed by its own publisher; the typed H2 bytes and identity are unchanged.
     pub fn to_hydration_artifact(&self) -> Result<HydrationArtifact, HydrationError> {
-        self.validate()?;
-        Ok(HydrationArtifact {
-            level: HydrationLevel::H2,
-            content_type: self.content_type().to_string(),
-            payload: self.payload.clone(),
-            payload_digest: self.payload_digest,
-            proof_roots: self.proof_roots.clone(),
-            completeness: self.completeness,
-            applied_transform: Some(self.applied_redaction_transform.clone()),
-            artifact_digest: self.artifact_digest,
-        })
+        self.verify()?;
+        HydrationArtifact::publish(
+            HydrationLevel::H2,
+            self.content_type(),
+            self.payload.clone(),
+            self.proof_roots.iter().copied(),
+            self.completeness,
+            Some(self.applied_redaction_transform.clone()),
+        )
     }
 
     /// Encodes the canonical body of this artifact (excluding the self-referential digest).

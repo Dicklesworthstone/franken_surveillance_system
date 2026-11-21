@@ -184,6 +184,15 @@ evidence edges and 8 MiB of canonical event metadata. Exceeding a bound refuses
 the request before returning a neighborhood. The H2 payload ceiling remains
 64 KiB. These are structural reference bounds, not a measured performance claim.
 
-The command records the operator-supplied grant identifier. Durable session H2
-admission, charging, continuation and MCP exposure remain separate unfinished
-work; the session query catalog continues to publish only H0 and H1.
+Typed H2 artifacts convert into a verified universal `HydrationArtifact` through
+the universal publisher. The payload, provenance roots and redaction transform
+are preserved. The typed H2 canonical bytes and digest stay unchanged; the
+universal envelope has its own digest over its own canonical body. A matching
+native catalog can therefore register the converted artifact and pass it to the
+existing durable disclosure transaction. Repeated direct disclosures incur
+separate charges; consumed progressive cursors remain consumed after recovery.
+
+The command records the operator-supplied grant identifier. The deployment H2
+profile still needs authorized descriptor discovery, contributing-lineage custody
+and frontend integration. The deployed session query catalog and MCP continue to
+publish only H0 and H1.

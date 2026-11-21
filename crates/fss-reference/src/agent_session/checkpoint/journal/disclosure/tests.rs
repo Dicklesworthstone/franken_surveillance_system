@@ -18,6 +18,9 @@ use fss_object::{InMemoryObjectStore, ObjectLimits, ObjectManifest};
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const SOURCE: &[u8] = b"original private footage must never enter the disclosure journal";
 
+#[path = "tests/h2_conversion.rs"]
+mod h2_conversion;
+
 #[test]
 fn existing_session_owner_and_disclosure_wrapper_share_cold_cursor_and_workspace_history()
 -> TestResult {

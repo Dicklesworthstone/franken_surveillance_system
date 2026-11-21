@@ -502,12 +502,24 @@ fn test_h2_all_5_kinds_roundtrip_and_properties() -> Result<(), Box<dyn Error>> 
         decoded_art.verify()?;
         assert_eq!(artifact, decoded_art);
 
-        // Convert to universal HydrationArtifact with re-validation
+        // Each envelope has its own seal; conversion must produce a catalog-verifiable
+        // universal artifact without changing the typed H2 identity or provenance.
+        let typed_digest = artifact.artifact_digest();
         let universal = artifact.to_hydration_artifact()?;
+        universal.verify()?;
         assert_eq!(universal.level, HydrationLevel::H2);
         assert_eq!(universal.content_type, expected_content_type);
         assert_eq!(universal.payload, artifact.payload());
         assert_eq!(universal.payload_digest, artifact.payload_digest());
+        assert_eq!(universal.proof_roots, *artifact.proof_roots());
+        assert_eq!(
+            universal.applied_transform.as_deref(),
+            Some(artifact.applied_redaction_transform())
+        );
+        assert_eq!(universal.artifact_digest, universal.computed_digest());
+        assert_ne!(universal.artifact_digest, typed_digest);
+        assert_eq!(artifact.artifact_digest(), typed_digest);
+        assert_eq!(artifact.to_canonical_bytes()?, art_bytes);
 
         // TryFrom conversion
         let from_try: HydrationArtifact = artifact.clone().try_into()?;
