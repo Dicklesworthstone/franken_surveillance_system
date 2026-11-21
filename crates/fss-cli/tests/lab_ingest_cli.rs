@@ -27,19 +27,16 @@ type TestResult = Result<(), Box<dyn Error>>;
 const SSRC: &str = "287454020";
 
 /// `clean.264` manifest (tests/fixtures/media/h264/fixture_manifest.json).
-const H264_SHA256: &str =
-    "8c306a4717970585256481714c96b1e868206c83f7cfa964602878276a09eff8";
+const H264_SHA256: &str = "8c306a4717970585256481714c96b1e868206c83f7cfa964602878276a09eff8";
 const H264_BYTES: u64 = 3558;
 const H264_AU: &str = "5";
 
 /// `mjpeg_clean_3frames.mjpeg` manifest (tests/fixtures/media/mjpeg/fixture_manifest.json).
-const MJPEG_CLEAN_SHA256: &str =
-    "5d0ad1de84dd83b354310d873ec1f1f8d02557b33b4420f3838673679d7591e7";
+const MJPEG_CLEAN_SHA256: &str = "5d0ad1de84dd83b354310d873ec1f1f8d02557b33b4420f3838673679d7591e7";
 const MJPEG_CLEAN_BYTES: u64 = 2510;
 
 /// `gray_16x16_flat.jpg` manifest (tests/fixtures/media/jpeg/fixture_manifest.json).
-const JPEG_SHA256: &str =
-    "bb89bdbebe3b4aa81a6bb3a0d3a548d4d8b4e0d633a511de75b0fd6c41062577";
+const JPEG_SHA256: &str = "bb89bdbebe3b4aa81a6bb3a0d3a548d4d8b4e0d633a511de75b0fd6c41062577";
 const JPEG_BYTES: u64 = 329;
 
 #[path = "../../fss-reference/tests/caplog_support/mod.rs"]
@@ -185,13 +182,21 @@ fn clean_h264_import_matches_manifest() -> TestResult {
         &["--media-format", "annexb"],
     )?;
     let record = Record::new("clean_h264_import")
-        .check("input_sha256", format!("sha256:{H264_SHA256}"), field(&output, "input_sha256")?)
+        .check(
+            "input_sha256",
+            format!("sha256:{H264_SHA256}"),
+            field(&output, "input_sha256")?,
+        )
         .check(
             "input_bytes",
             H264_BYTES.to_string(),
             field(&output, "input_bytes")?,
         )
-        .check("segment_count", H264_AU.to_string(), field(&output, "segment_count")?)
+        .check(
+            "segment_count",
+            H264_AU.to_string(),
+            field(&output, "segment_count")?,
+        )
         .check(
             "media_format",
             "annexb".to_string(),
@@ -226,7 +231,11 @@ fn clean_mjpeg_import_matches_manifest() -> TestResult {
             MJPEG_CLEAN_BYTES.to_string(),
             field(&output, "input_bytes")?,
         )
-        .check("segment_count", "3".to_string(), field(&output, "segment_count")?)
+        .check(
+            "segment_count",
+            "3".to_string(),
+            field(&output, "segment_count")?,
+        )
         .check(
             "media_format",
             "mjpeg".to_string(),
@@ -255,7 +264,11 @@ fn clean_jpeg_import_matches_manifest() -> TestResult {
             JPEG_BYTES.to_string(),
             field(&output, "input_bytes")?,
         )
-        .check("segment_count", "1".to_string(), field(&output, "segment_count")?);
+        .check(
+            "segment_count",
+            "1".to_string(),
+            field(&output, "segment_count")?,
+        );
     record.emit_checked(0, record.passed());
     assert_clean_media_report(&output, "1")?;
     Ok(())
@@ -314,11 +327,19 @@ fn repeated_import_is_idempotent() -> TestResult {
 fn truncated_last_is_degraded() -> TestResult {
     let scratch = Scratch::new("truncated")?;
     let input = fixture("mjpeg/mjpeg_truncated_last.mjpeg");
-    let output = import(&scratch.0.join("root"), &input, &["--media-format", "mjpeg"])?;
+    let output = import(
+        &scratch.0.join("root"),
+        &input,
+        &["--media-format", "mjpeg"],
+    )?;
     let history = field(&output, "acquisition_history")?;
     let pass = field(&output, "segment_count")? == "2" && history.contains("degraded");
     Record::new("truncated_last_degraded")
-        .check("segment_count", "2".to_string(), field(&output, "segment_count")?)
+        .check(
+            "segment_count",
+            "2".to_string(),
+            field(&output, "segment_count")?,
+        )
         .check("degraded_recorded", true, history.contains("degraded"))
         .emit_checked(0, pass);
     success(&output);
@@ -332,12 +353,19 @@ fn truncated_last_is_degraded() -> TestResult {
 fn garbage_between_frames_reports_omissions() -> TestResult {
     let scratch = Scratch::new("garbage")?;
     let input = fixture("mjpeg/mjpeg_garbage_between_frames.mjpeg");
-    let output = import(&scratch.0.join("root"), &input, &["--media-format", "mjpeg"])?;
+    let output = import(
+        &scratch.0.join("root"),
+        &input,
+        &["--media-format", "mjpeg"],
+    )?;
     let omitted = field(&output, "omission_count")?;
-    let pass = field(&output, "segment_count")? == "3"
-        && omitted.parse::<u64>().unwrap_or(0) >= 2;
+    let pass = field(&output, "segment_count")? == "3" && omitted.parse::<u64>().unwrap_or(0) >= 2;
     Record::new("garbage_between_frames_omissions")
-        .check("segment_count", "3".to_string(), field(&output, "segment_count")?)
+        .check(
+            "segment_count",
+            "3".to_string(),
+            field(&output, "segment_count")?,
+        )
         .check(
             "omission_count_at_least_2",
             true,
@@ -354,7 +382,11 @@ fn garbage_between_frames_reports_omissions() -> TestResult {
 fn zero_length_file_is_refused() -> TestResult {
     let scratch = Scratch::new("zero")?;
     let input = fixture("mjpeg/mjpeg_zero_length.mjpeg");
-    let output = import(&scratch.0.join("root"), &input, &["--media-format", "mjpeg"])?;
+    let output = import(
+        &scratch.0.join("root"),
+        &input,
+        &["--media-format", "mjpeg"],
+    )?;
     let pass = !output.status.success() && output.stdout.is_empty();
     Record::new("zero_length_refused")
         .check("exit_nonzero", true, !output.status.success())
@@ -459,13 +491,21 @@ fn rtpplay_imports_and_auto_is_refused() -> TestResult {
         && field(&imported, "capsule_count")? == "5"
         && auto_refused;
     Record::new("rtpplay_import_and_auto_refused")
-        .check("media_format", "rtpplay".to_string(), field(&imported, "media_format")?)
+        .check(
+            "media_format",
+            "rtpplay".to_string(),
+            field(&imported, "media_format")?,
+        )
         .check(
             "access_unit_count",
             "5".to_string(),
             field(&imported, "access_unit_count")?,
         )
-        .check("capsule_count", "5".to_string(), field(&imported, "capsule_count")?)
+        .check(
+            "capsule_count",
+            "5".to_string(),
+            field(&imported, "capsule_count")?,
+        )
         .check("auto_refused", true, auto_refused)
         .emit_checked(0, pass);
     success(&imported);
@@ -482,12 +522,8 @@ fn reopen_verify_rederives_source_digest() -> TestResult {
     let input = fixture("mjpeg/mjpeg_clean_3frames.mjpeg");
     let imported = import(&root, &input, &["--media-format", "mjpeg"])?;
     let identity = field(&imported, "import_identity")?;
-    let verify = action(
-        &root,
-        &["verify", "--import-id", &identity],
-    )?;
-    let pass = field(&verify, "verified_source_sha256")?
-        == field(&imported, "input_sha256")?
+    let verify = action(&root, &["verify", "--import-id", &identity])?;
+    let pass = field(&verify, "verified_source_sha256")? == field(&imported, "input_sha256")?
         && field(&verify, "authority_sequence")? == field(&imported, "authority_sequence")?;
     Record::new("reopen_verify_rederives_source")
         .check(
@@ -503,5 +539,50 @@ fn reopen_verify_rederives_source_digest() -> TestResult {
         .emit_checked(0, pass);
     success(&verify);
     assert!(pass);
+    Ok(())
+}
+
+/// Foreign site lineage: importing into an existing root under a different `--site` refuses
+/// without modifying the stored deployment.
+#[test]
+fn foreign_site_lineage_is_refused() -> TestResult {
+    let scratch = Scratch::new("foreign-site")?;
+    let root = scratch.0.join("root");
+    let input = fixture("jpeg/gray_16x16_flat.jpg");
+    let first = import(&root, &input, &[])?;
+    success(&first);
+
+    let objects_dir = root.join("objects").join("spool").join("objects");
+    let before_objects = fs::read_dir(&objects_dir)?.count();
+
+    let foreign = Command::new(env!("CARGO_BIN_EXE_fss-file"))
+        .arg("import")
+        .arg("--root")
+        .arg(&root)
+        .args(["--site", "site:foreign-site"])
+        .arg("--input")
+        .arg(&input)
+        .args([
+            "--sensor",
+            "sensor:lab-ingest-cli",
+            "--stream",
+            "stream:lab-ingest-cli",
+            "--receive-time-ns",
+            "2000000000",
+        ])
+        .output()?;
+    let after_objects = fs::read_dir(&objects_dir)?.count();
+    let pass =
+        !foreign.status.success() && foreign.stdout.is_empty() && before_objects == after_objects;
+    Record::new("foreign_site_lineage_refused")
+        .check("exit_nonzero", true, !foreign.status.success())
+        .check("stdout_empty", true, foreign.stdout.is_empty())
+        .check("object_count_unchanged", before_objects, after_objects)
+        .emit_checked(0, pass);
+    assert!(
+        pass,
+        "foreign site import unexpectedly succeeded: stderr={}",
+        String::from_utf8_lossy(&foreign.stderr)
+    );
     Ok(())
 }
