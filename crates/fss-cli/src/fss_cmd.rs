@@ -510,7 +510,8 @@ pub fn execute_live_fss_with_exit(command: FssCommand) -> (String, ExitIdentity)
 ///
 /// `None` means the command was cancelled before dispatch and never started. Once dispatched,
 /// native execution always returns its real outcome, including durable effect receipts. The
-/// transport must join that execution and suppress a cancelled request's response itself.
+/// transport must join that execution and preserve its actual outcome. A cancellation request
+/// cannot turn completed native state or an effect receipt into a claim that no work occurred.
 /// Source readers, follow waits, effect observation waits, and session admission consult the
 /// same probe at their existing checkpoints. Started effect mutations retain their own native
 /// owner and clock: cancelling a transport request never cancels or retries an effect.

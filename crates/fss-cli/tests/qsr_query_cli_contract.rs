@@ -10,8 +10,12 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use fss_cli::{ExitIdentity, FssCommand, execute_fss_with_exit, parse_fss_args};
+use fss_cli::{
+    ExitIdentity, FssCommand, RequestControl, execute_fss_with_exit,
+    execute_live_fss_with_control, parse_fss_args,
+};
 use fss_core::json_input::{Value, parse};
 use support::{Fixture, PRINCIPAL, Test};
 
@@ -425,6 +429,106 @@ fn source_grant_budget_and_corruption_refusals_return_no_partial_observations() 
     assert_eq!(refused.1, ExitIdentity::AGENT_REFUSED);
     same_mcp(&fixture, "", &refused)?;
     assert!(!refused.0.contains("claim:qsr:samples"));
+    assert_eq!(tree(&fixture.source.root)?, before);
+    Ok(())
+}
+
+#[test]
+fn native_cancellation_withholds_qsr_rows_through_final_delivery_without_source_mutation() -> Test
+{
+    let fixture = Fixture::new_lane("canonical-qsr-native-cancellation")?;
+    fs::write(
+        fixture.source.root.join("LAYOUT.tmp"),
+        b"unrelated pending layout bytes",
+    )?;
+    let before = tree(&fixture.source.root)?;
+    let options = [("--lane-stages", r#"["early","late"]"#)];
+    let expected = execute_fss_with_exit(parse_fss_args(args(&fixture, &options))?);
+    assert_eq!(expected.1, ExitIdentity::SUCCESS, "{}", expected.0);
+    assert!(expected.0.contains("claim:qsr:"));
+    assert!(expected.0.contains("claim:qsr-lane:"));
+
+    let polls = AtomicUsize::new(0);
+    let probe = || {
+        polls.fetch_add(1, Ordering::SeqCst);
+        false
+    };
+    let baseline = execute_live_fss_with_control(
+        parse_fss_args(args(&fixture, &options))?,
+        &RequestControl::new(&probe),
+    )
+    .ok_or("an uncancelled source query must start")?;
+    assert_eq!(baseline, expected);
+    assert_eq!(tree(&fixture.source.root)?, before);
+    let total_polls = polls.load(Ordering::SeqCst);
+    assert!(total_polls > 4, "native source verification must poll cancellation");
+
+    // Use the real successful run's checkpoints, including the final delivery poll.
+    // The owner signal stays cancelled, as required by RequestControl.
+    for cancel_at in [1, 2, total_polls / 2, total_polls - 1, total_polls] {
+        let polls = AtomicUsize::new(0);
+        let probe = || polls.fetch_add(1, Ordering::SeqCst) + 1 >= cancel_at;
+        let result = execute_live_fss_with_control(
+            parse_fss_args(args(&fixture, &options))?,
+            &RequestControl::new(&probe),
+        );
+        if cancel_at == 1 {
+            assert!(result.is_none(), "cancelled before dispatch must not start");
+            assert_eq!(polls.load(Ordering::SeqCst), 1);
+        } else {
+            assert!(
+                polls.load(Ordering::SeqCst) >= cancel_at,
+                "cancellation cut {cancel_at} was not reached"
+            );
+            let refused = result.ok_or("a started source query must return its native refusal")?;
+            assert_eq!(
+                refused.1,
+                ExitIdentity::AGENT_REFUSED,
+                "cancellation cut {cancel_at}: {}",
+                refused.0
+            );
+            let value = parse(&refused.0)?;
+            let object = value.object().ok_or("qsr cancellation response")?;
+            assert!(
+                object
+                    .get("payload")
+                    .is_none_or(|value| matches!(value, Value::Null))
+            );
+            assert!(
+                object
+                    .get("continuation")
+                    .is_none_or(|value| matches!(value, Value::Null))
+            );
+            assert!(!refused.0.contains("claim:qsr:"));
+            assert!(!refused.0.contains("claim:qsr-lane:"));
+        }
+        assert_eq!(tree(&fixture.source.root)?, before);
+
+        // Each request has its own owner. A cancelled read cannot poison a fresh query.
+        let recovered = execute_live_fss_with_control(
+            parse_fss_args(args(&fixture, &options))?,
+            &RequestControl::uncancelled(),
+        )
+        .ok_or("a fresh uncancelled source query must start")?;
+        assert_eq!(recovered, expected);
+        assert_eq!(tree(&fixture.source.root)?, before);
+    }
+
+    // Supplying a request control confers no source-verification authority.
+    let FssCommand::QsrQuery(mut ungranted) = parse_fss_args(args(&fixture, &options))? else {
+        return Err("qsr command".into());
+    };
+    ungranted.verify_qsr_source = false;
+    let expected_denial = fss_cli::qsr_query_cmd::execute_qsr_query(&ungranted);
+    let denied = execute_live_fss_with_control(
+        FssCommand::QsrQuery(ungranted),
+        &RequestControl::uncancelled(),
+    )
+    .ok_or("an uncancelled ungranted request must return its native refusal")?;
+    assert_eq!(denied, expected_denial);
+    assert_eq!(denied.1, ExitIdentity::AGENT_REFUSED);
+    assert!(!denied.0.contains("claim:qsr:"));
+    assert!(!denied.0.contains("claim:qsr-lane:"));
     assert_eq!(tree(&fixture.source.root)?, before);
     Ok(())
 }

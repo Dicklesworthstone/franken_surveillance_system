@@ -30,6 +30,10 @@ mod historical_health;
 #[path = "mcp_investigation_contract/wire.rs"]
 mod mcp_response;
 
+#[cfg(unix)]
+#[path = "agent_effect_cli_contract/mcp_cancellation.rs"]
+mod mcp_cancellation;
+
 use std::error::Error;
 use std::ffi::OsString;
 use std::fs;

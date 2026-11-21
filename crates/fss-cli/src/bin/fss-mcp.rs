@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 //! Owner-launched MCP stdio transport for native FSS reads and agent-session continuity.
-//! This is a bounded synchronous reference adapter, not a production network service.
+//! Unix requests run under owned Asupersync cancellation/drain; other platforms remain synchronous.
+//! This reference adapter is not a production network service.
 
 use std::ffi::OsString;
 use std::io;
@@ -35,6 +36,9 @@ mod localizations;
 mod server;
 #[path = "fss_mcp/tracks.rs"]
 mod tracks;
+#[cfg(unix)]
+#[path = "fss_mcp/transport.rs"]
+mod transport;
 
 const HELP: &str = "fss-mcp --root EXISTING_DEPLOYMENT [--principal PRINCIPAL_ID] [--archive-root EXISTING_ARCHIVE]\n\
         [--allow-replay-source-verification] [--allow-qsr-source-verification]\n\
@@ -65,7 +69,10 @@ event hydration and approved dispatch are at most 60 seconds (cooperative).\n\
 Mission text is literal, never a file to read. Session budgets are cumulative;\n\
 same-head retry and resume behavior comes from the native session implementation.\n\
 Input frames are limited to 64 KiB; semantic responses to 4 MiB before escaping.\n\
-Diagnostics go only to stderr. EOF shuts down. Reference-only, not qualified.\n";
+Unix stdio runs one native request with at most 16 queued; ping and cancellation stay live.\n\
+Cancellation is cooperative: completed native results and effects are never rolled back.\n\
+Other platforms retain synchronous stdio without in-flight cancellation.\n\
+Diagnostics go only to stderr. EOF drains admitted work. Reference-only, not qualified.\n";
 
 #[derive(Debug, Eq, PartialEq)]
 struct Options {
@@ -208,7 +215,11 @@ fn main() -> ExitCode {
     if allow_tracks_source_verification {
         server = server.with_tracks_source_verification();
     }
-    match server::serve(&mut server, io::stdin().lock(), io::stdout().lock()) {
+    #[cfg(unix)]
+    let result = transport::serve_stdio(&mut server);
+    #[cfg(not(unix))]
+    let result = server::serve(&mut server, io::stdin().lock(), io::stdout().lock());
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
         Err(_) => {

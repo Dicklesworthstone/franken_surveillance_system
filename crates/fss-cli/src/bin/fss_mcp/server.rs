@@ -1,21 +1,24 @@
 #![forbid(unsafe_code)]
-//! Synchronous MCP reference adapter for native reads and durable agent-session continuity.
-//! No network listener or second runtime.
+//! Bounded MCP decoding and canonical native admission, independent of request execution.
+//! Unix transport owns asynchronous work; the synchronous adapter remains for other platforms.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
+#[cfg(any(not(unix), test))]
 use std::io::{self, BufRead, Write};
 
 use fss_cli::session_cmd::SessionCommand;
-use fss_cli::{
-    ExitIdentity, FssCommand, escape_json_str, execute_live_fss_with_exit, parse_fss_args,
-};
+use fss_cli::{ExitIdentity, FssCommand, escape_json_str, parse_fss_args};
+#[cfg(any(not(unix), test))]
+use fss_cli::execute_live_fss_with_exit;
 use fss_core::json_input::MAX_MCP_TOOL_OUTPUT_BYTES;
 use fss_reference::deployment_session::{
     MAX_MISSION_BYTES, MAX_NOTE_BYTES, MAX_OBJECTIVE_BYTES, MAX_SESSION_TOKEN_BUDGET,
 };
 
-use super::json::{self, MAX_FRAME_BYTES, Value};
+use super::json::{self, Value};
+#[cfg(any(not(unix), test))]
+use super::json::MAX_FRAME_BYTES;
 
 const PROTOCOL_VERSION: &str = "2025-06-18";
 const MAX_BUDGET_TOKENS: u64 = 4096;
@@ -77,6 +80,56 @@ enum Phase {
     Ready,
 }
 
+/// Identity never passes through floating point. Numeric `-0` and `0` identify the same request;
+/// the separate wire spelling preserves the exact ID in its response.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum RequestKey {
+    Integer(i64),
+    Text(String),
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct RequestId {
+    pub(super) key: RequestKey,
+    wire: String,
+}
+
+impl RequestId {
+    fn parse(value: &Value) -> Option<Self> {
+        match value {
+            Value::Text(id) if id.len() <= 128 => Some(Self {
+                key: RequestKey::Text(id.clone()),
+                wire: quote(id),
+            }),
+            Value::Number(id) if integer_id(id) => Some(Self {
+                key: RequestKey::Integer(id.parse().ok()?),
+                wire: id.clone(),
+            }),
+            _ => None,
+        }
+    }
+
+    pub(super) fn error(&self, code: i32, message: &str) -> String {
+        error(&self.wire, code, message)
+    }
+
+    pub(super) fn tool_result(&self, output: &str, exit: ExitIdentity) -> String {
+        self.result(&tool_result(output, exit.code != 0))
+    }
+
+    fn result(&self, result: &str) -> String {
+        format!("{{\"jsonrpc\":\"2.0\",\"id\":{},\"result\":{result}}}", self.wire)
+    }
+}
+
+/// Parsing and native admission finish on the transport owner; execution is an owned handoff.
+pub(super) enum Dispatch {
+    Ignore,
+    Reply { id: Option<RequestId>, text: String },
+    Tool { id: RequestId, command: FssCommand },
+    Cancel(RequestId),
+}
+
 pub(super) struct Server {
     root: OsString,
     principal: String,
@@ -126,31 +179,44 @@ impl Server {
         self
     }
 
+    #[cfg(any(not(unix), test))]
     pub(super) fn handle(&mut self, text: &str) -> Option<String> {
         self.handle_with(text, execute_live_fss_with_exit)
     }
 
+    #[cfg(any(not(unix), test))]
     fn handle_with(
         &mut self,
         text: &str,
         mut execute: impl FnMut(FssCommand) -> (String, ExitIdentity),
     ) -> Option<String> {
+        match self.dispatch(text) {
+            Dispatch::Ignore | Dispatch::Cancel(_) => None,
+            Dispatch::Reply { text, .. } => Some(text),
+            Dispatch::Tool { id, command } => {
+                let (output, exit) = execute(command);
+                Some(id.tool_result(&output, exit))
+            }
+        }
+    }
+
+    pub(super) fn dispatch(&mut self, text: &str) -> Dispatch {
+        let invalid = |code, message| Dispatch::Reply {
+            id: None,
+            text: error("null", code, message),
+        };
         let value = match json::parse(text) {
             Ok(value) => value,
-            Err(()) => return Some(error("null", -32700, "Invalid or over-budget JSON")),
+            Err(()) => return invalid(-32700, "Invalid or over-budget JSON"),
         };
         let Some(request) = value.object() else {
-            return Some(error(
-                "null",
-                -32600,
-                "A single JSON-RPC object is required",
-            ));
+            return invalid(-32600, "A single JSON-RPC object is required");
         };
         if request.get("jsonrpc").and_then(Value::text) != Some("2.0") {
-            return Some(error("null", -32600, "Invalid JSON-RPC version"));
+            return invalid(-32600, "Invalid JSON-RPC version");
         }
         let Some(method) = request.get("method").and_then(Value::text) else {
-            return Some(error("null", -32600, "A method string is required"));
+            return invalid(-32600, "A method string is required");
         };
         let id = match request.get("id") {
             None => {
@@ -161,15 +227,31 @@ impl Server {
                 {
                     self.phase = Phase::Ready;
                 }
-                return None;
+                if method == "notifications/cancelled"
+                    && let Ok(p) = params(request)
+                    && only(p, &["requestId", "reason", "_meta"])
+                    && p.get("reason").is_none_or(|value| {
+                        value.text().is_some_and(|reason| reason.len() <= 1024)
+                    })
+                    && let Some(id) = p.get("requestId").and_then(RequestId::parse)
+                {
+                    return Dispatch::Cancel(id);
+                }
+                return Dispatch::Ignore;
             }
-            Some(Value::Text(id)) if id.len() <= 128 => quote(id),
-            Some(Value::Number(id)) if integer_id(id) => id.clone(),
-            _ => return Some(error("null", -32600, "Invalid request id")),
+            Some(value) => match RequestId::parse(value) {
+                Some(id) => id,
+                None => return invalid(-32600, "Invalid request id"),
+            },
         };
         let p = match params(request) {
             Ok(p) => p,
-            Err(()) => return Some(error(&id, -32602, "Parameters must be an object")),
+            Err(()) => {
+                return Dispatch::Reply {
+                    text: id.error(-32602, "Parameters must be an object"),
+                    id: Some(id),
+                };
+            }
         };
         let result = match method {
             "initialize" => self.initialize(p),
@@ -178,13 +260,19 @@ impl Server {
             _ if self.phase != Phase::Ready => Err((-32002, "Complete initialization first")),
             "tools/list" if only(p, &["_meta"]) => Ok(tools_list()),
             "tools/list" => Err((-32602, "This complete tool list has no continuation cursor")),
-            "tools/call" => self.call(p, &mut execute),
+            "tools/call" => match self.call(p) {
+                Ok(command) => return Dispatch::Tool { id, command },
+                Err(error) => Err(error),
+            },
             _ => Err((-32601, "Method not found")),
         };
-        Some(match result {
-            Ok(result) => format!("{{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{result}}}"),
-            Err((code, message)) => error(&id, code, message),
-        })
+        Dispatch::Reply {
+            text: match result {
+                Ok(result) => id.result(&result),
+                Err((code, message)) => id.error(code, message),
+            },
+            id: Some(id),
+        }
     }
 
     fn initialize(&mut self, p: &BTreeMap<String, Value>) -> RpcResult {
@@ -222,16 +310,12 @@ impl Server {
         }
         self.phase = Phase::AwaitingInitialized;
         Ok(format!(
-            "{{\"protocolVersion\":\"{PROTOCOL_VERSION}\",\"capabilities\":{{\"tools\":{{\"listChanged\":false}}}},\"serverInfo\":{{\"name\":\"fss-mcp\",\"version\":\"{}\"}},\"instructions\":\"Local reference adapter, not production-qualified. The launching operator fixes the deployment root, optional native archive root and principal audit label. Recording queries require that archive binding and exact source/catalog pins; they disclose metadata only. Tool results retain existing FSS evidence and uncertainty semantics. Sessions, investigations, claims, findings and explicit durable follow update agent continuity state. Session-bound reads also persist host-clock admission or expiry; evidence, workspaces and effects remain unchanged by those clock records. Alert controls require native exact approval; plans and recommendations grant no effect authority. After response loss inspect retained operations with wait and follow native reconciliation guidance before acting again. No remote authentication or in-flight cancellation is implemented.\"}}",
+            "{{\"protocolVersion\":\"{PROTOCOL_VERSION}\",\"capabilities\":{{\"tools\":{{\"listChanged\":false}}}},\"serverInfo\":{{\"name\":\"fss-mcp\",\"version\":\"{}\"}},\"instructions\":\"Local reference adapter, not production-qualified. The launching operator fixes the deployment root, optional native archive root and principal audit label. Recording queries require that archive binding and exact source/catalog pins; they disclose metadata only. Tool results retain existing FSS evidence and uncertainty semantics. Sessions, investigations, claims, findings and explicit durable follow update agent continuity state. Session-bound reads also persist host-clock admission or expiry; evidence, workspaces and effects remain unchanged by those clock records. Alert controls require native exact approval; plans and recommendations grant no effect authority. After response loss inspect retained operations with wait and follow native reconciliation guidance before acting again. Unix stdio supports cooperative request cancellation and drains native work before retirement; other platforms retain synchronous stdio. Cancellation never implies rollback of completed native state or effects. No remote authentication is implemented.\"}}",
             env!("CARGO_PKG_VERSION")
         ))
     }
 
-    fn call(
-        &self,
-        p: &BTreeMap<String, Value>,
-        execute: &mut impl FnMut(FssCommand) -> (String, ExitIdentity),
-    ) -> RpcResult {
+    fn call(&self, p: &BTreeMap<String, Value>) -> Result<FssCommand, (i32, &'static str)> {
         if !only(p, &["name", "arguments", "_meta"]) {
             return Err((-32602, "Unexpected tool call field"));
         }
@@ -255,15 +339,15 @@ impl Server {
             } else {
                 super::investigate::command(&self.root, &self.principal, args)?
             };
-            return execute_admitted(command, execute);
+            return admit(command);
         }
         if matches!(name, "plan" | "commit" | "cancel") {
             let command = super::control::command(name, &self.root, &self.principal, args)?;
-            return execute_admitted(command, execute);
+            return admit(command);
         }
         if name == "feedback" {
             let command = super::feedback::command(&self.root, &self.principal, args)?;
-            return execute_admitted(command, execute);
+            return admit(command);
         }
         let mut argv = match name {
             "session_open" => {
@@ -661,7 +745,7 @@ impl Server {
         }
         let command = parse_fss_args(argv)
             .map_err(|_| (-32602, "Arguments refused by the canonical CLI parser"))?;
-        execute_admitted(command, execute)
+        admit(command)
     }
 
     fn session_args(&self, subcommand: &str) -> Vec<OsString> {
@@ -681,10 +765,7 @@ impl Server {
 }
 
 /// Every tool, including typed authored intents, passes the same closed native command clamp.
-fn execute_admitted(
-    command: FssCommand,
-    execute: &mut impl FnMut(FssCommand) -> (String, ExitIdentity),
-) -> RpcResult {
+fn admit(command: FssCommand) -> Result<FssCommand, (i32, &'static str)> {
     // A final typed clamp remains even if command parsing gains new operations.
     if !matches!(
         command,
@@ -737,8 +818,7 @@ fn execute_admitted(
     ) {
         return Err((-32603, "Admitted command boundary refused dispatch"));
     }
-    let (output, exit) = execute(command);
-    Ok(tool_result(&output, exit.code != 0))
+    Ok(command)
 }
 
 type RpcResult = Result<String, (i32, &'static str)>;
@@ -848,6 +928,7 @@ fn tool_result(output: &str, failed: bool) -> String {
     )
 }
 
+#[cfg(any(not(unix), test))]
 fn read_frame(reader: &mut impl BufRead) -> io::Result<Option<Vec<u8>>> {
     let mut bytes = Vec::new();
     loop {
@@ -883,6 +964,7 @@ fn read_frame(reader: &mut impl BufRead) -> io::Result<Option<Vec<u8>>> {
     }
 }
 
+#[cfg(any(not(unix), test))]
 pub(super) fn serve(
     server: &mut Server,
     mut input: impl BufRead,

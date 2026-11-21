@@ -305,19 +305,67 @@ normalization, exact retry and publication-custody behavior.
 
 The negotiated version is **MCP 2025-06-18**. The server accepts `initialize`,
 then `notifications/initialized`, `ping`, `tools/list` and
-`tools/call`. The complete fourteen-tool list is returned in one response. Native
+`tools/call`. Unix stdio also handles `notifications/cancelled` while a native
+request is running. The complete fourteen-tool list is returned in one response. Native
 durable follow state is accessed by explicit calls; there is no asynchronous MCP
 subscription or task channel.
 
 UTF-8 JSON-RPC objects are newline-delimited; batches are refused. Stdout contains
 only protocol messages, and each response is flushed. Notifications never execute
-a tool or mutate session state. Diagnostics go to stderr. EOF ends the process;
-a partial final line is rejected.
+a tool or mutate session state. Diagnostics go to stderr. EOF stops admission and
+drains already admitted requests in FIFO order before exit; a partial final line
+is rejected. Request cancellation does not acknowledge a durable follow page.
 
 Input is limited to 64 KiB including the newline, 32 nesting levels, 4096 values,
 and 16 KiB per decoded string. Duplicate keys, malformed Unicode, invalid JSON
 numbers and unrecognized fields are refused. Integer request IDs preserve their
 exact spelling and must fit signed 64-bit range; string IDs are at most 128 bytes.
+Duplicate IDs among running or queued requests are refused before native execution.
+Numeric and string IDs remain distinct; numeric `-0` and `0` identify the same
+request. There is no floating-point ID conversion.
+
+### Request ownership and cancellation on Unix
+
+One Asupersync runtime owns one native blocking-pool worker. Up to sixteen further
+native requests can wait in its bounded FIFO. This preserves serial native mutation
+ordering while `ping`, `tools/list` and cancellation notifications remain responsive.
+A full native queue returns JSON-RPC `-32003` without invoking the new command;
+duplicate live IDs return `-32600`. The transport never runs a refused command inline.
+
+Cancel the exact JSON-RPC request ID, preserving its string or integer type:
+
+```json
+{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":42,"reason":"No longer needed"}}
+```
+
+Queued work is removed without native execution and receives `-32800`. A running
+request receives cancellation through its owned runtime context, and its owner
+waits for the native closure to return before retiring it. Native ordinary and
+durable follow waits, effect-receipt waits, footage/recording metadata queries,
+QSR/track source verification, archive/retained recording replay queries and event
+hydration check cancellation at their existing admission boundaries. Other commands
+finish their ordinary bounded native path. No operation is preemptively terminated,
+and cancellation never supplies a new grant, renews a deadline, acknowledges a page
+or issues the application-level `cancel` tool.
+
+The actual native response survives a cancellation race: a completed session write,
+charged hydration result or effect result is returned unchanged, including its exit
+identity. Cancellation is not rollback. An unknown or already retired request ID
+has no effect. A native panic or an indeterminate worker outcome returns an explicit
+error directing the client to inspect retained state before retrying.
+
+The Unix launcher temporarily sets nonblocking mode on owned duplicates of stdin
+and stdout, restoring their original flags on return. Safe `nix` fd operations use
+the existing pinned dependency with its `fs` feature; no detached reader thread or
+additional runtime is introduced. The scheduler retains partial frames across
+nonblocking reads and limits work per turn. Replies have a maximum backlog of
+sixty-four frames and `6 × 4 MiB + 128 KiB` retained wire bytes. Thirty seconds
+without output progress, exceeded output backlog, framing failure or an I/O error
+stops admission, discards unstarted work and requests cancellation of the running
+worker. The process drains that worker before returning. Filesystem and native
+execution cancellation remains cooperative; no hard preemption or rollback claim
+is made. Other platforms retain the previous synchronous stdio implementation and
+do not support in-flight cancellation.
 
 Semantic output is limited to 4 MiB before JSON escaping. Oversized output produces
 an explicit error, never a truncated envelope. Agent state may already have been
@@ -332,11 +380,13 @@ inside the tool result using the applicable native response contract.
 
 ## Scope and qualification
 
-This dependency-free synchronous adapter projects the implemented native CLI
+This local reference adapter projects the implemented native CLI
 operations. It does not implement full universal `AgentRequestEnvelope` ingress,
 capability negotiation, arbitrary privacy projections, remote authentication,
-in-flight cancellation, asynchronous live follow or FastMCP/Asupersync
-orchestration. The registered session implementations retain their existing
+asynchronous subscription notifications, durable MCP task projection or FastMCP
+integration. Unix request-owned execution is a bounded implementation slice of
+FSS-177, not completion of production request ownership or its qualification gate.
+The registered session implementations retain their existing
 reference limitations. No transport field silently changes those semantics.
 
 The adapter does not qualify the surveillance pipeline or a release gate. Full
@@ -348,6 +398,9 @@ under comprehensive-plan sections 20.6.1, 20.15 and 20.17.
 ```sh
 cargo test --locked -p fss-cli --bin fss-mcp
 cargo test --locked -p fss-cli --test mcp_cli_contract
+cargo test --locked -p fss-cli --test follow_cli_contract mcp_cancellation
+cargo test --locked -p fss-cli --test qsr_query_cli_contract native_cancellation
+cargo test --locked -p fss-cli --test tracks_query_cli_contract native_cancellation
 cargo test --locked -p fss-cli --test follow_subscription_cli_contract
 cargo test --locked -p fss-cli --test mcp_session_lifecycle_contract
 cargo test --locked -p fss-cli --test mcp_investigation_contract
@@ -361,7 +414,16 @@ cargo test --locked -p fss-cli --test mcp_feedback_contract
 Unit contracts cover exact dispatch, literal mission text, bounded cumulative
 budgets, all twenty-six typed investigation, claim and finding transitions, literal nested intent data,
 command and principal clamps, notification nonexecution, unchanged
-semantic payloads, framing and output ceilings. Process contracts use real
+semantic payloads, framing and output ceilings. Request-owner contracts cover queued
+cancellation and pressure, exact IDs, responsive ping, preserving a completed native
+result after cancellation, EOF drain, and draining a started worker on malformed input.
+Unix process contracts use retained certified-quiet coverage to exercise native follow
+cancellation, cancellation of an unstarted session write, duplicate IDs, late
+cancellation, broken output with stdin still open, framing failure and ordinary EOF.
+The prepared-effect process contract cancels a native receipt wait and verifies that
+the returned prepared receipt and proof pointers survive while all three journals
+and the underlying operation remain unchanged, with no relay connection.
+Process contracts use real
 reference deployments to check cross-surface identity, durable follow retries
 and acknowledgments, session lifecycle, case history, world-drift invalidation,
 claim lease and ownership fences, immutable finding retry receipts, exact native
@@ -369,8 +431,9 @@ plan/dispatch/cancel approvals, lost MCP and relay acknowledgments, retained
 receipts without resend, native advisory feedback parity and publication custody, and authority
 refusals. Native effect contracts also
 hold a complete loopback request to prove that session and case mutation cannot
-race an admitted dispatch. Included tests are not themselves test-pass or release qualification
-receipts.
+race an admitted dispatch. Native source-query contracts cancel before dispatch, during verification and at final delivery,
+withholding rows and continuations while preserving every source byte and the existing source-read
+grants. Included tests are not themselves test-pass or release qualification receipts.
 
 Protocol reference: `modelcontextprotocol/modelcontextprotocol`, specification
 `2025-06-18`, `basic/lifecycle`, `basic/transports`, and `server/tools`.

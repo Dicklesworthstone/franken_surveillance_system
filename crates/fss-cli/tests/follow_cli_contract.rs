@@ -42,6 +42,10 @@ const IDENTITY: &str = "1,0,0,0,1,0,0,0,1";
 /// Camera "west" sees the same ground mirrored left-right.
 const MIRROR: &str = "-1,0,96,0,1,0,0,0,1";
 
+#[cfg(unix)]
+#[path = "follow_cli_contract/mcp_cancellation.rs"]
+mod mcp_cancellation;
+
 // ---------------------------------------------------------------------------------------------
 // Minimal JSON reader: every assertion below goes through a full parse, so the output is also
 // proven to be one well-formed JSON document.
