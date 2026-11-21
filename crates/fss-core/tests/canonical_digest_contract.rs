@@ -7,8 +7,8 @@
 use core::str::FromStr;
 
 use fss_core::{
-    CanonicalDecode, CanonicalEncode, CanonicalVersionEnvelope, ContentDigest, ContractError,
-    DigestAlgorithm, Sha256Hasher, sha256,
+    CanonicalDecode, CanonicalEncode, CanonicalEncoder, CanonicalVersionEnvelope, ContentDigest,
+    ContractError, DigestAlgorithm, Sha256Hasher, sha256,
 };
 
 // ---------------------------------------------------------------------------
@@ -676,5 +676,27 @@ fn semantic_fingerprint_domain_separation() -> Result<(), ContractError> {
     assert_eq!(fp_alpha.algorithm(), DigestAlgorithm::Sha256);
     assert_eq!(fp_beta.algorithm(), DigestAlgorithm::Sha256);
 
+    Ok(())
+}
+
+#[test]
+fn canonical_encoder_fields_are_unambiguous() -> Result<(), ContractError> {
+    let mut left = CanonicalEncoder::new();
+    left.text("test");
+    left.text("ab");
+    left.text("c");
+    let left_bytes = left.finish_checked()?;
+
+    let mut right = CanonicalEncoder::new();
+    right.text("test");
+    right.text("a");
+    right.text("bc");
+    let right_bytes = right.finish_checked()?;
+
+    assert_ne!(left_bytes, right_bytes);
+    assert_ne!(
+        ContentDigest::sha256(&left_bytes),
+        ContentDigest::sha256(&right_bytes)
+    );
     Ok(())
 }

@@ -453,6 +453,37 @@ fn test_idempotency_keys_cannot_be_shared_across_different_intents() -> Result<(
     Ok(())
 }
 
+#[test]
+fn test_obligation_cannot_drift_between_operations() -> Result<(), Box<dyn Error>> {
+    let mut journal = EffectJournal::new();
+    let intent1 = sample_intent()?;
+    let shared_ob = ObligationId::parse("ob:drift:shared:01")?;
+
+    journal.prepare(
+        intent1.clone(),
+        shared_ob.clone(),
+        "delivery observed",
+        TimestampNs(1),
+    )?;
+
+    let second_intent = EffectIntent::new(
+        OperationId::parse("op:alert:dispatch:02")?,
+        IdempotencyKey::parse("idem:alert:2026-09-12:002")?,
+        "alert.dispatch",
+        ContentDigest::sha256(b"second-alert-request"),
+        intent1.precondition_digest,
+    )?;
+
+    let drift_res = journal.prepare(second_intent, shared_ob, "log visible", TimestampNs(2));
+    assert_eq!(
+        drift_res.err(),
+        Some(ContractError::ObligationConflict),
+        "reusing an obligation id on a second operation must fail with ObligationConflict"
+    );
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // 6. Hard bounds tested at bound and bound+1
 // ---------------------------------------------------------------------------
