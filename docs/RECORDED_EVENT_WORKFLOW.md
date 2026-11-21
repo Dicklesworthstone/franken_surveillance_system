@@ -748,6 +748,16 @@ fss-event prepare --root DIR --site SITE --report ./package-analysis.bin \
 fss-event publish ... --proposal-digest sha256:PROPOSAL
 ```
 
+Without `--retain yes`, `package-detect` produces an immutable preview, including
+its short and whole-recording sentinel modes. Capture may keep its writer open;
+the preview performs no initialization, journal recovery or effect reconciliation.
+It withholds the report until final custody and privacy checks confirm the original
+committed head. Concurrent changes or exhausted read allowances refuse the result.
+See the [preview limits](SENTINEL_DETECTION.md#preview-while-capture-owns-the-writer)
+for the shared byte/attempt budget and cooperative deadline. Preview reports are
+not retained inputs to `fss-event report`; the explicit `--retain yes` workflow
+above continues to require the exclusive writer.
+
 1. `--retain yes` retains the exact report JSON and a canonical `FSSPDET1` record
    (`fss.package_detection_record.v1`) root-last with one cognition-plane
    `package_detection_record` delta. Only the deployment's own computation is retained, never an

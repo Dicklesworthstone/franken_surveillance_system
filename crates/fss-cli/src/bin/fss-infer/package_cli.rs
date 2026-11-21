@@ -6,6 +6,7 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Instant;
 
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{BudgetVector, ContentDigest, OperationId, PrincipalId};
@@ -17,19 +18,23 @@ use fss_reference::ingest::package_detect::{
 };
 use fss_reference::ingest::recorded_decode::ComponentInterpretation;
 use fss_reference::ingest::rgb_package::{MAX_RGB_PACKAGE_BYTES, RgbDetectorPackage};
+use fss_reference::retained_source::ImmutableRetainedReadLimits;
 use fss_reference::{
     ExecBudget, ExecThreads, KernelBackend, MAX_EXEC_THREADS, ReferenceDeployment, ReplayCx,
     ScalarExecCx,
 };
 
 use super::long_sentinel_cli;
-use super::{RunResult, Values, digest, export, number, text, value};
+use super::{RunResult, Values, digest, export, number, retained_read, text, value};
+
+mod immutable;
 
 const HELP: &str = "fss-infer package-detect [options]\n\
   --root DIR --site SITE --import-id sha256:HEX --first-segment N --frames N (1..64)\n\
   --package FILE --package-digest sha256:HEX --interpretation gray|ycbcr\n\
   [--minimum-score-ppm N] [--max-macs N] [--max-tensor-bytes N] [--report-out FILE] [--principal ID]\n\
   [--retain yes] [--max-output-bytes N (1..16777216; default 16777216)]\n\
+  [--max-read-bytes N --max-read-objects N (unretained previews only)]\n\
   [--sentinel-every-frames N --sentinel-max-inferences M [--sentinel-burst-frames K]]\n\
   [--stream-sentinel yes --stream-read-bytes N --stream-pixel-budget N --max-report-bytes N]\n\
   [--max-frame-pixels N (stream-sentinel only)]\n\
@@ -45,6 +50,12 @@ const HELP: &str = "fss-infer package-detect [options]\n\
   cognition-plane evidence (root-last plus one package_detection_record delta) so `fss-event\n\
   report --package-report sha256:REPORT` can consume it; stdout stays the exact report bytes and\n\
   the retention receipt goes to stderr (package_detection_retained=, status=, root=).\n\
+  Without --retain yes, all three modes use an immutable reader alongside active capture,\n\
+  without a writer lock, initialization, recovery or effect reconciliation. Retained metadata,\n\
+  source, privacy and final custody checks share one allowance: 1073741824 bytes and\n\
+  1000000 read attempts by default, at most 4294967296 bytes and 4000000 attempts.\n\
+  A cooperative 60-second deadline applies at retained-read boundaries; a running model,\n\
+  decoder or filesystem call is not preempted. A changed source or authority refuses output.\n\
   Sentinel mode samples short contiguous bursts independently of foreground or motion.\n\
   --frames is the whole source/decode range (1..64); the first burst starts at --first-segment.\n\
   Period N is 1..64; burst K is 1..8 (default 3, no larger than N); allowance M is explicit,\n\
@@ -95,6 +106,7 @@ struct Options {
     retain: bool,
     sentinel: Option<SentinelConfig>,
     stream_sentinel: Option<long_sentinel_cli::StreamOptions>,
+    read_limits: ImmutableRetainedReadLimits,
 }
 
 fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
@@ -124,6 +136,8 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
         "--max-output-bytes",
         "--report-out",
         "--retain",
+        "--max-read-bytes",
+        "--max-read-objects",
         "--kernels",
         "--threads",
         "--sentinel-every-frames",
@@ -225,6 +239,19 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
     limits.run.maximum_output_bytes =
         long_sentinel_cli::output_ceiling(&values, limits.run.maximum_output_bytes)?;
     let stream_sentinel = long_sentinel_cli::parse_run(&values, first_segment, frames, limits)?;
+    let retain = match values.get("--retain").map(|v| v.to_str()) {
+        None => false,
+        Some(Some("yes")) => true,
+        Some(_) => return Err("--retain accepts only yes".into()),
+    };
+    if retain
+        && ["--max-read-bytes", "--max-read-objects"]
+            .iter()
+            .any(|key| values.contains_key(*key))
+    {
+        return Err("aggregate read allowances require an unretained preview".into());
+    }
+    let read_limits = retained_read::parse_limits(&values)?;
     Ok(Some(Options {
         root: PathBuf::from(value(&values, "--root")?),
         site,
@@ -235,6 +262,7 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
         threads,
         sentinel,
         stream_sentinel,
+        read_limits,
         request: PackageDetectRequest {
             import_identity: digest(&values, "--import-id")?,
             first_segment,
@@ -244,11 +272,7 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
         },
         limits,
         report: values.get("--report-out").map(PathBuf::from),
-        retain: match values.get("--retain").map(|v| v.to_str()) {
-            None => false,
-            Some(Some("yes")) => true,
-            Some(_) => return Err("--retain accepts only yes".into()),
-        },
+        retain,
     }))
 }
 
@@ -291,19 +315,31 @@ fn read_package(path: &Path) -> RunResult<Vec<u8>> {
     Ok(bytes)
 }
 
-fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
-    let authority_bytes = match &options.stream_sentinel {
-        Some(stream) => stream.authority_bytes()?,
-        None => 64 * 1024 * 1024,
+fn run(mut options: Options, out: &mut impl Write) -> RunResult<()> {
+    let authority_bytes = if options.retain {
+        match &options.stream_sentinel {
+            Some(stream) => stream.authority_bytes()?,
+            None => 64 * 1024 * 1024,
+        }
+    } else {
+        options.read_limits.max_read_bytes as u64
+    };
+    let budgets = if options.retain {
+        BudgetVector::builder().bytes(authority_bytes).build()?
+    } else {
+        BudgetVector::builder()
+            .bytes(authority_bytes)
+            .storage_operations(options.read_limits.max_read_objects as u64)
+            .build()?
     };
     let authority = ContextAuthority::new_root(RootAuthoritySpec {
         trace_id: "trace:package-detect-cli".into(),
         operation_id: OperationId::parse("operation:package-detect-cli")?,
-        principal: options.principal,
+        principal: options.principal.clone(),
         capabilities: vec!["ADP-REPLAY-001".into()],
         deadline: None,
         priority: 10,
-        budgets: BudgetVector::builder().bytes(authority_bytes).build()?,
+        budgets,
         privacy_scope: "privacy:local-authorized-files".into(),
         retention_scope: "retention:existing-deployment-policy".into(),
         anchor_universe: ContentDigest::sha256(options.site.as_bytes()),
@@ -317,8 +353,15 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
     {
         return Err(io::Error::other("existing non-symlink deployment required").into());
     }
-    let cx = ReplayCx::from_context_authority(&authority, options.root.clone())?;
+    let cx = if options.retain {
+        ReplayCx::from_context_authority(&authority, options.root.clone())?
+    } else {
+        options.root = fs::canonicalize(&options.root)?;
+        ReplayCx::from_context_authority_read_only(&authority, options.root.clone())?
+    };
     let scalar = ScalarExecCx::new();
+    let started = Instant::now();
+    let stopped = || started.elapsed() >= retained_read::DEADLINE;
     let result = (|| -> RunResult<()> {
         let bytes = read_package(&options.package)?;
         let package = RgbDetectorPackage::load_with_backend(
@@ -330,6 +373,14 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
             &scalar,
         )?
         .with_execution_threads(options.threads);
+        if !options.retain {
+            let usage = immutable::run(&options, &package, &cx, &scalar, &stopped, out)?;
+            eprintln!(
+                "payload_read_bytes={}\npayload_read_attempts={}\ndeployment_mutated=false",
+                usage.read_bytes, usage.read_objects,
+            );
+            return Ok(());
+        }
         let mut deployment = ReferenceDeployment::open(&options.root, &options.site, &cx)?;
         if let Some(stream) = &options.stream_sentinel {
             let request = stream.request(&options.request);

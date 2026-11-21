@@ -35,7 +35,7 @@ use super::rgb_detections::{
 use super::rgb_inference::{RgbInference, RgbRunLimits, RgbSourceBinding};
 use super::rgb_package::RgbDetectorPackage;
 use super::{RetainedFileImport, RetainedReadLimits};
-use crate::{ExecBudget, ReferenceDeployment, ReplayCx, ScalarExecCx};
+use crate::{ExecBudget, ReplayCx, RetainedSource, ScalarExecCx};
 
 /// Motion-independent, budgeted detector bursts with no tracking across sampling gaps.
 pub mod sentinel;
@@ -397,8 +397,10 @@ impl FrameRun<'_> {
 
 /// Run a verified package over a retained range. `scalar` owns inference cancellation.
 /// Frames are decoded and inferred one at a time; no decoded range is buffered.
+/// Immutable callers share one retained-read allowance and must call their source owner's
+/// final revalidation before releasing the report. This function never acquires a publisher.
 pub fn run_package_detection(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     package: &RgbDetectorPackage,
     request: &PackageDetectRequest,
     limits: &PackageDetectLimits,
@@ -431,7 +433,7 @@ pub fn run_package_detection(
 // complete. Its caller must partition the outputs into fully observed contiguous bursts.
 #[allow(clippy::too_many_arguments)]
 fn run_selected_detection<T>(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     package: &RgbDetectorPackage,
     request: &PackageDetectRequest,
     limits: &PackageDetectLimits,

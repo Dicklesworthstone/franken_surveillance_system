@@ -44,6 +44,37 @@ For a 20-frame range, period 8, burst 3 and allowance 6, segments 0–2 and 8–
 inferred. The full scheduled burst 16–18 is explicitly `budget_exhausted`. All fourteen
 uninferred segments are enumerated in `unsampled_segments`.
 
+## Preview while capture owns the writer
+
+Without `--retain yes`, ordinary package detection, short sentinel bursts and
+`--stream-sentinel yes` use an immutable reader of an existing deployment. Capture
+may keep its writer open: the preview takes no writer lock, initializes no store,
+recovers no journal and reconciles no effects. It releases stdout and an optional
+`--report-out` file only after final source, capsule, publication, privacy and
+authority checks succeed. Stderr reports `payload_read_bytes`,
+`payload_read_attempts` and `deployment_mutated=false`.
+
+The committed head and selected custody must remain unchanged through that final
+check. A concurrent commit, changed privacy policy, missing or altered payload,
+cancellation or exhausted allowance refuses the complete preview. A held writer
+is compatible with inspection; continuously advancing capture can require a fresh
+invocation after such a refusal.
+
+| Preview option | Default | Maximum |
+| --- | ---: | ---: |
+| `--max-read-bytes` | 1,073,741,824 | 4,294,967,296 |
+| `--max-read-objects` | 1,000,000 | 4,000,000 |
+
+One allowance covers retained metadata, source/privacy reads and final rereads;
+it never restarts between bursts or verification stages. Existing decoding,
+inference and whole-recording work limits remain independent. A cooperative
+60-second elapsed deadline is checked at retained-read boundaries, including final
+validation. It does not preempt a running model, decoder or filesystem call.
+
+`--retain yes` still requires the exclusive deployment writer and retains its
+existing publication behavior. The two aggregate read options apply only to
+unretained previews and are rejected with `--retain yes`.
+
 ## Native execution and provenance
 
 MJPEG reads and decodes only admitted frames. H.264/H.265 decode the whole bounded

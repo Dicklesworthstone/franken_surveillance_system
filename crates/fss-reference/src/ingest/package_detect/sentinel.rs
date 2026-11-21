@@ -25,7 +25,7 @@ use fss_core::{CanonicalEncoder, ContentDigest};
 
 use super::{
     MAX_PACKAGE_DETECT_FRAMES, PackageDetectError, PackageDetectFrame, PackageDetectLimits,
-    PackageDetectReport, PackageDetectRequest, ReferenceDeployment, ReplayCx, RgbDetectionContract,
+    PackageDetectReport, PackageDetectRequest, ReplayCx, RetainedSource, RgbDetectionContract,
     RgbDetectorPackage, ScalarExecCx, finish_report, json_string, run_selected_detection,
 };
 use crate::ingest::privacy_mask::MaskBinding;
@@ -218,9 +218,10 @@ impl SentinelReport {
 /// work counter and native video decoder serve all bursts; budgets do not reset at a boundary.
 /// Every child report contains a full burst and is consumable by `retain_package_detection`.
 /// Decode or cancellation failure yields no report and this function performs no writes.
+/// Immutable consumers revalidate their source owner before releasing any child or aggregate.
 #[allow(clippy::too_many_arguments)]
 pub fn run_sentinel_detection(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     package: &RgbDetectorPackage,
     request: &PackageDetectRequest,
     config: SentinelConfig,

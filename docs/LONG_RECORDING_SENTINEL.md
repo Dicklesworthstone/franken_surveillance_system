@@ -35,6 +35,18 @@ outside the deployment. Ordinary package detection and the original
 [short sentinel](SENTINEL_DETECTION.md) keep their existing limits and report
 bytes. Long sampling requires explicit opt-in and is not enabled by `watch`.
 
+Omit `--retain yes` for a fresh immutable preview. The preview can run while capture
+holds the writer, without initialization, recovery or effect reconciliation.
+It withholds stdout and `--report-out` until selected custody, current privacy and
+the committed authority head pass final revalidation; a concurrent change refuses
+the result and requires a fresh invocation. The shared preview allowance defaults
+to 1 GiB and 1,000,000 read attempts, including metadata and final rereads, with a
+cooperative 60-second retained-read deadline. See
+[preview limits and writer coexistence](SENTINEL_DETECTION.md#preview-while-capture-owns-the-writer)
+for `--max-read-bytes` and `--max-read-objects`. These limits are independent of
+`--stream-read-bytes` and the analysis-work ceilings below. Explicit retention
+continues to require the exclusive writer and rejects the preview-only options.
+
 ## Schedule and omissions
 
 The period is measured in source segments relative to `--first-segment`, not wall
