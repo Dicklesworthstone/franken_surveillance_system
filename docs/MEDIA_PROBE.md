@@ -11,6 +11,7 @@ fss-probe --parameters < source.264
 fss-probe --parameters --bytes 4096 --units 16 < source.265
 fss-probe --parameters < initialization.mp4
 fss-probe --parameters < recording.mkv
+fss-probe --parameters < recording.flv
 ```
 
 The command reads only stdin and writes one diagnostic line. There is no network access, source retention, decoding, model execution or automatic fallback. The original family-only invocation remains available.
@@ -18,7 +19,7 @@ The command reads only stdin and writes one diagnostic line. There is no network
 | Mode | Default byte allowance | Result |
 | --- | --- | --- |
 | Family | 189 | Container-family signature, payload domain and ISO-BMFF major brand when present |
-| `--parameters` | 4096 | First complete admitted Annex-B tuple, MP4 initialization or Matroska Tracks, signalled dimensions/profile/level/depth, original parameter spans and inspection counts |
+| `--parameters` | 4096 | First complete admitted Annex-B tuple, MP4 initialization, Matroska Tracks or FLV AVC sequence header, signalled dimensions/profile/level/depth, original parameter spans and inspection counts |
 
 `--bytes` accepts 1 through 4096 for family mode and 12 through 4096 for parameter mode. `--units` is available only with `--parameters` and accepts 1 through 64. Invalid or repeated options refuse before reading stdin. Short reads are accumulated within the original allowance. Interrupted reads have a fixed retry ceiling, and output failures return an error status.
 
@@ -91,17 +92,42 @@ Matroska and MP4 share the native configuration-record interpretation and origin
 
 Traversal is bounded by 128 visited element headers and 16 declared tracks, in addition to the caller's original byte/NAL/geometry limits. Nested track parsing has a fixed hierarchy. A parsed initialization child extending beyond a complete parent is malformed even when more source bytes follow; an incomplete first Tracks within an unfinished prefix remains insufficient or byte-limited. No external resource is followed, no frame is decoded, and success does not certify a complete or playable Matroska recording.
 
+## FLV AVC initialization within the prefix
+
+An FLV prefix may supply AVC parameters through a complete version-1 header and
+the first video tag. The probe reuses the packet owner's borrowed FLV header,
+tag and AVC video views, then the same bounded `avcC` interpretation used by MP4
+and Matroska. The first video tag must be an ordinary, unfiltered AVC sequence
+header with keyframe signalling and a zero composition offset. FLV output reports
+`container=flv`; original SPS/PPS spans point directly into that tag's configuration
+record, excluding NAL length fields. No track identifier is invented.
+
+Complete leading audio and script tags may be skipped. Tag extents, stream IDs,
+reserved flags and previous-tag sizes are checked even for skipped tags; audio
+tags require the header's audio declaration. Script and audio payloads are not
+interpreted. A media/video tag before initialization refuses instead of searching
+for a later sequence header. Enhanced/vendor codecs, filtered tags, HEVC-in-FLV
+and unsupported AVC packet forms remain outside this profile.
+
+Traversal is bounded by 128 tags and the caller's original byte, NAL and geometry
+ceilings. A complete sequence-header tag closes the result without observing EOF.
+Later media, parameter changes and corruption are outside that accepted prefix;
+no timestamp, frame-rate, source-continuity, decoder or playable-file claim follows.
+Malformed native parameters inside a complete tag cannot be repaired by appending
+bytes. Cancellation is checked at tag boundaries and by the shared configuration
+parser before a result is released.
+
 ## EOF, bounds and ownership
 
-The native parameter API takes an explicit `end_of_source` observation. A caller may set it only after observing EOF; exhausting an allowance is not EOF. A final undelimited Annex-B NAL is incomplete until either its next delimiter or actual EOF is observed. If an entire source is longer than the allowed prefix, its EOF cannot close the clipped prefix. The CLI never reads an extra byte just to decide whether EOF occurred. Consequently, an undelimited tuple ending exactly at `--bytes` needs a larger allowance to observe EOF, or a following delimiter within the allowance. MP4 uses its declared complete box boundaries, except that top-level size-zero boxes still require EOF. Matroska uses the complete declared Tracks boundary inside its Segment.
+The native parameter API takes an explicit `end_of_source` observation. A caller may set it only after observing EOF; exhausting an allowance is not EOF. A final undelimited Annex-B NAL is incomplete until either its next delimiter or actual EOF is observed. If an entire source is longer than the allowed prefix, its EOF cannot close the clipped prefix. The CLI never reads an extra byte just to decide whether EOF occurred. Consequently, an undelimited tuple ending exactly at `--bytes` needs a larger allowance to observe EOF, or a following delimiter within the allowance. MP4 uses its declared complete box boundaries, except that top-level size-zero boxes still require EOF. Matroska uses the complete declared Tracks boundary inside its Segment. FLV uses the complete declared AVC sequence-header tag and its previous-tag-size field.
 
 `ParameterLimits` independently limits head bytes, NAL count, coded width, coded height and coded luma samples. Defaults are 4096 bytes, 64 NAL units, 8192 by 8192 coded dimensions and 67,108,864 luma samples. Dimensions are metadata bounds; probing allocates no pixel buffers. Native parser allocations are confined to the bounded parameter bytes. Invalid limits fail closed rather than widening or clamping policy.
 
-Delimiter scanning is linear in the inspected prefix. Cancellation is checked on entry, between boxes/elements and units, every 128 delimiter-scan bytes and before/after native parsing; a final cancellation withholds the result. The caller supplies that cancellation observation. The stdin CLI does not install a separate cancellation runtime or signal handler.
+Delimiter scanning is linear in the inspected prefix. Cancellation is checked on entry, between boxes/elements/tags and units, every 128 delimiter-scan bytes and before/after native parsing; a final cancellation withholds the result. The caller supplies that cancellation observation. The stdin CLI does not install a separate cancellation runtime or signal handler.
 
 `VideoParameters` borrows the exact parameter bytes through `ParameterSource`; Rust prevents those backing bytes being mutated or reused while the result is live. Debug output exposes ranges, not payloads. This lifetime binding is not a durable custody record: an ingest owner must still bind stream/configuration generations and retained source evidence before using metadata in its own publication protocol.
 
-The cost boundary is the admitted source prefix plus at most 64 bounded native NAL inspections and one successful configuration parse, with the additional fixed container traversal bounds above. `inspected_bytes` is the consumed prefix extent, including a terminating Annex-B delimiter, the completed MP4 `moov` or the completed Matroska Tracks; skipped bounded container metadata remains within that extent. `inspected_units` counts complete units considered. These are inspection accounting, not measured CPU-time or decoding-cost claims.
+The cost boundary is the admitted source prefix plus at most 64 bounded native NAL inspections and one successful configuration parse, with the additional fixed container traversal bounds above. `inspected_bytes` is the consumed prefix extent, including a terminating Annex-B delimiter, the completed MP4 `moov` the completed Matroska Tracks or the completed FLV sequence-header tag; skipped bounded container metadata remains within that extent. `inspected_units` counts complete units considered. These are inspection accounting, not measured CPU-time or decoding-cost claims.
 
 ## Exit statuses
 
@@ -131,7 +157,15 @@ MP4 contracts additionally use retained baseline/cropped initializations and fra
 
 Matroska contracts use retained AVC/HEVC audio-plus-video files and an unknown-size live Segment, plus independently retained Main10/cropped parameter tuples. They cover complete-Tracks release, full-width track numbers, exact source spans, altered-tail noninterference, malformed later tracks, checksums, transformed-track refusal, unknown metadata sizes, parent-boundary crossings, record contradictions, element/track ceilings and cancellation at every observed checkpoint. CLI tests exercise successful metadata output, byte/unit exhaustion, EOF distinctions and exact input consumption on all three retained Matroska files.
 
-**Executed component verification (2026-11-15):** the pinned nightly-2026-08-31 toolchain compiled the core, packet and container libraries and both affected unit-test targets directly with `rustc` in Rust 2024 mode. The complete container library unit target passed **117 tests**, including all 12 new Matroska contracts and the existing MP4/Annex-B/demux regressions; the `fss-probe` unit target passed **16 tests**. A separately compiled `fss-probe` binary also passed 15 subprocess checks across the retained AVC, HEVC and live Matroska fixtures: successful metadata, exact prefix boundaries, short observed EOF and byte/NAL exhaustion. Pinned `rustfmt` and `git diff --check` also passed. These component results do not establish full Cargo/workspace CI or media qualification.
+FLV contracts wrap retained AVC configuration records in the native FLV framing.
+They cover exact source spans and cropped dimensions, leading audio/script tags,
+every truncated prefix, malformed framing and reserved bits, unsupported first-video
+forms, independent byte/NAL/geometry/tag ceilings, all cancellation checkpoints,
+deterministic byte mutations and accepted-prefix tail noninterference.
+
+**Executed component verification (2026-11-15; predates the FLV increment):** the pinned nightly-2026-08-31 toolchain compiled the core, packet and container libraries and both affected unit-test targets directly with `rustc` in Rust 2024 mode. The complete container library unit target passed **117 tests**, including all 12 new Matroska contracts and the existing MP4/Annex-B/demux regressions; the `fss-probe` unit target passed **16 tests**. A separately compiled `fss-probe` binary also passed 15 subprocess checks across the retained AVC, HEVC and live Matroska fixtures: successful metadata, exact prefix boundaries, short observed EOF and byte/NAL exhaustion. Pinned `rustfmt` and `git diff --check` also passed. These component results do not establish full Cargo/workspace CI or media qualification.
+
+**FLV increment validation (2026-11-20):** independent source review, pinned formatting and whitespace checks completed. Executable validation is pending: the shared build environment disconnected repeatedly, and a serial no-debug Cargo attempt was killed during unchanged dependency compilation before tests ran. This increment makes no new passing-test or qualification claim.
 
 ## Qualification
 

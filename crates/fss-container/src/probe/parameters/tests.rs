@@ -2,6 +2,7 @@
 
 use super::*;
 
+mod flv;
 mod matroska;
 mod mp4;
 

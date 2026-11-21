@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Bounded Annex-B, MP4 and Matroska initialization probing with borrowed source bindings.
+//! Bounded Annex-B, MP4, Matroska and FLV initialization probing with borrowed source bindings.
 //!
 //! The first complete AVC SPS/PPS or HEVC VPS/SPS/PPS tuple is interpreted by
 //! the packet owner's existing parsers. No picture is decoded, no source is
@@ -20,6 +20,7 @@ use fss_packet::{
 use super::{ContainerKind, MAX_PROBE_BYTES, ProbeLimits, ProbeOutcome, probe};
 
 mod configuration;
+mod flv;
 mod matroska;
 mod mp4;
 
@@ -70,7 +71,7 @@ impl ParameterLimits {
 pub enum ParameterError {
     /// Invalid caller policy.
     Configuration,
-    /// A byte, NAL-count, geometry or native syntax ceiling was reached.
+    /// A byte, work-count, geometry or native syntax ceiling was reached.
     Limit,
     /// The supplied prefix does not yet contain a complete parameter tuple.
     Truncated,
@@ -160,7 +161,8 @@ pub struct VideoParameters<'a> {
     pub sps: ParameterSource<'a>,
     /// Original PPS, checked against the SPS.
     pub pps: ParameterSource<'a>,
-    /// Consumed prefix extent, through a delimiter, complete MP4 `moov` or Matroska `Tracks`.
+    /// Consumed prefix extent, through a delimiter, complete MP4 `moov`, Matroska `Tracks`,
+    /// or FLV AVC configuration tag including its checked previous-tag-size field.
     pub inspected_bytes: usize,
     /// Complete NAL units considered, including skipped Annex-B units or configuration SEI arrays.
     pub inspected_units: usize,
@@ -311,10 +313,12 @@ fn save<'a>(
     Ok(())
 }
 
-/// Inspect Annex-B, MP4 or Matroska initialization within a bounded prefix.
-/// Cancellation is checked between boxes/elements/units, every 128 delimiter-scan bytes,
+/// Inspect Annex-B, MP4, Matroska or FLV initialization within a bounded prefix.
+/// Cancellation is checked between boxes/elements/tags/units, every 128 delimiter-scan bytes,
 /// and before/after native parsing. MP4 requires one video track in a complete `moov`;
 /// Matroska requires a complete EBML header and first `Tracks` before any `Cluster`.
+/// FLV requires its first video tag to be a complete unfiltered AVC sequence header,
+/// with at most 128 contiguous tags and no vendor-trailer boundary search.
 /// Media payloads, sample timelines and subsequent configurations are not inspected.
 ///
 /// end_of_source may be true only when the supplied bytes end at an observed EOF.
@@ -354,6 +358,10 @@ pub fn probe_parameters<'a>(
             container: ContainerKind::Matroska,
             ..
         } => return matroska::probe(window, incomplete, limits, &mut cancelled),
+        ProbeOutcome::Identified {
+            container: ContainerKind::Flv,
+            ..
+        } => return flv::probe(window, incomplete, limits, &mut cancelled),
         ProbeOutcome::Identified { .. } | ProbeOutcome::Unsupported => {
             return Err(ParameterError::Unsupported);
         }
