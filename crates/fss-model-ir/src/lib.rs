@@ -16,6 +16,8 @@ pub mod error;
 pub mod graph;
 /// Model invocation/receipt protocol (FSS-072).
 pub mod invocation;
+/// Model qualification, shadow evaluation, authorized activation, and rollback (FSS-074).
+pub mod lifecycle;
 pub mod memory;
 pub mod node;
 /// Bounded offline ONNX conversion; no external execution, downloads or model activation.
