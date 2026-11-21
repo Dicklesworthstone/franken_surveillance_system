@@ -7,30 +7,36 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::{Duration, Instant};
 
 use fss_cli::agent_json::{evidence_anchor, object, string};
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{
     BudgetVector, CaptureInterval, ContentDigest, EventId, OperationId, PrincipalId, TimestampNs,
 };
+use fss_reference::agent_orient::OrientLimits;
 use fss_reference::evidence_export::{CAP_EXPORT_COMMIT, CAP_EXPORT_PREPARE, EventExportRequest};
 use fss_reference::original_media_export::{
     CAP_EXPORT_ORIGINAL_MEDIA, MAX_ORIGINAL_MEDIA_BYTES, OriginalMediaExportError,
     OriginalMediaExportPreview, OriginalMediaExportRequest, approve_original_media_export,
     preview_original_media_export, revalidate_original_media_export, verify_original_media_export,
 };
+use fss_reference::retained_source::ImmutableRetainedReadLimits;
 use fss_reference::{DeploymentLayout, ReferenceDeployment, ReplayCx};
 
 use super::{RunResult, digest, text};
 
 #[path = "media/file.rs"]
 mod file;
+#[path = "media/immutable.rs"]
+mod immutable;
 
 pub(super) const HELP: &str = "fss-export media --root DIR --site SITE --event-id ID\n\
   --expected-revision sha256:HEX --import-identity sha256:HEX\n\
   --expected-import-root sha256:HEX --recipient ID --purpose TEXT --expires-at-ns I128\n\
   --attested-now-ns EARLIEST:LATEST --whole-source yes --max-source-bytes U64 --out DIR\n\
   [--principal ID] [--approve sha256:HEX]\n\
+  Preview only: [--max-read-bytes N] [--max-read-objects N] [--timeout-ms N]\n\
 Previews a separate original-footage profile. Repeat the exact request with its approval_digest\n\
 to write verified source media, canonical custody record and manifest; COMPLETE.json appears last.\n\
 The ENTIRE selected source recording is disclosed, including time outside the event. No trimming\n\
@@ -42,7 +48,11 @@ Review chains bind the\n\
 current revision to the original native event; operator assertions are not new sensor evidence.\n\
 Masked, deleted, unsupported, stale or unverified sources are refused. At most 64 MiB.\n\
 Approval binds the current event, source root, actor, recipient, purpose, expiry, clock attestation,\n\
-byte bound and actual destination parent. Preview creates no output. New directories are 0700 and\n\
+byte bound and actual destination parent. Preview uses immutable custody alongside capture,\n\
+without a writer lock, recovery or output. One shared allowance includes opening metadata,\n\
+source reads and final custody validation: 1 GiB / 1000000 reads by default, at most 4 GiB /\n\
+4000000 reads. The cooperative deadline defaults to 60000 ms, at most 600000 ms.\n\
+New directories are 0700 and\n\
 files 0600. Destination parent must exist outside the deployment and forbid group/world writes.\n\
 Publication requires Linux x86-64/aarch64 and /proc. Existing exact complete exports are verified\n\
 on retry; conflicting or incomplete directories are never overwritten. An interrupted write can\n\
@@ -57,6 +67,10 @@ consulted offline. Copies are plaintext; expiry or later deletion cannot erase e
 
 const MAX_REPORT_BYTES: usize = 512 * 1024;
 const MAX_JOURNAL_BYTES: u64 = 64 * 1024 * 1024;
+const DEFAULT_PREVIEW_READ_BYTES: u64 = 1024 * 1024 * 1024;
+const MAX_PREVIEW_READ_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+const DEFAULT_PREVIEW_READ_OBJECTS: u64 = 1_000_000;
+const MAX_PREVIEW_READ_OBJECTS: u64 = 4_000_000;
 
 struct Options {
     root: PathBuf,
@@ -65,6 +79,8 @@ struct Options {
     request: OriginalMediaExportRequest,
     output: PathBuf,
     approval: Option<ContentDigest>,
+    read_limits: ImmutableRetainedReadLimits,
+    timeout: Duration,
 }
 
 struct VerifyOptions {
@@ -145,6 +161,9 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
             "--out",
             "--principal",
             "--approve",
+            "--max-read-bytes",
+            "--max-read-objects",
+            "--timeout-ms",
         ],
     )?;
     if text(&values, "--whole-source")? != "yes" {
@@ -189,6 +208,26 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
         .get("--approve")
         .map(|_| text(&values, "--approve").and_then(digest))
         .transpose()?;
+    if approval.is_some()
+        && ["--max-read-bytes", "--max-read-objects", "--timeout-ms"]
+            .iter()
+            .any(|key| values.contains_key(*key))
+    {
+        return Err("immutable read limits apply only to an unapproved media preview".into());
+    }
+    let limit = |key: &str, default: u64, maximum: u64| -> Result<u64, String> {
+        let value = if values.contains_key(key) {
+            text(&values, key)?
+                .parse::<u64>()
+                .map_err(|_| format!("{key} requires a positive integer"))?
+        } else {
+            default
+        };
+        if value == 0 || value > maximum {
+            return Err(format!("{key} must be in 1..={maximum}"));
+        }
+        Ok(value)
+    };
     Ok(Options {
         root: path(&values, "--root")?,
         site,
@@ -196,6 +235,22 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
         request,
         output: path(&values, "--out")?,
         approval,
+        read_limits: ImmutableRetainedReadLimits {
+            snapshot: OrientLimits::default(),
+            max_read_bytes: usize::try_from(limit(
+                "--max-read-bytes",
+                DEFAULT_PREVIEW_READ_BYTES,
+                MAX_PREVIEW_READ_BYTES,
+            )?)
+            .map_err(|_| "read byte allowance exceeds address range")?,
+            max_read_objects: usize::try_from(limit(
+                "--max-read-objects",
+                DEFAULT_PREVIEW_READ_OBJECTS,
+                MAX_PREVIEW_READ_OBJECTS,
+            )?)
+            .map_err(|_| "read object allowance exceeds address range")?,
+        },
+        timeout: Duration::from_millis(limit("--timeout-ms", 60_000, 600_000)?),
     })
 }
 
@@ -285,7 +340,19 @@ fn report(
 }
 
 fn run(mut options: Options) -> RunResult<String> {
-    let root = preflight(&options.root, &options.site)?;
+    let start = Instant::now();
+    let preview = options.approval.is_none();
+    let root = if preview {
+        if !fs::symlink_metadata(&options.root)?.file_type().is_dir() {
+            return Err(
+                io::Error::other("existing non-symlink deployment directory required").into(),
+            );
+        }
+        fs::canonicalize(&options.root)?
+    } else {
+        preflight(&options.root, &options.site)?
+    };
+    options.root = root.clone();
     let target = file::Target::new(&options.output, &root)?;
     options.request.destination_binding = target.binding()?;
     let mut capabilities = vec![
@@ -299,13 +366,21 @@ fn run(mut options: Options) -> RunResult<String> {
     let authority = ContextAuthority::new_root(RootAuthoritySpec {
         trace_id: "trace:original-media-export-cli".into(),
         operation_id: OperationId::parse("operation:original-media-export-cli")?,
-        principal: options.principal,
+        principal: options.principal.clone(),
         capabilities,
         deadline: None,
         priority: 10,
         budgets: BudgetVector::builder()
-            .bytes(1024 * 1024 * 1024)
-            .storage_operations(65_536)
+            .bytes(if preview {
+                options.read_limits.max_read_bytes as u64
+            } else {
+                1024 * 1024 * 1024
+            })
+            .storage_operations(if preview {
+                options.read_limits.max_read_objects as u64
+            } else {
+                65_536
+            })
             .build()?,
         privacy_scope: "privacy:approved-whole-original-media-v1".into(),
         retention_scope: "retention:existing-deployment-policy".into(),
@@ -313,14 +388,22 @@ fn run(mut options: Options) -> RunResult<String> {
         generation: 1,
     })?;
     authority.validate()?;
-    let cx = ReplayCx::from_context_authority(&authority, root.clone())?;
+    let cx = if preview {
+        ReplayCx::from_context_authority_read_only(&authority, root.clone())?
+    } else {
+        ReplayCx::from_context_authority(&authority, root.clone())?
+    };
     let result = (|| -> RunResult<String> {
+        if preview {
+            return immutable::run_with(&options, target.path(), &authority, &cx, &|| {
+                start.elapsed() >= options.timeout
+            })
+            .map(|(report, _)| report);
+        }
         let deployment = ReferenceDeployment::open(&root, &options.site, &cx)?;
-        let Some(approval) = options.approval else {
-            let preview =
-                preview_original_media_export(&deployment, &options.request, &authority, &cx)?;
-            return report(&preview, target.path(), "awaiting_approval", false);
-        };
+        let approval = options
+            .approval
+            .ok_or(OriginalMediaExportError::Unauthorized)?;
         let prepared = approve_original_media_export(
             &deployment,
             &options.request,

@@ -49,6 +49,30 @@ frames before and after the event. There is no trimming, masking, transcoding or
 concatenation. The source capture bounds, event bounds, capture-time assumptions, exact source and
 analysis identities, and exclusion of other corroborating sources are disclosed in the record.
 
+Unapproved previews use one immutable retained owner and can run while capture holds the
+deployment writer. They open an existing deployment without initialization, writer acquisition,
+journal repair or effect reconciliation. The complete response, including its approval digest,
+remains buffered until opening metadata, selected source and event payloads, publication custody,
+deletion state, current privacy and the authority head pass final revalidation. A concurrent
+authority change refuses the preview; retry against a stable committed snapshot. Missing or torn
+authority/effect histories are refused without repair.
+
+Optional preview bounds cover the complete operation, including opening metadata, native source
+verification and every final reread:
+
+| Option | Default | Maximum |
+|---|---:|---:|
+| `--max-read-bytes` | 1,073,741,824 | 4,294,967,296 |
+| `--max-read-objects` | 1,000,000 | 4,000,000 |
+| `--timeout-ms` | 60,000 | 600,000 |
+
+Values must be positive integers. Read objects count bounded payload read attempts, including
+repeated reads; the allowance never renews between stages. The deadline is cooperative at native
+read boundaries. These controls do not change the canonical custody record, package root or
+approval identity. They apply only to an unapproved preview and must be omitted from an approved
+write. Library callers using `ImmutableRetainedSource` must also complete that same owner's
+snapshot-metadata and selected-custody revalidation before releasing a preview.
+
 Repeat the exact command with `--approve "$APPROVAL"`. Approval binds the current deployment
 anchor, event revision, source root, principal, recipient, purpose, exclusive expiry, caller-attested
 current-time bounds, byte ceiling and actual destination parent identity. Moving the destination
@@ -112,7 +136,7 @@ and final release of an already approved output. A reviewed package export also 
 intermediate review statement, not just the latest decision. Version-four records and manifest
 profiles cannot be substituted for any earlier profile or stripped of their review lineage.
 
-The command holds the deployment's exclusive lease throughout preparation and output. Before
+An approved command holds the deployment's exclusive lease throughout preparation and output. Before
 publishing completion it rechecks the current event, import, privacy and complete source through
 that owner. A second process cannot commit a compliant privacy or deletion change during release.
 The filesystem writer pins the output parent and package directory by open descriptors, writes
@@ -166,7 +190,10 @@ cargo test --locked --offline -p fss-cli --bin fss-export --bin fss-review --tes
 
 These exercise native retained event/source custody, exact approvals, scope/clock/byte boundaries,
 privacy and deletion invalidation, corruption, cancellation, create-only output, process restart
-and offline verification. Reviewed-event cases cover native AVC, HEVC and MJPEG, multi-review
+and offline verification. Immutable-preview regressions cover exact native and CLI approval/report
+parity beside an active writer, native and reviewed package origins, complete cumulative read
+budgets, late source/event/privacy changes, delivery-boundary cancellation and preservation of the
+exclusive approved-write path. Reviewed-event cases cover native AVC, HEVC and MJPEG, multi-review
 chains, stale approvals, missing or corrupt review custody, private rationale redaction, and
 continued refusal to replay an operator decision as native model output. They do not qualify detector accuracy or arbitrary camera/browser codec
 profiles. This implementation advances FSS-068; broader incident clip editing and multi-camera

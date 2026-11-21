@@ -40,7 +40,7 @@ use crate::ingest::package_event::{PackageEvent, PackageEventError};
 use crate::ingest::privacy_mask::{PrivacyMaskError, binding_digest, refuse_unmasked_source};
 use crate::ingest::recorded_decode::{RecordedDecodeError, retained_source_capsule};
 use crate::ingest::{FileIngestError, RetainedFileImport, RetainedReadLimits};
-use crate::{ReferenceDeployment, ReplayCx};
+use crate::{ReferenceDeployment, ReplayCx, RetainedSource};
 
 mod wire;
 
@@ -399,7 +399,7 @@ fn checkpoint(cx: &ReplayCx, stage: &'static str) -> Result<()> {
         .map_err(|_| OriginalMediaExportError::Cancelled)
 }
 fn authorize(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     request: &OriginalMediaExportRequest,
     authority: &ContextAuthority,
     cx: &ReplayCx,
@@ -449,12 +449,13 @@ fn is_native_rtsp(adapter: &str) -> bool {
 }
 
 fn prepare_record(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     request: &OriginalMediaExportRequest,
     authority: &ContextAuthority,
     cx: &ReplayCx,
 ) -> Result<(OriginalMediaExportRecord, RetainedFileImport)> {
     authorize(deployment, request, authority, cx, false)?;
+    deployment.verify_read_head()?;
     let basis = deployment.current_anchor().clone();
     // The existing owner verifies current event authority, exact source capsules, source roots,
     // native analysis provenance and current privacy. A caller-selected import alone proves none
@@ -661,8 +662,10 @@ fn prepare_record(
 }
 
 /// Read-only, exact whole-source preview. No file, retained export or delivery row is created.
+/// An immutable caller must finish metadata and selected-custody revalidation through the same
+/// source owner before delivering the preview; all reads share that owner's original allowance.
 pub fn preview_original_media_export(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     request: &OriginalMediaExportRequest,
     authority: &ContextAuthority,
     cx: &ReplayCx,
@@ -689,10 +692,7 @@ pub fn preview_original_media_export(
             .ok_or(OriginalMediaExportError::CustodyMismatch)?
             .min(manifest.chunk_bytes);
         let length = usize::try_from(len).map_err(|_| OriginalMediaExportError::Limit)?;
-        let chunk = deployment
-            .publisher()
-            .spool()
-            .read_bounded(*digest, length)?;
+        let chunk = deployment.read_object_bounded(*digest, length)?;
         if chunk.len() != length || ContentDigest::sha256(&chunk) != *digest {
             return Err(OriginalMediaExportError::CustodyMismatch);
         }
@@ -712,6 +712,7 @@ pub fn preview_original_media_export(
         return Err(OriginalMediaExportError::AuthorityChanged);
     }
     checkpoint(cx, "original_media_export:source_verified")?;
+    deployment.verify_read_head()?;
     let record_bytes = record.to_bytes();
     let manifest = ObjectManifest::new(
         record.profile(),

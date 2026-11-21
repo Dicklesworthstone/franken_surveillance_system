@@ -1,0 +1,125 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-20",
+  "date_timezone": "America/New_York",
+  "mission": "Implement important remaining functional gaps after reading the comprehensive plan and Beads; checkpoint meaningful changes directly to main through GitHub, without PRs.",
+  "basis": {
+    "started_at": "d957e9bb9f69c31f18e8f8d3bf9698be22ab8e86",
+    "plan": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+    "backlog": ".beads/issues.jsonl",
+    "concurrent_main_preserved": [
+      "bdc63c2c4b327f1b780fb74cbb921b33582c3d35",
+      "435c9f21d06c919efa6ed17028b2279859b8d779",
+      "e797345a5b8ecb1b5ab7521d849ab6daab3dbd9d"
+    ]
+  },
+  "authority": {
+    "repository": "Explicit user authorization for direct main commits with GitHub; no PR.",
+    "operational": "Repository work only. No live devices, policies, recordings, alerts or user evidence were changed."
+  },
+  "findings": [
+    "Broad open Beads already contain substantial implementations, so priorities were chosen from actual remaining source paths.",
+    "Video and dwell read/verification plus original-media preparation still acquired the exclusive deployment writer and could enter recovery.",
+    "Concurrent main strengthened canonical witness custody; reviewed-media and dwell metadata reservations must count those exact witness reads."
+  ],
+  "delivered": [
+    {
+      "feature": "Immutable published-video read and verification",
+      "commit": "09463f4a3a9c1b89577c6e1bb10724da12eab0a1",
+      "documentation": "docs/native_video_publication.md",
+      "native_tests": 4,
+      "process_tests": 3
+    },
+    {
+      "feature": "Immutable retained-dwell inspection and native replay",
+      "commit": "6741d992d39f501379ce047ef68737d827951d9d",
+      "documentation": "docs/native_dwell_replay.md",
+      "native_tests": 5,
+      "process_tests": 2
+    },
+    {
+      "feature": "Immutable original-media previews with reviewed event custody",
+      "commit": "this_commit",
+      "documentation": "docs/ORIGINAL_MEDIA_EXPORT.md",
+      "native_tests": 5,
+      "cli_binary_tests": 4,
+      "updated_native_budget_regressions": 1
+    }
+  ],
+  "behavior": {
+    "reader": "One root-scoped sealed immutable source from opening metadata through final payload/publication/journal validation.",
+    "delivery": "Complete report buffered until final validation; video file creation begins afterward through the existing protected create-new path.",
+    "concurrency": "The writer can remain held under stable authority. Any authority advance invalidates the snapshot and requires a fresh request.",
+    "missing_history": "Missing or torn effect journals refuse without initialization, repair or recovery.",
+    "mutation": "Approved original-media export and video publication remain exclusive.",
+    "identity": "Existing producer and media-export canonical identities are preserved. Video read/verify approvals additionally bind aggregate limits and immutable-read policy; publication approval encoding is unchanged.",
+    "native_replay": "Dwell keeps exact recipe/pins, current privacy and whole trace/classifier/event matching. Video drains and verifies the whole original range.",
+    "reviewed_lineage_budget": "After initial history/review-statement reads, reserve 3H+2W, where H is all canonical event manifest/payload bytes and W is all distinct canonical witness bytes."
+  },
+  "limits": {
+    "default_read_bytes": 1073741824,
+    "maximum_read_bytes": 4294967296,
+    "default_read_attempts": 1000000,
+    "maximum_read_attempts": 4000000,
+    "default_cooperative_timeout_ms": 60000,
+    "media_maximum_timeout_ms": 600000,
+    "dwell_selected_metadata_payload_read_ceiling": 273,
+    "deadline_scope": "Cooperative read admissions and final delivery, not preemptive interruption of filesystem operations or compute kernels."
+  },
+  "validation": {
+    "toolchain": "nightly-2026-08-31; rustc 1.100.0-nightly (908501772 2026-08-30)",
+    "source_review": "All three production slices independently reviewed. Corrected missing-effects history acceptance in dwell and updated shared reviewed-lineage reservations after concurrent witness hardening.",
+    "formatting": "Scoped pinned rustfmt completed on final changed Rust sources. Whitespace and conflict-marker checks passed on changed/new Rust files.",
+    "metadata": "Repository cargo metadata --locked --offline passed and all six focused integration targets were registered. Supplemental scratch harness resolves 199 dependencies with identical repository versions, sources and checksums; it is not a qualification entry point.",
+    "new_regressions": 23,
+    "new_runtime_tests_executed": 0,
+    "compiler_attempts": [
+      "Initial serial library check was interrupted after host stalls.",
+      "Second serial check lost its executor; no terminal outcome or source diagnostic was recovered.",
+      "Final protected serial check ended with Cargo SIGKILL before edited FSS crates."
+    ],
+    "final_check": {
+      "command": "cargo check --locked --offline -p fss-reference --lib -p fss-cli --bin fss-replay-dwell --bin fss-export --bin fss-video",
+      "profile": "One Cargo job; dev/test debug info disabled; incremental disabled; exact pinned locked offline dependencies.",
+      "exit_code": 137,
+      "process_returncode": -9,
+      "elapsed_seconds": 63.6,
+      "peak_sampled_compiler_rss_kib": 112052,
+      "max_child_rss_kib": 121000,
+      "minimum_host_available_kib": 1267156,
+      "watchdog_stop_reason": null,
+      "last_output": "Checking digest v0.11.3",
+      "edited_crates_reached": false,
+      "cause": "SIGKILL observed; cause not proven."
+    },
+    "integrity": "Source snapshots preserved through GitHub trees before publication; changed-file SHA-256 overlay rows updated. Final remote and worktree integrity checks recorded separately in session output.",
+    "qualification": "No verified typecheck, runtime test pass, full-workspace, real-device, detection-quality or release qualification. No dependency, toolchain or acceptance-gate changes."
+  },
+  "retry_commands": [
+    "cargo check --locked --offline -j1 -p fss-reference --lib -p fss-cli --bin fss-replay-dwell --bin fss-export --bin fss-video",
+    "cargo test --locked --offline -j1 -p fss-reference --test long_dwell_immutable_contract --test video_publication_read_source_contract --test video_publication_contract --test original_media_export_contract",
+    "cargo test --locked --offline -j1 -p fss-reference --lib ingest::long_dwell_replay::tests",
+    "cargo test --locked --offline -j1 -p fss-reference --lib event_review::tests::reviewed_export_lineage_reserves_every_summary_reread_before_returning_pins",
+    "cargo test --locked --offline -j1 -p fss-cli --test replay_dwell_cli --test video_publication_cli",
+    "cargo test --locked --offline -j1 -p fss-cli --bin fss-export media::immutable::tests"
+  ],
+  "continuations": [
+    {
+      "priority": "first",
+      "work": "Execute the focused Rust contracts on a functioning host, retaining exact pinned dependencies and release gates."
+    },
+    {
+      "priority": "functional",
+      "work": "The existing plan still calls for request-owned MCP execution/cancellation so long native calls do not block cancellation input; use the existing structured runtime and explicit authority."
+    },
+    {
+      "state": "existing_product_decision",
+      "work": "Standing indefinite recorder authority remains gated by the recorded D7 decision; no new standing capture authority is introduced here."
+    }
+  ],
+  "obligations": [
+    "Three meaningful feature checkpoints directly on main; no PRs.",
+    "Broad Beads remain open until their registered acceptance evidence exists.",
+    "No pending live operational effects."
+  ]
+}

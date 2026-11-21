@@ -4,6 +4,48 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Retained media reading and replay alongside capture — 2026-11-20
+
+`fss-video read` and `verify`, `fss-replay-dwell inspect` and `verify`, and
+unapproved `fss-export media` now use one sealed immutable retained source. They
+can operate while capture holds the writer, without acquiring a publisher or
+entering restart recovery. A concurrent authority advance invalidates the read
+and requires a fresh request; this is not uninterrupted historical-snapshot
+service across new capture commits.
+
+Video verification still replays the complete original range. Dwell verification
+reconstructs the exact retained recipe and matches the complete native trace,
+classifier outcome and event. Media previews preserve canonical report, record,
+manifest and approval identities, including reviewed long-event and package-event
+custody. Approved exports and video publication retain their exclusive owners.
+
+Opening metadata, source and pixel reads, execution and final rereads share one
+nonrenewing allowance. Complete reports remain buffered until final metadata,
+custody, publication, privacy and authority validation succeeds; optional video
+pixel exports start afterward. Missing or torn effects histories refuse without
+repair. Read defaults are 1 GiB and 1,000,000 attempts, with maxima of 4 GiB and
+4,000,000 attempts. Read admissions use cooperative deadlines. Reviewed-media
+lineage reserves every canonical history and distinct witness reread within its
+existing native ceiling.
+
+Twenty-three new regressions cover held-writer operation, exact and one-less
+budgets, native/approval parity, late corruption, privacy changes, cancellation
+and refusal without partial output or history repair. Fourteen are native
+integration tests, five launch real CLI processes, and four exercise the media
+CLI binary directly. One existing reviewed-lineage budget regression is updated.
+
+Scoped pinned formatting, whitespace/conflict checks, independent source review
+and locked offline Cargo target discovery passed. Compilation did not reach the
+edited FSS crates: the final protected serial check ended with Cargo SIGKILL
+(exit 137) after 63.6 seconds in dependencies, without a Rust diagnostic. Earlier
+attempts were interrupted or lost their executor. No new runtime test executed,
+and the termination cause is unproven. Dependencies, toolchain pins and release
+gates remain unchanged; no broad Bead closure or qualification is claimed.
+
+See [video](docs/native_video_publication.md), [dwell replay](docs/native_dwell_replay.md),
+[original-media export](docs/ORIGINAL_MEDIA_EXPORT.md), and the
+[session handoff](docs/SESSION_HANDOFF_2026-11-20_IMMUTABLE_MEDIA_READERS.json).
+
 ## RTSP requests bound to the approved transport authority — 2026-11-20
 
 The TCP send queue now rejects an immutable prepared request whose first request-line

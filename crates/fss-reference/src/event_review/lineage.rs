@@ -47,7 +47,7 @@ impl VerifiedReviewLineage {
     /// A sealed lineage can be used only against the same uninterrupted current authority.
     pub(crate) fn revalidate_basis(
         &self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         cx: &ReplayCx,
     ) -> Result<(), ReviewError> {
         checkpoint(cx, "event_review:lineage_current")?;
@@ -77,7 +77,7 @@ impl VerifiedReviewLineage {
 /// The original media exporter has already checked media-read/export authority before calling.
 /// This is not public review hydration and never grants a caller access to review plaintext.
 pub(crate) fn inspect_review_lineage(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     event_id: &EventId,
     cx: &ReplayCx,
 ) -> Result<VerifiedReviewLineage, ReviewError> {
@@ -86,7 +86,7 @@ pub(crate) fn inspect_review_lineage(
 
 /// A smaller allowance preserves the same complete proof and cannot raise the fixed ceiling.
 pub(super) fn inspect_review_lineage_with_limit(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     event_id: &EventId,
     cx: &ReplayCx,
     maximum: usize,
@@ -163,10 +163,9 @@ pub(super) fn inspect_review_lineage_with_limit(
             return Err(ReviewError::CustodyMismatch);
         }
         let slot = record.slot()?;
-        let visible = deployment
-            .publisher()
-            .root(&slot)
-            .ok_or(ReviewError::CustodyMismatch)?;
+        deployment
+            .check_publication(&slot, root, manifest.children().len())
+            .map_err(retained_error)?;
         let object = ObjectId::parse(format!("object:local-root:{}", slot.as_str()))?;
         let authority = deployment
             .ledger()
@@ -174,8 +173,7 @@ pub(super) fn inspect_review_lineage_with_limit(
             .objects
             .get(&object)
             .ok_or(ReviewError::CustodyMismatch)?;
-        if visible.root != root
-            || authority.family != fss_publication::ROOT_REACHABILITY_FAMILY
+        if authority.family != fss_publication::ROOT_REACHABILITY_FAMILY
             || authority.generation != 1
             || authority.payload_digest != root
         {
@@ -199,26 +197,19 @@ pub(super) fn inspect_review_lineage_with_limit(
         });
     }
     let last = revisions.last().ok_or(ReviewError::CustodyMismatch)?;
-    let last_manifest = ObjectManifest::new(
-        "event-revision",
-        last.event.model_receipts.iter().copied(),
-        Some(ContentDigest::sha256(&last.event.canonical_bytes())),
-    )?;
-    // The guarded current owner rereads every history root/payload and the current pair once
-    // more. The later export summary reads the whole history twice: reconstruction, then
-    // canonical lineage verification including each distinct revision witness. Reserve both
-    // owners' complete reads before either can allocate those payloads; reserving the current
-    // pair twice would undercount older revisions and omit witness custody.
-    reader.reserve(history_bytes)?;
-    reader.reserve(last_manifest.canonical_bytes().len())?;
-    reader.reserve(last.event.canonical_bytes().len())?;
-    for _ in 0..2 {
+    // The shared current-revision owner verifies every history root/payload and each
+    // independently retained revision witness. The later export summary first reconstructs
+    // that history, then verifies the same lineage and witnesses. Reserve all three history
+    // passes and both witness passes before either owner can allocate retained payloads.
+    for _ in 0..3 {
         reader.reserve(history_bytes)?;
     }
-    for revision in &revisions {
-        reader.reserve(crate::alert::event_revision_encoding(&revision.event).len())?;
+    for _ in 0..2 {
+        for revision in &revisions {
+            reader.reserve(crate::alert::event_revision_encoding(&revision.event).len())?;
+        }
     }
-    let (current, receipt) = deployment.current_event_authority(event_id)?;
+    let (current, receipt) = current_revision(deployment, event_id, &revisions, cx)?;
     if current != last.event
         || receipt.event_root != last.root
         || receipt.authority_anchor != last.anchor

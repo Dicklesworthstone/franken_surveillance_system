@@ -27,7 +27,7 @@ const PACKAGE: &[u8] = include_bytes!("../../../../models/yolox-nano/yolox_nano.
 const PACKAGE_SHA256: &str =
     "sha256:5b6568750faa375de3742e5eb310fbd4e22ff26e1ba727f193b79ab984a68c74";
 
-fn fixture(label: &str) -> Test<Fixture> {
+pub(super) fn fixture(label: &str) -> Test<Fixture> {
     let directory = Directory::new(label)?;
     let root = directory.0.join("deployment");
     let authority = authority(true)?;

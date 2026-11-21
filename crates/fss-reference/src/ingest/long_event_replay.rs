@@ -26,8 +26,10 @@ use super::recorded_decode::{
 };
 use super::recorded_watch::{WatchError, WatchStatus};
 use super::{FileIngestError, RetainedFileImport};
+#[cfg(test)]
+use crate::ReferenceDeployment;
 use crate::retained_source::{RetainedSource, verify_event_lineage};
-use crate::{ReferenceDeployment, ReferenceError, ReplayCx};
+use crate::{ReferenceError, ReplayCx};
 
 mod dwell;
 mod watch;
@@ -615,7 +617,7 @@ fn native_event_profile(event_id: &EventId) -> Result<(&'static str, &'static st
 /// Inspect the original computation only after the review owner has sealed the complete current
 /// lineage. This internal custody path does not make a reviewed event eligible for native replay.
 pub(crate) fn inspect_review_origin(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     lineage: &crate::event_review::lineage::VerifiedReviewLineage,
     limits: &LongEventReplayLimits,
     cx: &ReplayCx,

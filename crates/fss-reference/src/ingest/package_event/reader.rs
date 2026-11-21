@@ -36,7 +36,7 @@ impl PackageEvent {
     /// substitute an arbitrary event, root, digest or historical anchor. Public native reads
     /// still refuse reviewed successors, and all source/privacy/deletion checks remain current.
     pub(crate) fn open_review_origin(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         lineage: &crate::event_review::lineage::VerifiedReviewLineage,
         cx: &ReplayCx,
     ) -> Result<Self> {

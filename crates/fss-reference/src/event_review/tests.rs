@@ -472,21 +472,19 @@ fn reviewed_export_lineage_reserves_every_summary_reread_before_returning_pins()
     assert_eq!(revisions.len(), 3);
     let spool = f.deployment.publisher().spool();
     let mut history_bytes = 0;
-    let mut current_bytes = 0;
     let mut witness_bytes = 0;
     for revision in &revisions {
         let manifest_bytes = spool.read(revision.root)?;
         let manifest = ObjectManifest::from_canonical_bytes(&manifest_bytes)?;
         let payload = manifest.metadata_digest().ok_or("missing event metadata")?;
-        current_bytes = manifest_bytes.len() + spool.read(payload)?.len();
-        history_bytes += current_bytes;
+        history_bytes += manifest_bytes.len() + spool.read(payload)?.len();
         witness_bytes += spool.read(revision.event.revision_digest())?.len();
     }
     let inspected = history_bytes + statement_bytes;
-    let current_owner = history_bytes + current_bytes;
+    let current_owner = history_bytes + witness_bytes;
     let export_owner = 2 * history_bytes + witness_bytes;
     let exact = inspected + current_owner + export_owner;
-    let legacy = inspected + 2 * current_owner;
+    let legacy = inspected + 3 * history_bytes + witness_bytes;
     assert!(legacy < exact);
     let before = f.snapshot()?;
     for maximum in [legacy, exact - witness_bytes, exact - 1] {
