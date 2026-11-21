@@ -164,3 +164,21 @@ The planner estimates storage, Class A/B operations, retrieval, egress, repair o
 - credential/tenant capability noninterference;
 - same-binary chunk/repair policy experiments;
 - full reconstruction from manifests on an independent implementation.
+
+## 13. Reconciled lifecycle registry and reference implementation (`fss-x4a.13.31`)
+
+The three ATP lifecycle layers (semantic transfer `atp.semantic.*`, archive publication
+`atp.archive.*` plus archive-object custody `atp.archive_object.*`, and multipath transport path
+`atp.path.*`) and the exhaustive crosswalk for cross-document/legacy spellings (`ManifestVerified`,
+`ManifestValidated`, `PathsDiscovered`, `ChildrenScheduled`, `ChildVerified`, `ObjectVerified`,
+`GraphClosureVerified`, `ExposureReady`, `RootPublished`, `ReplicaQualified`,
+`RetrievabilityVerified`) are registered in [`../architecture/atp_lifecycles.json`](../architecture/atp_lifecycles.json)
+and [`../registries/ATP_LIFECYCLES.md`](../registries/ATP_LIFECYCLES.md).
+
+The deterministic safe-Rust reference reducers, crosswalk resolver, and append-only checksummed
+resumable journal live in `crates/fss-object/src/atp_lifecycle/` with contract and
+`RemoteProviderSimulator`-integrated fault tests in `crates/fss-object/tests/atp_lifecycle_contract.rs`
+and E2E runner script `scripts/e2e/fss_atp_lifecycles.sh`. This reference contract proves
+in-process state transitions, refusals, crash-cut resume equivalence, path draining, and simulated
+remote-provider fault behavior; it does not claim live network transport, physical RaptorQ coding,
+or full `GATE-040` / `WP-070` closure.

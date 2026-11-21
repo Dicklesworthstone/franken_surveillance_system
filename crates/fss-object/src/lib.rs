@@ -7,6 +7,8 @@
 //! [`upload_journal`] composes it into bounded multipart restart custody; neither backend
 //! alone claims archive visibility, replication or retrievability.
 
+/// Canonical ATP transfer, path, and archive lifecycles (`fss-x4a.13.31`).
+pub mod atp_lifecycle;
 pub mod belief_verification;
 /// Bounded local custody of the runtime effect coordinator's canonical history.
 pub mod effect_journal;

@@ -1,0 +1,809 @@
+{
+  "schema": "fss.atp_lifecycles.v1",
+  "asOf": "2026-11-21",
+  "beadId": "fss-x4a.13.31",
+  "receiptSchema": "fss.transfer_receipt.v1",
+  "description": "Canonical machine registry reconciling the three distinct ATP lifecycle layers (semantic transfer, archive publication + object custody, and multipath transport path) plus an exhaustive crosswalk for all cross-document and legacy state spellings. No transport may invent unlisted aliases or collapse distinct layers.",
+  "nonCollapseTerms": [
+    "offered",
+    "received",
+    "verified",
+    "graph_closed",
+    "durable",
+    "committed",
+    "published",
+    "replicated",
+    "retrievable",
+    "protected",
+    "complete"
+  ],
+  "invariants": [
+    "INV-046",
+    "INV-047",
+    "INV-048",
+    "INV-066",
+    "INV-067",
+    "INV-075"
+  ],
+  "layers": {
+    "semantic_transfer": {
+      "prefix": "atp.semantic.",
+      "sourceDocument": "docs/ATP_AND_DISTRIBUTED_EVIDENCE.md",
+      "progression": [
+        "atp.semantic.proposed",
+        "atp.semantic.reserved",
+        "atp.semantic.offered",
+        "atp.semantic.receiving",
+        "atp.semantic.children_verified",
+        "atp.semantic.graph_closed",
+        "atp.semantic.durability_satisfied",
+        "atp.semantic.root_committed",
+        "atp.semantic.receipt_sealed"
+      ],
+      "terminals": [
+        "atp.semantic.receipt_sealed",
+        "atp.semantic.rejected",
+        "atp.semantic.aborted",
+        "atp.semantic.quarantined",
+        "atp.semantic.indeterminate",
+        "atp.semantic.superseded"
+      ],
+      "states": [
+        {
+          "stateKey": "atp.semantic.proposed",
+          "name": "Proposed",
+          "terminal": false,
+          "allowedNext": [
+            "atp.semantic.reserved",
+            "atp.semantic.rejected",
+            "atp.semantic.aborted"
+          ]
+        },
+        {
+          "stateKey": "atp.semantic.reserved",
+          "name": "Reserved",
+          "terminal": false,
+          "allowedNext": [
+            "atp.semantic.offered",
+            "atp.semantic.rejected",
+            "atp.semantic.aborted"
+          ]
+        },
+        {
+          "stateKey": "atp.semantic.offered",
+          "name": "Offered",
+          "terminal": false,
+          "allowedNext": [
+            "atp.semantic.receiving",
+            "atp.semantic.aborted",
+            "atp.semantic.quarantined"
+          ]
+        },
+        {
+          "stateKey": "atp.semantic.receiving",
+          "name": "Receiving",
+          "terminal": false,
+          "allowedNext": [
+            "atp.semantic.children_verified",
+            "atp.semantic.aborted",
+            "atp.semantic.quarantined"
+          ]
+        },
+        {
+          "stateKey": "atp.semantic.children_verified",
+          "name": "ChildrenVerified",
+          "terminal": false,
+          "allowedNext": [
+            "atp.semantic.graph_closed",
+            "atp.semantic.aborted",
+            "atp.semantic.quarantined"
+          ]
+        },
+        {
+          "stateKey": "atp.semantic.graph_closed",
+          "name": "GraphClosed",
+          "terminal": false,
+          "allowedNext": [
+            "atp.semantic.durability_satisfied",
+            "atp.semantic.aborted",
+            "atp.semantic.quarantined"
+          ]
+        },
+        {
+          "stateKey": "atp.semantic.durability_satisfied",
+          "name": "DurabilitySatisfied",
+          "terminal": false,
+          "allowedNext": [
+            "atp.semantic.root_committed",
+            "atp.semantic.aborted",
+            "atp.semantic.quarantined",
+            "atp.semantic.indeterminate"
+          ]
+        },
+        {
+          "stateKey": "atp.semantic.root_committed",
+          "name": "RootCommitted",
+          "terminal": false,
+          "allowedNext": [
+            "atp.semantic.receipt_sealed",
+            "atp.semantic.indeterminate"
+          ]
+        },
+        {
+          "stateKey": "atp.semantic.receipt_sealed",
+          "name": "ReceiptSealed",
+          "terminal": true,
+          "allowedNext": [
+            "atp.semantic.superseded"
+          ]
+        },
+        {
+          "stateKey": "atp.semantic.rejected",
+          "name": "Rejected",
+          "terminal": true,
+          "allowedNext": []
+        },
+        {
+          "stateKey": "atp.semantic.aborted",
+          "name": "Aborted",
+          "terminal": true,
+          "allowedNext": []
+        },
+        {
+          "stateKey": "atp.semantic.quarantined",
+          "name": "Quarantined",
+          "terminal": true,
+          "allowedNext": []
+        },
+        {
+          "stateKey": "atp.semantic.indeterminate",
+          "name": "Indeterminate",
+          "terminal": true,
+          "allowedNext": []
+        },
+        {
+          "stateKey": "atp.semantic.superseded",
+          "name": "Superseded",
+          "terminal": true,
+          "allowedNext": []
+        }
+      ]
+    },
+    "archive_publication": {
+      "prefix": "atp.archive.",
+      "sourceDocument": "docs/ATP_ARCHIVE_AND_REPLICATION.md",
+      "secondaryDocument": "docs/ATP_MEDIA_GRAPH_AND_REPLICATION.md",
+      "progression": [
+        "atp.archive.planned",
+        "atp.archive.reserved",
+        "atp.archive.manifest_verified",
+        "atp.archive.fetching",
+        "atp.archive.staged",
+        "atp.archive.object_verified",
+        "atp.archive.graph_closed",
+        "atp.archive.exposure_ready",
+        "atp.archive.root_published",
+        "atp.archive.replica_qualified",
+        "atp.archive.retrievability_verified",
+        "atp.archive.complete",
+        "atp.archive.scrubbed",
+        "atp.archive.retired"
+      ],
+      "terminals": [
+        "atp.archive.retired",
+        "atp.archive.quarantined",
+        "atp.archive.cancelled",
+        "atp.archive.failed",
+        "atp.archive.indeterminate"
+      ],
+      "states": [
+        {
+          "stateKey": "atp.archive.planned",
+          "name": "Planned",
+          "terminal": false,
+          "allowedNext": [
+            "atp.archive.reserved",
+            "atp.archive.cancelled",
+            "atp.archive.failed"
+          ]
+        },
+        {
+          "stateKey": "atp.archive.reserved",
+          "name": "Reserved",
+          "terminal": false,
+          "allowedNext": [
+            "atp.archive.manifest_verified",
+            "atp.archive.cancelled",
+            "atp.archive.failed"
+          ]
+        },
+        {
+          "stateKey": "atp.archive.manifest_verified",
+          "name": "ManifestVerified",
+          "terminal": false,
+          "allowedNext": [
+            "atp.archive.fetching",
+            "atp.archive.cancelled",
+            "atp.archive.failed",
+            "atp.archive.quarantined"
+          ]
+        },
+        {
+          "stateKey": "atp.archive.fetching",
+          "name": "Fetching",
+          "terminal": false,
+          "allowedNext": [
+            "atp.archive.staged",
+            "atp.archive.cancelled",
+            "atp.archive.failed",
+            "atp.archive.quarantined"
+          ]
+        },
+        {
+          "stateKey": "atp.archive.staged",
+          "name": "Staged",
+          "terminal": false,
+          "allowedNext": [
+            "atp.archive.object_verified",
+            "atp.archive.cancelled",
+            "atp.archive.failed",
+            "atp.archive.quarantined"
+          ]
+        },
+        {
+          "stateKey": "atp.archive.object_verified",
+          "name": "ObjectVerified",
+          "terminal": false,
+          "allowedNext": [
+            "atp.archive.graph_closed",
+            "atp.archive.cancelled",
+            "atp.archive.failed",
+            "atp.archive.quarantined"
+          ]
+        },
+        {
+          "stateKey": "atp.archive.graph_closed",
+          "name": "GraphClosed",
+          "terminal": false,
+          "allowedNext": [
+            "atp.archive.exposure_ready",
+            "atp.archive.cancelled",
+            "atp.archive.failed",
+            "atp.archive.quarantined"
+          ]
+        },
+        {
+          "stateKey": "atp.archive.exposure_ready",
+          "name": "ExposureReady",
+          "terminal": false,
+          "allowedNext": [
+            "atp.archive.root_published",
+            "atp.archive.cancelled",
+            "atp.archive.failed",
+            "atp.archive.quarantined",
+            "atp.archive.indeterminate"
+          ]
+        },
+        {
+          "stateKey": "atp.archive.root_published",
+          "name": "RootPublished",
+          "terminal": false,
+          "allowedNext": [
+            "atp.archive.replica_qualified",
+            "atp.archive.failed",
+            "atp.archive.indeterminate"
+          ]
+        },
+        {
+          "stateKey": "atp.archive.replica_qualified",
+          "name": "ReplicaQualified",
+          "terminal": false,
+          "allowedNext": [
+            "atp.archive.retrievability_verified",
+            "atp.archive.failed",
+            "atp.archive.indeterminate"
+          ]
+        },
+        {
+          "stateKey": "atp.archive.retrievability_verified",
+          "name": "RetrievabilityVerified",
+          "terminal": false,
+          "allowedNext": [
+            "atp.archive.complete",
+            "atp.archive.failed"
+          ]
+        },
+        {
+          "stateKey": "atp.archive.complete",
+          "name": "Complete",
+          "terminal": false,
+          "allowedNext": [
+            "atp.archive.scrubbed",
+            "atp.archive.retired"
+          ]
+        },
+        {
+          "stateKey": "atp.archive.scrubbed",
+          "name": "Scrubbed",
+          "terminal": false,
+          "allowedNext": [
+            "atp.archive.scrubbed",
+            "atp.archive.retired",
+            "atp.archive.quarantined"
+          ]
+        },
+        {
+          "stateKey": "atp.archive.retired",
+          "name": "Retired",
+          "terminal": true,
+          "allowedNext": []
+        },
+        {
+          "stateKey": "atp.archive.quarantined",
+          "name": "Quarantined",
+          "terminal": true,
+          "allowedNext": []
+        },
+        {
+          "stateKey": "atp.archive.cancelled",
+          "name": "Cancelled",
+          "terminal": true,
+          "allowedNext": []
+        },
+        {
+          "stateKey": "atp.archive.failed",
+          "name": "Failed",
+          "terminal": true,
+          "allowedNext": []
+        },
+        {
+          "stateKey": "atp.archive.indeterminate",
+          "name": "Indeterminate",
+          "terminal": true,
+          "allowedNext": []
+        }
+      ]
+    },
+    "archive_object_custody": {
+      "prefix": "atp.archive_object.",
+      "sourceDocument": "docs/ATP_ARCHIVE_AND_REPLICATION.md",
+      "progression": [
+        "atp.archive_object.local_staged",
+        "atp.archive_object.local_durable",
+        "atp.archive_object.remote_staged",
+        "atp.archive_object.remote_children_verified",
+        "atp.archive_object.remote_root_published",
+        "atp.archive_object.replication_policy_satisfied",
+        "atp.archive_object.retrievability_sample_passed"
+      ]
+    },
+    "path": {
+      "prefix": "atp.path.",
+      "sourceDocument": "docs/ATP_MEDIA_GRAPH_AND_REPLICATION.md",
+      "progression": [
+        "atp.path.discover",
+        "atp.path.candidate",
+        "atp.path.probing",
+        "atp.path.active",
+        "atp.path.suspect",
+        "atp.path.draining",
+        "atp.path.closed"
+      ],
+      "terminals": [
+        "atp.path.closed"
+      ],
+      "states": [
+        {
+          "stateKey": "atp.path.discover",
+          "name": "Discover",
+          "terminal": false,
+          "allowedNext": [
+            "atp.path.candidate",
+            "atp.path.draining"
+          ]
+        },
+        {
+          "stateKey": "atp.path.candidate",
+          "name": "Candidate",
+          "terminal": false,
+          "allowedNext": [
+            "atp.path.probing",
+            "atp.path.draining"
+          ]
+        },
+        {
+          "stateKey": "atp.path.probing",
+          "name": "Probing",
+          "terminal": false,
+          "allowedNext": [
+            "atp.path.active",
+            "atp.path.suspect",
+            "atp.path.draining"
+          ]
+        },
+        {
+          "stateKey": "atp.path.active",
+          "name": "Active",
+          "terminal": false,
+          "allowedNext": [
+            "atp.path.suspect",
+            "atp.path.draining"
+          ]
+        },
+        {
+          "stateKey": "atp.path.suspect",
+          "name": "Suspect",
+          "terminal": false,
+          "allowedNext": [
+            "atp.path.probing",
+            "atp.path.draining"
+          ]
+        },
+        {
+          "stateKey": "atp.path.draining",
+          "name": "Draining",
+          "terminal": false,
+          "allowedNext": [
+            "atp.path.closed"
+          ]
+        },
+        {
+          "stateKey": "atp.path.closed",
+          "name": "Closed",
+          "terminal": true,
+          "allowedNext": []
+        }
+      ]
+    }
+  },
+  "legacyCrosswalk": [
+    {
+      "spelling": "ManifestVerified",
+      "sourceDocument": "docs/ATP_ARCHIVE_AND_REPLICATION.md",
+      "layer": "archive_publication",
+      "canonicalState": "atp.archive.manifest_verified",
+      "mapping": "distinct_canonical",
+      "note": "Distinct registered archive-publication state after reservation and manifest schema/digest/policy checks."
+    },
+    {
+      "spelling": "ManifestValidated",
+      "sourceDocument": "docs/ATP_MEDIA_GRAPH_AND_REPLICATION.md",
+      "layer": "archive_publication",
+      "canonicalState": "atp.archive.manifest_verified",
+      "mapping": "mapped_alias",
+      "note": "Media-graph document synonym for ManifestVerified; maps deterministically to atp.archive.manifest_verified."
+    },
+    {
+      "spelling": "PathsDiscovered",
+      "sourceDocument": "docs/ATP_MEDIA_GRAPH_AND_REPLICATION.md",
+      "layer": "path",
+      "canonicalState": "atp.path.candidate",
+      "mapping": "layer_rehomed",
+      "note": "Path-layer milestone; never collapsed into semantic transfer or archive publication states."
+    },
+    {
+      "spelling": "ChildrenScheduled",
+      "sourceDocument": "docs/ATP_MEDIA_GRAPH_AND_REPLICATION.md",
+      "layer": "archive_publication",
+      "canonicalState": "atp.archive.fetching",
+      "mapping": "mapped_alias",
+      "note": "Child scheduling begins the Fetching phase once the manifest is verified."
+    },
+    {
+      "spelling": "ChildVerified",
+      "sourceDocument": "docs/ATP_MEDIA_GRAPH_AND_REPLICATION.md",
+      "layer": "archive_publication",
+      "canonicalState": "atp.archive.object_verified",
+      "mapping": "mapped_alias",
+      "note": "Singular document spelling of ObjectVerified after staged child digest/repair verification."
+    },
+    {
+      "spelling": "ObjectVerified",
+      "sourceDocument": "docs/ATP_ARCHIVE_AND_REPLICATION.md",
+      "layer": "archive_publication",
+      "canonicalState": "atp.archive.object_verified",
+      "mapping": "distinct_canonical",
+      "note": "Distinct registered archive-publication state proving every staged child object matches its canonical digest."
+    },
+    {
+      "spelling": "GraphClosureVerified",
+      "sourceDocument": "docs/ATP_MEDIA_GRAPH_AND_REPLICATION.md",
+      "layer": "archive_publication",
+      "canonicalState": "atp.archive.graph_closed",
+      "mapping": "mapped_alias",
+      "note": "Media-graph spelling of archive GraphClosed; distinct from semantic atp.semantic.graph_closed."
+    },
+    {
+      "spelling": "ExposureReady",
+      "sourceDocument": "docs/ATP_MEDIA_GRAPH_AND_REPLICATION.md",
+      "layer": "archive_publication",
+      "canonicalState": "atp.archive.exposure_ready",
+      "mapping": "distinct_canonical",
+      "note": "Distinct pre-publication gate verifying privacy transforms, policy epochs, root generation, high-water continuity, and reader authorization."
+    },
+    {
+      "spelling": "RootPublished",
+      "sourceDocument": "docs/ATP_ARCHIVE_AND_REPLICATION.md",
+      "layer": "archive_publication",
+      "canonicalState": "atp.archive.root_published",
+      "mapping": "distinct_canonical",
+      "note": "Distinct root-last publication state after ExposureReady and publication-fence check."
+    },
+    {
+      "spelling": "ReplicaQualified",
+      "sourceDocument": "docs/ATP_MEDIA_GRAPH_AND_REPLICATION.md",
+      "layer": "archive_publication",
+      "canonicalState": "atp.archive.replica_qualified",
+      "mapping": "distinct_canonical",
+      "note": "Distinct replication-policy satisfaction state across independent failure domains."
+    },
+    {
+      "spelling": "RetrievabilityVerified",
+      "sourceDocument": "docs/ATP_ARCHIVE_AND_REPLICATION.md",
+      "layer": "archive_publication",
+      "canonicalState": "atp.archive.retrievability_verified",
+      "mapping": "distinct_canonical",
+      "note": "Distinct witnessed proof-of-retrievability state required before Complete."
+    },
+    {
+      "spelling": "Planned",
+      "sourceDocument": "docs/ATP_ARCHIVE_AND_REPLICATION.md",
+      "layer": "archive_publication",
+      "canonicalState": "atp.archive.planned",
+      "mapping": "distinct_canonical",
+      "note": "Initial archive publication planning state."
+    },
+    {
+      "spelling": "Fetching",
+      "sourceDocument": "docs/ATP_ARCHIVE_AND_REPLICATION.md",
+      "layer": "archive_publication",
+      "canonicalState": "atp.archive.fetching",
+      "mapping": "distinct_canonical",
+      "note": "Active child/symbol retrieval state before local/remote staging completes."
+    },
+    {
+      "spelling": "Staged",
+      "sourceDocument": "docs/ATP_ARCHIVE_AND_REPLICATION.md",
+      "layer": "archive_publication",
+      "canonicalState": "atp.archive.staged",
+      "mapping": "distinct_canonical",
+      "note": "Unpublished staged bytes awaiting digest and post-repair verification."
+    },
+    {
+      "spelling": "Complete",
+      "sourceDocument": "docs/ATP_ARCHIVE_AND_REPLICATION.md",
+      "layer": "archive_publication",
+      "canonicalState": "atp.archive.complete",
+      "mapping": "distinct_canonical",
+      "note": "Archive completion reachable only after RetrievabilityVerified."
+    },
+    {
+      "spelling": "Scrubbed",
+      "sourceDocument": "docs/ATP_MEDIA_GRAPH_AND_REPLICATION.md",
+      "layer": "archive_publication",
+      "canonicalState": "atp.archive.scrubbed",
+      "mapping": "distinct_canonical",
+      "note": "Post-completion periodic integrity/scrub verification state."
+    },
+    {
+      "spelling": "Retired",
+      "sourceDocument": "docs/ATP_MEDIA_GRAPH_AND_REPLICATION.md",
+      "layer": "archive_publication",
+      "canonicalState": "atp.archive.retired",
+      "mapping": "distinct_canonical",
+      "note": "Graph-complete deletion / retirement terminal archive state."
+    },
+    {
+      "spelling": "Proposed",
+      "sourceDocument": "docs/ATP_AND_DISTRIBUTED_EVIDENCE.md",
+      "layer": "semantic_transfer",
+      "canonicalState": "atp.semantic.proposed",
+      "mapping": "distinct_canonical",
+      "note": "Initial semantic transfer proposal before quota/authority reservation."
+    },
+    {
+      "spelling": "Offered",
+      "sourceDocument": "docs/ATP_AND_DISTRIBUTED_EVIDENCE.md",
+      "layer": "semantic_transfer",
+      "canonicalState": "atp.semantic.offered",
+      "mapping": "distinct_canonical",
+      "note": "Sender offered bytes/chunks; distinct from received and verified."
+    },
+    {
+      "spelling": "ChildrenVerified",
+      "sourceDocument": "docs/ATP_AND_DISTRIBUTED_EVIDENCE.md",
+      "layer": "semantic_transfer",
+      "canonicalState": "atp.semantic.children_verified",
+      "mapping": "distinct_canonical",
+      "note": "Every offered/repaired child verified against its canonical content digest."
+    },
+    {
+      "spelling": "DurabilitySatisfied",
+      "sourceDocument": "docs/ATP_AND_DISTRIBUTED_EVIDENCE.md",
+      "layer": "semantic_transfer",
+      "canonicalState": "atp.semantic.durability_satisfied",
+      "mapping": "distinct_canonical",
+      "note": "Destination durability contract satisfied prior to atomic root commit."
+    },
+    {
+      "spelling": "RootCommitted",
+      "sourceDocument": "docs/ATP_AND_DISTRIBUTED_EVIDENCE.md",
+      "layer": "semantic_transfer",
+      "canonicalState": "atp.semantic.root_committed",
+      "mapping": "distinct_canonical",
+      "note": "Atomic root pointer committed under exact fence before receipt sealing."
+    },
+    {
+      "spelling": "ReceiptSealed",
+      "sourceDocument": "docs/ATP_AND_DISTRIBUTED_EVIDENCE.md",
+      "layer": "semantic_transfer",
+      "canonicalState": "atp.semantic.receipt_sealed",
+      "mapping": "distinct_canonical",
+      "note": "Domain-separated canonical transfer receipt sealed after RootCommitted."
+    },
+    {
+      "spelling": "Rejected",
+      "sourceDocument": "docs/ATP_AND_DISTRIBUTED_EVIDENCE.md",
+      "layer": "semantic_transfer",
+      "canonicalState": "atp.semantic.rejected",
+      "mapping": "distinct_canonical",
+      "note": "Policy/capability/manifest refusal before receipt."
+    },
+    {
+      "spelling": "Aborted",
+      "sourceDocument": "docs/ATP_AND_DISTRIBUTED_EVIDENCE.md",
+      "layer": "semantic_transfer",
+      "canonicalState": "atp.semantic.aborted",
+      "mapping": "distinct_canonical",
+      "note": "Safely stopped after draining paths; no semantic root committed."
+    },
+    {
+      "spelling": "Superseded",
+      "sourceDocument": "docs/ATP_AND_DISTRIBUTED_EVIDENCE.md",
+      "layer": "semantic_transfer",
+      "canonicalState": "atp.semantic.superseded",
+      "mapping": "distinct_canonical",
+      "note": "Completed transfer superseded by a newer generation."
+    },
+    {
+      "spelling": "Discover",
+      "sourceDocument": "docs/ATP_MEDIA_GRAPH_AND_REPLICATION.md",
+      "layer": "path",
+      "canonicalState": "atp.path.discover",
+      "mapping": "distinct_canonical",
+      "note": "Initial path discovery state."
+    },
+    {
+      "spelling": "Candidate",
+      "sourceDocument": "docs/ATP_MEDIA_GRAPH_AND_REPLICATION.md",
+      "layer": "path",
+      "canonicalState": "atp.path.candidate",
+      "mapping": "distinct_canonical",
+      "note": "Admitted path candidate awaiting probing."
+    },
+    {
+      "spelling": "Probing",
+      "sourceDocument": "docs/ATP_MEDIA_GRAPH_AND_REPLICATION.md",
+      "layer": "path",
+      "canonicalState": "atp.path.probing",
+      "mapping": "distinct_canonical",
+      "note": "Actively probed path; may not expose data."
+    },
+    {
+      "spelling": "Active",
+      "sourceDocument": "docs/ATP_MEDIA_GRAPH_AND_REPLICATION.md",
+      "layer": "path",
+      "canonicalState": "atp.path.active",
+      "mapping": "distinct_canonical",
+      "note": "Authorized active transfer path."
+    },
+    {
+      "spelling": "Suspect",
+      "sourceDocument": "docs/ATP_MEDIA_GRAPH_AND_REPLICATION.md",
+      "layer": "path",
+      "canonicalState": "atp.path.suspect",
+      "mapping": "distinct_canonical",
+      "note": "Degraded/faulted path; cannot expose data until re-probed or drained."
+    },
+    {
+      "spelling": "Draining",
+      "sourceDocument": "docs/ATP_MEDIA_GRAPH_AND_REPLICATION.md",
+      "layer": "path",
+      "canonicalState": "atp.path.draining",
+      "mapping": "distinct_canonical",
+      "note": "Path draining all in-flight operations, buffers, and handles prior to Closed."
+    },
+    {
+      "spelling": "Closed",
+      "sourceDocument": "docs/ATP_MEDIA_GRAPH_AND_REPLICATION.md",
+      "layer": "path",
+      "canonicalState": "atp.path.closed",
+      "mapping": "distinct_canonical",
+      "note": "Terminal closed path; requires zero live work."
+    }
+  ],
+  "ambiguousBareSpellings": [
+    {
+      "spelling": "Reserved",
+      "layers": [
+        "semantic_transfer",
+        "archive_publication"
+      ],
+      "rule": "Must be layer-qualified (atp.semantic.reserved vs atp.archive.reserved); unqualified resolution refuses unless layer is supplied."
+    },
+    {
+      "spelling": "Receiving",
+      "layers": [
+        "semantic_transfer",
+        "archive_publication"
+      ],
+      "rule": "Canonical in semantic_transfer (atp.semantic.receiving); legacy media-graph doc spelling in archive_publication maps to atp.archive.fetching when layer=archive_publication."
+    },
+    {
+      "spelling": "GraphClosed",
+      "layers": [
+        "semantic_transfer",
+        "archive_publication"
+      ],
+      "rule": "Must be layer-qualified (atp.semantic.graph_closed vs atp.archive.graph_closed)."
+    },
+    {
+      "spelling": "Quarantined",
+      "layers": [
+        "semantic_transfer",
+        "archive_publication"
+      ],
+      "rule": "Must be layer-qualified (atp.semantic.quarantined vs atp.archive.quarantined)."
+    },
+    {
+      "spelling": "Indeterminate",
+      "layers": [
+        "semantic_transfer",
+        "archive_publication"
+      ],
+      "rule": "Must be layer-qualified (atp.semantic.indeterminate vs atp.archive.indeterminate); always owns a durable reconciliation obligation."
+    }
+  ],
+  "refusalRules": [
+    {
+      "code": "atp.refuse.skipped_publication",
+      "rule": "Reject any transition that skips an intermediate state or moves backwards on the semantic, archive, archive-object, or path lattice."
+    },
+    {
+      "code": "atp.refuse.root_before_child",
+      "rule": "Reject root commit or root publication if any declared child is missing, unverified, unclosed, or below required durability."
+    },
+    {
+      "code": "atp.refuse.stale_fence",
+      "rule": "Reject any mutation, commit, or publication presenting a publication fence older than the active lease/fence."
+    },
+    {
+      "code": "atp.refuse.receipt_before_commit",
+      "rule": "Reject sealing a committed receipt before RootCommitted (semantic) or RootPublished (archive)."
+    },
+    {
+      "code": "atp.refuse.path_close_live_work",
+      "rule": "Reject closing any path while in-flight operations, buffers, or open handles remain nonzero, or without traversing Draining."
+    },
+    {
+      "code": "atp.refuse.complete_without_retrievability",
+      "rule": "Reject transitioning archive publication to Complete without a matching witnessed RetrievabilityVerified proof."
+    },
+    {
+      "code": "atp.refuse.authority_revoked",
+      "rule": "Reject progression after capability, privacy, or destination authorization is revoked or expired."
+    },
+    {
+      "code": "atp.refuse.repair_digest_mismatch",
+      "rule": "Reject post-repair verification unless the reconstructed canonical digest matches the manifest child digest exactly."
+    },
+    {
+      "code": "atp.refuse.unknown_spelling",
+      "rule": "Reject any unlisted state spelling or unqualified ambiguous spelling; transports may not invent aliases."
+    },
+    {
+      "code": "atp.refuse.incompatible_version",
+      "rule": "Reject unsupported format versions, unknown critical extensions, or mismatched generation/anchor bindings."
+    }
+  ]
+}

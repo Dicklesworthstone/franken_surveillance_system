@@ -36,12 +36,197 @@
         "staged",
         "object_verified",
         "graph_closed",
+        "exposure_ready",
         "root_published",
+        "replica_qualified",
         "retrievability_verified",
         "complete",
+        "scrubbed",
+        "retired",
+        "quarantined",
         "cancelled",
         "failed",
         "indeterminate"
+      ]
+    },
+    "semanticState": {
+      "enum": [
+        "atp.semantic.proposed",
+        "atp.semantic.reserved",
+        "atp.semantic.offered",
+        "atp.semantic.receiving",
+        "atp.semantic.children_verified",
+        "atp.semantic.graph_closed",
+        "atp.semantic.durability_satisfied",
+        "atp.semantic.root_committed",
+        "atp.semantic.receipt_sealed",
+        "atp.semantic.rejected",
+        "atp.semantic.aborted",
+        "atp.semantic.quarantined",
+        "atp.semantic.indeterminate",
+        "atp.semantic.superseded"
+      ]
+    },
+    "archiveState": {
+      "enum": [
+        "atp.archive.planned",
+        "atp.archive.reserved",
+        "atp.archive.manifest_verified",
+        "atp.archive.fetching",
+        "atp.archive.staged",
+        "atp.archive.object_verified",
+        "atp.archive.graph_closed",
+        "atp.archive.exposure_ready",
+        "atp.archive.root_published",
+        "atp.archive.replica_qualified",
+        "atp.archive.retrievability_verified",
+        "atp.archive.complete",
+        "atp.archive.scrubbed",
+        "atp.archive.retired",
+        "atp.archive.quarantined",
+        "atp.archive.cancelled",
+        "atp.archive.failed",
+        "atp.archive.indeterminate"
+      ]
+    },
+    "pathStates": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "pathId",
+          "state",
+          "liveWork"
+        ],
+        "properties": {
+          "pathId": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "state": {
+            "enum": [
+              "atp.path.discover",
+              "atp.path.candidate",
+              "atp.path.probing",
+              "atp.path.active",
+              "atp.path.suspect",
+              "atp.path.draining",
+              "atp.path.closed"
+            ]
+          },
+          "liveWork": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "publicationFence": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "contractBasisDigest": {
+      "anyOf": [
+        {
+          "$ref": "sensor_capsule.v1.json#/$defs/digest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "counters": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "offeredBytes",
+        "receivedBytes",
+        "verifiedBytes",
+        "committedBytes",
+        "reusedBytes",
+        "offeredObjects",
+        "verifiedObjects",
+        "committedObjects"
+      ],
+      "properties": {
+        "offeredBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "receivedBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "verifiedBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "committedBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reusedBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "offeredObjects": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "verifiedObjects": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "committedObjects": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "providerTuple": {
+      "type": "string",
+      "maxLength": 256
+    },
+    "proofOfRetrievability": {
+      "anyOf": [
+        {
+          "$ref": "sensor_capsule.v1.json#/$defs/digest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "reconciliationObligation": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "obligationId",
+            "fence",
+            "reason"
+          ],
+          "properties": {
+            "obligationId": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "fence": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "reason": {
+              "type": "string",
+              "maxLength": 512
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
       ]
     },
     "source": {
