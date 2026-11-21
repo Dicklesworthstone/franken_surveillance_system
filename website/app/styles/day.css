@@ -1,6 +1,7 @@
 /* The written record, read in daylight. */
 .status {
   padding: clamp(56px, 8vw, 104px) 0 clamp(48px, 7vw, 88px);
+  border-top: 3px solid var(--sign);
 }
 .status__intro {
   display: grid;
@@ -41,6 +42,7 @@
   margin-top: 56px;
   padding: 28px 32px 30px;
   background: var(--day-raised);
+  border: 1px solid var(--day-line);
   border-radius: 6px;
 }
 .status__halves {
@@ -83,6 +85,53 @@
   padding: 10px 0;
   border-top: 1px solid var(--day-line);
   line-height: 1.4;
+}
+.cmdbox__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.cmdbox__tabs {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.cmdbox__tabs button {
+  padding: 6px 11px;
+  border-radius: 3px;
+  border: 1px solid var(--day-line);
+  background: var(--day-raised);
+  font-size: 0.82rem;
+  font-weight: 580;
+  color: var(--day-soft);
+  transition: border-color 120ms, background-color 120ms, color 120ms;
+}
+.cmdbox__tabs button:hover {
+  border-color: var(--day-text);
+  color: var(--day-text);
+}
+.cmdbox__tabs button.is-active {
+  background: var(--day-text);
+  border-color: var(--day-text);
+  color: #fff;
+}
+.cmdbox__copy {
+  padding: 5px 10px;
+  border-radius: 3px;
+  border: 1px solid var(--day-line);
+  background: var(--day-raised);
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--day-text);
+  transition: border-color 120ms, background-color 120ms, color 120ms;
+}
+.cmdbox__copy:hover {
+  border-color: var(--day-text);
+  background: var(--day-text);
+  color: #fff;
 }
 .status__run {
   margin: 0 0 14px;

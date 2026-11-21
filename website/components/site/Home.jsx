@@ -1,5 +1,6 @@
 import { loadTake } from "../../lib/watch/load";
 import { stamp } from "../../lib/watch/take";
+import ArchitectureDeck from "./ArchitectureDeck";
 import Console from "./Console";
 import HeroMedia from "./HeroMedia";
 import { MeasuredSummary } from "./Measured";
@@ -40,9 +41,31 @@ const STEPS = [
   ["#record", "Keep an append-only record of all of it"],
 ];
 
+const PILLARS = [
+  [
+    "Pure-Rust substrate.",
+    "First-party H.264/H.265/JPEG decoders, CPU model runtime, TUTK/Tuya/ONVIF/RTSP and 27 graph algorithms. Zero unsafe code, zero FFmpeg, OpenCV or Python in production.",
+  ],
+  [
+    "Witnessed absence.",
+    "A working camera that saw nobody and a dead, blocked or masked camera are never collapsed. Every claim carries one of nine typed knowledge states.",
+  ],
+  [
+    "Decomposable belief.",
+    "Evidence adds in whole millibans with Wilson intervals and common-cause ablation, so two cameras sharing a model or lighting change cannot double-count.",
+  ],
+  [
+    "Prepared, bounded effects.",
+    "Models propose and never authorize. Consequential actions commit by digest, verify against cameras, and stay indeterminate instead of resending blindly.",
+  ],
+];
+
 export default function Home() {
   const { summary, story, spans, sceneUrl, sceneDigest, renderDigest, native, boxesUrl, boxesDigest, hero, plate, films } = loadTake();
   const names = Object.fromEntries(summary.cameras.map((cam) => [cam.id, cam.name]));
+  const totalMeasuredFrames = native
+    ? native.cameras.reduce((sum, c) => sum + (c.custody === "ok" ? (c.frames ?? 0) : 0), 0)
+    : null;
   return (
     <>
       <TopBar />
@@ -55,17 +78,21 @@ export default function Home() {
           />
           <div className="wrap hero__body">
             <div>
+              <p className="hero__eyebrow data">PURE RUST · ZERO UNSAFE · LOCAL FIRST · 22 CRATES</p>
               <h1 className="display">A security room for your house, built from $35 cameras.</h1>
               <p className="hero__lede">
-                Franken Surveillance joins the cheap Wi-Fi cameras you already own, whatever the makers, into one live
-                model of your property. It follows everyone who walks onto it, records what it knows and how it knows
-                it, and gives an AI agent a place to watch from and a short list of things it may do.
+                Franken Surveillance joins the cheap Wi-Fi cameras you already own, whatever the makers, into one
+                calibrated, local-first model of your property. It seals raw bytes before decode, separates silence from
+                blind spots, and gives an AI agent a bounded place to watch and act without vendor clouds.
               </p>
               <div className="hero__actions">
                 <a className="button button--sign" href="#minute">
                   Watch one minute at 02:14
                 </a>
-                <a className="button button--line" href={REPO}>
+                <a className="button button--line" href="#architecture">
+                  Inspect the Rust stack
+                </a>
+                <a className="button button--ghost" href={REPO}>
                   Read the source
                 </a>
               </div>
@@ -76,46 +103,66 @@ export default function Home() {
             </p>
           </div>
           <div className="hero__status">
-            <p className="wrap">
-              Open source and unfinished. The scene on this page is staged: a rendered house, motion-captured actors and
-              a scripted agent. Each figure says whether the software measured it. <a href="#status">What runs today</a>
-            </p>
+            <div className="wrap hero__status-row">
+              <p>
+                Open source and unfinished. The scene on this page is staged: a rendered house, motion-captured actors and
+                a scripted agent. Each figure says whether the software measured it. <a href="#status">What runs today</a>
+              </p>
+              {totalMeasuredFrames != null && (
+                <p className="hero__telemetry data">
+                  {summary.cameras.length} films · {totalMeasuredFrames.toLocaleString("en")} frames measured · 14 fss/1 ops
+                </p>
+              )}
+            </div>
           </div>
         </section>
 
         <section className="pitch night" aria-label="The idea">
-          <div className="wrap pitch__grid">
-            <p>
-              Airports and borders have had this for decades: many sensors joined into one picture, watched around the
-              clock by trained staff.{" "}
-              <em>
-                The parts are cheap now. A Wi-Fi camera costs $35 and an AI agent can do the watching. Franken
-                Surveillance is the software in between.
-              </em>
-            </p>
-            <nav aria-labelledby="pitch-steps">
-              <h2 id="pitch-steps">What that software has to do</h2>
-              <ol>
-                {STEPS.map(([href, text]) => (
-                  <li key={href}>
-                    <a href={href}>{text}</a>
-                  </li>
-                ))}
-              </ol>
-            </nav>
+          <div className="wrap">
+            <div className="pitch__grid">
+              <p className="pitch__thesis">
+                Airports and borders have had this for decades: many sensors joined into one picture, watched around the
+                clock by trained staff.{" "}
+                <em>
+                  The parts are cheap now. A Wi-Fi camera costs $35 and an AI agent can do the watching. Franken
+                  Surveillance is the deterministic evidence fabric in between.
+                </em>
+              </p>
+              <nav aria-labelledby="pitch-steps">
+                <h2 id="pitch-steps">What that software has to do</h2>
+                <ol>
+                  {STEPS.map(([href, text]) => (
+                    <li key={href}>
+                      <a href={href}>{text}</a>
+                    </li>
+                  ))}
+                </ol>
+              </nav>
+            </div>
+            <ul className="pillars" aria-label="Core architectural differences">
+              {PILLARS.map(([lead, body]) => (
+                <li key={lead}>
+                  <strong>{lead}</strong> {body}
+                </li>
+              ))}
+            </ul>
           </div>
         </section>
 
         <section className="minute night" id="minute" aria-labelledby="minute-title">
           <div className="wrap">
             <div className="minute__intro">
-              <h2 className="title" id="minute-title">
-                One minute, {summary.cameras.length === 5 ? "five" : summary.cameras.length} cameras, two people who should not be there.
-              </h2>
+              <div>
+                <p className="eyebrow data">SYNCHRONIZED REPLAY · 02:14:00 TO 02:15:01</p>
+                <h2 className="title" id="minute-title">
+                  One minute, {summary.cameras.length === 5 ? "five" : summary.cameras.length} cameras, two people who should not be there.
+                </h2>
+              </div>
               <div>
                 <p className="prose soft">
-                  At 02:14 one man comes in through the gate while another keeps watch outside it. Press play or drag the
-                  timeline. The films, the site model, the agent and the ledger all run off one clock.
+                  At 02:14 one man comes in through the gate while another keeps watch outside it. Press play, step
+                  between moments or drag the timeline. The films, the site model, the agent and the ledger all run off
+                  one clock.
                 </p>
                 <p className="minute__key">
                   <span className="source source--staged">Dashed outline: staged position</span>
@@ -158,6 +205,7 @@ export default function Home() {
         )}
 
         <Story summary={summary} story={story} native={native} />
+        <ArchitectureDeck />
         <Status measured={native && <MeasuredSummary native={native} names={names} />} films={films} />
       </main>
       <Footer credits={CREDITS} />

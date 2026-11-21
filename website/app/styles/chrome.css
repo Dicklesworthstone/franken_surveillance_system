@@ -1,13 +1,17 @@
 .topbar {
-  position: absolute;
+  position: fixed;
   inset: 0 0 auto 0;
-  z-index: 20;
+  z-index: 40;
+  background: rgb(8 11 16 / 0.95);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border-bottom: 1px solid rgb(255 255 255 / 0.09);
 }
 .topbar__row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 24px;
+  gap: 20px;
   height: 64px;
 }
 .wordmark {
@@ -29,22 +33,80 @@
 .topbar nav ul {
   display: flex;
   align-items: center;
-  gap: clamp(14px, 2.2vw, 30px);
+  gap: clamp(14px, 2vw, 28px);
 }
 .topbar nav a {
-  font-size: 0.95rem;
+  font-size: 0.93rem;
   font-weight: 520;
   text-decoration: none;
   padding: 10px 0;
-  color: color-mix(in srgb, var(--night-text) 86%, transparent);
+  color: color-mix(in srgb, var(--night-text) 84%, transparent);
+  transition: color 120ms, border-color 120ms;
 }
 .topbar nav a:hover {
   color: #fff;
   text-decoration: underline;
 }
+.topbar nav a.is-current {
+  color: var(--sign);
+}
+.topbar nav a.topbar__source {
+  padding: 6px 12px;
+  border: 1px solid rgb(255 255 255 / 0.22);
+  border-radius: 3px;
+  color: var(--night-text);
+}
+.topbar nav a.topbar__source:hover {
+  border-color: var(--sign);
+  color: var(--sign);
+  text-decoration: none;
+}
+.topbar__mobile {
+  display: none;
+}
 @media (max-width: 720px) {
+  .topbar__row {
+    height: 50px;
+    gap: 12px;
+  }
+  .wordmark {
+    font-size: 0.95rem;
+    gap: 9px;
+  }
+  .wordmark svg {
+    width: 22px;
+    height: 22px;
+  }
   .topbar nav li:not(.topbar__keep) {
     display: none;
+  }
+  .topbar nav a.topbar__source {
+    padding: 4px 10px;
+    font-size: 0.84rem;
+  }
+  .topbar__mobile {
+    display: block;
+    border-top: 1px solid rgb(255 255 255 / 0.08);
+    background: rgb(8 11 16 / 0.94);
+  }
+  .topbar__mobile-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    height: 34px;
+  }
+  .topbar__mobile-row a {
+    font-size: 0.78rem;
+    font-weight: 560;
+    color: var(--night-soft);
+    text-decoration: none;
+    padding: 6px 2px;
+    white-space: nowrap;
+  }
+  .topbar__mobile-row a:hover,
+  .topbar__mobile-row a.is-current {
+    color: var(--sign);
   }
 }
 
@@ -84,7 +146,7 @@
   position: absolute;
   left: 12px;
   top: -60px;
-  z-index: 30;
+  z-index: 60;
   padding: 10px 14px;
   border-radius: 3px;
   background: var(--sign);

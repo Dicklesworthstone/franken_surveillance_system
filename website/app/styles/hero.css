@@ -34,33 +34,40 @@
   inset: 0;
   z-index: -1;
   background:
-    linear-gradient(to top, rgb(8 11 16 / 0.96) 0%, rgb(8 11 16 / 0.74) 28%, rgb(8 11 16 / 0) 62%),
-    linear-gradient(to right, rgb(8 11 16 / 0.62) 0%, rgb(8 11 16 / 0) 58%),
-    linear-gradient(to bottom, rgb(8 11 16 / 0.6) 0%, rgb(8 11 16 / 0) 20%);
+    linear-gradient(to top, rgb(8 11 16 / 0.96) 0%, rgb(8 11 16 / 0.76) 30%, rgb(8 11 16 / 0) 64%),
+    linear-gradient(to right, rgb(8 11 16 / 0.66) 0%, rgb(8 11 16 / 0) 58%),
+    linear-gradient(to bottom, rgb(8 11 16 / 0.68) 0%, rgb(8 11 16 / 0) 22%);
 }
 .hero__body {
-  padding: 150px 0 44px;
+  padding: 136px 0 40px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: end;
   gap: 32px 48px;
 }
+.hero__eyebrow {
+  margin-bottom: 14px;
+  font-size: 0.74rem;
+  letter-spacing: 0.09em;
+  color: var(--sign);
+}
 .hero h1 {
   max-width: 15ch;
 }
 .hero__lede {
-  margin-top: 22px;
-  max-width: 54ch;
-  font-size: clamp(1.06rem, 0.95rem + 0.5vw, 1.3rem);
-  line-height: 1.45;
+  margin-top: 20px;
+  max-width: 56ch;
+  font-size: clamp(1.04rem, 0.94rem + 0.45vw, 1.24rem);
+  line-height: 1.46;
   color: color-mix(in srgb, var(--night-text) 92%, transparent);
   text-wrap: pretty;
 }
 .hero__actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
-  margin-top: 30px;
+  align-items: center;
+  gap: 10px 12px;
+  margin-top: 28px;
 }
 /* The caption is the camera's own stamp for the frame behind the headline. */
 .hero__stamp {
@@ -80,51 +87,96 @@
 }
 .hero__status {
   border-top: 1px solid rgb(255 255 255 / 0.14);
-  background: rgb(8 11 16 / 0.72);
+  background: rgb(8 11 16 / 0.8);
+}
+.hero__status-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px 28px;
+  padding: 13px 0;
 }
 .hero__status p {
-  padding: 14px 0;
-  font-size: 0.94rem;
+  font-size: 0.92rem;
   color: var(--night-soft);
-  max-width: none;
+  max-width: 72ch;
 }
 .hero__status a {
   color: var(--night-text);
 }
-/* On a phone the picture sits above the words so neither has to fight the other. */
+.hero__status .hero__telemetry {
+  font-size: 0.76rem;
+  color: var(--seen);
+  white-space: nowrap;
+}
+
+/* On a phone the picture sits above the words and stays compact so headline + primary CTA sit above the fold. */
 @media (max-width: 860px) {
   .hero {
     min-height: 0;
     display: block;
+    padding-top: 64px;
   }
   .hero__plate {
     position: relative;
-    height: 52svh;
-    min-height: 300px;
-    max-height: 520px;
+    height: clamp(195px, 28svh, 290px);
   }
   .hero::after {
+    top: 64px;
     bottom: auto;
-    height: 52svh;
-    min-height: 300px;
-    max-height: 520px;
+    height: clamp(195px, 28svh, 290px);
     background:
-      linear-gradient(to top, rgb(8 11 16 / 1) 0%, rgb(8 11 16 / 0) 34%),
-      linear-gradient(to bottom, rgb(8 11 16 / 0.62) 0%, rgb(8 11 16 / 0) 26%);
+      linear-gradient(to top, rgb(8 11 16 / 1) 0%, rgb(8 11 16 / 0) 36%),
+      linear-gradient(to bottom, rgb(8 11 16 / 0.55) 0%, rgb(8 11 16 / 0) 26%);
   }
   .hero__body {
     grid-template-columns: minmax(0, 1fr);
-    padding: 4px 0 32px;
-    gap: 22px;
+    padding: 12px 0 26px;
+    gap: 16px;
+  }
+  .hero__eyebrow {
+    margin-bottom: 10px;
+    font-size: 0.63rem;
+    letter-spacing: 0.04em;
+  }
+  .hero .display {
+    font-size: clamp(2.05rem, 1.35rem + 3.4vw, 3.1rem);
+    line-height: 1.03;
+  }
+  .hero__lede {
+    margin-top: 12px;
+    font-size: 0.98rem;
+    line-height: 1.42;
+  }
+  .hero__actions {
+    margin-top: 18px;
+    gap: 8px 10px;
+  }
+  .hero__actions .button {
+    min-height: 42px;
+    padding: 0 0.95em;
+    font-size: 0.92rem;
   }
   .hero__stamp {
     text-align: left;
   }
 }
+@media (max-width: 720px) {
+  .hero {
+    padding-top: 85px;
+  }
+  .hero::after {
+    top: 85px;
+  }
+  .hero__status .hero__telemetry {
+    white-space: normal;
+  }
+}
 
 /* The claim, in three sentences, between the picture and the demonstration. */
 .pitch {
-  padding: clamp(48px, 7vw, 96px) 0 0;
+  padding: clamp(48px, 7vw, 92px) 0 0;
 }
 .pitch__grid {
   display: grid;
@@ -141,11 +193,11 @@
 .pitch ol {
   counter-reset: step;
 }
-.pitch li {
+.pitch ol li {
   counter-increment: step;
   border-top: 1px solid var(--night-line);
 }
-.pitch li a {
+.pitch ol li a {
   display: grid;
   grid-template-columns: 1.6em minmax(0, 1fr);
   gap: 8px;
@@ -153,30 +205,66 @@
   line-height: 1.35;
   text-decoration: none;
 }
-.pitch li a::before {
+.pitch ol li a::before {
   content: counter(step);
   font-variant-numeric: tabular-nums;
   color: var(--sign);
   font-weight: 640;
 }
-.pitch li a:hover {
+.pitch ol li a:hover {
   color: var(--sign);
 }
-@media (max-width: 980px) {
-  .pitch__grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
-.pitch p {
+.pitch__thesis {
   max-width: 26ch;
-  font-size: clamp(1.45rem, 1rem + 2vw, 2.5rem);
+  font-size: clamp(1.45rem, 1rem + 2vw, 2.45rem);
   font-stretch: 108%;
   font-weight: 560;
   line-height: 1.18;
   letter-spacing: -0.015em;
   text-wrap: balance;
 }
-.pitch em {
+.pitch__thesis em {
   font-style: normal;
   color: var(--night-soft);
+}
+
+/* Four architectural differentiators, laid out cleanly on hairlines without card clutter. */
+.pillars {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 20px 28px;
+  margin-top: clamp(36px, 5vw, 56px);
+  padding-top: 24px;
+  border-top: 1px solid var(--night-line);
+}
+.pillars li {
+  font-size: 0.9rem;
+  line-height: 1.48;
+  color: var(--night-soft);
+}
+.pillars strong {
+  display: block;
+  margin-bottom: 5px;
+  font-size: 0.96rem;
+  font-stretch: 106%;
+  font-weight: 650;
+  color: var(--night-text);
+}
+@media (max-width: 980px) {
+  .pitch__grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .pillars {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 560px) {
+  .pillars {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+  }
+  .pillars li + li {
+    padding-top: 14px;
+    border-top: 1px solid rgb(255 255 255 / 0.07);
+  }
 }

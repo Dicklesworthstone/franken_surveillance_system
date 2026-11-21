@@ -53,6 +53,15 @@ function Code({ children }) {
   );
 }
 
+function MiniBar({ ratio, tone = "seen" }) {
+  const clamped = Math.max(0, Math.min(1, ratio));
+  return (
+    <span className={"minibar minibar--" + tone} aria-hidden="true">
+      <i style={{ width: `${(clamped * 100).toFixed(1)}%` }} />
+    </span>
+  );
+}
+
 function Panel({ title = "Measured on these films", children, className = "" }) {
   return (
     <aside className={"measured " + className}>
@@ -269,7 +278,10 @@ export function Detector({ native, names }) {
                 {c.compared == null
                   ? "n/a"
                   : c.compared
-                    ? `${c.matched} of ${c.compared} (${pct(c.matched / c.compared)})`
+                    ? <>
+                        <span>{c.matched} of {c.compared} ({pct(c.matched / c.compared)})</span>
+                        <MiniBar ratio={c.matched / c.compared} tone={c.matched / c.compared >= 0.5 ? "seen" : "lamp"} />
+                      </>
                     : "none in view"}
               </td>
               <td className="num">{c.overlap != null && c.compared ? c.overlap.toFixed(2) : "n/a"}</td>
@@ -295,7 +307,8 @@ export function Detector({ native, names }) {
               <tr key={band.key}>
                 <td>{band.label}</td>
                 <td className="num">
-                  {band.matched} of {band.compared} ({pct(band.matched / band.compared)})
+                  <span>{band.matched} of {band.compared} ({pct(band.matched / band.compared)})</span>
+                  <MiniBar ratio={band.matched / band.compared} tone={band.matched / band.compared >= 0.5 ? "seen" : "lamp"} />
                 </td>
               </tr>
             ))}
@@ -352,8 +365,13 @@ export function CoverageRuns({ native, names }) {
                 <>
                   <td className="num">{c.coverage.records ?? "n/a"}</td>
                   <td className="num">
-                    {c.coverage.seconds != null ? c.coverage.seconds.toFixed(1) : "n/a"}
-                    {c.coverage.seconds != null && c.seconds != null && ` of ${c.seconds.toFixed(0)}`}
+                    <span>
+                      {c.coverage.seconds != null ? c.coverage.seconds.toFixed(1) : "n/a"}
+                      {c.coverage.seconds != null && c.seconds != null && ` of ${c.seconds.toFixed(0)}`}
+                    </span>
+                    {c.coverage.seconds != null && c.seconds > 0 && (
+                      <MiniBar ratio={c.coverage.seconds / c.seconds} tone="seen" />
+                    )}
                   </td>
                   <td>
                     {c.coverage.certified == null ? "not stated" : c.coverage.certified ? "yes" : "no"}
@@ -471,6 +489,11 @@ export function Briefing({ native }) {
         </strong>{" "}
         {refusedPulse && `The smaller pulse view was refused: ${refusedPulse.reason ?? refusedPulse.error}.`}
       </p>
+      {b.target > 0 && (
+        <div className="measured__meter" aria-hidden="true">
+          <i style={{ width: `${Math.min(100, (b.tokens / b.target) * 100).toFixed(1)}%` }} />
+        </div>
+      )}
       {laterFailed.length > 0 && (
         <p className="measured__flag">
           This briefing was taken before the coverage witnesses were stored
@@ -756,7 +779,7 @@ export function Custody({ native, names }) {
           {native.cameras.map((c) => (
             <tr key={c.id}>
               <th scope="row">{names[c.id]}</th>
-              <td className="num">{c.frames ?? "—"}</td>
+              <td className="num">{c.frames ?? "n/a"}</td>
               <td>{c.custody === "ok" ? <span className="data" title={c.sha256}>{c.sha256.slice(0, 24)}</span>
                 : <>Import {c.custody}{c.custodyReason && <small>{c.custodyReason}</small>}</>}</td>
             </tr>
@@ -808,7 +831,7 @@ export function MeasuredSummary({ native, names }) {
   const covered = native.cameras.filter((c) => c.coverage?.records && c.coverage.seconds != null).map((c) => c.coverage.seconds);
   const certified = native.cameras.some((c) => c.coverage?.certified);
   return (
-    <ul>
+    <ul className="measured-summary">
       <li>
         {imported.length
           ? `${count(imported.length, "film")}, ${frames.toLocaleString("en")} frames, imported under SHA-256 custody.`

@@ -1,3 +1,5 @@
+import TopBarNav from "./TopBarNav";
+
 export const REPO = "https://github.com/Dicklesworthstone/franken_surveillance_system";
 
 /** Five lenses and the one picture they add up to. */
@@ -26,28 +28,7 @@ export default function TopBar({ home = "#top" }) {
       <a className="skip" href="#minute">
         Skip to the recording
       </a>
-      <div className="wrap topbar__row">
-        <a className="wordmark" href={home}>
-          <Mark />
-          Franken Surveillance
-        </a>
-        <nav aria-label="Sections">
-          <ul>
-            <li>
-              <a href="#minute">The minute</a>
-            </li>
-            <li>
-              <a href="#how">How it works</a>
-            </li>
-            <li>
-              <a href="#status">What runs today</a>
-            </li>
-            <li className="topbar__keep">
-              <a href={REPO}>Source</a>
-            </li>
-          </ul>
-        </nav>
-      </div>
+      <TopBarNav repo={REPO} home={home} mark={<Mark />} />
     </header>
   );
 }

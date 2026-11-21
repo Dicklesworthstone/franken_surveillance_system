@@ -23,20 +23,29 @@ export function SeekLink({ t, children }) {
 /** Each camera's own stamp for one instant, and the same instant once aligned. */
 export function ClockStrip({ summary, t }) {
   const [aligned, setAligned] = useState(false);
-  const span = 2.5;
+  const offsets = summary.cameras.map((cam) => cam.offset);
+  const spread = offsets.length ? Math.max(...offsets) - Math.min(...offsets) : 0;
+  const maxAbs = offsets.length ? Math.max(...offsets.map((o) => Math.abs(o))) : 0;
+  const span = Math.max(2.5, Math.ceil(maxAbs * 2) / 2);
   return (
     <div className="clocks">
-      <div className="clocks__switch" role="group" aria-label="Camera clocks">
-        <button type="button" aria-pressed={!aligned} onClick={() => setAligned(false)}>
-          As stamped
-        </button>
-        <button type="button" aria-pressed={aligned} onClick={() => setAligned(true)}>
-          Aligned
-        </button>
+      <div className="clocks__head">
+        <div className="clocks__switch" role="group" aria-label="Camera clocks">
+          <button type="button" aria-pressed={!aligned} onClick={() => setAligned(false)}>
+            As stamped
+          </button>
+          <button type="button" aria-pressed={aligned} onClick={() => setAligned(true)}>
+            Aligned
+          </button>
+        </div>
+        <span className="clocks__status data">{(aligned ? 0 : spread).toFixed(1)} s spread</span>
       </div>
       <ol className="clocks__rows">
         {summary.cameras.map((cam) => {
           const shown = aligned ? 0 : cam.offset;
+          const pos = Math.max(2, Math.min(98, 50 + (shown / span) * 50));
+          const stemLeft = Math.min(50, pos);
+          const stemWidth = Math.abs(pos - 50);
           return (
             <li key={cam.id}>
               <span className="clocks__name">
@@ -44,7 +53,8 @@ export function ClockStrip({ summary, t }) {
                 <small>{cam.product}</small>
               </span>
               <span className="clocks__axis" aria-hidden="true">
-                <i style={{ left: `${50 + (shown / span) * 50}%` }} />
+                <b className="clocks__stem" style={{ left: `${stemLeft}%`, width: `${stemWidth}%` }} />
+                <i style={{ left: `${pos}%` }} />
               </span>
               <span className="clocks__read">
                 <span className="data">{stamp(summary, t, shown, true)}</span>
@@ -60,6 +70,11 @@ export function ClockStrip({ summary, t }) {
           );
         })}
       </ol>
+      <div className="clocks__scale data" aria-hidden="true">
+        <span>−{span.toFixed(1)} s</span>
+        <span>0.0 s true time</span>
+        <span>+{span.toFixed(1)} s</span>
+      </div>
       <p className="source source--staged">
         Staged offsets, written into each film's on-screen clock. Aligning clocks from shared events is planned.
       </p>
@@ -82,6 +97,18 @@ const BENCH = { x: -30, z: -8, w: 46, h: 54 };
 // house, so the person is kept on the grounds in front of it (z = 0 is the front door).
 const FRONT = 1;
 const compass = (metres, ahead, behind) => `${Math.abs(Math.round(metres))} metres ${metres < 0 ? behind : ahead}`;
+const PIN_LABEL = {
+  gate: [0, 3.2, "middle"],
+  driveway: [-1.8, 0.8, "end"],
+  doorbell: [-1.8, -0.4, "end"],
+  porch: [1.8, 1.2, "start"],
+  entry: [0, 3.2, "middle"],
+};
+const PRESETS = [
+  { id: "overlap", label: "Crossed views", pos: [-5.5, 10], cams: { gate: true, driveway: true, doorbell: true, porch: true, entry: true } },
+  { id: "single", label: "One lens only", pos: [-14.5, 22], cams: { gate: false, driveway: true, doorbell: false, porch: false, entry: false } },
+  { id: "blind", label: "Uncovered spot", pos: [-26.5, 4], cams: { gate: true, driveway: true, doorbell: true, porch: true, entry: true } },
+];
 
 /**
  * Put a person anywhere on the front of the lot and see what the enabled
@@ -125,6 +152,10 @@ export function FusionBench({ summary }) {
       Math.max(BENCH.x + 1, Math.min(BENCH.x + BENCH.w - 1, x + step[0])),
       Math.max(FRONT, Math.min(BENCH.z + BENCH.h - 1, z + step[1])),
     ]);
+  };
+  const applyPreset = (preset) => {
+    setAt(preset.pos);
+    setOn(Object.fromEntries(summary.cameras.map((cam) => [cam.id, preset.cams[cam.id] ?? true])));
   };
   return (
     <div className="bench">
@@ -186,17 +217,41 @@ export function FusionBench({ summary }) {
             onKeyDown={nudge}
           />
         </g>
-        {summary.cameras.map((cam) => (
-          <circle
-            key={cam.id}
-            cx={cam.position[0]}
-            cy={cam.position[2]}
-            r="0.8"
-            className={"bench__pin" + (on[cam.id] ? "" : " is-off")}
-          />
-        ))}
+        {summary.cameras.map((cam) => {
+          const [dx, dy, anchor] = PIN_LABEL[cam.id] ?? [0, -1.8, "middle"];
+          return (
+            <g key={cam.id} className={"bench__pin-group" + (on[cam.id] ? "" : " is-off")}>
+              <circle
+                cx={cam.position[0]}
+                cy={cam.position[2]}
+                r="0.8"
+                className={"bench__pin" + (on[cam.id] ? "" : " is-off")}
+              />
+              <text
+                x={cam.position[0] + dx}
+                y={cam.position[2] + dy}
+                textAnchor={anchor}
+                className="bench__pin-label"
+              >
+                {cam.name}
+              </text>
+            </g>
+          );
+        })}
       </svg>
       <div className="bench__side">
+        <div className="bench__presets" role="group" aria-label="Geometry presets">
+          {PRESETS.map((preset) => {
+            const active =
+              Math.hypot(at[0] - preset.pos[0], at[1] - preset.pos[1]) < 0.05 &&
+              summary.cameras.every((cam) => Boolean(on[cam.id]) === Boolean(preset.cams[cam.id] ?? true));
+            return (
+              <button key={preset.id} type="button" aria-pressed={active} onClick={() => applyPreset(preset)}>
+                {preset.label}
+              </button>
+            );
+          })}
+        </div>
         <fieldset className="bench__cameras">
           <legend>Cameras</legend>
           {summary.cameras.map((cam) => (
@@ -210,6 +265,10 @@ export function FusionBench({ summary }) {
             </label>
           ))}
         </fieldset>
+        <div className="bench__metrics data" aria-hidden="true">
+          <span>{seeing.length} of {summary.cameras.length} lenses</span>
+          <span>{bound ? `${bound.major.toFixed(1)} x ${bound.minor.toFixed(1)} m` : "unbounded"}</span>
+        </div>
         <p className="bench__verdict" aria-live="polite">
           <strong className="data">{verdict[0]}</strong>
           {verdict[1]}
@@ -237,6 +296,15 @@ export function BeliefSum() {
   const scale = 2000;
   return (
     <div className="belief">
+      <div className="belief__axis-head data" aria-hidden="true">
+        <span>Evidence item</span>
+        <span className="belief__axis-marks">
+          <span>−2000</span>
+          <span>0</span>
+          <span>+2000</span>
+        </span>
+        <span>mB</span>
+      </div>
       <ol className="belief__rows">
         {rows.map((r) => (
           <li key={r.id} className={r.active ? "" : "is-off"}>
@@ -247,7 +315,10 @@ export function BeliefSum() {
                 disabled={r.fixed || r.blocked}
                 onChange={(event) => setOff({ ...off, [r.id]: !event.target.checked })}
               />
-              <span>{r.label}</span>
+              <span>
+                {r.label}
+                {r.blocked && <small className="belief__hint">Applies only when both cameras are active.</small>}
+              </span>
             </label>
             <span className="belief__bar" aria-hidden="true">
               <i
@@ -265,6 +336,9 @@ export function BeliefSum() {
           </li>
         ))}
       </ol>
+      <div className="belief__gauge" aria-hidden="true">
+        <i style={{ width: `${Math.max(chance * 100, 1)}%` }} />
+      </div>
       <p className="belief__total" aria-live="polite">
         <span>
           Sum <span className="data">{total > 0 ? "+" : total < 0 ? "−" : ""}{Math.abs(total)} mB</span>
@@ -278,6 +352,22 @@ export function BeliefSum() {
 }
 
 const hex = (buffer) => [...new Uint8Array(buffer)].map((b) => b.toString(16).padStart(2, "0")).join("");
+
+function DiffHash({ value, baseline }) {
+  if (!value) return null;
+  const shown = value.slice(0, 40);
+  const base = baseline.slice(0, 40);
+  if (shown === base) return <>{shown}</>;
+  return (
+    <>
+      {[...shown].map((ch, i) => (
+        <span key={i} className={ch === base[i] ? "bytes__same" : "bytes__diff"}>
+          {ch}
+        </span>
+      ))}
+    </>
+  );
+}
 
 /** Change one character of a stored object and compare its digest with the one the root names. */
 export function ByteCheck({ text }) {
@@ -300,6 +390,11 @@ export function ByteCheck({ text }) {
     };
   }, [text, value]);
   const same = digests.root === digests.now;
+  const tamperOneByte = () => {
+    const mutated = value.replace(/("at": "\d\d:\d\d:\d\d\.)(\d)(")/, (_, p, d, s) => `${p}${(Number(d) + 1) % 10}${s}`);
+    if (mutated !== value) setValue(mutated);
+    else setValue(value.replace(/\d/, (d) => String((Number(d) + 1) % 10)));
+  };
   if (!able)
     return (
       <div className="bytes">
@@ -311,9 +406,18 @@ export function ByteCheck({ text }) {
     );
   return (
     <div className={"bytes" + (same ? "" : " is-changed")}>
-      <label className="bytes__label" htmlFor="bytes-object">
-        A stored object. Change any character.
-      </label>
+      <div className="bytes__head">
+        <label className="bytes__label" htmlFor="bytes-object">
+          A stored object. Change any character.
+        </label>
+        <button
+          type="button"
+          className="bytes__tamper data"
+          onClick={same ? tamperOneByte : () => setValue(text)}
+        >
+          {same ? "Flip 1 character" : "Restore original"}
+        </button>
+      </div>
       <textarea
         id="bytes-object"
         className="data"
@@ -329,7 +433,9 @@ export function ByteCheck({ text }) {
         </div>
         <div>
           <dt>These bytes hash to</dt>
-          <dd className="data">{digests.now.slice(0, 40)}</dd>
+          <dd className="data">
+            <DiffHash value={digests.now} baseline={digests.root} />
+          </dd>
         </div>
       </dl>
       <p className="bytes__verdict" aria-live="polite">

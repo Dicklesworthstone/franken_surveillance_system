@@ -127,6 +127,7 @@ export default function Console({ summary, story, spans, sceneUrl, sceneDigest, 
   const [presentation, setPresentation] = useState(null);
   const [follow, setFollow] = useState(true);
   const [view, setView] = useState("model");
+  const [overlayMode, setOverlayMode] = useState("both");
   const pending = useRef({ id: null, frames: 0 });
   useEffect(() => {
     if (!follow || !take) return;
@@ -165,8 +166,17 @@ export default function Console({ summary, story, spans, sceneUrl, sceneDigest, 
   };
   const skew = camera.offset === 0 ? "on time" : `${Math.abs(camera.offset).toFixed(1)} s ${camera.offset > 0 ? "fast" : "slow"}`;
 
+  const onConsoleKeyDown = (event) => {
+    if (event.code !== "Space") return;
+    const tag = event.target?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "BUTTON" || tag === "A" || tag === "SELECT") return;
+    event.preventDefault();
+    if (clock.playing()) clock.pause();
+    else clock.play();
+  };
+
   return (
-    <div className="console" id="console" ref={root}>
+    <div className="console" id="console" ref={root} tabIndex={-1} onKeyDown={onConsoleKeyDown}>
       {positions.error && (
         <p className="console__error" role="alert">
           Staged positions unavailable. {positions.error} <button type="button" onClick={positions.retry}>Retry positions</button>
@@ -189,23 +199,45 @@ export default function Console({ summary, story, spans, sceneUrl, sceneDigest, 
               detections={detector.value?.[cam.id]?.person}
               wanted={near}
               large={cam.id === selected}
+              showStaged={overlayMode !== "measured"}
+              showMeasured={overlayMode !== "staged"}
               setPresentation={cam.id === selected ? setPresentation : undefined}
               style={cam.id === selected ? { gridColumn: "1 / -1", gridRow: 1 } : { gridColumn: i + 1, gridRow: 3 }}
             />
           ))}
-          <p className="console__caption">
-            <span>
+          <div className="console__caption">
+            <p className="console__caption-info">
               <strong>{camera.name}.</strong> {camera.product}, {camera.mode === "infrared" ? "infrared night mode" : "colour night mode"}.{" "}
               {picture == null ? <>Its clock is {skew}.</> : <>
                 Its clock reads <span className="data">{stamp(summary, picture / summary.fps, camera.offset)}</span>, {skew}.
               </>}
               {" "}<span className="console__detector-status">{detectorStatus}</span>
-            </span>
-            <label className="console__follow">
-              <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} />
-              Follow the person between cameras
-            </label>
-          </p>
+            </p>
+            <div className="console__controls-bar">
+              {boxesUrl && (
+                <div className="console__overlay-switch" role="group" aria-label="Box overlays">
+                  {[
+                    ["both", "Both boxes"],
+                    ["staged", "Staged"],
+                    ["measured", "Detector"],
+                  ].map(([mode, label]) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      aria-pressed={overlayMode === mode}
+                      onClick={() => setOverlayMode(mode)}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <label className="console__follow">
+                <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} />
+                Follow the person between cameras
+              </label>
+            </div>
+          </div>
           {summary.cameras.map((cam, i) => {
             const seen = take ? summary.actors.filter((a) => boxAt(take, cam.id, a.id, frame)) : [];
             return (
@@ -218,7 +250,14 @@ export default function Console({ summary, story, spans, sceneUrl, sceneDigest, 
                 aria-label={`Show the ${cam.name.toLowerCase()} camera`}
                 onClick={() => pick(cam.id)}
               >
-                <span className="slot__frame">{cam.id === selected && <span>On the main screen</span>}</span>
+                <span className="slot__frame">
+                  {cam.id === selected && (
+                    <span className="slot__active">
+                      <b className="data">MAIN</b>
+                      <span>On the main screen</span>
+                    </span>
+                  )}
+                </span>
                 <span className="slot__name">
                   {cam.name}
                   {seen.map((a) => (
@@ -253,15 +292,21 @@ export default function Console({ summary, story, spans, sceneUrl, sceneDigest, 
 
       <div className="console__logs">
         <section aria-labelledby="agent-log">
-          <h3 id="agent-log" className="console__heading">
-            The agent
-          </h3>
+          <div className="console__log-head">
+            <h3 id="agent-log" className="console__heading">
+              The agent
+            </h3>
+            <span className="source source--staged">Staged script</span>
+          </div>
           <AgentLog rows={story.agent} t={t} clock={clock} />
         </section>
         <section aria-labelledby="ledger-log">
-          <h3 id="ledger-log" className="console__heading">
-            The ledger
-          </h3>
+          <div className="console__log-head">
+            <h3 id="ledger-log" className="console__heading">
+              The ledger
+            </h3>
+            <span className="source source--staged">Staged script</span>
+          </div>
           <LedgerLog rows={story.ledger} t={t} clock={clock} />
         </section>
       </div>

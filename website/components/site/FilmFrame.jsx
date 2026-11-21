@@ -13,7 +13,7 @@ export default function FilmFrame({ camera, t, caption }) {
   useEffect(() => {
     const watcher = new IntersectionObserver(
       (entries) => entries.some((entry) => entry.isIntersecting) && setNear(true),
-      { rootMargin: "500px" },
+      { rootMargin: "700px" },
     );
     watcher.observe(box.current);
     return () => watcher.disconnect();
@@ -49,6 +49,11 @@ export default function FilmFrame({ camera, t, caption }) {
   return (
     <figure className="frame" ref={box}>
       <span className="frame__picture" style={{ "--shape": `${camera.width} / ${camera.height}` }}>
+        {camera.video && !shown && !failure && !decodingFailed && (
+          <span className="frame__waiting data" aria-hidden="true">
+            Verifying frame...
+          </span>
+        )}
         {camera.video ? (
           <video
             key={source ?? "waiting"}

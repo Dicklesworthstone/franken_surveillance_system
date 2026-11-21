@@ -84,7 +84,19 @@ export function FilmFailure({ message, retry }) {
  * The console keeps one element per camera and moves the selected one into the
  * large slot, so a cut between cameras never reloads a film.
  */
-export default function Feed({ camera, take, summary, clock, detections, large, wanted = true, style, setPresentation }) {
+export default function Feed({
+  camera,
+  take,
+  summary,
+  clock,
+  detections,
+  large,
+  wanted = true,
+  showStaged = true,
+  showMeasured = true,
+  style,
+  setPresentation,
+}) {
   const video = useRef(null);
   const { source, failure, retry } = useFilm(camera, wanted);
   // mediaTime is the PTS of the picture sent to the compositor. currentTime can already be
@@ -185,7 +197,7 @@ export default function Feed({ camera, take, summary, clock, detections, large, 
         )}
         <FilmFailure message={failure || (decodingFailed && "This browser could not decode the camera recording.")} retry={retry} />
         {picture != null && <svg className="feed__marks" viewBox="0 0 1 1" preserveAspectRatio="none" aria-hidden="true">
-          {people.map(({ actor, box }) => (
+          {showStaged && people.map(({ actor, box }) => (
             <rect
               key={actor.id}
               className="feed__staged"
@@ -196,11 +208,11 @@ export default function Feed({ camera, take, summary, clock, detections, large, 
               style={{ stroke: actor.colour }}
             />
           ))}
-          {live.map((d, i) => (
+          {showMeasured && live.map((d, i) => (
             <rect key={i} className="feed__measured" x={d[0]} y={d[1]} width={d[2] - d[0]} height={d[3] - d[1]} />
           ))}
         </svg>}
-        {picture != null && large &&
+        {picture != null && large && showStaged &&
           people.map(({ actor, box }) => (
             <span
               key={actor.id}

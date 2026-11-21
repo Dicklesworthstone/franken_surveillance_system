@@ -19,6 +19,9 @@
   display: grid;
   gap: 16px;
 }
+.console:focus:not(:focus-visible) {
+  outline: none;
+}
 .console__error {
   padding: 10px 14px;
   border-left: 3px solid var(--track-a);
@@ -57,16 +60,49 @@
   grid-row: 2;
   display: flex;
   justify-content: space-between;
-  align-items: baseline;
-  gap: 8px 24px;
+  align-items: center;
+  gap: 10px 20px;
   flex-wrap: wrap;
   margin: 10px 0 14px;
-  font-size: 0.92rem;
+  font-size: 0.9rem;
   color: var(--night-soft);
+}
+.console__caption-info {
+  flex: 1 1 320px;
+  min-width: 0;
+  line-height: 1.42;
 }
 .console__caption strong {
   color: var(--night-text);
   font-weight: 640;
+}
+.console__controls-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+}
+.console__overlay-switch {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid var(--night-line);
+  border-radius: 4px;
+  background: var(--night-raised);
+}
+.console__overlay-switch button {
+  padding: 4px 9px;
+  border-radius: 3px;
+  font-size: 0.76rem;
+  font-weight: 580;
+  color: var(--night-soft);
+  white-space: nowrap;
+}
+.console__overlay-switch button:hover {
+  color: var(--night-text);
+}
+.console__overlay-switch button[aria-pressed="true"] {
+  background: var(--night-text);
+  color: #0b0d10;
 }
 .console__follow {
   display: inline-flex;
@@ -130,11 +166,21 @@
   gap: 16px 28px;
   margin-top: 10px;
 }
+.console__log-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
 .console__heading {
   font-size: 1rem;
   font-stretch: 110%;
   font-weight: 650;
   margin-bottom: 10px;
+}
+.console__log-head .console__heading {
+  margin-bottom: 0;
 }
 
 /* A camera */
@@ -167,7 +213,27 @@
 }
 .slot.is-selected .slot__frame {
   outline-color: var(--sign);
-  background: rgb(255 210 0 / 0.06);
+  background: rgb(255 210 0 / 0.07);
+}
+.slot__active {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 4px;
+}
+.slot__active b {
+  padding: 1px 6px;
+  border-radius: 2px;
+  background: var(--sign);
+  color: var(--sign-ink);
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+.slot__active span {
+  font-size: 0.68rem;
+  color: var(--night-soft);
 }
 .slot:hover .slot__frame {
   outline-color: rgb(255 255 255 / 0.5);
@@ -346,6 +412,10 @@
 .twin__camera {
   cursor: pointer;
 }
+.twin__camera:hover circle {
+  stroke: #fff;
+  stroke-width: 2px;
+}
 .twin__camera text {
   font: 600 calc(1.3px * var(--m, 1)) var(--sans);
   fill: #fff;
@@ -407,12 +477,18 @@
   gap: 12px;
   align-content: start;
 }
+.timeline__transport {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
 .timeline__play {
   width: 54px;
   height: 54px;
   border-radius: 50%;
   display: grid;
   place-items: center;
+  flex: none;
   background: var(--sign);
   color: var(--sign-ink);
 }
@@ -421,6 +497,29 @@
 }
 .timeline__play svg {
   fill: currentColor;
+}
+.timeline__steppers {
+  display: inline-flex;
+  gap: 5px;
+}
+.timeline__step {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid var(--night-line);
+  background: rgb(255 255 255 / 0.03);
+  color: var(--night-text);
+  display: grid;
+  place-items: center;
+  transition: border-color 120ms, color 120ms, background-color 120ms;
+}
+.timeline__step:hover:not(:disabled) {
+  border-color: var(--sign);
+  color: var(--sign);
+}
+.timeline__step:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
 }
 .timeline__now .data {
   display: block;
@@ -474,6 +573,11 @@
   bottom: 0;
   border-left: 1px solid var(--night-faint);
 }
+.timeline__marks li.is-end {
+  border-left: 0;
+  border-right: 1px solid var(--night-faint);
+  transform: translateX(-100%);
+}
 .timeline__marks--below button {
   padding-top: 9px;
 }
@@ -484,6 +588,13 @@
   line-height: 1.2;
   white-space: nowrap;
   color: var(--night-faint);
+}
+.timeline__marks li.is-end button {
+  padding: 0 6px 0 0;
+  text-align: right;
+}
+.timeline__marks--below li.is-end button {
+  padding-top: 9px;
 }
 .timeline__marks button.is-past {
   color: var(--night-text);
@@ -655,8 +766,12 @@
     font-size: 0.68rem;
     gap: 3px;
   }
-  .slot__frame {
-    font-size: 0;
+  .slot__active span {
+    display: none;
+  }
+  .slot__active b {
+    font-size: 0.58rem;
+    padding: 1px 4px;
   }
   .console__readouts {
     grid-template-columns: minmax(0, 1fr);
@@ -676,12 +791,18 @@
     grid-column: 1 / -1;
   }
   .timeline__chart {
-    --name: 62px;
+    --name: 84px;
   }
   .timeline__marks {
     height: 16px;
   }
-  .timeline__marks button {
+  .timeline__marks li.is-end {
+    border-right: 0;
+    border-left: 1px solid var(--night-faint);
+    transform: none;
+  }
+  .timeline__marks button,
+  .timeline__marks li.is-end button {
     width: 16px;
     height: 16px;
     margin-left: -8px;
