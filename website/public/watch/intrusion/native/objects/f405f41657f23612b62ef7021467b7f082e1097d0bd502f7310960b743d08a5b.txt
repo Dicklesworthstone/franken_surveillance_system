@@ -1,0 +1,3 @@
+ERR-CLI-RUNTIME-FAILURE-001: watch bound exceeded
+refusal_id=ERR-WATCH-LIMIT-001
+Durable provenance/events are not rolled back by later failures; incomplete exports may remain.

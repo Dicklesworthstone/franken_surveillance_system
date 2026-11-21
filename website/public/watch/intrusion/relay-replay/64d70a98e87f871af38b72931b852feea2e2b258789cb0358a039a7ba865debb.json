@@ -1,0 +1,68 @@
+{
+  "schema": "fss.website.relay_listener.v1",
+  "branch": "lost-ack",
+  "timing": "Monotonic microseconds around each completed native process invocation.",
+  "observations": [
+    {
+      "phase": "open",
+      "native_sha256": "sha256:4457424400e42f127d0d1efd0142dacdc732700780cefe56888f7af1defa83e1",
+      "elapsed_us": 645276,
+      "requests_before": 0,
+      "requests_after": 0,
+      "received": []
+    },
+    {
+      "phase": "plan",
+      "native_sha256": "sha256:ce2e6b94b6f9b6fdd294c22c55b6d3ff80e6e212ebbf772206284bf1789a818d",
+      "elapsed_us": 854518,
+      "requests_before": 0,
+      "requests_after": 0,
+      "received": []
+    },
+    {
+      "phase": "prepare",
+      "native_sha256": "sha256:4a661e84daf2f7f3624435e8c5d9186de47cc52d09ae231eafe132c6141b8274",
+      "elapsed_us": 840969,
+      "requests_before": 0,
+      "requests_after": 0,
+      "received": []
+    },
+    {
+      "phase": "dispatch",
+      "native_sha256": "sha256:efeff9d3e2b36e5d9e7e9f5c843da0874a609e125a5116136355d77d860d52b0",
+      "elapsed_us": 1516020,
+      "requests_before": 0,
+      "requests_after": 1,
+      "received": [
+        {
+          "path": "/fss/alert",
+          "body_bytes": 539,
+          "body_sha256": "sha256:f3cef19b654e68c51e2020feec6f6f09fde66728fa6fc6e53c1200318d17e404",
+          "idempotency_key": "379d00af38bf896fb19d30a83b0218948fd5f524ad42b2641562b03a1ecc12e5",
+          "response_disposition": "connection_closed_without_response",
+          "response_status": null,
+          "body": {
+            "path": "relay-replay/f3cef19b654e68c51e2020feec6f6f09fde66728fa6fc6e53c1200318d17e404.json",
+            "sha256": "sha256:f3cef19b654e68c51e2020feec6f6f09fde66728fa6fc6e53c1200318d17e404"
+          }
+        }
+      ]
+    },
+    {
+      "phase": "repeat",
+      "native_sha256": "sha256:51f08f8febc12b7757be4cb90d14d82251eae72c8f931290c503b20f1e964d41",
+      "elapsed_us": 755694,
+      "requests_before": 1,
+      "requests_after": 1,
+      "received": []
+    },
+    {
+      "phase": "inspect",
+      "native_sha256": "sha256:afe36b32a61ece0b191db86844c835ab4f4c0c45f921ca28a861c1555b9b2f8a",
+      "elapsed_us": 558607,
+      "requests_before": 1,
+      "requests_after": 1,
+      "received": []
+    }
+  ]
+}

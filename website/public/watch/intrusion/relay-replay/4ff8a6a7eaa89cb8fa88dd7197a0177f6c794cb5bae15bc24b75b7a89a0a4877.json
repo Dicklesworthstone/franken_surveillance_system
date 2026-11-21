@@ -1,0 +1,23 @@
+{
+  "schema": "fss.website.relay_listener.v1",
+  "branch": "held",
+  "timing": "Monotonic microseconds around each completed native process invocation.",
+  "observations": [
+    {
+      "phase": "open",
+      "native_sha256": "sha256:bbeabda43e1eaf972230d1219da5470bd2ff510f5ceb3d86ee24895dfca5afd6",
+      "elapsed_us": 597449,
+      "requests_before": 0,
+      "requests_after": 0,
+      "received": []
+    },
+    {
+      "phase": "plan",
+      "native_sha256": "sha256:1ff74d4c24610d76b50d99107e9e0dbefd7405b181b32a257d600cfb79188550",
+      "elapsed_us": 720989,
+      "requests_before": 0,
+      "requests_after": 0,
+      "received": []
+    }
+  ]
+}

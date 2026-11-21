@@ -1,0 +1,288 @@
+{
+  "schema": "fss.website.residential_relay.v1",
+  "source": {
+    "fusion_replay_sha256": "sha256:26ccb9d4ecf0f711a1d68e3134084a8a162107b35b5601d55d1764983e4833d7",
+    "report_sha256": "sha256:5c4c32929cda68c467b4b91a3949da5a7517a4d06df2908b0e0dd05bbc200e02",
+    "source_frames": [
+      240,
+      240,
+      240,
+      240,
+      240,
+      240,
+      240,
+      343,
+      344,
+      345,
+      346,
+      347
+    ],
+    "cameras": [
+      {
+        "camera": "entry",
+        "source_frame": 345,
+        "frame": 9,
+        "source_film_sha256": "sha256:d78b148e635ad42b37a8b526130f4beeb9c440923fe19fbeed50b92d82623e67",
+        "fixture_sha256": "sha256:0639e512147d034bb247d3980b4aba65899c3fd93f261636d7fac8d5275806ae"
+      },
+      {
+        "camera": "porch",
+        "source_frame": 345,
+        "frame": 9,
+        "source_film_sha256": "sha256:34f0734c8ff3148eabdb3e27566e5cc6a99450a8cc7ffef439b9ca3b03e902fa",
+        "fixture_sha256": "sha256:8fd5a03109b96fca89d2f37df317702aeaf110990cb9a6e9a549995084f357ca"
+      }
+    ]
+  },
+  "deadline_ms": 5000,
+  "observe_deadline_ms": 150,
+  "branches": [
+    {
+      "id": "held",
+      "event": {
+        "id": "event:long-corroborated:db4419388262a101f9444149d63691624e078075725fc141746444fda84d3df2",
+        "state": "witnessed",
+        "policy_action": "hold",
+        "proposal_digest": "sha256:c9f62a0fd726c1e1635ef9bf7da365bfe1d17a3edbc44920a391e1a900253e6c",
+        "revision_digest": "sha256:486c66c5fa55b94667ef5fdecf58530c5f4cb7a9e056e611db3195ce929ddd37",
+        "publication": {
+          "path": "relay-replay/8f73ce04f1ff5365ab69ad636dc0f999027a20562c950da6aff775daeb1b3fef.json",
+          "sha256": "sha256:8f73ce04f1ff5365ab69ad636dc0f999027a20562c950da6aff775daeb1b3fef"
+        }
+      },
+      "steps": [
+        {
+          "phase": "open",
+          "outcome": "ok",
+          "error_id": null,
+          "effect_state": null,
+          "requests_received": 0,
+          "exit_code": 0,
+          "native": {
+            "path": "relay-replay/bbeabda43e1eaf972230d1219da5470bd2ff510f5ceb3d86ee24895dfca5afd6.json",
+            "sha256": "sha256:bbeabda43e1eaf972230d1219da5470bd2ff510f5ceb3d86ee24895dfca5afd6"
+          }
+        },
+        {
+          "phase": "plan",
+          "outcome": "refused",
+          "error_id": "ERR-ALERT-NOT-ELIGIBLE-001",
+          "effect_state": null,
+          "requests_received": 0,
+          "exit_code": 5,
+          "native": {
+            "path": "relay-replay/1ff74d4c24610d76b50d99107e9e0dbefd7405b181b32a257d600cfb79188550.json",
+            "sha256": "sha256:1ff74d4c24610d76b50d99107e9e0dbefd7405b181b32a257d600cfb79188550"
+          }
+        }
+      ],
+      "listener": {
+        "path": "relay-replay/4ff8a6a7eaa89cb8fa88dd7197a0177f6c794cb5bae15bc24b75b7a89a0a4877.json",
+        "sha256": "sha256:4ff8a6a7eaa89cb8fa88dd7197a0177f6c794cb5bae15bc24b75b7a89a0a4877"
+      },
+      "relay": {
+        "requests_received": 0,
+        "response_disposition": null,
+        "response_status": null,
+        "body_sha256": null
+      }
+    },
+    {
+      "id": "accepted",
+      "event": {
+        "id": "event:long-corroborated:dbe479875a9ca706668fc17c48362e028ac7a82444c44f042ce601279e7ed34b",
+        "state": "corroborated",
+        "policy_action": "prepare_alert",
+        "proposal_digest": "sha256:02ece76ac73770b8558da65c5e77ed059e1d592376d81559f1566de7f2135d43",
+        "revision_digest": "sha256:6cb069968b59cb49e5a07a3fb816a88bc86f2915cad46b9d863259bf4cafa297",
+        "publication": {
+          "path": "relay-replay/2ad35cfba7f5f9a92b406eb976533b7732eff439d8617595174a94b39b38461f.json",
+          "sha256": "sha256:2ad35cfba7f5f9a92b406eb976533b7732eff439d8617595174a94b39b38461f"
+        }
+      },
+      "steps": [
+        {
+          "phase": "open",
+          "outcome": "ok",
+          "error_id": null,
+          "effect_state": null,
+          "requests_received": 0,
+          "exit_code": 0,
+          "native": {
+            "path": "relay-replay/56ac80bb0c0f14bd045f99c44a479965b7e9288b9bf40675c6d9f6f882fab747.json",
+            "sha256": "sha256:56ac80bb0c0f14bd045f99c44a479965b7e9288b9bf40675c6d9f6f882fab747"
+          }
+        },
+        {
+          "phase": "plan",
+          "outcome": "ok",
+          "error_id": null,
+          "effect_state": null,
+          "requests_received": 0,
+          "exit_code": 0,
+          "native": {
+            "path": "relay-replay/54195150ac8ed07e5889c512192a949e9dbfc553f379ffd8c589925e43e77bbb.json",
+            "sha256": "sha256:54195150ac8ed07e5889c512192a949e9dbfc553f379ffd8c589925e43e77bbb"
+          }
+        },
+        {
+          "phase": "prepare",
+          "outcome": "ok",
+          "error_id": null,
+          "effect_state": null,
+          "requests_received": 0,
+          "exit_code": 0,
+          "native": {
+            "path": "relay-replay/85738f09a7860957057100a75ce478d0e42acdf2585f16cbcb9c83baededdf89.json",
+            "sha256": "sha256:85738f09a7860957057100a75ce478d0e42acdf2585f16cbcb9c83baededdf89"
+          }
+        },
+        {
+          "phase": "dispatch",
+          "outcome": "ok",
+          "error_id": null,
+          "effect_state": "adapter_accepted",
+          "requests_received": 1,
+          "exit_code": 0,
+          "native": {
+            "path": "relay-replay/711a95e5e9a112ebb17fbad90a131f2cef40910fe055d3ee26f8c6744d4ec8e4.json",
+            "sha256": "sha256:711a95e5e9a112ebb17fbad90a131f2cef40910fe055d3ee26f8c6744d4ec8e4"
+          }
+        },
+        {
+          "phase": "repeat",
+          "outcome": "ok",
+          "error_id": null,
+          "effect_state": "adapter_accepted",
+          "requests_received": 0,
+          "exit_code": 0,
+          "native": {
+            "path": "relay-replay/22600ee0101d5b20c026933d72654d29a47219d787fdb2b2be9c99f57f456446.json",
+            "sha256": "sha256:22600ee0101d5b20c026933d72654d29a47219d787fdb2b2be9c99f57f456446"
+          }
+        },
+        {
+          "phase": "inspect",
+          "outcome": "partial",
+          "error_id": "ERR-OP-TIMEOUT-001",
+          "effect_state": "adapter_accepted",
+          "requests_received": 0,
+          "exit_code": 0,
+          "native": {
+            "path": "relay-replay/9822e9138d5cd34217dd61913efafb2a6e1ca655baec397ac7bea6195b46b7cc.json",
+            "sha256": "sha256:9822e9138d5cd34217dd61913efafb2a6e1ca655baec397ac7bea6195b46b7cc"
+          }
+        }
+      ],
+      "listener": {
+        "path": "relay-replay/37e3d2288f6cf53bf19da06216b968ac50dadfb70daa4f078790dc24a110f0c7.json",
+        "sha256": "sha256:37e3d2288f6cf53bf19da06216b968ac50dadfb70daa4f078790dc24a110f0c7"
+      },
+      "relay": {
+        "requests_received": 1,
+        "response_disposition": "http_200_sent",
+        "response_status": 200,
+        "body_sha256": "sha256:f3cef19b654e68c51e2020feec6f6f09fde66728fa6fc6e53c1200318d17e404"
+      }
+    },
+    {
+      "id": "lost-ack",
+      "event": {
+        "id": "event:long-corroborated:dbe479875a9ca706668fc17c48362e028ac7a82444c44f042ce601279e7ed34b",
+        "state": "corroborated",
+        "policy_action": "prepare_alert",
+        "proposal_digest": "sha256:02ece76ac73770b8558da65c5e77ed059e1d592376d81559f1566de7f2135d43",
+        "revision_digest": "sha256:6cb069968b59cb49e5a07a3fb816a88bc86f2915cad46b9d863259bf4cafa297",
+        "publication": {
+          "path": "relay-replay/2ad35cfba7f5f9a92b406eb976533b7732eff439d8617595174a94b39b38461f.json",
+          "sha256": "sha256:2ad35cfba7f5f9a92b406eb976533b7732eff439d8617595174a94b39b38461f"
+        }
+      },
+      "steps": [
+        {
+          "phase": "open",
+          "outcome": "ok",
+          "error_id": null,
+          "effect_state": null,
+          "requests_received": 0,
+          "exit_code": 0,
+          "native": {
+            "path": "relay-replay/4457424400e42f127d0d1efd0142dacdc732700780cefe56888f7af1defa83e1.json",
+            "sha256": "sha256:4457424400e42f127d0d1efd0142dacdc732700780cefe56888f7af1defa83e1"
+          }
+        },
+        {
+          "phase": "plan",
+          "outcome": "ok",
+          "error_id": null,
+          "effect_state": null,
+          "requests_received": 0,
+          "exit_code": 0,
+          "native": {
+            "path": "relay-replay/ce2e6b94b6f9b6fdd294c22c55b6d3ff80e6e212ebbf772206284bf1789a818d.json",
+            "sha256": "sha256:ce2e6b94b6f9b6fdd294c22c55b6d3ff80e6e212ebbf772206284bf1789a818d"
+          }
+        },
+        {
+          "phase": "prepare",
+          "outcome": "ok",
+          "error_id": null,
+          "effect_state": null,
+          "requests_received": 0,
+          "exit_code": 0,
+          "native": {
+            "path": "relay-replay/4a661e84daf2f7f3624435e8c5d9186de47cc52d09ae231eafe132c6141b8274.json",
+            "sha256": "sha256:4a661e84daf2f7f3624435e8c5d9186de47cc52d09ae231eafe132c6141b8274"
+          }
+        },
+        {
+          "phase": "dispatch",
+          "outcome": "indeterminate",
+          "error_id": "ERR-EFFECT-INDETERMINATE-001",
+          "effect_state": "indeterminate",
+          "requests_received": 1,
+          "exit_code": 1,
+          "native": {
+            "path": "relay-replay/efeff9d3e2b36e5d9e7e9f5c843da0874a609e125a5116136355d77d860d52b0.json",
+            "sha256": "sha256:efeff9d3e2b36e5d9e7e9f5c843da0874a609e125a5116136355d77d860d52b0"
+          }
+        },
+        {
+          "phase": "repeat",
+          "outcome": "indeterminate",
+          "error_id": "ERR-EFFECT-INDETERMINATE-001",
+          "effect_state": "indeterminate",
+          "requests_received": 0,
+          "exit_code": 1,
+          "native": {
+            "path": "relay-replay/51f08f8febc12b7757be4cb90d14d82251eae72c8f931290c503b20f1e964d41.json",
+            "sha256": "sha256:51f08f8febc12b7757be4cb90d14d82251eae72c8f931290c503b20f1e964d41"
+          }
+        },
+        {
+          "phase": "inspect",
+          "outcome": "partial",
+          "error_id": "ERR-OP-TIMEOUT-001",
+          "effect_state": "indeterminate",
+          "requests_received": 0,
+          "exit_code": 0,
+          "native": {
+            "path": "relay-replay/afe36b32a61ece0b191db86844c835ab4f4c0c45f921ca28a861c1555b9b2f8a.json",
+            "sha256": "sha256:afe36b32a61ece0b191db86844c835ab4f4c0c45f921ca28a861c1555b9b2f8a"
+          }
+        }
+      ],
+      "listener": {
+        "path": "relay-replay/64d70a98e87f871af38b72931b852feea2e2b258789cb0358a039a7ba865debb.json",
+        "sha256": "sha256:64d70a98e87f871af38b72931b852feea2e2b258789cb0358a039a7ba865debb"
+      },
+      "relay": {
+        "requests_received": 1,
+        "response_disposition": "connection_closed_without_response",
+        "response_status": null,
+        "body_sha256": "sha256:f3cef19b654e68c51e2020feec6f6f09fde66728fa6fc6e53c1200318d17e404"
+      }
+    }
+  ],
+  "scope": "The local listener records requests from native processes. Both camera views come from one renderer. The two eligible runs declare separate devices and start from copies of the same published event. The relay receives the same request at the same endpoint in both runs. Only its response changes. All requests remain on loopback."
+}

@@ -1,0 +1,565 @@
+{
+ "schema": "fss.website.estate_people_lock.v1",
+ "files": [
+  {
+   "path": "scans/eric/rp_eric_rigged_001_zup_t.fbx",
+   "url": "https://raw.githubusercontent.com/PacktPublishing/Godot-4-Game-Development-Cookbook/e752af943e8cf035def41f17d9efa8e50b1bc135/Chapter%209/Eric/rp_eric_rigged_001_zup_t.fbx",
+   "licence": "CC BY 4.0, Renderpeople",
+   "work": "Eric Rigged 001 - Rigged 3D Business Man",
+   "source": "https://sketchfab.com/3d-models/a46bc9f67aaa415bb4f3241eef900e7f",
+   "used": true,
+   "bytes": 6437504,
+   "sha256": "e275e9b2c93e5cbcac138ef7eea20bea0702f065a460c0a440ebf6428682f762"
+  },
+  {
+   "path": "scans/eric/rp_eric_rigged_001_dif.jpg",
+   "url": "https://raw.githubusercontent.com/PacktPublishing/Godot-4-Game-Development-Cookbook/e752af943e8cf035def41f17d9efa8e50b1bc135/Chapter%209/Eric/tex/rp_eric_rigged_001_dif.jpg",
+   "licence": "CC BY 4.0, Renderpeople",
+   "work": "Eric Rigged 001 - Rigged 3D Business Man",
+   "source": "https://sketchfab.com/3d-models/a46bc9f67aaa415bb4f3241eef900e7f",
+   "used": true,
+   "bytes": 5494792,
+   "sha256": "586ca7aa7acdd4a66258045553d434d9cb52f45c6f49a992d897c3fd4705ac2e"
+  },
+  {
+   "path": "scans/eric/rp_eric_rigged_001_gloss.jpg",
+   "url": "https://raw.githubusercontent.com/PacktPublishing/Godot-4-Game-Development-Cookbook/e752af943e8cf035def41f17d9efa8e50b1bc135/Chapter%209/Eric/tex/rp_eric_rigged_001_gloss.jpg",
+   "licence": "CC BY 4.0, Renderpeople",
+   "work": "Eric Rigged 001 - Rigged 3D Business Man",
+   "source": "https://sketchfab.com/3d-models/a46bc9f67aaa415bb4f3241eef900e7f",
+   "used": true,
+   "bytes": 5062610,
+   "sha256": "73bf1d7c419557b4794897abbf1dbe14db81d650cd6374acae423b5b98832c27"
+  },
+  {
+   "path": "scans/eric/rp_eric_rigged_001_mask01.jpg",
+   "url": "https://raw.githubusercontent.com/PacktPublishing/Godot-4-Game-Development-Cookbook/e752af943e8cf035def41f17d9efa8e50b1bc135/Chapter%209/Eric/tex/rp_eric_rigged_001_mask01.jpg",
+   "licence": "CC BY 4.0, Renderpeople",
+   "work": "Eric Rigged 001 - Rigged 3D Business Man",
+   "source": "https://sketchfab.com/3d-models/a46bc9f67aaa415bb4f3241eef900e7f",
+   "used": true,
+   "bytes": 2315050,
+   "sha256": "a90f702c33cabba892276821fbc5049595a10e6d3ca29e0ffd955e6c34a6cc21"
+  },
+  {
+   "path": "scans/eric/rp_eric_rigged_001_mask02.jpg",
+   "url": "https://raw.githubusercontent.com/PacktPublishing/Godot-4-Game-Development-Cookbook/e752af943e8cf035def41f17d9efa8e50b1bc135/Chapter%209/Eric/tex/rp_eric_rigged_001_mask02.jpg",
+   "licence": "CC BY 4.0, Renderpeople",
+   "work": "Eric Rigged 001 - Rigged 3D Business Man",
+   "source": "https://sketchfab.com/3d-models/a46bc9f67aaa415bb4f3241eef900e7f",
+   "used": true,
+   "bytes": 2243825,
+   "sha256": "704b7a16f97bb5a833986fa790e08127b892a90eebcd9ca8ffe01cad75b5cdf6"
+  },
+  {
+   "path": "scans/eric/rp_eric_rigged_001_norm.jpg",
+   "url": "https://raw.githubusercontent.com/PacktPublishing/Godot-4-Game-Development-Cookbook/e752af943e8cf035def41f17d9efa8e50b1bc135/Chapter%209/Eric/tex/rp_eric_rigged_001_norm.jpg",
+   "licence": "CC BY 4.0, Renderpeople",
+   "work": "Eric Rigged 001 - Rigged 3D Business Man",
+   "source": "https://sketchfab.com/3d-models/a46bc9f67aaa415bb4f3241eef900e7f",
+   "used": true,
+   "bytes": 12880171,
+   "sha256": "9ebc1c277550ead990b62f1c9ea4ba84e79a1a771ece642d2af0fb5c09e47c8f"
+  },
+  {
+   "path": "scans/nathan/rp_nathan_animated_003_walking.fbx",
+   "url": "https://raw.githubusercontent.com/PacktPublishing/Godot-4-Game-Development-Cookbook/e752af943e8cf035def41f17d9efa8e50b1bc135/Chapter%209/Nathan/rp_nathan_animated_003_walking.fbx",
+   "licence": "CC BY 4.0, Renderpeople",
+   "work": "Nathan Animated 003 - Walking 3D Man",
+   "source": "https://sketchfab.com/3d-models/143a2b1ea5eb4385ae90a73657aca3bc",
+   "used": true,
+   "bytes": 24646304,
+   "sha256": "7a7a65df5a382049dd6bbb2d0ecbeba260702191916fbca97de537cf952f97ec"
+  },
+  {
+   "path": "scans/nathan/rp_nathan_animated_003_dif.jpg",
+   "url": "https://raw.githubusercontent.com/PacktPublishing/Godot-4-Game-Development-Cookbook/e752af943e8cf035def41f17d9efa8e50b1bc135/Chapter%209/Nathan/tex/rp_nathan_animated_003_dif.jpg",
+   "licence": "CC BY 4.0, Renderpeople",
+   "work": "Nathan Animated 003 - Walking 3D Man",
+   "source": "https://sketchfab.com/3d-models/143a2b1ea5eb4385ae90a73657aca3bc",
+   "used": true,
+   "bytes": 5293636,
+   "sha256": "38eae688b4524559c7337593bdc26a2f860c166be1aee44a646bbd1b3e7eb221"
+  },
+  {
+   "path": "scans/nathan/rp_nathan_animated_003_gloss.jpg",
+   "url": "https://raw.githubusercontent.com/PacktPublishing/Godot-4-Game-Development-Cookbook/e752af943e8cf035def41f17d9efa8e50b1bc135/Chapter%209/Nathan/tex/rp_nathan_animated_003_gloss.jpg",
+   "licence": "CC BY 4.0, Renderpeople",
+   "work": "Nathan Animated 003 - Walking 3D Man",
+   "source": "https://sketchfab.com/3d-models/143a2b1ea5eb4385ae90a73657aca3bc",
+   "used": true,
+   "bytes": 13314171,
+   "sha256": "47e3b42b61e962ad875c0b1bd46f57749e572db573a3c7f8150de5edce39ccbe"
+  },
+  {
+   "path": "scans/nathan/rp_nathan_animated_003_mask01.jpg",
+   "url": "https://raw.githubusercontent.com/PacktPublishing/Godot-4-Game-Development-Cookbook/e752af943e8cf035def41f17d9efa8e50b1bc135/Chapter%209/Nathan/tex/rp_nathan_animated_003_mask01.jpg",
+   "licence": "CC BY 4.0, Renderpeople",
+   "work": "Nathan Animated 003 - Walking 3D Man",
+   "source": "https://sketchfab.com/3d-models/143a2b1ea5eb4385ae90a73657aca3bc",
+   "used": true,
+   "bytes": 2205648,
+   "sha256": "6b61c6a336c16362f2ae3d64221da339b315647872a117da3168e2d538bfa15a"
+  },
+  {
+   "path": "scans/nathan/rp_nathan_animated_003_mask02.jpg",
+   "url": "https://raw.githubusercontent.com/PacktPublishing/Godot-4-Game-Development-Cookbook/e752af943e8cf035def41f17d9efa8e50b1bc135/Chapter%209/Nathan/tex/rp_nathan_animated_003_mask02.jpg",
+   "licence": "CC BY 4.0, Renderpeople",
+   "work": "Nathan Animated 003 - Walking 3D Man",
+   "source": "https://sketchfab.com/3d-models/143a2b1ea5eb4385ae90a73657aca3bc",
+   "used": false,
+   "bytes": 201922,
+   "sha256": "71def3bb622b4febb8f016599cc690412673d82e7f861c1a26971fc7b8e00d5e"
+  },
+  {
+   "path": "scans/nathan/rp_nathan_animated_003_norm.jpg",
+   "url": "https://raw.githubusercontent.com/PacktPublishing/Godot-4-Game-Development-Cookbook/e752af943e8cf035def41f17d9efa8e50b1bc135/Chapter%209/Nathan/tex/rp_nathan_animated_003_norm.jpg",
+   "licence": "CC BY 4.0, Renderpeople",
+   "work": "Nathan Animated 003 - Walking 3D Man",
+   "source": "https://sketchfab.com/3d-models/143a2b1ea5eb4385ae90a73657aca3bc",
+   "used": true,
+   "bytes": 11737676,
+   "sha256": "43445715628c596a375f76584aaa4018bd316f2cad1154d01a9f7b7d09cac7a5"
+  },
+  {
+   "path": "mocap/91_17.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/091/91_17.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": true,
+   "bytes": 1160361,
+   "sha256": "12ac9a8f25c99c8d38b97523770428fdf22d3e365d95e739e2f29f07b94910b1"
+  },
+  {
+   "path": "mocap/77_28.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/077/77_28.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": true,
+   "bytes": 2235587,
+   "sha256": "33518938c33f34c188c0e0e937b28f33db50033222ae6967f2b90d9d16625984"
+  },
+  {
+   "path": "mocap/77_02.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/077/77_02.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": true,
+   "bytes": 705155,
+   "sha256": "d6eef8f4ab182bef1bb5db0c46cbec0261b81a63ce1720b8a19777b7e79887a9"
+  },
+  {
+   "path": "mocap/77_05.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/077/77_05.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": true,
+   "bytes": 394972,
+   "sha256": "767a9a7937c8b7631197d68316e92447246f726bf8050394311c167f87516d29"
+  },
+  {
+   "path": "mocap/77_10.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/077/77_10.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": true,
+   "bytes": 529460,
+   "sha256": "6662bd2269da1e8416d5df1852a3b30146229db4afc4fb38110c8d61629aed05"
+  },
+  {
+   "path": "mocap/09_01.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/009/09_01.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": true,
+   "bytes": 116013,
+   "sha256": "90641ccca814b9d8d59f63576a548bb5612477364462d142a9f741268fbe3b78"
+  },
+  {
+   "path": "mocap/35_01.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/035/35_01.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": true,
+   "bytes": 270282,
+   "sha256": "91d947f840845d00054dd331cb7e5c6a0195ee56406dc43273dbdc26467bc066"
+  },
+  {
+   "path": "mocap/40_10.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/040/40_10.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": true,
+   "bytes": 4668859,
+   "sha256": "bae07b3e33b646f7b6cc14af8b041bf7e126e4b15c6802cf32dbb484a0fe2ec1"
+  },
+  {
+   "path": "mocap/16_55.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/016/16_55.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": true,
+   "bytes": 140622,
+   "sha256": "03dae4cf0ce2f0a782f9eabe6ef542ed2c0fb7ed401f702127b452ad5f13b75e"
+  },
+  {
+   "path": "mocap/07_01.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/007/07_01.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 241649,
+   "sha256": "f8d82ea6ed1aab0cb7d9ee680f476b65471e2322e1da84add8a8527a2cb0b9a2"
+  },
+  {
+   "path": "mocap/07_02.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/007/07_02.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 250814,
+   "sha256": "c733525de3ebc2353de93afdabee85e30604447da5f68f7a552c5f0a64fe9318"
+  },
+  {
+   "path": "mocap/08_01.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/008/08_01.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 211678,
+   "sha256": "4e6cc1e0aa8b6b112be25b6aab5db8f176094181280b2c8ebcf903ede66e6e98"
+  },
+  {
+   "path": "mocap/35_02.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/035/35_02.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 305614,
+   "sha256": "4176075057ea0ac8bcf5f45765746041852609964aa7766483f24a88a9e42355"
+  },
+  {
+   "path": "mocap/16_08.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/016/16_08.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 183911,
+   "sha256": "63cf40ddd89cbe348d8a155d40ed4c1a8b77947a6e57b12bc07dcf556a3b2ed0"
+  },
+  {
+   "path": "mocap/16_15.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/016/16_15.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 354103,
+   "sha256": "7459cd4be169477b4e2c629075a9cde9436e37a87cdf4e774574400f4ec942d8"
+  },
+  {
+   "path": "mocap/16_17.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/016/16_17.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 390154,
+   "sha256": "91f57b476b9c678239b1d1353bb752acbfc91fa9e564082ccd57b5ab40124619"
+  },
+  {
+   "path": "mocap/16_19.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/016/16_19.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 310169,
+   "sha256": "bd5f6f56d52d0b5cd13e657f8cebfc15d70f07f063f6fd1b540ca8778efbce80"
+  },
+  {
+   "path": "mocap/16_21.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/016/16_21.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 236759,
+   "sha256": "fa1ac84e2efca453c4cd002b0d908f1e6c1fab4aa237898ac3ee5c80efdddd0e"
+  },
+  {
+   "path": "mocap/16_35.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/016/16_35.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 125846,
+   "sha256": "d20d54a9ccebd7aaf4aa6c4d7662c4905d47009401895de216a914edecf287be"
+  },
+  {
+   "path": "mocap/16_36.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/016/16_36.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 146795,
+   "sha256": "bc99c89352df21f9fed601b4529f430e364c174b6e87527144b6143e04005caf"
+  },
+  {
+   "path": "mocap/16_45.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/016/16_45.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 105946,
+   "sha256": "6c179f799f3b2f766ce41cf962caaae08d9342ce73fc32fbc15648bf6589e872"
+  },
+  {
+   "path": "mocap/16_56.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/016/16_56.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 131828,
+   "sha256": "6bd00d9fb4ec871419c7fb72f7546d33ae1796d75c7f91304e80b9457b84d41b"
+  },
+  {
+   "path": "mocap/16_57.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/016/16_57.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 205120,
+   "sha256": "b400e99a6acc63ccf04434a678c82673ad58f93f87bdaac87303c2dc2f775afc"
+  },
+  {
+   "path": "mocap/09_02.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/009/09_02.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 102201,
+   "sha256": "96cc613c494a44d593c97e3dd475d10d768eb7fc7ea8c4c6eee813ae69922cb8"
+  },
+  {
+   "path": "mocap/09_03.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/009/09_03.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 100605,
+   "sha256": "275d24814053eb17d6c46e00f396c4138d98c62fe5d68940447fb4ec29c4c042"
+  },
+  {
+   "path": "mocap/02_01.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/002/02_01.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 260091,
+   "sha256": "cf56db43157acc3d200b3d4215523f54d354a8926bea67e1f6c8031bd335ba7e"
+  },
+  {
+   "path": "mocap/12_01.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/012/12_01.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 394263,
+   "sha256": "14b0b93891225d3589c6e495a901d388952ab078776adff6c5d10b09c7416d88"
+  },
+  {
+   "path": "mocap/13_10.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/013/13_10.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 1807887,
+   "sha256": "0cae88c2ae622232040f4ea7a8251ea9b2c02f4c9e0d88610f6f5e05368a838d"
+  },
+  {
+   "path": "mocap/13_35.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/013/13_35.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 902904,
+   "sha256": "a676f7f5c13ece4a0b0a86bb5ddf8a86f76b72e0dfbdf17c575d1bb3df66ecdd"
+  },
+  {
+   "path": "mocap/15_06.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/015/15_06.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 2718191,
+   "sha256": "171b1c9dabe0d044f1da669f1e00c7aeac17493b4a3eda1f89ebc1bf8b4f07cc"
+  },
+  {
+   "path": "mocap/15_07.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/015/15_07.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 4149336,
+   "sha256": "e2ca5c7c2e21c2a0109ed4ab7c2c8627e0a7f1007345e8f13d915ceb73f83bc6"
+  },
+  {
+   "path": "mocap/26_09.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/026/26_09.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 564780,
+   "sha256": "9e37004de67649b0f00a2ca92703ffd67fd325f1d9acf3d34633c30ed2ceb578"
+  },
+  {
+   "path": "mocap/36_02.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/036/36_02.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 3205047,
+   "sha256": "2a6e9f62ee04428f9542f00f41439acc01a71b06acc24717c1b4a07e5d6ddf6a"
+  },
+  {
+   "path": "mocap/37_01.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/037/37_01.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 385827,
+   "sha256": "9103f9659627e54efd5cdc032185de5262571e9382ad5103da53d2d110ffe604"
+  },
+  {
+   "path": "mocap/39_01.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/039/39_01.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 289445,
+   "sha256": "5604f054684d55229ddfa2848b0ea2db6a9a0beb5177af11d9124d23d9f39c26"
+  },
+  {
+   "path": "mocap/69_68.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/069/69_68.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 623282,
+   "sha256": "4ca664afc3023d4e39741f6847cf99fa89046821b8e927f4285bbb1993c7bdfc"
+  },
+  {
+   "path": "mocap/69_70.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/069/69_70.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 790351,
+   "sha256": "fac827b41e02faeaa68ed6b24b6470e00db22be252805d9b3724c0cc97cfffb5"
+  },
+  {
+   "path": "mocap/70_01.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/070/70_01.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 537091,
+   "sha256": "1403b238cc635280d3dcac3a53a7da9d4909519e69edb44842cb6996fa78d863"
+  },
+  {
+   "path": "mocap/77_01.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/077/77_01.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 836011,
+   "sha256": "12ac3c51f3c5d3411c7a31c1f53789579723a843c00679541521d07a8be85949"
+  },
+  {
+   "path": "mocap/77_04.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/077/77_04.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 676766,
+   "sha256": "7d93254818acbc4926875eb313437f2b561ddab4f8f6490e14011948dfc58b7f"
+  },
+  {
+   "path": "mocap/77_06.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/077/77_06.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 1040522,
+   "sha256": "177c0be505af13e40d787a948e19e85dc38b9d51d562ab7a29923072d50ecea8"
+  },
+  {
+   "path": "mocap/77_09.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/077/77_09.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 762500,
+   "sha256": "6e71a29196ca8de2260287b6e5c815bcc8800235afa85ee2fed42e7ed8fdfca3"
+  },
+  {
+   "path": "mocap/77_11.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/077/77_11.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 246765,
+   "sha256": "d27fc38525bdb633d087313a045426b59dfab4315648d40e8a9f1a45dd45cccb"
+  },
+  {
+   "path": "mocap/77_14.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/077/77_14.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 761466,
+   "sha256": "52edb8ed5e6e51d7eda5df39caadca0e316001e7c5d6b261cecf96466eac11ee"
+  },
+  {
+   "path": "mocap/77_25.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/077/77_25.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 512085,
+   "sha256": "913edf36c461c7011afe42e190b4884ead885b1ceb7fb461aa4f63272039fad7"
+  },
+  {
+   "path": "mocap/77_26.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/077/77_26.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 500948,
+   "sha256": "f108d5f8b268e01e3e9891de014d4158e40f3a50a590a0f3bedc7e91ea7b135c"
+  },
+  {
+   "path": "mocap/77_29.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/077/77_29.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 1598157,
+   "sha256": "cc9890bed61e690fc80e4d6663d049037ce7526f9200079415de04834fe6a10f"
+  },
+  {
+   "path": "mocap/77_30.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/077/77_30.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 954320,
+   "sha256": "8fa587d5a6758d0d4a818b3da0073855b048f43503e873fdafeb495b4cf83ae5"
+  },
+  {
+   "path": "mocap/77_34.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/077/77_34.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 854790,
+   "sha256": "300f0d4da1349220634d77f490b58a65c845e103796b79b79261eff09c23aa17"
+  },
+  {
+   "path": "mocap/79_73.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/079/79_73.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 672852,
+   "sha256": "78f51b188603e2eb33212929fa67c43d68b99209b4d70515aeaa7dcde56f9230"
+  },
+  {
+   "path": "mocap/83_27.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/083/83_27.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 751993,
+   "sha256": "65239ea52f4aebc980ed613d4136049961c5f044614017571d68c0f6fce02cfd"
+  },
+  {
+   "path": "mocap/83_34.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/083/83_34.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 738507,
+   "sha256": "e2f1e77432fdb2697f895de05c7f625a0d3d57bfe7e3c4951ec886911889a174"
+  },
+  {
+   "path": "mocap/91_22.bvh",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/091/91_22.bvh",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 1598143,
+   "sha256": "d61d2e9a2845441778935dfbfd67a488515a8e828f25f050eee694ab453e2a5f"
+  },
+  {
+   "path": "mocap/cmu-mocap-index-text.txt",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/cmu-mocap-index-text.txt",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 68400,
+   "sha256": "b611669b7e8e4cb653cbda3b47ebc42c4151d019e4d28f2ed3e052e4e240ffbd"
+  },
+  {
+   "path": "mocap/READMEFIRST.txt",
+   "url": "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/READMEFIRST.txt",
+   "licence": "CMU Graphics Lab Motion Capture Database, mocap.cs.cmu.edu, created with funding from NSF EIA-0196217; free to use, not to be resold as data. BVH conversion by Bruce Hahne (cgspeed.com).",
+   "used": false,
+   "bytes": 13248,
+   "sha256": "8e6fe2e640b3728ef2e43e722cb5ae9cdf0010028c0517c4226ed165f9037930"
+  }
+ ]
+}

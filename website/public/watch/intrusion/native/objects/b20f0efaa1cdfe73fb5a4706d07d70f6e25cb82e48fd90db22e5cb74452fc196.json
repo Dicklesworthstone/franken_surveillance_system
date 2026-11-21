@@ -1,0 +1,89 @@
+{
+  "schema": "fss.fusion_query.v2",
+  "hypothesis": "event:person-on-grounds",
+  "kind": "person_presence",
+  "prior": [
+    -602,
+    -602
+  ],
+  "coverage": {
+    "state": "degraded",
+    "reason": "Rendered frames; no field calibration."
+  },
+  "looks": 1,
+  "now_ns": "1",
+  "severity": {
+    "expected_harm": 10000,
+    "false_alert_cost": 200,
+    "delay_cost_per_second": 5,
+    "reversible": false
+  },
+  "policy": {
+    "generation": "policy:example-v1",
+    "alert_threshold": 1000,
+    "retain_threshold": -500,
+    "reject_threshold": -2000,
+    "min_independent_support": 2,
+    "urgent_single_domain_threshold": null,
+    "max_wait_ns": "30000000000",
+    "look_penalty_per_doubling": 301,
+    "operator_confirmation_available": true
+  },
+  "evidence": [
+    {
+      "id": "sha256:b570afaaabac87426ef12c8013b6718b04bc4100709b564f3b62ebbca33c96a2",
+      "sensor": "camera:gate",
+      "failure_domains": [
+        "device:gate"
+      ],
+      "observability": "observed",
+      "calibration": {
+        "uncalibrated": "YOLOX-Nano scores have no calibration for this site"
+      }
+    },
+    {
+      "id": "sha256:40bae3df29808879b4b1850f3b932635051b5e46f9ba0c9b60b4ee7622b75d36",
+      "sensor": "camera:driveway",
+      "failure_domains": [
+        "device:driveway"
+      ],
+      "observability": "observed",
+      "calibration": {
+        "uncalibrated": "YOLOX-Nano scores have no calibration for this site"
+      }
+    },
+    {
+      "id": "sha256:320b91bfa6c65250362d04b191b4ba11a53d894e5377a278803987aeded77fd8",
+      "sensor": "camera:doorbell",
+      "failure_domains": [
+        "device:doorbell"
+      ],
+      "observability": "observed",
+      "calibration": {
+        "uncalibrated": "YOLOX-Nano scores have no calibration for this site"
+      }
+    },
+    {
+      "id": "sha256:7666774c8bf718aa763cc1ec0deaa468f81691e88991c1d87da4335539e2c963",
+      "sensor": "camera:porch",
+      "failure_domains": [
+        "device:porch"
+      ],
+      "observability": "observed",
+      "calibration": {
+        "uncalibrated": "YOLOX-Nano scores have no calibration for this site"
+      }
+    },
+    {
+      "id": "sha256:8153500cd0eacbb70ba4f085ed7809a9e3d2502227f89590f6d77ce36ec31bab",
+      "sensor": "camera:entry",
+      "failure_domains": [
+        "device:entry"
+      ],
+      "observability": "observed",
+      "calibration": {
+        "uncalibrated": "YOLOX-Nano scores have no calibration for this site"
+      }
+    }
+  ]
+}

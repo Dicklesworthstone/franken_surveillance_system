@@ -1,0 +1,40 @@
+.exhibit { margin-block: 2.5rem; min-width: 0; }
+.exhibit h3 { font-size: clamp(1.5rem, 2.8vw, 2.1rem); line-height: 1.1; margin: 0 0 .65rem; letter-spacing: -.04em; }
+.exhibit p { max-width: 72ch; line-height: 1.55; margin: 0 0 1.1rem; }
+.pair { display: grid; gap: .8rem; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.recording { min-width: 0; padding: 0 0 .6rem; color: #e7e9df; background: #171c1a; }
+.camera, .readout { display: flex; justify-content: space-between; gap: .3rem .7rem; align-items: baseline; padding: .55rem .7rem; }
+.camera { font-size: .8rem; font-weight: 650; }
+.camera span:last-child, .readout small, .stamp, .legend, .controls output, .markers small { font-family: "Martian Mono Variable", monospace; font-size: .64rem; font-weight: 430; }
+.camera span:last-child, .readout small { color: #c2c8bd; }
+.screen { position: relative; overflow: hidden; width: 100%; aspect-ratio: 16/9; background: #131919; }
+.screen img { position: absolute; top: 0; left: 0; max-width: none; max-height: none; display: block; }
+.stamp { position: absolute; bottom: .4rem; right: .45rem; padding: .15rem .3rem; background: #121714df; color: #f4f5e9; }
+.noPicture { display: grid; align-content: center; justify-items: center; gap: .35rem; height: 100%; color: #d0c4a2; background: repeating-linear-gradient(-45deg, #131919, #131919 6px, #1a201e 7px, #1a201e 8px); }
+.noPicture strong { font-size: clamp(.95rem, 1.8vw, 1.3rem); }
+.noPicture span, .noPicture button { font-size: .75rem; }
+.readout { flex-wrap: wrap; font-size: .78rem; }
+.band { position: relative; height: .55rem; margin: 0 .7rem; background: #778b9a; }
+.band i { position: absolute; height: 100%; }
+.gap { background: repeating-linear-gradient(135deg,#493c2d 0 3px,#ac8856 3px 5px); }
+.witness { bottom: 0; max-height: 45%; background: #cced95; }
+.cursor { top: -3px; height: calc(100% + 6px) !important; width: 2px; background: white; }
+.legend { display: flex; flex-wrap: wrap; gap: .4rem 1.1rem; margin: .5rem 0 1rem; }
+.legend span::before { content: ""; display: inline-block; width: .62rem; height: .42rem; margin-right: .32rem; background: #778b9a; }
+.legend span:nth-child(2)::before { background: #ac8856; }
+.legend span:nth-child(3)::before { background: #789745; }
+.controls, .markers { display: flex; align-items: center; gap: .5rem; }
+.controls input { min-width: 2rem; flex: 1; accent-color: #749459; }
+.controls output { min-width: 4.5rem; text-align: right; }
+.controls button, .markers button, .noPicture button { border: 1px solid currentColor; background: transparent; color: inherit; border-radius: 3px; padding: .35rem .55rem; cursor: pointer; }
+.markers { flex-wrap: wrap; margin: .65rem 0 .95rem; }
+.markers button { font-size: .76rem; min-height: 2.2rem; }
+.markers button[aria-pressed="true"] { text-decoration: underline; }
+.markers small { opacity: .85; }
+.exhibit summary { cursor: pointer; font-weight: 650; padding: .45rem 0; }
+.exhibit details a { text-decoration: underline; }
+.exhibit ul { padding-left: 1.25rem; }
+@media (max-width: 650px) {
+  .pair { grid-template-columns: minmax(0, 1fr); }
+  .camera, .readout { padding-block: .38rem; }
+}

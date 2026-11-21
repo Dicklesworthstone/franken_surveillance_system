@@ -1,0 +1,23 @@
+Staged camera recordings: credits
+
+The recordings show fictional events at a fictional property. They are path-traced renders, not footage of real places or incidents.
+
+People
+The intruder is "Eric Rigged 001 - Rigged 3D Business Man" and the lookout is "Nathan Animated 003 - Walking 3D Man", both by Renderpeople, published by Renderpeople under Creative Commons Attribution 4.0 International.
+https://sketchfab.com/3d-models/a46bc9f67aaa415bb4f3241eef900e7f
+https://sketchfab.com/3d-models/143a2b1ea5eb4385ae90a73657aca3bc
+https://sketchfab.com/renderpeople
+https://creativecommons.org/licenses/by/4.0/
+Changes: the intruder's shirt and tie and the lookout's T-shirt are recoloured through the garment masks supplied with the scans; each whole colour map is darkened, by 20% for the intruder and 10% for the lookout; textures are downsized to 4k; each mesh is subdivided once; a knit cap, a backpack and a hand torch are added; both bodies are driven by the motion capture credited below; in the two infrared films the colour maps are lifted with a gamma of 0.74 and the garment tints set to mid grey. Both men are models playing parts in a staged scene. The FBX files and texture maps were fetched from the mirror in chapter 9 of the Godot 4 Game Development Cookbook:
+https://github.com/PacktPublishing/Godot-4-Game-Development-Cookbook/tree/e752af943e8cf035def41f17d9efa8e50b1bc135/Chapter%209
+
+Motion
+The data used in this project was obtained from mocap.cs.cmu.edu. The database was created with funding from NSF EIA-0196217. BVH conversion by Bruce Hahne (cgspeed.com). Clips used: subject 91 trial 17, 77/28, 77/02, 77/05, 77/10, 09/01, 35/01, 40/10 and 16/55. One gesture, the arm reaching for the door knob, is authored by hand over a captured standing clip.
+http://mocap.cs.cmu.edu
+
+Property
+Architecture, grounds and details are authored for this project. Textures, the night sky, indoor panoramas, trees, shrubs and site furniture are from Poly Haven, CC0. The cars are the BMW benchmark scene by Mike Pan from Blender's demo files, CC0, with badges and plate removed.
+https://polyhaven.com
+https://www.blender.org/download/demo-files/
+
+The Poly Haven files are pinned by URL, size and SHA-256 in website/art/estate/assets.lock.json, and the scans and motion clips in website/art/estate/people.lock.json. The car archive is pinned by URL and SHA-256 in website/art/estate/fetch_assets.py. The clocks burned into the films are set in the DejaVu and Liberation fonts installed on the render machine, which are not pinned.

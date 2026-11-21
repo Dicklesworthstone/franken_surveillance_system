@@ -1,0 +1,730 @@
+.minute {
+  padding: clamp(56px, 8vw, 104px) 0 clamp(56px, 8vw, 96px);
+}
+.minute__intro {
+  display: grid;
+  grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+  gap: 20px 56px;
+  align-items: end;
+  margin-bottom: 34px;
+}
+.minute__key {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 22px;
+  margin-top: 14px;
+}
+
+.console {
+  display: grid;
+  gap: 16px;
+}
+.console__error {
+  padding: 10px 14px;
+  border-left: 3px solid var(--track-a);
+  background: var(--night-raised);
+  font-size: 0.92rem;
+}
+.console__error button {
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+}
+/* Films on the left; the plan runs the full height on the right. */
+.console__stage {
+  display: grid;
+  grid-template-columns: minmax(0, 1.92fr) minmax(0, 1fr);
+  grid-template-areas:
+    "feeds site"
+    "read  site";
+  gap: 14px 16px;
+}
+/* One element per camera. The selected one sits in the large slot on row 1. */
+.console__feeds {
+  grid-area: feeds;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0 10px;
+  align-items: start;
+}
+.console__readouts {
+  grid-area: read;
+}
+.console__site {
+  grid-area: site;
+}
+.console__caption {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px 24px;
+  flex-wrap: wrap;
+  margin: 10px 0 14px;
+  font-size: 0.92rem;
+  color: var(--night-soft);
+}
+.console__caption strong {
+  color: var(--night-text);
+  font-weight: 640;
+}
+.console__follow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.console__follow input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--sign);
+}
+.console__site {
+  position: relative;
+  min-height: 320px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: #05070a;
+}
+.console__site .twin {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+/* Model or plan */
+.console__view {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  padding: 2px;
+  background: rgb(5 7 10 / 0.72);
+  border-radius: 4px;
+}
+.console__view button {
+  padding: 5px 11px;
+  border-radius: 3px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--night-soft);
+}
+.console__view button:hover {
+  color: var(--night-text);
+}
+.console__view button[aria-pressed="true"] {
+  background: var(--night-text);
+  color: #0b0d10;
+}
+.console__readouts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  align-content: start;
+}
+.console__logs {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+  gap: 16px 28px;
+  margin-top: 10px;
+}
+.console__heading {
+  font-size: 1rem;
+  font-stretch: 110%;
+  font-weight: 650;
+  margin-bottom: 10px;
+}
+
+/* A camera */
+.feed {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  background: #000;
+  border-radius: 4px;
+  overflow: hidden;
+  pointer-events: none;
+}
+/* The strip under the main screen: one fixed place per camera. */
+.slot {
+  grid-row: 3;
+  display: block;
+  text-align: left;
+}
+.slot__frame {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 16 / 9;
+  border-radius: 4px;
+  outline: 2px solid transparent;
+  outline-offset: -2px;
+  font-size: 0.72rem;
+  line-height: 1.2;
+  text-align: center;
+  color: var(--night-soft);
+  transition: outline-color 140ms;
+}
+.slot.is-selected .slot__frame {
+  outline-color: var(--sign);
+  background: rgb(255 210 0 / 0.06);
+}
+.slot:hover .slot__frame {
+  outline-color: rgb(255 255 255 / 0.5);
+}
+.slot__name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 0.82rem;
+  font-weight: 540;
+  color: var(--night-soft);
+}
+.slot.is-selected .slot__name {
+  color: var(--night-text);
+}
+.slot__name i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+/* Full height of the frame at the film's own shape, so a square doorbell picture is not cropped. */
+.feed__picture {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  translate: -50% 0;
+  display: block;
+}
+.feed__picture video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.feed__marks {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.feed__marks rect {
+  fill: none;
+  stroke-width: 2px;
+  vector-effect: non-scaling-stroke;
+}
+.feed__staged {
+  stroke-dasharray: 6 4;
+}
+.feed:not(.feed--large) .feed__staged {
+  stroke-width: 1.5px;
+  stroke-dasharray: none;
+}
+.feed__measured {
+  stroke: var(--seen);
+}
+.feed.is-finding .feed__marks,
+.feed.is-finding .feed__label {
+  visibility: hidden;
+}
+.feed__label {
+  position: absolute;
+  transform: translateY(-100%);
+  padding: 1px 6px 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.5;
+  color: #0b0d10;
+  white-space: nowrap;
+}
+/* The plan */
+.twin {
+  display: block;
+}
+.twin__plate {
+  filter: brightness(0.62) saturate(0.9) contrast(1.04);
+}
+.twin__plate--lit {
+  opacity: 0;
+  filter: brightness(0.86) saturate(0.95);
+  transition: opacity 420ms;
+}
+.twin__plate--lit.is-on {
+  opacity: 1;
+}
+/* Coverage is a soft wash; only the camera in use and cameras with someone in view get an edge. */
+.twin__cover {
+  fill: rgb(255 226 120 / 0.055);
+  stroke: transparent;
+  stroke-width: 1.25px;
+  vector-effect: non-scaling-stroke;
+  transition: fill 180ms, stroke 180ms;
+}
+.twin__cover.is-selected {
+  stroke: rgb(255 210 0 / 0.55);
+}
+.twin__cover.is-watching {
+  fill: rgb(255 210 0 / 0.09);
+  stroke: rgb(255 210 0 / 0.7);
+}
+/* The gate once it has shut: the backdrops show it open. */
+.twin__gate {
+  stroke: var(--night-text);
+  stroke-width: 3px;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+.twin__trail {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.5px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+  opacity: 0.85;
+}
+.twin__bound {
+  fill: currentColor;
+  fill-opacity: 0.22;
+  stroke: currentColor;
+  stroke-width: 1.25px;
+  vector-effect: non-scaling-stroke;
+}
+.twin__dot {
+  fill: currentColor;
+  stroke: #05070a;
+  stroke-width: 1.5px;
+  vector-effect: non-scaling-stroke;
+}
+.twin__person--not_observable .twin__bound {
+  fill-opacity: 0.07;
+  stroke-dasharray: 5 4;
+}
+.twin__person--not_observable .twin__dot {
+  fill: #05070a;
+  stroke: currentColor;
+}
+.twin__person--closed {
+  opacity: 0.5;
+}
+.twin__person--closed .twin__bound {
+  display: none;
+}
+.twin__person--closed .twin__dot {
+  fill: none;
+  stroke: currentColor;
+}
+/* --m is the number of drawing units in one metre for the view in use. */
+.twin__tag {
+  font: 700 calc(1.55px * var(--m, 1)) var(--sans);
+  fill: currentColor;
+  paint-order: stroke;
+  stroke: #05070a;
+  stroke-width: calc(0.4px * var(--m, 1));
+  stroke-linejoin: round;
+}
+/* In the tilted view a person and a camera stand above their spot on the ground. */
+.twin__stand,
+.twin__mast {
+  stroke: currentColor;
+  stroke-width: 2px;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+.twin__mast {
+  stroke: rgb(255 210 0 / 0.55);
+  stroke-width: 1.25px;
+}
+.twin__camera circle {
+  fill: var(--sign);
+  stroke: #05070a;
+  stroke-width: 1.5px;
+  vector-effect: non-scaling-stroke;
+}
+.twin__camera {
+  cursor: pointer;
+}
+.twin__camera text {
+  font: 600 calc(1.3px * var(--m, 1)) var(--sans);
+  fill: #fff;
+  paint-order: stroke;
+  stroke: rgb(5 7 10 / 0.85);
+  stroke-width: calc(0.42px * var(--m, 1));
+  stroke-linejoin: round;
+}
+.twin__camera.is-selected text {
+  fill: var(--sign);
+}
+
+/* What is known about each person right now */
+.readout {
+  padding: 10px 14px 12px;
+  background: var(--night-raised);
+  border-left: 3px solid var(--who);
+  border-radius: 0 4px 4px 0;
+}
+.readout--not_observable,
+.readout--closed,
+.readout--none {
+  border-left-style: dashed;
+}
+.readout__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+.readout__track {
+  font-weight: 700;
+  font-stretch: 110%;
+  color: var(--who);
+}
+.readout__state {
+  font-size: 0.86rem;
+  font-weight: 600;
+}
+.readout__detail {
+  margin-top: 3px;
+  font-size: 0.88rem;
+  line-height: 1.4;
+  color: var(--night-soft);
+  min-height: 2.8em;
+}
+
+/* Who saw whom, when */
+.timeline {
+  display: grid;
+  grid-template-columns: 148px minmax(0, 1fr);
+  gap: 16px 20px;
+  padding: 18px 22px 14px 20px;
+  background: var(--night-raised);
+  border-radius: 6px;
+}
+.timeline__controls {
+  display: grid;
+  gap: 12px;
+  align-content: start;
+}
+.timeline__play {
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--sign);
+  color: var(--sign-ink);
+}
+.timeline__play:hover {
+  background: #ffe04d;
+}
+.timeline__play svg {
+  fill: currentColor;
+}
+.timeline__now .data {
+  display: block;
+  font-size: 1.22rem;
+}
+.timeline__beat {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.9rem;
+  color: var(--night-soft);
+}
+.timeline__case {
+  font-size: 0.86rem;
+  line-height: 1.3;
+  color: var(--night-soft);
+}
+.timeline__case strong {
+  display: block;
+  font-size: 1.5rem;
+  font-stretch: 110%;
+  font-weight: 680;
+  line-height: 1.1;
+  color: var(--night-text);
+}
+.timeline__lane--case .timeline__track {
+  height: 34px;
+  margin-bottom: 5px;
+  background: none;
+  border-bottom: 1px solid var(--night-faint);
+  border-radius: 0;
+}
+.timeline__level {
+  position: absolute;
+  bottom: 0;
+  background: var(--lamp);
+  opacity: 0.85;
+}
+.timeline__chart {
+  --name: 88px;
+  position: relative;
+  min-width: 0;
+}
+.timeline__marks {
+  position: relative;
+  height: 24px;
+  margin-left: var(--name);
+}
+.timeline__marks li {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-left: 1px solid var(--night-faint);
+}
+.timeline__marks--below button {
+  padding-top: 9px;
+}
+.timeline__marks button {
+  display: block;
+  padding: 0 0 0 6px;
+  font-size: 0.78rem;
+  line-height: 1.2;
+  white-space: nowrap;
+  color: var(--night-faint);
+}
+.timeline__marks button.is-past {
+  color: var(--night-text);
+}
+.timeline__marks button:hover {
+  color: var(--sign);
+}
+.timeline__lanes {
+  position: relative;
+  display: grid;
+  gap: 5px;
+}
+.timeline__lane {
+  display: grid;
+  grid-template-columns: var(--name) minmax(0, 1fr);
+  align-items: center;
+}
+.timeline__name {
+  font-size: 0.8rem;
+  color: var(--night-soft);
+}
+.timeline__track {
+  position: relative;
+  height: 14px;
+  background: rgb(255 255 255 / 0.055);
+  border-radius: 2px;
+}
+.timeline__bar {
+  position: absolute;
+  height: 50%;
+  min-width: 2px;
+}
+.timeline__bar--a {
+  top: 0;
+  background: var(--track-a);
+}
+.timeline__bar--b {
+  top: 50%;
+  background: var(--track-b);
+}
+.timeline__head {
+  position: absolute;
+  top: -7px;
+  bottom: -7px;
+  left: calc(var(--name) + (100% - var(--name)) * var(--at));
+  width: 2px;
+  margin-left: -1px;
+  background: var(--sign);
+  pointer-events: none;
+}
+.timeline__slider {
+  position: absolute;
+  top: -7px;
+  bottom: -7px;
+  left: var(--name);
+  width: calc(100% - var(--name));
+  height: auto;
+  margin: 0;
+  opacity: 0;
+  cursor: ew-resize;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.timeline__slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 2px;
+  height: 20px;
+}
+.timeline__slider::-moz-range-thumb {
+  width: 2px;
+  border: 0;
+}
+.timeline__lanes:focus-within .timeline__head {
+  outline: 2px solid var(--sign);
+  outline-offset: 2px;
+}
+.timeline__scale {
+  display: flex;
+  justify-content: space-between;
+  margin: 9px 0 0 var(--name);
+  font-size: 0.7rem;
+  color: var(--night-faint);
+}
+
+/* Lists that follow the clock */
+.follow {
+  position: relative;
+  max-height: 348px;
+  overflow-y: auto;
+  border-top: 1px solid var(--night-line);
+  scrollbar-width: thin;
+  scrollbar-color: var(--night-line) transparent;
+}
+.follow li {
+  border-bottom: 1px solid var(--night-line);
+  transition: opacity 200ms;
+}
+.follow li.is-ahead {
+  opacity: 0.34;
+}
+.follow button {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 12px;
+  width: 100%;
+  padding: 11px 10px 12px 11px;
+  text-align: left;
+  border-left: 3px solid transparent;
+}
+.follow button:hover {
+  background: rgb(255 255 255 / 0.035);
+}
+.follow li.is-now button {
+  border-left-color: var(--sign);
+  background: rgb(255 255 255 / 0.05);
+}
+.follow__when {
+  padding-top: 2px;
+  font-size: 0.76rem;
+  color: var(--night-soft);
+}
+.follow__what {
+  display: block;
+  min-width: 0;
+}
+.follow__op {
+  display: block;
+  margin-bottom: 3px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--lamp);
+}
+.follow__line {
+  display: block;
+  font-size: 0.93rem;
+  line-height: 1.42;
+}
+.follow__hash {
+  display: block;
+  margin-top: 3px;
+  font-size: 0.7rem;
+  color: var(--night-faint);
+}
+
+@media (max-width: 980px) {
+  .minute__intro {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .console__stage {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "feeds" "site" "read";
+  }
+  .console__logs {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .console__site {
+    aspect-ratio: 5 / 6;
+    min-height: 0;
+  }
+  .follow {
+    max-height: 300px;
+  }
+}
+@media (max-width: 640px) {
+  .console__feeds {
+    column-gap: 6px;
+  }
+  .slot__name {
+    font-size: 0.68rem;
+    gap: 3px;
+  }
+  .slot__frame {
+    font-size: 0;
+  }
+  .console__readouts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .console__follow {
+    white-space: normal;
+  }
+  .timeline {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 14px 14px 12px;
+  }
+  .timeline__controls {
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+  }
+  .timeline__case {
+    grid-column: 1 / -1;
+  }
+  .timeline__chart {
+    --name: 62px;
+  }
+  .timeline__marks {
+    height: 16px;
+  }
+  .timeline__marks button {
+    width: 16px;
+    height: 16px;
+    margin-left: -8px;
+    padding: 0;
+    font-size: 0;
+  }
+  .timeline__name {
+    font-size: 0.72rem;
+  }
+  .follow button {
+    gap: 9px;
+    padding-inline: 8px 6px;
+  }
+}
+
+/* A film that did not load, or is not the one the scene file names */
+.film-error {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 6px;
+  padding: 8px;
+  background: rgb(8 11 16 / 0.92);
+  color: var(--night-text);
+  font-size: 0.86rem;
+  line-height: 1.3;
+  text-align: center;
+}
+.film-error button {
+  pointer-events: auto;
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+}
+/* A failed film sits above its slot button so that its own button can be pressed. */
+.feed:has(.film-error) {
+  z-index: 1;
+}
+.feed:not(.feed--large) .film-error:has(button) > span {
+  display: none;
+}
+.feed:not(.feed--large) .film-error button {
+  font-size: 0.7rem;
+}

@@ -1,0 +1,147 @@
+operation=select-movie
+import_identity=sha256:e8f31ed2667d30422c84221962f7db946c6353ea3bcd634deff20d0b715cb4a5
+import_root=sha256:1dacca00ef7eb3a01eb7829a07e47622c1fc2ee4006e34cdbc3e078850483626
+manifest_digest=sha256:8c08f13faee426dfd7aa92a9574ab1f6a5c6b1a500e5b5e409c8183a599cfd38
+authority_sequence=7
+input_sha256=sha256:0b79469806e80cec396d8f690c6bdb1e677d5b46c8ab07a261005f279328012a
+input_bytes=1900887
+media_format=mkvavc
+segment_count=48
+omission_count=0
+container_structure_count=60
+capture_time_class=operator_assumption
+acquisition_history=requested,authenticated,adapter_accepted,degraded,cancelled
+acquisition_terminal=cancelled
+acquisition_ending=end_of_file_source
+acquisition_absence_refusal=absence claim forbidden in state cancelled: absence claims require verified continuity (ContinuityVerified)
+absence_certifiable=false
+selection_time_basis=container_movie_timeline
+selection_interval=half_open
+selection_source_format=mkvavc
+selection_movie_tick_unit=nanosecond
+selection_source_adapter=ADP-FILE-001
+selection_source_adapter_generation=gen:fss1:adapters-v1
+selection_track_id=1
+selection_codec=avc
+selection_verified_source_sha256=sha256:0b79469806e80cec396d8f690c6bdb1e677d5b46c8ab07a261005f279328012a
+selection_source_bytes=1900887
+selection_source_bytes_read=1900887
+selection_origin_read_bytes_charged=0
+selection_maximum_origin_read_bytes=138412032
+selection_origin_read_model=conservative_pre_io_bytes
+movie_timescale=1000000000
+media_timescale=1000000000
+query_start_movie_tick=0
+query_end_movie_tick=8000000000
+selected_presentation_count=48
+movie_gap_count=1
+decode_span_count=48
+selection_work_units=1556
+selected_sample_bytes=1898281
+required_decode_bytes=1898281
+quoted_annex_b_bytes=1900201
+movie_edit=0 edit_index=implicit movie_interval=0/1000000000,8000000000000000000/1000000000 media_time=0
+movie_sample=0 segment=0 edit_index=implicit movie_interval=0/1000000000,125000000000000000/1000000000 source_offset=514 source_bytes=64688
+movie_sample=1 segment=1 edit_index=implicit movie_interval=125000000000000000/1000000000,250000000000000000/1000000000 source_offset=65226 source_bytes=39150
+movie_sample=2 segment=2 edit_index=implicit movie_interval=250000000000000000/1000000000,375000000000000000/1000000000 source_offset=104400 source_bytes=39152
+movie_sample=3 segment=3 edit_index=implicit movie_interval=375000000000000000/1000000000,500000000000000000/1000000000 source_offset=143577 source_bytes=39165
+movie_sample=4 segment=4 edit_index=implicit movie_interval=500000000000000000/1000000000,625000000000000000/1000000000 source_offset=182767 source_bytes=39194
+movie_sample=5 segment=5 edit_index=implicit movie_interval=625000000000000000/1000000000,750000000000000000/1000000000 source_offset=221986 source_bytes=39089
+movie_sample=6 segment=6 edit_index=implicit movie_interval=750000000000000000/1000000000,875000000000000000/1000000000 source_offset=261100 source_bytes=39091
+movie_sample=7 segment=7 edit_index=implicit movie_interval=875000000000000000/1000000000,1000000000000000000/1000000000 source_offset=300216 source_bytes=39089
+movie_sample=8 segment=8 edit_index=implicit movie_interval=1000000000000000000/1000000000,1125000000000000000/1000000000 source_offset=339330 source_bytes=39122
+movie_sample=9 segment=9 edit_index=implicit movie_interval=1125000000000000000/1000000000,1250000000000000000/1000000000 source_offset=378477 source_bytes=39152
+movie_sample=10 segment=10 edit_index=implicit movie_interval=1250000000000000000/1000000000,1375000000000000000/1000000000 source_offset=417654 source_bytes=39047
+movie_sample=11 segment=11 edit_index=implicit movie_interval=1375000000000000000/1000000000,1500000000000000000/1000000000 source_offset=456726 source_bytes=39152
+movie_sample=12 segment=12 edit_index=implicit movie_interval=1500000000000000000/1000000000,1625000000000000000/1000000000 source_offset=495903 source_bytes=39159
+movie_sample=13 segment=13 edit_index=implicit movie_interval=1625000000000000000/1000000000,1750000000000000000/1000000000 source_offset=535087 source_bytes=39166
+movie_sample=14 segment=14 edit_index=implicit movie_interval=1750000000000000000/1000000000,1875000000000000000/1000000000 source_offset=574278 source_bytes=39161
+movie_sample=15 segment=15 edit_index=implicit movie_interval=1875000000000000000/1000000000,2000000000000000000/1000000000 source_offset=613464 source_bytes=39200
+movie_sample=16 segment=16 edit_index=implicit movie_interval=2000000000000000000/1000000000,2125000000000000000/1000000000 source_offset=652689 source_bytes=38977
+movie_sample=17 segment=17 edit_index=implicit movie_interval=2125000000000000000/1000000000,2250000000000000000/1000000000 source_offset=691691 source_bytes=39219
+movie_sample=18 segment=18 edit_index=implicit movie_interval=2250000000000000000/1000000000,2375000000000000000/1000000000 source_offset=730935 source_bytes=39186
+movie_sample=19 segment=19 edit_index=implicit movie_interval=2375000000000000000/1000000000,2500000000000000000/1000000000 source_offset=770146 source_bytes=39139
+movie_sample=20 segment=20 edit_index=implicit movie_interval=2500000000000000000/1000000000,2625000000000000000/1000000000 source_offset=809310 source_bytes=39170
+movie_sample=21 segment=21 edit_index=implicit movie_interval=2625000000000000000/1000000000,2750000000000000000/1000000000 source_offset=848505 source_bytes=39152
+movie_sample=22 segment=22 edit_index=implicit movie_interval=2750000000000000000/1000000000,2875000000000000000/1000000000 source_offset=887682 source_bytes=39176
+movie_sample=23 segment=23 edit_index=implicit movie_interval=2875000000000000000/1000000000,3000000000000000000/1000000000 source_offset=926883 source_bytes=39165
+movie_sample=24 segment=24 edit_index=implicit movie_interval=5000000000000000000/1000000000,5125000000000000000/1000000000 source_offset=966073 source_bytes=39209
+movie_sample=25 segment=25 edit_index=implicit movie_interval=5125000000000000000/1000000000,5250000000000000000/1000000000 source_offset=1005307 source_bytes=39168
+movie_sample=26 segment=26 edit_index=implicit movie_interval=5250000000000000000/1000000000,5375000000000000000/1000000000 source_offset=1044500 source_bytes=39298
+movie_sample=27 segment=27 edit_index=implicit movie_interval=5375000000000000000/1000000000,5500000000000000000/1000000000 source_offset=1083823 source_bytes=39363
+movie_sample=28 segment=28 edit_index=implicit movie_interval=5500000000000000000/1000000000,5625000000000000000/1000000000 source_offset=1123211 source_bytes=39443
+movie_sample=29 segment=29 edit_index=implicit movie_interval=5625000000000000000/1000000000,5750000000000000000/1000000000 source_offset=1162679 source_bytes=39348
+movie_sample=30 segment=30 edit_index=implicit movie_interval=5750000000000000000/1000000000,5875000000000000000/1000000000 source_offset=1202052 source_bytes=38835
+movie_sample=31 segment=31 edit_index=implicit movie_interval=5875000000000000000/1000000000,6000000000000000000/1000000000 source_offset=1240912 source_bytes=38939
+movie_sample=32 segment=32 edit_index=implicit movie_interval=6000000000000000000/1000000000,6125000000000000000/1000000000 source_offset=1279876 source_bytes=38890
+movie_sample=33 segment=33 edit_index=implicit movie_interval=6125000000000000000/1000000000,6250000000000000000/1000000000 source_offset=1318791 source_bytes=39073
+movie_sample=34 segment=34 edit_index=implicit movie_interval=6250000000000000000/1000000000,6375000000000000000/1000000000 source_offset=1357889 source_bytes=38936
+movie_sample=35 segment=35 edit_index=implicit movie_interval=6375000000000000000/1000000000,6500000000000000000/1000000000 source_offset=1396850 source_bytes=38781
+movie_sample=36 segment=36 edit_index=implicit movie_interval=6500000000000000000/1000000000,6625000000000000000/1000000000 source_offset=1435656 source_bytes=39049
+movie_sample=37 segment=37 edit_index=implicit movie_interval=6625000000000000000/1000000000,6750000000000000000/1000000000 source_offset=1474730 source_bytes=39023
+movie_sample=38 segment=38 edit_index=implicit movie_interval=6750000000000000000/1000000000,6875000000000000000/1000000000 source_offset=1513778 source_bytes=39030
+movie_sample=39 segment=39 edit_index=implicit movie_interval=6875000000000000000/1000000000,7000000000000000000/1000000000 source_offset=1552833 source_bytes=39030
+movie_sample=40 segment=40 edit_index=implicit movie_interval=7000000000000000000/1000000000,7125000000000000000/1000000000 source_offset=1591888 source_bytes=38463
+movie_sample=41 segment=41 edit_index=implicit movie_interval=7125000000000000000/1000000000,7250000000000000000/1000000000 source_offset=1630376 source_bytes=39027
+movie_sample=42 segment=42 edit_index=implicit movie_interval=7250000000000000000/1000000000,7375000000000000000/1000000000 source_offset=1669428 source_bytes=38482
+movie_sample=43 segment=43 edit_index=implicit movie_interval=7375000000000000000/1000000000,7500000000000000000/1000000000 source_offset=1707935 source_bytes=38624
+movie_sample=44 segment=44 edit_index=implicit movie_interval=7500000000000000000/1000000000,7625000000000000000/1000000000 source_offset=1746584 source_bytes=38161
+movie_sample=45 segment=45 edit_index=implicit movie_interval=7625000000000000000/1000000000,7750000000000000000/1000000000 source_offset=1784770 source_bytes=38322
+movie_sample=46 segment=46 edit_index=implicit movie_interval=7750000000000000000/1000000000,7875000000000000000/1000000000 source_offset=1823117 source_bytes=38423
+movie_sample=47 segment=47 edit_index=implicit movie_interval=7875000000000000000/1000000000,8000000000000000000/1000000000 source_offset=1861565 source_bytes=38403
+movie_gap=0 kind=unrepresented movie_interval=3000000000000000000/1000000000,5000000000000000000/1000000000
+decode_span=0 start_segment=0 segment_count=1 source_bytes=64688 annex_b_bytes=64728 requested_segments=0
+decode_span=1 start_segment=1 segment_count=1 source_bytes=39150 annex_b_bytes=39190 requested_segments=1
+decode_span=2 start_segment=2 segment_count=1 source_bytes=39152 annex_b_bytes=39192 requested_segments=2
+decode_span=3 start_segment=3 segment_count=1 source_bytes=39165 annex_b_bytes=39205 requested_segments=3
+decode_span=4 start_segment=4 segment_count=1 source_bytes=39194 annex_b_bytes=39234 requested_segments=4
+decode_span=5 start_segment=5 segment_count=1 source_bytes=39089 annex_b_bytes=39129 requested_segments=5
+decode_span=6 start_segment=6 segment_count=1 source_bytes=39091 annex_b_bytes=39131 requested_segments=6
+decode_span=7 start_segment=7 segment_count=1 source_bytes=39089 annex_b_bytes=39129 requested_segments=7
+decode_span=8 start_segment=8 segment_count=1 source_bytes=39122 annex_b_bytes=39162 requested_segments=8
+decode_span=9 start_segment=9 segment_count=1 source_bytes=39152 annex_b_bytes=39192 requested_segments=9
+decode_span=10 start_segment=10 segment_count=1 source_bytes=39047 annex_b_bytes=39087 requested_segments=10
+decode_span=11 start_segment=11 segment_count=1 source_bytes=39152 annex_b_bytes=39192 requested_segments=11
+decode_span=12 start_segment=12 segment_count=1 source_bytes=39159 annex_b_bytes=39199 requested_segments=12
+decode_span=13 start_segment=13 segment_count=1 source_bytes=39166 annex_b_bytes=39206 requested_segments=13
+decode_span=14 start_segment=14 segment_count=1 source_bytes=39161 annex_b_bytes=39201 requested_segments=14
+decode_span=15 start_segment=15 segment_count=1 source_bytes=39200 annex_b_bytes=39240 requested_segments=15
+decode_span=16 start_segment=16 segment_count=1 source_bytes=38977 annex_b_bytes=39017 requested_segments=16
+decode_span=17 start_segment=17 segment_count=1 source_bytes=39219 annex_b_bytes=39259 requested_segments=17
+decode_span=18 start_segment=18 segment_count=1 source_bytes=39186 annex_b_bytes=39226 requested_segments=18
+decode_span=19 start_segment=19 segment_count=1 source_bytes=39139 annex_b_bytes=39179 requested_segments=19
+decode_span=20 start_segment=20 segment_count=1 source_bytes=39170 annex_b_bytes=39210 requested_segments=20
+decode_span=21 start_segment=21 segment_count=1 source_bytes=39152 annex_b_bytes=39192 requested_segments=21
+decode_span=22 start_segment=22 segment_count=1 source_bytes=39176 annex_b_bytes=39216 requested_segments=22
+decode_span=23 start_segment=23 segment_count=1 source_bytes=39165 annex_b_bytes=39205 requested_segments=23
+decode_span=24 start_segment=24 segment_count=1 source_bytes=39209 annex_b_bytes=39249 requested_segments=24
+decode_span=25 start_segment=25 segment_count=1 source_bytes=39168 annex_b_bytes=39208 requested_segments=25
+decode_span=26 start_segment=26 segment_count=1 source_bytes=39298 annex_b_bytes=39338 requested_segments=26
+decode_span=27 start_segment=27 segment_count=1 source_bytes=39363 annex_b_bytes=39403 requested_segments=27
+decode_span=28 start_segment=28 segment_count=1 source_bytes=39443 annex_b_bytes=39483 requested_segments=28
+decode_span=29 start_segment=29 segment_count=1 source_bytes=39348 annex_b_bytes=39388 requested_segments=29
+decode_span=30 start_segment=30 segment_count=1 source_bytes=38835 annex_b_bytes=38875 requested_segments=30
+decode_span=31 start_segment=31 segment_count=1 source_bytes=38939 annex_b_bytes=38979 requested_segments=31
+decode_span=32 start_segment=32 segment_count=1 source_bytes=38890 annex_b_bytes=38930 requested_segments=32
+decode_span=33 start_segment=33 segment_count=1 source_bytes=39073 annex_b_bytes=39113 requested_segments=33
+decode_span=34 start_segment=34 segment_count=1 source_bytes=38936 annex_b_bytes=38976 requested_segments=34
+decode_span=35 start_segment=35 segment_count=1 source_bytes=38781 annex_b_bytes=38821 requested_segments=35
+decode_span=36 start_segment=36 segment_count=1 source_bytes=39049 annex_b_bytes=39089 requested_segments=36
+decode_span=37 start_segment=37 segment_count=1 source_bytes=39023 annex_b_bytes=39063 requested_segments=37
+decode_span=38 start_segment=38 segment_count=1 source_bytes=39030 annex_b_bytes=39070 requested_segments=38
+decode_span=39 start_segment=39 segment_count=1 source_bytes=39030 annex_b_bytes=39070 requested_segments=39
+decode_span=40 start_segment=40 segment_count=1 source_bytes=38463 annex_b_bytes=38503 requested_segments=40
+decode_span=41 start_segment=41 segment_count=1 source_bytes=39027 annex_b_bytes=39067 requested_segments=41
+decode_span=42 start_segment=42 segment_count=1 source_bytes=38482 annex_b_bytes=38522 requested_segments=42
+decode_span=43 start_segment=43 segment_count=1 source_bytes=38624 annex_b_bytes=38664 requested_segments=43
+decode_span=44 start_segment=44 segment_count=1 source_bytes=38161 annex_b_bytes=38201 requested_segments=44
+decode_span=45 start_segment=45 segment_count=1 source_bytes=38322 annex_b_bytes=38362 requested_segments=45
+decode_span=46 start_segment=46 segment_count=1 source_bytes=38423 annex_b_bytes=38463 requested_segments=46
+decode_span=47 start_segment=47 segment_count=1 source_bytes=38403 annex_b_bytes=38443 requested_segments=47
+selection_decoded_frames=0
+selection_media_exported=false
+selection_absence_certifiable=false
+selection_complete=true
+deployment_mutated=false
+payload_read_bytes=3986930
+payload_read_attempts=45

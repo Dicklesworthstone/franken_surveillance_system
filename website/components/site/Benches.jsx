@@ -1,0 +1,346 @@
+"use client";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { EVIDENCE, chance as chanceOf } from "../../lib/watch/evidence";
+import { ellipse, information } from "../../lib/watch/geometry";
+import { lensOf, stamp } from "../../lib/watch/take";
+
+/** Moves the console's clock to a moment and brings the console into view. */
+export function SeekLink({ t, children }) {
+  return (
+    <button
+      type="button"
+      className="seek"
+      onClick={() => {
+        window.dispatchEvent(new CustomEvent("fss:seek", { detail: t }));
+        (document.getElementById("console") ?? document.getElementById("minute"))?.scrollIntoView({ block: "start" });
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+/** Each camera's own stamp for one instant, and the same instant once aligned. */
+export function ClockStrip({ summary, t }) {
+  const [aligned, setAligned] = useState(false);
+  const span = 2.5;
+  return (
+    <div className="clocks">
+      <div className="clocks__switch" role="group" aria-label="Camera clocks">
+        <button type="button" aria-pressed={!aligned} onClick={() => setAligned(false)}>
+          As stamped
+        </button>
+        <button type="button" aria-pressed={aligned} onClick={() => setAligned(true)}>
+          Aligned
+        </button>
+      </div>
+      <ol className="clocks__rows">
+        {summary.cameras.map((cam) => {
+          const shown = aligned ? 0 : cam.offset;
+          return (
+            <li key={cam.id}>
+              <span className="clocks__name">
+                {cam.name}
+                <small>{cam.product}</small>
+              </span>
+              <span className="clocks__axis" aria-hidden="true">
+                <i style={{ left: `${50 + (shown / span) * 50}%` }} />
+              </span>
+              <span className="clocks__read">
+                <span className="data">{stamp(summary, t, shown, true)}</span>
+                <small>
+                  {cam.offset === 0
+                    ? "on time"
+                    : aligned
+                      ? `corrected by ${Math.abs(cam.offset).toFixed(1)} s`
+                      : `${Math.abs(cam.offset).toFixed(1)} s ${cam.offset > 0 ? "fast" : "slow"}`}
+                </small>
+              </span>
+            </li>
+          );
+        })}
+      </ol>
+      <p className="source source--staged">
+        Staged offsets, written into each film's on-screen clock. Aligning clocks from shared events is planned.
+      </p>
+    </div>
+  );
+}
+
+function inside(polygon, x, z) {
+  let hit = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const [xi, zi] = polygon[i];
+    const [xj, zj] = polygon[j];
+    if (zi > z !== zj > z && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi) hit = !hit;
+  }
+  return hit;
+}
+
+const BENCH = { x: -30, z: -8, w: 46, h: 54 };
+// The coverage shapes are each lens's cone on open ground and pass straight through the
+// house, so the person is kept on the grounds in front of it (z = 0 is the front door).
+const FRONT = 1;
+const compass = (metres, ahead, behind) => `${Math.abs(Math.round(metres))} metres ${metres < 0 ? behind : ahead}`;
+
+/**
+ * Put a person anywhere on the front of the lot and see what the enabled
+ * cameras can say about where they are. Computed here from the scene's camera
+ * positions and lenses.
+ */
+export function FusionBench({ summary }) {
+  const plan = summary.twin.plan;
+  const [a, , c, , e, f] = plan.affine;
+  const image = { x: -c / a, y: -f / e, width: 1 / a, height: 1 / e };
+  const svg = useRef(null);
+  const [at, setAt] = useState([-5.5, 10]);
+  const [on, setOn] = useState(() => Object.fromEntries(summary.cameras.map((cam) => [cam.id, true])));
+  const drag = useRef(false);
+  const tap = useRef(false);
+  const move = (event) => {
+    const point = new DOMPoint(event.clientX, event.clientY).matrixTransform(svg.current.getScreenCTM().inverse());
+    setAt([
+      Math.max(BENCH.x + 1, Math.min(BENCH.x + BENCH.w - 1, point.x)),
+      Math.max(FRONT, Math.min(BENCH.z + BENCH.h - 1, point.y)),
+    ]);
+  };
+  const seeing = summary.cameras.filter((cam) => on[cam.id] && inside(cam.footprint, at[0], at[1]));
+  const bound = useMemo(
+    () => (seeing.length ? ellipse(seeing.map((cam) => information(lensOf(cam), at))) : null),
+    [seeing.map((cam) => cam.id).join(), at[0], at[1]],
+  );
+  const names = seeing.map((cam) => cam.name).join(", ");
+  let verdict;
+  if (!seeing.length)
+    verdict = ["not_observable", "No enabled camera covers this ground. The system reports that it cannot see here. It does not report the ground as empty."];
+  else if (seeing.length === 1)
+    verdict = ["observed", `${names} only. The direction to the person is good, the distance is weak: the bound is ${bound.major.toFixed(1)} m long and ${bound.minor.toFixed(1)} m wide.`];
+  else
+    verdict = ["corroborated", `${names}. Views from different angles close each other's weak axis: the bound is ${bound.major.toFixed(1)} m by ${bound.minor.toFixed(1)} m.`];
+  const nudge = (event) => {
+    const step = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[event.key];
+    if (!step) return;
+    event.preventDefault();
+    setAt(([x, z]) => [
+      Math.max(BENCH.x + 1, Math.min(BENCH.x + BENCH.w - 1, x + step[0])),
+      Math.max(FRONT, Math.min(BENCH.z + BENCH.h - 1, z + step[1])),
+    ]);
+  };
+  return (
+    <div className="bench">
+      <svg
+        ref={svg}
+        className="bench__plan twin"
+        viewBox={`${BENCH.x} ${BENCH.z} ${BENCH.w} ${BENCH.h}`}
+        onPointerDown={(event) => {
+          // A mouse drags from anywhere. A finger drags only from the person, so that a swipe
+          // across the plan still scrolls the page; a tap elsewhere places the person on release.
+          const held = event.pointerType !== "touch" || /bench__(grab|handle)/.test(event.target.getAttribute("class") ?? "");
+          drag.current = held;
+          tap.current = !held;
+          if (!held) return;
+          event.currentTarget.setPointerCapture(event.pointerId);
+          move(event);
+        }}
+        onPointerMove={(event) => drag.current && move(event)}
+        onPointerUp={(event) => {
+          if (tap.current) move(event);
+          drag.current = tap.current = false;
+        }}
+        onPointerCancel={() => (drag.current = tap.current = false)}
+      >
+        <image href={plan.dark} {...image} preserveAspectRatio="none" className="twin__plate" />
+        {summary.cameras.map((cam) => (
+          <polygon
+            key={cam.id}
+            points={cam.footprint.map((p) => p.join(",")).join(" ")}
+            className={"twin__cover" + (seeing.includes(cam) ? " is-watching" : "") + (on[cam.id] ? "" : " is-off")}
+          />
+        ))}
+        {seeing.map((cam) => (
+          <line key={cam.id} x1={cam.position[0]} y1={cam.position[2]} x2={at[0]} y2={at[1]} className="bench__ray" />
+        ))}
+        <g style={{ color: "var(--track-a)" }} className={"twin__person" + (bound ? "" : " twin__person--not_observable")}>
+          {bound && (
+            <ellipse
+              rx={Math.max(bound.major, 0.3)}
+              ry={Math.max(bound.minor, 0.3)}
+              transform={`translate(${at[0]} ${at[1]}) rotate(${bound.angle})`}
+              className="twin__bound"
+            />
+          )}
+          {/* A finger-sized target around the dot. A touch that starts here drags the person; elsewhere it scrolls the page. */}
+          <circle cx={at[0]} cy={at[1]} r="3.4" className="bench__grab" />
+          <circle
+            cx={at[0]}
+            cy={at[1]}
+            r="0.75"
+            className="twin__dot bench__handle"
+            tabIndex={0}
+            role="slider"
+            aria-label="Person. Arrow keys move one metre."
+            aria-valuemin={BENCH.x + 1}
+            aria-valuemax={BENCH.x + BENCH.w - 1}
+            aria-valuenow={Math.round(at[0])}
+            aria-valuetext={`${compass(at[0], "east", "west")}, ${compass(at[1], "south", "north")} of the front door`}
+            onKeyDown={nudge}
+          />
+        </g>
+        {summary.cameras.map((cam) => (
+          <circle
+            key={cam.id}
+            cx={cam.position[0]}
+            cy={cam.position[2]}
+            r="0.8"
+            className={"bench__pin" + (on[cam.id] ? "" : " is-off")}
+          />
+        ))}
+      </svg>
+      <div className="bench__side">
+        <fieldset className="bench__cameras">
+          <legend>Cameras</legend>
+          {summary.cameras.map((cam) => (
+            <label key={cam.id}>
+              <input
+                type="checkbox"
+                checked={on[cam.id]}
+                onChange={(event) => setOn({ ...on, [cam.id]: event.target.checked })}
+              />
+              {cam.name}
+            </label>
+          ))}
+        </fieldset>
+        <p className="bench__verdict" aria-live="polite">
+          <strong className="data">{verdict[0]}</strong>
+          {verdict[1]}
+        </p>
+        <p className="source source--browser">
+          Computed in your browser from this scene's camera positions and lenses. Walls, trees and cars are left out.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+const WEIGHTS = EVIDENCE.filter((item) => !item.late);
+
+/** A conclusion as a sum of weighted evidence that can be taken apart. */
+export function BeliefSum() {
+  const [off, setOff] = useState({});
+  const rows = WEIGHTS.map((w) => ({
+    ...w,
+    active: !off[w.id] && (w.needs ?? []).every((id) => !off[id]),
+    blocked: (w.needs ?? []).some((id) => off[id]),
+  }));
+  const total = rows.reduce((sum, r) => sum + (r.active ? r.mb : 0), 0);
+  const chance = chanceOf(total);
+  const scale = 2000;
+  return (
+    <div className="belief">
+      <ol className="belief__rows">
+        {rows.map((r) => (
+          <li key={r.id} className={r.active ? "" : "is-off"}>
+            <label>
+              <input
+                type="checkbox"
+                checked={r.active}
+                disabled={r.fixed || r.blocked}
+                onChange={(event) => setOff({ ...off, [r.id]: !event.target.checked })}
+              />
+              <span>{r.label}</span>
+            </label>
+            <span className="belief__bar" aria-hidden="true">
+              <i
+                className={r.mb < 0 ? "is-against" : "is-for"}
+                style={{
+                  width: `${(Math.abs(r.mb) / scale) * 50}%`,
+                  [r.mb < 0 ? "right" : "left"]: "50%",
+                }}
+              />
+            </span>
+            <span className="belief__mb data">
+              {r.mb > 0 ? "+" : "−"}
+              {Math.abs(r.mb)}
+            </span>
+          </li>
+        ))}
+      </ol>
+      <p className="belief__total" aria-live="polite">
+        <span>
+          Sum <span className="data">{total > 0 ? "+" : total < 0 ? "−" : ""}{Math.abs(total)} mB</span>
+        </span>
+        <strong>{(chance * 100).toFixed(chance > 0.995 || chance < 0.005 ? 1 : 0)}%</strong>
+        <span>that a stranger is on the property</span>
+      </p>
+      <p className="source source--staged">These weights are invented for the example. The software adds its own the same way.</p>
+    </div>
+  );
+}
+
+const hex = (buffer) => [...new Uint8Array(buffer)].map((b) => b.toString(16).padStart(2, "0")).join("");
+
+/** Change one character of a stored object and compare its digest with the one the root names. */
+export function ByteCheck({ text }) {
+  const [value, setValue] = useState(text);
+  const [digests, setDigests] = useState({ root: "", now: "" });
+  // Browsers only offer SHA-256 to pages served over HTTPS or from this machine.
+  const [able, setAble] = useState(true);
+  useEffect(() => {
+    if (!globalThis.crypto?.subtle) {
+      setAble(false);
+      return;
+    }
+    let live = true;
+    const encode = (s) => crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+    Promise.all([encode(text), encode(value)])
+      .then(([root, now]) => live && setDigests({ root: hex(root), now: hex(now) }))
+      .catch(() => live && setAble(false));
+    return () => {
+      live = false;
+    };
+  }, [text, value]);
+  const same = digests.root === digests.now;
+  if (!able)
+    return (
+      <div className="bytes">
+        <p className="bytes__label">A stored object and its digest.</p>
+        <p className="soft">
+          This browser will not compute SHA-256 for a page loaded over plain HTTP, so the check cannot run here.
+        </p>
+      </div>
+    );
+  return (
+    <div className={"bytes" + (same ? "" : " is-changed")}>
+      <label className="bytes__label" htmlFor="bytes-object">
+        A stored object. Change any character.
+      </label>
+      <textarea
+        id="bytes-object"
+        className="data"
+        value={value}
+        onChange={(event) => setValue(event.target.value)}
+        spellCheck="false"
+        rows={7}
+      />
+      <dl>
+        <div>
+          <dt>The root names</dt>
+          <dd className="data">{digests.root.slice(0, 40)}</dd>
+        </div>
+        <div>
+          <dt>These bytes hash to</dt>
+          <dd className="data">{digests.now.slice(0, 40)}</dd>
+        </div>
+      </dl>
+      <p className="bytes__verdict" aria-live="polite">
+        {same ? "Match. This is the object the root points at." : "No match. A reader checking the root would reject this copy."}
+        {!same && (
+          <button type="button" onClick={() => setValue(text)}>
+            Restore
+          </button>
+        )}
+      </p>
+      <p className="source source--browser">SHA-256 computed in your browser</p>
+    </div>
+  );
+}

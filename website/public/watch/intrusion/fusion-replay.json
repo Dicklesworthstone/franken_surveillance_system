@@ -1,0 +1,162 @@
+{
+  "schema": "fss.website.residential_class_fusion.v1",
+  "cameras": [
+    {
+      "camera": "entry",
+      "source_film_sha256": "sha256:d78b148e635ad42b37a8b526130f4beeb9c440923fe19fbeed50b92d82623e67",
+      "fixture_sha256": "sha256:0639e512147d034bb247d3980b4aba65899c3fd93f261636d7fac8d5275806ae",
+      "frame": 9,
+      "source_frame": 345,
+      "evidence_digest": "sha256:e40a6f736bbce29b70a4813313ec792e4c887e9ae8bf4190b7a3056c9eac7c28",
+      "score_ppm_outward": [
+        665776,
+        665777
+      ],
+      "calibration": {
+        "schema": "fss.score_calibration.v1",
+        "generation": "residential-replay:entry:frame-box-iou30:v1",
+        "digest": "sha256:53def797c6fc0f3535f4aa9eee73ba93ddfae328c25171705236960757ef8951",
+        "prior_log_odds_millibans": [
+          1275,
+          2428
+        ],
+        "interval": "wilson_z2_per_bin_not_simultaneous",
+        "true_positives": 142,
+        "false_positives": 2,
+        "bins": [
+          {
+            "lo_ppm": 0,
+            "hi_ppm": 349999,
+            "true_positives": 13,
+            "false_positives": 2,
+            "llr_millibans": [
+              -1270,
+              -340
+            ]
+          },
+          {
+            "lo_ppm": 350000,
+            "hi_ppm": 1000000,
+            "true_positives": 129,
+            "false_positives": 0,
+            "llr_millibans": [
+              104,
+              100000
+            ]
+          }
+        ]
+      },
+      "llr_millibans": [
+        104,
+        100000
+      ]
+    },
+    {
+      "camera": "porch",
+      "source_film_sha256": "sha256:34f0734c8ff3148eabdb3e27566e5cc6a99450a8cc7ffef439b9ca3b03e902fa",
+      "fixture_sha256": "sha256:8fd5a03109b96fca89d2f37df317702aeaf110990cb9a6e9a549995084f357ca",
+      "frame": 9,
+      "source_frame": 345,
+      "evidence_digest": "sha256:29623606b4ef602fbefd75fb90aee0b930aa1bcdce2472a21ca8da3866d20e00",
+      "score_ppm_outward": [
+        848371,
+        848372
+      ],
+      "calibration": {
+        "schema": "fss.score_calibration.v1",
+        "generation": "residential-replay:porch:frame-box-iou30:v1",
+        "digest": "sha256:806b583bf72f735e780ad0bd3f9c743eac5b7673a1f0896ece0a35c8e6ad4d81",
+        "prior_log_odds_millibans": [
+          69,
+          286
+        ],
+        "interval": "wilson_z2_per_bin_not_simultaneous",
+        "true_positives": 161,
+        "false_positives": 107,
+        "bins": [
+          {
+            "lo_ppm": 0,
+            "hi_ppm": 349999,
+            "true_positives": 11,
+            "false_positives": 59,
+            "llr_millibans": [
+              -1228,
+              -580
+            ]
+          },
+          {
+            "lo_ppm": 350000,
+            "hi_ppm": 1000000,
+            "true_positives": 150,
+            "false_positives": 48,
+            "llr_millibans": [
+              207,
+              433
+            ]
+          }
+        ]
+      },
+      "llr_millibans": [
+        207,
+        433
+      ]
+    }
+  ],
+  "cluster": {
+    "members": [
+      "sha256:29623606b4ef602fbefd75fb90aee0b930aa1bcdce2472a21ca8da3866d20e00",
+      "sha256:e40a6f736bbce29b70a4813313ec792e4c887e9ae8bf4190b7a3056c9eac7c28"
+    ],
+    "llr_millibans": [
+      104,
+      100000
+    ],
+    "supporting_clusters": 1,
+    "posterior_millibans": [
+      -498,
+      99398
+    ],
+    "without_cluster_millibans": [
+      -602,
+      -602
+    ],
+    "decision": "request_operator_confirmation",
+    "without_cluster_decision": "retain_silently"
+  },
+  "native": {
+    "event_state": "witnessed",
+    "policy_action": "hold",
+    "effect_authority": false
+  },
+  "report": {
+    "path": "fusion-replay/5c4c32929cda68c467b4b91a3949da5a7517a4d06df2908b0e0dd05bbc200e02.json",
+    "sha256": "sha256:5c4c32929cda68c467b4b91a3949da5a7517a4d06df2908b0e0dd05bbc200e02",
+    "advice_digest": "sha256:5aafe6e730eafee450fecd31d95c54116034524365c3ebc9b324137cbb2eacf8"
+  },
+  "scene_sha256": "sha256:094e0ccabd9bc09b67876e15d3f6191a0a0b32f5c6d4d1f804bb3a2a14a4c35d",
+  "source_frames": [
+    240,
+    240,
+    240,
+    240,
+    240,
+    240,
+    240,
+    343,
+    344,
+    345,
+    346,
+    347
+  ],
+  "calibration_excluded_frames": [
+    [
+      225,
+      252
+    ],
+    [
+      325,
+      365
+    ]
+  ],
+  "scope": "Two edited views from one renderer. Calibration counts come from labelled detector boxes in other frames of the same films. Repeated frames and shared scene conditions limit their independence. The Wilson intervals describe this fixture and do not establish deployed-camera performance."
+}

@@ -1,0 +1,44 @@
+/*
+  Two grounds. "Night" carries the footage and the live console, because night
+  footage is only readable against a dark surround. "Day" carries the written
+  record that is read afterwards. The yellow is the yellow of a camera warning
+  sign and is the only brand colour; the track colours appear inside data views
+  only.
+*/
+:root {
+  --night: #080b10;
+  --night-raised: #10151c;
+  --night-line: #232b36;
+  --night-text: #e8ebef;
+  --night-soft: #a3adba;
+  --night-faint: #6f7a88;
+
+  --day: #f1f2ee;
+  --day-raised: #ffffff;
+  --day-line: #d5d8d1;
+  --day-text: #11151a;
+  --day-soft: #4a525c;
+
+  --sign: #ffd200;
+  --sign-ink: #171300;
+
+  --track-a: #ff7448;
+  --track-b: #4cc3f5;
+  --lamp: #ffc27a;
+  --seen: #86d8a0;
+  --unseen: #8d97a5;
+
+  --sans: "Archivo Variable", "Archivo", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "Martian Mono Variable", "Martian Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  --step--1: 0.8125rem;
+  --step-0: 1.0625rem;
+  --step-1: 1.25rem;
+  --step-2: 1.625rem;
+  --step-3: clamp(1.9rem, 1.2rem + 2.2vw, 2.9rem);
+  --step-4: clamp(2.5rem, 1.1rem + 4.6vw, 4.9rem);
+
+  --gutter: clamp(16px, 4vw, 56px);
+  --page: 1320px;
+  --measure: 62ch;
+}
