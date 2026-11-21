@@ -90,6 +90,8 @@ pub mod redact;
 pub mod replay_time_json;
 /// Metadata-only discovery of retained detector and zone-report handles.
 pub mod report_catalog_query_cmd;
+/// Explicit cancellation borrowed from an existing transport request owner.
+pub mod request_control;
 /// Import explicitly bound camera poses from an authored property scene.
 pub mod scene_rig;
 /// Exact owner-approved session authority revocation through AOP-010.
@@ -145,7 +147,8 @@ pub use follow_cmd::{
 };
 pub use fss_cmd::{
     DoctorArgs, FssCommand, execute_fss, execute_fss_with_exit, execute_fss_with_time,
-    execute_live_fss_with_exit, help_text as fss_help_text, parse_fss_args, parse_fss_tokens,
+    execute_live_fss_with_control, execute_live_fss_with_exit, help_text as fss_help_text,
+    parse_fss_args, parse_fss_tokens,
 };
 pub use hydration_cmd::{
     HydrationAction, VALID_HYDRATION_SCENARIOS, help_text as hydration_help_text,
@@ -168,6 +171,7 @@ pub use redact::{
     is_safe_to_echo, is_sensitive_standalone_flag, redact_argument, redact_sensitive_bytes,
     redact_value_or_digest, safe_os_repr, sanitize_and_truncate,
 };
+pub use request_control::RequestControl;
 pub use session_cmd::{
     ERR_AGENT_HANDOFF_INVALID, ERR_AGENT_HANDOFF_NOT_FOUND, ERR_AGENT_SESSION_NOT_FOUND,
     ERR_AGENT_SESSION_STALE, ERR_AGENT_SESSION_STORE_INVALID, ERR_AGENT_SESSION_STORE_LOCKED,

@@ -178,8 +178,7 @@ pub(crate) fn parse_query_command(tokens: &[ArgToken]) -> Result<FssCommand, Cli
                 .map(FssCommand::ReportCatalogQuery)
         }
         Some((_, target, _)) if target == "sources" => {
-            crate::sources_query_cmd::parse_sources_query_args(tokens)
-                .map(FssCommand::SourcesQuery)
+            crate::sources_query_cmd::parse_sources_query_args(tokens).map(FssCommand::SourcesQuery)
         }
         Some((_, target, _)) if target == "localizations" => {
             crate::localizations_query_cmd::parse_localizations_query_args(tokens)
@@ -566,10 +565,17 @@ fn native_refusal(args: &FootageQueryArgs, error: &FootageQueryError) -> (String
 /// registered query/case envelope. All native failures refuse; none become empty results.
 #[must_use]
 pub fn execute_footage_query(args: &FootageQueryArgs) -> (String, ExitIdentity) {
+    execute_footage_query_with_control(args, &crate::RequestControl::uncancelled())
+}
+
+pub(crate) fn execute_footage_query_with_control(
+    args: &FootageQueryArgs,
+    control: &crate::RequestControl<'_>,
+) -> (String, ExitIdentity) {
     let limits = FootageQueryLimits::default();
     let started = Instant::now();
     let query = match query_footage(&args.root, &args.request, &limits, &mut |_| {
-        started.elapsed() < READ_DEADLINE
+        !control.is_cancelled() && started.elapsed() < READ_DEADLINE
     }) {
         Ok(query) => query,
         Err(error) => return native_refusal(args, &error),
@@ -594,6 +600,16 @@ pub fn execute_footage_query(args: &FootageQueryArgs) -> (String, ExitIdentity) 
         }
     };
     match footage_response(args, &query, &orientation, &limits) {
+        Ok(_) if control.is_cancelled() || started.elapsed() >= READ_DEADLINE => rendered(
+            refusal(
+                args,
+                &query.snapshot,
+                "The query was cancelled or its cooperative deadline elapsed before output; no result was delivered.",
+            ),
+            ExitIdentity::AGENT_REFUSED,
+            "query",
+            &args.root,
+        ),
         Ok(output) if output.len() <= MAX_QUERY_OUTPUT_BYTES => (output, ExitIdentity::SUCCESS),
         Ok(_) => rendered(
             refusal(

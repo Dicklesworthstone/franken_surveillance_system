@@ -196,6 +196,16 @@ fn diagnostic(
 pub fn execute_retained_recording_replay_query(
     args: &RetainedRecordingReplayQueryArgs,
 ) -> (String, ExitIdentity) {
+    execute_retained_recording_replay_query_with_control(
+        args,
+        &crate::RequestControl::uncancelled(),
+    )
+}
+
+pub(crate) fn execute_retained_recording_replay_query_with_control(
+    args: &RetainedRecordingReplayQueryArgs,
+    control: &crate::RequestControl<'_>,
+) -> (String, ExitIdentity) {
     if !args.verify_replay_source {
         return diagnostic(args, RecordingReplayContextError::Unauthorized);
     }
@@ -246,7 +256,7 @@ pub fn execute_retained_recording_replay_query(
         &args.request,
         args.limits,
         Some(&permit),
-        &|| started.elapsed() >= Duration::from_secs(60),
+        &|| control.is_cancelled() || started.elapsed() >= Duration::from_secs(60),
     ) {
         Ok(query) => query,
         Err(error) => return diagnostic(args, error),
@@ -273,6 +283,7 @@ pub fn execute_retained_recording_replay_query(
     match response(args, &query, &orientation) {
         Ok(output)
             if output.len() <= MAX_QUERY_OUTPUT_BYTES
+                && !control.is_cancelled()
                 && started.elapsed() < Duration::from_secs(60) =>
         {
             (output, ExitIdentity::SUCCESS)
@@ -281,7 +292,7 @@ pub fn execute_retained_recording_replay_query(
             refusal(
                 args,
                 &query,
-                "Complete imported recorder response exceeded 256 KiB or the cooperative deadline. No result prefix was delivered; unknown and source-only observations were preserved.",
+                "Complete imported recorder response exceeded 256 KiB or the cooperative deadline, or the request was cancelled. No result prefix was delivered; unknown and source-only observations were preserved.",
             ),
             ExitIdentity::AGENT_REFUSED,
             "query",

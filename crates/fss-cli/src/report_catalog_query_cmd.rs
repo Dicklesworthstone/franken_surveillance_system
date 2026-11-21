@@ -367,6 +367,13 @@ fn diagnostic(args: &ReportCatalogQueryArgs, error: ReportCatalogError) -> (Stri
 /// Execute native report discovery for both transports while preserving protected context.
 #[must_use]
 pub fn execute_report_catalog_query(args: &ReportCatalogQueryArgs) -> (String, ExitIdentity) {
+    execute_report_catalog_query_with_control(args, &crate::RequestControl::uncancelled())
+}
+
+pub(crate) fn execute_report_catalog_query_with_control(
+    args: &ReportCatalogQueryArgs,
+    control: &crate::RequestControl<'_>,
+) -> (String, ExitIdentity) {
     let allowance = match args.limits.allowance() {
         Ok(value) => value,
         Err(error) => return diagnostic(args, error),
@@ -416,7 +423,9 @@ pub fn execute_report_catalog_query(args: &ReportCatalogQueryArgs) -> (String, E
     };
     let started = Instant::now();
     let result = query_report_catalog(&args.root, &args.request, args.limits, &cx, &|| {
-        authority.cancellation_reason.is_some() || started.elapsed() >= READ_DEADLINE
+        authority.cancellation_reason.is_some()
+            || control.is_cancelled()
+            || started.elapsed() >= READ_DEADLINE
     });
     cx.drain_and_finalize();
     let query = match result {
@@ -444,7 +453,9 @@ pub fn execute_report_catalog_query(args: &ReportCatalogQueryArgs) -> (String, E
     };
     match response(args, &query, &orientation) {
         Ok(output)
-            if output.len() <= MAX_QUERY_OUTPUT_BYTES && started.elapsed() < READ_DEADLINE =>
+            if output.len() <= MAX_QUERY_OUTPUT_BYTES
+                && !control.is_cancelled()
+                && started.elapsed() < READ_DEADLINE =>
         {
             (output, ExitIdentity::SUCCESS)
         }
@@ -452,7 +463,7 @@ pub fn execute_report_catalog_query(args: &ReportCatalogQueryArgs) -> (String, E
             refusal(
                 args,
                 &query,
-                "Complete report-catalog response exceeded 256 KiB or the cooperative deadline. No result prefix was delivered; reduce --max-entries or the complete-index allowance.",
+                "Complete report-catalog response exceeded 256 KiB or the cooperative deadline, or the request was cancelled. No result prefix was delivered; reduce --max-entries or the complete-index allowance.",
             ),
             ExitIdentity::AGENT_REFUSED,
             "query",

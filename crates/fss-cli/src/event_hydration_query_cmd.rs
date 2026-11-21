@@ -239,8 +239,16 @@ pub(crate) fn execute_event_hydration_query_with_time(
     args: &EventHydrationQueryArgs,
     clock: crate::session_time::Clock<'_>,
 ) -> (String, ExitIdentity) {
+    execute_event_hydration_query_with_control(args, clock, &crate::RequestControl::uncancelled())
+}
+
+pub(crate) fn execute_event_hydration_query_with_control(
+    args: &EventHydrationQueryArgs,
+    clock: crate::session_time::Clock<'_>,
+    control: &crate::RequestControl<'_>,
+) -> (String, ExitIdentity) {
     let started = Instant::now();
-    let cancelled = || started.elapsed() >= Duration::from_secs(60);
+    let cancelled = || control.is_cancelled() || started.elapsed() >= Duration::from_secs(60);
     let answer = match hydrate_event_evidence(
         crate::session_time::context(&args.root, clock),
         &args.request,

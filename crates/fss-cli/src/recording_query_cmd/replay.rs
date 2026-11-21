@@ -331,6 +331,13 @@ fn diagnostic(
 /// Execute only after local source-read consent; a typed request cannot bypass this gate.
 #[must_use]
 pub fn execute_recording_replay_query(args: &RecordingReplayQueryArgs) -> (String, ExitIdentity) {
+    execute_recording_replay_query_with_control(args, &crate::RequestControl::uncancelled())
+}
+
+pub(crate) fn execute_recording_replay_query_with_control(
+    args: &RecordingReplayQueryArgs,
+    control: &crate::RequestControl<'_>,
+) -> (String, ExitIdentity) {
     if !args.verify_replay_source {
         return (
             execution_diagnostic(
@@ -385,7 +392,7 @@ pub fn execute_recording_replay_query(args: &RecordingReplayQueryArgs) -> (Strin
         &args.request,
         &args.limits,
         Some(&permit),
-        &|| started.elapsed() >= Duration::from_secs(60),
+        &|| control.is_cancelled() || started.elapsed() >= Duration::from_secs(60),
     ) {
         Ok(query) => query,
         Err(error) => return diagnostic(args, error),
@@ -409,12 +416,12 @@ pub fn execute_recording_replay_query(args: &RecordingReplayQueryArgs) -> (Strin
             );
         }
     };
-    if started.elapsed() >= Duration::from_secs(60) {
+    if control.is_cancelled() || started.elapsed() >= Duration::from_secs(60) {
         return rendered(
             refusal(
                 args,
                 &query,
-                "Recorder UTC read deadline expired before response delivery.",
+                "Recorder UTC read was cancelled or its deadline expired before response delivery.",
             ),
             ExitIdentity::AGENT_REFUSED,
             "query",
@@ -424,6 +431,7 @@ pub fn execute_recording_replay_query(args: &RecordingReplayQueryArgs) -> (Strin
     match response(args, &query, &orientation) {
         Ok(output)
             if output.len() <= MAX_QUERY_OUTPUT_BYTES
+                && !control.is_cancelled()
                 && started.elapsed() < Duration::from_secs(60) =>
         {
             (output, ExitIdentity::SUCCESS)
@@ -432,7 +440,7 @@ pub fn execute_recording_replay_query(args: &RecordingReplayQueryArgs) -> (Strin
             refusal(
                 args,
                 &query,
-                "Complete recorder UTC response exceeded its 256 KiB output or cooperative read deadline. No result prefix was delivered; unknown and source-only rows were not dropped.",
+                "Complete recorder UTC response exceeded its 256 KiB output or cooperative read deadline, or the request was cancelled. No result prefix was delivered; unknown and source-only rows were not dropped.",
             ),
             ExitIdentity::AGENT_REFUSED,
             "query",

@@ -432,6 +432,13 @@ fn diagnostic(args: &QsrQueryArgs, error: QsrQueryError) -> (String, ExitIdentit
 /// Execute the same admitted native query for CLI and MCP, preserving protected context.
 #[must_use]
 pub fn execute_qsr_query(args: &QsrQueryArgs) -> (String, ExitIdentity) {
+    execute_qsr_query_with_control(args, &crate::RequestControl::uncancelled())
+}
+
+pub(crate) fn execute_qsr_query_with_control(
+    args: &QsrQueryArgs,
+    control: &crate::RequestControl<'_>,
+) -> (String, ExitIdentity) {
     if !args.verify_qsr_source {
         return diagnostic(args, QsrQueryError::Unauthorized);
     }
@@ -481,7 +488,7 @@ pub fn execute_qsr_query(args: &QsrQueryArgs) -> (String, ExitIdentity) {
         &args.request,
         args.limits,
         Some(&permit),
-        &|| started.elapsed() >= READ_DEADLINE,
+        &|| control.is_cancelled() || started.elapsed() >= READ_DEADLINE,
     ) {
         Ok(query) => query,
         Err(error) => return diagnostic(args, error),
@@ -507,7 +514,9 @@ pub fn execute_qsr_query(args: &QsrQueryArgs) -> (String, ExitIdentity) {
     };
     match response(args, &query, &orientation) {
         Ok(output)
-            if output.len() <= MAX_QUERY_OUTPUT_BYTES && started.elapsed() < READ_DEADLINE =>
+            if output.len() <= MAX_QUERY_OUTPUT_BYTES
+                && !control.is_cancelled()
+                && started.elapsed() < READ_DEADLINE =>
         {
             (output, ExitIdentity::SUCCESS)
         }
@@ -515,7 +524,7 @@ pub fn execute_qsr_query(args: &QsrQueryArgs) -> (String, ExitIdentity) {
             refusal(
                 args,
                 &query,
-                "Complete QSR response exceeded 256 KiB or the cooperative deadline. No result prefix was delivered; select a smaller retained report.",
+                "Complete QSR response exceeded 256 KiB or the cooperative deadline, or the request was cancelled. No result prefix was delivered; select a smaller retained report.",
             ),
             ExitIdentity::AGENT_REFUSED,
             "query",

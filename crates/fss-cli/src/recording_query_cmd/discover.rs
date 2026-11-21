@@ -165,6 +165,13 @@ fn refusal(
 pub fn execute_recording_discovery_query(
     args: &RecordingDiscoveryQueryArgs,
 ) -> (String, ExitIdentity) {
+    execute_recording_discovery_query_with_control(args, &crate::RequestControl::uncancelled())
+}
+
+pub(crate) fn execute_recording_discovery_query_with_control(
+    args: &RecordingDiscoveryQueryArgs,
+    control: &crate::RequestControl<'_>,
+) -> (String, ExitIdentity) {
     let limits = RecordingDiscoveryContextLimits::default();
     let started = Instant::now();
     let query = match discover_recordings_in_deployment(
@@ -173,7 +180,7 @@ pub fn execute_recording_discovery_query(
         &args.archive_root,
         &args.request,
         &limits,
-        &|| started.elapsed() >= Duration::from_secs(60),
+        &|| control.is_cancelled() || started.elapsed() >= Duration::from_secs(60),
     ) {
         Ok(query) => query,
         Err(error) => {
@@ -213,6 +220,18 @@ pub fn execute_recording_discovery_query(
         }
     };
     match response(args, &query, &orientation, &limits) {
+        Ok(_) if control.is_cancelled() || started.elapsed() >= Duration::from_secs(60) => {
+            rendered(
+                refusal(
+                    args,
+                    &query,
+                    "The query was cancelled or its cooperative deadline elapsed before output; no result was delivered.",
+                ),
+                ExitIdentity::AGENT_REFUSED,
+                "query",
+                &args.root,
+            )
+        }
         Ok(output) if output.len() <= MAX_QUERY_OUTPUT_BYTES => (output, ExitIdentity::SUCCESS),
         Ok(_) => rendered(
             refusal(

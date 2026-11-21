@@ -382,6 +382,13 @@ fn diagnostic(args: &TracksQueryArgs, error: TrackQueryError) -> (String, ExitId
 /// Execute the same admitted native page for CLI and MCP, preserving protected context.
 #[must_use]
 pub fn execute_tracks_query(args: &TracksQueryArgs) -> (String, ExitIdentity) {
+    execute_tracks_query_with_control(args, &crate::RequestControl::uncancelled())
+}
+
+pub(crate) fn execute_tracks_query_with_control(
+    args: &TracksQueryArgs,
+    control: &crate::RequestControl<'_>,
+) -> (String, ExitIdentity) {
     if !args.verify_tracks_source {
         return diagnostic(args, TrackQueryError::Unauthorized);
     }
@@ -431,7 +438,7 @@ pub fn execute_tracks_query(args: &TracksQueryArgs) -> (String, ExitIdentity) {
         &args.request,
         args.limits,
         Some(&permit),
-        &|| started.elapsed() >= READ_DEADLINE,
+        &|| control.is_cancelled() || started.elapsed() >= READ_DEADLINE,
     ) {
         Ok(query) => query,
         Err(error) => return diagnostic(args, error),
@@ -457,7 +464,9 @@ pub fn execute_tracks_query(args: &TracksQueryArgs) -> (String, ExitIdentity) {
     };
     match response(args, &query, &orientation) {
         Ok(output)
-            if output.len() <= MAX_QUERY_OUTPUT_BYTES && started.elapsed() < READ_DEADLINE =>
+            if output.len() <= MAX_QUERY_OUTPUT_BYTES
+                && !control.is_cancelled()
+                && started.elapsed() < READ_DEADLINE =>
         {
             (output, ExitIdentity::SUCCESS)
         }
@@ -465,7 +474,7 @@ pub fn execute_tracks_query(args: &TracksQueryArgs) -> (String, ExitIdentity) {
             refusal(
                 args,
                 &query,
-                "Complete track response exceeded 256 KiB or the cooperative deadline. No result prefix was delivered; start a fresh query with a smaller page or retained report.",
+                "Complete track response exceeded 256 KiB or the cooperative deadline, or the request was cancelled. No result prefix was delivered; start a fresh query with a smaller page or retained report.",
             ),
             ExitIdentity::AGENT_REFUSED,
             "query",

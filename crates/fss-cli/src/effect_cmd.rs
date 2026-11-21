@@ -38,12 +38,12 @@ use fss_reference::alert_reconcile::{
     AlertAttestation, AlertReconcileError, AlertReconciliationOutcome, CAP_ALERT_RECONCILE,
     MAX_RECONCILE_STATEMENT_BYTES, preview_alert_reconciliation, reconcile_alert_operation,
 };
-use fss_reference::deployment_session::{DeploymentSessionError, SessionTimeError};
 use fss_reference::deployment_session::episode::read_episode;
 use fss_reference::deployment_session::plan::{
     AlertRoute, PlanRecord, PlanningContext, hold_planning_context, publish_plan, read_plan,
     verify_plan_publication,
 };
+use fss_reference::deployment_session::{DeploymentSessionError, SessionTimeError};
 use fss_reference::webhook::{
     WebhookDenial, WebhookDisclosureProfile, WebhookEndpoint, WebhookRequestPreview,
 };
@@ -56,10 +56,9 @@ use fss_reference::{
 use crate::agent_json;
 use crate::alert_effect::{
     AlertDispatchAdmission, AlertEffectError, CAP_ALERT_COMMIT, CAP_ALERT_PREPARE, MAX_DEADLINE_MS,
-    WIRE_RETENTION_POLICY,
-    alert_identities, check_alert_request, check_alert_source_health, dispatch_approval_digest,
-    dispatch_prepared_alert_with_admission, not_eligible, obligation_state, outcome_text,
-    parse_disclosure_profile, plan_approval_digest, wall_ns,
+    WIRE_RETENTION_POLICY, alert_identities, check_alert_request, check_alert_source_health,
+    dispatch_approval_digest, dispatch_prepared_alert_with_admission, not_eligible,
+    obligation_state, outcome_text, parse_disclosure_profile, plan_approval_digest, wall_ns,
 };
 use crate::error::{CliError, ExitIdentity};
 use crate::orient_cmd::{
@@ -1784,8 +1783,10 @@ fn commit_answer(
         let session_context = crate::session_time::context(&args.root, clock);
         planning.revalidate(session_context)?;
         let check_session = || {
-            planning.check_time(session_context).map(|_| ()).map_err(|error| {
-                match error {
+            planning
+                .check_time(session_context)
+                .map(|_| ())
+                .map_err(|error| match error {
                     DeploymentSessionError::Time(SessionTimeError::Cancelled) => {
                         WebhookDenial::Cancelled
                     }
@@ -1797,8 +1798,7 @@ fn commit_answer(
                         WebhookDenial::Unauthorized
                     }
                     _ => WebhookDenial::Revoked,
-                }
-            })
+                })
         };
         let admission = AlertDispatchAdmission {
             deadline: planning.runtime_deadline(),
@@ -2154,7 +2154,7 @@ fn execute_reconcile(args: &ReconcileArgs) -> (String, ExitIdentity) {
 // wait (AOP-009)
 // ---------------------------------------------------------------------------------------------
 
-fn wait_answer(args: &WaitArgs) -> Result<Result<String, Box<dyn std::error::Error>>, Failure> {
+fn wait_answer(args: &WaitArgs, control: &crate::RequestControl<'_>) -> Result<Answered, Failure> {
     let first = snapshot(&args.root)?;
     let initial = first
         .operations
@@ -2172,9 +2172,15 @@ fn wait_answer(args: &WaitArgs) -> Result<Result<String, Box<dyn std::error::Err
     let mut current = (first, initial.clone());
     // A bounded read-only poll of the committed journal: no lock, no write, no retry of anything.
     while current.1.receipt_digest() == initial.receipt_digest() && started.elapsed() < deadline {
+        if control.is_cancelled() {
+            break;
+        }
         std::thread::sleep(
             Duration::from_millis(25).min(deadline - started.elapsed().min(deadline)),
         );
+        if control.is_cancelled() {
+            break;
+        }
         let next = snapshot(&args.root)?;
         if let Some(operation) = next
             .operations
@@ -2186,26 +2192,36 @@ fn wait_answer(args: &WaitArgs) -> Result<Result<String, Box<dyn std::error::Err
         }
     }
     let (snapshot_now, receipt) = current;
+    let cancelled = control.is_cancelled();
     let changed = receipt.receipt_digest() != initial.receipt_digest();
     let request_digest = crate::orient_cmd::request_identity("fss.cli_agent_wait.v1", |e| {
         e.text(args.operation.as_str());
         e.u64(args.deadline_ms);
         e.digest(initial.receipt_digest());
     });
-    Ok(receipt_response(ReceiptAnswer {
+    let response = receipt_response(ReceiptAnswer {
         operation: "wait",
         capability: CAPABILITY_SITUATION_READ,
         principal: &args.principal,
         session: None,
         snapshot: &snapshot_now,
         receipt: &receipt,
-        outcome: if changed {
+        outcome: if cancelled {
+            ResponseOutcome::Cancelled
+        } else if changed {
             ResponseOutcome::Ok
         } else {
             ResponseOutcome::Partial
         },
-        error_id: (!changed).then_some(ERR_OP_TIMEOUT),
-        degradation: vec![if changed {
+        error_id: (!changed && !cancelled).then_some(ERR_OP_TIMEOUT),
+        degradation: vec![if cancelled {
+            format!(
+                "Observation of {} was cancelled after the last verified {} receipt. The \
+                 operation remains under its durable owner; this did not cancel or retry it.",
+                args.operation,
+                receipt.state.as_str()
+            )
+        } else if changed {
             format!(
                 "{} moved from {} to {} while waiting.",
                 args.operation,
@@ -2238,13 +2254,36 @@ fn wait_answer(args: &WaitArgs) -> Result<Result<String, Box<dyn std::error::Err
         ),
         idempotency_key: None,
         budgets: None,
-    }))
+    });
+    Ok((
+        response,
+        if cancelled {
+            ExitIdentity::AGENT_REFUSED
+        } else {
+            ExitIdentity::SUCCESS
+        },
+    ))
 }
 
-fn execute_wait(args: &WaitArgs) -> (String, ExitIdentity) {
+fn execute_wait(args: &WaitArgs, control: &crate::RequestControl<'_>) -> (String, ExitIdentity) {
+    if control.is_cancelled() {
+        return (
+            crate::orient_cmd::execution_diagnostic(
+                "wait",
+                &args.root,
+                crate::orient_cmd::ERR_AGENT_CONTEXT_INCOMPLETE,
+                ExitIdentity::AGENT_REFUSED,
+            ),
+            ExitIdentity::AGENT_REFUSED,
+        );
+    }
+    let (answer, exit) = match wait_answer(args, control) {
+        Ok((answer, exit)) => (Ok(answer), exit),
+        Err(error) => (Err(error), ExitIdentity::AGENT_REFUSED),
+    };
     finish(
-        wait_answer(args),
-        ExitIdentity::SUCCESS,
+        answer,
+        exit,
         &Operation {
             command: "wait",
             name: "wait",
@@ -2388,11 +2427,22 @@ pub(crate) fn execute_effect_with_time(
     command: &EffectCommand,
     clock: crate::session_time::Clock<'_>,
 ) -> (String, ExitIdentity) {
+    execute_effect_with_control(command, clock, &crate::RequestControl::uncancelled())
+}
+
+pub(crate) fn execute_effect_with_control(
+    command: &EffectCommand,
+    clock: crate::session_time::Clock<'_>,
+    control: &crate::RequestControl<'_>,
+) -> (String, ExitIdentity) {
+    // The transport's initial dispatch fence is the only cancellation of an effect mutation.
+    // After that fence the native owner must finish/reconcile and preserve its durable receipt.
+    // `wait` is an observation only, so it can stop without changing the operation being watched.
     match command {
         EffectCommand::Plan(args) => execute_plan(args, clock),
         EffectCommand::Commit(args) => execute_commit(args, clock),
         EffectCommand::Reconcile(args) => execute_reconcile(args),
-        EffectCommand::Wait(args) => execute_wait(args),
+        EffectCommand::Wait(args) => execute_wait(args, control),
         EffectCommand::Cancel(args) => execute_cancel(args),
         EffectCommand::CancelSession(args) => {
             crate::session_cancel_cmd::execute_session_cancel_with_time(args, clock)

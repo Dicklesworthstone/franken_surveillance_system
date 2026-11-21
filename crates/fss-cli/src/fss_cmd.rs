@@ -11,44 +11,54 @@ use crate::error::{CliError, ExitIdentity};
 use crate::event_hydration_query_cmd::EventHydrationQueryArgs;
 use crate::feedback_cmd::{FeedbackArgs, parse_feedback_args};
 use crate::follow_cmd::{FollowArgs, parse_follow_args};
-use crate::footage_query_cmd::{FootageQueryArgs, execute_footage_query, parse_query_command};
+use crate::footage_query_cmd::{
+    FootageQueryArgs, execute_footage_query_with_control, parse_query_command,
+};
 use crate::investigate_cmd::{InvestigateArgs, parse_investigate_args};
-use crate::localizations_query_cmd::{LocalizationsQueryArgs, execute_localizations_query};
+use crate::localizations_query_cmd::{
+    LocalizationsQueryArgs, execute_localizations_query_with_control,
+};
 use crate::negative_evidence_cmd::{
     NegativeEvidenceAction, execute_negative_evidence, parse_negative_evidence_tokens,
 };
-use crate::onvif_query_cmd::{OnvifQueryArgs, execute_onvif_query};
+use crate::onvif_query_cmd::{OnvifQueryArgs, execute_onvif_query_with_control};
 use crate::orient_cmd::{ExplainArgs, OrientArgs, parse_explain_args, parse_orient_args};
-use crate::qsr_query_cmd::{QsrQueryArgs, execute_qsr_query};
+use crate::qsr_query_cmd::{QsrQueryArgs, execute_qsr_query_with_control};
 use crate::query_cmd::{QueryArgs, execute_query};
 use crate::recording_query_cmd::discover::{
-    RecordingDiscoveryQueryArgs, execute_recording_discovery_query,
+    RecordingDiscoveryQueryArgs, execute_recording_discovery_query_with_control,
 };
 use crate::recording_query_cmd::replay::retained::{
-    RetainedRecordingReplayQueryArgs, execute_retained_recording_replay_query,
+    RetainedRecordingReplayQueryArgs, execute_retained_recording_replay_query_with_control,
 };
 use crate::recording_query_cmd::replay::{
-    RecordingReplayQueryArgs, execute_recording_replay_query,
+    RecordingReplayQueryArgs, execute_recording_replay_query_with_control,
 };
-use crate::recording_query_cmd::set::{RecordingSetQueryArgs, execute_recording_set_query};
-use crate::recording_query_cmd::utc::{RecordingUtcQueryArgs, execute_recording_utc_query};
+use crate::recording_query_cmd::set::{
+    RecordingSetQueryArgs, execute_recording_set_query_with_control,
+};
+use crate::recording_query_cmd::utc::{
+    RecordingUtcQueryArgs, execute_recording_utc_query_with_control,
+};
 use crate::recording_query_cmd::utc_discover::{
-    RecordingUtcDiscoveryQueryArgs, execute_recording_utc_discovery_query,
+    RecordingUtcDiscoveryQueryArgs, execute_recording_utc_discovery_query_with_control,
 };
 use crate::recording_query_cmd::utc_sessions::{
-    RecordingUtcSessionsQueryArgs, execute_recording_utc_sessions_query,
+    RecordingUtcSessionsQueryArgs, execute_recording_utc_sessions_query_with_control,
 };
 use crate::recording_query_cmd::utc_set::{
-    RecordingUtcSetQueryArgs, execute_recording_utc_set_query,
+    RecordingUtcSetQueryArgs, execute_recording_utc_set_query_with_control,
 };
-use crate::recording_query_cmd::{RecordingQueryArgs, execute_recording_query};
-use crate::report_catalog_query_cmd::{ReportCatalogQueryArgs, execute_report_catalog_query};
+use crate::recording_query_cmd::{RecordingQueryArgs, execute_recording_query_with_control};
+use crate::report_catalog_query_cmd::{
+    ReportCatalogQueryArgs, execute_report_catalog_query_with_control,
+};
 use crate::session_cmd::{SessionCommand, parse_handoff, parse_session_args};
 use crate::site_cmd::{SiteCommand, execute_site, parse_site_args};
-use crate::sources_query_cmd::{SourcesQueryArgs, execute_sources_query};
-use crate::status_cmd::{StatusArgs, execute_status, parse_status_args};
+use crate::sources_query_cmd::{SourcesQueryArgs, execute_sources_query_with_control};
+use crate::status_cmd::{StatusArgs, execute_status_with_control, parse_status_args};
 use crate::token::{ArgToken, tokenize_os_args};
-use crate::tracks_query_cmd::{TracksQueryArgs, execute_tracks_query};
+use crate::tracks_query_cmd::{TracksQueryArgs, execute_tracks_query_with_control};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -496,6 +506,30 @@ pub fn execute_live_fss_with_exit(command: FssCommand) -> (String, ExitIdentity)
     execute_fss_with_time(command, &clock)
 }
 
+/// Execute under a borrowed probe of the transport's existing request cancellation.
+///
+/// `None` means the command was cancelled before dispatch and never started. Once dispatched,
+/// native execution always returns its real outcome, including durable effect receipts. The
+/// transport must join that execution and suppress a cancelled request's response itself.
+/// Source readers, follow waits, effect observation waits, and session admission consult the
+/// same probe at their existing checkpoints. Started effect mutations retain their own native
+/// owner and clock: cancelling a transport request never cancels or retries an effect.
+#[must_use]
+pub fn execute_live_fss_with_control(
+    command: FssCommand,
+    control: &crate::RequestControl<'_>,
+) -> Option<(String, ExitIdentity)> {
+    if control.is_cancelled() {
+        return None;
+    }
+    let clock = crate::session_time::HostSessionTime::default();
+    Some(execute_fss_with_clock_and_control(
+        command,
+        Some(&clock),
+        control,
+    ))
+}
+
 /// Execute using an explicit runtime clock; no request field supplies current time.
 #[must_use]
 pub fn execute_fss_with_time(
@@ -509,6 +543,19 @@ fn execute_fss_with_clock(
     command: FssCommand,
     clock: crate::session_time::Clock<'_>,
 ) -> (String, ExitIdentity) {
+    execute_fss_with_clock_and_control(command, clock, &crate::RequestControl::uncancelled())
+}
+
+fn execute_fss_with_clock_and_control(
+    command: FssCommand,
+    effect_clock: crate::session_time::Clock<'_>,
+    control: &crate::RequestControl<'_>,
+) -> (String, ExitIdentity) {
+    let controlled_clock =
+        effect_clock.map(|clock| crate::session_time::ControlledSessionTime { clock, control });
+    let clock = controlled_clock
+        .as_ref()
+        .map(|clock| clock as &dyn fss_reference::deployment_session::SessionTimeAuthority);
     match command {
         FssCommand::Help => (help_text().to_owned(), ExitIdentity::SUCCESS),
         FssCommand::Version => (format!("fss {VERSION}"), ExitIdentity::SUCCESS),
@@ -540,37 +587,55 @@ fn execute_fss_with_clock(
             };
             (report.to_json(), exit_id)
         }
-        FssCommand::Status(ref args) => execute_status(args),
+        FssCommand::Status(ref args) => execute_status_with_control(args, control),
         FssCommand::Site(ref command) => execute_site(command),
         FssCommand::NegativeEvidence(ref action) => execute_negative_evidence(action),
         FssCommand::Orient(ref args) => crate::orient_cmd::execute_orient_with_time(args, clock),
         FssCommand::Explain(ref args) => crate::orient_cmd::execute_explain_with_time(args, clock),
-        FssCommand::Follow(ref args) => crate::follow_cmd::execute_follow_with_time(args, clock),
+        FssCommand::Follow(ref args) => {
+            crate::follow_cmd::execute_follow_with_request_control(args, clock, control)
+        }
         FssCommand::Query(ref args) => execute_query(args),
-        FssCommand::FootageQuery(ref args) => execute_footage_query(args),
-        FssCommand::OnvifQuery(ref args) => execute_onvif_query(args),
-        FssCommand::QsrQuery(ref args) => execute_qsr_query(args),
-        FssCommand::TracksQuery(ref args) => execute_tracks_query(args),
-        FssCommand::ReportCatalogQuery(ref args) => execute_report_catalog_query(args),
-        FssCommand::SourcesQuery(ref args) => execute_sources_query(args),
-        FssCommand::LocalizationsQuery(ref args) => execute_localizations_query(args),
+        FssCommand::FootageQuery(ref args) => execute_footage_query_with_control(args, control),
+        FssCommand::OnvifQuery(ref args) => execute_onvif_query_with_control(args, control),
+        FssCommand::QsrQuery(ref args) => execute_qsr_query_with_control(args, control),
+        FssCommand::TracksQuery(ref args) => execute_tracks_query_with_control(args, control),
+        FssCommand::ReportCatalogQuery(ref args) => {
+            execute_report_catalog_query_with_control(args, control)
+        }
+        FssCommand::SourcesQuery(ref args) => execute_sources_query_with_control(args, control),
+        FssCommand::LocalizationsQuery(ref args) => {
+            execute_localizations_query_with_control(args, control)
+        }
         FssCommand::EventHydrationQuery(ref args) => {
-            crate::event_hydration_query_cmd::execute_event_hydration_query_with_time(args, clock)
+            crate::event_hydration_query_cmd::execute_event_hydration_query_with_control(
+                args, clock, control,
+            )
         }
-        FssCommand::RecordingQuery(ref args) => execute_recording_query(args),
-        FssCommand::RecordingReplayQuery(ref args) => execute_recording_replay_query(args),
+        FssCommand::RecordingQuery(ref args) => execute_recording_query_with_control(args, control),
+        FssCommand::RecordingReplayQuery(ref args) => {
+            execute_recording_replay_query_with_control(args, control)
+        }
         FssCommand::RetainedRecordingReplayQuery(ref args) => {
-            execute_retained_recording_replay_query(args)
+            execute_retained_recording_replay_query_with_control(args, control)
         }
-        FssCommand::RecordingSetQuery(ref args) => execute_recording_set_query(args),
-        FssCommand::RecordingDiscoveryQuery(ref args) => execute_recording_discovery_query(args),
-        FssCommand::RecordingUtcQuery(ref args) => execute_recording_utc_query(args),
-        FssCommand::RecordingUtcSetQuery(ref args) => execute_recording_utc_set_query(args),
+        FssCommand::RecordingSetQuery(ref args) => {
+            execute_recording_set_query_with_control(args, control)
+        }
+        FssCommand::RecordingDiscoveryQuery(ref args) => {
+            execute_recording_discovery_query_with_control(args, control)
+        }
+        FssCommand::RecordingUtcQuery(ref args) => {
+            execute_recording_utc_query_with_control(args, control)
+        }
+        FssCommand::RecordingUtcSetQuery(ref args) => {
+            execute_recording_utc_set_query_with_control(args, control)
+        }
         FssCommand::RecordingUtcDiscoveryQuery(ref args) => {
-            execute_recording_utc_discovery_query(args)
+            execute_recording_utc_discovery_query_with_control(args, control)
         }
         FssCommand::RecordingUtcSessionsQuery(ref args) => {
-            execute_recording_utc_sessions_query(args)
+            execute_recording_utc_sessions_query_with_control(args, control)
         }
         FssCommand::Investigate(ref args) => {
             crate::investigate_cmd::execute_investigate_with_time(args, clock)
@@ -579,7 +644,7 @@ fn execute_fss_with_clock(
         FssCommand::Claim(ref args) => crate::claim_cmd::execute_claim_with_time(args, clock),
         FssCommand::Finding(ref args) => crate::finding_cmd::execute_finding_with_time(args, clock),
         FssCommand::Effect(ref command) => {
-            crate::effect_cmd::execute_effect_with_time(command, clock)
+            crate::effect_cmd::execute_effect_with_control(command, effect_clock, control)
         }
         FssCommand::Feedback(ref args) => {
             crate::feedback_cmd::execute_feedback_with_time(args, clock)

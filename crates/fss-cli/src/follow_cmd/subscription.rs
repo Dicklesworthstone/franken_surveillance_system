@@ -113,7 +113,7 @@ pub(super) fn parse(
 /// The launching OS account and the explicit root provide local access. Durable session
 /// admission separately checks principal, grants, privacy, lease and immutable subscription
 /// scope. This adapter never authenticates remote credentials or executes an effect.
-struct LocalControl<'a> {
+struct LocalControl<'a, 'request> {
     root: &'a Path,
     principal: &'a PrincipalId,
     request: &'a FollowSessionRequest,
@@ -123,9 +123,10 @@ struct LocalControl<'a> {
     replay: Option<ReplayBinding>,
     wait: Option<FollowWaitBinding>,
     started: Instant,
+    request_control: &'a crate::RequestControl<'request>,
 }
 
-impl FollowSessionControl for LocalControl<'_> {
+impl FollowSessionControl for LocalControl<'_, '_> {
     fn admit_session(
         &mut self,
         binding: &FollowSessionBinding<'_>,
@@ -137,6 +138,9 @@ impl FollowSessionControl for LocalControl<'_> {
             || binding.limits() != &self.limits
         {
             return Err(ReplayDenial::Unauthorized);
+        }
+        if self.request_control.is_cancelled() {
+            return Err(ReplayDenial::Cancelled);
         }
         self.session_boundaries = self
             .session_boundaries
@@ -153,7 +157,7 @@ impl FollowSessionControl for LocalControl<'_> {
     }
 }
 
-impl ReplayControl for LocalControl<'_> {
+impl ReplayControl for LocalControl<'_, '_> {
     fn admit(
         &mut self,
         binding: &ReplayBinding,
@@ -169,6 +173,9 @@ impl ReplayControl for LocalControl<'_> {
                 .is_none_or(|session| session.session_id != self.request.session_id)
         {
             return Err(ReplayDenial::Unauthorized);
+        }
+        if self.request_control.is_cancelled() {
+            return Err(ReplayDenial::Cancelled);
         }
         if boundary == ReplayBoundary::BasisSnapshot {
             self.replay = Some(binding.clone());
@@ -189,7 +196,7 @@ impl ReplayControl for LocalControl<'_> {
     }
 }
 
-impl FollowWaitControl for LocalControl<'_> {
+impl FollowWaitControl for LocalControl<'_, '_> {
     fn checkpoint(
         &mut self,
         binding: &FollowWaitBinding,
@@ -197,6 +204,9 @@ impl FollowWaitControl for LocalControl<'_> {
     ) -> Result<u64, FollowWaitDenial> {
         if self.wait.as_ref() != Some(binding) {
             return Err(FollowWaitDenial::Unauthorized);
+        }
+        if self.request_control.is_cancelled() {
+            return Err(FollowWaitDenial::Cancelled);
         }
         u64::try_from(self.started.elapsed().as_millis())
             .map_err(|_| FollowWaitDenial::ClockUnavailable)
@@ -211,6 +221,7 @@ impl FollowWaitControl for LocalControl<'_> {
         if remaining > 0 {
             std::thread::sleep(Duration::from_millis(delay_ms.min(remaining)));
         }
+        self.checkpoint(binding, FollowWaitBoundary::Park)?;
         Ok(())
     }
 }
@@ -218,6 +229,7 @@ impl FollowWaitControl for LocalControl<'_> {
 pub(super) fn execute(
     args: &FollowArgs,
     clock: crate::session_time::Clock<'_>,
+    request_control: &crate::RequestControl<'_>,
 ) -> (String, ExitIdentity) {
     let Some(scope) = &args.subscription else {
         return internal_failure("follow", &args.root);
@@ -279,6 +291,7 @@ pub(super) fn execute(
         replay: None,
         wait: wait.as_ref().map(|binding| binding.read_scope().clone()),
         started: Instant::now(),
+        request_control,
     };
     if let Some(wait) = wait {
         return match follow_session_wait_with_context(

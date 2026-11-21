@@ -645,11 +645,30 @@ pub(crate) fn execute_follow_with_time(
     args: &FollowArgs,
     clock: crate::session_time::Clock<'_>,
 ) -> (String, ExitIdentity) {
+    execute_follow_with_request_control(args, clock, &crate::RequestControl::uncancelled())
+}
+
+pub(crate) fn execute_follow_with_request_control(
+    args: &FollowArgs,
+    clock: crate::session_time::Clock<'_>,
+    control: &crate::RequestControl<'_>,
+) -> (String, ExitIdentity) {
     if args.subscription.is_some() {
-        return subscription::execute(args, clock);
+        return subscription::execute(args, clock, control);
     }
     if args.wait_ms.is_some() {
-        return wait::execute(args);
+        return wait::execute(args, control);
+    }
+    if control.is_cancelled() {
+        return (
+            crate::orient_cmd::execution_diagnostic(
+                "follow",
+                &args.root,
+                ERR_AGENT_CONTEXT_INCOMPLETE,
+                ExitIdentity::AGENT_REFUSED,
+            ),
+            ExitIdentity::AGENT_REFUSED,
+        );
     }
     let limits = OrientLimits::default();
     let history = match DeploymentHistory::read(&args.root, &limits) {

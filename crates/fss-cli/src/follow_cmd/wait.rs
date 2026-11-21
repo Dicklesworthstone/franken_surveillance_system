@@ -18,14 +18,15 @@ const ERR_BUDGET: &str = "ERR-BUDGET-EXHAUSTED-001";
 const ERR_AUTH: &str = "ERR-AUTH-DENIED-001";
 
 /// The CLI invocation is the local operator's explicit read/wait scope, not authentication or
-/// a durable AgentSession grant. Every boundary compares that full scope. Process termination
-/// owns CLI cancellation; callers needing cooperative cancellation supply their own control.
-struct LocalControl {
+/// a durable AgentSession grant. Every boundary compares that full scope and observes the
+/// transport owner's existing request cancellation without creating another owner.
+struct LocalControl<'a, 'request> {
     admitted: FollowWaitBinding,
     started: Instant,
+    request_control: &'a crate::RequestControl<'request>,
 }
 
-impl FollowWaitControl for LocalControl {
+impl FollowWaitControl for LocalControl<'_, '_> {
     fn checkpoint(
         &mut self,
         binding: &FollowWaitBinding,
@@ -33,6 +34,9 @@ impl FollowWaitControl for LocalControl {
     ) -> Result<u64, FollowWaitDenial> {
         if binding != &self.admitted {
             return Err(FollowWaitDenial::Unauthorized);
+        }
+        if self.request_control.is_cancelled() {
+            return Err(FollowWaitDenial::Cancelled);
         }
         u64::try_from(self.started.elapsed().as_millis())
             .map_err(|_| FollowWaitDenial::ClockUnavailable)
@@ -49,6 +53,7 @@ impl FollowWaitControl for LocalControl {
         if remaining > 0 {
             std::thread::sleep(Duration::from_millis(delay_ms.min(remaining)));
         }
+        self.checkpoint(binding, FollowWaitBoundary::Park)?;
         Ok(())
     }
 }
@@ -73,7 +78,10 @@ fn binding(args: &FollowArgs) -> Result<FollowWaitBinding, ()> {
     .map_err(|_| ())
 }
 
-pub(super) fn execute(args: &FollowArgs) -> (String, ExitIdentity) {
+pub(super) fn execute(
+    args: &FollowArgs,
+    request_control: &crate::RequestControl<'_>,
+) -> (String, ExitIdentity) {
     let admitted = match binding(args) {
         Ok(binding) => binding,
         Err(_) => return internal_failure("follow", &args.root),
@@ -81,6 +89,7 @@ pub(super) fn execute(args: &FollowArgs) -> (String, ExitIdentity) {
     let mut control = LocalControl {
         admitted,
         started: Instant::now(),
+        request_control,
     };
     execute_with_control(args, &mut control)
 }

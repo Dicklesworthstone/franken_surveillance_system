@@ -431,11 +431,18 @@ fn refusal(
 /// Execute the registered query/case read and preserve protected deployment context.
 #[must_use]
 pub fn execute_onvif_query(args: &OnvifQueryArgs) -> (String, ExitIdentity) {
+    execute_onvif_query_with_control(args, &crate::RequestControl::uncancelled())
+}
+
+pub(crate) fn execute_onvif_query_with_control(
+    args: &OnvifQueryArgs,
+    control: &crate::RequestControl<'_>,
+) -> (String, ExitIdentity) {
     let limits = OnvifQueryLimits::default();
     let started = Instant::now();
     let query =
         match query_onvif_in_deployment(&HostSpoolIo, &args.root, &args.request, limits, &|| {
-            started.elapsed() >= READ_DEADLINE
+            control.is_cancelled() || started.elapsed() >= READ_DEADLINE
         }) {
             Ok(query) => query,
             Err(error) => {
@@ -473,11 +480,11 @@ pub fn execute_onvif_query(args: &OnvifQueryArgs) -> (String, ExitIdentity) {
         }
     };
     match response(args, &query, &orientation, limits) {
-        Ok(_) if started.elapsed() >= READ_DEADLINE => rendered(
+        Ok(_) if control.is_cancelled() || started.elapsed() >= READ_DEADLINE => rendered(
             refusal(
                 args,
                 &query,
-                "The cooperative ONVIF query deadline elapsed before output; no result was delivered.",
+                "The ONVIF query was cancelled or its cooperative deadline elapsed before output; no result was delivered.",
             ),
             ExitIdentity::AGENT_REFUSED,
             "query",

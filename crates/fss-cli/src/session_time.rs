@@ -10,6 +10,26 @@ use fss_reference::deployment_session::{SessionContext, SessionTimeAuthority, Se
 
 pub(crate) type Clock<'a> = Option<&'a dyn SessionTimeAuthority>;
 
+/// Add the request owner's existing cancellation to the native session clock boundary.
+/// Started effects deliberately keep their original clock and durable execution owner.
+pub(crate) struct ControlledSessionTime<'a, 'request> {
+    pub(crate) clock: &'a dyn SessionTimeAuthority,
+    pub(crate) control: &'a crate::RequestControl<'request>,
+}
+
+impl SessionTimeAuthority for ControlledSessionTime<'_, '_> {
+    fn observe(
+        &self,
+        root: &Path,
+        principal: &PrincipalId,
+    ) -> Result<TimestampNs, SessionTimeError> {
+        if self.control.is_cancelled() {
+            return Err(SessionTimeError::Cancelled);
+        }
+        self.clock.observe(root, principal)
+    }
+}
+
 pub(crate) fn context<'a>(root: &'a Path, clock: Clock<'a>) -> SessionContext<'a> {
     match clock {
         Some(clock) => SessionContext::runtime(root, clock),
@@ -56,7 +76,45 @@ impl SessionTimeAuthority for HostSessionTime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
+
+    #[test]
+    fn request_cancellation_stops_the_original_clock_before_another_observation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        struct Clock(Cell<u32>);
+        impl SessionTimeAuthority for Clock {
+            fn observe(&self, _: &Path, _: &PrincipalId) -> Result<TimestampNs, SessionTimeError> {
+                self.0.set(self.0.get() + 1);
+                Ok(TimestampNs(123))
+            }
+        }
+        let original = Clock(Cell::new(0));
+        let cancelled = AtomicBool::new(false);
+        let probe = || cancelled.load(Ordering::Acquire);
+        let control = crate::RequestControl::new(&probe);
+        let clock = ControlledSessionTime {
+            clock: &original,
+            control: &control,
+        };
+        let principal = PrincipalId::parse("principal:request-clock")?;
+        let root = Path::new("/request-clock");
+        assert_eq!(clock.observe(root, &principal), Ok(TimestampNs(123)));
+        cancelled.store(true, Ordering::Release);
+        assert_eq!(
+            clock.observe(root, &principal),
+            Err(SessionTimeError::Cancelled)
+        );
+        assert_eq!(
+            original.0.get(),
+            1,
+            "no clock observation after cancellation"
+        );
+        // A started effect deliberately retains this original capability, not the wrapper.
+        assert_eq!(original.observe(root, &principal), Ok(TimestampNs(123)));
+        assert_eq!(original.0.get(), 2);
+        Ok(())
+    }
 
     #[test]
     fn host_clock_uses_nanoseconds_and_refuses_regression_without_resetting_its_watermark() {

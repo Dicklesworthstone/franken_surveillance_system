@@ -122,10 +122,23 @@ pub fn legacy_status() -> String {
 /// [`MAX_STATUS_OUTPUT_BYTES`] document bound.
 #[must_use]
 pub fn execute_status(args: &StatusArgs) -> (String, ExitIdentity) {
+    execute_status_with_control(args, &crate::RequestControl::uncancelled())
+}
+
+pub(crate) fn execute_status_with_control(
+    args: &StatusArgs,
+    control: &crate::RequestControl<'_>,
+) -> (String, ExitIdentity) {
     execute_status_with(
         args,
         &HostStatusReadIo,
-        &mut || Ok(()),
+        &mut || {
+            if control.is_cancelled() {
+                Err(StatusError::Cancelled)
+            } else {
+                Ok(())
+            }
+        },
         MAX_STATUS_OUTPUT_BYTES,
     )
 }
@@ -154,6 +167,9 @@ pub fn execute_status_with(
     match inspect_deployment_status_with(io, root, &limits, checkpoint) {
         Ok(status) => {
             let rendered = render_status(&status, &limits, max_output_bytes);
+            if let Err(error) = checkpoint() {
+                return refusal(root, error);
+            }
             if rendered.len() > max_output_bytes {
                 return refusal(root, StatusError::OverBudget);
             }

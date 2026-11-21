@@ -8,17 +8,16 @@ use std::time::{Duration, Instant};
 use fss_core::{
     AgentCognitiveEnvelope, AgentView, BudgetVector, CanonicalEncode, CognitiveAnswerClass,
     Completeness, ContextAuthority, EnvelopeBudget, EnvelopeContinuity, EnvelopeProposition,
-    KnowledgeState, OperationId, ResponseOutcome, ResponseSafeRetry, RootAuthoritySpec,
-    SensorId, StreamId, TimestampNs,
+    KnowledgeState, OperationId, ResponseOutcome, ResponseSafeRetry, RootAuthoritySpec, SensorId,
+    StreamId, TimestampNs,
 };
 use fss_reference::ReplayCx;
 use fss_reference::agent_follow::AnchorToken;
 use fss_reference::agent_orient::{DeploymentOrientation, OrientRequest, orient_deployment};
 use fss_reference::agent_query::CAPABILITY_QUERY;
 use fss_reference::agent_sources::{
-    DEFAULT_SOURCES_QUERY_ENTRIES, DeploymentSourcesQuery, SourcesQueryError,
-    SourcesQueryFilter, SourcesQueryLimits, SourcesQueryRequest,
-    query_sources,
+    DEFAULT_SOURCES_QUERY_ENTRIES, DeploymentSourcesQuery, SourcesQueryError, SourcesQueryFilter,
+    SourcesQueryLimits, SourcesQueryRequest, query_sources,
 };
 
 use crate::agent_json;
@@ -72,9 +71,7 @@ fn number<T: std::str::FromStr + ToString>(
 }
 
 /// Closed source-inventory grammar. Filters do not bypass the complete-index bounds.
-pub fn parse_sources_query_args(
-    tokens: &[ArgToken],
-) -> Result<SourcesQueryArgs, CliError> {
+pub fn parse_sources_query_args(tokens: &[ArgToken]) -> Result<SourcesQueryArgs, CliError> {
     let values = collect_options(
         "query",
         tokens,
@@ -104,10 +101,16 @@ pub fn parse_sources_query_args(
         }
     }
     let sensor_id = take(&values, "--sensor")
-        .map(|(_, text, index)| SensorId::parse(text.clone()).map_err(|_| malformed("--sensor", "expected an exact sensor identity", *index)))
+        .map(|(_, text, index)| {
+            SensorId::parse(text.clone())
+                .map_err(|_| malformed("--sensor", "expected an exact sensor identity", *index))
+        })
         .transpose()?;
     let stream_id = take(&values, "--stream")
-        .map(|(_, text, index)| StreamId::parse(text.clone()).map_err(|_| malformed("--stream", "expected an exact stream identity", *index)))
+        .map(|(_, text, index)| {
+            StreamId::parse(text.clone())
+                .map_err(|_| malformed("--stream", "expected an exact stream identity", *index))
+        })
         .transpose()?;
     let max_entries = take(&values, "--max-entries")
         .map(|(_, text, index)| number::<u32>(text, "--max-entries", *index))
@@ -220,7 +223,10 @@ fn response(
     let mut metadata = BTreeMap::new();
     for row in &query.rows {
         for digest in &row.capsule_metadata {
-            metadata.insert(*digest, fss_reference::reference_deployment::FAMILY_SENSOR_CAPSULE.to_owned());
+            metadata.insert(
+                *digest,
+                fss_reference::reference_deployment::FAMILY_SENSOR_CAPSULE.to_owned(),
+            );
         }
     }
     let handles: Vec<_> = metadata
@@ -255,13 +261,10 @@ fn response(
         agent_json::affordance_objects(&action_ids, &capsule.affordances, &affordance_context)
             .ok_or(RenderError("source inventory affordance objects"))?;
     let frame_digest = capsule.frame.frame_digest()?;
-    let decision = request_identity(
-        "fss.cli.sources_query.context_decision.v1",
-        |encoder| {
-            encoder.digest(query.decision_digest);
-            encoder.digest(frame_digest);
-        },
-    );
+    let decision = request_identity("fss.cli.sources_query.context_decision.v1", |encoder| {
+        encoder.digest(query.decision_digest);
+        encoder.digest(frame_digest);
+    });
     let allowance = args.limits.allowance()?;
     let mut requested = orientation.requested;
     requested.latency_ms = allowance.latency_ms;
@@ -348,28 +351,32 @@ fn diagnostic(args: &SourcesQueryArgs, error: SourcesQueryError) -> (String, Exi
 /// Execute native source inventory for both transports while preserving protected context.
 #[must_use]
 pub fn execute_sources_query(args: &SourcesQueryArgs) -> (String, ExitIdentity) {
+    execute_sources_query_with_control(args, &crate::RequestControl::uncancelled())
+}
+
+pub(crate) fn execute_sources_query_with_control(
+    args: &SourcesQueryArgs,
+    control: &crate::RequestControl<'_>,
+) -> (String, ExitIdentity) {
     let allowance = match args.limits.allowance() {
         Ok(value) => value,
         Err(error) => return diagnostic(args, error),
     };
-    let input = request_identity(
-        "fss.cli.sources_query.metadata_authority.v1",
-        |encoder| {
-            args.request.principal.encode_canonical(encoder);
-            args.request.filter.encode_canonical(encoder);
-            encoder.u32(args.request.max_entries);
-            encoder.text(args.request.continuation.as_deref().unwrap_or(""));
-            encoder.text(
-                args.request
-                    .expected_anchor
-                    .as_ref()
-                    .map_or("", AnchorToken::as_str),
-            );
-            encoder.u64(args.limits.read.max_read_bytes as u64);
-            encoder.u64(args.limits.read.max_read_objects as u64);
-            encoder.u64(args.limits.max_streams as u64);
-        },
-    );
+    let input = request_identity("fss.cli.sources_query.metadata_authority.v1", |encoder| {
+        args.request.principal.encode_canonical(encoder);
+        args.request.filter.encode_canonical(encoder);
+        encoder.u32(args.request.max_entries);
+        encoder.text(args.request.continuation.as_deref().unwrap_or(""));
+        encoder.text(
+            args.request
+                .expected_anchor
+                .as_ref()
+                .map_or("", AnchorToken::as_str),
+        );
+        encoder.u64(args.limits.read.max_read_bytes as u64);
+        encoder.u64(args.limits.read.max_read_objects as u64);
+        encoder.u64(args.limits.max_streams as u64);
+    });
     let authority = match OperationId::parse("operation:sources-query")
         .map_err(|_| ())
         .and_then(|operation_id| {
@@ -397,7 +404,9 @@ pub fn execute_sources_query(args: &SourcesQueryArgs) -> (String, ExitIdentity) 
     };
     let started = Instant::now();
     let result = query_sources(&args.root, &args.request, args.limits, &cx, &|| {
-        authority.cancellation_reason.is_some() || started.elapsed() >= READ_DEADLINE
+        authority.cancellation_reason.is_some()
+            || control.is_cancelled()
+            || started.elapsed() >= READ_DEADLINE
     });
     cx.drain_and_finalize();
     let query = match result {
@@ -425,7 +434,9 @@ pub fn execute_sources_query(args: &SourcesQueryArgs) -> (String, ExitIdentity) 
     };
     match response(args, &query, &orientation) {
         Ok(output)
-            if output.len() <= MAX_QUERY_OUTPUT_BYTES && started.elapsed() < READ_DEADLINE =>
+            if output.len() <= MAX_QUERY_OUTPUT_BYTES
+                && !control.is_cancelled()
+                && started.elapsed() < READ_DEADLINE =>
         {
             (output, ExitIdentity::SUCCESS)
         }
@@ -433,7 +444,7 @@ pub fn execute_sources_query(args: &SourcesQueryArgs) -> (String, ExitIdentity) 
             refusal(
                 args,
                 &query,
-                "Complete sources-query response exceeded 256 KiB or the cooperative deadline. No result prefix was delivered; reduce --max-entries or the complete-index allowance.",
+                "Complete sources-query response exceeded 256 KiB or the cooperative deadline, or the request was cancelled. No result prefix was delivered; reduce --max-entries or the complete-index allowance.",
             ),
             ExitIdentity::AGENT_REFUSED,
             "query",
