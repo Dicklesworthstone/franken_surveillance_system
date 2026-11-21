@@ -2,6 +2,7 @@
 //! Native Asupersync ownership checks for the MCP scheduler and its actual framing loop.
 
 use super::*;
+use asupersync::types::Time;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 type Test = Result<(), Box<dyn std::error::Error>>;
@@ -76,18 +77,21 @@ fn active_cancel_is_exactly_scoped_and_cannot_erase_completed_native_output() ->
             ))
         }));
         let mut server = ready();
-        scheduler.accept(server.dispatch(&call("9007199254740993")))?;
-        scheduler.start_next(&cx)?;
+        scheduler.accept(server.dispatch(&call("9007199254740993")), cx.now())?;
+        scheduler.start_next(&cx).await?;
         wait_flag(&cx, &entered).await?;
         // Text and integer identities cannot alias, even beyond floating-point precision.
-        scheduler.accept(server.dispatch(&cancel(r#""9007199254740993""#)))?;
+        scheduler.accept(server.dispatch(&cancel(r#""9007199254740993""#)), cx.now())?;
         sleep(cx.now(), Duration::from_millis(10)).await;
         assert!(!observed.load(Ordering::Acquire));
-        scheduler.accept(server.dispatch(r#"{"jsonrpc":"2.0","id":"live","method":"ping"}"#))?;
+        scheduler.accept(
+            server.dispatch(r#"{"jsonrpc":"2.0","id":"live","method":"ping"}"#),
+            cx.now(),
+        )?;
         let mut output = Vec::new();
         scheduler.replies.pump(&mut output, OUTPUT_STALL_LIMIT)?;
         assert!(String::from_utf8(output)?.contains(r#""id":"live","result":{}"#));
-        scheduler.accept(server.dispatch(&cancel("9007199254740993")))?;
+        scheduler.accept(server.dispatch(&cancel("9007199254740993")), cx.now())?;
         wait_flag(&cx, &observed).await?;
         scheduler.retire_ready().await?;
         assert!(
@@ -108,7 +112,7 @@ fn active_cancel_is_exactly_scoped_and_cannot_erase_completed_native_output() ->
         assert!(response.contains(r#"{\"native\":\"committed\"}"#));
         assert!(response.contains(r#""isError":false"#));
         // Late cancellation is a no-op and never invokes a native application cancel operation.
-        scheduler.accept(server.dispatch(&cancel("9007199254740993")))?;
+        scheduler.accept(server.dispatch(&cancel("9007199254740993")), cx.now())?;
         assert!(scheduler.replies.empty());
         Ok(())
     })
@@ -123,17 +127,17 @@ fn queued_cancellation_duplicates_and_pressure_never_execute_refused_commands() 
         Some(("{}".to_owned(), ExitIdentity::SUCCESS))
     }));
     let mut server = ready();
-    scheduler.accept(server.dispatch(&call("-0")))?;
-    scheduler.accept(server.dispatch(&call("0")))?;
+    scheduler.accept(server.dispatch(&call("-0")), Time::from_nanos(0))?;
+    scheduler.accept(server.dispatch(&call("0")), Time::from_nanos(0))?;
     assert_eq!(
         scheduler.pending.len(),
         1,
         "numeric ID normalization rejects duplicate -0/0"
     );
-    scheduler.accept(server.dispatch(&cancel("0")))?;
+    scheduler.accept(server.dispatch(&cancel("0")), Time::from_nanos(0))?;
     assert!(scheduler.pending.is_empty());
     for id in 1..=MAX_QUEUED_REQUESTS + 1 {
-        scheduler.accept(server.dispatch(&call(&id.to_string())))?;
+        scheduler.accept(server.dispatch(&call(&id.to_string())), Time::from_nanos(0))?;
     }
     assert_eq!(scheduler.pending.len(), MAX_QUEUED_REQUESTS);
     assert_eq!(calls.load(Ordering::Relaxed), 0);
@@ -334,12 +338,15 @@ fn live_identity_survives_partial_output_flush_and_retirement() -> Test {
     let mut server = ready();
     server.enable_request_tracking();
     let key = RequestKey::Integer(41);
-    scheduler.accept(server.dispatch(r#"{"jsonrpc":"2.0","id":41,"method":"ping"}"#))?;
+    scheduler.accept(
+        server.dispatch(r#"{"jsonrpc":"2.0","id":41,"method":"ping"}"#),
+        Time::from_nanos(0),
+    )?;
     assert!(
         scheduler.owns(&key),
         "an immediate reply must retain its identity"
     );
-    scheduler.accept(server.dispatch(&call("41")))?;
+    scheduler.accept(server.dispatch(&call("41")), Time::from_nanos(0))?;
     assert!(
         scheduler.pending.is_empty(),
         "duplicate work was admitted behind an unsent reply"
@@ -364,13 +371,15 @@ fn live_identity_survives_partial_output_flush_and_retirement() -> Test {
     let text = String::from_utf8(output.bytes)?;
     assert!(text.contains(r#""id":41,"result":{}"#));
     assert!(text.contains(r#""id":null,"error":{"code":-32600"#));
-    scheduler.accept(server.dispatch(&call("41")))?;
+    scheduler.accept(server.dispatch(&call("41")), Time::from_nanos(0))?;
     assert!(
         scheduler.pending.is_empty(),
         "a retired ID remains reserved for the live session"
     );
     let mut retired_refusal = Vec::new();
-    scheduler.replies.pump(&mut retired_refusal, OUTPUT_STALL_LIMIT)?;
+    scheduler
+        .replies
+        .pump(&mut retired_refusal, OUTPUT_STALL_LIMIT)?;
     assert!(String::from_utf8(retired_refusal)?.contains(r#""id":null,"error":{"code":-32600"#));
     Ok(())
 }
@@ -380,7 +389,10 @@ fn live_identity_is_checked_before_initialization_even_after_flush() -> Test {
     let mut server = server();
     server.enable_request_tracking();
     let mut scheduler = Scheduler::new(Arc::new(|_, _| None));
-    scheduler.accept(server.dispatch(r#"{"jsonrpc":"2.0","id":0,"method":"ping"}"#))?;
+    scheduler.accept(
+        server.dispatch(r#"{"jsonrpc":"2.0","id":0,"method":"ping"}"#),
+        Time::from_nanos(0),
+    )?;
     let duplicate = server.dispatch_reserved(INIT, |key| scheduler.owns(key));
     assert!(matches!(duplicate, Dispatch::Reply { id: None, text } if text.contains("-32600")));
     scheduler
@@ -388,10 +400,9 @@ fn live_identity_is_checked_before_initialization_even_after_flush() -> Test {
         .pump(&mut Vec::new(), OUTPUT_STALL_LIMIT)?;
     let retired = server.dispatch_reserved(INIT, |key| scheduler.owns(key));
     assert!(matches!(retired, Dispatch::Reply { id: None, text } if text.contains("-32600")));
-    let initialize = server.dispatch_reserved(
-        &INIT.replace(r#""id":0"#, r#""id":1"#),
-        |key| scheduler.owns(key),
-    );
+    let initialize = server.dispatch_reserved(&INIT.replace(r#""id":0"#, r#""id":1"#), |key| {
+        scheduler.owns(key)
+    });
     assert!(
         matches!(initialize, Dispatch::Reply { text, .. } if text.contains("protocolVersion") && !text.contains("Already initialized"))
     );
@@ -416,8 +427,8 @@ fn native_work_waits_for_its_complete_reply_reservation() -> Test {
         scheduler
             .replies
             .push("x".repeat(MAX_QUEUED_REPLY_BYTES - MAX_NATIVE_REPLY_BYTES))?;
-        scheduler.accept(server.dispatch(&call("1")))?;
-        scheduler.start_next(&cx)?;
+        scheduler.accept(server.dispatch(&call("1")), cx.now())?;
+        scheduler.start_next(&cx).await?;
         let refused_before_start = scheduler.active.is_none()
             && scheduler.pending.len() == 1
             && calls.load(Ordering::Acquire) == 0;
@@ -425,7 +436,7 @@ fn native_work_waits_for_its_complete_reply_reservation() -> Test {
         while !scheduler.replies.empty() {
             scheduler.replies.pump(&mut output, OUTPUT_STALL_LIMIT)?;
         }
-        scheduler.start_next(&cx)?;
+        scheduler.start_next(&cx).await?;
         let limit = Instant::now();
         while scheduler.active.is_some() && limit.elapsed() < Duration::from_secs(5) {
             scheduler.retire_ready().await?;
@@ -433,7 +444,7 @@ fn native_work_waits_for_its_complete_reply_reservation() -> Test {
         }
         let drained = scheduler.active.is_none();
         if !drained {
-            scheduler.cancel_and_drain().await;
+            scheduler.cancel_and_drain(&cx).await?;
         }
         assert!(
             refused_before_start,
@@ -460,8 +471,8 @@ fn control_replies_cannot_spend_the_active_native_result_reservation() -> Test {
             Some(("retained native receipt".to_owned(), ExitIdentity::SUCCESS))
         }));
         let mut server = ready();
-        scheduler.accept(server.dispatch(&call("1")))?;
-        scheduler.start_next(&cx)?;
+        scheduler.accept(server.dispatch(&call("1")), cx.now())?;
+        scheduler.start_next(&cx).await?;
         let started = scheduler.active.is_some();
         let overflow_refused = scheduler
             .reply(
@@ -480,7 +491,7 @@ fn control_replies_cannot_spend_the_active_native_result_reservation() -> Test {
         }
         let drained = scheduler.active.is_none();
         if !drained {
-            scheduler.cancel_and_drain().await;
+            scheduler.cancel_and_drain(&cx).await?;
         }
         assert!(
             started && overflow_refused,
@@ -506,16 +517,16 @@ fn complete_catalog_with_maximally_escaped_id_fits_beside_a_native_result() -> T
             Some(("native result".to_owned(), ExitIdentity::SUCCESS))
         }));
         let mut server = ready();
-        scheduler.accept(server.dispatch(&call("1")))?;
-        scheduler.start_next(&cx)?;
+        scheduler.accept(server.dispatch(&call("1")), cx.now())?;
+        scheduler.start_next(&cx).await?;
         let active = scheduler.active.is_some();
         let request = format!(
             r#"{{"jsonrpc":"2.0","id":"{}","method":"tools/list"}}"#,
             r#"\u0001"#.repeat(128),
         );
-        let catalog = scheduler.accept(server.dispatch(&request));
+        let catalog = scheduler.accept(server.dispatch(&request), cx.now());
         let native_capacity_remains = scheduler.replies.capacity_for(MAX_NATIVE_REPLY_BYTES, 1);
-        scheduler.cancel_and_drain().await;
+        scheduler.cancel_and_drain(&cx).await?;
         assert!(active);
         catalog?;
         assert!(

@@ -354,9 +354,17 @@ Cancel the exact JSON-RPC request ID, preserving its string or integer type:
 {"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":42,"reason":"No longer needed"}}
 ```
 
-Queued work is removed without native execution and receives `-32800`. A running
-request receives cancellation through its owned runtime context, and its owner
-waits for the native closure to return before retiring it. Native ordinary and
+Each accepted native request receives a 60-second cooperative deadline at queue
+admission. Time spent waiting for the worker or its reserved reply space consumes
+that same allowance. Expired queued work receives `-32003` without execution.
+Execution opens a distinct child region with that original deadline; explicit
+cancellation or expiry cancels only that region. The native worker is joined
+before the region closes, and the next request receives a new region.
+
+Queued cancellation removes work without native execution and returns `-32800`.
+A running request remains owned until its native closure returns. The deadline
+requests cooperative cancellation; it does not promise termination of a running
+filesystem syscall or an already admitted native effect within 60 seconds. Native ordinary and
 durable follow waits, effect-receipt waits, footage/recording metadata queries,
 QSR/track source verification, archive/retained recording replay queries and event
 hydration check cancellation at their existing admission boundaries. Other commands
@@ -381,8 +389,11 @@ any acknowledgement already committed before the interrupted checkpoint.
 The actual native response survives a cancellation race: a completed session write,
 charged hydration result or effect result is returned unchanged, including its exit
 identity. Cancellation is not rollback. An unknown or already retired request ID
-has no effect. A native panic or an indeterminate worker outcome returns an explicit
-error directing the client to inspect retained state before retrying.
+has no effect. A native panic or an indeterminate worker outcome seals intake and
+discards queued successors before constructing the error directing the client to
+inspect retained state. A failed request-region admission or unconfirmed closure
+also seals intake. Available actual native results remain authoritative even when
+scope closure fails; the connection then exits with a failure after output drains.
 
 The Unix launcher temporarily sets nonblocking mode on owned duplicates of stdin
 and stdout. A shared descriptor lease samples both original flag sets before either
@@ -398,10 +409,14 @@ complete allocation remains charged until its newline is written; appending that
 newline never triggers an unchecked allocation. One output turn performs at most
 64 write attempts and 64 KiB of writes, keeping small writes and interruptions
 from monopolizing input handling. IDs and frame accounting remain reserved through
-a pending flush. Thirty seconds
-without output progress, exceeded output backlog, framing failure or an I/O error
-stops admission, discards unstarted work and requests cancellation of the running
-worker. The process drains that worker before returning. Filesystem and native
+a pending flush. Each reply has an absolute 30-second delivery allowance starting
+at enqueue, including time waiting behind older replies and pending flush. Partial
+writes, interrupted writes, new metadata traffic and becoming the front frame do
+not renew that allowance. The original deadline is checked before every write,
+including the final newline, and before flush. Expiry, exceeded output backlog,
+framing failure or an I/O error stops admission, discards unstarted work and
+requests cancellation of the running worker. The process joins the worker and
+closes its request region before returning. Filesystem and native
 execution cancellation remains cooperative; no hard preemption or rollback claim
 is made. Other platforms retain the previous synchronous stdio implementation and
 do not support in-flight cancellation.
@@ -459,7 +474,13 @@ result after cancellation, EOF drain, and draining a started worker on malformed
 Eight session-identity contracts cover permanent retention, exact integer/string IDs,
 phase and parameter refusals, the 4096-ID ceiling, closed notifications and native
 scope clamps. A controller contract proves exhaustion seals input while accepted
-native work drains. Output-pressure contracts retain IDs across partial writes and
+native work drains. Five request-lifetime contracts cover original queue deadlines,
+child-region/deadline isolation, actual-result preservation after expiry, quarantine
+after panic, output-pressure admission and absolute delivery age through partial
+writes and pending flush. The seven exact-production Outbox contracts passed with
+the pinned compiler in an isolated standard-library harness. The exact production
+response-delivery policy also passed its partial-write/new-metadata/pending-flush
+contract in isolation. These results do not establish integrated controller execution. Output-pressure contracts retain IDs across partial writes and
 flush, then prove session-level refusal persists after output ownership retires.
 Unix process contracts use retained certified-quiet coverage to exercise native follow
 cancellation, cancellation of an unstarted session write, live and retired duplicate IDs, late

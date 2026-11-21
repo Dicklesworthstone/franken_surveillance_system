@@ -1,10 +1,12 @@
 #![forbid(unsafe_code)]
 //! Bounded response allocation and serialized delivery for the MCP controller.
-//! Identity remains owned through the final newline. No clocks or runtime live here.
+//! Identity remains owned through the final newline. The owner supplies enqueue times
+//! and output admission checks; production delivery samples no ambient clock here.
 
 use std::{
     collections::VecDeque,
     io::{self, Write},
+    time::Instant,
 };
 
 struct Pending<K> {
@@ -12,6 +14,7 @@ struct Pending<K> {
     key: Option<K>,
     offset: usize,
     charge: usize,
+    enqueued: Instant,
 }
 
 pub(super) struct Outbox<K: Eq> {
@@ -26,6 +29,7 @@ pub(super) struct Progress<K> {
     pub written: usize,
     pub completed: usize,
     pub retired: Vec<K>,
+    pub oldest_written: Option<Instant>,
 }
 
 impl<K> Default for Progress<K> {
@@ -34,6 +38,7 @@ impl<K> Default for Progress<K> {
             written: 0,
             completed: 0,
             retired: Vec::new(),
+            oldest_written: None,
         }
     }
 }
@@ -64,7 +69,17 @@ impl<K: Eq> Outbox<K> {
                 .is_some_and(|total| total <= self.max_frames)
     }
 
+    #[cfg(test)]
     pub fn enqueue(&mut self, response: String, key: Option<K>) -> io::Result<()> {
+        self.enqueue_at(response, key, Instant::now())
+    }
+
+    pub fn enqueue_at(
+        &mut self,
+        response: String,
+        key: Option<K>,
+        enqueued: Instant,
+    ) -> io::Result<()> {
         // Keep the string unchanged and write its LF separately. Appending LF
         // could grow an exact-capacity string before checking the memory bound.
         let charge = response.capacity().checked_add(1).ok_or_else(|| {
@@ -82,6 +97,7 @@ impl<K: Eq> Outbox<K> {
             key,
             offset: 0,
             charge,
+            enqueued,
         });
         Ok(())
     }
@@ -90,10 +106,23 @@ impl<K: Eq> Outbox<K> {
     /// A key retires only after its complete frame and LF have been accepted.
     /// A permanent write error is terminal for the transport: earlier frames
     /// may already have been delivered, so callers must not replay the queue.
+    #[cfg(test)]
     pub fn progress(
         &mut self,
         output: &mut impl Write,
         max_bytes: usize,
+    ) -> io::Result<Progress<K>> {
+        self.progress_checked(output, max_bytes, |_| Ok(()))
+    }
+
+    /// Revalidate the owning response's original delivery budget before every
+    /// write, including its final LF and retry after interruption. Partial output
+    /// never replaces its enqueue time with a newer one.
+    pub fn progress_checked(
+        &mut self,
+        output: &mut impl Write,
+        max_bytes: usize,
+        mut admit: impl FnMut(Instant) -> io::Result<()>,
     ) -> io::Result<Progress<K>> {
         let mut progress = Progress::default();
         for _ in 0..MAX_WRITE_ATTEMPTS {
@@ -103,6 +132,7 @@ impl<K: Eq> Outbox<K> {
             let Some(frame) = self.frames.front_mut() else {
                 break;
             };
+            admit(frame.enqueued)?;
             let remaining = max_bytes - progress.written;
             let bytes = if frame.offset < frame.response.len() {
                 let bytes = &frame.response.as_bytes()[frame.offset..];
@@ -124,6 +154,11 @@ impl<K: Eq> Outbox<K> {
                     ));
                 }
                 Ok(written) => {
+                    progress.oldest_written = Some(
+                        progress
+                            .oldest_written
+                            .map_or(frame.enqueued, |previous| previous.min(frame.enqueued)),
+                    );
                     frame.offset += written;
                     progress.written += written;
                     if frame.offset > frame.response.len() {
@@ -144,6 +179,10 @@ impl<K: Eq> Outbox<K> {
             }
         }
         Ok(progress)
+    }
+
+    pub fn oldest_enqueued(&self) -> Option<Instant> {
+        self.frames.front().map(|frame| frame.enqueued)
     }
 
     /// An identity stays owned until its complete frame and newline retire.
@@ -311,6 +350,102 @@ mod tests {
         outbox.clear();
         assert!(outbox.is_empty());
         assert!(!outbox.owns(&key));
+        Ok(())
+    }
+
+    #[test]
+    fn deadline_is_rechecked_before_the_final_newline() -> io::Result<()> {
+        use std::cell::Cell;
+        use std::time::Duration;
+
+        let admitted = Instant::now();
+        let deadline = admitted + Duration::from_millis(5);
+        let now = Cell::new(admitted);
+        let mut outbox = Outbox::new(128, 2);
+        outbox.enqueue_at("body".into(), Some(1_u8), admitted)?;
+        let mut sink = Sink::new(128, 128);
+        let result = outbox.progress_checked(&mut sink, 128, |enqueued| {
+            assert_eq!(enqueued, admitted);
+            if now.get() >= deadline {
+                return Err(io::ErrorKind::TimedOut.into());
+            }
+            // The first admitted write can finish; the next write is already out of time.
+            now.set(deadline);
+            Ok(())
+        });
+        assert_eq!(error_kind(result)?, io::ErrorKind::TimedOut);
+        assert_eq!(sink.bytes, b"body");
+        assert_eq!(sink.calls, 1);
+        assert!(outbox.owns(&1));
+        assert_eq!(outbox.oldest_enqueued(), Some(admitted));
+        outbox.enqueue_at("later".into(), Some(2), now.get())?;
+        let calls = sink.calls;
+        assert_eq!(
+            error_kind(
+                outbox
+                    .progress_checked(&mut sink, 128, |_| { Err(io::ErrorKind::TimedOut.into()) })
+            )?,
+            io::ErrorKind::TimedOut
+        );
+        assert_eq!(sink.calls, calls);
+        assert!(outbox.owns(&1) && outbox.owns(&2));
+        Ok(())
+    }
+
+    #[test]
+    fn retired_bytes_keep_the_original_flush_time_and_successor_keeps_its_age() -> io::Result<()> {
+        use std::time::Duration;
+
+        let first_time = Instant::now();
+        let second_time = first_time + Duration::from_millis(1);
+        let mut outbox = Outbox::new(128, 2);
+        outbox.enqueue_at("one".into(), Some(1_u8), first_time)?;
+        outbox.enqueue_at("two".into(), Some(2), second_time)?;
+        let mut sink = Sink::new(128, 128);
+        let progress = outbox.progress_checked(&mut sink, 4, |_| Ok(()))?;
+        assert_eq!(progress.retired, [1]);
+        assert_eq!(progress.oldest_written, Some(first_time));
+        assert_eq!(outbox.oldest_enqueued(), Some(second_time));
+        assert_eq!(sink.bytes, b"one\n");
+        let now = second_time + Duration::from_millis(5);
+        let calls = sink.calls;
+        let result = outbox.progress_checked(&mut sink, 128, |enqueued| {
+            if now.duration_since(enqueued) >= Duration::from_millis(5) {
+                Err(io::ErrorKind::TimedOut.into())
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(error_kind(result)?, io::ErrorKind::TimedOut);
+        assert_eq!(sink.calls, calls);
+        assert!(outbox.owns(&2));
+        Ok(())
+    }
+
+    #[test]
+    fn interrupted_writes_recheck_the_same_delivery_deadline() -> io::Result<()> {
+        use std::cell::Cell;
+        use std::time::Duration;
+
+        let admitted = Instant::now();
+        let elapsed = Cell::new(0_u64);
+        let mut outbox = Outbox::new(128, 1);
+        outbox.enqueue_at("response".into(), Some(1_u8), admitted)?;
+        let mut sink = Sink::new(128, 128);
+        sink.interrupts = usize::MAX;
+        let result = outbox.progress_checked(&mut sink, 128, |enqueued| {
+            let now = admitted + Duration::from_millis(elapsed.get());
+            if now.duration_since(enqueued) >= Duration::from_millis(3) {
+                return Err(io::ErrorKind::TimedOut.into());
+            }
+            elapsed.set(elapsed.get() + 1);
+            Ok(())
+        });
+        assert_eq!(error_kind(result)?, io::ErrorKind::TimedOut);
+        assert_eq!(sink.calls, 3);
+        assert!(sink.bytes.is_empty());
+        assert!(outbox.owns(&1));
+        assert_eq!(outbox.oldest_enqueued(), Some(admitted));
         Ok(())
     }
 }

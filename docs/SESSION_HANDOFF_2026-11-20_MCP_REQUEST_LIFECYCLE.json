@@ -5,7 +5,7 @@
   "mission": "Implement the most important incomplete functionality from the comprehensive plan and Beads; commit meaningful changes directly to main through GitHub without PRs.",
   "basis": {
     "started_at": "7e336b8e457e11cffaf132b2176f78cf3da48371",
-    "integration_base": "17cc7d1b10f307d0eec8893e872d9f5be9372e39",
+    "integration_base": "6172fbcdc03f770fbb5864886d49372054cb04c5",
     "plan": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
     "backlog": ".beads/issues.jsonl",
     "bead": "fss-x4a.25.2",
@@ -18,7 +18,10 @@
       "0e432bf723f91ba71f43c4795a3f7171e3d0483a",
       "1b191d73116686b016043ec81588f67b0c34233f",
       "ac1a366e84642d01b904d6354f1f5ffb6409c798",
-      "17cc7d1b10f307d0eec8893e872d9f5be9372e39"
+      "17cc7d1b10f307d0eec8893e872d9f5be9372e39",
+      "1c43a8148e15126aa46276def3fdf31ccaf3378e",
+      "7f95ad73df0631a04f1690c537d3427221999d9b",
+      "6172fbcdc03f770fbb5864886d49372054cb04c5"
     ]
   },
   "authority": {
@@ -39,17 +42,28 @@
       "scope": "One Asupersync native worker, bounded FIFO, live ping/cancellation, clean EOF drain, six controller tests and native follow/effect/source cancellation regressions."
     },
     {
-      "commit": "this_commit",
+      "commit": "1c43a8148e15126aa46276def3fdf31ccaf3378e",
       "feature": "Request identity and native result delivery ownership",
       "scope": "Reserve IDs through full output and flush, refuse duplicates before protocol-state changes with null-ID errors, reserve the complete native output before execution, charge full allocations, bound write attempts, and integrate the tested shared stdio lease."
+    },
+    {
+      "commit": "6172fbcdc03f770fbb5864886d49372054cb04c5",
+      "feature": "Permanent session request identities",
+      "scope": "Reserve up to 4096 distinct IDs before parameter/phase checks; no reuse after delivery, null-ID duplicate errors, and seal intake then drain accepted work at exhaustion."
+    },
+    {
+      "commit": "this_commit",
+      "feature": "Request child regions and nonrenewing deadlines",
+      "scope": "One deadline from queue admission through an owned request region, join before close, quarantine uncertain outcomes before successors, and absolute reply delivery age through writes and flush."
     }
   ],
   "integration_decisions": [
     "Preserved the concurrent scheduler, injectable native executor, all six controller tests, native effect/follow/source regressions and non-Unix synchronous fallback.",
-    "Preserved sixteen pending native requests, thirty-second no-progress output timeout and actual completed-native-response delivery through cancellation.",
+    "Preserved sixteen pending native requests, thirty-second output delivery allowance (now absolute from enqueue) and actual completed-native-response delivery through cancellation.",
     "The earlier local alternative used eight queued requests and suppressed cancelled replies; it was not published over the concurrent implementation.",
     "A complete tools/list reply with a maximum escaped request ID exceeded the former control allowance by 140 bytes. The aggregate control allowance is now 256 KiB with a focused full-catalog regression.",
-    "Preserved the concurrent 17cc7d1 native refinement: follow parks check cancellation in at most 25 ms slices, and session cancellation keeps its native cancelled outcome before clock admission."
+    "Preserved the concurrent 17cc7d1 native refinement: follow parks check cancellation in at most 25 ms slices, and session cancellation keeps its native cancelled outcome before clock admission.",
+    "Ported lifecycle ownership onto the newer Outbox and shared stdio owners; preserved permanent session IDs, native reply reservation, full allocation accounting, final-newline delivery, finite write attempts and pending-flush identity ownership."
   ],
   "bounds": {
     "maximum_pending_native_requests": 16,
@@ -61,20 +75,23 @@
     "maximum_response_frames_including_pending_flush": 64,
     "write_attempts_per_pump": 64,
     "write_bytes_per_pump": 65536,
-    "output_no_progress_timeout_ms": 30000,
-    "controller_poll_interval_ms": 2
+    "controller_poll_interval_ms": 2,
+    "maximum_session_request_identities": 4096,
+    "native_request_cooperative_deadline_ms": 60000,
+    "absolute_response_delivery_deadline_ms": 30000
   },
   "semantics": {
-    "identity": "Decoded strings and signed integer IDs are distinct; -0 and 0 share numeric identity. Busy IDs cannot bind another operation or mutate initialization state. Duplicate refusals carry id:null.",
-    "output": "One native result slot and maximum escaped result bytes are held before starting work. Control replies cannot spend that reservation. Full owned allocations remain charged through newline; identity and frame counts remain reserved through pending flush.",
+    "identity": "Decoded strings and signed integer IDs are distinct; -0 and 0 share numeric identity. Up to 4096 valid identities remain reserved for the entire live session, including refusals and completed deliveries. Reuse receives id:null/-32600; the next new identity at the ceiling receives -32000 and stops intake while accepted work drains.",
+    "output": "One native result slot and maximum escaped result bytes are held before starting work. Control replies cannot spend that reservation. Full owned allocations remain charged through newline; identity and frame counts remain reserved through pending flush. Every response keeps its enqueue time through its final newline and pending flush. Thirty seconds is an absolute delivery allowance; partial progress and later metadata do not renew it. Every write and flush admission checks the oldest outstanding delivery.",
     "cancellation": "Queued work never executes; running work remains owned until its exact closure and coordinator join. Available native results remain authoritative and are returned even if cancellation raced completion. Cancellation cannot undo an effect.",
     "EOF": "Seal intake and drain accepted native commands and replies.",
-    "failure": "Framing/I/O/output pressure failure discards unstarted work and pending output, requests active cancellation and joins before returning.",
-    "stdio": "Both inherited descriptors share one restoration lease; original flags are sampled before either changes and restored only after both owners retire. Non-Unix retains the existing synchronous implementation."
+    "failure": "Framing/I/O/output pressure failure discards unstarted work and pending output, requests active cancellation and joins before returning. Panic, indeterminate work, failed region admission or unconfirmed closure quarantine the connection before successors execute. Actual completed native results are retained even if region close fails.",
+    "stdio": "Both inherited descriptors share one restoration lease; original flags are sampled before either changes and restored only after both owners retire. Non-Unix retains the existing synchronous implementation.",
+    "deadline": "One 60-second deadline starts at native queue admission and is inherited by a distinct child region. Queue/output pressure cannot renew it. Expired queued work never executes. Active expiry requests cooperative cancellation, joins the worker and closes its region; admitted effects and filesystem calls are not preempted."
   },
   "validation": {
     "toolchain": "nightly-2026-08-31; rustc 1.100.0-nightly (908501772 2026-08-30)",
-    "executed_relevant_contracts": 23,
+    "executed_relevant_contracts": 27,
     "baseline": {
       "passed": 13,
       "failed": 0,
@@ -89,12 +106,15 @@
       "results": "Compiling autocfg v1.5.1\n   Compiling memoffset v0.9.1\n   Compiling cfg_aliases v0.2.2\n   Compiling libc v0.2.191\n   Compiling nix v0.31.3\n   Compiling cfg-if v1.0.5\n   Compiling bitflags v2.13.2\n   Compiling fss-mcp-stdio-os-check v0.0.0 (/workspace/scratch/a39d6415a097/fss-mcp-stdio-check)\nwarning: associated function `open` is never used\n  --> /workspace/scratch/a39d6415a097/franken_surveillance_system/crates/fss-cli/src/bin/fss_mcp/stdio.rs:39:19\n   |\n35 | impl Stdio {\n   | ---------- associated function in this implementation\n...\n39 |     pub(super) fn open() -> io::Result<Self> {\n   |                   ^^^^\n   |\n   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default\n\nwarning: `fss-mcp-stdio-os-check` (lib test) generated 1 warning\n    Finished `test` profile [unoptimized] target(s) in 3.34s\n     Running unittests src/lib.rs (target/debug/build/fss-mcp-stdio-os-check/65bf0452beb7a418/out/fss_mcp_stdio_os_check-65bf0452beb7a418)\n\nrunning 6 tests\ntest stdio::tests::already_nonblocking_descriptors_keep_their_flags ... ok\ntest stdio::tests::aliased_duplex_descriptors_preserve_the_true_original_flags ... ok\ntest stdio::tests::flags_restore_only_after_both_halves_retire ... ok\ntest stdio::tests::output_flag_refusal_restores_the_input_change ... ok\ntest stdio::tests::empty_and_full_pipes_return_would_block_without_losing_bytes ... ok\ntest stdio::tests::redirected_regular_files_keep_exact_bytes_and_eof ... ok\n\ntest result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
     },
     "outbox": {
-      "passed": 4,
+      "passed": 7,
       "failed": 0,
-      "scope": "Generic production outbox.rs compiled and executed directly with pinned rustc; actual i64 key instantiation, no replacement implementations. Partial delivery/identity, full allocation accounting, finite attempts/bytes and zero-write refusal.",
-      "source_sha256": "f04fe5f31e7226d66f947c370bdd51d3967faedf0da44d8a1df094645e1c5c40",
-      "saved_blob": "78c2b0772a81f0da54b635cc9f02f0cb6955b1af",
-      "results": "running 4 tests\ntest outbox::tests::every_poll_bounds_interrupts_successful_writes_and_bytes ... ok\ntest outbox::tests::allocated_capacity_stays_charged_until_the_newline_retires ... ok\ntest outbox::tests::partial_frames_keep_identity_until_complete_ordered_delivery ... ok\ntest outbox::tests::zero_write_is_a_terminal_error_without_claiming_a_delivered_response ... ok\n\ntest result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      "scope": "Exact production outbox.rs compiled using pinned rustc --edition=2024 --test and forbid(unsafe_code), without Cargo, Asupersync or replacement implementations. Four original allocation/write contracts plus three original-age/per-write deadline contracts.",
+      "source_sha256": "4b08a14ca1f9e40ac35a22889f583bf5231d4e89070673fc9903c030cffe33ba",
+      "saved_blob": "fadbb9edd593b71aabebb4f486b766657d69e8ac",
+      "compile_seconds": 0.892,
+      "test_seconds": 0.004,
+      "peak_child_rss_kib": 137392,
+      "results": "7 passed; 0 failed; 0 ignored; exact source unchanged before and after."
     },
     "integrated_contracts_not_executed": {
       "new_native_facade_and_clock": 7,
@@ -106,7 +126,17 @@
         "control replies cannot consume native result space",
         "full tools/list with maximum escaped ID fits beside native result"
       ],
-      "preserved": "All concurrent effect/follow/source and scheduler tests retained. The real-process duplicate-ID assertion now requires null and proves original numeric ID remains cancellable."
+      "preserved": "All concurrent effect/follow/source and scheduler tests retained. The real-process duplicate-ID assertion now requires null and proves original numeric ID remains cancellable.",
+      "new_request_lifetime": 5,
+      "new_session_identity": 8,
+      "new_identity_exhaustion_controller": 1,
+      "lifetime_scenarios": [
+        "queue admission time consumes the original deadline",
+        "active child region and deadline are isolated from parent and successor",
+        "completed native output survives expiry",
+        "panic quarantines queued commands before output",
+        "output pressure does not renew queue admission and partial writes/new metadata/pending flush do not renew delivery age"
+      ]
     },
     "full_graph_check": {
       "command": "cargo check -p fss-cli --bin fss-mcp --locked --offline -j1",
@@ -122,9 +152,113 @@
       "scope": "Diagnostic memory flags are not the sealed qualification profile."
     },
     "formatting": "Exact pinned scoped rustfmt and whitespace checks passed.",
-    "independent_review": "Native facade/effect boundaries, concurrent implementation, response ownership, reservation arithmetic and test synchronization were reviewed independently.",
+    "independent_review": "Current lifetime sources reviewed against exact Asupersync 0.5 child-region APIs and native drained_blocking ownership. Confirmed inherited budget meet, task-owned child context, join before region close, native-result preservation, quarantine ordering, permanent-ID exhaustion drain and original delivery age through successor writes and flush. Current source/test formatting and scoped whitespace checks passed. Integration compilation/execution remains unobserved.",
     "integrity": "All changed source paths have exact base/delta SHA-256 rows. A full inherited manifest audit failed on unrelated baseline drift; no aggregate integrity pass claimed.",
-    "executor": "A temporary executor outage was recovered. Native cancellation was already committed; reviewed parallel work was checkpointed before rebasing onto concurrent main. No force update or concurrent work loss."
+    "executor": "A temporary executor outage was recovered. Native cancellation was already committed; reviewed parallel work was checkpointed before rebasing onto concurrent main. No force update or concurrent work loss.",
+    "executed_relevant_contracts_scope": "13 prior unchanged cancellation/parser contracts, 6 prior unchanged stdio contracts, the current 7 Outbox contracts and 1 exact current response-delivery fragment contract. These are isolated exact-source/module checks, not an integrated transport pass.",
+    "qualification": "No new Cargo/Asupersync retry was attempted for this increment after prior compiler SIGKILLs and executor loss. The earlier full_graph_check is historical evidence, not a compile result for current sources.",
+    "response_delivery": {
+      "passed": 1,
+      "failed": 0,
+      "scope": "Exact production Replies fragment plus actual RequestKey and constants, actual Outbox path include, and exact PartialOutput/test; no runtime or transport integration claim",
+      "sources": {
+        "transport": {
+          "sha256": "049b14902ddb37b82819932a7dc802df8e97a49ba35f3936c6f8164ae3250cbb",
+          "git_blob": "5fb5920b9779e017885a5aee4333f75a18c7385b",
+          "bytes": 22048
+        },
+        "outbox": {
+          "sha256": "4b08a14ca1f9e40ac35a22889f583bf5231d4e89070673fc9903c030cffe33ba",
+          "git_blob": "fadbb9edd593b71aabebb4f486b766657d69e8ac",
+          "bytes": 15921
+        },
+        "server": {
+          "sha256": "6c0386e8ae46b846f7944019d1b574e43c0af6f8d5f48771cbe95220029e3bc5",
+          "git_blob": "6dee35a1403822172ddf6b899a7c9d174e30a397",
+          "bytes": 212552
+        },
+        "tests": {
+          "sha256": "2d5d9ed9488b92bfda2a4e737f06782cbaaf55da13535878dcd32a7f9078492d",
+          "git_blob": "6724baefb23563dce04ca5734b858095704e2b4a",
+          "bytes": 15276
+        },
+        "json_input": {
+          "sha256": "eda43c5f4b79d928220bb7862d3afbe2ca37946cbc7faa38dac7812a728a48f8",
+          "git_blob": "6fe9317ac77ef436b3090610694701498e322b29",
+          "bytes": 23515
+        }
+      },
+      "extractions": [
+        {
+          "label": "MAX_MCP_TOOL_OUTPUT_BYTES",
+          "source": "json_input",
+          "first_line": 25,
+          "last_line": 25,
+          "sha256": "a738bc073415fbee96b002f096d58482647416de54b700498f00f5faacba28cb"
+        },
+        {
+          "label": "MAX_QUEUED_REPLIES",
+          "source": "transport",
+          "first_line": 34,
+          "last_line": 34,
+          "sha256": "386960bea006319bbdb41d130f5c46328fc9d3328263245260b16b9b848c4e99"
+        },
+        {
+          "label": "MAX_QUEUED_REPLY_BYTES",
+          "source": "transport",
+          "first_line": 37,
+          "last_line": 37,
+          "sha256": "e9a56790197c2e9f67c4a013e7c82c65cd0eccd6b5fe2437301ddd1ebb0eae9e"
+        },
+        {
+          "label": "IO_SLICE_BYTES",
+          "source": "transport",
+          "first_line": 40,
+          "last_line": 40,
+          "sha256": "3ee3d112ddf13a1a88f23efaf5e790f54983f86502de24dcce1af63e87dfc851"
+        },
+        {
+          "label": "OUTPUT_STALL_LIMIT",
+          "source": "transport",
+          "first_line": 42,
+          "last_line": 42,
+          "sha256": "fdd265b82577dd0402beba0e4b7d676557be4c00dfc055618f4b2fd992d1ea90"
+        },
+        {
+          "label": "RequestKey derive and enum",
+          "source": "server",
+          "first_line": 85,
+          "last_line": 89,
+          "sha256": "c9f38293836ebfc3e94f7ced0290f2da10e8f1be1af970a291c9537114fdfc7e"
+        },
+        {
+          "label": "Replies struct and all impls",
+          "source": "transport",
+          "first_line": 336,
+          "last_line": 462,
+          "sha256": "53abb562a2f18ab70beda0fb7466d8193d8624aefcc9f0d12dbb53538f5f251d"
+        },
+        {
+          "label": "Test result alias",
+          "source": "tests",
+          "first_line": 7,
+          "last_line": 7,
+          "sha256": "8f4f825a15d1c0c3f82be2e9fcc9df8362b53f409c822a6bac70d1a2c922a3c0"
+        },
+        {
+          "label": "Exact PartialOutput and absolute delivery-age test",
+          "source": "tests",
+          "first_line": 307,
+          "last_line": 385,
+          "sha256": "3646cb1fe9f8bfec7475ee264ed8e4b08d8e28e785299140ef547c5ea3fec0c2"
+        }
+      ],
+      "compile_seconds": 1.121,
+      "test_seconds": 0.005,
+      "peak_child_rss_kib": 139220,
+      "results": "running 1 test\ntest delivery::partial_writes_and_new_metadata_never_renew_an_unflushed_response_deadline ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s",
+      "sources_unchanged": true
+    }
   },
   "remaining_critical_work": [
     {
@@ -137,7 +271,7 @@
     },
     {
       "bead": "fss-x4a.25.2",
-      "work": "Complete universal envelope ingress, request-region proof and registered transport/taint qualification; the reference task owner does not close the full gate."
+      "work": "Complete universal envelope ingress, integrated request-region proof and registered transport/taint qualification; the reference task owner does not close the full gate."
     },
     {
       "external_ref": "FSS-178",
@@ -166,11 +300,13 @@
     "crates/fss-cli/src/request_control/tests.rs": "6d776f6933a3a5d97fb4052be2633660ec1ef7fb1749da74f04cacc4caf7e582",
     "crates/fss-cli/src/fss_cmd.rs": "fe45e0f73470ea33721cabca5c33b7892e5e96a1cb4f5bac6349fee778218953",
     "crates/fss-cli/src/bin/fss-mcp.rs": "83bd979585a520ae0a9a9999526295d5020b93d7d7cf5532bff2a3dcf736ed87",
-    "crates/fss-cli/src/bin/fss_mcp/server.rs": "60a778ccc844be3a2243826779440f015cc0a7b5a8f0df3dc33feac9bef01e6f",
-    "crates/fss-cli/src/bin/fss_mcp/transport.rs": "d9ac9ee1a31ddbbcd4d06da8fc2e4e343e3948cdeeebd90d76444d0e8fab4bf9",
-    "crates/fss-cli/src/bin/fss_mcp/outbox.rs": "f04fe5f31e7226d66f947c370bdd51d3967faedf0da44d8a1df094645e1c5c40",
+    "crates/fss-cli/src/bin/fss_mcp/server.rs": "6c0386e8ae46b846f7944019d1b574e43c0af6f8d5f48771cbe95220029e3bc5",
+    "crates/fss-cli/src/bin/fss_mcp/transport.rs": "049b14902ddb37b82819932a7dc802df8e97a49ba35f3936c6f8164ae3250cbb",
+    "crates/fss-cli/src/bin/fss_mcp/outbox.rs": "4b08a14ca1f9e40ac35a22889f583bf5231d4e89070673fc9903c030cffe33ba",
     "crates/fss-cli/src/bin/fss_mcp/stdio.rs": "ac3fad696d7680835232c058d4faeec2d87c7d4c29b608578b82f299261562f2",
-    "crates/fss-cli/src/bin/fss_mcp/transport_tests.rs": "836627f46053474d0e05c92f7b07c6ddc89c5f1182873455dbe59919a025240e",
-    "crates/fss-cli/tests/follow_cli_contract/mcp_cancellation.rs": "73d827662b36816a5200edf3f311648d0009fc751d0782f7b4ba339429107f65"
+    "crates/fss-cli/src/bin/fss_mcp/transport_tests.rs": "c6849202fbba6117ca52d65b9b0ed9d40b2b0a494a3f415397b601c40d32ba26",
+    "crates/fss-cli/tests/follow_cli_contract/mcp_cancellation.rs": "6e9e53379fb779fa01068f81d37b170bbbe3bdf4cdf343b6da68daac75ba09d5",
+    "crates/fss-cli/src/bin/fss_mcp/transport_budget_tests.rs": "2d5d9ed9488b92bfda2a4e737f06782cbaaf55da13535878dcd32a7f9078492d",
+    "crates/fss-cli/src/bin/fss_mcp/server/request_identity_tests.rs": "5bc4d1d5059153a2331c5f46b83fe91af1a34d237bd533889097c5ff678e4543"
   }
 }

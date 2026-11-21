@@ -12,7 +12,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use asupersync::{Cx, runtime::RuntimeBuilder, time::sleep};
+use asupersync::{
+    Cx,
+    cx::child_region::{ChildRegion, ChildRegionSpec},
+    runtime::RuntimeBuilder,
+    time::sleep,
+    types::{CancelKind, CancelReason, Time},
+};
 use fss_cli::{ExitIdentity, FssCommand, RequestControl, execute_live_fss_with_control};
 use fss_core::json_input::MAX_MCP_TOOL_OUTPUT_BYTES;
 use fss_runtime::drained_blocking::{self, Drained, WorkOutcome};
@@ -34,6 +40,7 @@ const FRAMES_PER_TURN: usize = 8;
 const IO_SLICE_BYTES: usize = 64 * 1024;
 const POLL_INTERVAL: Duration = Duration::from_millis(2);
 const OUTPUT_STALL_LIMIT: Duration = Duration::from_secs(30);
+const NATIVE_REQUEST_LIMIT: Duration = Duration::from_secs(60);
 
 type NativeResult = Option<(String, ExitIdentity)>;
 type NativeWork = Box<dyn FnOnce(Cx) -> NativeResult + Send>;
@@ -42,11 +49,32 @@ type Executor = Arc<dyn Fn(FssCommand, &Cx) -> NativeResult + Send + Sync>;
 struct Pending {
     id: RequestId,
     command: FssCommand,
+    deadline: Time,
 }
 
 struct Active {
     id: RequestId,
     owner: Drained<NativeWork, NativeResult>,
+    region: ChildRegion,
+    deadline: Time,
+    stopping: bool,
+}
+
+impl Active {
+    fn cancel(&mut self, kind: CancelKind, now: Time) -> io::Result<()> {
+        if self.stopping {
+            return Ok(());
+        }
+        self.stopping = true;
+        let result = self.region.cancel(CancelReason::with_origin(
+            kind,
+            self.region.region_id(),
+            now,
+        ));
+        // Even a failed scope cancellation cannot release a running worker.
+        self.owner.abort();
+        result.map_err(|_| io::Error::other("MCP request cancellation scope failed"))
+    }
 }
 
 struct Scheduler {
@@ -54,7 +82,9 @@ struct Scheduler {
     active: Option<Active>,
     replies: Replies,
     execute: Executor,
+    request_limit: Duration,
     stop_admission: bool,
+    terminal_failure: Option<&'static str>,
 }
 
 impl Scheduler {
@@ -64,7 +94,9 @@ impl Scheduler {
             active: None,
             replies: Replies::default(),
             execute,
+            request_limit: NATIVE_REQUEST_LIMIT,
             stop_admission: false,
+            terminal_failure: None,
         }
     }
 
@@ -102,7 +134,13 @@ impl Scheduler {
         )
     }
 
-    fn accept(&mut self, request: Dispatch) -> io::Result<()> {
+    fn quarantine(&mut self, reason: &'static str) {
+        self.stop_admission = true;
+        self.terminal_failure.get_or_insert(reason);
+        self.pending.clear();
+    }
+
+    fn accept(&mut self, request: Dispatch, now: Time) -> io::Result<()> {
         if self.stop_admission {
             return Err(io::Error::other("MCP request admission is closed"));
         }
@@ -129,15 +167,20 @@ impl Scheduler {
                     );
                     self.reply(Some(id), text)
                 } else {
-                    self.pending.push_back(Pending { id, command });
+                    self.pending.push_back(Pending {
+                        id,
+                        command,
+                        // Queueing consumes this budget; execution cannot renew it.
+                        deadline: now + self.request_limit,
+                    });
                     Ok(())
                 }
             }
             Dispatch::Cancel(id) => {
-                if let Some(active) = &self.active
+                if let Some(active) = &mut self.active
                     && active.id.key == id.key
                 {
-                    active.owner.abort();
+                    active.cancel(CancelKind::User, now)?;
                 } else if let Some(index) = self.pending.iter().position(|p| p.id.key == id.key)
                     && let Some(pending) = self.pending.remove(index)
                 {
@@ -152,24 +195,53 @@ impl Scheduler {
         }
     }
 
-    fn start_next(&mut self, cx: &Cx) -> io::Result<()> {
-        if self.active.is_some() || !self.replies.capacity_for(MAX_NATIVE_REPLY_BYTES, 1) {
+    async fn start_next(&mut self, cx: &Cx) -> io::Result<()> {
+        if self.active.is_some()
+            || self.terminal_failure.is_some()
+            || !self.replies.capacity_for(MAX_NATIVE_REPLY_BYTES, 1)
+        {
             return Ok(());
         }
         let Some(pending) = self.pending.pop_front() else {
             return Ok(());
         };
+        if cx.now() >= pending.deadline {
+            let text = pending.id.error(
+                -32003,
+                "Request deadline expired in the queue; native execution did not start",
+            );
+            return self.reply(Some(pending.id), text);
+        }
+        let spec =
+            ChildRegionSpec::inherit().with_budget(cx.budget().with_deadline(pending.deadline));
+        let region = match cx.open_child_region(spec).await {
+            Ok(region) => region,
+            Err(_) => {
+                self.quarantine("MCP request region admission failed");
+                let text = pending.id.error(
+                    -32003,
+                    "Runtime refused the request scope; native execution did not start",
+                );
+                return self.reply(Some(pending.id), text);
+            }
+        };
         let execute = Arc::clone(&self.execute);
         let work: NativeWork = Box::new(move |child| execute(pending.command, &child));
-        match drained_blocking::start(cx, work) {
+        match drained_blocking::start(region.cx(), work) {
             Ok(owner) => {
                 self.active = Some(Active {
                     id: pending.id,
                     owner,
+                    region,
+                    deadline: pending.deadline,
+                    stopping: false,
                 });
                 Ok(())
             }
             Err(_) => {
+                if region.close().await.is_err() {
+                    self.quarantine("MCP refused request region could not close");
+                }
                 let text = pending.id.error(
                     -32003,
                     "Runtime refused native execution; this request was not executed",
@@ -177,6 +249,15 @@ impl Scheduler {
                 self.reply(Some(pending.id), text)
             }
         }
+    }
+
+    fn expire_active(&mut self, now: Time) -> io::Result<()> {
+        if let Some(active) = &mut self.active
+            && now >= active.deadline
+        {
+            active.cancel(CancelKind::Timeout, now)?;
+        }
+        Ok(())
     }
 
     async fn retire_ready(&mut self) -> io::Result<()> {
@@ -198,12 +279,23 @@ impl Scheduler {
         let Some(active) = self.active.take() else {
             return Err(io::Error::other("missing native request owner"));
         };
+        if matches!(
+            &receipt.work,
+            WorkOutcome::Panicked | WorkOutcome::Indeterminate
+        ) {
+            // Fence successors before the reply path, which can fail independently.
+            self.quarantine("MCP native outcome requires inspection before further commands");
+        }
+        // Worker ownership settles before the request region can close.
+        if active.region.close().await.is_err() {
+            self.quarantine("MCP request region closure could not be confirmed");
+        }
         let response = match receipt.work {
             // A cancellation-dominant runtime result cannot erase a completed native result.
             WorkOutcome::Finished(Some((output, exit))) => active.id.tool_result(&output, exit),
             WorkOutcome::Finished(None) | WorkOutcome::NotStarted(_) => active
                 .id
-                .error(-32800, "Request cancelled before native execution"),
+                .error(-32800, "Request cancelled or refused before native execution"),
             WorkOutcome::Panicked => active.id.error(
                 -32603,
                 "Native request panicked; inspect retained state before retrying because effects may have committed",
@@ -222,16 +314,22 @@ impl Scheduler {
         self.replies.push_owned(response, Some(active.id.key))
     }
 
-    async fn cancel_and_drain(&mut self) {
+    async fn cancel_and_drain(&mut self, cx: &Cx) -> io::Result<()> {
         self.stop_admission = true;
         self.pending.clear();
         self.replies.clear();
-        if let Some(active) = &mut self.active {
-            active.owner.abort();
+        if let Some(mut active) = self.active.take() {
+            let cancelled = active.cancel(CancelKind::Shutdown, cx.now());
             // Never advertise quiescence, exit, or release this owner while its native closure runs.
-            let _ = active.owner.join().await;
+            let joined = active.owner.join().await.is_some();
+            let closed = active.region.close().await;
+            if cancelled.is_err() || !joined || closed.is_err() {
+                return Err(io::Error::other(
+                    "MCP request cleanup could not be confirmed",
+                ));
+            }
         }
-        self.active = None;
+        Ok(())
     }
 }
 
@@ -240,7 +338,7 @@ struct Replies {
     flushing_keys: Vec<RequestKey>,
     flushing_frames: usize,
     flush_pending: bool,
-    last_progress: Option<Instant>,
+    flush_since: Option<Instant>,
 }
 
 impl Default for Replies {
@@ -250,7 +348,7 @@ impl Default for Replies {
             flushing_keys: Vec::new(),
             flushing_frames: 0,
             flush_pending: false,
-            last_progress: None,
+            flush_since: None,
         }
     }
 }
@@ -280,10 +378,7 @@ impl Replies {
                 "MCP output backlog exceeded its fixed bound",
             ));
         }
-        if self.empty() {
-            self.last_progress = Some(Instant::now());
-        }
-        self.frames.enqueue(response, key)
+        self.frames.enqueue_at(response, key, Instant::now())
     }
 
     fn empty(&self) -> bool {
@@ -295,11 +390,39 @@ impl Replies {
         self.flushing_keys.clear();
         self.flushing_frames = 0;
         self.flush_pending = false;
-        self.last_progress = None;
+        self.flush_since = None;
     }
 
-    fn pump(&mut self, output: &mut impl Write, stall_limit: Duration) -> io::Result<()> {
-        let progress = self.frames.progress(output, IO_SLICE_BYTES)?;
+    fn oldest_delivery(&self) -> Option<Instant> {
+        self.frames
+            .oldest_enqueued()
+            .into_iter()
+            .chain(self.flush_since)
+            .min()
+    }
+
+    fn check_delivery_deadline(&self, limit: Duration) -> io::Result<()> {
+        Self::check_age(self.oldest_delivery(), limit)
+    }
+
+    fn check_age(enqueued: Option<Instant>, limit: Duration) -> io::Result<()> {
+        if enqueued.is_some_and(|at| at.elapsed() >= limit) {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "MCP response delivery deadline expired",
+            ));
+        }
+        Ok(())
+    }
+
+    fn pump(&mut self, output: &mut impl Write, limit: Duration) -> io::Result<()> {
+        // The oldest response remains an obligation until flush, including if its
+        // last byte is written before a later frame during this same pump.
+        let oldest = self.oldest_delivery();
+        Self::check_age(oldest, limit)?;
+        let progress = self.frames.progress_checked(output, IO_SLICE_BYTES, |at| {
+            Self::check_age(Some(oldest.map_or(at, |oldest| oldest.min(at))), limit)
+        })?;
         self.flushing_frames = self
             .flushing_frames
             .checked_add(progress.completed)
@@ -307,14 +430,20 @@ impl Replies {
         self.flushing_keys.extend(progress.retired);
         if progress.written > 0 {
             self.flush_pending = true;
-            self.last_progress = Some(Instant::now());
+            self.flush_since = self
+                .flush_since
+                .into_iter()
+                .chain(progress.oldest_written)
+                .min();
         }
         if self.flush_pending {
+            self.check_delivery_deadline(limit)?;
             match output.flush() {
                 Ok(()) => {
                     self.flush_pending = false;
                     self.flushing_keys.clear();
                     self.flushing_frames = 0;
+                    self.flush_since = None;
                 }
                 Err(error)
                     if matches!(
@@ -327,17 +456,7 @@ impl Replies {
                 Err(error) => return Err(error),
             }
         }
-        if !self.empty()
-            && self
-                .last_progress
-                .is_some_and(|at| at.elapsed() >= stall_limit)
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "MCP output remained blocked",
-            ));
-        }
-        Ok(())
+        self.check_delivery_deadline(limit)
     }
 }
 
@@ -412,7 +531,14 @@ async fn serve_owned(
     let mut eof = false;
     let result = async {
         loop {
+            if cx.checkpoint().is_err() {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "MCP transport cancelled",
+                ));
+            }
             scheduler.retire_ready().await?;
+            scheduler.expire_active(cx.now())?;
             scheduler.replies.pump(output, stall_limit)?;
             eof |= scheduler.stop_admission;
             if !eof {
@@ -426,12 +552,12 @@ async fn serve_owned(
                                     text: "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32700,\"message\":\"Invalid UTF-8\"}}".to_owned(),
                                 },
                             };
-                            scheduler.accept(request)?;
+                            scheduler.accept(request, cx.now())?;
                             if scheduler.stop_admission {
                                 eof = true;
                                 break;
                             }
-                            scheduler.start_next(cx)?;
+                            scheduler.start_next(cx).await?;
                         }
                         Input::Pending => break,
                         Input::Eof => {
@@ -442,27 +568,24 @@ async fn serve_owned(
                 }
             }
             // EOF and the session request ceiling both drain every admitted request.
-            scheduler.start_next(cx)?;
+            scheduler.start_next(cx).await?;
             scheduler.replies.pump(output, stall_limit)?;
             if eof
                 && scheduler.active.is_none()
                 && scheduler.pending.is_empty()
                 && scheduler.replies.empty()
             {
-                return Ok(());
-            }
-            if cx.is_cancel_requested() {
-                return Err(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "MCP transport cancelled",
-                ));
+                return match scheduler.terminal_failure {
+                    Some(reason) => Err(io::Error::other(reason)),
+                    None => Ok(()),
+                };
             }
             sleep(cx.now(), POLL_INTERVAL).await;
         }
     }
     .await;
     if result.is_err() {
-        scheduler.cancel_and_drain().await;
+        scheduler.cancel_and_drain(cx).await?;
     }
     result
 }
@@ -484,7 +607,7 @@ pub(super) fn serve_stdio(server: &mut Server) -> io::Result<()> {
             Arc::new(|command, child| {
                 execute_live_fss_with_control(
                     command,
-                    &RequestControl::new(&|| child.is_cancel_requested()),
+                    &RequestControl::new(&|| child.checkpoint().is_err()),
                 )
             }),
             OUTPUT_STALL_LIMIT,
@@ -496,3 +619,7 @@ pub(super) fn serve_stdio(server: &mut Server) -> io::Result<()> {
 #[cfg(test)]
 #[path = "transport_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "transport_budget_tests.rs"]
+mod budget_tests;

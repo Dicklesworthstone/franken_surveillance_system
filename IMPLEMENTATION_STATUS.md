@@ -4,6 +4,33 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## MCP request regions and original deadlines — 2026-11-20
+
+Each admitted Unix MCP native request now carries one 60-second cooperative
+deadline through queueing, output-space admission and its distinct Asupersync child
+region. Queue expiry refuses execution; active expiry and explicit cancellation
+cancel only that request. The controller joins the exact native closure before
+closing its region and preserves every completed native result, including effects
+that committed before cancellation. Panic, indeterminate outcomes and region
+failures seal intake and prevent queued successors from executing.
+
+Replies now retain their original enqueue time through partial writes and pending
+flush. Their absolute 30-second delivery allowance cannot be renewed by trickle
+output or newer metadata replies. Every write, including the final newline and
+interrupt retries, checks the oldest pending delivery deadline. Existing full
+allocation accounting, native-result reservation, permanent session IDs and shared
+stdio ownership remain in place.
+
+Seven exact-production Outbox contracts passed with the pinned compiler in a small
+standard-library-only harness, including three new deadline contracts. The exact
+production response-delivery policy also passed its original-age/pending-flush
+contract in isolation. Five integrated lifetime contracts are authored; their native compilation and execution
+remain unobserved after the earlier dependency compiler SIGKILLs in unchanged
+Asupersync. No integrated or production qualification is claimed. Filesystem work
+and admitted effects remain cooperative, so 60 seconds is a cancellation deadline,
+not a hard termination guarantee. FSS-177 / `fss-x4a.25.2` remains open for deeper
+native checkpoints, full request-envelope admission and qualification.
+
 ## Permanent MCP request identities — 2026-11-21
 
 Live Unix MCP sessions now retain up to 4096 exact request identities across protocol
@@ -24,8 +51,8 @@ shared stdio ownership and synchronous reference adapter are preserved.
 These additions have source review only; their integrated compilation and execution
 remain unobserved after the dependency build was killed in unchanged `asupersync`
 before reaching edited FSS crates. No test pass or production qualification is claimed.
-This advances `fss-x4a.25.2` / FSS-177; request-region/deadline ownership and full
-transport qualification remain open.
+This advances `fss-x4a.25.2` / FSS-177; integrated request-region/deadline proof and
+full transport qualification remain open.
 
 ## Native request cancellation and MCP response ownership — 2026-11-20
 
