@@ -1,6 +1,10 @@
 //! Immutable sensor evidence, witnessed absence, and append-only reference MVCC.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+
+mod append;
+pub use append::{LedgerAppendGuard, PreparedLedgerAppend, ResumeLedgerAppendError};
 
 use crate::{
     BatchId, CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, CapsuleId,
@@ -430,11 +434,25 @@ pub struct LedgerSnapshot {
 }
 
 /// Single-threaded deterministic reference ledger.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct ReferenceLedger {
     snapshots: Vec<LedgerSnapshot>,
     batches: Vec<EvidenceDeltaBatch>,
     committed_batches: BTreeMap<BatchId, ContentDigest>,
+    // Private live identity, never encoded or used as canonical evidence. A
+    // cloned reference branch cannot install another owner's suspended stage.
+    append_owner: Arc<()>,
+}
+
+impl Clone for ReferenceLedger {
+    fn clone(&self) -> Self {
+        Self {
+            snapshots: self.snapshots.clone(),
+            batches: self.batches.clone(),
+            committed_batches: self.committed_batches.clone(),
+            append_owner: Arc::new(()),
+        }
+    }
 }
 
 impl ReferenceLedger {
@@ -449,6 +467,7 @@ impl ReferenceLedger {
             }],
             batches: Vec::new(),
             committed_batches: BTreeMap::new(),
+            append_owner: Arc::new(()),
         }
     }
 
@@ -505,48 +524,7 @@ impl ReferenceLedger {
 
     /// Atomically verifies and publishes a prepared batch.
     pub fn append(&mut self, batch: EvidenceDeltaBatch) -> Result<&LedgerSnapshot, ContractError> {
-        let offered_digest = batch.computed_digest();
-        if let Some(committed_digest) = self.committed_batches.get(&batch.batch_id)
-            && offered_digest != *committed_digest
-        {
-            return Err(ContractError::IdempotencyConflict);
-        }
-        if batch.basis_anchor != self.current().anchor {
-            return Err(ContractError::StaleAnchor);
-        }
-        let expected_sequence = batch
-            .basis_anchor
-            .commit_sequence
-            .checked_add(1)
-            .ok_or(ContractError::InvalidAnchorSuccessor)?;
-        if batch.new_anchor.site_lineage != batch.basis_anchor.site_lineage
-            || batch.new_anchor.ledger_epoch != batch.basis_anchor.ledger_epoch
-            || batch.new_anchor.commit_sequence != expected_sequence
-            || batch.new_anchor.adapter_registry_epoch != batch.basis_anchor.adapter_registry_epoch
-            || batch.new_anchor.schema_epoch != batch.basis_anchor.schema_epoch
-            || batch.new_anchor.policy_epoch != batch.basis_anchor.policy_epoch
-            || batch.new_anchor.privacy_epoch != batch.basis_anchor.privacy_epoch
-        {
-            return Err(ContractError::InvalidAnchorSuccessor);
-        }
-        if !batch.is_canonically_ordered() {
-            return Err(ContractError::NonCanonicalOrdering);
-        }
-        if offered_digest != batch.batch_digest {
-            return Err(ContractError::DigestMismatch);
-        }
-        let next_objects = apply_deltas(&self.current().objects, &batch.deltas)?;
-        if state_root(&next_objects) != batch.new_anchor.state_root {
-            return Err(ContractError::DigestMismatch);
-        }
-        self.snapshots.push(LedgerSnapshot {
-            anchor: batch.new_anchor.clone(),
-            objects: next_objects,
-        });
-        self.committed_batches
-            .insert(batch.batch_id.clone(), batch.batch_digest);
-        self.batches.push(batch);
-        Ok(self.current())
+        Ok(self.stage_append(batch)?.commit())
     }
 
     /// Replays a sequence of batches into a fresh ledger and returns its terminal anchor.

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use fss_core::{
     AuthoritativeLedger, BatchId, ContentDigest, ContractError, DigestAlgorithm, EvidenceDelta,
-    EvidenceDeltaBatch, LedgerSnapshot, ReferenceLedger,
+    EvidenceDeltaBatch, LedgerSnapshot, PreparedLedgerAppend, ReferenceLedger,
 };
 
 use crate::sealed_lineage::{
@@ -282,9 +282,9 @@ impl BatchIdentityIndex {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct PendingLedgerAppend {
-    candidate: ReferenceLedger,
+    candidate: PreparedLedgerAppend,
     sequence: u64,
     batch_id: BatchId,
     identity: CommittedIdentity,
@@ -478,7 +478,8 @@ impl DurableReferenceLedger {
     ///
     /// A batch whose stable identity is already committed with different content is refused with
     /// `DurableLedgerError::BatchIdConflict` before any other check and before journal I/O. The
-    /// exact successor ledger and durable bytes are then prepared before journal I/O. If the
+    /// exact successor snapshot and durable bytes are prepared before journal I/O. No historical
+    /// ledger snapshot or batch is cloned to stage the append. If the
     /// journal returns `AppendIndeterminate`, the candidate remains private and this ledger blocks
     /// further mutation until `reconcile_pending` proves whether that exact batch committed.
     ///
@@ -537,21 +538,20 @@ impl DurableReferenceLedger {
         }
 
         self.identities.check_not_reused(&batch)?;
-        let mut candidate = self.ledger.clone();
-        candidate.append(batch.clone())?;
-        let encoded = encode_batch(&batch)?;
-        let batch_id = batch.batch_id.clone();
-        let identity = CommittedIdentity::of(&batch);
+        let staged = self.ledger.stage_append(batch)?;
+        let encoded = encode_batch(staged.batch())?;
+        let batch_id = staged.batch().batch_id.clone();
+        let identity = CommittedIdentity::of(staged.batch());
         match self.journal.append(EVIDENCE_BATCH_RECORD_KIND, &encoded) {
             Ok(_record) => {
-                self.ledger = candidate;
+                staged.commit();
                 self.identities.insert(batch_id, identity);
                 Ok(self.ledger.current())
             }
             Err(error) => {
                 if let JournalError::AppendIndeterminate { sequence, .. } = &error {
                     self.pending = Some(PendingLedgerAppend {
-                        candidate,
+                        candidate: staged.suspend(),
                         sequence: *sequence,
                         batch_id,
                         identity,
@@ -562,31 +562,52 @@ impl DurableReferenceLedger {
         }
     }
 
-    /// Reconciles the exact prevalidated candidate retained after an indeterminate append.
+    /// Reconciles the exact prevalidated successor retained after an indeterminate append.
     ///
-    /// A committed result installs the already validated candidate without replaying a fallible
-    /// semantic transition after the durable decision. A not-committed result discards the private
-    /// candidate and leaves the canonical ledger unchanged.
+    /// The suspended stage is rebound to its original unchanged ledger before journal
+    /// reconciliation. A committed result then installs it without fallible semantic validation;
+    /// a not-committed result drops it, leaving the canonical ledger unchanged. A refused
+    /// reconciliation retains the stage for another exact attempt.
     pub fn reconcile_pending(
         &mut self,
         tail_policy: IncompleteTailPolicy,
     ) -> Result<DurableAppendReconciliation, DurableLedgerError> {
-        let pending = self.pending.take().ok_or(JournalError::NoPendingAppend)?;
+        let PendingLedgerAppend {
+            candidate,
+            sequence,
+            batch_id,
+            identity,
+        } = self.pending.take().ok_or(JournalError::NoPendingAppend)?;
+        let staged = match self.ledger.resume_append(candidate) {
+            Ok(staged) => staged,
+            Err(error) => {
+                let (error, candidate) = error.into_parts();
+                self.pending = Some(PendingLedgerAppend {
+                    candidate,
+                    sequence,
+                    batch_id,
+                    identity,
+                });
+                return Err(error.into());
+            }
+        };
         match self.journal.reconcile_pending(tail_policy) {
             Ok(AppendReconciliation::Committed(_record)) => {
-                self.ledger = pending.candidate;
-                self.identities
-                    .insert(pending.batch_id.clone(), pending.identity);
-                Ok(DurableAppendReconciliation::Committed {
-                    sequence: pending.sequence,
-                    batch_id: pending.batch_id,
-                })
+                staged.commit();
+                self.identities.insert(batch_id.clone(), identity);
+                Ok(DurableAppendReconciliation::Committed { sequence, batch_id })
             }
             Ok(AppendReconciliation::NotCommitted { sequence }) => {
+                drop(staged);
                 Ok(DurableAppendReconciliation::NotCommitted { sequence })
             }
             Err(error) => {
-                self.pending = Some(pending);
+                self.pending = Some(PendingLedgerAppend {
+                    candidate: staged.suspend(),
+                    sequence,
+                    batch_id,
+                    identity,
+                });
                 Err(error.into())
             }
         }

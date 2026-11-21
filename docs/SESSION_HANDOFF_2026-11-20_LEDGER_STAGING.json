@@ -1,0 +1,116 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-20",
+  "date_timezone": "America/New_York",
+  "mission": "Read the comprehensive plan and Beads, implement critical remaining functional gaps, and checkpoint meaningful increments directly to main through GitHub without PRs.",
+  "basis": {
+    "started_at": "d957e9bb9f69c31f18e8f8d3bf9698be22ab8e86",
+    "parent": "09463f4a3a9c1b89577c6e1bb10724da12eab0a1",
+    "plan": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+    "backlog": ".beads/issues.jsonl",
+    "concurrent_main_preserved": [
+      "bdc63c2c4b327f1b780fb74cbb921b33582c3d35",
+      "09463f4a3a9c1b89577c6e1bb10724da12eab0a1"
+    ]
+  },
+  "authority": {
+    "repository": "Explicit user authorization to commit directly to main using GitHub; no PR.",
+    "operational": "Repository code only; no live camera or deployment actions."
+  },
+  "findings": [
+    "Broad open Beads include substantial existing implementations; prioritization used current source and the plan's crash-safe evidence and resource requirements.",
+    "Every durable append cloned the entire reference ledger, including all prior full snapshots and batches, to avoid a semantic failure after journal publication.",
+    "An indeterminate append requires the exact validated successor to remain private until the original journal obligation is reconciled."
+  ],
+  "delivered": [
+    {
+      "feature": "Owner-bound prevalidated durable append",
+      "commit": "this_commit",
+      "scope": "One successor snapshot and batch, an exclusive stage guard, non-clonable owner-and-basis sealed suspension, refusal preserving pending state, and semantic installation only after proven durable commitment.",
+      "documentation": "docs/ONE_VERSION_UNIVERSE.md",
+      "new_core_tests": 7,
+      "new_integration_tests": 4,
+      "compile_fail_borrowing_example": 1
+    }
+  ],
+  "compatibility": [
+    "Canonical batch bytes and journal format unchanged.",
+    "Existing semantic validation and duplicate error precedence preserved.",
+    "Default reference historical snapshots and snapshot_at behavior unchanged.",
+    "Sealed lineage admission and journal root-last durability remain unchanged.",
+    "No dependency, toolchain, acceptance threshold, operation-cost registry or freeze change."
+  ],
+  "validation": {
+    "toolchain": "nightly-2026-08-31; rustc 1.100.0-nightly (908501772 2026-08-30)",
+    "independent_review": "Exact rescued source reviewed by root and an independent agent; no blocker found.",
+    "formatting": "Scoped pinned rustfmt completed locally before host loss. Exact pre-format source was recovered and obvious formatting-only wraps corrected. Final recovered bytes were not checked by rustfmt.",
+    "first_build": {
+      "command": "cargo test --locked --offline -j1 -p fss-core -p fss-ledger",
+      "environment": "PATH includes /home/agent/.cargo/bin; CARGO_BUILD_JOBS=1; RUSTUP_AUTO_INSTALL=0",
+      "exit_code": 101,
+      "termination": "rustc signal 9 / SIGKILL compiling fss-core (lib), debuginfo=2",
+      "tests_executed": false,
+      "cause": "Process termination observed; cause not proven."
+    },
+    "retry": {
+      "command": "cargo test --locked --offline -j1 -p fss-core -p fss-ledger --lib",
+      "environment": "Same pinned toolchain; CARGO_BUILD_JOBS=1; CARGO_PROFILE_DEV_DEBUG=0; CARGO_PROFILE_TEST_DEBUG=0; CARGO_INCREMENTAL=0; RUSTUP_AUTO_INSTALL=0",
+      "outcome": "Unknown: executor disconnected, then environment explicitly became unavailable before log or terminal result was recoverable.",
+      "verified_test_pass": false
+    },
+    "source_preservation": {
+      "rescue_tree": "fb99a95415dfe5766cf1aa6aa906f90918ccc453",
+      "method": "Exact pre-format applied files transferred through unreferenced GitHub tree; root read the blobs and independently reviewed before publishing.",
+      "post_rescue_edits": "Formatting-only wraps in new append module and tests."
+    },
+    "integrity": "Changed-file SHA-256 overlay rows updated from published contents. Full native worktree audit was unavailable; no aggregate pass claimed.",
+    "qualification": "No verified native test pass, performance measurement, full-workspace, real-device or release qualification."
+  },
+  "remaining_limits": [
+    "ReferenceLedger still retains a full object map for each historical commit; durable replay's resident snapshot-history growth remains a substantive follow-up.",
+    "Each staged successor clones and hashes the current object map; no constant-time or deployment-throughput claim.",
+    "Core and durable identity-map insertion may allocate after journal commitment; reconciliation also clones a receipt identity. This is semantically infallible installation, not allocation-free. Allocator abort recovers by replay."
+  ],
+  "related_beads": [
+    {
+      "id": "fss-x4a.9.9",
+      "external_ref": "FSS-102",
+      "status": "open",
+      "scope": "Incremental improvement only; broad acceptance remains open."
+    },
+    {
+      "id": "fss-x4a.9.3",
+      "external_ref": "FSS-033",
+      "status": "open"
+    },
+    {
+      "id": "fss-x4a.30.2.5",
+      "external_ref": "INV-034",
+      "status": "open"
+    }
+  ],
+  "continuations": [
+    {
+      "priority": "first",
+      "work": "Run focused native tests and final formatting on an available host using unchanged pinned dependencies."
+    },
+    {
+      "priority": "functional",
+      "work": "Evaluate an explicit current-snapshot retention mode for durable replay while preserving default reference history, complete canonical batch history, identity indexes and exact replay equality."
+    },
+    {
+      "priority": "same_session",
+      "work": "Publish the independently reviewed RTSP request-authority binding fix preserved in tree 1b8a60fc4f0881141d877b8b9f7d04c75eb08525 as a separate meaningful commit."
+    }
+  ],
+  "retry_commands": [
+    "cargo test --locked --offline -j1 -p fss-core -p fss-ledger --lib",
+    "cargo test --locked --offline -j1 -p fss-core --doc",
+    "cargo test --locked --offline -j1 -p fss-ledger --test staged_append_reconciliation_contract --test durable_batch_id_reuse_contract --test crash_defects_contract --test durable_inspect_contract --test durable_world_fact_authority_contract --test ledger_oracle_contract --test ledger_oracle_review567 --test ledger_repair_contract"
+  ],
+  "obligations": [
+    "Implementation checkpointed on main with accurate validation limits.",
+    "Broad Beads remain open pending their registered acceptance evidence.",
+    "No pending live operational effects."
+  ]
+}

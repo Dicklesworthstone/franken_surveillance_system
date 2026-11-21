@@ -4,6 +4,34 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Durable append staging without historical cloning — 2026-11-20
+
+Durable evidence append now validates and retains one successor snapshot and batch.
+Previously it cloned every historical reference snapshot and batch before each journal
+write. An exclusive installation guard keeps the basis stable through persistence;
+successful writes publish the already validated successor without another fallible
+semantic check. Indeterminate writes retain a private token tied to the original live
+ledger and exact basis. Failed reconciliation preserves the token, and a proven
+uncommitted write leaves the canonical prefix unchanged. Cloned ledgers receive distinct
+owner seals even when their anchors are identical.
+
+Seven core tests, four journal cut-point integration tests and a compile-fail borrowing
+example cover owner isolation, private staging, abandonment, repeated suspension,
+reconciliation refusal, exact journal bytes and cold replay. Existing journal bytes,
+roots, history, duplicate classifications and sealed-lineage rules remain unchanged.
+Historical snapshots are still retained, successor materialization still scales with
+current objects, and identity maps can still allocate after the durable decision.
+No measured speedup or bounded-history claim is made.
+
+Independent reviews completed. Scoped pinned formatting ran before the executor failed;
+recovery used the exact captured pre-format source with simple formatting corrections,
+so final formatting remains unverified. The first serial core/ledger build exited 101
+with rustc SIGKILL while compiling fss-core, before tests. The no-debug, nonincremental
+retry lost its execution environment before its outcome could be read. No executable
+test pass, full-workspace qualification or broad FSS-102/FSS-033 closure is claimed.
+Source is preserved through GitHub, with changed-file digests and exact retry commands in
+the [session handoff](docs/SESSION_HANDOFF_2026-11-20_LEDGER_STAGING.json).
+
 ## Detector and export previews alongside capture — 2026-11-20
 
 Fresh `fss-infer package-detect` previews use the sealed immutable retained owner for

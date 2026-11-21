@@ -227,6 +227,38 @@ On restart:
 7. begin a new process/adapter observation epoch;
 8. emit a recovery receipt naming unresolved or indeterminate obligations.
 
+### Reference append staging
+
+The reference ledger can validate one successor with `stage_append` while keeping
+its current head and history unpublished. A `LedgerAppendGuard` holds the original
+ledger exclusively through persistence. Its `commit` installs the prevalidated
+snapshot and batch without another fallible semantic check. Dropping an unused
+guard leaves canonical state unchanged.
+
+An indeterminate journal write suspends the guard into a private, non-clonable
+`PreparedLedgerAppend`. Resuming requires the same live owner and exact basis
+anchor. Even an identical cloned ledger has a different owner seal. Refusal
+returns the unchanged token so the persistence owner can preserve its obligation.
+The durable wrapper reattaches the token before journal reconciliation; only a
+proven committed outcome publishes it. A proven uncommitted outcome discards it,
+and a reconciliation refusal preserves it for another attempt.
+
+This avoids cloning the entire historical ledger for every durable append. It
+still materializes and hashes one successor object map, and the reference ledger
+still retains full historical snapshots. This is not a constant-time append or a
+bounded-history implementation. Vector capacity and the core batch-identity
+string are prepared before persistence; identity maps may still allocate during
+installation. An allocator abort after a durable commit recovers through normal
+journal replay. Canonical batch bytes, journal format, roots, historical lookup,
+lineage restrictions and duplicate classifications are unchanged.
+
+Focused contracts cover unpublished state, abandonment, foreign and cloned
+owners, advanced bases, repeated suspension, all four journal write/sync cut
+points, repeated reconciliation refusals and exact cold-replay equality. See
+`docs/SESSION_HANDOFF_2026-11-20_LEDGER_STAGING.json` for executable verification
+status; the added tests and structural reduction in copying are not a measured
+throughput result or full FSS-102 qualification.
+
 ## 13. Admission tests
 
 - single-threaded reference ledger differential;
