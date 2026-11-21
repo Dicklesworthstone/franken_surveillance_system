@@ -1003,16 +1003,16 @@ fn effect_commit_refused_on_stale_fence_and_missing_grant() -> Result<(), Box<dy
     )?;
     let approval = effect_approval(&prepared);
     leases.revoke(&lease.id)?;
-    let err = effects
-        .commit(
-            &auth,
-            &tree,
-            &mut leases,
-            prepared,
-            TimestampNs(200),
-            approval,
-        )
-        .expect_err("stale fence must refuse commit");
+    let Err(err) = effects.commit(
+        &auth,
+        &tree,
+        &mut leases,
+        prepared,
+        TimestampNs(200),
+        approval,
+    ) else {
+        return Err("stale fence must refuse commit".into());
+    };
     assert!(matches!(err.error(), EffectCoordError::Fence { .. }));
     assert_eq!(effects.state(err.token())?, EffectState::Prepared);
 
@@ -1038,16 +1038,16 @@ fn effect_commit_refused_on_stale_fence_and_missing_grant() -> Result<(), Box<dy
         TimestampNs(301),
     )?;
     let approval2 = effect_approval(&prepared2);
-    let err = effects
-        .commit(
-            &auth2,
-            &tree2,
-            &mut leases,
-            prepared2,
-            TimestampNs(400),
-            approval2,
-        )
-        .expect_err("commit grant missing");
+    let Err(err) = effects.commit(
+        &auth2,
+        &tree2,
+        &mut leases,
+        prepared2,
+        TimestampNs(400),
+        approval2,
+    ) else {
+        return Err("commit grant missing".into());
+    };
     assert!(matches!(err.error(), EffectCoordError::Grant { .. }));
     assert_eq!(effects.state(err.token())?, EffectState::Prepared);
     Ok(())
@@ -1105,9 +1105,10 @@ fn effect_cancel_and_indeterminate_semantics() -> Result<(), Box<dyn std::error:
         TimestampNs(10),
         approval2,
     )?;
-    let err = effects
-        .indeterminate(&mut tree, &auth, committed2, None, TimestampNs(11))
-        .expect_err("note required");
+    let Err(err) = effects.indeterminate(&mut tree, &auth, committed2, None, TimestampNs(11))
+    else {
+        return Err("note required".into());
+    };
     assert!(matches!(
         err.error(),
         EffectCoordError::IndeterminateWithoutNote { .. }
@@ -1197,13 +1198,13 @@ fn effect_illegal_transitions_are_typed_refusals() -> Result<(), Box<dyn std::er
         approval,
     )?;
     let before = effects.journal().clone();
-    let err = effects
-        .observed(
-            &mut committed,
-            ContentDigest::sha256(b"premature observation"),
-            TimestampNs(6),
-        )
-        .expect_err("committed cannot skip adapter acceptance");
+    let Err(err) = effects.observed(
+        &mut committed,
+        ContentDigest::sha256(b"premature observation"),
+        TimestampNs(6),
+    ) else {
+        return Err("committed cannot skip adapter acceptance".into());
+    };
     assert!(matches!(err, EffectCoordError::IllegalTransition { .. }));
     assert_eq!(effects.journal(), &before);
     Ok(())
@@ -1571,11 +1572,20 @@ fn camera_settings_effect_requires_its_own_grants_and_lease()
         &operation,
         "device:camera:fixture",
         lease.fence,
-        [RuntimeGrant::CameraManagementPrepare, RuntimeGrant::CameraSettingCommit],
+        [
+            RuntimeGrant::CameraManagementPrepare,
+            RuntimeGrant::CameraSettingCommit,
+        ],
         "management and setting grants cannot be combined",
     )?;
     assert!(matches!(
-        effects.prepare(&auth, &mut tree, &mut leases, cross_domain, TimestampNs(101)),
+        effects.prepare(
+            &auth,
+            &mut tree,
+            &mut leases,
+            cross_domain,
+            TimestampNs(101)
+        ),
         Err(EffectCoordError::InvalidGrantPair { .. })
     ));
     let prepared = effects.prepare(

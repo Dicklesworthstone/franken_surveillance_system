@@ -110,7 +110,7 @@ impl CanonicalDecode for RetainedPreparation {
 #[derive(Debug)]
 pub(super) enum JournalEvent {
     Prepare(Box<RetainedPreparation>),
-    Transition(EffectJournalTransition),
+    Transition(Box<EffectJournalTransition>),
 }
 
 impl JournalEvent {
@@ -121,7 +121,7 @@ impl JournalEvent {
         now: TimestampNs,
     ) -> Result<Self, EffectCoordError> {
         let operation_id = operation.clone();
-        Ok(Self::Transition(match action {
+        Ok(Self::Transition(Box::new(match action {
             Reconciliation::Observed(proof) => EffectJournalTransition::Transition {
                 operation_id,
                 next: EffectState::Observed,
@@ -159,7 +159,7 @@ impl JournalEvent {
                     .map_err(|error| journal_error(operation, error))?,
                 reason: None,
             },
-        }))
+        })))
     }
 
     fn encode(
@@ -583,7 +583,7 @@ fn replay_record(
             journal
                 .apply_transition(transition.clone())
                 .map_err(|_| invalid("transition semantics"))?;
-            JournalEvent::Transition(transition)
+            JournalEvent::Transition(Box::new(transition))
         }
         _ => return Err(invalid("unknown record kind")),
     };
@@ -624,7 +624,8 @@ mod preparation_guard_tests {
         let before = journal.journal_root();
         let mut intended = journal.clone();
         intended.apply_transition(transition.clone())?;
-        let bytes = JournalEvent::Transition(transition).encode(before, intended.journal_root())?;
+        let bytes = JournalEvent::Transition(Box::new(transition))
+            .encode(before, intended.journal_root())?;
         let mut bindings = BTreeMap::new();
         assert!(matches!(
             replay_record(&bytes, &mut journal, &mut bindings),

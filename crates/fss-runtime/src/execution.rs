@@ -140,7 +140,7 @@ pub enum TaskEffectError {
     /// The task registration, clock, lifecycle or runtime refused admission.
     Execution(ExecutionError),
     /// The effect coordinator refused its own authority, lease or journal checks.
-    Coordinator(EffectCoordError),
+    Coordinator(Box<EffectCoordError>),
     /// This task has already retained the maximum number of effect operations.
     Capacity,
     /// This operation was prepared before this task registered its ownership.
@@ -164,12 +164,12 @@ impl std::error::Error for TaskEffectError {}
 pub struct TaskEffectCommitRefusal {
     /// Why no dispatch permit was issued.
     pub reason: TaskEffectError,
-    prepared: PreparedEffect,
+    prepared: Box<PreparedEffect>,
 }
 impl TaskEffectCommitRefusal {
     /// Recover the original prepared handle; this does not authorize dispatch.
     pub fn into_prepared(self) -> PreparedEffect {
-        self.prepared
+        *self.prepared
     }
 }
 impl std::fmt::Display for TaskEffectCommitRefusal {
@@ -185,12 +185,12 @@ impl std::error::Error for TaskEffectCommitRefusal {}
 pub struct TaskEffectCancellationRefusal {
     /// Why the task or coordinator refused the cancellation.
     pub reason: TaskEffectError,
-    prepared: PreparedEffect,
+    prepared: Box<PreparedEffect>,
 }
 impl TaskEffectCancellationRefusal {
     /// Recover the original preparation; this grants no dispatch authority.
     pub fn into_prepared(self) -> PreparedEffect {
-        self.prepared
+        *self.prepared
     }
 }
 impl std::fmt::Display for TaskEffectCancellationRefusal {
@@ -206,12 +206,12 @@ impl std::error::Error for TaskEffectCancellationRefusal {}
 pub struct TaskEffectVerificationRefusal {
     /// Why the effect was not verified.
     pub reason: TaskEffectError,
-    effect: CommittedEffect,
+    effect: Box<CommittedEffect>,
 }
 impl TaskEffectVerificationRefusal {
     /// Recover the original committed effect without authorizing another dispatch.
     pub fn into_effect(self) -> CommittedEffect {
-        self.effect
+        *self.effect
     }
 }
 impl std::fmt::Display for TaskEffectVerificationRefusal {
@@ -433,7 +433,7 @@ impl<'a> TaskCx<'a> {
         } = &mut *state;
         let prepared = effects
             .prepare(authority, tree, leases, spec, now)
-            .map_err(TaskEffectError::Coordinator)?;
+            .map_err(|error| TaskEffectError::Coordinator(Box::new(error)))?;
         state.effect_operations.insert(operation);
         Ok(prepared)
     }
@@ -469,7 +469,12 @@ impl<'a> TaskCx<'a> {
         })();
         let mut state = match admission {
             Ok(state) => state,
-            Err(reason) => return Err(TaskEffectCommitRefusal { reason, prepared }),
+            Err(reason) => {
+                return Err(TaskEffectCommitRefusal {
+                    reason,
+                    prepared: Box::new(prepared),
+                });
+            }
         };
         let ExecutionState {
             authority, tree, ..
@@ -479,8 +484,8 @@ impl<'a> TaskCx<'a> {
             .map_err(|error| {
                 let (reason, prepared) = error.into_parts();
                 TaskEffectCommitRefusal {
-                    reason: TaskEffectError::Coordinator(reason),
-                    prepared,
+                    reason: TaskEffectError::Coordinator(Box::new(reason)),
+                    prepared: Box::new(prepared),
                 }
             })
     }
@@ -519,7 +524,12 @@ impl<'a> TaskCx<'a> {
         })();
         let mut state = match admission {
             Ok(state) => state,
-            Err(reason) => return Err(TaskEffectCancellationRefusal { reason, prepared }),
+            Err(reason) => {
+                return Err(TaskEffectCancellationRefusal {
+                    reason,
+                    prepared: Box::new(prepared),
+                });
+            }
         };
         let ExecutionState {
             authority, tree, ..
@@ -529,8 +539,8 @@ impl<'a> TaskCx<'a> {
             .map_err(|error| {
                 let (reason, prepared) = error.into_parts();
                 TaskEffectCancellationRefusal {
-                    reason: TaskEffectError::Coordinator(reason),
-                    prepared,
+                    reason: TaskEffectError::Coordinator(Box::new(reason)),
+                    prepared: Box::new(prepared),
                 }
             })
     }
@@ -567,7 +577,12 @@ impl<'a> TaskCx<'a> {
         })();
         let mut state = match admission {
             Ok(state) => state,
-            Err(reason) => return Err(TaskEffectVerificationRefusal { reason, effect }),
+            Err(reason) => {
+                return Err(TaskEffectVerificationRefusal {
+                    reason,
+                    effect: Box::new(effect),
+                });
+            }
         };
         let ExecutionState {
             authority, tree, ..
@@ -577,8 +592,8 @@ impl<'a> TaskCx<'a> {
             .map_err(|error| {
                 let (reason, effect) = error.into_parts();
                 TaskEffectVerificationRefusal {
-                    reason: TaskEffectError::Coordinator(reason),
-                    effect,
+                    reason: TaskEffectError::Coordinator(Box::new(reason)),
+                    effect: Box::new(effect),
                 }
             })
     }

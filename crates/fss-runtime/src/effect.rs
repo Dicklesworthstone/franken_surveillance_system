@@ -366,7 +366,7 @@ impl std::error::Error for EffectCoordError {}
 /// Only refusals allocate storage for the retained token.
 #[derive(Debug)]
 pub struct EffectTransitionError<T> {
-    error: EffectCoordError,
+    error: Box<EffectCoordError>,
     token: Box<T>,
 }
 
@@ -392,7 +392,7 @@ impl<T> EffectTransitionError<T> {
     /// Recover the refusal reason and original token, in that order.
     #[must_use]
     pub fn into_parts(self) -> (EffectCoordError, T) {
-        (self.error, *self.token)
+        (*self.error, *self.token)
     }
 }
 
@@ -404,7 +404,7 @@ impl<T> std::fmt::Display for EffectTransitionError<T> {
 
 impl<T: std::fmt::Debug> std::error::Error for EffectTransitionError<T> {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.error)
+        Some(self.error.as_ref())
     }
 }
 
@@ -640,7 +640,11 @@ impl EffectCoordinator {
         if self.persistence_poisoned {
             return Err(EffectSettlementRefusal::PersistencePoisoned);
         }
-        if self.journal.operations().any(|receipt| !receipt.state.is_terminal()) {
+        if self
+            .journal
+            .operations()
+            .any(|receipt| !receipt.state.is_terminal())
+        {
             return Err(EffectSettlementRefusal::Unsettled);
         }
         Ok(())
@@ -925,13 +929,13 @@ impl EffectCoordinator {
                 .map_err(|error| journal_error(operation, error))?;
             self.persist_event(
                 operation,
-                JournalEvent::Transition(EffectJournalTransition::Transition {
+                JournalEvent::Transition(Box::new(EffectJournalTransition::Transition {
                     operation_id: operation.clone(),
                     next: EffectState::Committed,
                     now,
                     result_digest: None,
                     error_code: None,
-                }),
+                })),
                 &candidate,
             )?;
             self.journal = candidate;
@@ -1239,13 +1243,13 @@ impl EffectCoordinator {
             .map_err(|error| journal_error(operation, error))?;
         self.persist_event(
             operation,
-            JournalEvent::Transition(EffectJournalTransition::Transition {
+            JournalEvent::Transition(Box::new(EffectJournalTransition::Transition {
                 operation_id: operation.clone(),
                 next: target,
                 now,
                 result_digest: proof,
                 error_code: None,
-            }),
+            })),
             &candidate,
         )?;
         self.journal = candidate;
@@ -1453,7 +1457,7 @@ fn keep_token_on_error<T>(
     match operation(&token) {
         Ok(()) => Ok(token),
         Err(error) => Err(EffectTransitionError {
-            error,
+            error: Box::new(error),
             token: Box::new(token),
         }),
     }

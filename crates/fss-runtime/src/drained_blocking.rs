@@ -266,17 +266,22 @@ mod tests {
     struct ReentrantWake {
         signal: Weak<Signal>,
         wakes: AtomicUsize,
+        signal_missing: AtomicBool,
+        lock_contended: AtomicBool,
     }
     impl Wake for ReentrantWake {
         fn wake(self: Arc<Self>) {
             self.wake_by_ref();
         }
         fn wake_by_ref(self: &Arc<Self>) {
-            let signal = self.signal.upgrade().expect("signal exists");
-            let _guard = signal
-                .waiters
-                .try_lock()
-                .expect("wake must occur outside lock");
+            let Some(signal) = self.signal.upgrade() else {
+                self.signal_missing.store(true, Ordering::Relaxed);
+                return;
+            };
+            let Ok(_guard) = signal.waiters.try_lock() else {
+                self.lock_contended.store(true, Ordering::Relaxed);
+                return;
+            };
             self.wakes.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -287,12 +292,16 @@ mod tests {
         let probe = Arc::new(ReentrantWake {
             signal: Arc::downgrade(&signal),
             wakes: AtomicUsize::new(0),
+            signal_missing: AtomicBool::new(false),
+            lock_contended: AtomicBool::new(false),
         });
         let waker = Waker::from(Arc::clone(&probe));
         let mut cx = Context::from_waker(&waker);
         assert!(signal.poll(&mut cx, 0).is_pending());
         assert!(signal.poll(&mut cx, 1).is_pending());
         signal.finish();
+        assert!(!probe.signal_missing.load(Ordering::Relaxed));
+        assert!(!probe.lock_contended.load(Ordering::Relaxed));
         assert_eq!(probe.wakes.load(Ordering::Relaxed), 2);
         assert!(signal.poll(&mut cx, 0).is_ready());
         assert!(signal.poll(&mut cx, 1).is_ready());

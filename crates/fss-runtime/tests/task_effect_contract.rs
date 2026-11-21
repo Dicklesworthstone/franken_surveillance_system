@@ -169,16 +169,20 @@ fn owning_task_verifies_only_the_recorded_observation_and_retains_refused_permit
                         TimestampNs(5),
                         approved,
                     )?;
-                    let refused = task
-                        .verify_effect(cx, &mut effects, effect, proof, TimestampNs(6))
-                        .expect_err("an unobserved effect must not be verified");
+                    let Err(refused) =
+                        task.verify_effect(cx, &mut effects, effect, proof, TimestampNs(6))
+                    else {
+                        return Err("an unobserved effect must not be verified".into());
+                    };
                     assert!(matches!(refused.reason, TaskEffectError::Coordinator(_)));
                     let mut effect = refused.into_effect();
                     effects.adapter_accepted(&mut effect, None, TimestampNs(7))?;
                     effects.observed(&mut effect, proof, TimestampNs(8))?;
-                    let refused = task
-                        .verify_effect(cx, &mut effects, effect, wrong, TimestampNs(9))
-                        .expect_err("different proof must not settle the effect");
+                    let Err(refused) =
+                        task.verify_effect(cx, &mut effects, effect, wrong, TimestampNs(9))
+                    else {
+                        return Err("different proof must not settle the effect".into());
+                    };
                     assert!(matches!(refused.reason, TaskEffectError::Coordinator(_)));
                     assert_eq!(
                         effects
@@ -284,17 +288,19 @@ fn another_task_cannot_verify_the_committed_effect() -> Test {
             },
             &cx,
             async |task, cx| {
-                let refused = task
-                    .verify_effect(cx, &mut effects, effect, proof, TimestampNs(10))
-                    .expect_err("a foreign task must not verify the effect");
-                let output = if matches!(
-                    refused.reason,
-                    TaskEffectError::Execution(ExecutionError::ObligationOwnerMismatch)
-                ) {
-                    Ok(refused.into_effect())
-                } else {
-                    Err("unexpected foreign-verification refusal")
-                };
+                let output =
+                    match task.verify_effect(cx, &mut effects, effect, proof, TimestampNs(10)) {
+                        Err(refused)
+                            if matches!(
+                                refused.reason,
+                                TaskEffectError::Execution(ExecutionError::ObligationOwnerMismatch)
+                            ) =>
+                        {
+                            Ok(refused.into_effect())
+                        }
+                        Err(_) => Err("unexpected foreign-verification refusal"),
+                        Ok(()) => Err("a foreign task must not verify the effect"),
+                    };
                 TaskCompletion {
                     output,
                     outcome: TaskOutcome::Success,
@@ -355,16 +361,16 @@ fn observed_task_can_prepare_and_commit_with_retained_failed_approval() -> Test 
                     )?;
                     let mut wrong = approval(&prepared);
                     wrong.current_precondition_digest = ContentDigest::sha256(b"wrong");
-                    let refused = task
-                        .commit_effect(
-                            cx,
-                            &mut effects,
-                            &mut leases,
-                            prepared,
-                            TimestampNs(5),
-                            wrong,
-                        )
-                        .expect_err("stale approval");
+                    let Err(refused) = task.commit_effect(
+                        cx,
+                        &mut effects,
+                        &mut leases,
+                        prepared,
+                        TimestampNs(5),
+                        wrong,
+                    ) else {
+                        return Err("stale approval must fail".into());
+                    };
                     assert!(matches!(refused.reason, TaskEffectError::Coordinator(_)));
                     let prepared = refused.into_prepared();
                     let approved = approval(&prepared);
@@ -382,15 +388,15 @@ fn observed_task_can_prepare_and_commit_with_retained_failed_approval() -> Test 
                         "EFFECT-CAMERA-MANAGEMENT-001"
                     );
                     let inert = effects.prepared(&operation).ok_or("missing preparation")?;
-                    let refusal = task
-                        .cancel_prepared_effect(
-                            cx,
-                            &mut effects,
-                            inert,
-                            ContentDigest::sha256(b"late cancel"),
-                            TimestampNs(7),
-                        )
-                        .expect_err("committed effect must not be cancelled as prepared");
+                    let Err(refusal) = task.cancel_prepared_effect(
+                        cx,
+                        &mut effects,
+                        inert,
+                        ContentDigest::sha256(b"late cancel"),
+                        TimestampNs(7),
+                    ) else {
+                        return Err("committed effect must not be cancelled as prepared".into());
+                    };
                     assert!(matches!(refusal.reason, TaskEffectError::Coordinator(_)));
                     assert_eq!(refusal.into_prepared().operation(), &operation);
                     assert_eq!(
@@ -450,13 +456,15 @@ fn another_task_cannot_claim_or_commit_existing_preparation() -> Test {
             },
             &cx,
             async |task, cx| {
-                let output = task.prepare_effect(
-                    cx,
-                    &mut effects,
-                    &mut leases,
-                    spec(&operation, fence).expect("fixture spec"),
-                    TimestampNs(4),
-                );
+                let output: Result<PreparedEffect, Box<dyn Error>> = (|| {
+                    Ok(task.prepare_effect(
+                        cx,
+                        &mut effects,
+                        &mut leases,
+                        spec(&operation, fence)?,
+                        TimestampNs(4),
+                    )?)
+                })();
                 TaskCompletion {
                     output,
                     outcome: TaskOutcome::Success,
@@ -466,7 +474,7 @@ fn another_task_cannot_claim_or_commit_existing_preparation() -> Test {
         )
         .await?;
         result.receipt?;
-        Ok::<_, Box<dyn Error>>(result.output?)
+        result.output
     })?;
     let prepared = runtime.block_on(async {
         let cx = asupersync::Cx::current().ok_or("missing runtime")?;
@@ -481,30 +489,30 @@ fn another_task_cannot_claim_or_commit_existing_preparation() -> Test {
             async |task, cx| {
                 let output: Result<PreparedEffect, Box<dyn Error>> = (|| {
                     let approved = approval(&prepared);
-                    let refused = task
-                        .commit_effect(
-                            cx,
-                            &mut effects,
-                            &mut leases,
-                            prepared,
-                            TimestampNs(7),
-                            approved,
-                        )
-                        .expect_err("foreign commit must fail");
+                    let Err(refused) = task.commit_effect(
+                        cx,
+                        &mut effects,
+                        &mut leases,
+                        prepared,
+                        TimestampNs(7),
+                        approved,
+                    ) else {
+                        return Err("foreign commit must fail".into());
+                    };
                     assert!(matches!(
                         refused.reason,
                         TaskEffectError::Execution(ExecutionError::ObligationOwnerMismatch)
                     ));
                     let prepared = refused.into_prepared();
-                    let refusal = task
-                        .cancel_prepared_effect(
-                            cx,
-                            &mut effects,
-                            prepared,
-                            ContentDigest::sha256(b"foreign fixture cancellation"),
-                            TimestampNs(8),
-                        )
-                        .expect_err("foreign cancellation must fail");
+                    let Err(refusal) = task.cancel_prepared_effect(
+                        cx,
+                        &mut effects,
+                        prepared,
+                        ContentDigest::sha256(b"foreign fixture cancellation"),
+                        TimestampNs(8),
+                    ) else {
+                        return Err("foreign cancellation must fail".into());
+                    };
                     assert!(matches!(
                         refusal.reason,
                         TaskEffectError::Execution(ExecutionError::ObligationOwnerMismatch)
