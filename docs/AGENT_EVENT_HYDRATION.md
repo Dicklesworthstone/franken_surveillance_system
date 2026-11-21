@@ -6,8 +6,8 @@ available through the MCP `query` tool. The operation uses an existing durable
 session, verifies current metadata custody and commits the disclosure's token
 charge and cursor transition before returning the artifact.
 
-This is a reference implementation. It does not hydrate original media or
-provide H2, H3 or H4. Retained uncertainty, contradictory evidence, pending
+This durable query path is a reference implementation. It does not hydrate
+original media or provide H2, H3 or H4. Retained uncertainty, contradictory evidence, pending
 obligations and protected possible worlds remain visible.
 
 ## Select and open a session
@@ -156,3 +156,34 @@ admission; it performs no additional metadata or media read. If no verified
 anchor was obtained, it returns the ordinary unanchored CLI diagnostic.
 No refusal implies a refund, an empty evidence result or permission to replay an
 external effect.
+
+## Standalone H2 graph inspection
+
+The separate local `fss-event graph hydrate-h2` command constructs an H2 graph
+summary for an exact retained event revision. Its radius is two topological hops
+in the active-support incidence graph: one support relation has an object node,
+a support-incidence node and a revision node. Distance ignores arc direction;
+the selected graph retains the original directed arcs and weights. Two events
+sharing one external reference are four incidence hops apart.
+
+The synthetic unexpanded-reference frontier is excluded from selection. Adding
+an event outside the radius cannot change the selected node/edge counts or
+subgraph digest. Historical revision references stay unexpanded and never bind
+to a current successor. Contradiction and other non-supporting relations remain
+bound by their complete event revision digests; they do not become support arcs.
+
+The proof set includes every current event publication represented by a revision
+or support-incidence node. Each contributor's witnessed revision must agree with
+its retained record, and deletion of any contributing publication or revision
+refuses the whole artifact. Unexpanded references do not gain source custody or
+independence claims. The existing canonical payload shape, H2 envelope and H0/H1
+descriptor identities are preserved.
+
+The complete source projection remains bounded to 128 current events, 8,192
+evidence edges and 8 MiB of canonical event metadata. Exceeding a bound refuses
+the request before returning a neighborhood. The H2 payload ceiling remains
+64 KiB. These are structural reference bounds, not a measured performance claim.
+
+The command records the operator-supplied grant identifier. Durable session H2
+admission, charging, continuation and MCP exposure remain separate unfinished
+work; the session query catalog continues to publish only H0 and H1.

@@ -693,3 +693,6 @@ fn descriptor_binds_privacy_epoch_and_never_supplies_missing_grants() -> Test {
     assert_eq!(built.catalog.issued_cursor_count(), 1);
     Ok(())
 }
+
+#[path = "agent_event_hydration_contract/h2_neighborhood.rs"]
+mod h2_neighborhood;

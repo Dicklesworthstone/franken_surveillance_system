@@ -13,6 +13,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+use fss_graph_algorithms::evidence::{FRONTIER_ROOT, object_node};
+use fss_graph_algorithms::weighted::{WeightedGraph, WeightedGraphBuilder};
+
 use fss_core::{
     BudgetVector, CanonicalEncoder, Completeness, ContentDigest, ContractError,
     DecisionArtifactKind, EventId, Generation, GraphNeighborhoodArtifact, H0Identity,
@@ -25,7 +28,8 @@ use fss_core::{
 
 use crate::agent_follow::snapshot_anchor_token;
 use crate::agent_orient::{
-    DeploymentOrientation, DeploymentSnapshot, EventExplanation, OrientError, explain_event,
+    DeploymentOrientation, DeploymentSnapshot, EventExplanation, OrientError, RetainedEvent,
+    explain_event,
 };
 use crate::{ReferenceHydrationCatalog, ReferenceHydrationLimits};
 
@@ -525,11 +529,18 @@ impl MetadataFacts<'_> {
 /// Builds and round-trip verifies an authorized, privacy-redacted H2 decision artifact
 /// (`DecisionArtifactKind::GraphNeighborhood`) for one exact committed event revision.
 ///
-/// The neighborhood payload carries only the redacted structural evidence-graph neighborhood
-/// (node/edge counts, failure-domain labels, relation counts, and subgraph digest) — never raw
-/// pixels, raw sensor media, or unredacted operator notes. Every proof root is bound to the
-/// deployment's retained event publication root and verified through
-/// [`H2DecisionArtifact::decode_verified`].
+/// The neighborhood is the induced radius-two projection around the exact revision's object
+/// node in the active-support incidence graph. Distance ignores arc direction; retained arcs
+/// keep their original direction. One support relation takes two incidence hops. The synthetic
+/// unexpanded-reference frontier is excluded, so it cannot join unrelated event components.
+/// Historical revisions named by support remain unexpanded references, never current successors.
+///
+/// The existing payload shape contains the selected graph's node/edge counts and digest plus
+/// the selected event's failure-domain labels, never source media or operator notes. Proof roots
+/// include every current event publication that contributes a revision or support-incidence
+/// node. All those roots are checked for deletion and round-trip verified through
+/// [`H2DecisionArtifact::decode_verified`]. Structural proximity does not establish truth,
+/// independent corroboration, source custody for unexpanded references, or effect authority.
 ///
 /// # Errors
 ///
@@ -556,14 +567,9 @@ pub fn build_event_h2_graph_neighborhood(
         retention_until,
     )?;
     let retained = &catalog.explanation.event;
-    let projection = crate::evidence_claim_graph::retained_evidence_projection(
-        snapshot.events.iter(),
-        Default::default(),
-    )
-    .map_err(|_| EventHydrationBuildError::Limit)?;
-    let graph = projection.graph();
+    let (graph, contributors) = selected_h2_neighborhood(snapshot, expected_revision)?;
     let node_count =
-        u32::try_from(graph.node_count().max(1)).map_err(|_| EventHydrationBuildError::Limit)?;
+        u32::try_from(graph.node_count()).map_err(|_| EventHydrationBuildError::Limit)?;
     let edge_count =
         u32::try_from(graph.arc_count()).map_err(|_| EventHydrationBuildError::Limit)?;
     let subgraph_digest = graph.digest();
@@ -602,11 +608,11 @@ pub fn build_event_h2_graph_neighborhood(
     )?;
 
     let payload_digest = ContentDigest::sha256(&payload);
-    let retained_provenance = RetainedProvenance::new([retained.event_root])?;
-    let mut proof_roots = BTreeSet::new();
+    let retained_provenance =
+        RetainedProvenance::new(contributors.iter().map(|event| event.event_root))?;
+    let mut proof_roots = retained_provenance.as_set().clone();
     proof_roots.insert(payload_digest);
     proof_roots.insert(expected_revision);
-    proof_roots.insert(retained.event_root);
 
     let estimated_cost = BudgetVector::builder()
         .tokens(EVENT_HYDRATION_H2_TOKENS)
@@ -639,4 +645,82 @@ pub fn build_event_h2_graph_neighborhood(
     let encoded = artifact.to_canonical_bytes()?;
     let verified = H2DecisionArtifact::decode_verified(&encoded, &retained_provenance)?;
     Ok(verified)
+}
+
+/// Selects a bounded structural projection, not a new analytic graph algorithm. The complete
+/// admitted source projection retains its existing event/edge/byte ceilings; two adjacency
+/// expansions cannot silently truncate it or pull in the synthetic frontier.
+fn selected_h2_neighborhood(
+    snapshot: &DeploymentSnapshot,
+    revision: ContentDigest,
+) -> Result<(WeightedGraph, Vec<&RetainedEvent>), EventHydrationBuildError> {
+    let projection = crate::evidence_claim_graph::retained_evidence_projection(
+        snapshot.events.iter(),
+        Default::default(),
+    )
+    .map_err(|_| EventHydrationBuildError::Limit)?;
+    let graph = projection.graph();
+    let center = graph
+        .index_of(&object_node(revision))
+        .ok_or(EventHydrationBuildError::RevisionChanged)?;
+    let mut selected = BTreeSet::from([center]);
+    let mut frontier = BTreeSet::from([center]);
+    for _ in 0..2 {
+        let mut next = BTreeSet::new();
+        for node in frontier {
+            for &arc_index in graph.out_arcs(node).iter().chain(graph.in_arcs(node)) {
+                let arc = graph.arc(arc_index);
+                let neighbor = if arc.tail == node { arc.head } else { arc.tail };
+                if graph.id(neighbor) != FRONTIER_ROOT && selected.insert(neighbor) {
+                    next.insert(neighbor);
+                }
+            }
+        }
+        frontier = next;
+    }
+
+    let mut builder = WeightedGraphBuilder::directed(graph.unit());
+    for &node in &selected {
+        builder.add_weighted_node(graph.id(node), graph.node_weight(node));
+    }
+    for arc in graph.arcs() {
+        if selected.contains(&arc.tail) && selected.contains(&arc.head) {
+            builder.add_arc(graph.id(arc.tail), graph.id(arc.head), arc.weight);
+        }
+    }
+    let neighborhood = builder
+        .build()
+        .map_err(|_| EventHydrationBuildError::Limit)?;
+
+    // A support-incidence node is authored by its target current revision. For this fixed
+    // radius two, every selected incidence has that revision's object node in the selection:
+    // it either ends at the center or is one hop from the center as its source. Therefore the
+    // selected current revision nodes enumerate every contributing publication, without
+    // treating an unexpanded object reference as verified retained source evidence.
+    let mut contributors = Vec::new();
+    for retained in &snapshot.events {
+        let actual_revision = retained.event.revision_digest();
+        if neighborhood
+            .index_of(&object_node(actual_revision))
+            .is_none()
+        {
+            continue;
+        }
+        if actual_revision != retained.revision_digest {
+            return Err(EventHydrationBuildError::RevisionChanged);
+        }
+        if snapshot.deletions.object(retained.event_root).is_some()
+            || snapshot
+                .deletions
+                .object(retained.revision_digest)
+                .is_some()
+        {
+            return Err(EventHydrationBuildError::MetadataDeleted);
+        }
+        contributors.push(retained);
+    }
+    if contributors.is_empty() {
+        return Err(EventHydrationBuildError::UnknownEvent);
+    }
+    Ok((neighborhood, contributors))
 }
