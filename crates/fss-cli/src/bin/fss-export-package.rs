@@ -8,6 +8,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::{Duration, Instant};
 
 use fss_cli::agent_json::{object, string};
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
@@ -15,9 +16,14 @@ use fss_core::{
     BudgetVector, CaptureInterval, ContentDigest, DigestAlgorithm, OperationId, PrincipalId,
     TimestampNs,
 };
+use fss_reference::agent_orient::OrientLimits;
 use fss_reference::evidence_export::{CAP_EXPORT_COMMIT, CAP_EXPORT_PREPARE, ExportError};
 use fss_reference::export_package::{
-    MAX_PACKAGE_BYTES, PackageError, PackageScope, VerifiedPackage, prepare_package, verify_package,
+    MAX_PACKAGE_BYTES, PackageError, PackageScope, PreparedPackage, VerifiedPackage,
+    prepare_package, verify_package,
+};
+use fss_reference::retained_source::{
+    ImmutableRetainedReadLimits, ImmutableRetainedSource, RetainedReadUsage,
 };
 use fss_reference::{DeploymentLayout, ReferenceDeployment, ReplayCx};
 
@@ -29,11 +35,16 @@ const HELP: &str = "fss-export-package pack --root DIR --site SITE --export-root
   [--principal ID] [--approve sha256:EXACT_FILE_APPROVAL]\n\
 Packages an ALREADY COMMITTED fss-export event root, never an unapproved preview.\n\
 Without --approve: reports the exact file approval; no output file is created.\n\
+Preview works during capture without locking or reconciling deployment state.\n\
+Preview-only limits: --max-read-bytes N (default 64 MiB, max 1 GiB),\n\
+  --max-read-objects N (default 65536, max 1000000),\n\
+  --timeout-ms N (default 30000, max 600000; cooperative at retained reads).\n\
+One nonrenewing allowance includes metadata, selected custody and final revalidation.\n\
 Approval binds the package, recipient, time bounds, actor and actual destination directory.\n\
 Writes require Linux x86-64/aarch64, /proc, and an existing directory outside the deployment.\n\
 The destination directory must not be group- or world-writable. New files use mode 0600.\n\
 The final name is create-only; exact-byte retries are idempotent, conflicts never overwrite.\n\
-Opening the existing deployment may perform its normal restart reconciliation.\n\
+Approved copies keep the exclusive deployment owner and its normal restart reconciliation.\n\
 \n\
 fss-export-package verify --input FILE --export-root sha256:TRUSTED_ROOT\n\
   --recipient LABEL --attested-now-ns EARLIEST:LATEST\n\
@@ -45,6 +56,10 @@ Hash verification is not a signature, current-state proof, physical truth or del
 The package is plaintext; expiry does not erase existing copies.\n";
 const MAX_REPORT_BYTES: usize = 512 * 1024;
 const MAX_JOURNAL_BYTES: u64 = 64 * 1024 * 1024;
+const DEFAULT_PREVIEW_READ_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_PREVIEW_READ_BYTES: u64 = 1024 * 1024 * 1024;
+const DEFAULT_PREVIEW_READ_OBJECTS: u64 = 65_536;
+const MAX_PREVIEW_READ_OBJECTS: u64 = 1_000_000;
 type RunResult<T> = Result<T, Box<dyn Error>>;
 
 #[derive(Debug)]
@@ -56,6 +71,8 @@ struct Pack {
     scope: PackageScope,
     output: PathBuf,
     approval: Option<ContentDigest>,
+    read_limits: ImmutableRetainedReadLimits,
+    timeout: Duration,
 }
 #[derive(Debug)]
 enum Options {
@@ -98,7 +115,7 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
         .first()
         .and_then(|v| v.to_str())
         .ok_or("pack or verify required")?;
-    if !matches!(command, "pack" | "verify") || args.len() > 21 {
+    if !matches!(command, "pack" | "verify") || args.len() > 27 {
         return Err("expected bounded pack or verify command".into());
     }
     let mut values = BTreeMap::new();
@@ -110,7 +127,14 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
             || match command {
                 "pack" => matches!(
                     key,
-                    "--root" | "--site" | "--principal" | "--out" | "--approve"
+                    "--root"
+                        | "--site"
+                        | "--principal"
+                        | "--out"
+                        | "--approve"
+                        | "--max-read-bytes"
+                        | "--max-read-objects"
+                        | "--timeout-ms"
                 ),
                 "verify" => key == "--input",
                 _ => false,
@@ -177,6 +201,26 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
     } else {
         None
     };
+    if approval.is_some()
+        && ["--max-read-bytes", "--max-read-objects", "--timeout-ms"]
+            .iter()
+            .any(|key| values.contains_key(*key))
+    {
+        return Err("immutable read limits apply only to an unapproved package preview".into());
+    }
+    let limit = |key: &str, default: u64, maximum: u64| -> Result<u64, String> {
+        let value = if values.contains_key(key) {
+            text(&values, key)?
+                .parse::<u64>()
+                .map_err(|_| format!("{key} requires a positive integer"))?
+        } else {
+            default
+        };
+        if value == 0 || value > maximum {
+            return Err(format!("{key} must be in 1..={maximum}"));
+        }
+        Ok(value)
+    };
     Ok(Options::Pack(Pack {
         root: path(&values, "--root")?,
         site,
@@ -185,6 +229,22 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
         scope,
         output: path(&values, "--out")?,
         approval,
+        read_limits: ImmutableRetainedReadLimits {
+            snapshot: OrientLimits::default(),
+            max_read_bytes: usize::try_from(limit(
+                "--max-read-bytes",
+                DEFAULT_PREVIEW_READ_BYTES,
+                MAX_PREVIEW_READ_BYTES,
+            )?)
+            .map_err(|_| "read byte allowance exceeds address range")?,
+            max_read_objects: usize::try_from(limit(
+                "--max-read-objects",
+                DEFAULT_PREVIEW_READ_OBJECTS,
+                MAX_PREVIEW_READ_OBJECTS,
+            )?)
+            .map_err(|_| "read attempt allowance exceeds address range")?,
+        },
+        timeout: Duration::from_millis(limit("--timeout-ms", 30_000, 600_000)?),
     }))
 }
 
@@ -278,8 +338,150 @@ fn approve_command(
     ))
 }
 
+struct PackReport<'a> {
+    options: &'a Pack,
+    root: &'a Path,
+    target: &'a file::Target,
+    package: &'a PreparedPackage,
+    approval: ContentDigest,
+}
+
+impl<'a> PackReport<'a> {
+    fn new(
+        options: &'a Pack,
+        root: &'a Path,
+        target: &'a file::Target,
+        package: &'a PreparedPackage,
+    ) -> RunResult<Self> {
+        let approval =
+            target.approval(package, &options.scope, &options.principal, &options.site)?;
+        Ok(Self {
+            options,
+            root,
+            target,
+            package,
+            approval,
+        })
+    }
+
+    // Pure rendering: neither filesystem reads nor admission callbacks follow the preview's
+    // final source observation. File approval was already bound to the pinned destination.
+    fn render(
+        &self,
+        status: &str,
+        cleanup: bool,
+        usage: Option<RetainedReadUsage>,
+    ) -> RunResult<String> {
+        let Self {
+            options,
+            root,
+            target,
+            package,
+            approval,
+        } = self;
+        bounded_report(object(&[
+            ("format", string("fss.export_package_file_report.v1")),
+            ("status", string(status)),
+            ("approval_digest", string(&approval.to_text())),
+            (
+                "approve_command",
+                approve_command(options, root, target.path(), *approval)
+                    .as_deref()
+                    .map_or_else(|| "null".into(), string),
+            ),
+            (
+                "output",
+                target.path().to_str().map_or_else(|| "null".into(), string),
+            ),
+            ("package_bytes", package.bytes().len().to_string()),
+            ("temporary_cleanup_pending", cleanup.to_string()),
+            ("deployment_open_may_reconcile", usage.is_none().to_string()),
+            (
+                "payload_read_bytes",
+                usage.map_or_else(|| "null".into(), |value| value.read_bytes.to_string()),
+            ),
+            (
+                "payload_read_attempts",
+                usage.map_or_else(|| "null".into(), |value| value.read_objects.to_string()),
+            ),
+            ("copy_receipt_in_deployment", "false".into()),
+            ("delivery_verified", "false".into()),
+            (
+                "details",
+                report(
+                    package.verified(),
+                    &options.scope,
+                    "verified_committed_export_for_copy",
+                ),
+            ),
+        ]))
+    }
+}
+
+fn preview_read_error(error: fss_reference::ingest::FileIngestError) -> PackageError {
+    match error {
+        fss_reference::ingest::FileIngestError::CancellationRequested { .. } => {
+            PackageError::Cancelled
+        }
+        _ => PackageError::AuthorityChanged,
+    }
+}
+
+fn run_pack_preview(
+    options: &Pack,
+    root: &Path,
+    target: &file::Target,
+    authority: &ContextAuthority,
+    cx: &ReplayCx,
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> RunResult<String> {
+    if options.approval.is_some() {
+        return Err(PackageError::Unauthorized.into());
+    }
+    let source =
+        ImmutableRetainedSource::open_cancellable(root, options.read_limits, cx, cancelled)
+            .map_err(preview_read_error)?;
+    if source.history().site_lineage() != options.site {
+        return Err(PackageError::Unauthorized.into());
+    }
+    // The existing package profile requires complete local journals. Missing effect history
+    // is not treated as an empty journal, and no recovery owner is constructed to recreate it.
+    if !source.snapshot().effect_journal_present {
+        return Err(PackageError::AuthorityChanged.into());
+    }
+    let package = prepare_package(&source, options.export_root, &options.scope, authority, cx)?;
+    // Bound the entire response before final custody checks, allowing the largest counters.
+    let report = PackReport::new(options, root, target, &package)?;
+    report.render(
+        "proposed",
+        false,
+        Some(RetainedReadUsage {
+            read_bytes: u64::MAX,
+            read_objects: u64::MAX,
+        }),
+    )?;
+    cx.checkpoint("export_package_cli:preview_delivery")
+        .map_err(|_| PackageError::Cancelled)?;
+    source
+        .revalidate_snapshot_metadata()
+        .map_err(preview_read_error)?;
+    source.revalidate().map_err(preview_read_error)?;
+    report.render("proposed", false, Some(source.usage()))
+}
+
 fn run_pack(options: &Pack) -> RunResult<String> {
-    let root = preflight(&options.root, &options.site)?;
+    let start = Instant::now();
+    let preview = options.approval.is_none();
+    let root = if preview {
+        if !fs::symlink_metadata(&options.root)?.file_type().is_dir() {
+            return Err(
+                io::Error::other("existing non-symlink deployment directory required").into(),
+            );
+        }
+        fs::canonicalize(&options.root)?
+    } else {
+        preflight(&options.root, &options.site)?
+    };
     let target = file::Target::new(&options.output, &root)?;
     // This explicitly invoked local-owner adapter is not remote authentication. It may read the
     // original owner's approved export; the new file effect additionally needs exact approval.
@@ -295,16 +497,33 @@ fn run_pack(options: &Pack) -> RunResult<String> {
         deadline: None,
         priority: 10,
         budgets: BudgetVector::builder()
-            .bytes(128 * 1024 * 1024)
-            .storage_operations(65_536)
+            .bytes(if preview {
+                options.read_limits.max_read_bytes as u64
+            } else {
+                128 * 1024 * 1024
+            })
+            .storage_operations(if preview {
+                options.read_limits.max_read_objects as u64
+            } else {
+                65_536
+            })
             .build()?,
         privacy_scope: "privacy:redacted-event-export-v1".into(),
         retention_scope: "retention:existing-deployment-policy".into(),
         anchor_universe: ContentDigest::sha256(options.site.as_bytes()),
         generation: 1,
     })?;
-    let cx = ReplayCx::from_context_authority(&authority, root.clone())?;
+    let cx = if preview {
+        ReplayCx::from_context_authority_read_only(&authority, root.clone())?
+    } else {
+        ReplayCx::from_context_authority(&authority, root.clone())?
+    };
     let result = (|| -> RunResult<String> {
+        if preview {
+            return run_pack_preview(options, &root, &target, &authority, &cx, &|| {
+                start.elapsed() >= options.timeout
+            });
+        }
         let deployment = ReferenceDeployment::open(&root, &options.site, &cx)?;
         let package = prepare_package(
             &deployment,
@@ -313,45 +532,17 @@ fn run_pack(options: &Pack) -> RunResult<String> {
             &authority,
             &cx,
         )?;
-        let approval =
-            target.approval(&package, &options.scope, &options.principal, &options.site)?;
-        let details = report(
-            package.verified(),
-            &options.scope,
-            "verified_committed_export_for_copy",
-        );
+        let report = PackReport::new(options, &root, &target, &package)?;
+        let approval = report.approval;
         // Bound every complete report BEFORE the external output filename can become visible.
         let render = |status: &str, cleanup: bool| -> RunResult<String> {
-            bounded_report(object(&[
-                ("format", string("fss.export_package_file_report.v1")),
-                ("status", string(status)),
-                ("approval_digest", string(&approval.to_text())),
-                (
-                    "approve_command",
-                    approve_command(options, &root, target.path(), approval)
-                        .as_deref()
-                        .map_or_else(|| "null".into(), string),
-                ),
-                (
-                    "output",
-                    target.path().to_str().map_or_else(|| "null".into(), string),
-                ),
-                ("package_bytes", package.bytes().len().to_string()),
-                ("temporary_cleanup_pending", cleanup.to_string()),
-                ("deployment_open_may_reconcile", "true".into()),
-                ("copy_receipt_in_deployment", "false".into()),
-                ("delivery_verified", "false".into()),
-                ("details", details.clone()),
-            ]))
+            report.render(status, cleanup, None)
         };
-        let proposed = render("proposed", false)?;
         let created = render("created", false)?;
         let existing = render("already_present", false)?;
         let created_cleanup_pending = render("created", true)?;
         let existing_cleanup_pending = render("already_present", true)?;
-        let Some(given) = options.approval else {
-            return Ok(proposed);
-        };
+        let given = options.approval.ok_or(PackageError::Unauthorized)?;
         if given != approval {
             return Err(ExportError::StaleApproval.into());
         }

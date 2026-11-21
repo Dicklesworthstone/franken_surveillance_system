@@ -13,12 +13,14 @@ use fss_core::{
 
 use super::*;
 use crate::evidence_export::{EventExportRequest, commit_export, preview_export};
-use crate::{ReferencePolicyAction, ReferencePolicyDecision};
+use crate::{ReferenceDeployment, ReferencePolicyAction, ReferencePolicyDecision};
 
 type Test<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const SITE: &str = "site:portable-export";
 const ACTOR: &str = "principal:portable-export";
 const RECIPIENT: &str = "recipient:case-7";
+
+mod immutable;
 
 struct Directory(PathBuf);
 impl Directory {

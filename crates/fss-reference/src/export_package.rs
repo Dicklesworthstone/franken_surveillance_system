@@ -15,12 +15,13 @@ use std::fmt;
 use fss_core::region::ContextAuthority;
 use fss_core::{CaptureInterval, ContentDigest, DigestAlgorithm, ObjectId};
 
-use crate::deletion::DeletionIndex;
+use crate::deletion::{DeletionError, DeletionIndex, MAX_DELETION_RECORD_BYTES};
 use crate::evidence_export::{
     CAP_EXPORT_COMMIT, CAP_EXPORT_PREPARE, EXPORT_OBJECT_PREFIX, EventExportRecord, ExportError,
     FAMILY_EVIDENCE_EXPORT, MAX_EXPORT_RECORD_BYTES, MAX_RECIPIENT_BYTES, read_export,
 };
-use crate::{ReferenceDeployment, ReplayCx};
+use crate::ingest::FileIngestError;
+use crate::{ReplayCx, RetainedSource};
 
 /// Fixed envelope magic; incompatible layouts require a different version.
 pub const PACKAGE_MAGIC: [u8; 8] = *b"FSSXPK01";
@@ -197,6 +198,21 @@ impl From<ExportError> for PackageError {
         Self::Export(error)
     }
 }
+impl From<DeletionError> for PackageError {
+    fn from(error: DeletionError) -> Self {
+        match error {
+            DeletionError::Cancelled { .. } => Self::Cancelled,
+            _ => Self::AuthorityChanged,
+        }
+    }
+}
+
+fn read_error(error: FileIngestError) -> PackageError {
+    match error {
+        FileIngestError::CancellationRequested { .. } => PackageError::Cancelled,
+        _ => PackageError::AuthorityChanged,
+    }
+}
 
 fn valid_root(root: ContentDigest) -> bool {
     root.algorithm() == DigestAlgorithm::Sha256 && root.bytes() != [0; 32]
@@ -284,10 +300,11 @@ pub fn verify_package(
 /// The original approving principal needs BOTH export capabilities. Preparing a new export is
 /// a separate operation: a preview-only or merely staged root is refused. Finite-deadline
 /// delegation is refused because this synchronous reference has no independent clock owner.
-/// Opening the deployment is the caller's responsibility and can have its existing recovery
-/// effects; this function does not claim that `ReferenceDeployment::open` is read-only.
+/// Both native and sealed immutable retained-source owners use the same canonical record and
+/// custody checks. An immutable caller must withhold the result until the owner's final
+/// snapshot and payload revalidation succeeds under the same nonrenewing read allowance.
 pub fn prepare_package(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     export_root: ContentDigest,
     scope: &PackageScope,
     authority: &ContextAuthority,
@@ -309,11 +326,13 @@ pub fn prepare_package(
     }
     cx.checkpoint("export_package:read")
         .map_err(|_| PackageError::Cancelled)?;
-    deployment
-        .ledger()
-        .verify_durable_head()
-        .map_err(|_| PackageError::AuthorityChanged)?;
-    let deleted = DeletionIndex::read(deployment).map_err(|_| PackageError::AuthorityChanged)?;
+    deployment.verify_read_head().map_err(read_error)?;
+    let deleted =
+        DeletionIndex::from_batches::<PackageError>(deployment.ledger().batches(), |digest| {
+            deployment
+                .read_object_bounded(digest, MAX_DELETION_RECORD_BYTES)
+                .map_err(read_error)
+        })?;
     if deleted.object(export_root).is_some() {
         return Err(PackageError::Deleted);
     }
@@ -347,10 +366,7 @@ pub fn prepare_package(
     scope.admits(&record)?;
     let bytes = encode_record(&record)?;
     let verified = verify_package(&bytes, export_root, scope)?;
-    deployment
-        .ledger()
-        .verify_durable_head()
-        .map_err(|_| PackageError::AuthorityChanged)?;
+    deployment.verify_read_head().map_err(read_error)?;
     cx.checkpoint("export_package:ready")
         .map_err(|_| PackageError::Cancelled)?;
     Ok(PreparedPackage { bytes, verified })

@@ -17,10 +17,10 @@ reviewed event revision, recipient, purpose, expiry and principal and returns `e
 A preview-only root, or a root published without the reserved export authority record, cannot
 be packaged. This new command does not approve an event export on your behalf.
 
-To inspect that committed root during active ingestion, use the immutable
-[`fss-export show`](EVIDENCE_EXPORT.md#verified-readback) reader. Its aggregate read allowances,
-cooperative deadline and final custody revalidation apply to inspection only. Package preparation
-and file publication retain the approval and deployment-lock behavior described below.
+Both the unapproved package preview and
+[`fss-export show`](EVIDENCE_EXPORT.md#verified-readback) can read an existing deployment while
+capture holds its writer. Package preview returns the exact approval needed for the separate
+file-publication step.
 
 Prepare a private output directory outside the deployment, then preview the file handoff:
 
@@ -48,11 +48,42 @@ recipient, time assertion, canonical OS-byte destination path, and physical dest
 Changing any of those values invalidates it. For non-UTF-8 paths, the command string and display
 path are null rather than lossy; repeat the original OS arguments with the supplied digest.
 
-The source deployment stays locked throughout packaging and output publication. Existing
-`ReferenceDeployment::open` can perform its normal restart reconciliation, so the command does
-not claim that opening the deployment is mutation-free. Package preparation itself appends no
-record. Tombstoned export custody is refused even when interrupted deletion has not yet removed
-its bytes; the current authority head and reserved export object are rechecked.
+### Preview during capture
+
+Without `--approve`, packaging uses a sealed immutable retained-source reader. It does not acquire
+the deployment writer, initialize missing state, repair journal tails, reconcile effects or create
+an output file. Missing or incomplete local journals are refused. The preview checks the original
+export authority and reserved object, verifies selected export custody, and repeats metadata,
+payload, publication and authority checks before returning the complete report. A concurrent
+authority advance, custody change, tombstone, cancellation or exhausted allowance refuses the
+whole preview without a JSON prefix. This permits inspection beside a held capture writer; it
+does not guarantee success while that writer is changing the observed authority.
+
+These optional flags apply only to an unapproved `pack` preview:
+
+| Option | Default | Maximum |
+|---|---:|---:|
+| `--max-read-bytes` | 67,108,864 (64 MiB) | 1,073,741,824 (1 GiB) |
+| `--max-read-objects` | 65,536 | 1,000,000 |
+| `--timeout-ms` | 30,000 | 600,000 |
+
+Values must be positive integers. One nonrenewing allowance covers metadata, selected custody,
+deletion proofs and final rereads. `payload_read_bytes` reports successful payload bytes read;
+`payload_read_attempts` includes metadata and publication reads, not filesystem syscall counts.
+The cooperative elapsed-time deadline is checked at retained reads; it cannot preempt a blocked
+filesystem call and does not supply the export's attested current time. Preview reports
+`deployment_open_may_reconcile: false`. Read limits are not part of file approval and are omitted
+from `approve_command`; supplying them with `--approve` or `verify` is rejected.
+
+### Approved copy
+
+With `--approve`, the source deployment stays locked throughout packaging and output publication.
+Existing `ReferenceDeployment::open` can perform its normal restart reconciliation; approved-copy
+reports retain `deployment_open_may_reconcile: true` and do not report immutable read counters.
+Package preparation itself appends no record. Tombstoned export custody is refused even when
+interrupted deletion has not yet removed its bytes; the current authority head and reserved
+export object are rechecked. The immutable preview and approved copy use the same canonical
+package bytes and destination-bound approval identity.
 
 ## Recipient workflow and trust boundary
 
@@ -151,13 +182,16 @@ cargo test -p fss-cli --bin fss-export-package
 cargo test -p fss-cli --test export_package_cli
 ```
 
-Ten library tests cover real export authority, strict framing, independent-root forgery,
-recipient/expiry bounds, cancellation and cold readback. Nine filesystem tests cover no-overwrite
-publication, private permissions, checkpoints, competing files, directory substitution and
-bounded reads. Six process tests cover preview/copy/retry/offline verification, changed approvals,
-recipient/root/time refusals, corruption and malformed requests.
+Library tests cover real export authority, strict framing, independent-root forgery,
+recipient/expiry bounds, cancellation, cold readback and native/immutable package parity.
+Filesystem tests cover no-overwrite publication, private permissions, checkpoints, competing
+files, directory substitution and bounded reads. Process tests cover preview/copy/retry/offline
+verification, changed approvals, recipient/root/time refusals and malformed requests. Added
+immutable-preview regressions cover a held writer, unavailable original media/models, exact
+cumulative budgets, unchanged missing/torn journals and final custody invalidations.
 
-These Rust tests and `rustfmt` were **not executed in the authoring environment**, which lacked
-the Rust toolchain. Separate Python/filesystem checks exercised descriptor-pinned hard-link
-publication, no-replacement behavior, directory replacement, and envelope arithmetic; those are
-not a compilation or test run of the Rust implementation. This slice remains unqualified.
+The commands above are qualification commands, not evidence of a passing run. During the
+immutable-preview implementation, the pinned formatter ran, but two serialized Cargo baseline
+checks were killed while compiling the unchanged `asupersync` dependency, before the affected
+crates. The new Rust tests have not executed; this change has no passing compilation or test-run
+claim. Earlier Python/filesystem publication checks do not substitute for Rust qualification.

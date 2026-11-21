@@ -33,6 +33,9 @@ const RECIPIENT: &str = "recipient:case-7";
 #[path = "export_package_cli/show.rs"]
 mod show;
 
+#[path = "export_package_cli/preview.rs"]
+mod preview;
+
 // Avoid another fixture's briefly inherited deployment lock while a test forks a CLI child.
 static SERIAL: Mutex<()> = Mutex::new(());
 
