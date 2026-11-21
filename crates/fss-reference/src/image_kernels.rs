@@ -18,6 +18,10 @@
 //! match bit-for-bit; the deterministic-reference differential lane
 //! compares against THESE functions.
 
+/// Safe SIMD image transform candidates with same-binary gates (FSS-123).
+#[path = "image_kernels_simd.rs"]
+pub mod simd;
+
 /// Typed kernel refusal.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ImageKernelError {
