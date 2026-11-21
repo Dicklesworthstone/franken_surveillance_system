@@ -14,6 +14,6 @@ source "${SCRIPT_DIR}/lib.sh"
 _E2E_SCRIPT_PATH="scripts/e2e/cap_status.sh"
 e2e_init "status" "fss-2h5zq.60" "$@"
 # Every case must report; a missing record is a failure, not a silent skip.
-export FSS_EXPECTED_ROSTER="legacy_unchanged,lab_roots,file_import_roots,rtpplay_root,refusals,incomplete_import,held_writer"
+export FSS_EXPECTED_ROSTER="legacy_unchanged,lab_roots,file_import_roots,rtpplay_root,rtpplay_loss_root,refusals,incomplete_import,held_writer,output_bound,unreadable,changed_and_cancelled,handoff_digests"
 e2e_cargo_test "fss-cli" "status_real_root"
 e2e_summary

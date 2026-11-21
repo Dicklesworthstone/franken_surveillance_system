@@ -458,12 +458,15 @@ e2e_summary
                 "FSS_E2E_LOG_DIR": str(log_dir),
                 "STUB_RCH_MODE": "exit_103",
                 "STUB_RCH_LOG": str(rch_log),
+                "CARGO_BUILD_JOBS": "2",
             }
         )
         self.assertNotEqual(res.returncode, 0, "Exit 103 must fail the run")
 
         rch_invocations = rch_log.read_text().strip().splitlines()
         self.assertEqual(len(rch_invocations), 4, f"Expected 4 invocations (1 initial + 3 retries), got {len(rch_invocations)}")
+        for invocation in rch_invocations:
+            self.assertIn(" -j 2 -- --nocapture", invocation)
 
         log_file = sorted((log_dir / "r103_suite").glob("run_*.log"))[-1]
         validate_file(log_file)

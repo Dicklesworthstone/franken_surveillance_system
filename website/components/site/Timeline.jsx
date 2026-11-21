@@ -48,7 +48,9 @@ export default function Timeline({ summary, spans, markers, belief, clock, frame
           <span className="timeline__beat">{current ? current.label : "Quiet"}</span>
         </p>
         <p className="timeline__case">
-          {held === belief[0] ? (
+          {!held ? (
+            <span>No assessment at this time.</span>
+          ) : held === belief[0] ? (
             <span>No track confirmed yet.</span>
           ) : (
             <>

@@ -215,11 +215,6 @@ impl CapStep {
         ));
     }
 
-    /// Logs a measured value that is not itself an expectation (a bound is checked separately).
-    fn observe_only(&mut self, key: &str, observed: usize) {
-        self.observed.push((key.to_owned(), observed.to_string()));
-    }
-
     fn emit(&self, verdict: &str, exit: i32) {
         println!(
             "CAPLOG {{\"step\":{},\"verdict\":{},\"exit\":{},\"duration_ms\":{},\"expected\":{},\"observed\":{}}}",
@@ -1624,7 +1619,9 @@ fn test_local_limit_10k_orphaned_entries() -> TestResult {
     // The scan stops at the first entry past the bound: a small constant number of reads beyond
     // `max_scan` (the spool and the other directories), never one read per orphan.
     let dir_reads = recording.call_count(SpoolIoCall::NextDirEntry);
-    step.observe_only("next_dir_entry_calls", dir_reads);
+    println!(
+        "Local publication inspection: {dir_reads} directory reads for {orphans} orphan files"
+    );
     step.check(
         "next_dir_entry_calls_bounded_by_scan_limit",
         true,

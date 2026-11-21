@@ -860,60 +860,70 @@ fn file_import_roots_report_a_file_source_without_live_continuity() -> TestResul
 /// import lifecycle object, and the recorded RTP import capability.
 #[test]
 fn rtpplay_import_root_reports_recorded_gaps_and_its_own_import_family() -> TestResult {
-    let dir = directory("rtpplay")?;
-    let root = dir.join("deployment");
-    let imported = import(
-        &root,
-        &media_fixture("rtp/clean.rtp"),
-        "sensor:status-rtp",
-        &RTP_BINDING,
-    )?;
-    success(&imported);
-    assert_eq!(line_field(&imported, "capsule_count")?, "5");
-    assert_eq!(line_field(&imported, "gap_before_capsules")?, "1");
-    let (document, stdout) = read_status(&root)?;
-    println!("STATUS rtpplay {}", stdout.trim_end());
-    let (sensor, stream) = only_stream(&document)?;
-    assert_eq!(sensor, "sensor:status-rtp");
-    assert_eq!(stream.get("capsules")?.number()?, 5);
-    assert_eq!(stream.get("recorded_gaps")?.number()?, 1);
-    assert_eq!(
-        stream.path(&["capture_interval", "clock_bases"])?.texts()?,
-        ["estimated"]
-    );
-    assert_eq!(
-        stream.path(&["continuity", "knowledge"])?.text()?,
-        "not_observable_file_source"
-    );
-    assert_eq!(
-        document
-            .path(&["imports", "rtpdump_import_records"])?
-            .number()?,
-        1
-    );
-    assert_eq!(
-        document
-            .path(&["imports", "file_imports_completed"])?
-            .number()?,
-        0
-    );
-    let exercised = capabilities(&document)?;
-    assert!(exercised.contains(&"recorded_rtp_session_import"));
-    assert!(!exercised.contains(&"reference_file_import"));
-    let kinds = degraded_kinds(&document)?;
-    assert!(kinds.contains(&"no_live_continuity"));
-    assert_eq!(
-        document
-            .get("degraded")?
-            .find("kind", "recorded_gaps")?
-            .get("count")?
-            .number()?,
-        1
-    );
-    caplog(
-        "rtpplay_root",
-        "capsules=5 recorded_gaps=1 continuity=not_observable_file_source",
-    );
+    for (case, capsules, gaps) in [("clean", 5, 1), ("loss", 6, 2)] {
+        let dir = directory(&format!("rtpplay-{case}"))?;
+        let root = dir.join("deployment");
+        let imported = import(
+            &root,
+            &media_fixture(&format!("rtp/{case}.rtp")),
+            "sensor:status-rtp",
+            &RTP_BINDING,
+        )?;
+        success(&imported);
+        assert_eq!(
+            line_field(&imported, "capsule_count")?,
+            capsules.to_string()
+        );
+        assert_eq!(
+            line_field(&imported, "gap_before_capsules")?,
+            gaps.to_string()
+        );
+        let (document, stdout) = read_status(&root)?;
+        println!("STATUS rtpplay {case} {}", stdout.trim_end());
+        let (sensor, stream) = only_stream(&document)?;
+        assert_eq!(sensor, "sensor:status-rtp");
+        assert_eq!(stream.get("capsules")?.number()?, capsules);
+        assert_eq!(stream.get("recorded_gaps")?.number()?, gaps);
+        assert_eq!(
+            stream.path(&["capture_interval", "clock_bases"])?.texts()?,
+            ["estimated"]
+        );
+        let continuity = stream.path(&["continuity", "knowledge"])?.text()?;
+        assert_eq!(continuity, "not_observable_file_source");
+        assert_eq!(
+            document
+                .path(&["imports", "rtpdump_import_records"])?
+                .number()?,
+            1
+        );
+        assert_eq!(
+            document
+                .path(&["imports", "file_imports_completed"])?
+                .number()?,
+            0
+        );
+        let exercised = capabilities(&document)?;
+        assert!(exercised.contains(&"recorded_rtp_session_import"));
+        assert!(!exercised.contains(&"reference_file_import"));
+        let kinds = degraded_kinds(&document)?;
+        assert!(kinds.contains(&"no_live_continuity"));
+        assert_eq!(
+            document
+                .get("degraded")?
+                .find("kind", "recorded_gaps")?
+                .get("count")?
+                .number()?,
+            gaps
+        );
+        caplog(
+            if case == "clean" {
+                "rtpplay_root"
+            } else {
+                "rtpplay_loss_root"
+            },
+            &format!("capsules={capsules} recorded_gaps={gaps} continuity={continuity}"),
+        );
+    }
     Ok(())
 }
 

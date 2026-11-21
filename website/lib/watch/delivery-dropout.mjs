@@ -112,6 +112,8 @@ export function readDeliveryDropout(directory, sceneFile) {
         assert.deepEqual([record.sensor_id, record.import_identity, record.first_segment, record.last_segment],
           ["sensor:porch", imp.import_identity, start, segments.length - 1]);
         assert.equal(record.presentation_timing_checked, true, "Watch did not verify movie presentation timing");
+        assert.equal(record.presentation_confirmation_checked, true,
+          "Watch did not bound confirmation to continuous decoded frames");
         assert.deepEqual(record.zones.map(zone => zone.zone_id), ["porch"]);
         for (const zone of record.zones) {
           const cuts = zone.uncovered.filter(gap => gap.reason === "presentation_continuity_unproven");

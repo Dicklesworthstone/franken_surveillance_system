@@ -10,9 +10,11 @@ export function createClock(duration, fps) {
   const listeners = new Set();
   const emit = () => listeners.forEach((fn) => fn());
   const step = (now) => {
-    // A hidden tab stops animation frames. On return the clock carries on from about where it was.
-    time += Math.min((now - last) / 1000, 1);
-    last = now;
+    // A queued frame can carry a timestamp earlier than the click that started playback.
+    // A hidden tab can jump forward, so limit the catch-up on the first frame back.
+    const tick = Math.max(last, now);
+    time += Math.min((tick - last) / 1000, 1);
+    last = tick;
     if (time >= duration) {
       time = duration;
       playing = false;
@@ -45,6 +47,7 @@ export function createClock(duration, fps) {
       emit();
     },
     seek(t) {
+      if (!Number.isFinite(t)) return;
       time = Math.max(0, Math.min(duration, t));
       emit();
     },

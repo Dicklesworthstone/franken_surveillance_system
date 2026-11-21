@@ -1425,7 +1425,12 @@ e2e_cargo_test() {
     start_ms=$(_e2e_now_ms)
 
     local test_exit=0
-    local cmd_args=(rch exec -- cargo test -p "$crate" --test "$target" --locked --offline -- --nocapture)
+    local cmd_args=(rch exec -- cargo test -p "$crate" --test "$target" --locked --offline)
+    # An explicit job count lets the dispatcher reserve the same capacity Cargo will use.
+    if [[ "${CARGO_BUILD_JOBS:-}" =~ ^[1-9][0-9]*$ ]]; then
+        cmd_args+=(-j "$CARGO_BUILD_JOBS")
+    fi
+    cmd_args+=(-- --nocapture)
     if [[ -n "$filter" ]]; then
         cmd_args+=("$filter")
     fi

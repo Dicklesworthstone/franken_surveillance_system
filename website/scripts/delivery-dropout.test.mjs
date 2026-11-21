@@ -89,6 +89,11 @@ test("a cross-gap native claim and a substituted sample both fail release verifi
   replace(name, JSON.stringify(report));
   assert.throws(() => readDeliveryDropout(copy, scene), /witness crosses source dropout/);
   replace(name, bytes);
+  const legacy = JSON.parse(bytes);
+  delete legacy.coverage.records[0].presentation_confirmation_checked;
+  replace(name, JSON.stringify(legacy));
+  assert.throws(() => readDeliveryDropout(copy, scene), /bound confirmation to continuous decoded frames/);
+  replace(name, bytes);
   const movie = "dropout-movie.txt";
   const rows = readFileSync(join(copy, movie), "utf8");
   const mutated = rows.replace(/(movie_sample=24 [^\n]*?source_offset=)(\d+)/, (_, prefix, n) => prefix + (Number(n) + 1));
