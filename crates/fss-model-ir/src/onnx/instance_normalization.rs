@@ -83,9 +83,24 @@ pub(super) fn lower(mut source: SourceNode<'_>, lowering: &mut Lowering<'_, '_>)
     // never exceed the admitted input tensor, and no constants are replicated.
     // Admit every helper/value before allocating any generated name.
     let limits = lowering.admission.limits;
-    if lowering.nodes.len().checked_add(5).ok_or(OnnxError::Limit)? > limits.nodes
-        || lowering.known.len().checked_add(5).ok_or(OnnxError::Limit)? > limits.tensors
-        || lowering.reserved.len().checked_add(4).ok_or(OnnxError::Limit)? > limits.tensors
+    if lowering
+        .nodes
+        .len()
+        .checked_add(5)
+        .ok_or(OnnxError::Limit)?
+        > limits.nodes
+        || lowering
+            .known
+            .len()
+            .checked_add(5)
+            .ok_or(OnnxError::Limit)?
+            > limits.tensors
+        || lowering
+            .reserved
+            .len()
+            .checked_add(4)
+            .ok_or(OnnxError::Limit)?
+            > limits.tensors
     {
         return Err(OnnxError::Limit);
     }

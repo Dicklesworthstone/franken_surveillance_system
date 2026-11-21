@@ -9,9 +9,7 @@
 use fss_tensor::Tensor;
 
 use super::resize_coordinates::{PlanningError, Scale};
-use super::resize_linear_coordinates::{
-    AxisPlan, Direct, LinearCoordinates, Selection, plan_axis,
-};
+use super::resize_linear_coordinates::{AxisPlan, Direct, LinearCoordinates, Selection, plan_axis};
 use super::{Lowering, OnnxError, Result, SourceNode, port};
 use crate::{AttrValue, AttributeMap, GraphNode, OpCode};
 
@@ -36,14 +34,21 @@ impl Emitter<'_, '_, '_> {
         };
         self.lowering.append(
             GraphNode::new(
-                id, op, self.source.label.clone(), inputs, vec![output.clone()], attrs,
-            ).map_err(|_| OnnxError::Graph)?,
+                id,
+                op,
+                self.source.label.clone(),
+                inputs,
+                vec![output.clone()],
+                attrs,
+            )
+            .map_err(|_| OnnxError::Graph)?,
         )?;
         Ok(output)
     }
 
     fn reshape(&mut self, input: String, shape: &[usize]) -> Result<String> {
-        let shape = shape.iter()
+        let shape = shape
+            .iter()
             .map(|&dim| i64::try_from(dim).map_err(|_| OnnxError::Limit))
             .collect::<Result<Vec<_>>>()?;
         self.append(
@@ -64,7 +69,9 @@ impl Emitter<'_, '_, '_> {
     fn repeat(&mut self, input: String, axis: usize, repetitions: usize) -> Result<String> {
         self.lowering.admission.charge(repetitions)?;
         let mut inputs = Vec::new();
-        inputs.try_reserve_exact(repetitions).map_err(|_| OnnxError::Limit)?;
+        inputs
+            .try_reserve_exact(repetitions)
+            .map_err(|_| OnnxError::Limit)?;
         inputs.resize_with(repetitions, || input.clone());
         self.concat(inputs, axis)
     }
@@ -80,14 +87,19 @@ impl Emitter<'_, '_, '_> {
             return Ok(input.to_owned());
         }
         let mut parts = Vec::new();
-        parts.try_reserve_exact(plan.runs.len()).map_err(|_| OnnxError::Limit)?;
+        parts
+            .try_reserve_exact(plan.runs.len())
+            .map_err(|_| OnnxError::Limit)?;
         for run in &plan.runs {
             let integer = |n| i64::try_from(n).map_err(|_| OnnxError::Limit);
             let mut selected = self.append(
                 OpCode::Slice,
                 vec![input.to_owned()],
                 AttributeMap::from([
-                    ("starts".into(), AttrValue::IntList(vec![integer(run.start)?])),
+                    (
+                        "starts".into(),
+                        AttrValue::IntList(vec![integer(run.start)?]),
+                    ),
                     ("ends".into(), AttrValue::IntList(vec![integer(run.end)?])),
                     ("axes".into(), AttrValue::IntList(vec![axis as i64])),
                     ("steps".into(), AttrValue::IntList(vec![integer(run.step)?])),
@@ -103,7 +115,10 @@ impl Emitter<'_, '_, '_> {
                     selected = self.reshape(selected, &shape)?;
                     selected = self.repeat(selected, axis + 1, run.repetitions)?;
                     let mut shape = dims;
-                    shape[axis] = run.count.checked_mul(run.repetitions).ok_or(OnnxError::Limit)?;
+                    shape[axis] = run
+                        .count
+                        .checked_mul(run.repetitions)
+                        .ok_or(OnnxError::Limit)?;
                     selected = self.reshape(selected, &shape)?;
                 }
             }
@@ -125,9 +140,15 @@ impl Emitter<'_, '_, '_> {
     ) -> Result<String> {
         match plan {
             Selection::Direct(plan) => self.direct(plan, input, dims, axis),
-            Selection::Interleave { phases, width, tail } => {
+            Selection::Interleave {
+                phases,
+                width,
+                tail,
+            } => {
                 let mut parts = Vec::new();
-                parts.try_reserve_exact(phases.len()).map_err(|_| OnnxError::Limit)?;
+                parts
+                    .try_reserve_exact(phases.len())
+                    .map_err(|_| OnnxError::Limit)?;
                 for phase in phases {
                     if phase.output != *width {
                         return Err(OnnxError::Graph);
@@ -159,24 +180,31 @@ impl Emitter<'_, '_, '_> {
         let bytes = plan.output.checked_mul(4).ok_or(OnnxError::Limit)?;
         let mut names = [String::new(), String::new()];
         for (component, name) in names.iter_mut().enumerate() {
-            *name = self.lowering.fresh_name(
-                &format!("{}-linear-axis-{axis}-weight-{component}", self.source.id),
-            )?;
+            *name = self.lowering.fresh_name(&format!(
+                "{}-linear-axis-{axis}-weight-{component}",
+                self.source.id
+            ))?;
             let mut shape = vec![1; 4];
             shape[axis] = plan.output;
             let port = port(
-                name.clone(), shape, self.lowering.generation, self.lowering.admission,
+                name.clone(),
+                shape,
+                self.lowering.generation,
+                self.lowering.admission,
             )?;
             self.lowering.admission.charge(bytes)?;
             let mut values = Vec::new();
-            values.try_reserve_exact(plan.output).map_err(|_| OnnxError::Limit)?;
+            values
+                .try_reserve_exact(plan.output)
+                .map_err(|_| OnnxError::Limit)?;
             for weights in &plan.weights {
                 self.lowering.admission.charge(1)?;
                 values.push(weights[component]);
             }
             self.lowering.admission.charge(bytes)?;
-            let tensor = Tensor::from_values(port.shape().clone(), &values, self.lowering.generation)
-                .map_err(|_| OnnxError::Limit)?;
+            let tensor =
+                Tensor::from_values(port.shape().clone(), &values, self.lowering.generation)
+                    .map_err(|_| OnnxError::Limit)?;
             self.lowering.add_constant(port, tensor)?;
         }
         Ok(names)
@@ -200,9 +228,13 @@ pub(super) fn lower(
     let mut plans = Vec::new();
     for axis in order {
         let plan = plan_axis(
-            dims[axis], scales[axis - 2], coordinates, lowering.admission.limits.nodes,
+            dims[axis],
+            scales[axis - 2],
+            coordinates,
+            lowering.admission.limits.nodes,
             |units| lowering.admission.charge(units),
-        ).map_err(|error| match error {
+        )
+        .map_err(|error| match error {
             PlanningError::Coordinates(error) => OnnxError::from(error),
             PlanningError::Admission(error) => error,
         })?;
@@ -210,21 +242,55 @@ pub(super) fn lower(
             plans.push((axis, plan));
         }
     }
-    let nodes = plans.iter().map(|(_, plan)| plan.node_count()).sum::<usize>().max(1);
-    let parameters = plans.iter().filter(|(_, plan)| plan.upper.is_some()).count() * 2;
-    let bytes = plans.iter().map(|(_, plan)| plan.parameter_bytes()).sum::<usize>();
+    let nodes = plans
+        .iter()
+        .map(|(_, plan)| plan.node_count())
+        .sum::<usize>()
+        .max(1);
+    let parameters = plans
+        .iter()
+        .filter(|(_, plan)| plan.upper.is_some())
+        .count()
+        * 2;
+    let bytes = plans
+        .iter()
+        .map(|(_, plan)| plan.parameter_bytes())
+        .sum::<usize>();
     let limits = lowering.admission.limits;
     // Planning scratch is bounded to 4096 coordinates per axis. Admit the
     // complete graph and coefficients before constructing names or tensors.
-    if lowering.nodes.len().checked_add(nodes).ok_or(OnnxError::Limit)? > limits.nodes
-        || lowering.known.len().checked_add(nodes + parameters).ok_or(OnnxError::Limit)? > limits.tensors
-        || lowering.reserved.len().checked_add(nodes - 1 + parameters).ok_or(OnnxError::Limit)? > limits.tensors
-        || lowering.parameter_bytes.checked_add(bytes).ok_or(OnnxError::Limit)? > limits.parameter_bytes
+    if lowering
+        .nodes
+        .len()
+        .checked_add(nodes)
+        .ok_or(OnnxError::Limit)?
+        > limits.nodes
+        || lowering
+            .known
+            .len()
+            .checked_add(nodes + parameters)
+            .ok_or(OnnxError::Limit)?
+            > limits.tensors
+        || lowering
+            .reserved
+            .len()
+            .checked_add(nodes - 1 + parameters)
+            .ok_or(OnnxError::Limit)?
+            > limits.tensors
+        || lowering
+            .parameter_bytes
+            .checked_add(bytes)
+            .ok_or(OnnxError::Limit)?
+            > limits.parameter_bytes
     {
         return Err(OnnxError::Limit);
     }
     lowering.admission.charge(nodes + parameters)?;
-    let mut emitter = Emitter { source, lowering, remaining: nodes };
+    let mut emitter = Emitter {
+        source,
+        lowering,
+        remaining: nodes,
+    };
     let mut value = source.inputs[0].clone();
     if plans.is_empty() {
         emitter.reshape(value, &dims)?;
@@ -234,8 +300,10 @@ pub(super) fn lower(
             value = if let Some(upper) = &plan.upper {
                 let high = emitter.selection(upper, &value, dims, axis)?;
                 let [low_weight, high_weight] = emitter.weights(&plan, axis)?;
-                let low = emitter.append(OpCode::Mul, vec![selected, low_weight], AttributeMap::new())?;
-                let high = emitter.append(OpCode::Mul, vec![high, high_weight], AttributeMap::new())?;
+                let low =
+                    emitter.append(OpCode::Mul, vec![selected, low_weight], AttributeMap::new())?;
+                let high =
+                    emitter.append(OpCode::Mul, vec![high, high_weight], AttributeMap::new())?;
                 emitter.append(OpCode::Add, vec![low, high], AttributeMap::new())?
             } else {
                 selected

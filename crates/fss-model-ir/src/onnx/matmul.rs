@@ -84,11 +84,7 @@ pub(super) fn lower(source: SourceNode<'_>, lowering: &mut Lowering<'_, '_>) -> 
         .known
         .get(&source.inputs[1])
         .ok_or(OnnxError::Graph)?;
-    if a.dtype() != DType::F32
-        || b.dtype() != DType::F32
-        || a.rank() == 0
-        || b.rank() == 0
-    {
+    if a.dtype() != DType::F32 || b.dtype() != DType::F32 || a.rank() == 0 || b.rank() == 0 {
         return Err(OnnxError::Unsupported);
     }
     let mut a_dims = a.shape().dims().to_vec();

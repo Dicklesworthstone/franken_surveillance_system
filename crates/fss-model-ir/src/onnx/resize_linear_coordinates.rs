@@ -44,7 +44,9 @@ fn unit_weight(numerator: u128, denominator: u128) -> Result<f32> {
     if numerator.checked_shl(shift).ok_or(CoordinateError::Limit)? < denominator {
         shift += 1;
     }
-    let scaled = numerator.checked_shl(23 + shift).ok_or(CoordinateError::Limit)?;
+    let scaled = numerator
+        .checked_shl(23 + shift)
+        .ok_or(CoordinateError::Limit)?;
     let mut significand = scaled / denominator;
     let remainder = (scaled % denominator) * 2;
     if remainder > denominator || (remainder == denominator && significand & 1 != 0) {
@@ -58,7 +60,9 @@ fn unit_weight(numerator: u128, denominator: u128) -> Result<f32> {
     if !((1 << 23)..(1 << 24)).contains(&significand) || exponent == 0 || exponent >= 255 {
         return Err(CoordinateError::Limit);
     }
-    Ok(f32::from_bits((exponent << 23) | (significand as u32 - (1 << 23))))
+    Ok(f32::from_bits(
+        (exponent << 23) | (significand as u32 - (1 << 23)),
+    ))
 }
 
 fn sample(input: usize, scale: Scale, position: usize, mode: LinearCoordinates) -> Result<Sample> {
@@ -76,22 +80,32 @@ fn sample(input: usize, scale: Scale, position: usize, mode: LinearCoordinates) 
             // Negative half-pixel coordinates use the first source sample.
             (
                 center.saturating_sub(scale_numerator),
-                scale_numerator.checked_mul(2).ok_or(CoordinateError::Limit)?,
+                scale_numerator
+                    .checked_mul(2)
+                    .ok_or(CoordinateError::Limit)?,
             )
         }
         LinearCoordinates::AlignCorners if scale.output > 1 => (
-            position.checked_mul((input - 1) as u128).ok_or(CoordinateError::Limit)?,
+            position
+                .checked_mul((input - 1) as u128)
+                .ok_or(CoordinateError::Limit)?,
             (scale.output - 1) as u128,
         ),
         LinearCoordinates::Asymmetric => (
-            position.checked_mul(scale_denominator).ok_or(CoordinateError::Limit)?,
+            position
+                .checked_mul(scale_denominator)
+                .ok_or(CoordinateError::Limit)?,
             scale_numerator,
         ),
         LinearCoordinates::PytorchHalfPixel | LinearCoordinates::AlignCorners => (0, 1),
         LinearCoordinates::HalfPixel => return Err(CoordinateError::Limit),
     };
     let last = (input - 1) as u128;
-    if numerator >= last.checked_mul(denominator).ok_or(CoordinateError::Limit)? {
+    if numerator
+        >= last
+            .checked_mul(denominator)
+            .ok_or(CoordinateError::Limit)?
+    {
         return Ok(Sample {
             lower: input - 1,
             upper: input - 1,
@@ -158,7 +172,10 @@ impl Selection {
         match self {
             Self::Direct(plan) => plan.node_count(),
             Self::Interleave { phases, tail, .. } => {
-                phases.iter().map(|phase| phase.node_count() + 1).sum::<usize>()
+                phases
+                    .iter()
+                    .map(|phase| phase.node_count() + 1)
+                    .sum::<usize>()
                     + 2
                     + tail.as_ref().map_or(0, |tail| tail.node_count() + 1)
             }
@@ -175,7 +192,10 @@ pub(super) struct AxisPlan {
 impl AxisPlan {
     pub(super) fn node_count(&self) -> usize {
         self.lower.node_count()
-            + self.upper.as_ref().map_or(0, |upper| upper.node_count() + 3)
+            + self
+                .upper
+                .as_ref()
+                .map_or(0, |upper| upper.node_count() + 3)
     }
     pub(super) fn parameter_bytes(&self) -> usize {
         self.weights.len() * 8
@@ -190,12 +210,17 @@ fn direct<E>(
 ) -> Planned<Option<Direct>, E> {
     charge(indices.len()).map_err(PlanningError::Admission)?;
     if indices.len() == input && indices.iter().copied().eq(0..input) {
-        return Ok(Some(Direct { runs: Vec::new(), output: input }));
+        return Ok(Some(Direct {
+            runs: Vec::new(),
+            output: input,
+        }));
     }
     // Equal-value runs become sample repetitions. Neighboring equal-length
     // runs with an arithmetic progression of source indices share one Slice.
     let mut groups = Vec::new();
-    groups.try_reserve_exact(indices.len()).map_err(|_| CoordinateError::Limit)?;
+    groups
+        .try_reserve_exact(indices.len())
+        .map_err(|_| CoordinateError::Limit)?;
     let mut at = 0;
     while at < indices.len() {
         let start = at;
@@ -214,7 +239,10 @@ fn direct<E>(
         let mut count = 1;
         let mut step = 1;
         if let Some(&(next, _)) = groups.get(at + 1).filter(|next| next.1 == repetitions) {
-            step = next.checked_sub(start).filter(|&n| n > 0).ok_or(CoordinateError::Limit)?;
+            step = next
+                .checked_sub(start)
+                .filter(|&n| n > 0)
+                .ok_or(CoordinateError::Limit)?;
             count = 2;
             while at + count < groups.len()
                 && groups[at + count].1 == repetitions
@@ -226,7 +254,10 @@ fn direct<E>(
         }
         let run = Run {
             start,
-            end: groups[at + count - 1].0.checked_add(1).ok_or(CoordinateError::Limit)?,
+            end: groups[at + count - 1]
+                .0
+                .checked_add(1)
+                .ok_or(CoordinateError::Limit)?,
             step,
             count,
             repetitions,
@@ -239,12 +270,18 @@ fn direct<E>(
         runs.push(run);
         at += count;
     }
-    Ok(Some(Direct { runs, output: indices.len() }))
+    Ok(Some(Direct {
+        runs,
+        output: indices.len(),
+    }))
 }
 
 fn period(input: usize, scale: Scale, mode: LinearCoordinates) -> Result<usize> {
     let (numerator, denominator) = if mode == LinearCoordinates::AlignCorners {
-        (scale.output.saturating_sub(1) as u128, input.saturating_sub(1) as u128)
+        (
+            scale.output.saturating_sub(1) as u128,
+            input.saturating_sub(1) as u128,
+        )
     } else {
         scale.ratio()
     };
@@ -265,12 +302,21 @@ fn period(input: usize, scale: Scale, mode: LinearCoordinates) -> Result<usize> 
     // or approximated. Compare the final helper count before choosing it.
     let mut best = (u128::MAX, 1);
     for candidate in 1..=MAX_PHASES {
-        let product = (candidate as u128).checked_mul(denominator).ok_or(CoordinateError::Limit)?;
-        let nearest = product.checked_add(numerator / 2).ok_or(CoordinateError::Limit)? / numerator;
+        let product = (candidate as u128)
+            .checked_mul(denominator)
+            .ok_or(CoordinateError::Limit)?;
+        let nearest = product
+            .checked_add(numerator / 2)
+            .ok_or(CoordinateError::Limit)?
+            / numerator;
         if nearest == 0 {
             continue;
         }
-        let distance = product.abs_diff(nearest.checked_mul(numerator).ok_or(CoordinateError::Limit)?);
+        let distance = product.abs_diff(
+            nearest
+                .checked_mul(numerator)
+                .ok_or(CoordinateError::Limit)?,
+        );
         if distance < best.0 {
             best = (distance, candidate);
         }
@@ -290,13 +336,23 @@ fn selection<E>(
         let width = indices.len() / period;
         let prefix = width * period;
         let mut phases = Vec::new();
-        phases.try_reserve_exact(period).map_err(|_| CoordinateError::Limit)?;
+        phases
+            .try_reserve_exact(period)
+            .map_err(|_| CoordinateError::Limit)?;
         let mut nodes = 2;
         for offset in 0..period {
             charge(width).map_err(PlanningError::Admission)?;
             let mut selected = Vec::new();
-            selected.try_reserve_exact(width).map_err(|_| CoordinateError::Limit)?;
-            selected.extend(indices[..prefix].iter().skip(offset).step_by(period).copied());
+            selected
+                .try_reserve_exact(width)
+                .map_err(|_| CoordinateError::Limit)?;
+            selected.extend(
+                indices[..prefix]
+                    .iter()
+                    .skip(offset)
+                    .step_by(period)
+                    .copied(),
+            );
             let Some(phase) = direct(input, &selected, maximum, charge)? else {
                 break;
             };
@@ -313,9 +369,15 @@ fn selection<E>(
                 None
             };
             if prefix == indices.len() || tail.is_some() {
-                let alternative = Selection::Interleave { phases, width, tail };
+                let alternative = Selection::Interleave {
+                    phases,
+                    width,
+                    tail,
+                };
                 if alternative.node_count() <= maximum
-                    && best.as_ref().is_none_or(|best| alternative.node_count() < best.node_count())
+                    && best
+                        .as_ref()
+                        .is_none_or(|best| alternative.node_count() < best.node_count())
                 {
                     best = Some(alternative);
                 }
@@ -342,7 +404,9 @@ pub(super) fn plan_axis<E>(
     }
     charge(scale.output * 4).map_err(PlanningError::Admission)?;
     let mut samples = Vec::new();
-    samples.try_reserve_exact(scale.output).map_err(|_| CoordinateError::Limit)?;
+    samples
+        .try_reserve_exact(scale.output)
+        .map_err(|_| CoordinateError::Limit)?;
     for position in 0..scale.output {
         charge(64).map_err(PlanningError::Admission)?;
         samples.push(sample(input, scale, position, mode)?);
@@ -350,7 +414,9 @@ pub(super) fn plan_axis<E>(
     charge(128).map_err(PlanningError::Admission)?;
     let period = period(input, scale, mode)?;
     let mut indices = Vec::new();
-    indices.try_reserve_exact(scale.output).map_err(|_| CoordinateError::Limit)?;
+    indices
+        .try_reserve_exact(scale.output)
+        .map_err(|_| CoordinateError::Limit)?;
     indices.extend(samples.iter().map(|sample| sample.lower));
     let lower = selection(input, &indices, period, maximum, &mut charge)?;
     let interpolate = samples.iter().any(|sample| sample.weights[1] != 0.0);
@@ -364,10 +430,17 @@ pub(super) fn plan_axis<E>(
     let mut weights = Vec::new();
     if interpolate {
         charge(scale.output * 2).map_err(PlanningError::Admission)?;
-        weights.try_reserve_exact(scale.output).map_err(|_| CoordinateError::Limit)?;
+        weights
+            .try_reserve_exact(scale.output)
+            .map_err(|_| CoordinateError::Limit)?;
         weights.extend(samples.into_iter().map(|sample| sample.weights));
     }
-    Ok(AxisPlan { output: scale.output, lower, upper, weights })
+    Ok(AxisPlan {
+        output: scale.output,
+        lower,
+        upper,
+        weights,
+    })
 }
 
 #[cfg(test)]
@@ -378,8 +451,12 @@ mod tests {
     fn coefficient_rounding_preserves_ties_to_even_and_exponent_carries() {
         let d = 1_u128 << 25;
         for (n, bits) in [
-            (0, 0), (1, 0x3300_0000), (d / 2 + 1, 0x3f00_0000),
-            (d / 2 + 3, 0x3f00_0002), (d - 1, 0x3f80_0000), (d, 0x3f80_0000),
+            (0, 0),
+            (1, 0x3300_0000),
+            (d / 2 + 1, 0x3f00_0000),
+            (d / 2 + 3, 0x3f00_0002),
+            (d - 1, 0x3f80_0000),
+            (d, 0x3f80_0000),
         ] {
             assert_eq!(unit_weight(n, d).map(f32::to_bits), Ok(bits));
         }
@@ -387,11 +464,27 @@ mod tests {
 
     #[test]
     fn coefficient_rounding_matches_independent_binary64_division_on_bounded_rationals() {
-        for d in [1_u128, 2, 3, 7, 17, 31, 4095, 4096, (1 << 24) - 1, (1 << 25) - 1, 1 << 25] {
+        for d in [
+            1_u128,
+            2,
+            3,
+            7,
+            17,
+            31,
+            4095,
+            4096,
+            (1 << 24) - 1,
+            (1 << 25) - 1,
+            1 << 25,
+        ] {
             for i in 0..=1024_u128 {
                 let n = d * i / 1024;
                 let expected = (n as f64 / d as f64) as f32;
-                assert_eq!(unit_weight(n, d).map(f32::to_bits), Ok(expected.to_bits()), "{n}/{d}");
+                assert_eq!(
+                    unit_weight(n, d).map(f32::to_bits),
+                    Ok(expected.to_bits()),
+                    "{n}/{d}"
+                );
             }
         }
         for (n, d) in [(1, 0), (2, 1), (0, (1 << 25) + 1)] {
