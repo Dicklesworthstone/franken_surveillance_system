@@ -13,6 +13,8 @@ mod blind_paths;
 mod capacity;
 #[path = "graph_cuts.rs"]
 mod cuts;
+#[path = "graph_hydrate_h2.rs"]
+mod hydrate_h2;
 #[path = "graph_legacy.rs"]
 mod legacy;
 #[path = "graph_reliability.rs"]
@@ -34,10 +36,14 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
     if args.first().and_then(|arg| arg.to_str()) == Some("blind-paths") {
         return blind_paths::main(args);
     }
+    if args.first().and_then(|arg| arg.to_str()) == Some("hydrate-h2") {
+        return hydrate_h2::main(args);
+    }
     if matches!(args, [flag] if matches!(flag.to_str(), Some("help" | "--help" | "-h")))
         && writeln!(
             io::stdout().lock(),
             "Retained deployment graph analysis: fss-event graph analyze --help\n\
+             Authorized H2 graph neighborhood: fss-event graph hydrate-h2 --help\n\
              Joint dependency failures: fss-event graph failure-cuts --help\n\
              Blindness probability bounds: fss-event graph reliability --help\n\
              Adversarial blind paths: fss-event graph blind-paths --help\n\
