@@ -397,8 +397,11 @@ impl FrameRun<'_> {
 
 /// Run a verified package over a retained range. `scalar` owns inference cancellation.
 /// Frames are decoded and inferred one at a time; no decoded range is buffered.
-/// Immutable callers share one retained-read allowance and must call their source owner's
-/// final revalidation before releasing the report. This function never acquires a publisher.
+/// The source and context must belong to the same deployment; the authority head is checked
+/// before and after computation. Immutable callers keep the original owner through
+/// [`crate::retained_source::ImmutableRetainedSource::revalidate_snapshot_metadata`] and
+/// [`crate::retained_source::ImmutableRetainedSource::revalidate`] before releasing the report.
+/// Those final reads share the original allowance. This function never acquires a publisher.
 pub fn run_package_detection(
     deployment: &dyn RetainedSource,
     package: &RgbDetectorPackage,
@@ -450,6 +453,9 @@ fn run_selected_detection<T>(
 ) -> Result<T, PackageDetectError> {
     cx.checkpoint("package_detect:begin")
         .map_err(|_| PackageDetectError::Cancelled)?;
+    scalar
+        .checkpoint("package_detect:begin")
+        .map_err(|_| PackageDetectError::Cancelled)?;
     if request.segment_count == 0
         || request.segment_count > MAX_PACKAGE_DETECT_FRAMES
         || request
@@ -479,6 +485,7 @@ fn run_selected_detection<T>(
         }
     };
     let first = request.first_segment;
+    validate_source_owner(deployment, cx, first)?;
     let retained = RetainedFileImport::open(deployment, request.import_identity, limits.read, cx)
         .map_err(frame_error(first))?;
     let end = first + request.segment_count;
@@ -620,9 +627,27 @@ fn run_selected_detection<T>(
     }
     admission.finish()?;
     let result = finish(contract, import_root, media_format, frames, privacy)?;
+    validate_source_owner(deployment, cx, first)?;
     cx.checkpoint("package_detect:complete")
         .map_err(|_| PackageDetectError::Cancelled)?;
+    scalar
+        .checkpoint("package_detect:complete")
+        .map_err(|_| PackageDetectError::Cancelled)?;
     Ok(result)
+}
+
+fn validate_source_owner(
+    deployment: &dyn RetainedSource,
+    cx: &ReplayCx,
+    segment: usize,
+) -> Result<(), PackageDetectError> {
+    if cx.root_dir() != deployment.root() || !cx.io_authority().is_valid() {
+        return Err(PackageDetectError::Frame {
+            segment,
+            source: "source context does not own this deployment".into(),
+        });
+    }
+    deployment.verify_read_head().map_err(frame_error(segment))
 }
 
 // Shared canonical rendering: ordinary detection and every sentinel burst use identical bytes.

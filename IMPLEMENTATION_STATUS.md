@@ -4,6 +4,44 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Detector preview custody and FLV initialization — 2026-11-20
+
+Fresh unretained package detection, short sentinel bursts and whole-recording
+sentinel previews now use the immutable retained source while capture holds its
+writer. The concurrent preview implementation is preserved; native analysis now
+also checks that its context owns that source root and that the durable authority
+head is unchanged before and after computation. Both replay and scalar
+cancellation remain active through completion and the final CLI read. Preview
+delivery revalidates the complete opening metadata snapshot, selected custody and
+current authority under one nonrenewing allowance, with a 16 MiB JSON ceiling.
+Retained publication keeps the exclusive writer and existing canonical reports.
+
+Five new native integration contracts cover MJPEG/AVC/HEVC parity, active capture,
+exact cumulative allowances, late source/capsule/manifest/publication damage,
+privacy authority drift, wrong-root ownership, and early/final cancellation.
+Two additional CLI regressions cover scalar cancellation at the last retained
+read and an effects journal torn immediately before delivery, across all three
+preview modes. The existing six preview CLI contracts remain in place. Both
+targets are included in the focused retained-perception script. See
+[detector and sentinel previews](docs/SENTINEL_DETECTION.md).
+
+`fss-probe --parameters` now also reads a bounded standard FLV AVC sequence
+header through the existing packet framing and AVC configuration parsers. It
+keeps original SPS/PPS spans, checks independent byte/NAL/geometry/tag limits and
+refuses unsupported first-video forms without heuristic recovery. Eleven new
+fixture-based tests cover exact metadata, every truncated prefix, malformed
+framing, opaque skipped payloads, limits, cancellation and mutations. This is a
+configuration-prefix result, not a claim about complete or playable recordings.
+See [media probing](docs/MEDIA_PROBE.md).
+
+Independent source review completed for both increments; pinned formatting and
+whitespace checks completed for the FLV implementation. Executable validation
+remains pending: the exact pinned compiler was restored, but the shared host
+repeatedly disconnected, and a serial no-debug Cargo attempt was killed during
+unchanged dependency compilation before any new tests ran. The environment then
+became unavailable. No full Cargo, release-lane, detector-quality or broad
+FSS-053/FSS-077/FSS-078 qualification pass is claimed.
+
 ## Operator review alongside capture — 2026-11-20
 
 `fss-review show` and unapproved `investigate`, `resolve` and `reject` requests
@@ -131,9 +169,9 @@ test-target metadata check was interrupted after approximately eleven minutes un
 shared host pressure without a compiler diagnostic. A final production recheck
 also stalled before producing output. No new runtime test-pass or release claim
 is made. Broad fusion, tracker and VIT-012 beads remain open. See the
-[session handoff](docs/SESSION_HANDOFF_2026-11-20_IMMUTABLE_ANALYSIS.json) for exact
-continuations, including fresh unretained detector/sentinel previews that still
-acquire the writer.
+[session handoff](docs/SESSION_HANDOFF_2026-11-20_IMMUTABLE_ANALYSIS.json) for the original
+continuations. Fresh unretained detector/sentinel previews are now implemented;
+see the detector preview section above for current behavior and validation scope.
 
 ## Native event preparation and local agent rehearsal — 2026-11-17
 

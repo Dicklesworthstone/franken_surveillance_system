@@ -71,6 +71,19 @@ inference and whole-recording work limits remain independent. A cooperative
 60-second elapsed deadline is checked at retained-read boundaries, including final
 validation. It does not preempt a running model, decoder or filesystem call.
 
+Before delivery, the opening snapshot's metadata (including effects history) is
+revalidated as well as the selected payloads and current authority. Both replay
+and scalar cancellation owners remain active through the final retained read.
+All preview modes have a 16 MiB JSON ceiling. Refusals release no report bytes or
+new report file; an unrelated output I/O failure can still leave a partial
+external file under the existing create-only export contract.
+
+Native `run_package_detection` and `run_sentinel_detection` also enforce that
+the supplied context owns the sealed source's root and has valid I/O authority.
+They check the retained authority head before source analysis and after report
+construction. Native callers must still keep the same immutable owner for
+`revalidate_snapshot_metadata()` and `revalidate()` before exposing the result.
+
 `--retain yes` still requires the exclusive deployment writer and retains its
 existing publication behavior. The two aggregate read options apply only to
 unretained previews and are rejected with `--retain yes`.

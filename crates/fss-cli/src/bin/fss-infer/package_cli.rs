@@ -56,6 +56,8 @@ const HELP: &str = "fss-infer package-detect [options]\n\
   1000000 read attempts by default, at most 4294967296 bytes and 4000000 attempts.\n\
   A cooperative 60-second deadline applies at retained-read boundaries; a running model,\n\
   decoder or filesystem call is not preempted. A changed source or authority refuses output.\n\
+  Preview JSON has a 16777216-byte ceiling; both read and scalar cancellation are observed\n\
+  through final validation before stdout or a report file is released.\n\
   Sentinel mode samples short contiguous bursts independently of foreground or motion.\n\
   --frames is the whole source/decode range (1..64); the first burst starts at --first-segment.\n\
   Period N is 1..64; burst K is 1..8 (default 3, no larger than N); allowance M is explicit,\n\

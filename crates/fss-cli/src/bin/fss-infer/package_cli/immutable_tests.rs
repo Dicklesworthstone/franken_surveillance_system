@@ -2,6 +2,7 @@
 //! Native previews beside an active writer: exact output, bounded custody and refusal.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use fss_core::{SensorId, StreamId, TimestampNs};
 use fss_reference::ingest::privacy_mask::{PrivacyMaskPolicy, declare_mask, preview_mask};
@@ -522,5 +523,112 @@ fn aggregate_read_flags_are_bounded_and_only_admitted_for_unretained_previews() 
             }
         }
     }
+    Ok(())
+}
+
+#[test]
+fn scalar_cancellation_at_the_last_read_withholds_all_preview_outputs() -> Test {
+    let f = Fixture::new("last-scalar-cancel")?;
+    let before = snapshot(&f.root)?;
+    for mode in MODES {
+        let scalar = ScalarExecCx::new();
+        let model = f.model(&scalar)?;
+        let mut options = f.options(mode)?;
+        let calls = AtomicUsize::new(0);
+        let mut expected = Vec::new();
+        super::run(
+            &options,
+            &model,
+            &f.cx,
+            &scalar,
+            &|| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                false
+            },
+            &mut expected,
+        )?;
+        let last = calls.load(Ordering::SeqCst);
+        assert!(last > 0);
+        assert!(!expected.is_empty());
+        calls.store(0, Ordering::SeqCst);
+        options.report = Some(f.directory.0.join(format!("late-scalar-{mode:?}.json")));
+        let mut out = Vec::new();
+        let result = super::run(
+            &options,
+            &model,
+            &f.cx,
+            &scalar,
+            &|| {
+                if calls.fetch_add(1, Ordering::SeqCst) + 1 == last {
+                    scalar.request_cancellation();
+                }
+                false
+            },
+            &mut out,
+        );
+        assert!(result.is_err(), "{mode:?}");
+        assert!(scalar.is_cancelled());
+        assert!(out.is_empty());
+        assert!(!options.report.as_ref().ok_or("report path")?.exists());
+        assert_eq!(snapshot(&f.root)?, before);
+        scalar.drain_and_finalize();
+    }
+    Ok(())
+}
+
+#[test]
+fn late_effect_journal_damage_is_refused_before_preview_delivery_without_repair() -> Test {
+    let f = Fixture::new("late-effect-journal")?;
+    let scalar = ScalarExecCx::new();
+    let model = f.model(&scalar)?;
+    let journal = f.root.join("effects/journal.fssj");
+    let original = fs::read(&journal)?;
+    let mut torn = original.clone();
+    torn.extend_from_slice(b"\x01\x02\x03");
+    for mode in MODES {
+        let mut options = f.options(mode)?;
+        let calibrate = context(&f.root)?;
+        calibrate.set_cancel_at_checkpoint("package_preview:delivery");
+        let calls = AtomicUsize::new(0);
+        let mut out = Vec::new();
+        assert!(
+            super::run(
+                &options,
+                &model,
+                &calibrate,
+                &scalar,
+                &|| {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    false
+                },
+                &mut out,
+            )
+            .is_err()
+        );
+        assert!(out.is_empty());
+        let before_delivery = calls.load(Ordering::SeqCst);
+        calibrate.drain_and_finalize();
+        calls.store(0, Ordering::SeqCst);
+        options.report = Some(f.directory.0.join(format!("late-journal-{mode:?}.json")));
+        let result = super::run(
+            &options,
+            &model,
+            &f.cx,
+            &scalar,
+            &|| {
+                if calls.fetch_add(1, Ordering::SeqCst) == before_delivery {
+                    fs::write(&journal, &torn).expect("damage temporary journal");
+                }
+                false
+            },
+            &mut out,
+        );
+        assert!(result.is_err(), "{mode:?}");
+        assert_eq!(fs::read(&journal)?, torn);
+        assert!(out.is_empty());
+        assert!(!options.report.as_ref().ok_or("report path")?.exists());
+        fs::write(&journal, &original)?;
+    }
+    scalar.drain_and_finalize();
     Ok(())
 }

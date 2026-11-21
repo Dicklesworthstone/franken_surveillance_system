@@ -5,6 +5,8 @@ use fss_reference::retained_source::{ImmutableRetainedSource, RetainedReadUsage,
 
 use super::*;
 
+const MAX_PREVIEW_REPORT_BYTES: usize = 16 * 1024 * 1024;
+
 pub(super) fn run(
     options: &Options,
     package: &RgbDetectorPackage,
@@ -16,11 +18,14 @@ pub(super) fn run(
     if options.retain {
         return Err(io::Error::other("immutable package analysis cannot retain reports").into());
     }
+    // Observe both cancellation owners at every read, including the final authority read.
+    // Invoke the caller first: it can request scalar cancellation at that same boundary.
+    let stopped = || cancelled() || scalar.is_cancelled();
     let source = ImmutableRetainedSource::open_cancellable(
         &options.root,
         options.read_limits,
         cx,
-        cancelled,
+        &stopped,
     )?;
     if source.site_lineage() != options.site {
         return Err(io::Error::other("retained package source site lineage mismatch").into());
@@ -58,9 +63,15 @@ pub(super) fn run(
         )?
         .json
     };
+    if json.len() > MAX_PREVIEW_REPORT_BYTES {
+        return Err(io::Error::other("preview report exceeds 16777216 bytes").into());
+    }
+    cx.checkpoint("package_preview:delivery")?;
+    scalar.checkpoint("package_preview:delivery")?;
     // The owner remembers every payload used by native decoding/inference, including original
     // source provenance, capsules and privacy bindings. Rehash them and check the original
     // publication/journal basis under the same budget before any stdout or export is released.
+    source.revalidate_snapshot_metadata()?;
     source.revalidate()?;
     if let Some(path) = &options.report {
         export(path, json.as_bytes(), &options.root, cx)?;

@@ -26,6 +26,10 @@ check() {
     fi
 }
 
+check package-detection-immutable cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-reference --test package_detect_immutable_contract -- --test-threads=1
+check package-detection-preview-operator cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-cli --bin fss-infer package_cli:: -- --test-threads=1
 check alert-reconciliation-custody cargo "+$channel" test --locked --offline --no-fail-fast \
     -p fss-reference --test alert_reconciliation_contract --test alert_operation_status_contract
 check alert-lifecycle-operator cargo "+$channel" test --locked --offline --no-fail-fast \
