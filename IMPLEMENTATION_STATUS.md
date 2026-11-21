@@ -4,6 +4,29 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## RTSP requests bound to the approved transport authority — 2026-11-20
+
+The TCP send queue now rejects an immutable prepared request whose first request-line
+authority differs from the link's exact owner-approved authority. The check uses the
+existing RTSP URI validator and exact host/case/port semantics, including for Digest
+authorization retries. A refusal returns the unchanged request with payload-free
+`TcpError::RequestScope`, before retention, send-budget reservation or socket I/O.
+Matching requests keep their exact wire bytes, and a refused foreign request does not
+consume the valid route's send allowance.
+
+Three regression contracts cover eight mismatched authority forms, genuine SHA-256
+Digest retries, request preservation, diagnostic redaction, unchanged socket counters
+and send budget, continued use of the valid link, and exact matching dispatch.
+This establishes request-target/transport-authority binding; same-authority session,
+ingress and generation permissions remain the owner's responsibility.
+
+Independent source review and scoped pinned formatting/whitespace checks completed
+before the executor became unavailable. Captured source was recovered through GitHub;
+the recovered client and TCP blobs match the observed local diff identities. Native
+RTSP tests were not executed to an observed result. No deployment or release
+qualification is claimed. The [session handoff](docs/SESSION_HANDOFF_2026-11-20_RTSP_AUTHORITY.json)
+records the source identities, exact retry command and the prior ledger checkpoint.
+
 ## Durable append staging without historical cloning — 2026-11-20
 
 Durable evidence append now validates and retains one successor snapshot and batch.

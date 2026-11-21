@@ -19,6 +19,21 @@ revocation, live time and resource permission through its Cx or equivalent.
 media; TLS, Basic authentication, DNS and transport-security downgrade are not
 implemented or implied. No third-party camera is discovered or probed.
 
+Queue admission also binds the immutable request target to the exact
+owner-approved `TcpBinding` authority. It reads only the first request line and
+uses the same URI validator as the protocol owner; a Digest header cannot supply
+or override the target. Host spelling, case and explicit ports must match exactly,
+consistent with the existing RTSP session scope. The caller-resolved peer address
+is not a substitute authority.
+
+A mismatch returns payload-free `TcpError::RequestScope` with the original
+`ClientRequest` intact. It is checked before queue retention or send-budget
+reservation and performs no socket I/O. The valid route remains usable. Matching
+unsigned and Digest requests retain their original wire bytes. This check binds
+the request's target authority; it does not add ingress, generation or session
+provenance to `ClientRequest`. The owner still enforces those permissions, including
+isolation between sessions sharing the same authority.
+
 The owner supplies monotonic admission time and an absolute lease. A connect
 attempt uses the smaller of its configured timeout and remaining lease, then
 rechecks live authority before any RTSP write. One connect or individual socket
@@ -60,12 +75,18 @@ source-custody store, encrypted transport, or runtime/Asupersync integration.
 cargo test -p fss-reference --lib rtsp::tcp::tests
 ```
 
-Thirteen authored contracts cover real loopback TCP, exact partial dispatch,
+Sixteen authored contracts cover real loopback TCP, exact partial dispatch,
 WouldBlock/Interrupted behavior, pre/post-I/O denial, retained unread bytes,
 work and byte limits, EOF versus failure, original deadlines, and debug privacy.
 The deterministic I/O seam is private and test-only construction does not expose
 an arbitrary-stream injection surface to callers.
 
-Rust compilation/tests/rustfmt/Clippy and qualification remain unrun in this
-editing environment, which has no Rust toolchain or network provisioning.
-Lexical/delimiter and uploaded-byte checks are not passing Rust execution.
+The three request-authority regressions cover mismatched hosts, ports, aliases and
+case; retained and redacted Digest retries; no socket work or spent send budget on
+refusal; and byte-for-byte dispatch on the matching route. Exact source received
+independent review. Scoped pinned rustfmt checks passed before the executor became
+unavailable, and the captured patches were recovered through GitHub. Native RTSP
+test execution remains pending; the shared validation host failed during the earlier
+core/ledger build attempts. No camera, full-workspace or release qualification is
+claimed. See `docs/SESSION_HANDOFF_2026-11-20_RTSP_AUTHORITY.json` for the exact
+validation boundary and retry command.

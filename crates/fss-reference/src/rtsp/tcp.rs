@@ -233,6 +233,8 @@ pub enum TcpError {
     Closed,
     /// Consume the existing read/request before admitting another.
     Backpressure,
+    /// Prepared request targets a different authority than the owner-approved route.
+    RequestScope,
     /// A request does not fit its independent size or remaining send-byte reservation.
     RequestBudget,
     /// Receive-byte or socket-call budget is exhausted; this is NOT clean EOF.
@@ -529,7 +531,8 @@ impl RtspTcpLink {
     pub fn check(&mut self, now: u64, authority: &dyn TcpAuthority) -> Result<(), TcpError> {
         self.admit(now, TcpOperation::Poll, authority)
     }
-    /// Retain one original prepared request. No write, nonce retry or session advance occurs here.
+    /// Retain one original prepared request for this exact authority. No write, nonce retry
+    /// or session advance occurs here. A scope refusal returns the request unchanged.
     pub fn queue_request(
         &mut self,
         request: ClientRequest,
@@ -539,6 +542,9 @@ impl RtspTcpLink {
         let result = self
             .admit(now, TcpOperation::QueueRequest, authority)
             .and_then(|()| {
+                if !request.matches_authority(self.binding.authority()) {
+                    return Err(TcpError::RequestScope);
+                }
                 if self.request.is_some() {
                     return Err(TcpError::Backpressure);
                 }

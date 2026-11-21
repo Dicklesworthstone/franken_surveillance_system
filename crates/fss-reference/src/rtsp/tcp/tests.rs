@@ -2,6 +2,7 @@
 //! Deterministic faults use the private socket seam; the public constructor owns real TCP only.
 
 use super::*;
+use crate::rtsp::authentication::{DigestCredentials, DigestPolicy};
 use crate::rtsp::client::{ClientCommand, ClientConfig, RtspClientSession};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -106,16 +107,136 @@ fn make_link(script: Script, limits: TcpLimits) -> Result<RtspTcpLink, TcpError>
         interrupted_write: 0,
     })
 }
-fn request() -> Result<ClientRequest, crate::rtsp::client::ClientError> {
+fn session(authority: &str) -> Result<RtspClientSession, crate::rtsp::client::ClientError> {
     RtspClientSession::new(ClientConfig {
-        presentation_uri: "rtsp://camera.local/live/".into(),
-        control_root_uri: "rtsp://camera.local/live".into(),
+        presentation_uri: format!("rtsp://{authority}/live/"),
+        control_root_uri: format!("rtsp://{authority}/live"),
         media_index: 0,
         channels: (0, 1),
         response_timeout_ns: 10_000_000_000,
         default_session_timeout_seconds: 60,
-    })?
-    .request(ClientCommand::Describe, 0)
+    })
+}
+fn request() -> Result<ClientRequest, crate::rtsp::client::ClientError> {
+    session("camera.local")?.request(ClientCommand::Describe, 0)
+}
+fn digest_retry(authority: &str) -> Result<ClientRequest, Box<dyn std::error::Error>> {
+    let mut session = session(authority)?;
+    session.enable_digest("route-realm", DigestPolicy::default())?;
+    let credentials = DigestCredentials::new("route-operator", "route-password")?;
+    session.request_digest(ClientCommand::Describe, &credentials, [1; 16], 0)?;
+    Ok(session.retry_digest_response(
+        b"RTSP/1.0 401 Unauthorized\r\nCSeq: 1\r\nWWW-Authenticate: Digest realm=\"route-realm\", nonce=\"route-nonce\", algorithm=SHA-256, qop=\"auth\"\r\nContent-Length: 0\r\n\r\n",
+        &credentials,
+        [2; 16],
+        1,
+    )?)
+}
+
+#[test]
+fn request_authority_must_match_before_any_socket_work() -> TestResult {
+    for authority in [
+        "other-camera.local",
+        "camera.local:554",
+        "camera.local:8554",
+        "camera.local.other",
+        "camera.local.",
+        "CAMERA.local",
+        "127.0.0.1:8554",
+        "[::1]",
+    ] {
+        let script = Script::default();
+        let sent = Arc::clone(&script.sent);
+        let original_request = session(authority)?.request(ClientCommand::Describe, 0)?;
+        let original = original_request.bytes().to_vec();
+        let mut link = make_link(
+            script,
+            TcpLimits {
+                max_sent_bytes: request()?.bytes().len() as u64,
+                ..TcpLimits::default()
+            },
+        )?;
+        let refused = link
+            .queue_request(original_request, 1, &Permit)
+            .err()
+            .ok_or("foreign authority admitted")?;
+        assert_eq!(refused.reason, TcpError::RequestScope);
+        assert_eq!(refused.request.bytes(), original);
+        assert_eq!(refused.request.cseq(), 1);
+        assert_eq!(refused.request.command(), ClientCommand::Describe);
+        assert!(!link.has_pending_request());
+        assert_eq!(link.write_step(2, &Permit)?, TcpWriteStep::Idle);
+        assert_eq!(link.totals().sent_bytes, 0);
+        assert_eq!(link.totals().write_calls, 0);
+        assert_eq!(link.totals().read_calls, 0);
+        assert_eq!(link.totals().last_sent_cseq, None);
+        assert!(sent.lock().map_err(|_| "test lock poisoned")?.is_empty());
+
+        // A scope refusal neither spends the send reservation nor closes the valid route.
+        let valid = request()?;
+        let expected = valid.bytes().to_vec();
+        link.queue_request(valid, 3, &Permit)?;
+        assert!(matches!(
+            link.write_step(4, &Permit)?,
+            TcpWriteStep::Sent { cseq: 1, .. }
+        ));
+        assert_eq!(*sent.lock().map_err(|_| "test lock poisoned")?, expected);
+        assert_eq!(link.totals().sent_bytes as usize, expected.len());
+    }
+    Ok(())
+}
+
+#[test]
+fn foreign_digest_retry_remains_caller_owned_and_redacted() -> TestResult {
+    let script = Script::default();
+    let sent = Arc::clone(&script.sent);
+    let mut link = make_link(script, TcpLimits::default())?;
+    let request = digest_retry("foreign.private")?;
+    let original = request.bytes().to_vec();
+    assert!(std::str::from_utf8(&original)?.contains("Authorization: Digest"));
+    let refused = link
+        .queue_request(request, 1, &Permit)
+        .err()
+        .ok_or("foreign Digest credentials admitted")?;
+    assert_eq!(refused.reason, TcpError::RequestScope);
+    assert_eq!(refused.request.bytes(), original);
+    assert_eq!(refused.request.cseq(), 2);
+    assert_eq!(refused.request.command(), ClientCommand::Describe);
+    assert_eq!(link.write_step(2, &Permit)?, TcpWriteStep::Idle);
+    assert_eq!(link.totals().sent_bytes, 0);
+    assert_eq!(link.totals().write_calls, 0);
+    assert!(sent.lock().map_err(|_| "test lock poisoned")?.is_empty());
+    let diagnostic = format!("{refused:?} {refused}");
+    for secret in [
+        "foreign.private",
+        "camera.local",
+        "/live",
+        "route-operator",
+        "route-password",
+        "route-realm",
+        "route-nonce",
+        "Authorization",
+    ] {
+        assert!(!diagnostic.contains(secret));
+    }
+    Ok(())
+}
+
+#[test]
+fn matching_digest_retry_is_sent_byte_for_byte() -> TestResult {
+    let script = Script::default();
+    let sent = Arc::clone(&script.sent);
+    let mut link = make_link(script, TcpLimits::default())?;
+    let request = digest_retry("camera.local")?;
+    let expected = request.bytes().to_vec();
+    link.queue_request(request, 1, &Permit)?;
+    assert!(matches!(
+        link.write_step(2, &Permit)?,
+        TcpWriteStep::Sent { cseq: 2, .. }
+    ));
+    assert_eq!(*sent.lock().map_err(|_| "test lock poisoned")?, expected);
+    assert_eq!(link.totals().last_sent_cseq, Some(2));
+    Ok(())
 }
 
 #[test]

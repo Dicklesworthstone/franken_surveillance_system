@@ -1,0 +1,85 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-20",
+  "date_timezone": "America/New_York",
+  "mission": "Implement critical functional gaps from the comprehensive plan and Beads, checkpointing substantive changes directly to main through GitHub with no PRs.",
+  "basis": {
+    "parent": "435c9f21d06c919efa6ed17028b2279859b8d779",
+    "previous_handoff": "docs/SESSION_HANDOFF_2026-11-20_LEDGER_STAGING.json",
+    "plan": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+    "backlog": ".beads/issues.jsonl"
+  },
+  "authority": {
+    "repository": "User explicitly authorized direct main commits using GitHub.",
+    "operational": "No live camera connections or deployment changes; all authored tests use injected I/O or local fixtures."
+  },
+  "delivered": [
+    {
+      "feature": "Owner-bound durable append staging",
+      "commit": "435c9f21d06c919efa6ed17028b2279859b8d779",
+      "documentation": "docs/ONE_VERSION_UNIVERSE.md",
+      "verification": "Native tests remain unverified; exact limitation retained in prior handoff."
+    },
+    {
+      "feature": "RTSP request-target authority bound to TCP route",
+      "commit": "this_commit",
+      "documentation": "docs/NATIVE_RTSP_TCP.md",
+      "scope": "Validate immutable first wire line using the existing credential-free URI parser before queue ownership, send reservation or socket I/O. Refuse with RequestScope and unchanged ClientRequest. Preserve matching bytes and usable valid route."
+    }
+  ],
+  "threat_addressed": "A request prepared for one authority, including Digest authorization material, could previously be queued onto another authority's owner-approved TCP route because only the link's authority was checked.",
+  "compatibility": [
+    "Exact textual authority semantics follow existing session validation; no DNS, default-port, case or alias normalization was introduced.",
+    "ClientRequest constructors and wire bytes are unchanged.",
+    "Scope refusal is payload-free and does not consume the request or its send allowance.",
+    "No same-authority session, ingress, generation or principal binding is implied; those remain with the explicit owner.",
+    "No dependencies, pins, qualification gates or retry policies were weakened."
+  ],
+  "validation": {
+    "authored_regressions": [
+      "request_authority_must_match_before_any_socket_work",
+      "foreign_digest_retry_remains_caller_owned_and_redacted",
+      "matching_digest_retry_is_sent_byte_for_byte"
+    ],
+    "cases": "Eight mismatched authority forms, actual-vs-authority ports, genuine SHA-256 Digest challenge retry, untouched request bytes/CSeq/command, redacted errors, zero socket work, unchanged send allowance and subsequent valid dispatch.",
+    "independent_review": "Exact rescued source and shared URI/client construction, CLI error classification and reconnect behavior reviewed by root and a separate agent; no blocker found.",
+    "original_formatting": "Pinned rustfmt --edition 2024 --check and git diff --check returned exit 0 for the RTSP changes before environment loss.",
+    "final_source": "Recovered from captured applied patches. Client blob 11f79067042fbebcf42272b038b1c23effb33859 and TCP blob 2f54dd146820bf82a94447aadf1e88e04274ea3d match observed local git diff identities. Test blob 691954effe764f2b9aa22cc8cb9bccdfbccc24fc was recovered from the exact captured patch and source; no final native check was available.",
+    "rescue_tree": "1b8a60fc4f0881141d877b8b9f7d04c75eb08525",
+    "native_test_outcome": "Not executed to an observed result. The serial validation queue was blocked by earlier core/ledger compiler SIGKILL and subsequent executor loss; no RTSP test pass claimed.",
+    "integrity": "Changed-file SHA-256 manifest overlay updated from the published bytes; no full native worktree audit claim.",
+    "qualification": "No real-camera, full-workspace, deployment-throughput or release qualification."
+  },
+  "retry": {
+    "command": "cargo test --locked --offline -j1 -p fss-reference --lib rtsp::tcp::tests",
+    "environment": "Exact nightly-2026-08-31 and locked registry closure; CARGO_BUILD_JOBS=1; CARGO_PROFILE_DEV_DEBUG=0; CARGO_PROFILE_TEST_DEBUG=0; CARGO_INCREMENTAL=0; RUSTUP_AUTO_INSTALL=0",
+    "dependency": "asupersync 0.5.0; compiler needs a functioning host with adequate capacity."
+  },
+  "related_requirements": [
+    {
+      "plan_section": "9.3",
+      "scope": "Owner-authorized bounded RTSP transport; this security contract is a narrow implementation improvement, not closure of a broad ingest or device-qualification Bead."
+    }
+  ],
+  "continuations": [
+    {
+      "priority": "first",
+      "work": "Execute the ledger and RTSP contracts and verify final formatting on an available host without changing pins or weakening acceptance gates."
+    },
+    {
+      "priority": "functional",
+      "work": "Durable replay still retains full historical object maps. Introduce an explicit current-snapshot mode only with exact oracle/prefix/crash parity and preserved canonical batch and identity history."
+    },
+    {
+      "priority": "functional",
+      "bead": "fss-x4a.25.2",
+      "external_ref": "FSS-177",
+      "work": "Request-owned MCP execution/cancellation remains a previously identified substantial gap; use Asupersync ownership, bounded admission and drain/finalize contracts."
+    }
+  ],
+  "obligations": [
+    "Both implemented functional increments are committed directly to main; no PRs.",
+    "Outstanding native validation is explicit; broad Beads are not closed on source review.",
+    "No pending live operational effects."
+  ]
+}

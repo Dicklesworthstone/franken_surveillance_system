@@ -192,6 +192,17 @@ impl ClientRequest {
     pub fn command(&self) -> ClientCommand {
         self.command
     }
+    /// Bind the immutable request target to the transport's exact owner-approved authority.
+    /// Only the first wire line is relevant; Digest headers cannot supply the target.
+    pub(super) fn matches_authority(&self, authority: &str) -> bool {
+        self.bytes
+            .split_once("\r\n")
+            .and_then(|(line, _)| line.strip_prefix(self.command.wire_method()))
+            .and_then(|target| target.strip_prefix(' '))
+            .and_then(|target| target.strip_suffix(" RTSP/1.0"))
+            .and_then(|target| uri_parts(target).ok())
+            .is_some_and(|(target_authority, _)| target_authority == authority)
+    }
 }
 impl fmt::Debug for ClientRequest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
