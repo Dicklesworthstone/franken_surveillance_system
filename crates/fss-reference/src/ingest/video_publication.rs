@@ -28,7 +28,7 @@ use super::recorded_decode::h265::{
 };
 use super::recorded_decode::{RecordedDecodeError, source_capsule};
 use super::{RetainedFileImport, RetainedReadLimits};
-use crate::{ReferenceDeployment, ReplayCx};
+use crate::{ReferenceDeployment, ReplayCx, RetainedSource};
 
 type Result<T> = std::result::Result<T, RecordedDecodeError>;
 const MAX_METADATA_BYTES: usize = 4096;
@@ -207,13 +207,17 @@ impl Binding {
 
     fn source_gate(
         &self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         count: usize,
         output: u64,
         limits: VideoPublicationLimits,
         cx: &ReplayCx,
     ) -> Result<MaskBinding> {
         checkpoint(cx, "video_publication:source")?;
+        if deployment.root() != cx.root_dir() {
+            return Err(RecordedDecodeError::CustodyMismatch);
+        }
+        deployment.verify_read_head()?;
         self.lengths(limits)?;
         if count == 0
             || count > MAX_RANGE_SEGMENTS
@@ -426,12 +430,16 @@ impl PublishedVideoFrame {
     /// Reads and verifies source custody, current privacy policy, exact authority/manifest closure,
     /// the unchanged native receipt, and packed pixels. Missing completion is never success.
     pub fn open(
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         root: ContentDigest,
         limits: VideoPublicationLimits,
         cx: &ReplayCx,
     ) -> Result<Self> {
         checkpoint(cx, "video_publication:open")?;
+        if deployment.root() != cx.root_dir() {
+            return Err(RecordedDecodeError::CustodyMismatch);
+        }
+        deployment.verify_read_head()?;
         if root.algorithm() != DigestAlgorithm::Sha256 {
             return Err(RecordedDecodeError::InvalidReceipt);
         }
@@ -467,6 +475,7 @@ impl PublishedVideoFrame {
         let i420 = read(deployment, binding.i420, luma_len + 2 * chroma_len)?;
         verify_pixels(&binding, &i420, luma_len, chroma_len)?;
         checkpoint(cx, "video_publication:read_complete")?;
+        deployment.verify_read_head()?;
         Ok(Self {
             binding,
             receipt,
@@ -611,31 +620,20 @@ fn closure(manifest: &ObjectManifest) -> Vec<ContentDigest> {
     children.dedup();
     children
 }
-fn read(
-    deployment: &ReferenceDeployment,
-    digest: ContentDigest,
-    maximum: usize,
-) -> Result<Vec<u8>> {
-    let bytes = deployment
-        .publisher()
-        .spool()
-        .read_bounded(digest, maximum)?;
+fn read(deployment: &dyn RetainedSource, digest: ContentDigest, maximum: usize) -> Result<Vec<u8>> {
+    let bytes = deployment.read_object_bounded(digest, maximum)?;
     if ContentDigest::sha256(&bytes) != digest {
         return Err(RecordedDecodeError::InvalidReceipt);
     }
     Ok(bytes)
 }
 fn verify_visible(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     slot: &SlotName,
     manifest: &ObjectManifest,
 ) -> Result<()> {
-    if deployment
-        .publisher()
-        .root(slot)
-        .is_none_or(|r| r.root != manifest.root())
-        || read(deployment, manifest.root(), MAX_METADATA_BYTES)? != manifest.canonical_bytes()
-    {
+    deployment.check_publication(slot, manifest.root(), manifest.children().len())?;
+    if read(deployment, manifest.root(), MAX_METADATA_BYTES)? != manifest.canonical_bytes() {
         return Err(RecordedDecodeError::InvalidReceipt);
     }
     Ok(())

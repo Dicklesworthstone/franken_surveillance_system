@@ -477,6 +477,8 @@ fn read_refuses_cross_import_codec_privacy_and_narrowed_bounds_before_export() -
         ("--max-pixels", "1".into()),
         ("--max-dimension", "16".into()),
         ("--max-source-bytes", "1".into()),
+        ("--max-read-bytes", "1".into()),
+        ("--max-read-objects", "1".into()),
     ] {
         let mut read = fixture.read("read", root);
         set(&mut read, key, value);
@@ -609,6 +611,89 @@ fn retained_source_damage_invalidates_cold_pixels_and_exact_publication_without_
     refuse(&publish)?;
     assert_eq!(fs::read(path)?, damaged);
     assert_eq!(fixture.journals()?, saved);
+    Ok(())
+}
+
+#[test]
+fn immutable_read_and_full_replay_work_while_publication_owner_is_active() -> Test {
+    let fixture = Fixture::new("avc")?;
+    let published = rows(&good(&approved(&fixture.publish(3))?)?)?;
+    let frame = details(&published, "frame")?[0];
+    let root = text(frame, "frame_root")?;
+    let cx = context(&fixture.root)?;
+    let deployment = ReferenceDeployment::open(&fixture.root, SITE, &cx)?;
+    let before = fixture.journals()?;
+    for command in ["read", "verify"] {
+        let result = rows(&good(&approved(&fixture.read(command, root))?)?)?;
+        let saved = details(&result, "frame")?[0];
+        assert_eq!(
+            text(saved, "receipt_digest")?,
+            text(frame, "receipt_digest")?
+        );
+        assert_eq!(text(saved, "i420_digest")?, text(frame, "i420_digest")?);
+        let terminal = details(&result, "terminal")?[0];
+        assert_eq!(
+            number(terminal, "frames_decoded")?,
+            if command == "verify" { 3 } else { 0 }
+        );
+        assert_eq!(flag(terminal, "replay_verified")?, command == "verify");
+    }
+    assert!(refuse(&approved(&fixture.publish(3))?)?.stdout.is_empty());
+    assert_eq!(fixture.journals()?, before);
+    drop(deployment);
+    cx.drain_and_finalize();
+    Ok(())
+}
+
+#[test]
+fn immutable_allowances_are_approved_and_refusals_release_no_success_rows() -> Test {
+    let fixture = Fixture::new("avc")?;
+    let published = rows(&good(&approved(&fixture.publish(3))?)?)?;
+    let root = text(details(&published, "frame")?[0], "frame_root")?;
+    let before = fixture.journals()?;
+    for command in ["read", "verify"] {
+        for key in ["--max-read-bytes", "--max-read-objects"] {
+            let base = fixture.read(command, root);
+            let mut stale = approved(&base)?;
+            set(&mut stale, key, "1");
+            assert!(
+                refuse(&stale)?.stdout.is_empty(),
+                "read allowance escaped approval"
+            );
+            let mut narrow = base;
+            set(&mut narrow, key, "1");
+            assert!(refuse(&approved(&narrow)?)?.stdout.is_empty());
+        }
+        let mut foreign_site = fixture.read(command, root);
+        set(&mut foreign_site, "--site", "site:another-owner");
+        assert!(refuse(&approved(&foreign_site)?)?.stdout.is_empty());
+    }
+    assert_eq!(fixture.journals()?, before);
+    Ok(())
+}
+
+#[test]
+fn immutable_video_read_never_recovers_a_torn_ledger_tail() -> Test {
+    let fixture = Fixture::new("avc")?;
+    let published = rows(&good(&approved(&fixture.publish(1))?)?)?;
+    let root = text(details(&published, "frame")?[0], "frame_root")?;
+    let journal = fixture.root.join("ledger/journal.fssj");
+    let mut damaged = fs::read(&journal)?;
+    damaged.extend_from_slice(b"interrupted-frame-commit");
+    fs::write(&journal, &damaged)?;
+    let before = fixture.journals()?;
+    for command in ["read", "verify"] {
+        assert!(
+            refuse(&approved(&fixture.read(command, root))?)?
+                .stdout
+                .is_empty()
+        );
+        assert_eq!(
+            fixture.journals()?,
+            before,
+            "read recovered a writer journal"
+        );
+    }
     Ok(())
 }
 

@@ -25,13 +25,15 @@ use fss_reference::ingest::recorded_decode::{ComponentInterpretation, RecordedDe
 use fss_reference::ingest::video_publication::{
     NativeVideoFrame, PublishedVideoCodec, PublishedVideoFrame, VideoPublicationLimits,
 };
-use fss_reference::{ReferenceDeployment, ReplayCx};
+use fss_reference::{ReferenceDeployment, ReplayCx, RetainedSource};
 
 use crate::plan::{
     Codec, Command, MANIFEST_RESERVE, Plan, REPORT_LIMIT, SCHEMA, STORAGE_OPERATIONS,
 };
 use crate::{Result, fail, write_bounded};
 
+#[path = "immutable.rs"]
+mod immutable;
 #[path = "selected.rs"]
 mod selected;
 
@@ -208,7 +210,7 @@ impl Range {
         plan: &Plan,
         first: usize,
         count: usize,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         budget: &mut RecordedVideoDecodeBudget,
         cx: &ReplayCx,
     ) -> Result<Self> {
@@ -254,7 +256,7 @@ impl Range {
     }
     fn next(
         &mut self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         budget: &mut RecordedVideoDecodeBudget,
         cx: &ReplayCx,
     ) -> Result<Option<Frame>> {
@@ -411,14 +413,12 @@ pub(crate) fn run(plan: &Plan, out: &mut impl Write) -> Result<()> {
     if plan.approval != Some(approval) {
         return Err(fail("exact video operation approval required"));
     }
+    if plan.command != Command::Publish {
+        return immutable::run(plan, out);
+    }
     // Approval and existing layout precede context construction, which must not create a store.
     let start = Instant::now();
     let root = existing_root(&plan.root)?;
-    let export = plan
-        .output
-        .as_ref()
-        .map(|p| Export::prepare(p, &root))
-        .transpose()?;
     let authority = ContextAuthority::new_root(RootAuthoritySpec {
         trace_id: "trace:video-cli".into(),
         operation_id: OperationId::parse("operation:video-cli")?,
@@ -519,77 +519,7 @@ pub(crate) fn run(plan: &Plan, out: &mut impl Write) -> Result<()> {
                 skipped = range.skipped().to_vec();
             }
             Command::Read | Command::Verify => {
-                let saved = PublishedVideoFrame::open(
-                    &deployment,
-                    plan.frame.ok_or_else(|| fail("frame root required"))?,
-                    publication_limits(plan),
-                    &cx,
-                )?;
-                scope(plan, &saved)?;
-                if plan.command == Command::Verify {
-                    let mut range = Range::open(
-                        plan,
-                        usize::try_from(saved.range_start())?,
-                        saved.range_segment_count(),
-                        &deployment,
-                        &mut budget,
-                        &cx,
-                    )?;
-                    let mut matched = false;
-                    loop {
-                        gate.check()?;
-                        let Some(frame) = range.next(&deployment, &mut budget, &cx)? else {
-                            break;
-                        };
-                        decoded += 1;
-                        if frame.output() == saved.output_index() {
-                            if matched || !frame.equals(&saved) {
-                                return Err(RecordedDecodeError::InvalidReceipt.into());
-                            }
-                            matched = true;
-                        }
-                        // Never stop after finding the frame: later corruption/refusal belongs
-                        // to the original requested range and must prevent a replay certificate.
-                    }
-                    if !matched {
-                        return Err(RecordedDecodeError::InvalidReceipt.into());
-                    }
-                    skipped = range.skipped().to_vec();
-                } else {
-                    skipped = Vec::new();
-                }
-                gate.check()?;
-                if let Some(export) = &export {
-                    let bytes = match plan.pixel_format.as_deref() {
-                        Some("pgm") => {
-                            let [w, h] = saved.dimensions();
-                            let mut bytes = format!("P5\n{w} {h}\n255\n").into_bytes();
-                            bytes.try_reserve_exact(saved.pixels().len())?;
-                            bytes.extend_from_slice(saved.pixels());
-                            bytes
-                        }
-                        Some("i420") => saved.i420().to_vec(),
-                        Some("rgb") => saved.to_rgb()?,
-                        _ => return Err(fail("pixel format required")),
-                    };
-                    export.write(&bytes, &gate)?;
-                    reports.row(
-                        "export",
-                        object(&[
-                            ("bytes", bytes.len().to_string()),
-                            ("digest", string(&ContentDigest::sha256(&bytes).to_text())),
-                            (
-                                "pixel_format",
-                                string(
-                                    plan.pixel_format
-                                        .as_deref()
-                                        .ok_or_else(|| fail("pixel format"))?,
-                                ),
-                            ),
-                        ]),
-                    )?;
-                }
-                reports.row("frame", frame_json(&saved))?;
+                return Err(fail("read operations require the immutable owner"));
             }
         }
         gate.check()?;

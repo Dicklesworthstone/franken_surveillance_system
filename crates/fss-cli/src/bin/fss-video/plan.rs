@@ -8,10 +8,11 @@ use std::path::{Component, PathBuf};
 use fss_cli::agent_json::{object, string};
 use fss_core::{CanonicalEncoder, ContentDigest, DigestAlgorithm, PrincipalId};
 use fss_reference::ingest::RetainedReadLimits;
+use fss_reference::retained_source::ImmutableRetainedReadLimits;
 
 use crate::{Result, fail};
 
-pub(crate) const MAX_ARGUMENTS: usize = 67;
+pub(crate) const MAX_ARGUMENTS: usize = 71;
 pub(crate) const SELECTED_REPORT_RESERVE: usize = 8192;
 const SELECTED_POLICY: &str = "one-display-output:complete-native-range-before-publication:unchanged-frame-root:charge-selected-derived-only:v1";
 pub(crate) const REPORT_LIMIT: usize = 4 * 1024 * 1024;
@@ -19,6 +20,7 @@ pub(crate) const MANIFEST_RESERVE: usize = 4096;
 pub(crate) const STORAGE_OPERATIONS: u64 = 65_536;
 pub(crate) const SCHEMA: &str = "fss.native_video_cli.v1";
 const POLICY: &str = "explicit-codec-import-and-privacy:sealed-native-frames:bounded-display-order:source-verified-cold-read:whole-range-replay:no-camera:no-effects:incremental-publication:v1";
+const READ_POLICY: &str = "immutable-native-owner:no-recovery:nonrenewing-metadata-and-payload-budget:buffered-report:final-source-pixels-privacy-and-head-revalidation:v1";
 pub(crate) const HELP: &str = "fss-video <publish|read|verify> [options]\n\
   --root EXISTING_ABSOLUTE_DEPLOYMENT --site SITE --import-id sha256:HEX\n\
   --codec avc|hevc --privacy-policy none|sha256:HEX --read-originals yes\n\
@@ -29,6 +31,7 @@ pub(crate) const HELP: &str = "fss-video <publish|read|verify> [options]\n\
   Native bounds: --max-pixels 4194304 --max-dimension 4096 --max-slices 4096\n\
   --max-segments 1024 --work-units 8000000000 --timeout-ms 30000\n\
   --max-source-bytes N --chunk-bytes N --max-segment-bytes N\n\
+  Read/verify aggregate allowance: --max-read-bytes 1073741824 --max-read-objects 1000000\n\
   Publication allowance: --max-derived-bytes 67108864 (maximum 268435456)\n\
 Without --approve every command is a pure JSON preview. Repeat exactly with its approval.\n\
 Publish decodes an IDR/IRAP-led range in display order and retains masked I420 plus original\n\
@@ -42,7 +45,9 @@ Read verifies completed frame, whole source custody and the exact current privac
 without decoding. Verify additionally replays the ENTIRE original range, never stopping\n\
 after the selected frame. It compares receipt, source/output positions and all three planes.\n\
 No new deployment, camera traffic, unmasked export, event/alert or absence authority is created.\n\
-Read/verify do not append cognition. Native deployment open may perform its existing recovery.\n\
+Read/verify use an immutable snapshot during active publication, without writer locks or recovery.\n\
+Their aggregate read allowance covers opening, source checks, replay and final revalidation.\n\
+Reports and exports begin only after source, pixels, privacy metadata and authority are rechecked.\n\
 Export writes only a new file outside the deployment; a failed export may leave a partial file.\n\
 PGM is luma, I420 is packed Y/Cb/Cr, RGB is packed native RGB with mask fill preserved.\n\
 Timeout checks are cooperative between bounded operations, not syscall/codec preemption.\n";
@@ -89,6 +94,7 @@ pub(crate) struct Plan {
     pub output_index: Option<u64>,
     pub frame: Option<ContentDigest>,
     pub source: RetainedReadLimits,
+    pub read: ImmutableRetainedReadLimits,
     pub pixels: usize,
     pub dimension: u32,
     pub slices: u32,
@@ -174,7 +180,11 @@ impl Plan {
                             | "--max-derived-bytes"
                             | "--output-index"
                     ))
-                || (command != Command::Publish && key == "--frame-root")
+                || (command != Command::Publish
+                    && matches!(
+                        key,
+                        "--frame-root" | "--max-read-bytes" | "--max-read-objects"
+                    ))
                 || (command == Command::Read && matches!(key, "--output" | "--pixel-format"));
             if !allowed
                 || value.is_empty()
@@ -306,6 +316,21 @@ impl Plan {
                     1,
                     64 * 1024 * 1024,
                 )?,
+            },
+            read: ImmutableRetainedReadLimits {
+                snapshot: fss_reference::agent_orient::OrientLimits::default(),
+                max_read_bytes: usize::try_from(number(
+                    "--max-read-bytes",
+                    1024 * 1024 * 1024,
+                    1,
+                    4 * 1024 * 1024 * 1024,
+                )?)?,
+                max_read_objects: usize::try_from(number(
+                    "--max-read-objects",
+                    1_000_000,
+                    1,
+                    4_000_000,
+                )?)?,
             },
             pixels: number("--max-pixels", 4_194_304, 1, 4_194_304)? as usize,
             dimension: number("--max-dimension", 4096, 1, 4096)? as u32,
@@ -444,6 +469,12 @@ impl Plan {
             e.u64(index);
             e.u64(SELECTED_REPORT_RESERVE as u64);
         }
+        if self.command != Command::Publish {
+            e.text(READ_POLICY);
+            e.u64(self.read.max_read_bytes as u64);
+            e.u64(self.read.max_read_objects as u64);
+            e.text(&format!("{:?}", self.read.snapshot));
+        }
         Ok(ContentDigest::sha256(&e.finish_checked()?))
     }
     pub(crate) fn preview(&self) -> Result<String> {
@@ -502,9 +533,20 @@ impl Plan {
             ("native_decoder_limits", string(&self.native_bounds()?)),
             (
                 "maximum_context_bytes",
-                self.source.max_source_bytes.to_string(),
+                if self.command == Command::Publish {
+                    self.source.max_source_bytes.to_string()
+                } else {
+                    self.read.max_read_bytes.to_string()
+                },
             ),
-            ("maximum_storage_operations", STORAGE_OPERATIONS.to_string()),
+            (
+                "maximum_storage_operations",
+                if self.command == Command::Publish {
+                    STORAGE_OPERATIONS.to_string()
+                } else {
+                    self.read.max_read_objects.to_string()
+                },
+            ),
             (
                 "manifest_reservation_per_frame",
                 MANIFEST_RESERVE.to_string(),
@@ -537,6 +579,22 @@ impl Plan {
                     "frame_report_reserve_bytes",
                     SELECTED_REPORT_RESERVE.to_string(),
                 ),
+            ]);
+        }
+        if self.command != Command::Publish {
+            fields.extend([
+                ("read_policy", string(READ_POLICY)),
+                ("maximum_read_bytes", self.read.max_read_bytes.to_string()),
+                (
+                    "maximum_read_objects",
+                    self.read.max_read_objects.to_string(),
+                ),
+                (
+                    "snapshot_limits",
+                    string(&format!("{:?}", self.read.snapshot)),
+                ),
+                ("writer_authority_requested", "false".into()),
+                ("recovery_requested", "false".into()),
             ]);
         }
         Ok(object(&fields))
