@@ -14,8 +14,9 @@ use fss_codec_mjpeg::{DecodeBudget, decode_luma};
 use fss_core::{CanonicalEncoder, ContentDigest, SensorCapsule};
 
 use super::{
-    HealthError, HealthFinding, HealthFrame, HealthObservation, HealthScreen, POLICY_NAME,
-    policy_digest,
+    HealthError, HealthFinding, HealthFrame, HealthObservation, HealthScreen, OPTICAL_QUALITY_DOMAIN,
+    OpticalFinding, OpticalQualityMetrics, OpticalThresholds, POLICY_NAME, policy_digest,
+    screen_optical_quality,
 };
 use crate::ingest::RetainedFileImport;
 use crate::ingest::privacy_mask::current_mask;
@@ -72,6 +73,7 @@ pub struct ScreeningReport {
     range_complete: bool,
     samples_used: u64,
     observations: Vec<HealthObservation>,
+    optical_observations: Vec<OpticalQualityMetrics>,
 }
 
 impl ScreeningReport {
@@ -83,6 +85,23 @@ impl ScreeningReport {
         plan: &WatchPlan,
         limits: &WatchLimits,
         maximum_samples: u64,
+        cx: &ReplayCx,
+    ) -> Result<Self, ScreeningError> {
+        Self::analyze_with_optical(deployment, plan, limits, maximum_samples, None, cx)
+    }
+
+    /// Decode and screen one complete watch range with optional additive Stage-1 optical quality
+    /// screening (4-neighbor Laplacian blur variance and localized highlight glare) over the exact
+    /// privacy-masked luma plane.
+    ///
+    /// Preserves byte-identical `conservative-v1` [`Self::observations`], [`Self::digest`], and
+    /// [`Self::to_json`] regardless of whether `optical_thresholds` is enabled.
+    pub fn analyze_with_optical(
+        deployment: &ReferenceDeployment,
+        plan: &WatchPlan,
+        limits: &WatchLimits,
+        maximum_samples: u64,
+        optical_thresholds: Option<OpticalThresholds>,
         cx: &ReplayCx,
     ) -> Result<Self, ScreeningError> {
         cx.checkpoint("sensor_health:source")
@@ -106,6 +125,11 @@ impl ScreeningReport {
         let mut complete = !spans.iter().any(|span| span.gap_before);
         let mut screen = HealthScreen::new(maximum_samples);
         let mut observations = Vec::with_capacity(plan.segment_count);
+        let mut optical_observations = if optical_thresholds.is_some() {
+            Vec::with_capacity(plan.segment_count)
+        } else {
+            Vec::new()
+        };
         let mut seen = BTreeSet::new();
         let mut accept = |segment: u64,
                           capsule: &SensorCapsule,
@@ -129,18 +153,20 @@ impl ScreeningReport {
                 crate::ingest::recorded_decode::ComponentInterpretation::YCbCr => 1,
             });
             let source_generation = ContentDigest::sha256(&e.finish());
-            let observation = screen.observe(
-                HealthFrame {
-                    source_generation,
-                    segment,
-                    capsule_digest,
-                    capture: capsule.capture,
-                    dimensions,
-                    gap_before: capsule.gap_before,
-                    pixels,
-                },
-                cx,
-            )?;
+            let frame = HealthFrame {
+                source_generation,
+                segment,
+                capsule_digest,
+                capture: capsule.capture,
+                dimensions,
+                gap_before: capsule.gap_before,
+                pixels,
+            };
+            let observation = screen.observe(frame, cx)?;
+            if let Some(thresholds) = optical_thresholds {
+                let optical = screen_optical_quality(frame, thresholds, cx)?;
+                optical_observations.push(optical);
+            }
             if let Some(first) = observations.first() {
                 let first: &HealthObservation = first;
                 complete &= first.source_generation == observation.source_generation
@@ -257,6 +283,7 @@ impl ScreeningReport {
             range_complete: complete,
             samples_used: screen.samples_used(),
             observations,
+            optical_observations,
         })
     }
 
@@ -270,6 +297,104 @@ impl ScreeningReport {
     #[must_use]
     pub fn observations(&self) -> &[HealthObservation] {
         &self.observations
+    }
+
+    /// Additive Stage-1 optical-quality measurements in decoder output order (empty unless
+    /// requested through [`Self::analyze_with_optical`]).
+    #[must_use]
+    pub fn optical_observations(&self) -> &[OpticalQualityMetrics] {
+        &self.optical_observations
+    }
+
+    /// True if any screened frame exhibited an additive optical degradation finding.
+    #[must_use]
+    pub fn has_optical_findings(&self) -> bool {
+        self.optical_observations
+            .iter()
+            .any(|row| !row.findings.is_empty())
+    }
+
+    /// True only when both `conservative-v1` and complete additive optical screening reported zero
+    /// findings over the full range; never a physical health or coverage certificate.
+    #[must_use]
+    pub fn optical_admitted(&self) -> bool {
+        self.admitted()
+            && self.optical_observations.len() == self.observations.len()
+            && !self.optical_observations.is_empty()
+            && !self.has_optical_findings()
+    }
+
+    /// Canonical digest binding the `conservative-v1` report and every additive optical measurement
+    /// when optical screening was requested.
+    #[must_use]
+    pub fn optical_digest(&self) -> Option<ContentDigest> {
+        if self.optical_observations.is_empty() {
+            return None;
+        }
+        let mut e = CanonicalEncoder::new();
+        e.text(OPTICAL_QUALITY_DOMAIN);
+        e.digest(self.digest());
+        e.u32(self.optical_observations.len() as u32);
+        for metric in &self.optical_observations {
+            e.digest(metric.digest());
+        }
+        Some(ContentDigest::sha256(&e.finish()))
+    }
+
+    /// Bounded local-operator optical-quality diagnostic JSON (no raw pixels or effect authority).
+    #[must_use]
+    pub fn to_optical_json(&self) -> String {
+        let rows: Vec<String> = self
+            .optical_observations
+            .iter()
+            .map(|row| {
+                let findings: Vec<String> = row
+                    .findings
+                    .iter()
+                    .map(|finding| format!("\"{}\"", OpticalFinding::as_str(*finding)))
+                    .collect();
+                format!(
+                    concat!(
+                        "{{\"segment\":{},\"capsule_digest\":\"{}\",\"luma_digest\":\"{}\",",
+                        "\"optical_digest\":\"{}\",\"width\":{},\"height\":{},",
+                        "\"interior_pixels\":{},\"laplacian_variance_x1000\":{},",
+                        "\"glare_pixels\":{},\"glare_ppm\":{},\"findings\":[{}]}}"
+                    ),
+                    row.segment,
+                    row.capsule_digest,
+                    row.luma_digest,
+                    row.digest(),
+                    row.dimensions[0],
+                    row.dimensions[1],
+                    row.interior_pixels,
+                    row.laplacian_variance_x1000,
+                    row.glare_pixels,
+                    row.glare_ppm,
+                    findings.join(",")
+                )
+            })
+            .collect();
+        let optical_digest = self
+            .optical_digest()
+            .map_or_else(|| "null".to_owned(), |d| format!("\"{d}\""));
+        format!(
+            concat!(
+                "{{\"domain\":\"{}\",\"report_digest\":\"{}\",\"optical_report_digest\":{},",
+                "\"import_identity\":\"{}\",\"frames_screened\":{},\"range_complete\":{},",
+                "\"optical_admitted\":{},\"has_optical_findings\":{},",
+                "\"health_certified\":false,\"tamper_proven\":false,",
+                "\"absence_certifiable\":false,\"effect_authority\":false,\"frames\":[{}]}}"
+            ),
+            OPTICAL_QUALITY_DOMAIN,
+            self.digest(),
+            optical_digest,
+            self.import_identity,
+            rows.len(),
+            self.range_complete,
+            self.optical_admitted(),
+            self.has_optical_findings(),
+            rows.join(",")
+        )
     }
 
     /// Canonical identity of the entire screen, independent of later publication state.
@@ -397,3 +522,249 @@ impl std::fmt::Display for ScreeningRefusal {
     }
 }
 impl std::error::Error for ScreeningRefusal {}
+
+#[cfg(test)]
+mod optical_retained_tests {
+    use super::*;
+    use crate::ingest::recorded_decode::ComponentInterpretation;
+    use crate::ingest::recorded_watch::{WatchDetectorConfig, WatchTrackerConfig, WatchZone};
+    use crate::ingest::{FileIngestAdapter, FileIngestRequest};
+    use crate::media_fixture::jpeg::{JpegConfig, Subsampling, encode_jpeg};
+    use fss_core::region::{ContextAuthority, RootAuthoritySpec};
+    use fss_core::{BudgetVector, OperationId, SensorId, StreamId, TimestampNs};
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    struct TempDir(PathBuf);
+    impl TempDir {
+        fn new(tag: &str) -> Result<Self, Box<dyn std::error::Error>> {
+            for attempt in 0..100_u32 {
+                let path = std::env::temp_dir().join(format!(
+                    "fss-optical-retained-{tag}-{}-{attempt}",
+                    std::process::id()
+                ));
+                match fs::create_dir(&path) {
+                    Ok(()) => return Ok(Self(path)),
+                    Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(err) => return Err(err.into()),
+                }
+            }
+            Err(std::io::Error::other("temp dir capacity").into())
+        }
+    }
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn test_cx(root: &Path) -> Result<ReplayCx, Box<dyn std::error::Error>> {
+        let authority = ContextAuthority::new_root(RootAuthoritySpec {
+            trace_id: "trace:optical-retained".to_owned(),
+            operation_id: OperationId::parse("operation:optical-retained")?,
+            principal: "principal:optical-retained".to_owned(),
+            capabilities: vec!["ADP-REPLAY-001".to_owned()],
+            deadline: None,
+            priority: 10,
+            budgets: BudgetVector::builder()
+                .bytes(64 * 1024 * 1024)
+                .storage_operations(4096)
+                .build()?,
+            privacy_scope: "privacy:test".to_owned(),
+            retention_scope: "retention:test".to_owned(),
+            anchor_universe: ContentDigest::sha256(b"site:optical-retained"),
+            generation: 1,
+        })?;
+        authority.validate()?;
+        Ok(ReplayCx::from_context_authority(
+            &authority,
+            root.to_path_buf(),
+        )?)
+    }
+
+    fn sharp_pixels(w: u32, h: u32) -> Vec<u8> {
+        let mut out = vec![0_u8; (w * h) as usize];
+        for y in 0..h {
+            for x in 0..w {
+                out[(y * w + x) as usize] = if ((x / 4) + (y / 4)) % 2 == 0 {
+                    200
+                } else {
+                    40
+                };
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn retained_mjpeg_optical_screening_preserves_baseline_and_flags_blur_and_glare()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = TempDir::new("mixed")?;
+        let root = dir.0.join("deployment");
+        let w = 64_u32;
+        let h = 48_u32;
+        let cfg = JpegConfig {
+            quality: 95,
+            subsampling: Subsampling::Grayscale,
+            restart_interval: 0,
+            custom_markers: Vec::new(),
+        };
+
+        // Frame 0: sharp block checkerboard.
+        let frame0 = sharp_pixels(w, h);
+        // Frame 1: flat low-frequency defocused field (Laplacian variance near 0).
+        let frame1 = vec![120_u8; (w * h) as usize];
+        // Frame 2: sharp texture with top 25% saturated highlight glare (255).
+        let mut frame2 = sharp_pixels(w, h);
+        for y in 0..(h / 4) {
+            for x in 0..w {
+                frame2[(y * w + x) as usize] = 255;
+            }
+        }
+
+        let mut stream = Vec::new();
+        for pixels in [&frame0, &frame1, &frame2] {
+            stream.extend(encode_jpeg(w, h, pixels, &cfg)?);
+        }
+        let mjpeg_path = dir.0.join("optical.mjpeg");
+        fs::write(&mjpeg_path, &stream)?;
+
+        let cx = test_cx(&root)?;
+        let mut deployment = ReferenceDeployment::open(&root, "site:optical-retained", &cx)?;
+        let import_id = FileIngestAdapter::ingest(
+            FileIngestRequest::new(
+                mjpeg_path,
+                SensorId::parse("sensor:optical-cam")?,
+                StreamId::parse("stream:main")?,
+            )
+            .with_receive_time(TimestampNs(1_000_000_000)),
+            &cx,
+            &mut deployment,
+        )?
+        .import_identity;
+
+        let plan = WatchPlan {
+            import_identity: import_id,
+            interpretation: ComponentInterpretation::Grayscale,
+            first_segment: 0,
+            segment_count: 3,
+            zones: vec![WatchZone {
+                zone_id: "entry".to_owned(),
+                x: 0,
+                y: 0,
+                width: w,
+                height: h,
+            }],
+            detector: WatchDetectorConfig::default(),
+            tracker: WatchTrackerConfig::default(),
+        };
+        let limits = WatchLimits::default();
+
+        let baseline = ScreeningReport::analyze(&deployment, &plan, &limits, 1_000_000, &cx)?;
+        let optical = ScreeningReport::analyze_with_optical(
+            &deployment,
+            &plan,
+            &limits,
+            1_000_000,
+            Some(OpticalThresholds::default()),
+            &cx,
+        )?;
+
+        assert_eq!(baseline.digest(), optical.digest());
+        assert_eq!(baseline.to_json(), optical.to_json());
+        assert!(baseline.optical_observations().is_empty());
+        assert!(baseline.optical_digest().is_none());
+
+        assert_eq!(optical.optical_observations().len(), 3);
+        assert!(optical.optical_observations()[0].findings.is_empty());
+        assert!(
+            optical.optical_observations()[1]
+                .findings
+                .contains(&OpticalFinding::SevereBlur)
+        );
+        assert!(
+            optical.optical_observations()[2]
+                .findings
+                .contains(&OpticalFinding::LocalizedHighlightGlare)
+        );
+        assert!(optical.has_optical_findings());
+        assert!(!optical.optical_admitted());
+        assert!(optical.optical_digest().is_some());
+
+        let json = optical.to_optical_json();
+        assert!(json.contains("\"severe_blur\""));
+        assert!(json.contains("\"localized_highlight_glare\""));
+        assert!(json.contains("\"health_certified\":false"));
+        assert!(json.contains("\"effect_authority\":false"));
+        assert!(json.contains("\"optical_admitted\":false"));
+        Ok(())
+    }
+
+    #[test]
+    fn retained_mjpeg_all_sharp_frames_pass_optical_admission()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = TempDir::new("sharp")?;
+        let root = dir.0.join("deployment");
+        let w = 64_u32;
+        let h = 48_u32;
+        let cfg = JpegConfig {
+            quality: 95,
+            subsampling: Subsampling::Grayscale,
+            restart_interval: 0,
+            custom_markers: Vec::new(),
+        };
+        let mut stream = Vec::new();
+        for offset in [0_u8, 4_u8, 8_u8] {
+            let mut pixels = sharp_pixels(w, h);
+            for p in &mut pixels {
+                *p = p.saturating_add(offset);
+            }
+            stream.extend(encode_jpeg(w, h, &pixels, &cfg)?);
+        }
+        let mjpeg_path = dir.0.join("sharp.mjpeg");
+        fs::write(&mjpeg_path, &stream)?;
+
+        let cx = test_cx(&root)?;
+        let mut deployment = ReferenceDeployment::open(&root, "site:optical-sharp", &cx)?;
+        let import_id = FileIngestAdapter::ingest(
+            FileIngestRequest::new(
+                mjpeg_path,
+                SensorId::parse("sensor:optical-cam")?,
+                StreamId::parse("stream:main")?,
+            )
+            .with_receive_time(TimestampNs(2_000_000_000)),
+            &cx,
+            &mut deployment,
+        )?
+        .import_identity;
+
+        let plan = WatchPlan {
+            import_identity: import_id,
+            interpretation: ComponentInterpretation::Grayscale,
+            first_segment: 0,
+            segment_count: 3,
+            zones: vec![WatchZone {
+                zone_id: "entry".to_owned(),
+                x: 0,
+                y: 0,
+                width: w,
+                height: h,
+            }],
+            detector: WatchDetectorConfig::default(),
+            tracker: WatchTrackerConfig::default(),
+        };
+        let report = ScreeningReport::analyze_with_optical(
+            &deployment,
+            &plan,
+            &WatchLimits::default(),
+            1_000_000,
+            Some(OpticalThresholds::default()),
+            &cx,
+        )?;
+        assert!(report.admitted());
+        assert!(report.optical_admitted());
+        assert!(!report.has_optical_findings());
+        assert!(report.to_optical_json().contains("\"optical_admitted\":true"));
+        Ok(())
+    }
+}

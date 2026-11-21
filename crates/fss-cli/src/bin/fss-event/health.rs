@@ -25,6 +25,9 @@ use fss_reference::retained_source::{
 };
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
+#[path = "health_optical.rs"]
+mod optical;
+
 type Run<T> = Result<T, Box<dyn Error>>;
 const MAX_REPORT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_WATCH_REPORT_BYTES: usize = 1024 * 1024;
@@ -671,6 +674,9 @@ pub(super) fn with_watch_diagnostic(
 }
 
 pub(super) fn main(args: &[OsString]) -> ExitCode {
+    if args.first().and_then(|arg| arg.to_str()) == Some("optical") {
+        return optical::main(args);
+    }
     if args.is_empty()
         || (args.len() == 1 && ["help", "--help", "-h"].iter().any(|arg| args[0] == *arg))
         || (args.len() == 2
