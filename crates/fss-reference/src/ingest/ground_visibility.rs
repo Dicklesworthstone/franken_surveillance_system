@@ -702,17 +702,31 @@ pub fn assess_ground_zone_masked(
     policy: VisibilityPolicy,
     masked: Option<PixelMask<'_>>,
 ) -> Result<ZoneVisibility, VisibilityError> {
-    let samples = ground_samples(polygon, policy)?;
     let mut budget = WorkBudget::new(MAX_VISIBILITY_WORK);
-    assess_samples(
+    assess_ground_zone_with_budget(
         camera,
         dimensions,
-        &samples,
+        polygon,
         mesh,
         policy,
         masked,
         &mut budget,
     )
+}
+
+/// [`assess_ground_zone_masked`] under an explicit caller-owned [`WorkBudget`] (supporting
+/// finite unit limits and cooperative cancellation).
+pub fn assess_ground_zone_with_budget(
+    camera: VisibilityCamera<'_>,
+    dimensions: [u32; 2],
+    polygon: &[(f64, f64)],
+    mesh: Option<SceneMesh<'_>>,
+    policy: VisibilityPolicy,
+    masked: Option<PixelMask<'_>>,
+    budget: &mut WorkBudget<'_>,
+) -> Result<ZoneVisibility, VisibilityError> {
+    let samples = ground_samples(polygon, policy)?;
+    assess_samples(camera, dimensions, &samples, mesh, policy, masked, budget)
 }
 
 /// [`assess_ground_zone_masked`] over precomputed `samples`, charging `budget` (one unit per
