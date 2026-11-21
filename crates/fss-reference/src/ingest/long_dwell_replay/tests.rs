@@ -10,7 +10,7 @@ use crate::ingest::recorded_watch::{
 use crate::ingest::zone_dwell::DwellPolicy;
 use crate::ingest::{CaptureHint, FileIngestAdapter, FileIngestLimits, FileIngestRequest};
 use crate::media_fixture::jpeg::{JpegConfig, Subsampling, encode_jpeg};
-use crate::{ReferencePolicyAction, ReferencePolicyDecision};
+use crate::{ReferenceDeployment, ReferencePolicyAction, ReferencePolicyDecision};
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{BudgetVector, OperationId, SensorId, StreamId, TimestampNs};
 use std::fs;

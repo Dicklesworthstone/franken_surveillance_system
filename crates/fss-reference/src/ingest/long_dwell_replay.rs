@@ -17,12 +17,13 @@ use super::sensor_health::{
     policy_bytes as health_policy_bytes, policy_digest as health_policy_digest,
 };
 use super::{FileIngestError, RetainedFileImport};
-use crate::{ReferenceDeployment, ReferenceError, ReplayCx};
+use crate::retained_source::{RetainedSource, verify_event_lineage};
+use crate::{ReferenceError, ReplayCx};
 use fss_core::{
     ContentDigest, ContractError, DigestAlgorithm, EventHypothesis, EventId, EventKind, EventState,
     EvidenceClass, EvidenceEdgeRelation, LedgerAnchor, ObjectId,
 };
-use fss_object::{HostSpoolIo, ObjectManifest, read_verified_payload};
+use fss_object::ObjectManifest;
 use fss_publication::{ROOT_REACHABILITY_FAMILY, SlotName};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -37,7 +38,7 @@ pub const MAX_ANALYSIS_BYTES: usize =
 /// Hard cumulative selected-metadata read ceiling, excluding deployment open and source replay.
 pub const MAX_REPLAY_METADATA_BYTES: usize =
     super::rgb_package::MAX_RGB_PACKAGE_BYTES + 32 * 1024 * 1024;
-const MAX_METADATA_OBJECTS: usize = 16 + super::zone_dwell::MAX_DWELL_EPISODES * 8;
+const MAX_METADATA_OBJECTS: usize = 17 + super::zone_dwell::MAX_DWELL_EPISODES * 8;
 const ANALYSIS_KIND: &str = "recorded-long-dwell-analysis-v1";
 const EPISODE_KIND: &str = "recorded-long-dwell-episode-v1";
 
@@ -186,14 +187,13 @@ fn checkpoint(cx: &ReplayCx, stage: &'static str) -> Result<()> {
 fn hex(digest: ContentDigest) -> String {
     digest.bytes().iter().map(|b| format!("{b:02x}")).collect()
 }
-fn check_context(deployment: &ReferenceDeployment, cx: &ReplayCx) -> Result<()> {
+fn check_context(deployment: &dyn RetainedSource, cx: &ReplayCx) -> Result<()> {
     checkpoint(cx, "long_dwell_replay:read")?;
     if cx.root_dir() != deployment.root() || !cx.io_authority().is_valid() {
         return Err(DwellReplayError::AuthorityChanged);
     }
     deployment
-        .ledger()
-        .verify_durable_head()
+        .verify_read_head()
         .map_err(|_| DwellReplayError::AuthorityChanged)
 }
 
@@ -203,9 +203,22 @@ struct MetadataReader {
     objects: usize,
 }
 impl MetadataReader {
+    fn reserve_owner_read(&mut self, length: usize) -> Result<()> {
+        if self.objects == MAX_METADATA_OBJECTS || length > self.remaining {
+            return Err(DwellReplayError::Limit);
+        }
+        self.objects += 1;
+        self.remaining -= length;
+        self.used = self
+            .used
+            .checked_add(length)
+            .ok_or(DwellReplayError::Limit)?;
+        Ok(())
+    }
+
     fn read(
         &mut self,
-        deployment: &ReferenceDeployment,
+        deployment: &dyn RetainedSource,
         digest: ContentDigest,
         maximum: usize,
         cx: &ReplayCx,
@@ -215,23 +228,10 @@ impl MetadataReader {
         if self.objects == MAX_METADATA_OBJECTS || self.remaining == 0 {
             return Err(DwellReplayError::Limit);
         }
-        // Existing read-only spool owner caps allocation before reading and rejects symlinks.
-        // The deployment lock and the active, root-scoped ReplayCx remain held throughout.
-        let bytes = read_verified_payload(
-            deployment.publisher().spool().root(),
-            digest,
-            maximum.min(self.remaining),
-            &HostSpoolIo,
-        )?;
-        self.objects += 1;
-        self.remaining = self
-            .remaining
-            .checked_sub(bytes.len())
-            .ok_or(DwellReplayError::Limit)?;
-        self.used = self
-            .used
-            .checked_add(bytes.len())
-            .ok_or(DwellReplayError::Limit)?;
+        // The sealed owner applies current custody, allocation and cumulative read limits.
+        // Immutable readers register this payload for their final revalidation pass.
+        let bytes = deployment.read_object_bounded(digest, maximum.min(self.remaining))?;
+        self.reserve_owner_read(bytes.len())?;
         checkpoint(cx, "long_dwell_replay:metadata_read")?;
         Ok(bytes)
     }
@@ -307,10 +307,11 @@ struct Loaded {
     detector_package: Option<Vec<u8>>,
 }
 fn published_root(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     prefix: &str,
     identity: ContentDigest,
     root: ContentDigest,
+    children: usize,
 ) -> Result<()> {
     let slot = SlotName::parse(&format!("{prefix}-{}", hex(identity)))
         .map_err(|_| DwellReplayError::InvalidRecord)?;
@@ -324,13 +325,10 @@ fn published_root(
     if current.family != ROOT_REACHABILITY_FAMILY
         || current.generation != 1
         || current.payload_digest != root
-        || deployment
-            .publisher()
-            .root(&slot)
-            .is_none_or(|visible| visible.root != root)
     {
         return Err(DwellReplayError::AuthorityChanged);
     }
+    deployment.check_publication(&slot, root, children)?;
     Ok(())
 }
 fn manifest(bytes: &[u8], kind: &str, maximum: usize) -> Result<ObjectManifest> {
@@ -344,7 +342,7 @@ fn manifest(bytes: &[u8], kind: &str, maximum: usize) -> Result<ObjectManifest> 
 }
 
 fn load(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     event_id: &EventId,
     pins: Option<DwellReplayPins>,
     limits: &DwellReplayLimits,
@@ -357,7 +355,46 @@ fn load(
         valid_digest(pins.event_revision)?;
         valid_digest(pins.analysis_root)?;
     }
-    let (event, receipt) = deployment.current_event_authority(event_id)?;
+    let mut reader = MetadataReader {
+        remaining: limits.maximum_metadata_bytes,
+        used: 0,
+        objects: 0,
+    };
+    // A read-only snapshot is not an event receipt. Reconstruct the exact canonical event and
+    // independently bind its complete committed lineage before accepting any source recipe.
+    let object = ObjectId::parse(format!("object:event:{}", event_id.as_str()))?;
+    let current = deployment
+        .ledger()
+        .current()
+        .objects
+        .get(&object)
+        .ok_or(DwellReplayError::AuthorityChanged)?;
+    if current.family != "event_revision" {
+        return Err(DwellReplayError::AuthorityChanged);
+    }
+    if current.generation != 1 {
+        return Err(DwellReplayError::UnsupportedProfile);
+    }
+    let event_root = current.payload_digest;
+    let event_root_bytes = reader.read(deployment, event_root, 512 * 1024, cx)?;
+    let event_manifest = ObjectManifest::from_canonical_bytes(&event_root_bytes)
+        .map_err(|_| DwellReplayError::InvalidRecord)?;
+    let event_payload = event_manifest
+        .metadata_digest()
+        .ok_or(DwellReplayError::InvalidRecord)?;
+    let event_bytes = reader.read(deployment, event_payload, 512 * 1024, cx)?;
+    let event = EventHypothesis::from_canonical_bytes(&event_bytes)
+        .map_err(|_| DwellReplayError::InvalidRecord)?;
+    if event.event_id != *event_id {
+        return Err(DwellReplayError::AuthorityChanged);
+    }
+    reader.reserve_owner_read(event_root_bytes.len())?;
+    reader.reserve_owner_read(event_bytes.len())?;
+    reader.reserve_owner_read(crate::alert::event_revision_encoding(&event).len())?;
+    let lineage = verify_event_lineage(deployment, std::slice::from_ref(&event), 512 * 1024)?;
+    if lineage.len() != 1 || lineage[0].0 != event_root {
+        return Err(DwellReplayError::AuthorityChanged);
+    }
     if pins.is_some_and(|pins| pins.event_revision != event.revision_digest()) {
         return Err(DwellReplayError::StaleSelection);
     }
@@ -391,11 +428,6 @@ fn load(
     }) {
         return Err(DwellReplayError::InvalidRecord);
     }
-    let mut reader = MetadataReader {
-        remaining: limits.maximum_metadata_bytes,
-        used: 0,
-        objects: 0,
-    };
     let record = reader.read(deployment, record_digest, 2048, cx)?;
     let analysis_root = episode_analysis(&record)?;
     if pins.is_some_and(|pins| pins.analysis_root != analysis_root) {
@@ -413,7 +445,13 @@ fn load(
     {
         return Err(DwellReplayError::InvalidRecord);
     }
-    published_root(deployment, "ld-e", record_digest, episode_root)?;
+    published_root(
+        deployment,
+        "ld-e",
+        record_digest,
+        episode_root,
+        episode.children().len(),
+    )?;
     let shared = manifest(
         &reader.read(deployment, analysis_root, 16 * 1024, cx)?,
         ANALYSIS_KIND,
@@ -435,7 +473,13 @@ fn load(
         objects.insert(child, bytes);
     }
     let analysis_digest = selected.ok_or(DwellReplayError::InvalidRecord)?;
-    published_root(deployment, "ld-a", analysis_digest, analysis_root)?;
+    published_root(
+        deployment,
+        "ld-a",
+        analysis_digest,
+        analysis_root,
+        shared.children().len(),
+    )?;
     let analysis = objects
         .remove(&analysis_digest)
         .ok_or(DwellReplayError::InvalidRecord)?;
@@ -542,7 +586,7 @@ fn load(
                 analysis_root,
             },
             event,
-            event_root: receipt.event_root,
+            event_root,
             analysis_digest,
             recipe,
             basis,
@@ -553,8 +597,9 @@ fn load(
 
 /// Inspect a currently committed event and reconstruct its stored recipe without decoding media.
 /// A preview-only or merely staged event cannot enter this path. Inspection is NOT native replay.
+/// Immutable callers must revalidate their owner before delivering the result.
 pub fn inspect_dwell(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     event: &EventId,
     limits: &DwellReplayLimits,
     cx: &ReplayCx,
@@ -565,8 +610,9 @@ pub fn inspect_dwell(
 /// Reconstruct and execute the exact retained recipe, requiring a separately supplied selection.
 /// Execution reads retained source, not an input path or caller-supplied trace. It never calls
 /// any publisher, modifies the effect journal, or upgrades an event's epistemic state.
+/// Immutable callers must revalidate their owner before delivering the result.
 pub fn replay_dwell(
-    deployment: &ReferenceDeployment,
+    deployment: &dyn RetainedSource,
     event: &EventId,
     pins: DwellReplayPins,
     limits: &DwellReplayLimits,

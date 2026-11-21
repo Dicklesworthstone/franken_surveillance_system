@@ -5,18 +5,25 @@ use fss_cli::agent_json::{array, evidence_anchor, object, string};
 use fss_cli::{ERR_CLI_MALFORMED_VALUE, ERR_CLI_RUNTIME_FAILURE, ExitIdentity};
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{BudgetVector, ContentDigest, DigestAlgorithm, EventId, OperationId, PrincipalId};
+use fss_reference::ReplayCx;
 use fss_reference::ingest::long_dwell_replay::{
     DwellReplayInspection, DwellReplayLimits, DwellReplayPins, inspect_dwell, replay_dwell,
 };
 use fss_reference::ingest::recorded_decode::ComponentInterpretation;
-use fss_reference::{DeploymentLayout, ReferenceDeployment, ReplayCx};
+use fss_reference::retained_source::{
+    ImmutableRetainedReadLimits, ImmutableRetainedSource, RetainedSource,
+};
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::ffi::OsString;
-use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::fs;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Instant;
+
+#[path = "fss-infer/retained_read.rs"]
+mod retained_read;
 
 type Run<T> = Result<T, Box<dyn Error>>;
 const HELP: &str = "fss-replay-dwell inspect --root EXISTING_DIR --site SITE --event-id EVENT\n\
@@ -30,14 +37,16 @@ The entire trace, classifier output and committed event must match.\n\
 No original input path, saved CLI command, external model, network or pixel export is needed.\n\
 Changed privacy, missing custody, stale pins, unsupported profiles and divergence fail closed.\n\
 Common bounds: --max-metadata-bytes N --max-report-bytes N [--principal ID]\n\
+  --max-read-bytes N --max-read-objects N (opening, payloads and final rereads together)\n\
 Execution bounds: --source-read-bytes N --pixel-budget N --assignment-work N --trace-bytes N\n\
   --decode-work N --max-dimension N --max-pixels N --max-segment-bytes N\n\
 Only a current v1 whole-recording dwell event is admitted, not a preview or short-watch event.\n\
 No threshold, zone, source, range, screening, approval or event-state override is accepted.\n\
-Opening uses existing exclusive locks and restart recovery; it is not universally mutation-free.\n\
+Reads use one immutable source alongside capture, with a cooperative 60-second deadline.\n\
+No writer is acquired and no restart recovery runs. The complete response is withheld until\n\
+current custody, privacy, publication and authority pass final revalidation.\n\
 Inspection/replay themselves do not append authority or effects. Matching means reproducibility,\n\
 not physical truth, detection quality, health, absence, alert delivery or release qualification.\n";
-const MAX_JOURNAL_BYTES: u64 = 64 * 1024 * 1024;
 const COMMON: &[&str] = &[
     "--root",
     "--site",
@@ -45,6 +54,8 @@ const COMMON: &[&str] = &[
     "--principal",
     "--max-metadata-bytes",
     "--max-report-bytes",
+    "--max-read-bytes",
+    "--max-read-objects",
 ];
 const EXECUTION: &[&str] = &[
     "--expected-event-revision",
@@ -69,6 +80,7 @@ struct Options {
     pins: Option<DwellReplayPins>,
     limits: DwellReplayLimits,
     maximum_report_bytes: usize,
+    read_limits: ImmutableRetainedReadLimits,
 }
 fn text<'a>(values: &'a BTreeMap<String, OsString>, key: &str) -> Result<&'a str, String> {
     values
@@ -107,7 +119,9 @@ fn digest(value: &str) -> Result<ContentDigest, String> {
     Ok(value)
 }
 fn parse(args: &[OsString]) -> Result<Options, String> {
-    if args.len() > 37 || args.iter().any(|v| v.as_encoded_bytes().len() > 4096) {
+    if args.len() > 1 + 2 * (COMMON.len() + EXECUTION.len())
+        || args.iter().any(|v| v.as_encoded_bytes().len() > 4096)
+    {
         return Err("argument bounds exceeded".into());
     }
     let verify = match args.first().and_then(|s| s.to_str()) {
@@ -224,10 +238,11 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
         pins,
         limits,
         maximum_report_bytes,
+        read_limits: retained_read::parse_limits(&values)?,
     })
 }
 
-// Existing local-owner boundary: refuse absent deployments before ReplayCx can create a root.
+// Existing local-owner boundary: refuse absent deployments before opening read authority.
 // No arbitrary destination, report-file write, command execution, or recursive path walk exists.
 fn preflight(root: &Path, site: &str, authority: &ContextAuthority) -> Run<PathBuf> {
     authority.validate()?;
@@ -239,28 +254,9 @@ fn preflight(root: &Path, site: &str, authority: &ContextAuthority) -> Run<PathB
     if !fs::symlink_metadata(root)?.file_type().is_dir() {
         return Err("existing non-symlink deployment directory required".into());
     }
-    let root = fs::canonicalize(root)?;
-    let path = root.join("LAYOUT");
-    let meta = fs::symlink_metadata(&path)?;
-    if !meta.file_type().is_file() || meta.len() > 4096 {
-        return Err("regular bounded deployment layout required".into());
-    }
-    let mut bytes = Vec::new();
-    File::open(&path)?.take(4097).read_to_end(&mut bytes)?;
-    if bytes.len() > 4096 {
-        return Err("deployment layout exceeds bound".into());
-    }
-    let layout = DeploymentLayout::parse_canonical_text(std::str::from_utf8(&bytes)?)?;
-    if layout.site_lineage != site {
-        return Err("deployment site does not match".into());
-    }
-    for relative in [layout.ledger_relpath, layout.effects_relpath] {
-        let meta = fs::symlink_metadata(root.join(relative))?;
-        if !meta.file_type().is_file() || meta.len() > MAX_JOURNAL_BYTES {
-            return Err("regular existing journals at most 64 MiB required".into());
-        }
-    }
-    Ok(root)
+    // The immutable owner bounds and charges all layout/journal content reads. Do not open a
+    // second preflight reader whose payloads would escape the cumulative allowance.
+    Ok(fs::canonicalize(root)?)
 }
 fn quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
@@ -272,7 +268,8 @@ fn command(options: &Options, root: &Path, inspected: &DwellReplayInspection) ->
             "fss-replay-dwell verify --root {} --site {} --principal {} --event-id {} ",
             "--expected-event-revision {} --expected-analysis-root {} --execute-perception yes ",
             "--max-metadata-bytes {} --max-report-bytes {} --source-read-bytes {} --pixel-budget {} ",
-            "--assignment-work {} --trace-bytes {} --decode-work {} --max-dimension {} --max-pixels {} --max-segment-bytes {}"
+            "--assignment-work {} --trace-bytes {} --decode-work {} --max-dimension {} --max-pixels {} --max-segment-bytes {} ",
+            "--max-read-bytes {} --max-read-objects {}"
         ),
         quote(root.to_str()?),
         quote(&options.site),
@@ -289,7 +286,9 @@ fn command(options: &Options, root: &Path, inspected: &DwellReplayInspection) ->
         limits.execution.decode.jpeg_work_units,
         limits.execution.decode.jpeg_limits.maximum_dimension,
         limits.execution.decode.jpeg_limits.maximum_pixels,
-        limits.execution.decode.read_limits.max_segment_bytes
+        limits.execution.decode.read_limits.max_segment_bytes,
+        options.read_limits.max_read_bytes,
+        options.read_limits.max_read_objects
     ))
 }
 fn report(
@@ -397,6 +396,14 @@ fn report(
                     options.limits.execution.decode.jpeg_work_units.to_string(),
                 ),
                 ("report_bytes", options.maximum_report_bytes.to_string()),
+                (
+                    "total_read_bytes",
+                    options.read_limits.max_read_bytes.to_string(),
+                ),
+                (
+                    "total_read_objects",
+                    options.read_limits.max_read_objects.to_string(),
+                ),
             ]),
         ),
         ("import_identity", string(&plan.import_identity.to_text())),
@@ -490,16 +497,18 @@ fn report(
     Ok(format!("{body}\n"))
 }
 fn run(options: Options) -> Run<String> {
+    let started = Instant::now();
+    let cancelled = || started.elapsed() >= retained_read::DEADLINE;
     let authority = ContextAuthority::new_root(RootAuthoritySpec {
         trace_id: "trace:dwell-replay-cli".into(),
         operation_id: OperationId::parse("operation:dwell-replay-cli")?,
         principal: options.principal.clone(),
-        capabilities: vec!["ADP-REPLAY-001".into()],
+        capabilities: vec!["ADP-REPLAY-001".into(), "CAP-READ-MEDIA-001".into()],
         deadline: None,
         priority: 10,
         budgets: BudgetVector::builder()
-            .bytes(128 * 1024 * 1024)
-            .storage_operations(65_536)
+            .bytes(options.read_limits.max_read_bytes as u64)
+            .storage_operations(options.read_limits.max_read_objects as u64)
             .build()?,
         privacy_scope: "privacy:current-deployment-policy".into(),
         retention_scope: "retention:existing-deployment-policy".into(),
@@ -508,33 +517,50 @@ fn run(options: Options) -> Run<String> {
     })?;
     authority.validate()?;
     let root = preflight(&options.root, &options.site, &authority)?;
-    let cx = ReplayCx::from_context_authority(&authority, root.clone())?;
-    let result = (|| -> Run<String> {
-        let deployment = ReferenceDeployment::open(&root, &options.site, &cx)?;
-        match options.pins {
-            None => report(
-                &options,
-                &root,
-                &inspect_dwell(&deployment, &options.event, &options.limits, &cx)?,
-                None,
-            ),
-            Some(pins) => {
-                let verified =
-                    replay_dwell(&deployment, &options.event, pins, &options.limits, &cx)?;
-                report(
-                    &options,
-                    &root,
-                    verified.inspection(),
-                    Some((
-                        verified.frames_replayed(),
-                        verified.source_chunk_bytes_read(),
-                    )),
-                )
-            }
-        }
-    })();
+    let cx = ReplayCx::from_context_authority_read_only(&authority, root.clone())?;
+    let result = read(&options, &root, &cx, &cancelled);
     cx.drain_and_finalize();
     result
+}
+
+fn read(
+    options: &Options,
+    root: &Path,
+    cx: &ReplayCx,
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> Run<String> {
+    let deployment =
+        ImmutableRetainedSource::open_cancellable(root, options.read_limits, cx, cancelled)?;
+    if deployment.site_lineage() != options.site {
+        return Err("deployment site does not match".into());
+    }
+    if !deployment.snapshot().effect_journal_present {
+        return Err("complete retained effect history is required".into());
+    }
+    let output = match options.pins {
+        None => report(
+            options,
+            root,
+            &inspect_dwell(&deployment, &options.event, &options.limits, cx)?,
+            None,
+        )?,
+        Some(pins) => {
+            let verified = replay_dwell(&deployment, &options.event, pins, &options.limits, cx)?;
+            report(
+                options,
+                root,
+                verified.inspection(),
+                Some((
+                    verified.frames_replayed(),
+                    verified.source_chunk_bytes_read(),
+                )),
+            )?
+        }
+    };
+    cx.checkpoint("long_dwell_replay:delivery")?;
+    deployment.revalidate_snapshot_metadata()?;
+    deployment.revalidate()?;
+    Ok(output)
 }
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).collect();

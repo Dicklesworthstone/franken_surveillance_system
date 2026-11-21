@@ -382,3 +382,57 @@ fn privacy_changes_after_inspection_cannot_replay_the_old_unmasked_lineage() -> 
     assert_eq!(f.snapshot()?, before);
     Ok(())
 }
+
+#[test]
+fn inspect_and_verify_work_while_capture_holds_the_writer() -> Test {
+    let f = Fixture::new("active-writer", 40, true)?;
+    let pins = f.pins()?;
+    let expected_inspection = good(run(&f.args("inspect"))?)?;
+    let expected_verification = good(run(&f.verify(pins))?)?;
+    let cx = context(&f.root)?;
+    let writer = ReferenceDeployment::open(&f.root, SITE, &cx)?;
+    let before = f.snapshot()?;
+    assert_eq!(good(run(&f.args("inspect"))?)?, expected_inspection);
+    assert_eq!(good(run(&f.verify(pins))?)?, expected_verification);
+    for action in [f.args("inspect"), f.verify(pins)] {
+        for bound in ["--max-read-bytes", "--max-read-objects"] {
+            let mut args = action.clone();
+            args.extend([bound.into(), "1".into()]);
+            let output = run(&args)?;
+            assert!(!output.status.success());
+            assert!(
+                output.stdout.is_empty(),
+                "{bound} released a partial result"
+            );
+        }
+    }
+    assert_eq!(f.snapshot()?, before);
+    assert_eq!(writer.site_lineage(), SITE);
+    drop(writer);
+    cx.drain_and_finalize();
+    Ok(())
+}
+
+#[test]
+fn immutable_replay_refuses_damaged_effect_history_without_repairing_it() -> Test {
+    let f = Fixture::new("torn-history", 40, false)?;
+    let pins = f.pins()?;
+    let path = f.root.join("effects/journal.fssj");
+    let mut bytes = fs::read(&path)?;
+    bytes.extend_from_slice(b"incomplete-effect-record");
+    fs::write(&path, &bytes)?;
+    for args in [f.args("inspect"), f.verify(pins)] {
+        let output = run(&args)?;
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert_eq!(fs::read(&path)?, bytes);
+    }
+    fs::remove_file(&path)?;
+    for args in [f.args("inspect"), f.verify(pins)] {
+        let output = run(&args)?;
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(!path.exists(), "missing effect history was recreated");
+    }
+    Ok(())
+}

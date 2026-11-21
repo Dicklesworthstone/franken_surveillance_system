@@ -31,7 +31,8 @@ Inspection reads the current event through the existing authority reader, checks
 and visible episode/analysis roots, decodes the original bounded recipe, and checks its source
 and current privacy bindings. It returns `inspected_not_replayed`, `native_replayed: false`,
 and no decoded-frame count. It does not decompress source media or certify derived observations.
-Deployment opening can still perform its existing custody verification and restart recovery.
+Opening uses the immutable retained source. It can run while capture holds the writer, and
+does not acquire a publisher, recover a journal or change retained state.
 
 The returned `verification_command` is a shell-quoted command with both exact selection pins and
 all execution/report ceilings. Review and run that command, or invoke the verifier explicitly:
@@ -101,11 +102,17 @@ authorized deployment owner, like the existing watch/replay commands; `--princip
 identity, not a remote credential. Another authorized reader can reproduce a result without
 inheriting the publisher's approval.
 
-The existing deployment open takes exclusive locks and may reconcile interrupted operations or
-sync custody. It is not advertised as universally mutation-free. Inspection and replay themselves
-have no staging, publication, repair or effect-transition call. They do not persist a verification
-receipt, change the event to corroborated, release a hold, or authorize an alert. The returned
-anchor records the consumed snapshot; an authority change during the request refuses completion.
+Inspection and replay use one immutable retained source with an exact opening authority snapshot.
+The complete report remains buffered until the opening metadata, selected payloads, custody,
+publication records and both journal roots have passed final revalidation under the same read
+allowance. A writer may remain open throughout a successful read; an authority advance during
+the request refuses completion and requires a fresh request. This is not an uninterrupted
+historical-snapshot service across new capture commits.
+
+Neither operation stages, publishes, repairs or transitions an effect. They do not persist a
+verification receipt, change the event to corroborated, release a hold, or authorize an alert.
+Torn histories are refused without truncation or recovery. The returned anchor identifies the
+exact consumed snapshot.
 
 ## Budgets and output
 
@@ -118,6 +125,8 @@ Insufficient work returns a refusal instead of a partial verification.
 | Option | Default | Scope |
 |---|---:|---|
 | `--max-metadata-bytes` | 16 MiB | Aggregate selected provenance payloads, including the optional retained model; hard maximum 64 MiB |
+| `--max-read-bytes` | 1 GiB | One cumulative payload allowance for opening metadata, native reads and all final rereads; hard maximum 4 GiB |
+| `--max-read-objects` | 1,000,000 | One cumulative payload-read-attempt allowance, including opening metadata and final checks; hard maximum 4,000,000 |
 | `--source-read-bytes` | 512 MiB | Actual verified source-chunk bytes fetched by native replay |
 | `--pixel-budget` | 1,073,741,824 | Temporal luma samples plus optional classifier-pass pixels; health screening has its own counter under the same ceiling |
 | `--assignment-work` | 1,073,741,824 | Whole-scan checked tracker admission bound |
@@ -128,20 +137,25 @@ Insufficient work returns a refusal instead of a partial verification.
 `--max-dimension`, `--max-pixels` and `--max-segment-bytes` also narrow native per-frame/read
 ceilings. These execution options are refused on `inspect`, which runs no perception; metadata
 and report bounds apply to both commands. Arguments are bounded, duplicates and unknown options
-are refused, and an absent deployment is rejected before creating a context directory. Existing
-regular journals of at most 64 MiB each are required by this CLI's startup preflight.
+are refused, and an absent deployment is rejected without creating a context directory. The
+native immutable reader applies its bounded layout, journal and snapshot contracts; every
+content read is charged to the same aggregate allowance. The generated verification command
+preserves both aggregate ceilings in addition to the native execution limits.
 
-Selected provenance traversal has at most 272 payload reads (the base graph plus up to 32 episodes
+Selected provenance traversal has at most 273 payload reads (the base graph, exact event witness,
+and up to 32 episodes
 with 8 class records each), fixed manifest shapes and
-per-object allocation bounds applied by the existing read-only spool owner. The original
+per-object allocation bounds applied by the sealed retained-source owner. The original
 65,536-position, 64-track, 32-episode and trace ceilings remain in force. Metadata parsing and
-native stages poll cancellation; the health screen polls every row. No deadline or hard-real-time
-preemption is claimed for filesystem operations or compute kernels.
+native stages poll cancellation; the health screen polls every row. The CLI additionally applies
+a cooperative 60-second deadline at read admissions and final delivery. Blocking filesystem
+operations and compute kernels do not have a hard-real-time preemption guarantee.
 
 The report names the retained detector package digest when present and distinguishes actual
 replay frame/source-read counts from configured ceilings.
-Metadata counts exclude the existing deployment-open/current-event reader and native source
-reader's own costs; these are not total-system I/O, RAM, energy or latency measurements. An error
+Selected metadata counts include the canonical event and its lineage rereads, but exclude
+deployment opening and native source reads. The separate aggregate allowance covers all of them
+plus final revalidation; neither counter is total-system I/O, RAM, energy or latency. An error
 produces no JSON prefix, and an oversized complete report is refused. The CLI writes only stdout
 and stderr, never an output file or raw pixel buffer. For non-UTF-8 deployment paths the command
 hint is null rather than lossy; repeat the original OS-byte path with the returned pins.
@@ -156,6 +170,7 @@ format. Native qualification remains separate from deterministic replay.
 
 ```sh
 cargo test -p fss-reference --lib long_dwell_replay
+cargo test -p fss-reference --test long_dwell_immutable_contract
 cargo test -p fss-reference --lib long_dwell::tests::detector
 cargo test -p fss-cli --test replay_dwell_cli
 cargo test -p fss-cli --test watch_stream_dwell_cli
@@ -166,6 +181,10 @@ pins, preview refusal, privacy invalidation, cumulative limits, cancellation, mi
 malformed encodings, internally consistent forged derivation and an independent authorized reader.
 Actual-process regressions cover both CLI modes, cold source-only operation, mandatory
 acknowledgement/pins, refusal of overrides, malformed/missing deployments, budgets and privacy.
+Immutable-reader contracts additionally cover writer-held native parity, exact cumulative
+allowances and one-less refusal, late source/event/publication damage, privacy and effect-history
+changes, wrong-root authority and cancellation. Process tests exercise both operations with the
+writer held and prove torn effect history is not repaired or emitted as a partial success.
 
 Trained native regressions additionally remove the loose source/model files before replay,
 require retained package and class custody, and preserve exact inference exhaustion across
