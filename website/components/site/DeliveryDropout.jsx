@@ -50,7 +50,7 @@ export default function DeliveryDropout({ replay }) {
   const total = replay.complete.frames.length;
   const [index, setIndex] = useState(mid);
   const [playing, setPlaying] = useState(false);
-  const playStart = useRef(0);
+  const playStart = useRef({ index: 0, timestamp: 0 });
   const section = useRef(null);
   const [visible, setVisible] = useState(false);
   useEffect(() => {
@@ -66,14 +66,18 @@ export default function DeliveryDropout({ replay }) {
   useEffect(() => {
     if (!playing) return;
     let request;
+    const start = playStart.current;
+    let currentFrame = start.index;
     function advance(now) {
-      const i = Math.max(0, Math.floor((now - playStart.current) * replay.fps / 1000));
-      if (i >= total) {
+      // A queued animation frame can precede Play. Preserve the selected scene frame.
+      const elapsedFrames = Math.floor((now - start.timestamp) * replay.fps / 1000);
+      currentFrame = Math.max(currentFrame, start.index + elapsedFrames);
+      if (currentFrame >= total) {
         setIndex(total - 1);
         setPlaying(false);
         return;
       }
-      setIndex(i);
+      setIndex(currentFrame);
       request = requestAnimationFrame(advance);
     }
     request = requestAnimationFrame(advance);
@@ -93,7 +97,7 @@ export default function DeliveryDropout({ replay }) {
           if (!playing) {
             const start = index === total - 1 ? 0 : index;
             setIndex(start);
-            playStart.current = performance.now() - start * 1000 / replay.fps;
+            playStart.current = { index: start, timestamp: performance.now() };
           }
           setPlaying(!playing);
         }}>{playing ? "Pause" : "Play"}</button>

@@ -41,7 +41,25 @@ export async function checkDeliveryDropout(browser, url) {
   assert.equal(await damaged.getAttribute("data-segment"), "24");
   await page.waitForFunction(() => document.querySelector('[data-recording="dropout"] img')?.naturalWidth === 4096);
   await inside.click();
-  await view.getByRole("button", { name: "Play delivery replay" }).click();
+  const originalFrame = await original.getAttribute("data-segment");
+  await page.evaluate(() => {
+    const raf = window.requestAnimationFrame;
+    window.deliveryReplayTestTicks = 0;
+    window.restoreDeliveryReplayClock = () => { window.requestAnimationFrame = raf; };
+    window.requestAnimationFrame = callback => raf.call(window, () => {
+      if (document.querySelector('[aria-label="Pause delivery replay"]')) window.deliveryReplayTestTicks++;
+      callback(0);
+    });
+  });
+  try {
+    await view.getByRole("button", { name: "Play delivery replay" }).click();
+    await page.waitForFunction(() => window.deliveryReplayTestTicks >= 3, null, { polling: 25 });
+    assert.equal(await original.getAttribute("data-segment"), originalFrame,
+      "A stale animation timestamp must keep playback at the selected scene frame");
+    assert.equal(await damaged.getAttribute("data-segment"), "unknown");
+  } finally {
+    await page.evaluate(() => window.restoreDeliveryReplayClock());
+  }
   await page.waitForFunction(() => Number(document.querySelector('[data-recording="dropout"]')?.dataset.segment) >= 24);
   await view.getByRole("button", { name: "Pause delivery replay" }).click();
 
@@ -80,7 +98,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     args: ["--no-sandbox", "--disable-dev-shm-usage"] });
   try {
     await checkDeliveryDropout(browser, url);
-    console.log("Passed shared-clock markers, playback recovery, preview-failure retry and mobile layout.");
+    console.log("Passed shared-clock markers, monotonic playback, recovery, preview retry and mobile layout.");
   } finally {
     await browser.close();
   }

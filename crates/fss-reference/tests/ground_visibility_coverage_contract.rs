@@ -21,10 +21,11 @@ mod support;
 
 use fss_core::ContentDigest;
 use fss_core::SensorId;
+use fss_geometry::{GeometryError, WorkBudget};
 use fss_reference::ingest::FileFormatHint;
 use fss_reference::ingest::ground_visibility::{
     CameraModel, CameraPose, NotVisibleCause, Occlusion, OcclusionUnknownReason, SceneMesh,
-    VisibilityPolicy, import_scene_mesh,
+    VisibilityCamera, VisibilityPolicy, assess_ground_zone, import_scene_mesh, rectangle,
 };
 use fss_reference::ingest::privacy_mask::{PrivacyMaskPolicy, declare_mask, preview_mask};
 use fss_reference::ingest::recorded_corroboration::{
@@ -35,6 +36,7 @@ use fss_reference::ingest::recorded_coverage::{CoverageRecord, UncoveredReason, 
 use fss_reference::ingest::recorded_decode::ComponentInterpretation;
 use fss_reference::ingest::recorded_watch::{WatchDetectorConfig, WatchLimits, WatchTrackerConfig};
 use fss_reference::media_fixture::jpeg::{JpegConfig, Subsampling, encode_jpeg};
+use std::sync::atomic::AtomicBool;
 use support::{Fixture, TestResult};
 
 /// East sees the ground from above: `x = u`, `y = 48 - v`.
@@ -105,6 +107,10 @@ fn text(out: &mut Vec<u8>, value: &str) {
 /// An fss-twin `FSSTWIN1` package: an opaque support ground plane at z = 0 and, optionally, an
 /// opaque wall in the plane x = 52 (z 0..20) between the cameras and every ground point x > 52.
 fn twin_package(wall: bool) -> Vec<u8> {
+    placed_twin_package(wall.then_some(52.0), [0.0, 0.0])
+}
+
+fn placed_twin_package(wall_x: Option<f64>, shift: [f64; 2]) -> Vec<u8> {
     let mut body = vec![1_u8; 32];
     text(&mut body, "test/Z-up");
     text(&mut body, "synthetic");
@@ -119,13 +125,13 @@ fn twin_package(wall: bool) -> Vec<u8> {
         [-100.0, 200.0, 0.0],
     ];
     let mut triangles: Vec<[u32; 4]> = vec![[0, 1, 2, 0], [0, 2, 3, 0]];
-    let objects: u32 = if wall { 2 } else { 1 };
-    if wall {
+    let objects: u32 = if wall_x.is_some() { 2 } else { 1 };
+    if let Some(x) = wall_x {
         vertices.extend([
-            [52.0, -10.0, 0.0],
-            [52.0, 60.0, 0.0],
-            [52.0, 60.0, 20.0],
-            [52.0, -10.0, 20.0],
+            [x, -10.0, 0.0],
+            [x, 60.0, 0.0],
+            [x, 60.0, 20.0],
+            [x, -10.0, 20.0],
         ]);
         triangles.extend([[4, 5, 6, 1], [4, 6, 7, 1]]);
     }
@@ -139,20 +145,20 @@ fn twin_package(wall: bool) -> Vec<u8> {
     }
     text(&mut body, "ground");
     body.push(1);
-    if wall {
+    if wall_x.is_some() {
         text(&mut body, "wall");
         body.push(5);
     }
     text(&mut body, "ground");
     body.extend_from_slice(&0_u32.to_le_bytes());
     body.extend_from_slice(&[1, 1]);
-    if wall {
+    if wall_x.is_some() {
         text(&mut body, "wall");
         body.extend_from_slice(&1_u32.to_le_bytes());
         body.extend_from_slice(&[0, 1]);
     }
-    for vertex in &vertices {
-        for value in vertex {
+    for [x, y, z] in vertices {
+        for value in [x + shift[0], y + shift[1], z] {
             body.extend_from_slice(&value.to_le_bytes());
         }
     }
@@ -167,6 +173,108 @@ fn twin_package(wall: bool) -> Vec<u8> {
     let trailer = ContentDigest::sha256(&package).bytes();
     package.extend_from_slice(&trailer);
     package
+}
+
+#[test]
+fn hand_derived_visibility_is_stable_when_the_ground_frame_moves() -> TestResult {
+    let cases = [
+        ("open_yard", None, [0.0, 0.0], false, [16, 0, 0]),
+        ("half_wall", Some(52.0), [0.0, 0.0], false, [8, 8, 0]),
+        (
+            "translated_wall",
+            Some(52.0),
+            [25.0, -13.0],
+            false,
+            [8, 8, 0],
+        ),
+        ("moved_wall", Some(80.0), [0.0, 0.0], false, [16, 0, 0]),
+        ("facing_away", None, [0.0, 0.0], true, [0, 0, 16]),
+    ];
+    for (step, wall, [dx, dy], away, [visible, occluded, outside]) in cases {
+        let bytes = placed_twin_package(wall, [dx, dy]);
+        let digest = ContentDigest::sha256(&bytes);
+        let twin = import_scene_mesh(&bytes, digest, source_scene()?)?;
+        let centre = [48.0 + dx, 24.0 + dy, 10.0];
+        let direction = if away { 1.0 } else { -1.0 };
+        let pose = CameraPose::from_parameters(
+            [96, 48],
+            [10.0, 10.0, 48.0, 24.0],
+            [
+                [1.0, 0.0, 0.0],
+                [0.0, direction, 0.0],
+                [0.0, 0.0, direction],
+            ],
+            [-centre[0], -direction * centre[1], -direction * centre[2]],
+        )?;
+        let mesh = SceneMesh {
+            mesh: twin.mesh(),
+            package_digest: digest,
+        };
+        let evaluate = || {
+            assess_ground_zone(
+                VisibilityCamera::Pose(&pose),
+                [96, 48],
+                &rectangle(44.0 + dx, 16.0 + dy, 16.0, 16.0),
+                Some(mesh),
+                VisibilityPolicy {
+                    grid: 4,
+                    threshold_ppm: 500_000,
+                },
+            )
+        };
+        let result = evaluate()?;
+        assert_eq!(
+            [result.visible, result.occluded, result.outside_frustum],
+            [visible, occluded, outside]
+        );
+        assert_eq!(result.samples, 16);
+        assert_eq!(result.observable(), visible >= 8);
+        assert_eq!(result.occlusion, Occlusion::MeshChecked(digest));
+        assert_eq!(evaluate()?, result);
+        println!(
+            "CAPLOG {{\"step\":\"{step}\",\"verdict\":\"pass\",\"observed\":{{\"visible\":{},\"occluded\":{},\"outside\":{},\"visible_ppm\":{},\"observable\":{},\"basis\":\"{digest}\"}}}}",
+            result.visible,
+            result.occluded,
+            result.outside_frustum,
+            result.visible_fraction_ppm(),
+            result.observable(),
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn wall_ray_honors_exact_budget_and_cancellation() -> TestResult {
+    let bytes = twin_package(true);
+    let digest = ContentDigest::sha256(&bytes);
+    let twin = import_scene_mesh(&bytes, digest, source_scene()?)?;
+    let mesh = twin.mesh();
+    let cast = |budget: &mut WorkBudget<'_>| {
+        mesh.segment_occluded(
+            mesh.basis(),
+            [48.0, 24.0, 10.0],
+            [58.0, 24.0, 0.0],
+            0.0001,
+            budget,
+        )
+    };
+    let mut budget = WorkBudget::new(100);
+    assert!(cast(&mut budget)?);
+    let used = budget.used();
+    assert!(used > 0);
+    assert!(cast(&mut WorkBudget::new(used))?);
+    assert_eq!(
+        cast(&mut WorkBudget::new(used - 1)),
+        Err(GeometryError::BudgetExhausted)
+    );
+    let cancelled = AtomicBool::new(true);
+    let mut budget = WorkBudget::cancellable(used, &cancelled);
+    assert_eq!(cast(&mut budget), Err(GeometryError::Cancelled));
+    assert_eq!(budget.used(), 0);
+    println!(
+        "CAPLOG {{\"step\":\"wall_ray_budget\",\"verdict\":\"pass\",\"observed\":{{\"used\":{used},\"one_less_refused\":true,\"cancelled_without_work\":true,\"basis\":\"{digest}\"}}}}"
+    );
+    Ok(())
 }
 
 fn source_scene() -> TestResult<ContentDigest> {
@@ -411,6 +519,22 @@ fn with_poses_and_a_scene_mesh_the_zone_in_view_is_covered_and_behind_a_wall_it_
             .map(CoverageRecord::to_bytes)
             .collect::<Vec<_>>()
     );
+    for (label, report) in [
+        ("retained_open", &covered),
+        ("retained_occluded", &occluded),
+    ] {
+        for record in report.coverage() {
+            let door = zone(record, "door")?;
+            let visibility = door.visibility.as_ref().ok_or("door visibility")?;
+            let sensor = &record.sensor_id;
+            println!(
+                "CAPLOG {{\"step\":\"{label}_{sensor}\",\"verdict\":\"pass\",\"observed\":{{\"zone\":\"door\",\"visible_ppm\":{},\"observable\":{},\"record\":\"{}\"}}}}",
+                visibility.visible_fraction_ppm(),
+                visibility.observable(),
+                record.digest(),
+            );
+        }
+    }
     Ok(())
 }
 
