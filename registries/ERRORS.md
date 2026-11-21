@@ -679,6 +679,7 @@ Stable process exit identities map command-line interface outcomes to determinis
 Canonical machine error codes returned by `ContractError::code()` (AGT-LAYER-002, INV-003):
 | Error code | Meaning | Stable identity |
 |---|---|---|
+| `object_plane_conflict` | A successor changes an existing object's established semantic plane; reports object identity and both planes, refuses the whole batch, and never repairs an invalid committed prefix implicitly | `ERR-LEDGER-OBJECT-PLANE-CONFLICT-001` |
 | `source_evidence_missing_anchor` | Source evidence record missing authoritative anchor | `ERR-SOURCE-EVIDENCE-MISSING-ANCHOR-001` |
 | `source_evidence_omission_required` | Not-retained source evidence must declare an explicit omission reason | `ERR-SOURCE-EVIDENCE-OMISSION-REQUIRED-001` |
 | `source_evidence_retained_with_omission` | Retained source evidence cannot declare an omission reason | `ERR-SOURCE-EVIDENCE-RETAINED-WITH-OMISSION-001` |

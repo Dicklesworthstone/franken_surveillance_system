@@ -295,7 +295,9 @@ pub struct EvidenceDelta {
     pub new_generation: u64,
     /// Validity interval.
     pub validity: CaptureInterval,
-    /// Plane that owns the object.
+    /// Plane that owns the object, fixed by its first committed generation.
+    /// A successor must preserve this owner; validated cross-plane publication uses a distinct
+    /// target object identity and its own authority checks.
     pub plane: Plane,
     /// Digest of the immutable object payload.
     pub payload_digest: ContentDigest,
@@ -826,6 +828,13 @@ fn apply_deltas(
                     || delta.new_generation != expected_generation
                 {
                     return Err(ContractError::GenerationConflict);
+                }
+                if delta.plane != current.plane {
+                    return Err(ContractError::ObjectPlaneConflict {
+                        object_id: delta.object_id.clone(),
+                        committed_plane: current.plane,
+                        delta_plane: delta.plane,
+                    });
                 }
             }
             None => {

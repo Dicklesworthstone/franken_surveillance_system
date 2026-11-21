@@ -68,6 +68,29 @@ A batch contains ordered typed deltas such as:
 
 Each delta has stable object identity, prior/new generation, validity interval, authority class, provenance, and optional witness/operation reference.
 
+### Object plane ownership
+
+An object's first committed generation fixes its semantic owning plane. Every successor generation
+must preserve that plane. Payload, validity, and family can change through their ordinary validated
+revision paths; a generation increment cannot turn a cognition object into authority or an effect,
+or move an existing authority or effect object into another plane. A validated cross-plane publisher
+creates a distinct target object under its own authority checks and links its supporting evidence.
+Deletion tombstones likewise preserve the original object's plane.
+
+The reference and durable ledgers refuse a changed owner with the structured
+`ContractError::ObjectPlaneConflict` (`object_plane_conflict`), including the object identity,
+committed plane, and proposed plane. Existing generation checks run first; batch identity, anchor,
+ordering, and batch-digest checks retain their earlier refusal precedence. No part of a refused
+batch is committed or written to the durable journal. Both snapshot-retention modes enforce this
+same rule, matching the independent ledger oracle.
+
+Canonical batch encoding and the roots of valid histories are unchanged. An old journal containing
+a previously admitted plane mutation now fails semantic replay and inspection; it is not silently
+rewritten, skipped, or repaired by tail truncation. Any correction requires an explicitly reviewed
+history repair. `plane_ownership_contract.rs` covers all six plane changes, unchanged same-plane
+revisions, complete-batch refusal, earlier error precedence, and invalid committed prefixes with a
+torn tail.
+
 ## 4. Canonical order
 
 Within a batch, order is deterministic:

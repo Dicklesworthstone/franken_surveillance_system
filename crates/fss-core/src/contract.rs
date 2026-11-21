@@ -3,7 +3,7 @@
 use core::fmt;
 
 use crate::canonical::{CanonicalDecode, CanonicalDecoder};
-use crate::{CanonicalEncode, CanonicalEncoder, ContentDigest};
+use crate::{CanonicalEncode, CanonicalEncoder, ContentDigest, ObjectId};
 
 /// Which semantic plane owns a record.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -2832,6 +2832,15 @@ pub enum ContractError {
     InvalidAnchorSuccessor,
     /// A referenced object generation does not match the ledger.
     GenerationConflict,
+    /// A successor generation attempts to change an object's established semantic owner.
+    ObjectPlaneConflict {
+        /// Stable identity whose owning plane cannot change across generations.
+        object_id: ObjectId,
+        /// Plane established by the object's first committed generation.
+        committed_plane: Plane,
+        /// Different plane claimed by the offered successor.
+        delta_plane: Plane,
+    },
     /// A root or content digest does not match the represented bytes.
     DigestMismatch,
     /// A negative claim lacks a complete coverage witness.
@@ -3051,6 +3060,7 @@ impl ContractError {
             Self::StaleAnchor => "stale_anchor",
             Self::InvalidAnchorSuccessor => "invalid_anchor_successor",
             Self::GenerationConflict => "generation_conflict",
+            Self::ObjectPlaneConflict { .. } => "object_plane_conflict",
             Self::DigestMismatch => "digest_mismatch",
             Self::CoverageUncertified => "coverage_uncertified",
             Self::InvalidEffectTransition => "invalid_effect_transition",
