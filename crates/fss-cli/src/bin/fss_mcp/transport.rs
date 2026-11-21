@@ -4,10 +4,8 @@
 
 use std::{
     collections::VecDeque,
-    fs::File,
     future::{Future, poll_fn},
     io::{self, Read, Write},
-    os::fd::{AsFd, OwnedFd},
     pin::pin,
     sync::Arc,
     task::Poll,
@@ -18,17 +16,20 @@ use asupersync::{Cx, runtime::RuntimeBuilder, time::sleep};
 use fss_cli::{ExitIdentity, FssCommand, RequestControl, execute_live_fss_with_control};
 use fss_core::json_input::MAX_MCP_TOOL_OUTPUT_BYTES;
 use fss_runtime::drained_blocking::{self, Drained, WorkOutcome};
-use nix::fcntl::{FcntlArg, OFlag, fcntl};
 
 use super::{
     json::MAX_FRAME_BYTES,
-    server::{Dispatch, RequestId, RequestKey, Server},
+    outbox::Outbox,
+    server::{self, Dispatch, RequestId, RequestKey, Server},
+    stdio::Stdio,
 };
 
 const MAX_QUEUED_REQUESTS: usize = 16;
 const MAX_QUEUED_REPLIES: usize = 64;
-// One maximally escaped native response plus a bounded allowance for protocol/control replies.
-const MAX_QUEUED_REPLY_BYTES: usize = 6 * MAX_MCP_TOOL_OUTPUT_BYTES + 128 * 1024;
+// One maximally escaped native response plus room for the full advertised catalog,
+// a maximally escaped request ID and other bounded protocol/control replies.
+const MAX_QUEUED_REPLY_BYTES: usize = 6 * MAX_MCP_TOOL_OUTPUT_BYTES + 256 * 1024;
+const MAX_NATIVE_REPLY_BYTES: usize = 6 * MAX_MCP_TOOL_OUTPUT_BYTES + 1024;
 const FRAMES_PER_TURN: usize = 8;
 const IO_SLICE_BYTES: usize = 64 * 1024;
 const POLL_INTERVAL: Duration = Duration::from_millis(2);
@@ -70,28 +71,54 @@ impl Scheduler {
             .as_ref()
             .is_some_and(|active| &active.id.key == key)
             || self.pending.iter().any(|pending| &pending.id.key == key)
+            || self.replies.owns(key)
+    }
+
+    /// Protocol replies cannot consume the capacity held for an executing native
+    /// result. This avoids completing an approved effect and only then discovering
+    /// that its receipt cannot enter the bounded response queue.
+    fn reply(&mut self, id: Option<RequestId>, text: String) -> io::Result<()> {
+        let text = text.into_boxed_str().into_string();
+        let reserved = usize::from(self.active.is_some());
+        if !self.replies.capacity_for(
+            text.capacity()
+                .saturating_add(1)
+                .saturating_add(reserved * MAX_NATIVE_REPLY_BYTES),
+            1 + reserved,
+        ) {
+            return Err(io::Error::other(
+                "MCP output backlog exceeded its fixed bound",
+            ));
+        }
+        self.replies.push_owned(text, id.map(|id| id.key))
+    }
+
+    fn duplicate(&mut self) -> io::Result<()> {
+        self.reply(
+            None,
+            server::error("null", -32600, "Request id is already in flight"),
+        )
     }
 
     fn accept(&mut self, request: Dispatch) -> io::Result<()> {
         match request {
             Dispatch::Ignore => Ok(()),
             Dispatch::Reply { id, text } => {
-                if let Some(id) = id.filter(|id| self.owns(&id.key)) {
-                    self.replies
-                        .push(id.error(-32600, "Request id is already in flight"))
+                if id.as_ref().is_some_and(|id| self.owns(&id.key)) {
+                    self.duplicate()
                 } else {
-                    self.replies.push(text)
+                    self.reply(id, text)
                 }
             }
             Dispatch::Tool { id, command } => {
                 if self.owns(&id.key) {
-                    self.replies
-                        .push(id.error(-32600, "Request id is already in flight"))
+                    self.duplicate()
                 } else if self.pending.len() >= MAX_QUEUED_REQUESTS {
-                    self.replies.push(id.error(
+                    let text = id.error(
                         -32003,
                         "Native request queue is full; this request was not executed",
-                    ))
+                    );
+                    self.reply(Some(id), text)
                 } else {
                     self.pending.push_back(Pending { id, command });
                     Ok(())
@@ -105,10 +132,10 @@ impl Scheduler {
                 } else if let Some(index) = self.pending.iter().position(|p| p.id.key == id.key)
                     && let Some(pending) = self.pending.remove(index)
                 {
-                    self.replies.push(pending.id.error(
-                        -32800,
-                        "Request cancelled before native execution",
-                    ))?;
+                    let text = pending
+                        .id
+                        .error(-32800, "Request cancelled before native execution");
+                    self.reply(Some(pending.id), text)?;
                 }
                 // Unknown and already-retired request IDs cannot cancel durable application work.
                 Ok(())
@@ -117,7 +144,7 @@ impl Scheduler {
     }
 
     fn start_next(&mut self, cx: &Cx) -> io::Result<()> {
-        if self.active.is_some() {
+        if self.active.is_some() || !self.replies.capacity_for(MAX_NATIVE_REPLY_BYTES, 1) {
             return Ok(());
         }
         let Some(pending) = self.pending.pop_front() else {
@@ -133,10 +160,13 @@ impl Scheduler {
                 });
                 Ok(())
             }
-            Err(_) => self.replies.push(pending.id.error(
-                -32003,
-                "Runtime refused native execution; this request was not executed",
-            )),
+            Err(_) => {
+                let text = pending.id.error(
+                    -32003,
+                    "Runtime refused native execution; this request was not executed",
+                );
+                self.reply(Some(pending.id), text)
+            }
         }
     }
 
@@ -174,11 +204,18 @@ impl Scheduler {
                 "Native request outcome is indeterminate; inspect retained state before retrying",
             ),
         };
-        self.replies.push(response)
+        let response = response.into_boxed_str().into_string();
+        if response.len() + 1 > MAX_NATIVE_REPLY_BYTES {
+            return Err(io::Error::other(
+                "MCP native reply exceeded its reserved envelope",
+            ));
+        }
+        self.replies.push_owned(response, Some(active.id.key))
     }
 
     async fn cancel_and_drain(&mut self) {
         self.pending.clear();
+        self.replies.clear();
         if let Some(active) = &mut self.active {
             active.owner.abort();
             // Never advertise quiescence, exit, or release this owner while its native closure runs.
@@ -188,75 +225,102 @@ impl Scheduler {
     }
 }
 
-#[derive(Default)]
 struct Replies {
-    frames: VecDeque<Vec<u8>>,
-    offset: usize,
-    bytes: usize,
+    frames: Outbox<RequestKey>,
+    flushing_keys: Vec<RequestKey>,
+    flushing_frames: usize,
     flush_pending: bool,
     last_progress: Option<Instant>,
 }
 
+impl Default for Replies {
+    fn default() -> Self {
+        Self {
+            frames: Outbox::new(MAX_QUEUED_REPLY_BYTES, MAX_QUEUED_REPLIES),
+            flushing_keys: Vec::new(),
+            flushing_frames: 0,
+            flush_pending: false,
+            last_progress: None,
+        }
+    }
+}
+
 impl Replies {
-    fn push(&mut self, mut response: String) -> io::Result<()> {
-        response.push('\n');
-        if self.frames.len() >= MAX_QUEUED_REPLIES
-            || response.len() > MAX_QUEUED_REPLY_BYTES.saturating_sub(self.bytes)
-        {
-            return Err(io::Error::other("MCP output backlog exceeded its fixed bound"));
+    fn owns(&self, key: &RequestKey) -> bool {
+        self.frames.owns(key) || self.flushing_keys.contains(key)
+    }
+
+    fn capacity_for(&self, bytes: usize, frames: usize) -> bool {
+        frames
+            .checked_add(self.flushing_frames)
+            .is_some_and(|frames| self.frames.capacity_for(bytes, frames))
+    }
+
+    #[cfg(test)]
+    fn push(&mut self, response: String) -> io::Result<()> {
+        self.push_owned(response, None)
+    }
+
+    fn push_owned(&mut self, response: String, key: Option<RequestKey>) -> io::Result<()> {
+        // Compact before admission, and charge the complete allocation until retirement.
+        // The outbox writes LF separately so appending it cannot double this allocation.
+        let response = response.into_boxed_str().into_string();
+        if !self.capacity_for(response.capacity().saturating_add(1), 1) {
+            return Err(io::Error::other(
+                "MCP output backlog exceeded its fixed bound",
+            ));
         }
         if self.empty() {
             self.last_progress = Some(Instant::now());
         }
-        self.bytes += response.len();
-        self.frames.push_back(response.into_bytes());
-        Ok(())
+        self.frames.enqueue(response, key)
     }
 
     fn empty(&self) -> bool {
         self.frames.is_empty() && !self.flush_pending
     }
 
+    fn clear(&mut self) {
+        self.frames.clear();
+        self.flushing_keys.clear();
+        self.flushing_frames = 0;
+        self.flush_pending = false;
+        self.last_progress = None;
+    }
+
     fn pump(&mut self, output: &mut impl Write, stall_limit: Duration) -> io::Result<()> {
-        let mut allowance = IO_SLICE_BYTES;
-        while allowance > 0 {
-            let Some(front) = self.frames.front() else {
-                break;
-            };
-            let end = front.len().min(self.offset + allowance);
-            match output.write(&front[self.offset..end]) {
-                Ok(0) => {
-                    return Err(io::Error::new(io::ErrorKind::WriteZero, "MCP output stopped"));
-                }
-                Ok(written) => {
-                    self.offset += written;
-                    allowance -= written;
-                    self.flush_pending = true;
-                    self.last_progress = Some(Instant::now());
-                    if self.offset == front.len() {
-                        self.bytes -= front.len();
-                        self.frames.pop_front();
-                        self.offset = 0;
-                    }
-                }
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => break,
-                Err(error) => return Err(error),
-            }
+        let progress = self.frames.progress(output, IO_SLICE_BYTES)?;
+        self.flushing_frames = self
+            .flushing_frames
+            .checked_add(progress.completed)
+            .ok_or_else(|| io::Error::other("MCP response retirement accounting overflow"))?;
+        self.flushing_keys.extend(progress.retired);
+        if progress.written > 0 {
+            self.flush_pending = true;
+            self.last_progress = Some(Instant::now());
         }
         if self.flush_pending {
             match output.flush() {
-                Ok(()) => self.flush_pending = false,
+                Ok(()) => {
+                    self.flush_pending = false;
+                    self.flushing_keys.clear();
+                    self.flushing_frames = 0;
+                }
                 Err(error)
                     if matches!(
                         error.kind(),
                         io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
-                    ) => (),
+                    ) =>
+                {
+                    ()
+                }
                 Err(error) => return Err(error),
             }
         }
         if !self.empty()
-            && self.last_progress.is_some_and(|at| at.elapsed() >= stall_limit)
+            && self
+                .last_progress
+                .is_some_and(|at| at.elapsed() >= stall_limit)
         {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
@@ -305,7 +369,10 @@ impl Frames {
                 if matches!(
                     error.kind(),
                     io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
-                ) => Ok(Input::Pending),
+                ) =>
+            {
+                Ok(Input::Pending)
+            }
             Err(error) => Err(error),
         }
     }
@@ -341,7 +408,7 @@ async fn serve_owned(
                     match frames.read(input)? {
                         Input::Frame(frame) => {
                             let request = match std::str::from_utf8(&frame) {
-                                Ok(text) => server.dispatch(text),
+                                Ok(text) => server.dispatch_reserved(text, |key| scheduler.owns(key)),
                                 Err(_) => Dispatch::Reply {
                                     id: None,
                                     text: "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32700,\"message\":\"Invalid UTF-8\"}}".to_owned(),
@@ -384,45 +451,20 @@ async fn serve_owned(
     result
 }
 
-/// Duplicate the inherited endpoint without manufacturing an fd or using an unowned reader thread.
-/// `fcntl` changes this open file description; restore the launcher's flags before closing the copy.
-struct NonblockingFd {
-    file: File,
-    original: OFlag,
-}
-
-impl NonblockingFd {
-    fn new(fd: OwnedFd) -> io::Result<Self> {
-        let original = OFlag::from_bits_retain(fcntl(&fd, FcntlArg::F_GETFL)?);
-        fcntl(&fd, FcntlArg::F_SETFL(original | OFlag::O_NONBLOCK))?;
-        Ok(Self {
-            file: File::from(fd),
-            original,
-        })
-    }
-}
-
-impl Drop for NonblockingFd {
-    fn drop(&mut self) {
-        let _ = fcntl(&self.file, FcntlArg::F_SETFL(self.original));
-    }
-}
-
 pub(super) fn serve_stdio(server: &mut Server) -> io::Result<()> {
-    // Drop output before input even if the launcher supplied aliases of one open description.
-    let mut input = NonblockingFd::new(io::stdin().as_fd().try_clone_to_owned()?)?;
-    let mut output = NonblockingFd::new(io::stdout().as_fd().try_clone_to_owned()?)?;
+    let (mut input, mut output) = Stdio::open()?.split();
     let runtime = RuntimeBuilder::current_thread()
         .blocking_threads(1, 1)
         .build()
         .map_err(|_| io::Error::other("MCP runtime unavailable"))?;
     runtime.block_on(async {
-        let cx = Cx::current().ok_or_else(|| io::Error::other("MCP runtime context unavailable"))?;
+        let cx =
+            Cx::current().ok_or_else(|| io::Error::other("MCP runtime context unavailable"))?;
         serve_owned(
             server,
             &cx,
-            &mut input.file,
-            &mut output.file,
+            &mut input,
+            &mut output,
             Arc::new(|command, child| {
                 execute_live_fss_with_control(
                     command,

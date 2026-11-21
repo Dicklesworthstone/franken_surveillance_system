@@ -7,18 +7,18 @@ use std::ffi::OsString;
 #[cfg(any(not(unix), test))]
 use std::io::{self, BufRead, Write};
 
-use fss_cli::session_cmd::SessionCommand;
-use fss_cli::{ExitIdentity, FssCommand, escape_json_str, parse_fss_args};
 #[cfg(any(not(unix), test))]
 use fss_cli::execute_live_fss_with_exit;
+use fss_cli::session_cmd::SessionCommand;
+use fss_cli::{ExitIdentity, FssCommand, escape_json_str, parse_fss_args};
 use fss_core::json_input::MAX_MCP_TOOL_OUTPUT_BYTES;
 use fss_reference::deployment_session::{
     MAX_MISSION_BYTES, MAX_NOTE_BYTES, MAX_OBJECTIVE_BYTES, MAX_SESSION_TOKEN_BUDGET,
 };
 
-use super::json::{self, Value};
 #[cfg(any(not(unix), test))]
 use super::json::MAX_FRAME_BYTES;
+use super::json::{self, Value};
 
 const PROTOCOL_VERSION: &str = "2025-06-18";
 const MAX_BUDGET_TOKENS: u64 = 4096;
@@ -118,7 +118,10 @@ impl RequestId {
     }
 
     fn result(&self, result: &str) -> String {
-        format!("{{\"jsonrpc\":\"2.0\",\"id\":{},\"result\":{result}}}", self.wire)
+        format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":{},\"result\":{result}}}",
+            self.wire
+        )
     }
 }
 
@@ -200,7 +203,18 @@ impl Server {
         }
     }
 
+    #[cfg(any(not(unix), test))]
     pub(super) fn dispatch(&mut self, text: &str) -> Dispatch {
+        self.dispatch_reserved(text, |_| false)
+    }
+
+    /// Refuse occupied identities before a request can change protocol state.
+    /// The transport retains each identity through native drain and response delivery.
+    pub(super) fn dispatch_reserved(
+        &mut self,
+        text: &str,
+        reserved: impl Fn(&RequestKey) -> bool,
+    ) -> Dispatch {
         let invalid = |code, message| Dispatch::Reply {
             id: None,
             text: error("null", code, message),
@@ -230,9 +244,8 @@ impl Server {
                 if method == "notifications/cancelled"
                     && let Ok(p) = params(request)
                     && only(p, &["requestId", "reason", "_meta"])
-                    && p.get("reason").is_none_or(|value| {
-                        value.text().is_some_and(|reason| reason.len() <= 1024)
-                    })
+                    && p.get("reason")
+                        .is_none_or(|value| value.text().is_some_and(|reason| reason.len() <= 1024))
                     && let Some(id) = p.get("requestId").and_then(RequestId::parse)
                 {
                     return Dispatch::Cancel(id);
@@ -244,6 +257,10 @@ impl Server {
                 None => return invalid(-32600, "Invalid request id"),
             },
         };
+        if reserved(&id.key) {
+            // Do not let a duplicate refusal masquerade as the original completion.
+            return invalid(-32600, "Request id is already in flight");
+        }
         let p = match params(request) {
             Ok(p) => p,
             Err(()) => {
@@ -906,7 +923,7 @@ fn quote(text: &str) -> String {
     format!("\"{}\"", escape_json_str(text))
 }
 
-fn error(id: &str, code: i32, message: &str) -> String {
+pub(super) fn error(id: &str, code: i32, message: &str) -> String {
     format!(
         "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"error\":{{\"code\":{code},\"message\":{}}}}}",
         quote(message)

@@ -10,7 +10,10 @@ const INIT: &str = r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"p
 const READY: &str = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
 
 fn server() -> Server {
-    Server::new("/not-read-by-scheduler-test".into(), "principal:test".to_owned())
+    Server::new(
+        "/not-read-by-scheduler-test".into(),
+        "principal:test".to_owned(),
+    )
 }
 
 fn ready() -> Server {
@@ -21,11 +24,15 @@ fn ready() -> Server {
 }
 
 fn call(id: &str) -> String {
-    format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/call","params":{{"name":"doctor","arguments":{{}}}}}}"#)
+    format!(
+        r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/call","params":{{"name":"doctor","arguments":{{}}}}}}"#
+    )
 }
 
 fn cancel(id: &str) -> String {
-    format!(r#"{{"jsonrpc":"2.0","method":"notifications/cancelled","params":{{"requestId":{id}}}}}"#)
+    format!(
+        r#"{{"jsonrpc":"2.0","method":"notifications/cancelled","params":{{"requestId":{id}}}}}"#
+    )
 }
 
 async fn wait_flag(cx: &Cx, flag: &AtomicBool) -> Test {
@@ -41,7 +48,9 @@ async fn wait_flag(cx: &Cx, flag: &AtomicBool) -> Test {
 
 #[test]
 fn active_cancel_is_exactly_scoped_and_cannot_erase_completed_native_output() -> Test {
-    let runtime = RuntimeBuilder::current_thread().blocking_threads(1, 1).build()?;
+    let runtime = RuntimeBuilder::current_thread()
+        .blocking_threads(1, 1)
+        .build()?;
     runtime.block_on(async {
         let cx = Cx::current().ok_or("no runtime context")?;
         let entered = Arc::new(AtomicBool::new(false));
@@ -53,13 +62,18 @@ fn active_cancel_is_exactly_scoped_and_cannot_erase_completed_native_output() ->
         let mut scheduler = Scheduler::new(Arc::new(move |_, child| {
             worker_entered.store(true, Ordering::Release);
             let started = Instant::now();
-            while !worker_release.load(Ordering::Acquire) && started.elapsed() < Duration::from_secs(5) {
+            while !worker_release.load(Ordering::Acquire)
+                && started.elapsed() < Duration::from_secs(5)
+            {
                 if child.is_cancel_requested() {
                     worker_observed.store(true, Ordering::Release);
                 }
                 std::thread::sleep(POLL_INTERVAL);
             }
-            Some((r#"{"native":"committed"}"#.to_owned(), ExitIdentity::SUCCESS))
+            Some((
+                r#"{"native":"committed"}"#.to_owned(),
+                ExitIdentity::SUCCESS,
+            ))
         }));
         let mut server = ready();
         scheduler.accept(server.dispatch(&call("9007199254740993")))?;
@@ -76,7 +90,10 @@ fn active_cancel_is_exactly_scoped_and_cannot_erase_completed_native_output() ->
         scheduler.accept(server.dispatch(&cancel("9007199254740993")))?;
         wait_flag(&cx, &observed).await?;
         scheduler.retire_ready().await?;
-        assert!(scheduler.active.is_some(), "a cancellation request is not a drain receipt");
+        assert!(
+            scheduler.active.is_some(),
+            "a cancellation request is not a drain receipt"
+        );
         release.store(true, Ordering::Release);
         let limit = Instant::now();
         while scheduler.active.is_some() && limit.elapsed() < Duration::from_secs(5) {
@@ -108,7 +125,11 @@ fn queued_cancellation_duplicates_and_pressure_never_execute_refused_commands() 
     let mut server = ready();
     scheduler.accept(server.dispatch(&call("-0")))?;
     scheduler.accept(server.dispatch(&call("0")))?;
-    assert_eq!(scheduler.pending.len(), 1, "numeric ID normalization rejects duplicate -0/0");
+    assert_eq!(
+        scheduler.pending.len(),
+        1,
+        "numeric ID normalization rejects duplicate -0/0"
+    );
     scheduler.accept(server.dispatch(&cancel("0")))?;
     assert!(scheduler.pending.is_empty());
     for id in 1..=MAX_QUEUED_REQUESTS + 1 {
@@ -127,7 +148,9 @@ fn queued_cancellation_duplicates_and_pressure_never_execute_refused_commands() 
 
 #[test]
 fn eof_drains_all_admitted_native_commands_in_fifo_order() -> Test {
-    let runtime = RuntimeBuilder::current_thread().blocking_threads(1, 1).build()?;
+    let runtime = RuntimeBuilder::current_thread()
+        .blocking_threads(1, 1)
+        .build()?;
     runtime.block_on(async {
         let cx = Cx::current().ok_or("no runtime context")?;
         let count = Arc::new(AtomicUsize::new(0));
@@ -135,10 +158,19 @@ fn eof_drains_all_admitted_native_commands_in_fifo_order() -> Test {
         let input = format!("{INIT}\n{READY}\n{}\n{}\n", call("1"), call("2"));
         let mut output = Vec::new();
         serve_owned(
-            &mut server(), &cx, &mut io::Cursor::new(input), &mut output,
-            Arc::new(move |_, _| Some((worker_count.fetch_add(1, Ordering::Relaxed).to_string(), ExitIdentity::SUCCESS))),
+            &mut server(),
+            &cx,
+            &mut io::Cursor::new(input),
+            &mut output,
+            Arc::new(move |_, _| {
+                Some((
+                    worker_count.fetch_add(1, Ordering::Relaxed).to_string(),
+                    ExitIdentity::SUCCESS,
+                ))
+            }),
             OUTPUT_STALL_LIMIT,
-        ).await?;
+        )
+        .await?;
         let output = String::from_utf8(output)?;
         let replies: Vec<_> = output.lines().collect();
         assert_eq!(count.load(Ordering::Relaxed), 2);
@@ -169,7 +201,9 @@ impl Read for GatedInput {
 
 #[test]
 fn partial_frame_failure_cancels_and_drains_started_native_work_before_return() -> Test {
-    let runtime = RuntimeBuilder::current_thread().blocking_threads(1, 1).build()?;
+    let runtime = RuntimeBuilder::current_thread()
+        .blocking_threads(1, 1)
+        .build()?;
     runtime.block_on(async {
         let cx = Cx::current().ok_or("no runtime context")?;
         let entered = Arc::new(AtomicBool::new(false));
@@ -182,7 +216,10 @@ fn partial_frame_failure_cancels_and_drains_started_native_work_before_return() 
             entered,
         };
         let result = serve_owned(
-            &mut server(), &cx, &mut input, &mut Vec::new(),
+            &mut server(),
+            &cx,
+            &mut input,
+            &mut Vec::new(),
             Arc::new(move |_, child| {
                 worker_entered.store(true, Ordering::Release);
                 let started = Instant::now();
@@ -193,9 +230,16 @@ fn partial_frame_failure_cancels_and_drains_started_native_work_before_return() 
                 Some(("cancelled".to_owned(), ExitIdentity::AGENT_REFUSED))
             }),
             OUTPUT_STALL_LIMIT,
-        ).await;
-        assert_eq!(result.err().map(|error| error.kind()), Some(io::ErrorKind::InvalidData));
-        assert!(finished.load(Ordering::Acquire), "transport returned before the cancelled worker drained");
+        )
+        .await;
+        assert_eq!(
+            result.err().map(|error| error.kind()),
+            Some(io::ErrorKind::InvalidData)
+        );
+        assert!(
+            finished.load(Ordering::Acquire),
+            "transport returned before the cancelled worker drained"
+        );
         Ok(())
     })
 }
@@ -211,7 +255,8 @@ fn cancelled_notifications_are_closed_and_do_not_accept_authority_or_malformed_i
         r#"{"requestId":1,"_meta":false}"#,
         r#"{"reason":"missing identity"}"#,
     ] {
-        let request = format!(r#"{{"jsonrpc":"2.0","method":"notifications/cancelled","params":{params}}}"#);
+        let request =
+            format!(r#"{{"jsonrpc":"2.0","method":"notifications/cancelled","params":{params}}}"#);
         assert!(matches!(server.dispatch(&request), Dispatch::Ignore));
     }
     assert!(matches!(server.dispatch(&cancel("1")), Dispatch::Cancel(_)));
@@ -243,9 +288,231 @@ fn incremental_frames_and_output_pressure_have_fixed_bounds() -> Test {
     assert!(replies.push("{}".to_owned()).is_err());
     struct Blocked;
     impl Write for Blocked {
-        fn write(&mut self, _: &[u8]) -> io::Result<usize> { Err(io::ErrorKind::WouldBlock.into()) }
-        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::ErrorKind::WouldBlock.into())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
-    assert_eq!(replies.pump(&mut Blocked, Duration::ZERO).err().map(|error| error.kind()), Some(io::ErrorKind::TimedOut));
+    assert_eq!(
+        replies
+            .pump(&mut Blocked, Duration::ZERO)
+            .err()
+            .map(|error| error.kind()),
+        Some(io::ErrorKind::TimedOut)
+    );
     Ok(())
+}
+
+#[test]
+fn reply_identity_survives_partial_output_and_blocked_flush() -> Test {
+    struct Pressure {
+        bytes: Vec<u8>,
+        allowance: usize,
+        flush_ready: bool,
+    }
+    impl Write for Pressure {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.allowance == 0 {
+                return Err(io::ErrorKind::WouldBlock.into());
+            }
+            let count = bytes.len().min(self.allowance);
+            self.bytes.extend_from_slice(&bytes[..count]);
+            self.allowance -= count;
+            Ok(count)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            if self.flush_ready {
+                Ok(())
+            } else {
+                Err(io::ErrorKind::WouldBlock.into())
+            }
+        }
+    }
+    let mut scheduler = Scheduler::new(Arc::new(|_, _| None));
+    let mut server = ready();
+    let key = RequestKey::Integer(41);
+    scheduler.accept(server.dispatch(r#"{"jsonrpc":"2.0","id":41,"method":"ping"}"#))?;
+    assert!(
+        scheduler.owns(&key),
+        "an immediate reply must retain its identity"
+    );
+    scheduler.accept(server.dispatch(&call("41")))?;
+    assert!(
+        scheduler.pending.is_empty(),
+        "duplicate work was admitted behind an unsent reply"
+    );
+    let mut output = Pressure {
+        bytes: Vec::new(),
+        allowance: 5,
+        flush_ready: false,
+    };
+    scheduler.replies.pump(&mut output, OUTPUT_STALL_LIMIT)?;
+    assert!(scheduler.owns(&key), "partial output released its identity");
+    output.allowance = IO_SLICE_BYTES;
+    scheduler.replies.pump(&mut output, OUTPUT_STALL_LIMIT)?;
+    assert!(
+        scheduler.owns(&key),
+        "unflushed output released its identity"
+    );
+    assert!(scheduler.replies.frames.is_empty());
+    output.flush_ready = true;
+    scheduler.replies.pump(&mut output, OUTPUT_STALL_LIMIT)?;
+    assert!(!scheduler.owns(&key));
+    let text = String::from_utf8(output.bytes)?;
+    assert!(text.contains(r#""id":41,"result":{}"#));
+    assert!(text.contains(r#""id":null,"error":{"code":-32600"#));
+    scheduler.accept(server.dispatch(&call("41")))?;
+    assert_eq!(
+        scheduler.pending.len(),
+        1,
+        "an actually retired ID can be reused"
+    );
+    Ok(())
+}
+
+#[test]
+fn reserved_identity_is_checked_before_initialization_changes_state() -> Test {
+    let mut server = server();
+    let mut scheduler = Scheduler::new(Arc::new(|_, _| None));
+    scheduler.accept(server.dispatch(r#"{"jsonrpc":"2.0","id":0,"method":"ping"}"#))?;
+    let duplicate = server.dispatch_reserved(INIT, |key| scheduler.owns(key));
+    assert!(matches!(duplicate, Dispatch::Reply { id: None, text } if text.contains("-32600")));
+    scheduler
+        .replies
+        .pump(&mut Vec::new(), OUTPUT_STALL_LIMIT)?;
+    let initialize = server.dispatch_reserved(INIT, |key| scheduler.owns(key));
+    assert!(
+        matches!(initialize, Dispatch::Reply { text, .. } if text.contains("protocolVersion") && !text.contains("Already initialized"))
+    );
+    Ok(())
+}
+
+#[test]
+fn native_work_waits_for_its_complete_reply_reservation() -> Test {
+    let runtime = RuntimeBuilder::current_thread()
+        .blocking_threads(1, 1)
+        .build()?;
+    runtime.block_on(async {
+        let cx = Cx::current().ok_or("no runtime context")?;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let worker_calls = Arc::clone(&calls);
+        let mut scheduler = Scheduler::new(Arc::new(move |_, _| {
+            worker_calls.fetch_add(1, Ordering::AcqRel);
+            Some(("{}".to_owned(), ExitIdentity::SUCCESS))
+        }));
+        let mut server = ready();
+        // Exceed the non-native allowance by one complete allocated byte.
+        scheduler
+            .replies
+            .push("x".repeat(MAX_QUEUED_REPLY_BYTES - MAX_NATIVE_REPLY_BYTES))?;
+        scheduler.accept(server.dispatch(&call("1")))?;
+        scheduler.start_next(&cx)?;
+        let refused_before_start = scheduler.active.is_none()
+            && scheduler.pending.len() == 1
+            && calls.load(Ordering::Acquire) == 0;
+        let mut output = Vec::new();
+        while !scheduler.replies.empty() {
+            scheduler.replies.pump(&mut output, OUTPUT_STALL_LIMIT)?;
+        }
+        scheduler.start_next(&cx)?;
+        let limit = Instant::now();
+        while scheduler.active.is_some() && limit.elapsed() < Duration::from_secs(5) {
+            scheduler.retire_ready().await?;
+            sleep(cx.now(), POLL_INTERVAL).await;
+        }
+        let drained = scheduler.active.is_none();
+        if !drained {
+            scheduler.cancel_and_drain().await;
+        }
+        assert!(
+            refused_before_start,
+            "native work ran without reserved response capacity"
+        );
+        assert!(drained);
+        assert_eq!(calls.load(Ordering::Acquire), 1);
+        assert!(
+            scheduler.owns(&RequestKey::Integer(1)),
+            "completed native reply lost its ID"
+        );
+        Ok(())
+    })
+}
+
+#[test]
+fn control_replies_cannot_spend_the_active_native_result_reservation() -> Test {
+    let runtime = RuntimeBuilder::current_thread()
+        .blocking_threads(1, 1)
+        .build()?;
+    runtime.block_on(async {
+        let cx = Cx::current().ok_or("no runtime context")?;
+        let mut scheduler = Scheduler::new(Arc::new(|_, _| {
+            Some(("retained native receipt".to_owned(), ExitIdentity::SUCCESS))
+        }));
+        let mut server = ready();
+        scheduler.accept(server.dispatch(&call("1")))?;
+        scheduler.start_next(&cx)?;
+        let started = scheduler.active.is_some();
+        let overflow_refused = scheduler
+            .reply(
+                None,
+                "x".repeat(MAX_QUEUED_REPLY_BYTES - MAX_NATIVE_REPLY_BYTES),
+            )
+            .is_err();
+        let small_reply = scheduler.reply(
+            None,
+            server::error("null", -32600, "bounded protocol refusal"),
+        );
+        let limit = Instant::now();
+        while scheduler.active.is_some() && limit.elapsed() < Duration::from_secs(5) {
+            scheduler.retire_ready().await?;
+            sleep(cx.now(), POLL_INTERVAL).await;
+        }
+        let drained = scheduler.active.is_none();
+        if !drained {
+            scheduler.cancel_and_drain().await;
+        }
+        assert!(
+            started && overflow_refused,
+            "control traffic consumed native result capacity"
+        );
+        small_reply?;
+        assert!(drained);
+        let mut output = Vec::new();
+        scheduler.replies.pump(&mut output, OUTPUT_STALL_LIMIT)?;
+        assert!(String::from_utf8(output)?.contains("retained native receipt"));
+        Ok(())
+    })
+}
+
+#[test]
+fn complete_catalog_with_maximally_escaped_id_fits_beside_a_native_result() -> Test {
+    let runtime = RuntimeBuilder::current_thread()
+        .blocking_threads(1, 1)
+        .build()?;
+    runtime.block_on(async {
+        let cx = Cx::current().ok_or("no runtime context")?;
+        let mut scheduler = Scheduler::new(Arc::new(|_, _| {
+            Some(("native result".to_owned(), ExitIdentity::SUCCESS))
+        }));
+        let mut server = ready();
+        scheduler.accept(server.dispatch(&call("1")))?;
+        scheduler.start_next(&cx)?;
+        let active = scheduler.active.is_some();
+        let request = format!(
+            r#"{{"jsonrpc":"2.0","id":"{}","method":"tools/list"}}"#,
+            r#"\u0001"#.repeat(128),
+        );
+        let catalog = scheduler.accept(server.dispatch(&request));
+        let native_capacity_remains = scheduler.replies.capacity_for(MAX_NATIVE_REPLY_BYTES, 1);
+        scheduler.cancel_and_drain().await;
+        assert!(active);
+        catalog?;
+        assert!(
+            native_capacity_remains,
+            "valid catalog spent the native result reservation"
+        );
+        Ok(())
+    })
 }

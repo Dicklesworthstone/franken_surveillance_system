@@ -20,20 +20,26 @@ mod feedback;
 mod investigate;
 #[path = "fss_mcp/json.rs"]
 mod json;
+#[path = "fss_mcp/localizations.rs"]
+mod localizations;
 #[path = "fss_mcp/onvif.rs"]
 mod onvif;
+#[cfg(unix)]
+#[path = "fss_mcp/outbox.rs"]
+mod outbox;
 #[path = "fss_mcp/qsr.rs"]
 mod qsr;
 #[path = "fss_mcp/recordings.rs"]
 mod recordings;
 #[path = "fss_mcp/report_catalog.rs"]
 mod report_catalog;
-#[path = "fss_mcp/sources.rs"]
-mod sources;
-#[path = "fss_mcp/localizations.rs"]
-mod localizations;
 #[path = "fss_mcp/server.rs"]
 mod server;
+#[path = "fss_mcp/sources.rs"]
+mod sources;
+#[cfg(unix)]
+#[path = "fss_mcp/stdio.rs"]
+mod stdio;
 #[path = "fss_mcp/tracks.rs"]
 mod tracks;
 #[cfg(unix)]

@@ -320,7 +320,10 @@ Input is limited to 64 KiB including the newline, 32 nesting levels, 4096 values
 and 16 KiB per decoded string. Duplicate keys, malformed Unicode, invalid JSON
 numbers and unrecognized fields are refused. Integer request IDs preserve their
 exact spelling and must fit signed 64-bit range; string IDs are at most 128 bytes.
-Duplicate IDs among running or queued requests are refused before native execution.
+Request IDs remain owned while queued, running, awaiting output or awaiting flush.
+Duplicate IDs are refused before protocol-state changes or native execution, with
+an invalid-request error using `id: null` so it cannot be mistaken for completion
+of the original request. An ID becomes reusable only after its full reply is delivered.
 Numeric and string IDs remain distinct; numeric `-0` and `0` identify the same
 request. There is no floating-point ID conversion.
 
@@ -330,7 +333,11 @@ One Asupersync runtime owns one native blocking-pool worker. Up to sixteen furth
 native requests can wait in its bounded FIFO. This preserves serial native mutation
 ordering while `ping`, `tools/list` and cancellation notifications remain responsive.
 A full native queue returns JSON-RPC `-32003` without invoking the new command;
-duplicate live IDs return `-32600`. The transport never runs a refused command inline.
+duplicate live IDs return `-32600` with `id: null`. The transport never runs a refused
+command inline. Before starting a native worker, it reserves one reply slot and
+enough bytes for the largest permitted escaped native result. Protocol/control
+replies cannot consume that reservation. Earlier output must drain before another
+native command starts if the complete reservation is unavailable.
 
 Cancel the exact JSON-RPC request ID, preserving its string or integer type:
 
@@ -369,11 +376,20 @@ has no effect. A native panic or an indeterminate worker outcome returns an expl
 error directing the client to inspect retained state before retrying.
 
 The Unix launcher temporarily sets nonblocking mode on owned duplicates of stdin
-and stdout, restoring their original flags on return. Safe `nix` fd operations use
+and stdout. A shared descriptor lease samples both original flag sets before either
+is changed and restores them only after both endpoint owners retire, including
+aliased descriptors and failed setup. Safe `nix` fd operations use
 the existing pinned dependency with its `fs` feature; no detached reader thread or
 additional runtime is introduced. The scheduler retains partial frames across
 nonblocking reads and limits work per turn. Replies have a maximum backlog of
-sixty-four frames and `6 × 4 MiB + 128 KiB` retained wire bytes. Thirty seconds
+sixty-four frames and `6 × 4 MiB + 256 KiB` retained allocated bytes. The control
+allowance accommodates the complete tool catalog with a maximally escaped ID
+while a native result remains reserved. Each frame's
+complete allocation remains charged until its newline is written; appending that
+newline never triggers an unchecked allocation. One output turn performs at most
+64 write attempts and 64 KiB of writes, keeping small writes and interruptions
+from monopolizing input handling. IDs and frame accounting remain reserved through
+a pending flush. Thirty seconds
 without output progress, exceeded output backlog, framing failure or an I/O error
 stops admission, discards unstarted work and requests cancellation of the running
 worker. The process drains that worker before returning. Filesystem and native

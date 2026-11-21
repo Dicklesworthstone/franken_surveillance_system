@@ -117,9 +117,14 @@ follow the native reconciliation guidance. Do not create a new operation or reci
 to evade deduplication. The commit tool intentionally does not advertise automatic idempotent
 retry, despite the native protection against duplicate dispatch.
 
-MCP notifications never execute tools. The synchronous stdio adapter cannot process an
-in-flight cancellation notification while dispatch blocks. `cancel` is the durable
-native cancellation operation, not cancellation of a JSON-RPC response.
+MCP notifications never execute tools. The Unix stdio controller processes request
+cancellation while native work runs. Cancelling a queued dispatch prevents it from
+starting; cancellation after admission keeps the native owner until its work drains
+and preserves the actual completed result and durable receipt. It does not invoke
+the approved `cancel` tool, retry dispatch, or prove that an alert was not sent.
+Before native admission, the controller reserves the complete result's output space;
+the request ID remains owned through response delivery. See
+[request ownership and cancellation](MCP_READ_ONLY_REFERENCE.md#request-ownership-and-cancellation-on-unix).
 
 ## Cancellation, reconciliation and closure
 

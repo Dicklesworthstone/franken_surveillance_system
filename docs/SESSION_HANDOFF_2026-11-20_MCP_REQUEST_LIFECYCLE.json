@@ -1,0 +1,176 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-20",
+  "date_timezone": "America/New_York",
+  "mission": "Implement the most important incomplete functionality from the comprehensive plan and Beads; commit meaningful changes directly to main through GitHub without PRs.",
+  "basis": {
+    "started_at": "7e336b8e457e11cffaf132b2176f78cf3da48371",
+    "integration_base": "17cc7d1b10f307d0eec8893e872d9f5be9372e39",
+    "plan": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+    "backlog": ".beads/issues.jsonl",
+    "bead": "fss-x4a.25.2",
+    "external_ref": "FSS-177",
+    "status": "open; materially advanced, not qualified or closed",
+    "concurrent_commits_preserved": [
+      "8c2c7cd0faee1f84e7ac20a7c6b0a8d470474f79",
+      "6d5600534473f5261b56ec3a341913f1edb89de8",
+      "8ef7fcb30adcf4cf8eee4d11625c921272ff3b1c",
+      "0e432bf723f91ba71f43c4795a3f7171e3d0483a",
+      "1b191d73116686b016043ec81588f67b0c34233f",
+      "ac1a366e84642d01b904d6354f1f5ffb6409c798",
+      "17cc7d1b10f307d0eec8893e872d9f5be9372e39"
+    ]
+  },
+  "authority": {
+    "repository": "Explicit user authorization for direct main commits through GitHub. No PRs, force pushes or changed protections.",
+    "native": "Launch-owned typed scope is retained. RequestControl borrows the existing owner cancellation probe and grants no source, session or effect authority.",
+    "effects": "Cancellation before dispatch prevents work; admitted effect mutations retain their original clock, owner, actual outcome and durable receipt. No implicit AOP-010, rollback or resend."
+  },
+  "delivered": [
+    {
+      "commit": "7a4809824db062788b14276d7b478863d758bad5",
+      "feature": "Native request cancellation",
+      "scope": "Public borrowed control facade; sixteen source-query adapters, hydration/status/follow/session admission and effect observation; existing synchronous entrypoints preserved."
+    },
+    {
+      "commit": "0e432bf723f91ba71f43c4795a3f7171e3d0483a",
+      "origin": "concurrent implementation preserved and extended",
+      "feature": "Responsive owned Unix MCP scheduler",
+      "scope": "One Asupersync native worker, bounded FIFO, live ping/cancellation, clean EOF drain, six controller tests and native follow/effect/source cancellation regressions."
+    },
+    {
+      "commit": "this_commit",
+      "feature": "Request identity and native result delivery ownership",
+      "scope": "Reserve IDs through full output and flush, refuse duplicates before protocol-state changes with null-ID errors, reserve the complete native output before execution, charge full allocations, bound write attempts, and integrate the tested shared stdio lease."
+    }
+  ],
+  "integration_decisions": [
+    "Preserved the concurrent scheduler, injectable native executor, all six controller tests, native effect/follow/source regressions and non-Unix synchronous fallback.",
+    "Preserved sixteen pending native requests, thirty-second no-progress output timeout and actual completed-native-response delivery through cancellation.",
+    "The earlier local alternative used eight queued requests and suppressed cancelled replies; it was not published over the concurrent implementation.",
+    "A complete tools/list reply with a maximum escaped request ID exceeded the former control allowance by 140 bytes. The aggregate control allowance is now 256 KiB with a focused full-catalog regression.",
+    "Preserved the concurrent 17cc7d1 native refinement: follow parks check cancellation in at most 25 ms slices, and session cancellation keeps its native cancelled outcome before clock admission."
+  ],
+  "bounds": {
+    "maximum_pending_native_requests": 16,
+    "maximum_executing_native_requests": 1,
+    "input_frame_bytes_including_lf": 65536,
+    "semantic_native_output_bytes": 4194304,
+    "reserved_native_reply_bytes": 25166848,
+    "maximum_queued_output_allocated_bytes": 25427968,
+    "maximum_response_frames_including_pending_flush": 64,
+    "write_attempts_per_pump": 64,
+    "write_bytes_per_pump": 65536,
+    "output_no_progress_timeout_ms": 30000,
+    "controller_poll_interval_ms": 2
+  },
+  "semantics": {
+    "identity": "Decoded strings and signed integer IDs are distinct; -0 and 0 share numeric identity. Busy IDs cannot bind another operation or mutate initialization state. Duplicate refusals carry id:null.",
+    "output": "One native result slot and maximum escaped result bytes are held before starting work. Control replies cannot spend that reservation. Full owned allocations remain charged through newline; identity and frame counts remain reserved through pending flush.",
+    "cancellation": "Queued work never executes; running work remains owned until its exact closure and coordinator join. Available native results remain authoritative and are returned even if cancellation raced completion. Cancellation cannot undo an effect.",
+    "EOF": "Seal intake and drain accepted native commands and replies.",
+    "failure": "Framing/I/O/output pressure failure discards unstarted work and pending output, requests active cancellation and joins before returning.",
+    "stdio": "Both inherited descriptors share one restoration lease; original flags are sampled before either changes and restored only after both owners retire. Non-Unix retains the existing synchronous implementation."
+  },
+  "validation": {
+    "toolchain": "nightly-2026-08-31; rustc 1.100.0-nightly (908501772 2026-08-30)",
+    "executed_relevant_contracts": 23,
+    "baseline": {
+      "passed": 13,
+      "failed": 0,
+      "scope": "Nine unchanged CancellationLifecycle contracts and four actual native MCP JSON parser tests compiled from exact production sources without stubs."
+    },
+    "unix_io": {
+      "passed": 6,
+      "failed": 0,
+      "scope": "Exact production stdio.rs in an isolated locked offline Cargo harness using genuine nix =0.31.3 with fs/net and the pinned compiler. Real pipes, duplex descriptor aliases, pressure, regular files and setup rollback.",
+      "source_sha256": "ac3fad696d7680835232c058d4faeec2d87c7d4c29b608578b82f299261562f2",
+      "saved_blob": "b46455631792dce2d43f88d77552f7a3ead4504b",
+      "results": "Compiling autocfg v1.5.1\n   Compiling memoffset v0.9.1\n   Compiling cfg_aliases v0.2.2\n   Compiling libc v0.2.191\n   Compiling nix v0.31.3\n   Compiling cfg-if v1.0.5\n   Compiling bitflags v2.13.2\n   Compiling fss-mcp-stdio-os-check v0.0.0 (/workspace/scratch/a39d6415a097/fss-mcp-stdio-check)\nwarning: associated function `open` is never used\n  --> /workspace/scratch/a39d6415a097/franken_surveillance_system/crates/fss-cli/src/bin/fss_mcp/stdio.rs:39:19\n   |\n35 | impl Stdio {\n   | ---------- associated function in this implementation\n...\n39 |     pub(super) fn open() -> io::Result<Self> {\n   |                   ^^^^\n   |\n   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default\n\nwarning: `fss-mcp-stdio-os-check` (lib test) generated 1 warning\n    Finished `test` profile [unoptimized] target(s) in 3.34s\n     Running unittests src/lib.rs (target/debug/build/fss-mcp-stdio-os-check/65bf0452beb7a418/out/fss_mcp_stdio_os_check-65bf0452beb7a418)\n\nrunning 6 tests\ntest stdio::tests::already_nonblocking_descriptors_keep_their_flags ... ok\ntest stdio::tests::aliased_duplex_descriptors_preserve_the_true_original_flags ... ok\ntest stdio::tests::flags_restore_only_after_both_halves_retire ... ok\ntest stdio::tests::output_flag_refusal_restores_the_input_change ... ok\ntest stdio::tests::empty_and_full_pipes_return_would_block_without_losing_bytes ... ok\ntest stdio::tests::redirected_regular_files_keep_exact_bytes_and_eof ... ok\n\ntest result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+    },
+    "outbox": {
+      "passed": 4,
+      "failed": 0,
+      "scope": "Generic production outbox.rs compiled and executed directly with pinned rustc; actual i64 key instantiation, no replacement implementations. Partial delivery/identity, full allocation accounting, finite attempts/bytes and zero-write refusal.",
+      "source_sha256": "f04fe5f31e7226d66f947c370bdd51d3967faedf0da44d8a1df094645e1c5c40",
+      "saved_blob": "78c2b0772a81f0da54b635cc9f02f0cb6955b1af",
+      "results": "running 4 tests\ntest outbox::tests::every_poll_bounds_interrupts_successful_writes_and_bytes ... ok\ntest outbox::tests::allocated_capacity_stays_charged_until_the_newline_retires ... ok\ntest outbox::tests::partial_frames_keep_identity_until_complete_ordered_delivery ... ok\ntest outbox::tests::zero_write_is_a_terminal_error_without_claiming_a_delivered_response ... ok\n\ntest result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+    },
+    "integrated_contracts_not_executed": {
+      "new_native_facade_and_clock": 7,
+      "new_controller": 5,
+      "controller_scenarios": [
+        "identity held during partial output and blocked flush",
+        "duplicate checked before initialize changes state",
+        "native execution waits for complete result reservation",
+        "control replies cannot consume native result space",
+        "full tools/list with maximum escaped ID fits beside native result"
+      ],
+      "preserved": "All concurrent effect/follow/source and scheduler tests retained. The real-process duplicate-ID assertion now requires null and proves original numeric ID remains cancellable."
+    },
+    "full_graph_check": {
+      "command": "cargo check -p fss-cli --bin fss-mcp --locked --offline -j1",
+      "rustflags": "-Zthreads=1 -Zmir-opt-level=0",
+      "profile": "debug=0, incremental=0, one job, MALLOC_ARENA_MAX=1, explicit real pinned compiler/cache",
+      "exit_code": 101,
+      "timed_out": false,
+      "wall_seconds": 79.12,
+      "peak_child_rss_kib": 2712712,
+      "termination": "rustc SIGKILL while checking unchanged asupersync 0.5.0",
+      "edited_fss_crates_reached": false,
+      "cause": "Unproven; no OOM diagnosis or integrated/qualification pass claimed.",
+      "scope": "Diagnostic memory flags are not the sealed qualification profile."
+    },
+    "formatting": "Exact pinned scoped rustfmt and whitespace checks passed.",
+    "independent_review": "Native facade/effect boundaries, concurrent implementation, response ownership, reservation arithmetic and test synchronization were reviewed independently.",
+    "integrity": "All changed source paths have exact base/delta SHA-256 rows. A full inherited manifest audit failed on unrelated baseline drift; no aggregate integrity pass claimed.",
+    "executor": "A temporary executor outage was recovered. Native cancellation was already committed; reviewed parallel work was checkpointed before rebasing onto concurrent main. No force update or concurrent work loss."
+  },
+  "remaining_critical_work": [
+    {
+      "bead": "fss-x4a.25.2",
+      "work": "Execute pinned facade, fss-mcp binary, follow/effect process, session lifecycle and source cancellation contracts on a builder able to compile unchanged asupersync; resolve findings before qualification."
+    },
+    {
+      "bead": "fss-x4a.25.2",
+      "work": "Extend request checkpoints into legacy event reads, doctor, unsessioned orientation and retained model/decoder probe loops while retaining native authority and effects."
+    },
+    {
+      "bead": "fss-x4a.25.2",
+      "work": "Complete universal envelope ingress, request-region proof and registered transport/taint qualification; the reference task owner does not close the full gate."
+    },
+    {
+      "external_ref": "FSS-178",
+      "work": "Durable application-owned MCP task projection remains separate unfinished functionality."
+    }
+  ],
+  "required_followup_commands": [
+    "cargo test --locked -p fss-cli --lib request_control::tests",
+    "cargo test --locked -p fss-cli --lib session_time::tests",
+    "cargo test --locked -p fss-cli --bin fss-mcp",
+    "cargo test --locked -p fss-cli --test follow_cli_contract mcp_cancellation::",
+    "cargo test --locked -p fss-cli --test agent_effect_cli_contract mcp_cancellation::",
+    "cargo test --locked -p fss-cli --test qsr_query_cli_contract",
+    "cargo test --locked -p fss-cli --test tracks_query_cli_contract",
+    "cargo test --locked -p fss-cli --test mcp_cli_contract",
+    "cargo test --locked -p fss-cli --test mcp_session_lifecycle_contract",
+    "cargo test --locked -p fss-cli --test mcp_control_contract"
+  ],
+  "limitations": [
+    "Filesystem syscalls remain cooperative; O_NONBLOCK does not make regular-file storage preemptible.",
+    "The passing module/OS tests do not establish integrated Asupersync controller scheduling or release qualification.",
+    "Other platforms retain synchronous stdio without in-flight cancellation."
+  ],
+  "source_sha256": {
+    "crates/fss-cli/src/request_control.rs": "43e9772a4949d8e24e97710238078aa52b3251a1de1979f49acbbad41dc5dd2f",
+    "crates/fss-cli/src/request_control/tests.rs": "6d776f6933a3a5d97fb4052be2633660ec1ef7fb1749da74f04cacc4caf7e582",
+    "crates/fss-cli/src/fss_cmd.rs": "fe45e0f73470ea33721cabca5c33b7892e5e96a1cb4f5bac6349fee778218953",
+    "crates/fss-cli/src/bin/fss-mcp.rs": "83bd979585a520ae0a9a9999526295d5020b93d7d7cf5532bff2a3dcf736ed87",
+    "crates/fss-cli/src/bin/fss_mcp/server.rs": "60a778ccc844be3a2243826779440f015cc0a7b5a8f0df3dc33feac9bef01e6f",
+    "crates/fss-cli/src/bin/fss_mcp/transport.rs": "d9ac9ee1a31ddbbcd4d06da8fc2e4e343e3948cdeeebd90d76444d0e8fab4bf9",
+    "crates/fss-cli/src/bin/fss_mcp/outbox.rs": "f04fe5f31e7226d66f947c370bdd51d3967faedf0da44d8a1df094645e1c5c40",
+    "crates/fss-cli/src/bin/fss_mcp/stdio.rs": "ac3fad696d7680835232c058d4faeec2d87c7d4c29b608578b82f299261562f2",
+    "crates/fss-cli/src/bin/fss_mcp/transport_tests.rs": "836627f46053474d0e05c92f7b07c6ddc89c5f1182873455dbe59919a025240e",
+    "crates/fss-cli/tests/follow_cli_contract/mcp_cancellation.rs": "73d827662b36816a5200edf3f311648d0009fc751d0782f7b4ba339429107f65"
+  }
+}

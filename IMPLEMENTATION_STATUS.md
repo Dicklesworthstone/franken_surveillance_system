@@ -4,6 +4,39 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Native request cancellation and MCP response ownership — 2026-11-20
+
+The native CLI facade now accepts a borrowed request cancellation probe. Sixteen
+source-query adapters, hydration, status, ordinary/durable follow, session-clock
+admission and effect-observation waits use their existing native checkpoints.
+Already admitted effect mutations retain their original clock, durable owner and
+actual outcome; request cancellation never invokes the approved effect-cancel tool
+or retries dispatch. Existing synchronous CLI entrypoints retain their behavior.
+
+The concurrent Unix MCP scheduler now uses that facade with serial owned execution,
+responsive control messages and graceful EOF drain. Its response handling now keeps
+request IDs reserved through complete output and flush, refuses duplicate IDs before
+protocol-state changes, and reserves the largest allowed native reply before starting
+work. Control replies cannot spend that reservation. The output owner accounts for
+complete allocations and bounds write attempts; the shared stdio lease safely owns
+nonblocking flags and their restoration.
+
+Six real Unix I/O tests and four generic production output-queue tests passed with
+the exact pinned compiler and genuine dependencies. Thirteen existing cancellation
+and MCP parser contracts also passed in an exact-source harness. Seven new native
+facade/clock contracts and five new integrated controller contracts are retained;
+the concurrent effect/follow/source cancellation regressions are preserved.
+Integrated compilation and execution remain unverified: the locked source check
+ended with rustc SIGKILL in unchanged `asupersync 0.5.0` before reaching FSS crates
+(79.120 seconds, peak child RSS 2,712,712 KiB). The termination cause is unproven.
+
+This advances `fss-x4a.25.2` / FSS-177 without closing or qualifying it. Legacy event
+reads, doctor, orientation without a session and retained probe kernels still need
+deeper request checkpoints. Full envelope admission, durable MCP task projection
+and production qualification remain open. See
+[MCP request semantics](docs/MCP_READ_ONLY_REFERENCE.md#request-ownership-and-cancellation-on-unix)
+and the [typed handoff](docs/SESSION_HANDOFF_2026-11-20_MCP_REQUEST_LIFECYCLE.json).
+
 ## Retained media reading and replay alongside capture — 2026-11-20
 
 `fss-video read` and `verify`, `fss-replay-dwell inspect` and `verify`, and
