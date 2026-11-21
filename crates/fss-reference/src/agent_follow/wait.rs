@@ -390,6 +390,7 @@ pub fn follow_deployment_wait(
     binding: &FollowWaitBinding,
     control: &mut dyn FollowWaitControl,
 ) -> Result<FollowWaitResult, FollowWaitFailure> {
+    let metadata_budget = crate::agent_orient::MetadataReadBudget::default();
     let mut progress = FollowWaitProgress::default();
     let mut last_follow: Option<DeploymentFollow> = None;
     let mut observed_head: Option<FollowWaitHead> = None;
@@ -411,8 +412,12 @@ pub fn follow_deployment_wait(
                     .admitted_reads
                     .checked_add(1)
                     .ok_or(FollowWaitError::AccountingOverflow)?;
-                let history = DeploymentHistory::read(&binding.root, &binding.read_limits)
-                    .map_err(|error| FollowWaitError::Follow(FollowError::Read(error)))?;
+                let history = DeploymentHistory::read_metadata(
+                    &binding.root,
+                    &binding.read_limits,
+                    &metadata_budget,
+                )
+                .map_err(|error| FollowWaitError::Follow(FollowError::Read(error)))?;
                 let position = history.head();
                 let (anchor, ledger_root, effect_root) = history.roots_at(position).ok_or(
                     FollowWaitError::Follow(FollowError::Anchor(super::AnchorRefusal::Unknown)),

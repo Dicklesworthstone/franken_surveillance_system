@@ -460,8 +460,8 @@ def _json_object_pairs_hook(pairs):
     return d
 
 
-def validate_file(file_path: Path):
-    """Validates a single log file."""
+def validate_file(file_path: Path) -> str:
+    """Validate the log and return its recorded run verdict."""
     try:
         size = file_path.stat().st_size
     except Exception as e:
@@ -722,6 +722,7 @@ def validate_file(file_path: Path):
                 "Summary verdict is 'fail' but summary failures list is empty",
                 line_no=summary_line_no,
             )
+    return summary_verdict
 
 
 def find_log_files(target: Path):
@@ -769,8 +770,8 @@ def main():
 
     for file_path in all_files:
         try:
-            validate_file(file_path)
-            print(f"PASS: {file_path}")
+            verdict = validate_file(file_path)
+            print(f"Valid log (run verdict: {verdict}): {file_path}")
         except ValidationError as exc:
             sys.stderr.write(f"VALIDATION_ERROR [{exc.code}]: {exc.message}\n")
             if exc.line:

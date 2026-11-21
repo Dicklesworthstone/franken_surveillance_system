@@ -657,7 +657,7 @@ if ! grep -q "https://user:<redacted>@endpoint.local/test" "$LOG17"; then
     echo "FAIL: Expected <redacted> in URL credentials in $LOG17!" >&2
     exit 1
 fi
-if ! grep -F -q '([A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:)[^/\s:@]+(@)' "${REPO_ROOT}/scripts/e2e/lib.sh"; then
+if ! grep -F -q '(://[^/\s:@]+:)[^/\s:@]+(@)' "${REPO_ROOT}/scripts/e2e/lib.sh"; then
     echo "FAIL: N33 survived: URL credential redaction missing from lib.sh!" >&2
     exit 1
 fi

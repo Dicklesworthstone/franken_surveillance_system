@@ -203,6 +203,31 @@ impl MatroskaVideo<'_> {
             .explicit_duration_ns(self.default_duration_ns(), self.timestamp_scale)
     }
 
+    /// Raw Segment presentation bounds of one frame under the explicit-duration timing
+    /// profile. An absent duration or unsupported transform cannot prove continuity. These
+    /// bounds never establish a capture clock; the next timestamp is never used as an end.
+    pub fn declared_sample_interval_ns(
+        &self,
+        index: usize,
+    ) -> Result<Option<Range<i128>>, DemuxError> {
+        let sample = self.samples.get(index).ok_or(DemuxError::Layout)?;
+        if !self.track_timing.supports_explicit_movie_profile() {
+            return Ok(None);
+        }
+        let duration = match self.movie_sample_duration_ns(index) {
+            Ok(Some(duration)) if duration > 0 => duration,
+            Ok(_) | Err(DemuxError::Unsupported) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let start = i128::from(sample.timestamp)
+            .checked_mul(i128::from(self.timestamp_scale))
+            .ok_or(DemuxError::Timeline)?;
+        let end = start
+            .checked_add(i128::try_from(duration).map_err(|_| DemuxError::Timeline)?)
+            .ok_or(DemuxError::Timeline)?;
+        Ok(Some(start..end))
+    }
+
     fn decode_selection(
         &self,
         selected: &[MovieSampleSelection],

@@ -27,7 +27,7 @@ pub(super) fn project(
     let mut result = Projection::default();
     let Some(warnings) = warnings else {
         result.unknown.push(
-            "Advisory operational memory is unavailable in this projection; no absence of harmful history is established."
+            "Advisory memory unavailable: no absence of harmful history established."
                 .to_owned(),
         );
         return Ok(result);

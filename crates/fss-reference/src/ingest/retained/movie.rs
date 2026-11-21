@@ -159,6 +159,135 @@ impl RetainedFileImport {
         if query.start >= query.end {
             return Err(refusal(DemuxError::Timeline, STAGE_SELECT));
         }
+        let (source, origin_read_bytes_charged) = self.authenticated_movie_source(
+            deployment,
+            read_limits,
+            maximum_origin_read_bytes,
+            cx,
+        )?;
+        let (track_id, codec, selection) =
+            select_container(&self.manifest, &source, query, selection_limits, cx)?;
+
+        // Never release cached metadata after its witnessed custody becomes unavailable.
+        // Reopening checks deletion, root/part closure and the exact completion binding again.
+        self.revalidate(deployment, read_limits, cx)?;
+        checkpoint(cx, STAGE_COMPLETE)?;
+        Ok(RetainedMovieSelection {
+            import_identity: self.import_identity,
+            import_root: self.import_root,
+            manifest_digest: self.manifest_digest,
+            authority_anchor: self.authority_anchor.clone(),
+            source_adapter_id: self.manifest.adapter_id.clone(),
+            source_adapter_generation: self.manifest.adapter_generation.clone(),
+            source_format: self.manifest.format.clone(),
+            input_sha256: self.manifest.input_sha256,
+            input_bytes: self.manifest.input_bytes,
+            source_bytes_read: source.len() as u64,
+            origin_read_bytes_charged,
+            maximum_origin_read_bytes,
+            track_id,
+            codec,
+            capture_time_label: self.manifest.capture_time_label.clone(),
+            selection,
+        })
+    }
+    /// Bound adjacent decoded samples to the retained container's declared media times. A
+    /// break with a known hole also restarts tracking. Missing or reordered timing withdraws
+    /// the negative bridge without suppressing the frames available for positive detection.
+    pub(crate) fn coverage_presentation_breaks(
+        &self,
+        deployment: &dyn RetainedSource,
+        segments: Range<usize>,
+        read_limits: RetainedReadLimits,
+        cx: &ReplayCx,
+    ) -> Result<(Vec<usize>, Vec<usize>), FileIngestError> {
+        let format = self.manifest.format.as_str();
+        if !matches!(format, "mkvavc" | "mkvhevc" | "mp4avc" | "mp4hevc") || segments.len() < 2 {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        let source = match self.authenticated_movie_source(
+            deployment,
+            read_limits,
+            MAX_MOVIE_ORIGIN_READ_BYTES,
+            cx,
+        ) {
+            Ok((source, _)) => source,
+            Err(
+                FileIngestError::Mp4Refused {
+                    refusal: DemuxError::Unsupported,
+                }
+                | FileIngestError::MatroskaRefused {
+                    refusal: DemuxError::Unsupported,
+                },
+            ) => return Ok((segments.skip(1).collect(), Vec::new())),
+            Err(error) => return Err(error),
+        };
+        let refuse = |error| container_refusal(format, error, STAGE_PARSE);
+        let limits =
+            super::super::file_adapter::mp4_demux_limits(self.manifest.segment_spans.len());
+        let mut check = || {
+            cx.checkpoint(STAGE_PARSE)
+                .map_err(|_| DemuxError::Cancelled)
+        };
+        let mut intervals = Vec::with_capacity(segments.len());
+        let presentation_ordered;
+        if matches!(format, "mkvavc" | "mkvhevc") {
+            let movie = MatroskaVideo::parse_recovering_tail(&source, None, limits, &mut check)
+                .map_err(refuse)?;
+            verify_matroska_sample_index(&self.manifest, &source, &movie, || {
+                checkpoint(cx, STAGE_INDEX)
+            })?;
+            presentation_ordered = movie
+                .samples()
+                .windows(2)
+                .all(|pair| pair[0].timestamp < pair[1].timestamp);
+            for index in segments.clone() {
+                intervals.push(movie.declared_sample_interval_ns(index).map_err(refuse)?);
+            }
+        } else {
+            let movie = AvcMp4::parse_inband_recovering_tail(&source, None, limits, &mut check)
+                .map_err(refuse)?;
+            verify_sample_index(&self.manifest, &source, &movie, || {
+                checkpoint(cx, STAGE_INDEX)
+            })?;
+            presentation_ordered = movie
+                .samples()
+                .windows(2)
+                .all(|pair| pair[0].presentation_time() < pair[1].presentation_time());
+            for sample in movie
+                .samples()
+                .get(segments.clone())
+                .ok_or_else(|| invalid("coverage sample range"))?
+            {
+                // The capture hint used these media PTS, before any movie edit-list mapping.
+                let start = sample.presentation_time();
+                intervals.push(Some(start..start + i128::from(sample.duration)));
+            }
+        }
+        let mut breaks = Vec::new();
+        let mut holes = Vec::new();
+        for (pair, segment) in intervals.windows(2).zip(segments.skip(1)) {
+            match (&pair[0], &pair[1]) {
+                (Some(left), Some(right)) if left.end == right.start => continue,
+                (Some(left), Some(right)) if presentation_ordered && left.end < right.start => {
+                    holes.push(segment)
+                }
+                _ => {}
+            }
+            breaks.push(segment);
+        }
+        self.revalidate(deployment, read_limits, cx)?;
+        Ok((breaks, holes))
+    }
+
+    fn authenticated_movie_source(
+        &self,
+        deployment: &dyn RetainedSource,
+        read_limits: RetainedReadLimits,
+        maximum_origin_read_bytes: u64,
+        cx: &ReplayCx,
+    ) -> Result<(Vec<u8>, u64), FileIngestError> {
+        let refusal = |error, stage| container_refusal(&self.manifest.format, error, stage);
         let maximum = source_admission(&self.manifest, read_limits)?;
         checkpoint(cx, STAGE_SOURCE)?;
         self.revalidate(deployment, read_limits, cx)?;
@@ -247,31 +376,7 @@ impl RetainedFileImport {
             &mut reserve_origin,
         )?;
 
-        let (track_id, codec, selection) =
-            select_container(&self.manifest, &source, query, selection_limits, cx)?;
-
-        // Never release cached metadata after its witnessed custody becomes unavailable.
-        // Reopening checks deletion, root/part closure and the exact completion binding again.
-        self.revalidate(deployment, read_limits, cx)?;
-        checkpoint(cx, STAGE_COMPLETE)?;
-        Ok(RetainedMovieSelection {
-            import_identity: self.import_identity,
-            import_root: self.import_root,
-            manifest_digest: self.manifest_digest,
-            authority_anchor: self.authority_anchor.clone(),
-            source_adapter_id: self.manifest.adapter_id.clone(),
-            source_adapter_generation: self.manifest.adapter_generation.clone(),
-            source_format: self.manifest.format.clone(),
-            input_sha256,
-            input_bytes: self.manifest.input_bytes,
-            source_bytes_read: source.len() as u64,
-            origin_read_bytes_charged,
-            maximum_origin_read_bytes,
-            track_id,
-            codec,
-            capture_time_label: self.manifest.capture_time_label.clone(),
-            selection,
-        })
+        Ok((source, origin_read_bytes_charged))
     }
 }
 

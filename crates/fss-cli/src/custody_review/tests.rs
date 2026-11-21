@@ -7,6 +7,7 @@ mod fixture;
 use fixture::{Fixture, TestResult, inventory};
 use fss_core::{Generation, ObjectId, TombstoneReason, TombstoneRecord};
 use fss_publication::tombstone_record_bytes;
+use fss_reference::agent_orient::read_deployment;
 
 fn read(f: &Fixture) -> TestResult<DeploymentSnapshot> {
     Ok(read_deployment(&f.root, &OrientLimits::default())?)

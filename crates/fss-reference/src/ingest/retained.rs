@@ -495,6 +495,46 @@ pub struct RetainedFileImport {
     manifest: FileImportManifest,
 }
 
+/// Returns the exact source root and metadata digest bound together by a file completion.
+/// Callers select the canonical completion batch for the requested import identity.
+pub(crate) fn completion_digests(
+    batch: &fss_core::EvidenceDeltaBatch,
+    hex: &str,
+) -> Result<(ContentDigest, ContentDigest), FileIngestError> {
+    let object_id = format!("object:file-import-manifest:{hex}");
+    let delta = batch
+        .deltas
+        .iter()
+        .find(|d| {
+            d.family == "file_import_manifest"
+                && d.object_id.as_str() == object_id
+                && d.plane == Plane::Authority
+                && d.prior_generation.is_none()
+                && d.new_generation == 1
+        })
+        .ok_or_else(|| invalid("manifest authority binding is absent"))?;
+    let import_root = delta
+        .witness_digest
+        .ok_or_else(|| invalid("root witness is absent"))?;
+    let manifest_digest = delta.payload_digest;
+    let import_object = format!("object:file-import:{hex}");
+    if !batch.children.contains(&manifest_digest)
+        || !batch.children.contains(&import_root)
+        || !batch.deltas.iter().any(|d| {
+            d.family == "file_import"
+                && d.object_id.as_str() == import_object
+                && d.plane == Plane::Authority
+                && d.prior_generation == Some(1)
+                && d.new_generation == 2
+                && d.payload_digest == manifest_digest
+                && d.witness_digest == Some(import_root)
+        })
+    {
+        return Err(invalid("completion and manifest authority disagree"));
+    }
+    Ok((import_root, manifest_digest))
+}
+
 impl RetainedFileImport {
     /// Recovers a completed import without reading or requiring the original source file.
     pub fn open(
@@ -542,37 +582,7 @@ impl RetainedFileImport {
             .iter()
             .find(|b| b.batch_id == batch_id)
             .ok_or_else(|| invalid("completed import authority is absent"))?;
-        let object_id = format!("object:file-import-manifest:{hex}");
-        let delta = batch
-            .deltas
-            .iter()
-            .find(|d| {
-                d.family == "file_import_manifest"
-                    && d.object_id.as_str() == object_id
-                    && d.plane == Plane::Authority
-                    && d.prior_generation.is_none()
-                    && d.new_generation == 1
-            })
-            .ok_or_else(|| invalid("manifest authority binding is absent"))?;
-        let import_root = delta
-            .witness_digest
-            .ok_or_else(|| invalid("root witness is absent"))?;
-        let manifest_digest = delta.payload_digest;
-        let import_object = format!("object:file-import:{hex}");
-        if !batch.children.contains(&manifest_digest)
-            || !batch.children.contains(&import_root)
-            || !batch.deltas.iter().any(|d| {
-                d.family == "file_import"
-                    && d.object_id.as_str() == import_object
-                    && d.plane == Plane::Authority
-                    && d.prior_generation == Some(1)
-                    && d.new_generation == 2
-                    && d.payload_digest == manifest_digest
-                    && d.witness_digest == Some(import_root)
-            })
-        {
-            return Err(invalid("completion and manifest authority disagree"));
-        }
+        let (import_root, manifest_digest) = completion_digests(batch, &hex)?;
         let bytes = deployment.read_object_bounded(
             manifest_digest,
             maximum_manifest_bytes.min(MAX_RETAINED_MANIFEST_BYTES),

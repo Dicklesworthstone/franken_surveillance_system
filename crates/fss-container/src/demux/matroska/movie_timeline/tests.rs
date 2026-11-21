@@ -368,6 +368,7 @@ fn unknown_duration_is_unsupported_even_when_a_later_timestamp_exists() -> Test 
     ] {
         let bytes = fixture(1, default_duration, 0, &[], &frames)?;
         let video = parse(&bytes)?; // ordinal import remains available
+        assert_eq!(video.declared_sample_interval_ns(0)?, None);
         assert!(
             video
                 .samples()

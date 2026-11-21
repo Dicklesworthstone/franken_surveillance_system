@@ -358,7 +358,7 @@ try:
             for pat in token_patterns:
                 line = pat.sub("<redacted>", line)
             line = re.sub(r"(--password(?:=|\s+))\S+", r"\g<1><redacted>", line)
-            line = re.sub(r"([A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:)[^/\s:@]+(@)", r"\g<1><redacted>\g<2>", line)
+            line = re.sub(r"(://[^/\s:@]+:)[^/\s:@]+(@)", r"\g<1><redacted>\g<2>", line)
             line = re.sub(r"(?<!\S)-p\S+", "-p<redacted>", line)
             line = hex_pat.sub(lambda m: f"<{len(m.group(0))} hex chars>", line)
             out_lines.append(line)
@@ -651,7 +651,7 @@ def sanitize(s):
     for pat in token_patterns:
         s = pat.sub("<redacted>", s)
     s = re.sub(r"(--password(?:=|\s+))\S+", r"\g<1><redacted>", s)
-    s = re.sub(r"([A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:)[^/\s:@]+(@)", r"\g<1><redacted>\g<2>", s)
+    s = re.sub(r"(://[^/\s:@]+:)[^/\s:@]+(@)", r"\g<1><redacted>\g<2>", s)
     s = re.sub(r"(?<!\S)-p\S+", "-p<redacted>", s)
     s = hex_pat.sub(lambda m: f"<{len(m.group(0))} hex chars>", s)
     b = s.encode("utf-8")
@@ -759,7 +759,7 @@ def sanitize(s):
     for pat in token_patterns:
         s = pat.sub("<redacted>", s)
     s = re.sub(r"(--password(?:=|\s+))\S+", r"\g<1><redacted>", s)
-    s = re.sub(r"([A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:)[^/\s:@]+(@)", r"\g<1><redacted>\g<2>", s)
+    s = re.sub(r"(://[^/\s:@]+:)[^/\s:@]+(@)", r"\g<1><redacted>\g<2>", s)
     s = re.sub(r"(?<!\S)-p\S+", "-p<redacted>", s)
     s = hex_pat.sub(lambda m: f"<{len(m.group(0))} hex chars>", s)
     b = s.encode("utf-8")
@@ -895,7 +895,7 @@ def sanitize(s):
     for pat in token_patterns:
         s = pat.sub("<redacted>", s)
     s = re.sub(r"(--password(?:=|\s+))\S+", r"\g<1><redacted>", s)
-    s = re.sub(r"([A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:)[^/\s:@]+(@)", r"\g<1><redacted>\g<2>", s)
+    s = re.sub(r"(://[^/\s:@]+:)[^/\s:@]+(@)", r"\g<1><redacted>\g<2>", s)
     s = re.sub(r"(?<!\S)-p\S+", "-p<redacted>", s)
     s = hex_pat.sub(lambda m: f"<{len(m.group(0))} hex chars>", s)
     b = s.encode("utf-8")
@@ -1013,7 +1013,7 @@ def sanitize(s):
     for pat in token_patterns:
         s = pat.sub("<redacted>", s)
     s = re.sub(r"(--password(?:=|\s+))\S+", r"\g<1><redacted>", s)
-    s = re.sub(r"([A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:)[^/\s:@]+(@)", r"\g<1><redacted>\g<2>", s)
+    s = re.sub(r"(://[^/\s:@]+:)[^/\s:@]+(@)", r"\g<1><redacted>\g<2>", s)
     s = re.sub(r"(?<!\S)-p\S+", "-p<redacted>", s)
     s = hex_pat.sub(lambda m: f"<{len(m.group(0))} hex chars>", s)
     b = s.encode("utf-8")
@@ -1140,7 +1140,7 @@ def sanitize(s):
     for pat in token_patterns:
         s = pat.sub("<redacted>", s)
     s = re.sub(r"(--password(?:=|\s+))\S+", r"\g<1><redacted>", s)
-    s = re.sub(r"([A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:)[^/\s:@]+(@)", r"\g<1><redacted>\g<2>", s)
+    s = re.sub(r"(://[^/\s:@]+:)[^/\s:@]+(@)", r"\g<1><redacted>\g<2>", s)
     s = re.sub(r"(?<!\S)-p\S+", "-p<redacted>", s)
     s = hex_pat.sub(lambda m: f"<{len(m.group(0))} hex chars>", s)
     b = s.encode("utf-8")
@@ -1245,7 +1245,7 @@ def sanitize(s):
     for pat in token_patterns:
         s = pat.sub("<redacted>", s)
     s = re.sub(r"(--password(?:=|\s+))\S+", r"\g<1><redacted>", s)
-    s = re.sub(r"([A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:)[^/\s:@]+(@)", r"\g<1><redacted>\g<2>", s)
+    s = re.sub(r"(://[^/\s:@]+:)[^/\s:@]+(@)", r"\g<1><redacted>\g<2>", s)
     s = re.sub(r"(?<!\S)-p\S+", "-p<redacted>", s)
     s = hex_pat.sub(lambda m: f"<{len(m.group(0))} hex chars>", s)
     b = s.encode("utf-8")
@@ -1304,7 +1304,7 @@ def sanitize(s):
     for pat in token_patterns:
         s = pat.sub("<redacted>", s)
     s = re.sub(r"(--password(?:=|\s+))\S+", r"\g<1><redacted>", s)
-    s = re.sub(r"([A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:)[^/\s:@]+(@)", r"\g<1><redacted>\g<2>", s)
+    s = re.sub(r"(://[^/\s:@]+:)[^/\s:@]+(@)", r"\g<1><redacted>\g<2>", s)
     s = re.sub(r"(?<!\S)-p\S+", "-p<redacted>", s)
     s = hex_pat.sub(lambda m: f"<{len(m.group(0))} hex chars>", s)
     b = s.encode("utf-8")
@@ -1521,7 +1521,7 @@ def sanitize(s):
     for pat in token_patterns:
         s = pat.sub("<redacted>", s)
     s = re.sub(r"(--password(?:=|\s+))\S+", r"\g<1><redacted>", s)
-    s = re.sub(r"([A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:)[^/\s:@]+(@)", r"\g<1><redacted>\g<2>", s)
+    s = re.sub(r"(://[^/\s:@]+:)[^/\s:@]+(@)", r"\g<1><redacted>\g<2>", s)
     s = re.sub(r"(?<!\S)-p\S+", "-p<redacted>", s)
     s = hex_pat.sub(lambda m: f"<{len(m.group(0))} hex chars>", s)
     b = s.encode("utf-8")

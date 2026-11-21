@@ -15,6 +15,7 @@ Kills mutants for:
 import json
 import os
 import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -509,6 +510,20 @@ class TestValidateLog(unittest.TestCase):
         with self.assertRaises(ValidationError) as ctx:
             validate_file(self.log_path)
         self.assertEqual(ctx.exception.code, "ERR_SECRET_VALUE_FOUND")
+
+    def test_cli_reports_the_run_verdict_of_a_valid_log(self):
+        for verdict, exit_code, failures in (("pass", 0, []), ("fail", 1, ["step1"])):
+            with self.subTest(verdict=verdict):
+                self._write_records([
+                    self._valid_env_record(),
+                    self._valid_step_record(verdict=verdict, exit_code=exit_code),
+                    self._valid_summary_record(verdict=verdict, failures=failures),
+                ])
+                result = subprocess.run(
+                    [sys.executable, validate_log.__file__, str(self.log_path)],
+                    capture_output=True, text=True, check=True,
+                )
+                self.assertEqual(result.stdout.strip(), f"Valid log (run verdict: {verdict}): {self.log_path}")
 
     def test_n29_find_log_files_ignores_tmpdirs_extension(self):
         target_dir = Path(self.tmp_dir) / "suite_tmpdirs"
