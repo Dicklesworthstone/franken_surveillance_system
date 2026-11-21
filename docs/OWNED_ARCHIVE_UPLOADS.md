@@ -222,16 +222,41 @@ size is 64 MiB, with up to 65,536 records, 16 MiB per checkpoint and 256 MiB of 
 Neither a journal inspection nor a provider completion receipt establishes independent archive
 retrievability. The report states that distinction explicitly.
 
+## Remote eventual-consistency and partial-list simulator (FSS-132)
+
+`fss-object::provider::remote_simulator::RemoteProviderSimulator` provides a deterministic,
+pure-Rust laboratory simulator for S3-compatible eventual consistency and partial listings
+(`fss.remote_provider_fault_schedule.v1` and `fss.remote_provider_sim.v1`). It implements both
+`ObjectStoreProvider` (matching `InMemoryObjectStoreProvider`'s canonical `run_oracle` digest
+bit-for-bit on a clean schedule) and `MultipartTransport` (plugging directly into
+`MultipartSession`, `StagedUpload`, and `FileUploadJournal` cold-restart recovery).
+
+The simulator enforces explicit resource ceilings (`SimulatorLimits`) and models:
+- Authoritative commit epochs separated from eventual read/list visibility (`default_visibility_lag`,
+  `advance_epoch`, `flush_visibility`);
+- Paginated `list_objects` and `list_multipart_parts` with bounded continuation tokens,
+  tamper rejection, forced early page truncation, partial omissions, and post-delete/retire
+  stale ghosts (`ListingCollection::complete` is true only when pagination terminates cleanly
+  with zero lag, omission, or ghost anomalies);
+- Conditional keyspace writes (`If-None-Match: *`, `If-Match: <etag>`), lost acknowledgements,
+  and readback bit-flip corruption detection (`DigestMismatch` / `NotRetrievable`);
+- Honest reconciliation under lag or partial part listings (`ProviderUploadState::Unknown`
+  never fabricated into a partial `Active` inventory or premature terminal state), plus opt-in
+  `AdversarialMisbehavior` negative controls proving protocol refusal of forged responses;
+- Seeded integer parts-per-million fault campaigns with bit-identical `SimulatorReport` digests
+  and secret-free JSON-lines logs.
+
 ## Scope and verification
 
-This implements the injected multipart protocol, in-process ownership, and optional durable local
-restart recovery for FSS-063/FSS-064/FSS-130. It does not implement a native network S3 transport,
-byte encryption or independent archive retrievability verification. A real provider adapter
+This implements the injected multipart protocol, in-process ownership, optional durable local
+restart recovery, and deterministic remote eventual-consistency/partial-list simulator for
+FSS-063/FSS-064/FSS-130/FSS-132. It does not implement a native network S3 transport,
+byte encryption or independent remote archive retrievability verification. A real provider adapter
 must enforce intent idempotency and checksum conditions, use the admitted context at its actual I/O
 boundary, and return `Unknown` when its consistency guarantees cannot resolve an uncertain effect.
 
 ```sh
-cargo test --locked --offline -p fss-object --test multipart_family --test uploader_family --test durable_upload_contract --test recovered_upload_authority --test upload_journal_namespace
+cargo test --locked --offline -p fss-object --test multipart_family --test uploader_family --test durable_upload_contract --test recovered_upload_authority --test upload_journal_namespace --test remote_eventual_consistency_contract
 cargo test --locked --offline -p fss-cli --test archive_upload_journal_cli
 ```
 
