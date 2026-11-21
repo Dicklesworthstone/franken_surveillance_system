@@ -5,29 +5,31 @@
 
 `--frames` is `auto`, or film-frame ranges such as `0-23,400-430`. Frames already on
 disk are skipped, so a second process started with `--reverse` on another GPU
-shares the work. The frames folder records which staging it was rendered from and
-the script stops if the take has been staged again since. Needs an NVIDIA card:
-the device and the denoiser are OptiX. With `auto`
-the script renders every film frame in which a person is in view or something
-in view is changing, plus one empty plate per lighting state; held frames
-reuse the plate. It writes manifest.json naming the EXR behind every film
-frame. Film frame f is scene frame 1 + 2 f.
+shares the work. The frames folder records which staging and render settings it
+was made with, and the script stops if either differs. Needs an NVIDIA card: the
+device and the denoiser are OptiX. With `auto` the script renders every film
+frame in which a person is in view or something in view is changing. The other
+frames are held: each lighting state that has any gets one empty plate, which
+they reuse. It writes manifest.json naming the EXR behind every film frame.
+Film frame f is scene frame 1 + 2 f.
 """
 import argparse
 import json
+import math
 import pathlib
 import sys
 import time
 
 import bpy
+import numpy as np
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+import plan  # noqa: E402
 import takes  # noqa: E402
 import render_files  # noqa: E402
 
 PAD = 6  # film frames rendered either side of a person's time in view
-SEES_GATE = {"gate", "driveway"}
 
 
 def arguments():
@@ -72,8 +74,47 @@ def infrared_cloth():
                 shader.inputs["Base Color"].default_value = (0.3, 0.3, 0.3, 1.0)
 
 
+def lens_model(camera):
+    """A camera's entry in the truth file, as the lens model takes.project() works with."""
+    lens = camera["lens"]
+    model = dict(inverse=np.linalg.inv(np.array(camera["world_from_camera"], dtype=float)))
+    if lens["model"] == "rectilinear":
+        model.update(kind="rectilinear", hfov=math.radians(lens["hfov"]), vfov=math.radians(lens["vfov"]))
+    else:
+        model.update(kind="fisheye_equidistant", fov=math.radians(lens["fov"]))
+    return model
+
+
+def sees_gate(camera):
+    """Whether the gate, or the ground its leaves swing over, falls inside a camera's frame.
+
+    `camera` is the camera's entry in the truth file, and the projection is the one that
+    placed the people's boxes. Whatever stands in the way is ignored, so a camera whose view
+    of the gate is blocked counts as seeing it.
+    """
+    gate = plan.GATE
+    half = gate["opening"] / 2
+    # Scene axes are (x, -z, height). Each leaf is about half the opening long and swings inside
+    # the wall, so the block sampled is the opening wide, that deep and as tall as the piers.
+    spots = [(gate["x"] + across, inward - gate["z"], height)
+             for across in np.linspace(-half, half, 7) for inward in np.linspace(0.0, half, 4)
+             for height in np.linspace(0.0, gate["pillar_height"], 4)]
+    u, v, _, valid = takes.project(lens_model(camera), spots)
+    return bool((valid & (u >= 0) & (u <= 1) & (v >= 0) & (v <= 1)).any())
+
+
+def gate_swing(beats, fps, frames):
+    """Film frames over which the gate leaves move, with a frame to spare before and two after."""
+    return range(max(0, int(beats["gate_starts_closing"] * fps) - 1), min(frames, int(beats["gate_closed"] * fps) + 3))
+
+
 def wanted_frames(truth, camera):
-    """Film frames that must be rendered, and the lighting state of every frame."""
+    """Film frames that must be rendered, and the lighting state of every frame.
+
+    A frame is rendered when a person is in view within PAD frames of it, when the lighting
+    is changing, or when the gate is swinging in a frame that takes it in. A person's shadow
+    or torch light that reaches the picture while the person is hidden is not looked for.
+    """
     frames = truth["clock"]["frames"]
     fps = truth["clock"]["fps"]
     beats = truth["beats"]
@@ -82,8 +123,8 @@ def wanted_frames(truth, camera):
         for f, box in enumerate(rows):
             if box and box[4] > 0:
                 needed.update(range(max(0, f - PAD), min(frames, f + PAD + 1)))
-    if camera in SEES_GATE:
-        needed.update(range(max(0, int(beats["gate_starts_closing"] * fps) - 1), min(frames, int(beats["gate_closed"] * fps) + 3)))
+    if sees_gate(next(spec for spec in truth["cameras"] if spec["id"] == camera)):
+        needed.update(gate_swing(beats, fps, frames))
     edges = [beats["lights_on"], beats["window_on"], beats["gate_closed"]]
     states = [sum(1 for edge in edges if f / fps >= edge + 0.09) for f in range(frames)]
     # A lighting change is rendered from the frame before it through the first frame that
@@ -94,6 +135,27 @@ def wanted_frames(truth, camera):
         flip = next((f for f in range(frames) if f / fps >= beats[key] + 0.09), frames - 1)
         needed.update(range(max(0, at - 1), min(frames, flip + 1)))
     return sorted(needed), states
+
+
+def plate_frames(states, needed, swing):
+    """The film frame at which each lighting state's empty plate is taken.
+
+    A plate stands in for the held frames of its state, so it is taken at one of them, the
+    middle one. It then has exactly their lighting, which the plain middle of a state does
+    not promise: the last frame or two of a state can already show the next state's lights.
+    For a camera that takes in the gate it has their gate position too, since that camera
+    renders the swing frame by frame and holds nothing in it. The other cameras pass over
+    held frames inside the swing when they have any outside it. A state with no held frame
+    gets no plate: no film frame would show it, and the manifest would not name the file.
+    """
+    chosen = set(needed)
+    moments = {}
+    for state in sorted(set(states)):
+        held = [f for f, s in enumerate(states) if s == state and f not in chosen]
+        pick = [f for f in held if f not in swing] or held
+        if pick:
+            moments[state] = pick[len(pick) // 2]
+    return moments
 
 
 def main():
@@ -160,14 +222,14 @@ def main():
             print(f"FRAME {args.camera} {f} {times[-1]:.1f}s", flush=True)
     manifest = None
     if states is not None:
-        # One empty plate per lighting state, taken at a moment inside that state.
+        # One empty plate for each lighting state in which a frame is held.
         people.hide_render = True
         plates = {}
-        for state in sorted(set(states)):
-            members = [f for f in range(frames) if states[f] == state]
+        swing = gate_swing(truth["beats"], truth["clock"]["fps"], frames)
+        for state, moment in plate_frames(states, needed, swing).items():
             path = out / f"plate{state}.exr"
             if not path.exists():
-                times.append(render(1 + 2 * members[len(members) // 2], path))
+                times.append(render(1 + 2 * moment, path))
                 print(f"PLATE {args.camera} {state} {times[-1]:.1f}s", flush=True)
             plates[state] = path.name
         people.hide_render = False
