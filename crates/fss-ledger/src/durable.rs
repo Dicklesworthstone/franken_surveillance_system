@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use fss_core::{
     AuthoritativeLedger, BatchId, ContentDigest, ContractError, DigestAlgorithm, EvidenceDelta,
-    EvidenceDeltaBatch, LedgerSnapshot, PreparedLedgerAppend, ReferenceLedger,
+    EvidenceDeltaBatch, LedgerSnapshot, LedgerSnapshotRetention, PreparedLedgerAppend, ReferenceLedger,
 };
 
 use crate::sealed_lineage::{
@@ -295,6 +295,9 @@ struct PendingLedgerAppend {
 /// On open, every committed journal record is decoded and replayed through the same
 /// batch-identity check and `ReferenceLedger::append` checks used by live publication. This makes
 /// restart state a deterministic function of the durable committed prefix.
+/// Only the current object map is materialized in memory; complete canonical batches and batch
+/// identities remain resident. This owner exposes no historical snapshot API. Historical readers
+/// reconstruct their requested prefix from the retained batches rather than keeping every map.
 #[derive(Debug)]
 pub struct DurableReferenceLedger {
     journal: Journal,
@@ -392,6 +395,15 @@ impl DurableReferenceLedger {
     #[must_use]
     pub fn current(&self) -> &LedgerSnapshot {
         self.ledger.current()
+    }
+
+    /// Resident committed object-map count, excluding a private indeterminate successor.
+    ///
+    /// The durable owner retains exactly one current materialization. Canonical batch history,
+    /// identity indexes, journal buffers and a staged successor have separate memory costs.
+    #[must_use]
+    pub fn retained_snapshot_count(&self) -> usize {
+        self.ledger.retained_snapshot_count()
     }
 
     /// Returns the authoritative ledger handle witnessing the on-disk committed head.
@@ -654,7 +666,10 @@ fn replay_report(
     report: &RecoveryReport,
     site_lineage: &str,
 ) -> Result<(ReferenceLedger, BatchIdentityIndex), DurableLedgerError> {
-    let mut ledger = ReferenceLedger::new(site_lineage);
+    let mut ledger = ReferenceLedger::new_with_snapshot_retention(
+        site_lineage,
+        LedgerSnapshotRetention::CurrentOnly,
+    );
     let mut identities = BatchIdentityIndex::default();
     for record in report.records() {
         if record.kind() != EVIDENCE_BATCH_RECORD_KIND {
@@ -800,7 +815,10 @@ pub fn inspect_durable_with_io(
     let meta = match io.symlink_metadata(path) {
         Ok(meta) => meta,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            let ledger = ReferenceLedger::new(site_lineage);
+            let ledger = ReferenceLedger::new_with_snapshot_retention(
+                site_lineage,
+                LedgerSnapshotRetention::CurrentOnly,
+            );
             let snapshot = ledger.current().clone();
             return Ok(LedgerInspection {
                 status: DurableLedgerStatus::Absent,

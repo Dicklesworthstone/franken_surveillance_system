@@ -8,7 +8,10 @@ use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
 
-use super::{EvidenceDeltaBatch, LedgerSnapshot, ReferenceLedger, apply_deltas, state_root};
+use super::{
+    EvidenceDeltaBatch, LedgerSnapshot, LedgerSnapshotRetention, ReferenceLedger, apply_deltas,
+    state_root,
+};
 use crate::{BatchId, ContractError};
 
 /// A fully validated successor detached from its ledger while persistence is
@@ -89,7 +92,12 @@ impl<'ledger> LedgerAppendGuard<'ledger> {
     /// after a durable write requires ordinary journal replay, not a new append.
     pub fn commit(self) -> &'ledger LedgerSnapshot {
         let Self { ledger, prepared } = self;
-        ledger.snapshots.push(prepared.snapshot);
+        match ledger.snapshot_retention {
+            LedgerSnapshotRetention::FullHistory => ledger.snapshots.push(prepared.snapshot),
+            // Construction installs one snapshot and this mode never adds another. Replacing
+            // it only after commit drops the old materialization without pruning batch history.
+            LedgerSnapshotRetention::CurrentOnly => ledger.snapshots[0] = prepared.snapshot,
+        }
         ledger
             .committed_batches
             .insert(prepared.committed_id, prepared.batch.batch_digest);
@@ -229,9 +237,11 @@ impl ReferenceLedger {
     }
 
     fn reserve_append_capacity(&mut self) -> Result<(), ContractError> {
-        self.snapshots
-            .try_reserve(1)
-            .map_err(|_| ContractError::BudgetExhausted)?;
+        if self.snapshot_retention == LedgerSnapshotRetention::FullHistory {
+            self.snapshots
+                .try_reserve(1)
+                .map_err(|_| ContractError::BudgetExhausted)?;
+        }
         self.batches
             .try_reserve(1)
             .map_err(|_| ContractError::BudgetExhausted)?;

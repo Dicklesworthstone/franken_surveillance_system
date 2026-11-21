@@ -57,9 +57,11 @@ fn next_batch(
 fn exercise_cut(phase: AppendPhase) -> TestResult {
     let path = path_for(phase)?;
     let mut ledger = DurableReferenceLedger::open(&path, SITE, IncompleteTailPolicy::Reject)?;
+    assert_eq!(ledger.retained_snapshot_count(), 1);
     for index in 0..32 {
         let batch = next_batch(&ledger, index)?;
         ledger.append(batch)?;
+        assert_eq!(ledger.retained_snapshot_count(), 1);
     }
     let before = ledger.current().clone();
     let history = ledger.batches().to_vec();
@@ -76,6 +78,7 @@ fn exercise_cut(phase: AppendPhase) -> TestResult {
         other => return Err(format!("expected indeterminate {phase:?}, got {other:?}").into()),
     }
     assert_eq!(ledger.current(), &before);
+    assert_eq!(ledger.retained_snapshot_count(), 1);
     assert_eq!(ledger.batches(), history.as_slice());
     assert_eq!(ledger.journal_root(), root_before);
     assert_eq!(ledger.pending_append_sequence(), Some(33));
@@ -103,6 +106,7 @@ fn exercise_cut(phase: AppendPhase) -> TestResult {
             ));
             assert_eq!(ledger.pending_append_sequence(), Some(33));
             assert_eq!(ledger.current(), &before);
+            assert_eq!(ledger.retained_snapshot_count(), 1);
             assert_eq!(ledger.batches(), history.as_slice());
             assert_eq!(fs::read(&path)?, after_write);
         }
@@ -111,6 +115,7 @@ fn exercise_cut(phase: AppendPhase) -> TestResult {
             DurableAppendReconciliation::NotCommitted { sequence: 33 }
         );
         assert_eq!(ledger.current(), &before);
+        assert_eq!(ledger.retained_snapshot_count(), 1);
         assert_eq!(ledger.batches(), history.as_slice());
         assert_eq!(fs::read(&path)?, bytes_before);
         ledger.append(batch.clone())?;
@@ -126,6 +131,7 @@ fn exercise_cut(phase: AppendPhase) -> TestResult {
     }
 
     assert_eq!(ledger.pending_append_sequence(), None);
+    assert_eq!(ledger.retained_snapshot_count(), 1);
     assert_eq!(ledger.current().anchor, batch.new_anchor);
     assert_eq!(ledger.batches().len(), 33);
     let committed_snapshot = ledger.current().clone();
@@ -144,8 +150,10 @@ fn exercise_cut(phase: AppendPhase) -> TestResult {
     drop(ledger);
     let mut reopened = DurableReferenceLedger::open(&path, SITE, IncompleteTailPolicy::Reject)?;
     assert_eq!(reopened.current(), &committed_snapshot);
+    assert_eq!(reopened.retained_snapshot_count(), 1);
     assert_eq!(reopened.batches(), committed_history.as_slice());
     assert_eq!(reopened.verify_storage()?, reopened.journal_root());
+    assert_eq!(reopened.retained_snapshot_count(), 1);
     drop(reopened);
     fs::remove_file(path)?;
     Ok(())

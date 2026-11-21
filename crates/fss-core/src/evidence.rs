@@ -433,10 +433,24 @@ pub struct LedgerSnapshot {
     pub objects: BTreeMap<ObjectId, ObjectRevision>,
 }
 
+/// Which committed object-map materializations a reference ledger keeps resident.
+///
+/// This changes memory ownership only. Every canonical batch and committed batch identity is
+/// retained in either mode; no evidence, journal record or object-retention policy is changed.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum LedgerSnapshotRetention {
+    /// Retain every materialized commit, including genesis, for [`ReferenceLedger::snapshot_at`].
+    #[default]
+    FullHistory,
+    /// Retain only the current materialized commit. Historical states can be replayed from batches.
+    CurrentOnly,
+}
+
 /// Single-threaded deterministic reference ledger.
 #[derive(Debug)]
 pub struct ReferenceLedger {
     snapshots: Vec<LedgerSnapshot>,
+    snapshot_retention: LedgerSnapshotRetention,
     batches: Vec<EvidenceDeltaBatch>,
     committed_batches: BTreeMap<BatchId, ContentDigest>,
     // Private live identity, never encoded or used as canonical evidence. A
@@ -448,6 +462,7 @@ impl Clone for ReferenceLedger {
     fn clone(&self) -> Self {
         Self {
             snapshots: self.snapshots.clone(),
+            snapshot_retention: self.snapshot_retention,
             batches: self.batches.clone(),
             committed_batches: self.committed_batches.clone(),
             append_owner: Arc::new(()),
@@ -456,19 +471,48 @@ impl Clone for ReferenceLedger {
 }
 
 impl ReferenceLedger {
-    /// Creates an empty ledger.
+    /// Creates an empty ledger that retains every historical materialized snapshot.
     #[must_use]
     pub fn new(site_lineage: impl Into<String>) -> Self {
+        Self::new_with_snapshot_retention(site_lineage, LedgerSnapshotRetention::FullHistory)
+    }
+
+    /// Creates an empty ledger with explicit resident snapshot ownership.
+    ///
+    /// `CurrentOnly` keeps exactly one committed object map, initially genesis. A staged append
+    /// privately owns one additional successor until it commits or is abandoned. Canonical
+    /// batches and their identity index remain complete, independent of the selected mode.
+    #[must_use]
+    pub fn new_with_snapshot_retention(
+        site_lineage: impl Into<String>,
+        snapshot_retention: LedgerSnapshotRetention,
+    ) -> Self {
         let anchor = LedgerAnchor::genesis(site_lineage);
         Self {
             snapshots: vec![LedgerSnapshot {
                 anchor,
                 objects: BTreeMap::new(),
             }],
+            snapshot_retention,
             batches: Vec::new(),
             committed_batches: BTreeMap::new(),
             append_owner: Arc::new(()),
         }
+    }
+
+    /// Selected resident snapshot ownership; fixed for this live ledger's lifetime.
+    #[must_use]
+    pub const fn snapshot_retention(&self) -> LedgerSnapshotRetention {
+        self.snapshot_retention
+    }
+
+    /// Number of resident committed object maps, excluding a privately staged successor.
+    ///
+    /// This is one in `CurrentOnly` mode. It does not count canonical batches or identity entries,
+    /// which remain resident in both modes, and is not a total-memory measurement.
+    #[must_use]
+    pub fn retained_snapshot_count(&self) -> usize {
+        self.snapshots.len()
     }
 
     /// Returns the latest complete snapshot.
@@ -483,7 +527,10 @@ impl ReferenceLedger {
         &self.batches
     }
 
-    /// Returns a snapshot at an exact commit sequence in the current epoch.
+    /// Returns a retained snapshot at an exact commit sequence in the current epoch.
+    ///
+    /// The default `FullHistory` mode retains every committed sequence. `CurrentOnly` returns
+    /// `None` for older sequences even though their complete canonical batches remain available.
     #[must_use]
     pub fn snapshot_at(&self, sequence: u64) -> Option<&LedgerSnapshot> {
         self.snapshots
@@ -532,7 +579,22 @@ impl ReferenceLedger {
         site_lineage: impl Into<String>,
         batches: impl IntoIterator<Item = EvidenceDeltaBatch>,
     ) -> Result<Self, ContractError> {
-        let mut ledger = Self::new(site_lineage);
+        Self::replay_with_snapshot_retention(
+            site_lineage,
+            LedgerSnapshotRetention::FullHistory,
+            batches,
+        )
+    }
+
+    /// Replays every batch with the ordinary semantic checks and explicit snapshot ownership.
+    ///
+    /// Both modes preserve the exact terminal state and full canonical batch/identity history.
+    pub fn replay_with_snapshot_retention(
+        site_lineage: impl Into<String>,
+        snapshot_retention: LedgerSnapshotRetention,
+        batches: impl IntoIterator<Item = EvidenceDeltaBatch>,
+    ) -> Result<Self, ContractError> {
+        let mut ledger = Self::new_with_snapshot_retention(site_lineage, snapshot_retention);
         for batch in batches {
             let _ = ledger.append(batch)?;
         }

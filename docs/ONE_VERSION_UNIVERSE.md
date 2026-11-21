@@ -244,9 +244,10 @@ proven committed outcome publishes it. A proven uncommitted outcome discards it,
 and a reconciliation refusal preserves it for another attempt.
 
 This avoids cloning the entire historical ledger for every durable append. It
-still materializes and hashes one successor object map, and the reference ledger
-still retains full historical snapshots. This is not a constant-time append or a
-bounded-history implementation. Vector capacity and the core batch-identity
+still materializes and hashes one successor object map. The default reference
+ledger retains historical snapshots; durable owners select the explicit resident
+snapshot mode below. This is not a constant-time append or bounded canonical
+history. Vector capacity and the core batch-identity
 string are prepared before persistence; identity maps may still allocate during
 installation. An allocator abort after a durable commit recovers through normal
 journal replay. Canonical batch bytes, journal format, roots, historical lookup,
@@ -258,6 +259,45 @@ points, repeated reconciliation refusals and exact cold-replay equality. See
 `docs/SESSION_HANDOFF_2026-11-20_LEDGER_STAGING.json` for executable verification
 status; the added tests and structural reduction in copying are not a measured
 throughput result or full FSS-102 qualification.
+
+### Resident snapshot ownership
+
+`ReferenceLedger::new` and `ReferenceLedger::replay` retain their existing
+`LedgerSnapshotRetention::FullHistory` behavior: `snapshot_at` can return every
+committed materialized state, including genesis. Callers that need only the head
+can select `CurrentOnly` through `new_with_snapshot_retention` or
+`replay_with_snapshot_retention`. That mode owns exactly one committed object map.
+Older `snapshot_at` lookups return `None`; the complete canonical batches remain
+available to reconstruct a historical prefix explicitly.
+
+`DurableReferenceLedger` selects `CurrentOnly` for live operation, opening
+preflight, cold replay, storage verification and immutable inspection. Its API
+exposes the current snapshot and full batches, not historical materializations.
+`LedgerInspection` still returns the same terminal snapshot and all batches;
+deployment-history readers reconstruct their requested views from those batches.
+Every committed batch identity remains indexed, so releasing an old object map
+cannot permit identity reuse or skip semantic validation of an older prefix.
+
+The mode is fixed for each core owner and copied when cloning a branch; a clone
+still receives a fresh append-owner seal. A staged successor does not replace
+the visible map until commit, and an indeterminate successor remains private
+through reconciliation. `retained_snapshot_count` reports committed resident maps
+only, excluding the private stage. It is a structural count, not a memory or
+throughput measurement.
+
+For one newly created object per commit, retaining every map stores
+`n(n+1)/2` object entries; current-only ownership stores `n` committed entries.
+Canonical batches, identity indexes, journal buffers and the current map still
+grow with retained evidence. A staged append temporarily owns another map, and
+cloning/hashing the current state is still proportional to its size. Journal
+bytes, batch/root identities, historical reference defaults, error precedence,
+sealed-lineage admission and crash/repair behavior are unchanged.
+
+The focused `current_snapshot_replay_contract` compares a growing live ledger
+against the full-history core and independent `LedgerOracle` at every prefix,
+including repeated restart, inspection and old batch-ID refusals. Core tests
+check the resident-map bound and stage ownership; the existing four append-cut
+contracts also assert one committed map before and after reconciliation.
 
 ## 13. Admission tests
 

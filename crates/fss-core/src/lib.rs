@@ -199,7 +199,7 @@ pub use event::{
 pub use event_store::*;
 pub use evidence::{
     ClockBasis, CoverageContinuity, CoverageStopReason, CoverageWitness, EvidenceDelta,
-    EvidenceDeltaBatch, LedgerAnchor, LedgerAppendGuard, LedgerSnapshot, ObjectRevision,
+    EvidenceDeltaBatch, LedgerAnchor, LedgerAppendGuard, LedgerSnapshot, LedgerSnapshotRetention, ObjectRevision,
     PreparedLedgerAppend, ReferenceLedger, ResumeLedgerAppendError, SensorCapsule,
     SensorSourceBytesSpec,
 };
