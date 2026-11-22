@@ -15,7 +15,7 @@ target/debug/fss-onvif-metadata tracks \
   --rtp-source "$RTP_IMPORT_ID@$RTP_PUBLICATION_ROOT"
 ```
 
-The result is one closed `fss.onvif_vendor_tracklets_report.v1` JSON document. It includes every source receipt, accepted analytics frame and object occurrence, stable advisory tracklet identities, exact source/document/frame/object handles and explicit grouping break reasons. `provenance="derived"` describes the grouping; `source_provenance="vendor_claimed"` preserves the original observations' status. A run records repeated vendor claims and does not establish physical identity, authenticated origin, coverage, absence, calibrated geometry, events or effect permission.
+The result is one closed `fss.onvif_vendor_tracklets_report.v2` JSON document. It includes every source receipt, accepted analytics frame and object occurrence, stable advisory tracklet identities, exact source/document/frame/object handles and explicit grouping break reasons. `provenance="derived"` describes the grouping; `source_provenance="vendor_claimed"` preserves the original observations' status. A run records repeated vendor claims and does not establish physical identity, authenticated origin, coverage, absence, calibrated geometry, events or effect permission.
 
 Raw module names, ObjectIds and vendor timestamps are `null` by default. Add `--include-values yes` to disclose their original spellings to local stdout. Classes, shapes and transformations remain in the original XML and can be hydrated through the exact handles using `inspect` or `inspect-rtp`; the grouping does not normalize geometry or classify people.
 
@@ -23,19 +23,21 @@ The grouping requires the same generation scope and named module, an equal XML i
 
 Within one clean RTP source, adjacent XML documents can continue a run only when their retained packet-boundary provenance agrees exactly. Empty/rejected/opaque documents break linkage. Any incomplete transport or native acquisition conservatively disables all inter-document linkage for that source while preserving useful within-document claims. Completed processing and zero returned tracks never establish scene coverage or absence.
 
-The owner verifies every selected source, exact root, frozen parser/transport generation, publication and current deletion state twice. Both passes share one nonrenewing indexed-read and work allowance; a later missing, deleted, changed, over-budget or cancelled source refuses the entire report, including sources with no analytics. Query opening requires a complete existing deployment and leaves pending external effects unreconciled. Normal publisher recovery and the exclusive deployment lock still apply, so opening can perform local housekeeping.
+The immutable native owner verifies every selected source, exact root, frozen parser/transport generation, publication and current deletion state twice. Both passes share one nonrenewing source filesystem-read and work allowance; a later missing, deleted, changed, over-budget or cancelled source refuses the entire report, including sources with no analytics. Opening and final authority checks share a separate metadata payload allowance. `tracks`, `lifecycle` and `zones` can now read while capture holds the publisher lock; they perform no publisher recovery, initialization or effect reconciliation. Missing effect history or a torn authority/effect journal refuses the whole query without repair.
 
 | Bound | Default | Hard maximum |
 |---|---:|---:|
 | Ordered distinct source pins | 32 | 32 |
-| Indexed stored-envelope bytes, both passes | 64 MiB | 1 GiB |
-| Indexed read attempts, both passes | 8192 | 65,536 |
+| Source read bytes, both passes and closure revalidation | 64 MiB | 1 GiB |
+| Source filesystem calls, both passes | 8192 | 65,536 |
+| Deployment metadata payload bytes, opening and final checks | 128 MiB | 256 MiB |
+| Deployment metadata payload-read attempts | 16,384 | 65,536 |
 | Shared conservative work reservation | 8,388,608 | 67,108,864 |
 | Work reserved for each pure projection | 2,000,000 | 16,777,216 |
 | Frames / object occurrences / tracklets | 1024 / 4096 / 4096 | 1024 / 4096 / 4096 |
 | Canonical projection / complete JSON | 4 MiB / 16 MiB | 4 MiB / 16 MiB |
 
-Indexed bytes include envelope overhead, provenance and deletion-plan reads; opening recovery, directory scans and metadata/open syscalls remain under the existing deployment-open capacity contract. Each of the two projections reserves its full declared work allowance from the shared balance before running. The report separates conservative reserved work from actual deterministic projector work. See the [tracklet contract](onvif-vendor-tracklets-contract.md), [closed JSON schema](../schemas/onvif_vendor_tracklets_report.v1.json), and `tracks --help` for option names and exact limitations.
+Source accounting includes all closure filesystem calls, local deletion probes and selected payload rereads. Deployment metadata accounting measures returned payload bytes and attempted payload reads, including deletion proofs, and excludes stat/open syscalls. Both allowances are explicit in the v2 report and remain fixed across final revalidation. Each pure projection reserves its full declared work allowance from the shared source-work balance. The report separates that conservative reservation from exact deterministic projector work. See the [tracklet contract](onvif-vendor-tracklets-contract.md), [v2 schema](../schemas/onvif_vendor_tracklets_report.v2.json), [immutable-native migration](ONVIF_IMMUTABLE_NATIVE_READS.md), and `tracks --help`. Existing v1 schemas and legacy retained-owner APIs keep their original meanings.
 
 ## Capture live PullPoint events
 

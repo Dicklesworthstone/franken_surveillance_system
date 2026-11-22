@@ -5,7 +5,7 @@
 use std::fmt::{self, Write};
 
 use fss_core::ContentDigest;
-use fss_reference::onvif::metadata::lifecycle::RetainedLifecycle;
+use fss_reference::onvif::metadata::native_read::{NativeOnvifRead, OnvifAnalysisResult};
 use fss_reference::onvif::wire::{EventDocumentFormat, LIFECYCLE_PARSER_GENERATION};
 
 use super::super::tracks;
@@ -14,7 +14,7 @@ use super::lifecycle_json;
 /// Complete JSON byte ceiling, separately from the canonical projection ceiling.
 pub(super) const MAX_JSON_BYTES: usize = 32 * 1024 * 1024;
 /// Closed source-verified lifecycle query envelope.
-pub(super) const SCHEMA: &str = "fss.onvif_vendor_lifecycle_report.v1";
+pub(super) const SCHEMA: &str = "fss.onvif_vendor_lifecycle_report.v2";
 const LIMIT: &str = "ERR-ONVIF-LIFECYCLE-JSON-LIMIT-001";
 
 struct Bounded {
@@ -50,10 +50,10 @@ fn optional_index(value: Option<usize>) -> String {
 /// A formatting/allocation refusal releases no successful JSON prefix. Original vendor
 /// values are controlled by the same disclosure flag in the nested tracklet and lineage rows.
 pub(super) fn render(
-    retained: &RetainedLifecycle,
+    retained: &NativeOnvifRead,
     include_values: bool,
 ) -> Result<String, &'static str> {
-    let original = tracks::report::render(retained.snapshot(), include_values)?;
+    let original = tracks::report::render(retained, include_values)?;
     let mut out = Bounded {
         text: String::new(),
     };
@@ -63,18 +63,21 @@ pub(super) fn render(
 
 fn write_report(
     out: &mut Bounded,
-    retained: &RetainedLifecycle,
+    retained: &NativeOnvifRead,
     include_values: bool,
     original: &str,
 ) -> fmt::Result {
-    let parse = retained.limits().parse;
+    let OnvifAnalysisResult::Lifecycle { report, documents, .. } = &retained.native.analysis else {
+        return Err(fmt::Error);
+    };
+    let parse = retained.limits.source.parse;
     write!(
         out,
         "{{\"schema\":{},\"status\":\"verified\",\"plane\":\"cognition\",\"provenance\":\"derived\",\"source_provenance\":\"vendor_claimed\",\"parser_generation\":{},\"vendor_values_included\":{},\"snapshot_digest\":{},\"max_json_bytes\":{},\"parser_limits\":{{\"max_frames\":{},\"max_objects\":{},\"max_operations\":{},\"max_references\":{},\"max_work_units\":{}}},\"tracklets\":",
         string(SCHEMA),
         string(LIFECYCLE_PARSER_GENERATION),
         include_values,
-        digest(retained.digest()),
+        digest(retained.snapshot_digest),
         MAX_JSON_BYTES,
         parse.max_frames,
         parse.max_objects,
@@ -86,7 +89,7 @@ fn write_report(
     // ordinary JSON whitespace and is deliberately preserved when embedding the exact report.
     out.write_str(original)?;
     out.write_str(",\"documents\":[")?;
-    for (index, document) in retained.documents().iter().enumerate() {
+    for (index, document) in documents.iter().enumerate() {
         if index != 0 {
             out.write_char(',')?;
         }
@@ -119,6 +122,6 @@ fn write_report(
         )?;
     }
     out.write_str("],\"analysis\":")?;
-    lifecycle_json::write_json(out, retained.report(), include_values)?;
+    lifecycle_json::write_json(out, report, include_values)?;
     out.write_str(",\"claims\":{\"physical_identity\":false,\"physical_departure\":false,\"authenticated_origin\":false,\"coverage\":false,\"physical_absence\":false,\"calibrated_geometry\":false,\"event_authority\":false,\"effect_permission\":false}}\n")
 }

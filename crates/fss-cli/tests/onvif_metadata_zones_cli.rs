@@ -2,18 +2,21 @@
 //! Actual-process import -> source-pinned vendor-zone reports and complete refusal contracts.
 //! These fixtures establish no calibrated geometry, physical identity or coverage.
 
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use fss_core::{
-    ContentDigest,
+    BudgetVector, ContentDigest, ContextAuthority, OperationId, RootAuthoritySpec,
     json_input::{Value, parse},
 };
+
+use fss_reference::{ReferenceDeployment, ReplayCx};
 
 type Test<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 const SITE: &str = "site:onvif-zones-cli";
@@ -311,7 +314,7 @@ fn retained_xml_to_zones_preserves_originals_transitions_and_exact_policy_bytes(
     let args = fixture.args(&policy_path)?;
     let output = success(run(&args)?)?;
     let report = parse(&output)?;
-    assert_eq!(text(&report, "schema")?, "fss.onvif_vendor_zones_report.v1");
+    assert_eq!(text(&report, "schema")?, "fss.onvif_vendor_zones_report.v2");
     original_is_unchanged(&report, &fixture.original)?;
     let tracks = field(&report, "tracklets")?;
     let runs = list(tracks, "tracklets")?;
@@ -538,6 +541,8 @@ fn policy_errors_resource_bounds_and_missing_store_refuse_without_json_or_initia
 
     for (flag, value) in [
         ("--max-read-bytes", "1"),
+        ("--max-deployment-read-bytes", "1"),
+        ("--max-deployment-read-attempts", "1"),
         ("--max-analysis-work", "2000000"),
         ("--max-analysis-bytes", "1"),
         ("--max-work-units", "10000000"),
@@ -554,5 +559,99 @@ fn policy_errors_resource_bounds_and_missing_store_refuse_without_json_or_initia
     // Refused runs neither relabel the retained source nor corrupt its subsequent query.
     let completed = parse(&success(run(&args)?)?)?;
     original_is_unchanged(&completed, &fixture.original)?;
+    Ok(())
+}
+
+
+fn immutable_tree(root: &Path) -> Test<BTreeMap<PathBuf, Option<Vec<u8>>>> {
+    fn visit(
+        root: &Path,
+        path: &Path,
+        entries: &mut BTreeMap<PathBuf, Option<Vec<u8>>>,
+    ) -> Test {
+        for entry in fs::read_dir(path)? {
+            let entry = entry?;
+            let path = entry.path();
+            let relative = path.strip_prefix(root)?.to_path_buf();
+            if entry.file_type()?.is_dir() {
+                entries.insert(relative, None);
+                visit(root, &path, entries)?;
+            } else {
+                entries.insert(relative, Some(fs::read(path)?));
+            }
+        }
+        Ok(())
+    }
+    let mut entries = BTreeMap::new();
+    visit(root, root, &mut entries)?;
+    Ok(entries)
+}
+
+fn writer_context(root: &Path) -> Test<ReplayCx> {
+    let authority = ContextAuthority::new_root(RootAuthoritySpec {
+        trace_id: "trace:onvif-zones-cli-writer".into(),
+        operation_id: OperationId::parse("operation:onvif-zones-cli-writer")?,
+        principal: "principal:onvif-zones-cli-writer".into(),
+        capabilities: vec![fss_reference::ADP_REPLAY_ROW_ID.into()],
+        deadline: None,
+        priority: 10,
+        budgets: BudgetVector::builder()
+            .bytes(128 * 1024 * 1024)
+            .storage_operations(16_384)
+            .build()?,
+        privacy_scope: "privacy:fixture".into(),
+        retention_scope: "retention:fixture".into(),
+        anchor_universe: ContentDigest::sha256(SITE.as_bytes()),
+        generation: 1,
+    })?;
+    Ok(ReplayCx::from_context_authority_read_only(
+        &authority, root,
+    )?)
+}
+
+#[test]
+fn native_zones_runs_with_live_writer_and_refuses_torn_effect_history_without_repair() -> Test {
+    let fixture = Fixture::new("immutable-writer")?;
+    let policy = fixture.policy("policy.json", &fixture.pins.json())?;
+    let args = fixture.args(&policy)?;
+    let expected = success(run(&args)?)?;
+    let root = fixture.directory.root();
+    let writer_cx = writer_context(&root)?;
+    let writer = ReferenceDeployment::open(&root, SITE, &writer_cx)?;
+    let before = immutable_tree(&root)?;
+    let actual = success(run(&args)?)?;
+    assert_eq!(actual, expected);
+    let report = parse(&actual)?;
+    original_is_unchanged(&report, &fixture.original)?;
+    let tracks = field(&report, "tracklets")?;
+    assert_eq!(
+        text(tracks, "schema")?,
+        "fss.onvif_vendor_tracklets_report.v2"
+    );
+    assert_eq!(text(tracks, "read_owner")?, "fss.onvif_native_immutable_read.v1");
+    let usage = field(tracks, "usage")?;
+    assert_eq!(field(usage, "publisher_opened")?.boolean(), Some(false));
+    assert_eq!(field(usage, "recovery_performed")?.boolean(), Some(false));
+    assert!(field(usage, "source_io_calls")?.integer().is_some_and(|v| v > 0));
+    assert!(
+        field(usage, "deployment_read_attempts")?
+            .integer()
+            .is_some_and(|v| v > 0)
+    );
+    assert_eq!(immutable_tree(&root)?, before);
+    assert_eq!(
+        field(field(tracks, "authority")?, "commit_sequence")?.integer(),
+        Some(i128::from(writer.current_anchor().commit_sequence))
+    );
+
+    let effects = root.join("effects/journal.fssj");
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&effects)?
+        .write_all(b"FSS")?;
+    let torn = immutable_tree(&root)?;
+    refusal(run(&args)?);
+    assert_eq!(immutable_tree(&root)?, torn);
+    assert!(fs::read(effects)?.ends_with(b"FSS"));
     Ok(())
 }

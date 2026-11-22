@@ -13,8 +13,9 @@ use fss_core::{
     BudgetVector, CanonicalEncoder, ContentDigest, ContextAuthority, OperationId, RootAuthoritySpec,
 };
 use fss_reference::ReplayCx;
+use fss_reference::onvif::metadata::native_read::{NativeOnvifRead, OnvifAnalysis};
 use fss_reference::onvif::metadata::lifecycle::{
-    DEFAULT_LIFECYCLE_READ_WORK_UNITS, LifecycleReadLimits, RetainedLifecycle,
+    DEFAULT_LIFECYCLE_READ_WORK_UNITS, LifecycleReadLimits,
     contract::{MAX_LIFECYCLE_REPORT_BYTES, MAX_LIFECYCLE_WORK_UNITS},
 };
 
@@ -30,13 +31,14 @@ const HELP: &str = "fss-onvif-metadata lifecycle [options]
   All tracks source/grouping bounds are accepted; see tracks --help.
   The shared --max-work-units default is 33554432 for lifecycle.
 
-Returns one complete fss.onvif_vendor_lifecycle_report.v1 JSON document, at most
+Returns one complete fss.onvif_vendor_lifecycle_report.v2 JSON document, at most
 32 MiB, with the complete original tracks report, every document disposition,
 source-linked lifecycle relationships and shared cumulative request accounting.
 Both source passes, tracklet replay and lifecycle interpretation consume the SAME
-nonrenewing allowance. Opening may perform existing publisher recovery; indexed
-source counters exclude opening work. No deployment is initialized, source data
-acquired, derived root published or pending external effect reconciled.
+nonrenewing source allowance. Source counters include every filesystem call; opening
+and final authority checks share separate deployment payload-byte/read-attempt limits.
+The immutable owner runs while capture holds the publisher lock. Missing/torn journals
+or changed authority refuse the complete report without repair or initialization.
 
 ObjectTree Rename/Split/Merge/Delete and separate Behaviour Idle/Removed claims
 use an independent generation. Original tracks-v1 runs and identities stay unchanged.
@@ -52,7 +54,6 @@ are withheld unless --include-values yes. UUID strings remain withheld.
 
 struct Options {
     common: tracks::Options,
-    limits: LifecycleReadLimits,
 }
 
 fn number(
@@ -79,7 +80,7 @@ fn number(
 
 fn parse(args: &[OsString]) -> Result<Options, &'static str> {
     if args.is_empty()
-        || args.len() > 99
+        || args.len() > 101
         || args.len() % 2 != 1
         || args[0] != "lifecycle"
         || args.iter().any(|arg| arg.as_encoded_bytes().len() > 4096)
@@ -126,9 +127,15 @@ fn parse(args: &[OsString]) -> Result<Options, &'static str> {
         MAX_LIFECYCLE_REPORT_BYTES as u64,
     )? as usize;
     limits.validate().map_err(|_| ARGUMENT_ERROR)?;
+    common.read_limits.source.lifecycle = limits.projection;
+    common.read_limits.source.parse = limits.parse;
+    common
+        .read_limits
+        .validate(&OnvifAnalysis::Lifecycle)
+        .map_err(|_| ARGUMENT_ERROR)?;
 
     let mut request = CanonicalEncoder::new();
-    request.text("fss.onvif_vendor_lifecycle_cli_request.v1");
+    request.text("fss.onvif_vendor_lifecycle_cli_request.v2");
     request.digest(common.approval);
     request.digest(limits.projection.digest().map_err(|_| ARGUMENT_ERROR)?);
     for value in [
@@ -141,7 +148,7 @@ fn parse(args: &[OsString]) -> Result<Options, &'static str> {
     }
     request.u64(limits.parse.max_work_units);
     common.approval = ContentDigest::sha256(&request.finish_checked().map_err(|_| ARGUMENT_ERROR)?);
-    Ok(Options { common, limits })
+    Ok(Options { common })
 }
 
 fn run(options: Options) -> Result<(CommandOutput, bool), &'static str> {
@@ -149,17 +156,24 @@ fn run(options: Options) -> Result<(CommandOutput, bool), &'static str> {
     let storage_operations = (common.limits.max_work_units as u64)
         .checked_mul(4)
         .and_then(|value| value.checked_add(4 * common.limits.max_indexed_reads + 4096))
+        .and_then(|value| {
+            value.checked_add(4 * common.read_limits.max_deployment_read_attempts as u64)
+        })
+        .ok_or(LIMIT_ERROR)?;
+    let bytes = common
+        .limits
+        .max_stored_bytes
+        .checked_add(common.read_limits.max_deployment_read_bytes as u64)
         .ok_or(LIMIT_ERROR)?;
     let request = runtime::Request {
         approval: common.approval,
         principal: common.principal.clone(),
         timeout_ns: common.timeout_ns,
-        bytes: common.limits.max_stored_bytes,
+        bytes,
         network_bytes: 0,
         storage_operations,
         network: false,
-        // Existing publisher opening may perform recovery under its exclusive lock.
-        write: true,
+        write: false,
         secrets: false,
     };
     let report = runtime::run(request, |scope| {
@@ -173,7 +187,7 @@ fn run(options: Options) -> Result<(CommandOutput, bool), &'static str> {
             deadline: None,
             priority: 10,
             budgets: BudgetVector::builder()
-                .bytes(common.limits.max_stored_bytes)
+                .bytes(bytes)
                 .storage_operations(storage_operations)
                 .build()
                 .map_err(|_| LIMIT_ERROR)?,
@@ -185,12 +199,13 @@ fn run(options: Options) -> Result<(CommandOutput, bool), &'static str> {
         .map_err(|_| ARGUMENT_ERROR)?;
         let cx = ReplayCx::from_context_authority_read_only(&authority, common.root.clone())
             .map_err(|_| ARGUMENT_ERROR)?
-            .with_admission(|_| admission::check(scope));
-        let result = RetainedLifecycle::open(
+            .with_admission(|_| admission::check_read(scope));
+        let result = NativeOnvifRead::open(
             &common.root,
             &common.site,
             &common.pins,
-            options.limits,
+            &OnvifAnalysis::Lifecycle,
+            common.read_limits,
             &cx,
         )
         .map_err(|error| error.code());

@@ -14,8 +14,9 @@ use fss_core::{
     BudgetVector, CanonicalEncoder, ContentDigest, ContextAuthority, OperationId, RootAuthoritySpec,
 };
 use fss_reference::ReplayCx;
+use fss_reference::onvif::metadata::native_read::{NativeOnvifRead, OnvifAnalysis};
 use fss_reference::onvif::metadata::zones::{
-    DEFAULT_ZONE_READ_WORK_UNITS, RetainedZones, ZonePolicy, ZoneReadLimits,
+    DEFAULT_ZONE_READ_WORK_UNITS, ZonePolicy, ZoneReadLimits,
     contract::{
         MAX_ZONE_POLICY_BYTES, MAX_ZONE_REPORT_BYTES, MAX_ZONE_WORK_UNITS, ZONE_GENERATION,
     },
@@ -44,7 +45,7 @@ Each of 1..16 rectangles supplies a local id, exact scope/module/frame-transform
 transform digests from tracks, min/max integer pairs and a nonnegative margin. Coordinates
 and margin use one million subunits per raw vendor unit. No transformation is applied.
 
-Returns complete fss.onvif_vendor_zones_report.v1 JSON, at most 32 MiB, containing the
+Returns complete fss.onvif_vendor_zones_report.v2 JSON, at most 32 MiB, containing the
 original tracks report, full operator policy, every occurrence-by-zone cell and every
 frame-by-zone sample, including empty and wrong-domain frames. Entire claimed boxes are
 rounded outward and expanded by the declared margin: inside/outside are definite numeric
@@ -57,17 +58,17 @@ physical identity, capture clock, dwell time, calibrated geometry, coverage, abs
 authority event or permission to act is inferred. Operator policy values are always reported;
 raw vendor module/ObjectId/time values remain hidden unless --include-values yes.
 
-Both complete source/analysis passes share one nonrenewing indexed-read/work allowance.
-The policy read has a separate 65537-byte reservation including its trailing probe. Opening
-can perform existing publisher recovery; its work is outside indexed-source counters.
-No deployment is initialized, source data acquired, derived root published or effect reconciled.
+Both complete source/analysis passes share one nonrenewing source read/work allowance.
+Source calls include metadata and final revalidation; deployment metadata payload reads
+have separate explicit limits shared by opening and final authority verification.
+The policy read has a separate 65537-byte reservation including its trailing probe.
+The immutable owner works while capture holds the publisher lock and never repairs journals.
 The result commits both semantic policy and exact policy-file bytes; JSON whitespace can
 change query_digest without changing the semantic analysis digest.
 ";
 
 struct Options {
     common: tracks::Options,
-    limits: ZoneReadLimits,
     policy: PathBuf,
 }
 
@@ -95,7 +96,7 @@ fn number(
 
 fn parse(args: &[OsString]) -> Result<Options, &'static str> {
     if args.is_empty()
-        || args.len() > 99
+        || args.len() > 103
         || args.len() % 2 != 1
         || args[0] != "zones"
         || args.iter().any(|arg| arg.as_encoded_bytes().len() > 4096)
@@ -147,8 +148,9 @@ fn parse(args: &[OsString]) -> Result<Options, &'static str> {
         MAX_ZONE_REPORT_BYTES as u64,
     )? as usize;
     limits.validate().map_err(|_| ARGUMENT_ERROR)?;
+    common.read_limits.source.zones = limits.projection;
     let mut request = CanonicalEncoder::new();
-    request.text("fss.onvif_vendor_zones_cli_request.v1");
+    request.text("fss.onvif_vendor_zones_cli_request.v2");
     request.text(ZONE_GENERATION);
     request.digest(common.approval);
     request.text(policy.to_str().ok_or(ARGUMENT_ERROR)?);
@@ -165,7 +167,6 @@ fn parse(args: &[OsString]) -> Result<Options, &'static str> {
     common.approval = ContentDigest::sha256(&request.finish_checked().map_err(|_| ARGUMENT_ERROR)?);
     Ok(Options {
         common,
-        limits,
         policy,
     })
 }
@@ -175,11 +176,15 @@ fn run(options: Options) -> Result<(CommandOutput, bool), &'static str> {
     let storage_operations = (common.limits.max_work_units as u64)
         .checked_mul(4)
         .and_then(|value| value.checked_add(4 * common.limits.max_indexed_reads + 4096))
+        .and_then(|value| {
+            value.checked_add(4 * common.read_limits.max_deployment_read_attempts as u64)
+        })
         .ok_or(LIMIT_ERROR)?;
     let bytes = common
         .limits
         .max_stored_bytes
-        .checked_add(POLICY_READ_BYTES)
+        .checked_add(common.read_limits.max_deployment_read_bytes as u64)
+        .and_then(|value| value.checked_add(POLICY_READ_BYTES))
         .ok_or(LIMIT_ERROR)?;
     let request = runtime::Request {
         approval: common.approval,
@@ -189,8 +194,7 @@ fn run(options: Options) -> Result<(CommandOutput, bool), &'static str> {
         network_bytes: 0,
         storage_operations,
         network: false,
-        // The original existing-store owner can perform publisher recovery housekeeping.
-        write: true,
+        write: false,
         secrets: false,
     };
     let report = runtime::run(request, |scope| {
@@ -221,13 +225,13 @@ fn run(options: Options) -> Result<(CommandOutput, bool), &'static str> {
         .map_err(|_| ARGUMENT_ERROR)?;
         let cx = ReplayCx::from_context_authority_read_only(&authority, common.root.clone())
             .map_err(|_| ARGUMENT_ERROR)?
-            .with_admission(|_| admission::check(scope));
-        let result = RetainedZones::open(
+            .with_admission(|_| admission::check_read(scope));
+        let result = NativeOnvifRead::open(
             &common.root,
             &common.site,
             &common.pins,
-            &policy,
-            options.limits,
+            &OnvifAnalysis::Zones(policy),
+            common.read_limits,
             &cx,
         )
         .map_err(|error| error.code());

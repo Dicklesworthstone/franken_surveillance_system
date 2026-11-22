@@ -4,13 +4,14 @@
 use std::fmt::{self, Write};
 
 use fss_core::{CanonicalEncoder, ContentDigest};
-use fss_reference::onvif::metadata::zones::{RetainedZones, contract::MAX_ZONE_POLICY_BYTES};
+use fss_reference::onvif::metadata::native_read::{NativeOnvifRead, OnvifAnalysisResult};
+use fss_reference::onvif::metadata::zones::contract::MAX_ZONE_POLICY_BYTES;
 
 use super::super::tracks;
 use super::{POLICY_READ_BYTES, zones_json};
 
 pub(super) const MAX_JSON_BYTES: usize = 32 * 1024 * 1024;
-pub(super) const SCHEMA: &str = "fss.onvif_vendor_zones_report.v1";
+pub(super) const SCHEMA: &str = "fss.onvif_vendor_zones_report.v2";
 const LIMIT: &str = "ERR-ONVIF-ZONES-JSON-LIMIT-001";
 
 struct Bounded {
@@ -35,7 +36,7 @@ fn digest(value: ContentDigest) -> String {
 }
 
 pub(super) fn render(
-    retained: &RetainedZones,
+    retained: &NativeOnvifRead,
     include_values: bool,
     policy_input_digest: ContentDigest,
     policy_input_bytes: usize,
@@ -43,10 +44,13 @@ pub(super) fn render(
     if policy_input_bytes == 0 || policy_input_bytes > MAX_ZONE_POLICY_BYTES {
         return Err(LIMIT);
     }
-    let original = tracks::report::render(retained.snapshot(), include_values)?;
+    let OnvifAnalysisResult::Zones(report) = &retained.native.analysis else {
+        return Err(LIMIT);
+    };
+    let original = tracks::report::render(retained, include_values)?;
     let mut commitment = CanonicalEncoder::new();
-    commitment.text("fss.onvif_vendor_zones_cli_report.v1");
-    commitment.digest(retained.digest());
+    commitment.text("fss.onvif_vendor_zones_cli_report.v2");
+    commitment.digest(retained.snapshot_digest);
     commitment.digest(policy_input_digest);
     commitment.u64(policy_input_bytes as u64);
     let query_digest = ContentDigest::sha256(&commitment.finish_checked().map_err(|_| LIMIT)?);
@@ -55,13 +59,13 @@ pub(super) fn render(
     };
     write!(out,
         "{{\"schema\":{},\"status\":\"verified\",\"plane\":\"cognition\",\"provenance\":\"derived\",\"source_provenance\":\"vendor_claimed\",\"vendor_values_included\":{},\"snapshot_digest\":{},\"query_digest\":{},\"policy_input\":{{\"digest\":{},\"bytes\":{},\"max_bytes\":{},\"byte_reservation\":{}}},\"max_json_bytes\":{},\"tracklets\":",
-        string(SCHEMA), include_values, digest(retained.digest()), digest(query_digest),
+        string(SCHEMA), include_values, digest(retained.snapshot_digest), digest(query_digest),
         digest(policy_input_digest), policy_input_bytes, MAX_ZONE_POLICY_BYTES, POLICY_READ_BYTES,
         MAX_JSON_BYTES,
     ).map_err(|_| LIMIT)?;
     out.write_str(&original).map_err(|_| LIMIT)?;
     out.write_str(",\"analysis\":").map_err(|_| LIMIT)?;
-    zones_json::write_json(&mut out, retained.report()).map_err(|_| LIMIT)?;
+    zones_json::write_json(&mut out, report).map_err(|_| LIMIT)?;
     out.write_str(",\"claims\":{\"physical_identity\":false,\"calibrated_geometry\":false,\"capture_clock\":false,\"dwell\":false,\"physical_absence\":false,\"coverage\":false,\"event_authority\":false,\"effect_permission\":false}}\n")
         .map_err(|_| LIMIT)?;
     Ok(out.text)

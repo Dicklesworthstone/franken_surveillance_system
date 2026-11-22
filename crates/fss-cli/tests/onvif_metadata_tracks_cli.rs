@@ -1,18 +1,22 @@
 #![forbid(unsafe_code)]
 //! Actual-process source import -> bounded vendor-tracklet JSON, privacy and refusal contracts.
 
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use fss_core::{
-    ContentDigest,
+    BudgetVector, ContentDigest, ContextAuthority, EffectIntent, EffectState, IdempotencyKey,
+    ObligationId, OperationId, RootAuthoritySpec, TimestampNs,
     json_input::{Value, parse},
 };
+
+use fss_reference::{ReferenceDeployment, ReplayCx};
 
 type Test<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 const SITE: &str = "site:onvif-tracks-cli";
@@ -224,13 +228,14 @@ fn xml_import_to_tracks_is_private_by_default_and_explicit_values_are_json_escap
     let hidden = parse(&hidden_text)?;
     assert_eq!(
         field(&hidden, "schema")?.text(),
-        Some("fss.onvif_vendor_tracklets_report.v1")
+        Some("fss.onvif_vendor_tracklets_report.v2")
     );
     assert_eq!(field(&hidden, "provenance")?.text(), Some("derived"));
     assert_eq!(
         field(&hidden, "source_provenance")?.text(),
         Some("vendor_claimed")
     );
+    immutable_accounting(&hidden)?;
     assert_eq!(list(&hidden, "frames")?.len(), 2);
     assert_eq!(list(&hidden, "tracklets")?.len(), 1);
     assert_eq!(
@@ -309,7 +314,11 @@ fn required_root_duplicate_source_and_tiny_budget_refuse_without_partial_json() 
     duplicated.extend(["--rtp-source".into(), base[6].clone()]);
     let mut limited = base.clone();
     limited.extend(["--max-read-bytes".into(), "1".into()]);
-    for args in [unpinned, duplicated, limited] {
+    let mut metadata_bytes = base.clone();
+    metadata_bytes.extend(["--max-deployment-read-bytes".into(), "1".into()]);
+    let mut metadata_attempts = base.clone();
+    metadata_attempts.extend(["--max-deployment-read-attempts".into(), "1".into()]);
+    for args in [unpinned, duplicated, limited, metadata_bytes, metadata_attempts] {
         let output = run(&args)?;
         assert!(!output.status.success());
         assert!(output.stdout.is_empty());
@@ -362,7 +371,7 @@ fn lifecycle_xml_explains_original_runs_without_relabeling_or_default_disclosure
     let hidden = parse(&hidden_text)?;
     assert_eq!(
         field(&hidden, "schema")?.text(),
-        Some("fss.onvif_vendor_lifecycle_report.v1")
+        Some("fss.onvif_vendor_lifecycle_report.v2")
     );
     let tracks = field(&hidden, "tracklets")?;
     assert_eq!(
@@ -520,6 +529,8 @@ fn lifecycle_preserves_frozen_v1_and_refuses_limits_or_missing_store_without_jso
     assert!(list(field(&report, "tracklets")?, "occurrences")?.is_empty());
     for extra in [
         ["--max-read-bytes", "1"],
+        ["--max-deployment-read-bytes", "1"],
+        ["--max-deployment-read-attempts", "1"],
         ["--max-analysis-work", "2000000"],
         ["--max-work-units", "10000000"],
     ] {
@@ -537,5 +548,182 @@ fn lifecycle_preserves_frozen_v1_and_refuses_limits_or_missing_store_without_jso
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
     assert!(!missing.exists());
+    Ok(())
+}
+
+
+fn immutable_accounting(tracks: &Value) -> Test {
+    assert_eq!(
+        field(tracks, "read_owner")?.text(),
+        Some("fss.onvif_native_immutable_read.v1")
+    );
+    let usage = field(tracks, "usage")?;
+    let limits = field(tracks, "limits")?;
+    assert_eq!(field(usage, "source_validation_passes")?.integer(), Some(2));
+    assert_eq!(field(usage, "publisher_opened")?.boolean(), Some(false));
+    assert_eq!(field(usage, "recovery_performed")?.boolean(), Some(false));
+    for (used, maximum) in [
+        ("source_read_bytes", "max_source_read_bytes"),
+        ("peak_reserved_source_read_bytes", "max_source_read_bytes"),
+        ("source_io_calls", "max_source_io_calls"),
+        ("deployment_read_bytes", "max_deployment_read_bytes"),
+        ("deployment_read_attempts", "max_deployment_read_attempts"),
+    ] {
+        let used = field(usage, used)?.integer().ok_or("usage integer")?;
+        let maximum = field(limits, maximum)?.integer().ok_or("limit integer")?;
+        assert!(used > 0 && used <= maximum);
+    }
+    Ok(())
+}
+
+fn immutable_tree(root: &Path) -> Test<BTreeMap<PathBuf, Option<Vec<u8>>>> {
+    fn visit(
+        root: &Path,
+        path: &Path,
+        entries: &mut BTreeMap<PathBuf, Option<Vec<u8>>>,
+    ) -> Test {
+        for entry in fs::read_dir(path)? {
+            let entry = entry?;
+            let path = entry.path();
+            let relative = path.strip_prefix(root)?.to_path_buf();
+            if entry.file_type()?.is_dir() {
+                entries.insert(relative, None);
+                visit(root, &path, entries)?;
+            } else {
+                entries.insert(relative, Some(fs::read(path)?));
+            }
+        }
+        Ok(())
+    }
+    let mut entries = BTreeMap::new();
+    visit(root, root, &mut entries)?;
+    Ok(entries)
+}
+
+fn writer_context(root: &Path) -> Test<ReplayCx> {
+    let authority = ContextAuthority::new_root(RootAuthoritySpec {
+        trace_id: "trace:onvif-cli-writer".into(),
+        operation_id: OperationId::parse("operation:onvif-cli-writer")?,
+        principal: "principal:onvif-cli-writer".into(),
+        capabilities: vec![fss_reference::ADP_REPLAY_ROW_ID.into()],
+        deadline: None,
+        priority: 10,
+        budgets: BudgetVector::builder()
+            .bytes(128 * 1024 * 1024)
+            .storage_operations(16_384)
+            .build()?,
+        privacy_scope: "privacy:fixture".into(),
+        retention_scope: "retention:fixture".into(),
+        anchor_universe: ContentDigest::sha256(SITE.as_bytes()),
+        generation: 1,
+    })?;
+    Ok(ReplayCx::from_context_authority_read_only(
+        &authority, root,
+    )?)
+}
+
+#[test]
+fn native_tracks_and_lifecycle_run_while_writer_and_unreconciled_effects_are_live() -> Test {
+    let directory = Directory::new("immutable-live-writer")?;
+    let input = directory.0.join("source.xml");
+    let seconds: Vec<u8> = (0..40).collect();
+    fs::write(&input, xml(&seconds))?;
+    let root = directory.root();
+    let receipt = success(run(&import_args(&root, &input, false))?)?;
+    fs::remove_file(input)?;
+    let track_args = tracks_args(&root, "--xml-source", &receipt)?;
+    let life_args = lifecycle_args(&root, "--xml-source", &receipt)?;
+    let original_tracks = parse(&success(run(&track_args)?)?)?;
+    let original_lifecycle = parse(&success(run(&life_args)?)?)?;
+    assert!(list(&original_tracks, "frames")?.len() > 32);
+    let writer_cx = writer_context(&root)?;
+    let mut writer = ReferenceDeployment::open(&root, SITE, &writer_cx)?;
+    for (label, committed) in [("prepared", false), ("committed", true)] {
+        let intent = EffectIntent::new(
+            OperationId::parse(format!("operation:onvif-cli:{label}"))?,
+            IdempotencyKey::parse(format!("idempotency:onvif-cli:{label}"))?,
+            "fixture:notification",
+            ContentDigest::sha256(label.as_bytes()),
+            ContentDigest::sha256(b"immutable native query authority"),
+        )?;
+        writer.effects_mut().prepare(
+            intent.clone(),
+            ObligationId::parse(format!("obligation:onvif-cli:{label}"))?,
+            "fixture notification observed",
+            TimestampNs(1),
+        )?;
+        if committed {
+            writer.effects_mut().transition(
+                &intent.operation_id,
+                EffectState::Committed,
+                TimestampNs(2),
+                None,
+                None,
+            )?;
+        }
+    }
+    let before = immutable_tree(&root)?;
+    for (args, lifecycle) in [(track_args, false), (life_args, true)] {
+        let rendered = success(run(&args)?)?;
+        assert!(!rendered.contains(PRIVATE_OBJECT));
+        assert!(!rendered.contains("private"));
+        let report = parse(&rendered)?;
+        let tracks = if lifecycle {
+            assert_eq!(
+                field(&report, "analysis")?,
+                field(&original_lifecycle, "analysis")?
+            );
+            assert_eq!(
+                field(&report, "documents")?,
+                field(&original_lifecycle, "documents")?
+            );
+            field(&report, "tracklets")?
+        } else {
+            &report
+        };
+        for name in ["report_digest", "sources", "frames", "occurrences", "tracklets"] {
+            assert_eq!(field(tracks, name)?, field(&original_tracks, name)?);
+        }
+        immutable_accounting(tracks)?;
+        assert_eq!(immutable_tree(&root)?, before);
+    }
+    assert_eq!(writer.effects().operations().count(), 2);
+    Ok(())
+}
+
+#[test]
+fn native_tracks_and_lifecycle_refuse_incomplete_journals_without_repair_or_json() -> Test {
+    for journal in ["ledger/journal.fssj", "effects/journal.fssj"] {
+        for missing in [false, true] {
+            let directory = Directory::new(&format!(
+                "immutable-{}-{missing}",
+                journal.replace('/', "-")
+            ))?;
+            let input = directory.0.join("source.xml");
+            fs::write(&input, xml(&[0, 1]))?;
+            let root = directory.root();
+            let receipt = success(run(&import_args(&root, &input, false))?)?;
+            let path = root.join(journal);
+            if missing {
+                fs::remove_file(&path)?;
+            } else {
+                fs::OpenOptions::new()
+                    .append(true)
+                    .open(&path)?
+                    .write_all(b"FSS")?;
+            }
+            let before = immutable_tree(&root)?;
+            for args in [
+                tracks_args(&root, "--xml-source", &receipt)?,
+                lifecycle_args(&root, "--xml-source", &receipt)?,
+            ] {
+                let output = run(&args)?;
+                assert!(!output.status.success());
+                assert!(output.stdout.is_empty());
+                assert!(!String::from_utf8_lossy(&output.stderr).contains(PRIVATE_OBJECT));
+                assert_eq!(immutable_tree(&root)?, before);
+            }
+        }
+    }
     Ok(())
 }

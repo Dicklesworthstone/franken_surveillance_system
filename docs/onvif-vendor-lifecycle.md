@@ -24,12 +24,14 @@ Each independently supplied pin is a continuity boundary. A source file used for
 the original import is not needed: the query verifies the retained originals.
 
 The complete result uses
-[`fss.onvif_vendor_lifecycle_report.v1`](../schemas/onvif_vendor_lifecycle_report.v1.json).
+[`fss.onvif_vendor_lifecycle_report.v2`](../schemas/onvif_vendor_lifecycle_report.v2.json).
+The native command uses `NativeOnvifRead::open` with `OnvifAnalysis::Lifecycle`, so it can read while capture holds the publisher lock. It does not repair journals or create missing state; absent effects history or torn ledger/effect tails refuse the complete result. Source I/O and opening/final deployment metadata each keep one explicit nonrenewing allowance. See [immutable native reads](ONVIF_IMMUTABLE_NATIVE_READS.md).
+
 Its main fields are:
 
 | Field | Meaning |
 |---|---|
-| `tracklets` | Complete original tracks-v1 JSON, including exact source handles, current authority, original groups and cumulative read/work usage |
+| `tracklets` | Complete immutable tracks-v2 envelope with unchanged tracks-v1 grouping, exact source handles, current authority and separate source/deployment read accounting |
 | `documents` | Every pinned source/document, including frozen-v1, SOAP, rejected, empty and zero-document dispositions |
 | `analysis.frames` | Original frame coordinates, declaration positions, row ranges and explicit lifecycle boundaries |
 | `analysis.operations` | Ordered Rename/Split/Merge/Delete claims with observed, unresolved or conflicted endpoints and exact supporting occurrences |
@@ -133,7 +135,7 @@ cargo test --locked --offline -j1 -p fss-core --test onvif_lifecycle_wire_contra
 
 ## Retained lifecycle lineage
 
-The public `metadata::lifecycle::RetainedLifecycle::open` API accepts the same
+The legacy public `metadata::lifecycle::RetainedLifecycle::open` API retains its original exclusive-owner semantics and accepts the same
 ordered, exact XML/RTP identity-and-root pins as retained tracklets, plus
 `LifecycleReadLimits` and the existing `ReplayCx`. It reconstructs all original
 sources twice and runs the additive interpretation inside each complete source
@@ -169,7 +171,7 @@ counts. Empty, rejected and SOAP candidates remain visible. An RTP source with n
 complete candidate receives an explicit zero-document row. Frozen events-v1 inputs
 are skipped without applying the new parser or discovering analytics frames.
 
-Both complete passes debit the same installed indexed-read allowance and outer
+For the legacy retained-owner API, both complete passes debit the same installed indexed-read allowance and outer
 work balance. Additive XML rereads, once-per-document RTP hashing, conservative
 parser quotes, the entire independent projector reservation and receipt hashing
 are charged to that balance. Parser work is narrowed to the source quote only
@@ -182,7 +184,7 @@ The pure aggregate ceilings are 1024 frames, 4096 original objects, 1024 operati
 4096 operation endpoints and 4 MiB canonical output. All rows participate; no
 successful truncated report is returned.
 
-The existing deployment must already exist. Its normal exclusive publisher open
+That legacy API requires an existing deployment. Its normal exclusive publisher open
 may perform recovery housekeeping, which remains outside indexed source-read
 counters. The query neither initializes a deployment nor reconciles pending
 external effects. The original final admission callback precedes durable-head and
@@ -218,3 +220,5 @@ module tree and corrected explicit child paths for tracks/lifecycle/report modul
 Those pinned parse/module-resolution checks pass; native typechecking remains
 separate. See [source-verified vendor zones](onvif-vendor-zones.md) for the independent
 geometry query and exact original-occurrence correlation.
+
+The current CLI v2 immutable-owner integration and its new fault/process tests are source implemented and independently reviewed. They have not been compiled or executed in the disconnected session; earlier pure-projector results above do not qualify this new owner. FSS-046 and physical-device/Profile M qualification remain open.

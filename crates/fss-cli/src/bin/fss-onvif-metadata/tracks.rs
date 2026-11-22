@@ -12,12 +12,16 @@ use fss_core::{
     BudgetVector, CanonicalEncoder, ContentDigest, ContextAuthority, OperationId, RootAuthoritySpec,
 };
 use fss_reference::ReplayCx;
+use fss_reference::onvif::metadata::native_read::{
+    MAX_NATIVE_DEPLOYMENT_READ_ATTEMPTS, MAX_NATIVE_DEPLOYMENT_READ_BYTES, NativeOnvifRead,
+    NativeOnvifReadLimits, OnvifAnalysis,
+};
 use fss_reference::onvif::metadata::tracks::contract::{
     MAX_TRACK_FRAMES, MAX_TRACK_OBJECTS, MAX_TRACK_REPORT_BYTES,
 };
 use fss_reference::onvif::metadata::tracks::{
     MAX_TRACK_INDEXED_READS, MAX_TRACK_SOURCES, MAX_TRACK_STORED_BYTES, MAX_TRACK_WORK_UNITS,
-    RetainedTracklets, TrackReadLimits, TrackSourcePin,
+    TrackReadLimits, TrackSourcePin,
 };
 
 use super::{
@@ -32,17 +36,20 @@ const HELP: &str = "fss-onvif-metadata tracks [options]
   RTP pins also accept existing capture-rtp roots and verify their native original observations.
   [--include-values yes|no] [--timeout-ms 30000]
   [--max-read-bytes 67108864] [--max-read-attempts 8192]
+  [--max-deployment-read-bytes 134217728] [--max-deployment-read-attempts 16384]
   [--max-work-units 8388608] [--max-projection-work 2000000]
   [--max-frames 1024] [--max-objects 4096] [--max-tracklets 4096]
   [--max-vendor-gap-ms 5000] [--max-projection-bytes 4194304]
 
-Returns one complete fss.onvif_vendor_tracklets_report.v1 JSON document, at most 16 MiB.
-Both original-source reconstruction passes share one nonrenewing indexed read and work
-allowance. Each projection reserves --max-projection-work from --max-work-units before
-running; history/replay/frame accounting also consumes that same outer work allowance.
-Opening uses the existing deployment capacity limits and may perform publisher recovery;
-its recovery, directory scans and metadata/open syscalls are outside indexed read counters.
-No deployment is initialized and pending external effects are not reconciled.
+Returns one complete fss.onvif_vendor_tracklets_report.v2 JSON document, at most 16 MiB.
+Both original-source reconstruction passes share one nonrenewing source read and work
+allowance. --max-read-attempts now bounds all source filesystem calls, including metadata
+and final revalidation. Each projection reserves --max-projection-work from --max-work-units;
+history/replay/frame accounting also consumes that same source work allowance.
+Opening and final authority checks share the separate deployment payload-byte/read-attempt
+limits. Those counters exclude filesystem stat/open calls and do not measure CPU time.
+The immutable owner runs while capture holds the publisher lock. Missing/torn journals,
+source drift or exhausted limits refuse the complete report without repair or initialization.
 
 Groups consecutive claims from the same named vendor analytics module and integer ObjectId
 within an exact generation scope, increasing vendor UTC and the selected maximum gap.
@@ -65,6 +72,7 @@ pub(super) struct Options {
     pub(super) principal: String,
     pub(super) pins: Vec<TrackSourcePin>,
     pub(super) limits: TrackReadLimits,
+    pub(super) read_limits: NativeOnvifReadLimits,
     pub(super) include_values: bool,
     pub(super) timeout_ns: u64,
     pub(super) approval: ContentDigest,
@@ -140,6 +148,8 @@ pub(super) fn parse(args: &[OsString]) -> Result<Options, &'static str> {
                 | "--timeout-ms"
                 | "--max-read-bytes"
                 | "--max-read-attempts"
+                | "--max-deployment-read-bytes"
+                | "--max-deployment-read-attempts"
                 | "--max-work-units"
                 | "--max-projection-work"
                 | "--max-frames"
@@ -240,8 +250,23 @@ pub(super) fn parse(args: &[OsString]) -> Result<Options, &'static str> {
         60_000,
     )? * 1_000_000;
     limits.validate().map_err(|_| ARGUMENT_ERROR)?;
+    let mut read_limits =
+        NativeOnvifReadLimits::from_tracks(limits).map_err(|_| ARGUMENT_ERROR)?;
+    read_limits.max_deployment_read_bytes = number(
+        &values,
+        "--max-deployment-read-bytes",
+        read_limits.max_deployment_read_bytes as u64,
+        MAX_NATIVE_DEPLOYMENT_READ_BYTES as u64,
+    )? as usize;
+    read_limits.max_deployment_read_attempts = number(
+        &values,
+        "--max-deployment-read-attempts",
+        read_limits.max_deployment_read_attempts as u64,
+        MAX_NATIVE_DEPLOYMENT_READ_ATTEMPTS as u64,
+    )? as usize;
+    read_limits.validate(&OnvifAnalysis::Tracks).map_err(|_| ARGUMENT_ERROR)?;
     let mut approval = CanonicalEncoder::new();
-    approval.text("fss.onvif_vendor_tracklet_cli_request.v1");
+    approval.text("fss.onvif_vendor_tracklet_cli_request.v2");
     approval.text(root.to_str().ok_or(ARGUMENT_ERROR)?);
     approval.text(&site);
     approval.text(&principal);
@@ -250,6 +275,8 @@ pub(super) fn parse(args: &[OsString]) -> Result<Options, &'static str> {
     approval.u64(limits.max_stored_bytes);
     approval.u64(limits.max_indexed_reads);
     approval.u64(limits.max_work_units as u64);
+    approval.u64(read_limits.max_deployment_read_bytes as u64);
+    approval.u64(read_limits.max_deployment_read_attempts as u64);
     approval.digest(limits.projection.digest().map_err(|_| ARGUMENT_ERROR)?);
     approval.u64(pins.len() as u64);
     for pin in &pins {
@@ -263,6 +290,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<Options, &'static str> {
         principal,
         pins,
         limits,
+        read_limits,
         include_values,
         timeout_ns,
         approval: ContentDigest::sha256(&approval.finish()),
@@ -274,17 +302,24 @@ fn run(options: Options) -> Result<(CommandOutput, bool), &'static str> {
     let storage_operations = (options.limits.max_work_units as u64)
         .checked_mul(4)
         .and_then(|n| n.checked_add(4 * options.limits.max_indexed_reads + 4096))
+        .and_then(|n| {
+            n.checked_add(4 * options.read_limits.max_deployment_read_attempts as u64)
+        })
+        .ok_or(LIMIT_ERROR)?;
+    let bytes = options
+        .limits
+        .max_stored_bytes
+        .checked_add(options.read_limits.max_deployment_read_bytes as u64)
         .ok_or(LIMIT_ERROR)?;
     let request = runtime::Request {
         approval: options.approval,
         principal: options.principal.clone(),
         timeout_ns: options.timeout_ns,
-        bytes: options.limits.max_stored_bytes,
+        bytes,
         network_bytes: 0,
         storage_operations,
         network: false,
-        // Existing-store opening can perform publisher recovery housekeeping under its lock.
-        write: true,
+        write: false,
         secrets: false,
     };
     let report = runtime::run(request, |scope| {
@@ -298,7 +333,7 @@ fn run(options: Options) -> Result<(CommandOutput, bool), &'static str> {
             deadline: None,
             priority: 10,
             budgets: BudgetVector::builder()
-                .bytes(options.limits.max_stored_bytes)
+                .bytes(bytes)
                 .storage_operations(storage_operations)
                 .build()
                 .map_err(|_| LIMIT_ERROR)?,
@@ -310,12 +345,13 @@ fn run(options: Options) -> Result<(CommandOutput, bool), &'static str> {
         .map_err(|_| ARGUMENT_ERROR)?;
         let cx = ReplayCx::from_context_authority_read_only(&authority, options.root.clone())
             .map_err(|_| ARGUMENT_ERROR)?
-            .with_admission(|_| admission::check(scope));
-        let result = RetainedTracklets::open(
+            .with_admission(|_| admission::check_read(scope));
+        let result = NativeOnvifRead::open(
             &options.root,
             &options.site,
             &options.pins,
-            options.limits,
+            &OnvifAnalysis::Tracks,
+            options.read_limits,
             &cx,
         )
         .map_err(|error| error.code());

@@ -33,10 +33,12 @@ order, with at most 32 distinct identities. Each independently supplied pin rema
 a continuity boundary. The original import file is unnecessary: the query reads
 and verifies retained originals, including native original observations where present.
 
-The deployment must already exist. Normal exclusive publisher opening may perform
-recovery housekeeping; this is the existing retained-source owner, not a forensic
-mount. The command does not initialize a missing deployment, acquire camera data,
-publish a derived root, or reconcile pending external effects.
+The deployment must already exist. The native command uses `NativeOnvifRead::open`
+with `OnvifAnalysis::Zones` and reads while capture holds the publisher lock.
+It constructs no publisher and performs no recovery, initialization, camera acquisition,
+derived publication or effect reconciliation. Missing effects history or a torn
+ledger/effect tail refuses the complete result. Legacy `RetainedZones::open`
+retains its original exclusive-owner semantics.
 
 ## Declare the coordinate domain
 
@@ -155,7 +157,7 @@ permission, and neither establishes physical identity or departure.
 
 ## Complete result and commitments
 
-The [report schema](../schemas/onvif_vendor_zones_report.v1.json) describes one
+The [report schema](../schemas/onvif_vendor_zones_report.v2.json) describes one
 complete JSON document, bounded to 32 MiB:
 
 | Field | Contents |
@@ -183,9 +185,9 @@ supplied operator policy. Operator zone names and coordinates are always reporte
 ## Bounds and source verification
 
 Both complete original-source and zone-projection passes use one nonrenewing
-indexed read and work allowance. They must produce identical complete results,
-followed by durable ledger-head and effect-store verification after the final
-admission callback. Each zone projection replays the genuine frozen tracklet
+flat-closure read and work allowance. They must produce identical complete results,
+followed by bounded immutable deployment-history/deletion reconstruction after
+the final admission callback, under the original separate metadata allowance. Each zone projection replays the genuine frozen tracklet
 projector and requires full equality before consuming any associations. The
 comparison, geometry input commitment, complete matrix and canonical serialization
 are separately charged; final owner commitment work is prepaid within the passes.
@@ -200,9 +202,11 @@ successful prefix or hidden top-k result.
 All `tracks` options are accepted. `--max-analysis-work` and
 `--max-analysis-bytes` control the zone projection. Impossible two-pass work
 policies fail before source I/O. Policy-file bytes cannot enlarge the installed
-source-spool byte/read limits. Opening recovery and metadata/open syscalls retain
-the existing deployment bounds outside indexed-source counters. Work units are
-deterministic conservative accounting, not CPU timing measurements.
+source byte/call limits. Source accounting includes all filesystem calls. Opening
+and final deployment metadata share the separate limits from `tracks --help`;
+those counters measure payload bytes/read attempts and exclude stat/open calls.
+The v2 envelope labels both explicitly. Work units are conservative deterministic
+accounting, not CPU timing measurements. See [immutable native reads](ONVIF_IMMUTABLE_NATIVE_READS.md).
 
 ## Validation scope
 
@@ -234,3 +238,5 @@ cargo test --locked --offline -j1 -p fss-reference --test onvif_metadata_zones_c
 cargo test --locked --offline -j1 -p fss-cli --bin fss-onvif-metadata
 cargo test --locked --offline -j1 -p fss-cli --test onvif_metadata_zones_cli
 ```
+
+The native CLI now emits the v2 custody envelope while preserving every pure zone/tracklet row, policy identity and disclosure rule. The immutable-owner integration and new fault/process tests are source implemented and reviewed; this disconnected session could not compile or execute them. Prior pure-projector test results do not qualify the new native integration.
