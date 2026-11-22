@@ -355,6 +355,9 @@ fn checkpoint_trace(abort_before_start: bool) -> Result<Vec<Vec<u8>>, Box<dyn st
 }
 
 impl UploadJournal for GuardedJournal {
+    fn origin_binding(&self) -> Option<ContentDigest> {
+        self.inner.origin_binding()
+    }
     fn head(&self) -> Option<UploadJournalPin> {
         self.inner.head()
     }

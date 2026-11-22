@@ -42,6 +42,14 @@ pub struct UploadJournalPin {
 /// enforce exclusive ownership and stop after an ambiguous write until reopen.
 /// Journal I/O has a separate allowance from the provider's transport budget.
 pub trait UploadJournal {
+    /// Stable origin of this complete history and its independently verified
+    /// custody namespace. Once provided, it must remain unchanged and
+    /// distinguish separate journals even when their intent/checkpoint bytes
+    /// are identical. Unbound, legacy-only or otherwise unproven storage returns
+    /// None; callers must not manufacture an origin from an intent alone.
+    fn origin_binding(&self) -> Option<ContentDigest> {
+        None
+    }
     /// Current verified durable head, or none for an empty journal.
     fn head(&self) -> Option<UploadJournalPin>;
     /// Canonical checkpoint belonging to exactly `head()`.
@@ -91,6 +99,7 @@ pub(super) struct Checkpoint {
 pub struct MultipartRecovery {
     pub(super) checkpoint: Checkpoint,
     head: UploadJournalPin,
+    origin_binding: Option<ContentDigest>,
 }
 
 impl MultipartRecovery {
@@ -111,7 +120,15 @@ impl MultipartRecovery {
         }
         let bytes = journal.latest().ok_or(MultipartError::InvalidCheckpoint)?;
         let checkpoint = Checkpoint::decode(bytes)?;
-        Ok(Self { checkpoint, head })
+        let origin_binding = journal.origin_binding();
+        if origin_binding.is_some_and(|origin| !valid_digest(origin)) {
+            return Err(MultipartError::InvalidCheckpoint);
+        }
+        Ok(Self {
+            checkpoint,
+            head,
+            origin_binding,
+        })
     }
 
     /// Preflight journal identity and clock before reserving a fresh child.
@@ -125,6 +142,7 @@ impl MultipartRecovery {
             return Err(MultipartError::ClockRegression);
         }
         if journal.head() != Some(self.head)
+            || journal.origin_binding() != self.origin_binding
             || !journal.contains(self.head)
             || journal.latest() != Some(self.checkpoint.encode()?.as_slice())
         {
@@ -180,7 +198,11 @@ impl MultipartRecovery {
             poisoned: false,
         };
         let head = durable.persist(checkpoint.clone())?;
-        Ok(Self { checkpoint, head })
+        Ok(Self {
+            checkpoint,
+            head,
+            origin_binding: self.origin_binding,
+        })
     }
 
     /// Exact canonical chunk layout, including its cost row.
@@ -284,6 +306,13 @@ impl MultipartRecovery {
     #[must_use]
     pub const fn head(&self) -> UploadJournalPin {
         self.head
+    }
+    /// Stable, verified custody origin, independent of the upload intent. An
+    /// absent binding cannot support a native completion proof requiring it.
+    /// This is inert provenance and never grants execution authority.
+    #[must_use]
+    pub const fn origin_binding(&self) -> Option<ContentDigest> {
+        self.origin_binding
     }
     /// Already established completion proof, with no provider I/O.
     pub fn completion_receipt(&self) -> Result<CompletionReceipt, MultipartError> {
@@ -838,6 +867,7 @@ impl DurableState<'_> {
 
 /// Private effect-boundary hook; adapters cannot replace or remove it.
 pub(super) trait TransportPersistence {
+    fn origin_binding(&self) -> Option<ContentDigest>;
     fn record(
         &mut self,
         consumed: BudgetVector,
@@ -851,6 +881,9 @@ pub(super) struct DispatchJournal<'call, 'journal> {
     pub checkpoint: Checkpoint,
 }
 impl TransportPersistence for DispatchJournal<'_, '_> {
+    fn origin_binding(&self) -> Option<ContentDigest> {
+        self.durable.journal.origin_binding()
+    }
     fn record(
         &mut self,
         consumed: BudgetVector,

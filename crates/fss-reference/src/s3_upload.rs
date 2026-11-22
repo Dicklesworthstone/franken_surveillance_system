@@ -6,7 +6,8 @@
 //! uses its real TransportCx and one owned, bounded socket. Public-address
 //! plaintext, DNS, redirects, credential discovery, automatic retries and TLS
 //! are deliberately unsupported. A lost acknowledgement remains uncertain;
-//! a read-only, intent/checksum-bound HEAD can prove an uncertain completion.
+//! a read-only HEAD bound to journal origin, intent and checksum can prove an
+//! uncertain completion. Legacy objects without origin metadata stay uncertain.
 //! Absence from an object listing cannot authorize another create or complete.
 
 mod http;
@@ -317,6 +318,7 @@ pub struct NativeS3Transport<C: S3Clock> {
     limits: S3Limits,
     clock: C,
     intent: Option<UploadIntent>,
+    origin: Option<ContentDigest>,
     upload: Option<UploadId>,
     parts: BTreeMap<u64, PartReceipt>,
     confirmed_bytes: u64,
@@ -346,6 +348,7 @@ impl<C: S3Clock> NativeS3Transport<C> {
             limits,
             clock,
             intent: None,
+            origin: None,
             upload: None,
             parts: BTreeMap::new(),
             confirmed_bytes: 0,
@@ -370,6 +373,7 @@ impl<C: S3Clock> NativeS3Transport<C> {
         }
         let mut result = Self::new(endpoint, credentials, limits, clock)?;
         result.intent = Some(recovery.intent().clone());
+        result.origin = recovery.origin_binding();
         result.upload = recovery.upload_id().cloned();
         result.parts = recovery
             .part_receipts()
@@ -401,6 +405,9 @@ impl<C: S3Clock> NativeS3Transport<C> {
         if cx.resource() != self.endpoint.resource() || cx.operation() != operation {
             return Err(S3Error::Binding);
         }
+        if self.intent.is_some() && self.origin != cx.origin_binding() {
+            return Err(S3Error::Binding);
+        }
         // The protocol-only v1 recovery mask covers object/network grants.
         // Native signing additionally uses AdapterAuth. Only StagedUpload's
         // validated owner metadata durably preserves its dynamic revocation.
@@ -416,14 +423,25 @@ impl<C: S3Clock> NativeS3Transport<C> {
         Ok(now)
     }
 
-    fn bind(&mut self, intent: &UploadIntent) -> Result<(), S3Error> {
+    fn bind(
+        &mut self,
+        intent: &UploadIntent,
+        origin: Option<ContentDigest>,
+    ) -> Result<(), S3Error> {
         if intent.resource() != self.endpoint.resource()
             || self.intent.as_ref().is_some_and(|bound| bound != intent)
+            || (self.intent.is_some() && self.origin != origin)
+            || origin.is_some_and(|value| {
+                value.algorithm() != DigestAlgorithm::Sha256
+                    || value.bytes() == [0; 32]
+                    || value.is_laboratory()
+            })
         {
             return Err(S3Error::Binding);
         }
         if self.intent.is_none() {
             self.intent = Some(intent.clone());
+            self.origin = origin;
         }
         Ok(())
     }
@@ -488,7 +506,7 @@ impl<C: S3Clock> NativeS3Transport<C> {
         intent: &UploadIntent,
     ) -> Result<UploadId, S3Error> {
         self.check(cx, TransportOperation::Initiate)?;
-        self.bind(intent)?;
+        self.bind(intent, cx.origin_binding())?;
         if self.phase == MultipartPhase::Uploading {
             return self.upload.clone().ok_or(S3Error::Binding);
         }
@@ -496,26 +514,30 @@ impl<C: S3Clock> NativeS3Transport<C> {
             return Err(S3Error::Uncertain);
         }
         self.phase = MultipartPhase::Uncertain(TransportOperation::Initiate);
+        let mut headers = vec![
+            ("x-amz-checksum-algorithm", "SHA256".to_owned()),
+            ("x-amz-checksum-type", "COMPOSITE".to_owned()),
+            (
+                "x-amz-meta-fss-intent",
+                signing::hex(&intent.digest().bytes()),
+            ),
+            (
+                "x-amz-meta-fss-plan",
+                signing::hex(&intent.plan_digest().bytes()),
+            ),
+            (
+                "x-amz-meta-fss-root",
+                signing::hex(&intent.manifest_root().bytes()),
+            ),
+        ];
+        if let Some(origin) = self.origin {
+            headers.push(("x-amz-meta-fss-origin", signing::hex(&origin.bytes())));
+        }
         let response = self.exchange(
             cx,
             "POST",
             "uploads=",
-            &[
-                ("x-amz-checksum-algorithm", "SHA256".to_owned()),
-                ("x-amz-checksum-type", "COMPOSITE".to_owned()),
-                (
-                    "x-amz-meta-fss-intent",
-                    signing::hex(&intent.digest().bytes()),
-                ),
-                (
-                    "x-amz-meta-fss-plan",
-                    signing::hex(&intent.plan_digest().bytes()),
-                ),
-                (
-                    "x-amz-meta-fss-root",
-                    signing::hex(&intent.manifest_root().bytes()),
-                ),
-            ],
+            &headers,
             &[],
             ContentDigest::sha256(b""),
             false,
@@ -603,7 +625,7 @@ impl<C: S3Clock> NativeS3Transport<C> {
         parts: &[PartReceipt],
     ) -> Result<(), S3Error> {
         let now = self.check(cx, TransportOperation::Complete)?;
-        self.bind(intent)?;
+        self.bind(intent, cx.origin_binding())?;
         self.active(upload)?;
         if parts.len() != self.parts.len()
             || parts.is_empty()
@@ -660,7 +682,7 @@ impl<C: S3Clock> NativeS3Transport<C> {
         intent: &UploadIntent,
     ) -> Result<(), S3Error> {
         self.check(cx, TransportOperation::Abort)?;
-        self.bind(intent)?;
+        self.bind(intent, cx.origin_binding())?;
         self.active(upload)?;
         // All earlier sends had full acknowledgements and this owner never
         // dispatches concurrently. An uncertain earlier send cannot reach here.
@@ -689,7 +711,7 @@ impl<C: S3Clock> NativeS3Transport<C> {
         intent: &UploadIntent,
     ) -> Result<Reconciliation, S3Error> {
         self.check(cx, TransportOperation::Reconcile)?;
-        self.bind(intent)?;
+        self.bind(intent, cx.origin_binding())?;
         let mut observation = Reconciliation {
             intent_digest: intent.digest(),
             state: ProviderUploadState::Unknown,
@@ -700,6 +722,14 @@ impl<C: S3Clock> NativeS3Transport<C> {
         if self.phase != MultipartPhase::Uncertain(TransportOperation::Complete) {
             return Ok(observation);
         }
+        // An identical semantic intent can be attempted by another journal.
+        // Only an origin committed before this initiation distinguishes its
+        // completed object from a prior attempt that left this upload active.
+        // Legacy and non-durable uploads therefore cannot acquire positive
+        // completion evidence from object metadata alone.
+        let Some(origin) = self.origin else {
+            return Ok(observation);
+        };
         if self.upload.is_none()
             || self.parts.is_empty()
             || self.parts.len() > 10_000
@@ -743,6 +773,7 @@ impl<C: S3Clock> NativeS3Transport<C> {
                 "x-amz-meta-fss-root",
                 signing::hex(&intent.manifest_root().bytes()),
             ),
+            ("x-amz-meta-fss-origin", signing::hex(&origin.bytes())),
             (
                 "x-amz-checksum-sha256",
                 xml::composite_checksum(self.parts.values()),

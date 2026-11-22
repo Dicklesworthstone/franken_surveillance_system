@@ -393,6 +393,18 @@ impl FileUploadJournal {
 }
 
 impl UploadJournal for FileUploadJournal {
+    fn origin_binding(&self) -> Option<ContentDigest> {
+        if !self.namespace_bound {
+            return None;
+        }
+        let (&sequence, &root) = self.pins.first_key_value()?;
+        let mut encoder = CanonicalEncoder::new();
+        encoder.text("fss.multipart_custody_origin.v1");
+        encoder.digest(self.namespace);
+        encoder.u64(sequence);
+        encoder.digest(root);
+        Some(ContentDigest::sha256(&encoder.finish()))
+    }
     fn head(&self) -> Option<UploadJournalPin> {
         self.pins
             .last_key_value()

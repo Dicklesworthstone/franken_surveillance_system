@@ -201,10 +201,13 @@ enum HeadProof {
     WrongIntent,
     WrongPlan,
     WrongRoot,
+    MissingOrigin,
+    WrongOrigin,
     WrongChecksum,
     WrongChecksumType,
     WrongSize,
     DuplicateMetadata,
+    DuplicateOrigin,
     DuplicateChecksum,
     DuplicateLength,
     Range,
@@ -261,6 +264,17 @@ fn head_proof(listener: &TcpListener, metadata: &[String], proof: HeadProof) {
         }
         _ => {}
     }
+    if let Some(origin) = metadata.get(3) {
+        match proof {
+            HeadProof::MissingOrigin => {}
+            HeadProof::WrongOrigin => values.push(("x-amz-meta-fss-origin", "0".repeat(64))),
+            HeadProof::DuplicateOrigin => {
+                values.push(("x-amz-meta-fss-origin", origin.clone()));
+                values.push(("x-amz-meta-fss-origin", origin.clone()));
+            }
+            _ => values.push(("x-amz-meta-fss-origin", origin.clone())),
+        }
+    }
     let mut response = format!("HTTP/1.1 103 Early Hints\r\n\r\nHTTP/1.1 {status} Fixture\r\n");
     for (name, value) in values {
         response.push_str(&format!("{name}: {value}\r\n"));
@@ -277,7 +291,7 @@ fn server(listener: TcpListener, ending: End) {
     let (head, body) = request(&mut socket);
     assert!(head.starts_with(&format!("POST {TARGET}?uploads= HTTP/1.1\r\n")));
     assert!(body.is_empty());
-    let metadata: Vec<_> = [
+    let mut metadata: Vec<_> = [
         "x-amz-meta-fss-intent",
         "x-amz-meta-fss-plan",
         "x-amz-meta-fss-root",
@@ -285,6 +299,14 @@ fn server(listener: TcpListener, ending: End) {
     .into_iter()
     .map(|name| request_value(&head, name).to_owned())
     .collect();
+    if let Some(origin) = head
+        .lines()
+        .find_map(|line| line.strip_prefix("x-amz-meta-fss-origin: "))
+    {
+        assert_eq!(origin.len(), 64);
+        assert!(request_value(&head, "authorization").contains(";x-amz-meta-fss-origin;"));
+        metadata.push(origin.to_owned());
+    }
     for header in [
         "x-amz-checksum-algorithm: SHA256\r\n",
         "x-amz-checksum-type: COMPOSITE\r\n",
@@ -367,10 +389,6 @@ fn server(listener: TcpListener, ending: End) {
     socket
         .write_all(format!("{:X}\r\n{body}\r\n0\r\n\r\n", body.len()).as_bytes())
         .unwrap();
-    if matches!(ending, End::Error) {
-        drop(socket);
-        head_proof(&listener, &metadata, HeadProof::Missing);
-    }
 }
 
 fn run(ending: End) {
@@ -433,7 +451,14 @@ fn run(ending: End) {
                         upload.phase(),
                         MultipartPhase::Uncertain(TransportOperation::Complete)
                     );
+                    let consumed = *upload.budget().consumed();
                     assert_eq!(upload.reconcile(&mut tree, NOW).unwrap(), upload.phase());
+                    // Unbound requests never gain positive proof from matching
+                    // object metadata and do not even issue a speculative HEAD.
+                    assert_eq!(
+                        upload.budget().consumed().network_bytes,
+                        consumed.network_bytes
+                    );
                     assert!(upload.cancel(&mut tree, NOW).is_err());
                 } else {
                     let receipt = upload.finish(&mut tree, NOW).unwrap();
@@ -465,7 +490,16 @@ fn lost_create_bad_checksum_and_http200_error_preserve_uncertainty() {
     run(End::Error);
 }
 
+#[cfg(unix)]
 fn reconcile_lost_completion(proof: HeadProof) {
+    use std::sync::Arc;
+
+    use fss_object::HostSpoolIo;
+    use fss_object::upload_journal::FileUploadJournal;
+
+    let directory = durable::Directory::new();
+    let mut journal =
+        FileUploadJournal::create(&directory.0, durable::limits(), Arc::new(HostSpoolIo)).unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = endpoint(listener.local_addr().unwrap());
     let resource = endpoint.resource().to_owned();
@@ -489,6 +523,7 @@ fn reconcile_lost_completion(proof: HeadProof) {
             NOW,
         )
         .unwrap();
+        upload.attach_journal(&tree, NOW, &mut journal).unwrap();
         upload.start(&tree, NOW).unwrap();
         upload.upload_part(&tree, NOW, 0, b"abc").unwrap();
         assert!(upload.finish(&mut tree, NOW).is_err());
@@ -526,6 +561,7 @@ fn reconcile_lost_completion(proof: HeadProof) {
             if matches!(
                 proof,
                 HeadProof::DuplicateMetadata
+                    | HeadProof::DuplicateOrigin
                     | HeadProof::DuplicateChecksum
                     | HeadProof::DuplicateLength
                     | HeadProof::UnexpectedBody
@@ -554,11 +590,13 @@ fn reconcile_lost_completion(proof: HeadProof) {
 }
 
 #[test]
+#[cfg(unix)]
 fn lost_complete_is_resolved_only_by_exact_read_only_head_proof() {
     reconcile_lost_completion(HeadProof::Exact);
 }
 
 #[test]
+#[cfg(unix)]
 fn missing_denied_redirected_or_conflicting_head_cannot_resolve_completion() {
     for proof in [
         HeadProof::Missing,
@@ -567,6 +605,8 @@ fn missing_denied_redirected_or_conflicting_head_cannot_resolve_completion() {
         HeadProof::WrongIntent,
         HeadProof::WrongPlan,
         HeadProof::WrongRoot,
+        HeadProof::MissingOrigin,
+        HeadProof::WrongOrigin,
         HeadProof::WrongChecksum,
         HeadProof::WrongChecksumType,
         HeadProof::WrongSize,
@@ -579,9 +619,11 @@ fn missing_denied_redirected_or_conflicting_head_cannot_resolve_completion() {
 }
 
 #[test]
+#[cfg(unix)]
 fn duplicate_integrity_headers_and_unexpected_head_body_preserve_uncertainty() {
     for proof in [
         HeadProof::DuplicateMetadata,
+        HeadProof::DuplicateOrigin,
         HeadProof::DuplicateChecksum,
         HeadProof::DuplicateLength,
         HeadProof::UnexpectedBody,
@@ -678,15 +720,15 @@ mod durable {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use fss_object::HostSpoolIo;
-    use fss_object::multipart::{MultipartRecovery, MultipartSession, UploadIo};
+    use fss_object::multipart::{MultipartRecovery, MultipartSession, UploadIo, UploadJournal};
     use fss_object::planner::plan_chunks;
     use fss_object::upload_journal::{FileUploadJournal, UploadJournalLimits};
 
     static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
 
-    struct Directory(PathBuf);
+    pub(super) struct Directory(pub(super) PathBuf);
     impl Directory {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             for _ in 0..16 {
                 let ordinal = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
                 let path = std::env::temp_dir()
@@ -705,13 +747,164 @@ mod durable {
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
-    fn limits() -> UploadJournalLimits {
+    pub(super) fn limits() -> UploadJournalLimits {
         UploadJournalLimits {
             max_records: 128,
             max_checkpoint_bytes: 16 * 1024,
             max_total_bytes: 512 * 1024,
             max_read_bytes: 2 * 1024 * 1024,
         }
+    }
+
+    #[test]
+    fn separate_journals_with_identical_intent_cannot_claim_each_others_completion() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = endpoint(listener.local_addr().unwrap());
+        let resource = endpoint.resource().to_owned();
+        std::thread::scope(|scope| {
+            let server = scope.spawn(move || {
+                let mut completed_metadata = Vec::new();
+                for attempt in 0..2 {
+                    let mut socket = accept(&listener);
+                    let (head, body) = request(&mut socket);
+                    assert!(head.starts_with(&format!("POST {TARGET}?uploads= HTTP/1.1\r\n")));
+                    assert!(body.is_empty());
+                    let metadata: Vec<_> = [
+                        "x-amz-meta-fss-intent",
+                        "x-amz-meta-fss-plan",
+                        "x-amz-meta-fss-root",
+                        "x-amz-meta-fss-origin",
+                    ]
+                    .into_iter()
+                    .map(|name| request_value(&head, name).to_owned())
+                    .collect();
+                    assert!(
+                        request_value(&head, "authorization")
+                            .contains(";x-amz-meta-fss-origin;")
+                    );
+                    if attempt == 0 {
+                        completed_metadata = metadata;
+                    } else {
+                        assert_eq!(metadata[..3], completed_metadata[..3]);
+                        assert_ne!(metadata[3], completed_metadata[3]);
+                    }
+                    reply(
+                        &mut socket,
+                        200,
+                        "",
+                        &format!(
+                            "<InitiateMultipartUploadResult><Bucket>archive</Bucket><Key>{KEY}</Key><UploadId>attempt-{attempt}</UploadId></InitiateMultipartUploadResult>"
+                        ),
+                    );
+                    drop(socket);
+                    let mut socket = accept(&listener);
+                    let (head, body) = request(&mut socket);
+                    assert!(head.starts_with(&format!(
+                        "PUT {TARGET}?partNumber=1&uploadId=attempt-{attempt} HTTP/1.1\r\n"
+                    )));
+                    assert_eq!(body, b"abc");
+                    reply(
+                        &mut socket,
+                        200,
+                        &format!(
+                            "ETag: \"opaque-part-token\"\r\nx-amz-checksum-sha256: {CHECKSUM}\r\n"
+                        ),
+                        "",
+                    );
+                    drop(socket);
+                    let mut socket = accept(&listener);
+                    let (head, _) = request(&mut socket);
+                    assert!(head.starts_with(&format!(
+                        "POST {TARGET}?uploadId=attempt-{attempt} HTTP/1.1\r\n"
+                    )));
+                    assert!(head.contains("if-none-match: *\r\n"));
+                    if attempt == 0 {
+                        reply(
+                            &mut socket,
+                            200,
+                            "",
+                            &format!(
+                                "<CompleteMultipartUploadResult><Bucket>archive</Bucket><Key>{KEY}</Key><ETag>\"opaque-whole-token\"</ETag><ChecksumSHA256>{COMPOSITE}</ChecksumSHA256><ChecksumType>COMPOSITE</ChecksumType></CompleteMultipartUploadResult>"
+                            ),
+                        );
+                    } else {
+                        // The first object exists and the second upload remains
+                        // staged. Matching semantic metadata cannot close it.
+                        reply(
+                            &mut socket,
+                            412,
+                            "",
+                            "<Error><Code>PreconditionFailed</Code></Error>",
+                        );
+                        drop(socket);
+                        head_proof(&listener, &completed_metadata, HeadProof::Exact);
+                    }
+                }
+            });
+            let mut expected = None;
+            let mut origins = Vec::new();
+            for attempt in 0..2 {
+                let directory = Directory::new();
+                let mut journal =
+                    FileUploadJournal::create(&directory.0, limits(), Arc::new(HostSpoolIo))
+                        .unwrap();
+                let (_root, mut parent, mut tree) = property(&resource);
+                let mut transport = NativeS3Transport::new(
+                    endpoint.clone(),
+                    credentials(),
+                    S3Limits::default(),
+                    Clock,
+                )
+                .unwrap();
+                {
+                    let mut upload = StagedUpload::stage(
+                        &mut parent,
+                        &mut tree,
+                        &mut transport,
+                        spec(allowance()).operation_id,
+                        3,
+                        ChunkPolicy {
+                            part_size: MIN_PART_SIZE,
+                        },
+                        ContentDigest::sha256(b"abc"),
+                        spec(allowance()),
+                        &resource,
+                        NOW,
+                    )
+                    .unwrap();
+                    if let Some(expected) = &expected {
+                        assert_eq!(upload.intent(), expected);
+                    } else {
+                        expected = Some(upload.intent().clone());
+                    }
+                    upload.attach_journal(&tree, NOW, &mut journal).unwrap();
+                    upload.start(&tree, NOW).unwrap();
+                    upload.upload_part(&tree, NOW, 0, b"abc").unwrap();
+                    if attempt == 0 {
+                        assert_eq!(upload.finish(&mut tree, NOW).unwrap().upload.0, "attempt-0");
+                    } else {
+                        assert!(upload.finish(&mut tree, NOW).is_err());
+                        assert_eq!(
+                            upload.reconcile(&mut tree, NOW).unwrap(),
+                            MultipartPhase::Uncertain(TransportOperation::Complete)
+                        );
+                        assert!(upload.finish(&mut tree, NOW).is_err());
+                        assert!(upload.cancel(&mut tree, NOW).is_err());
+                        upload
+                            .settle_indeterminate(
+                                &mut tree,
+                                NOW,
+                                "observed object belongs to a different custody origin",
+                                ContentDigest::sha256(b"distinct-attempt follow-up"),
+                            )
+                            .unwrap();
+                    }
+                }
+                origins.push(journal.origin_binding().unwrap());
+            }
+            assert_ne!(origins[0], origins[1]);
+            server.join().unwrap();
+        });
     }
 
     #[test]

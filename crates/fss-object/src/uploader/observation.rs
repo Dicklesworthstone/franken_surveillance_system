@@ -453,6 +453,7 @@ impl<'a> CompletionObservation<'a> {
                 now,
             },
             self.source.intent().resource(),
+            self.source.origin_binding(),
         )?;
         self.attempted = true;
         let result = transport.reconcile(&mut cx, self.source.intent());

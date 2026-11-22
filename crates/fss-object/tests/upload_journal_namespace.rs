@@ -179,6 +179,120 @@ fn legacy(root: &Path, checkpoint: &[u8]) -> Result<UploadJournalPin, Box<dyn st
 }
 
 #[test]
+fn custody_origins_distinguish_identical_intents_and_checkpoint_bytes() -> Test {
+    let directory = Directory::new()?;
+    let (first, first_pin) = seed(&directory.0.join("first"), false)?;
+    let (second, second_pin) = seed(&directory.0.join("second"), false)?;
+    assert_eq!(first.latest(), second.latest());
+    assert_ne!(first_pin, second_pin);
+    let first_origin = first.origin_binding().ok_or("first origin missing")?;
+    let second_origin = second.origin_binding().ok_or("second origin missing")?;
+    assert_ne!(first_origin, second_origin);
+    assert_eq!(
+        MultipartRecovery::read(&first, first_pin)?.origin_binding(),
+        Some(first_origin)
+    );
+    assert_eq!(
+        MultipartRecovery::read(&second, second_pin)?.origin_binding(),
+        Some(second_origin)
+    );
+    let empty =
+        FileUploadJournal::create(directory.0.join("empty"), limits(), Arc::new(HostSpoolIo))?;
+    assert_eq!(empty.origin_binding(), None);
+    Ok(())
+}
+
+#[test]
+fn custody_origin_survives_later_checkpoints_and_cold_owned_recovery() -> Test {
+    let directory = Directory::new()?;
+    let path = directory.0.join("journal");
+    let (mut journal, first) = seed(&path, false)?;
+    let origin = journal.origin_binding().ok_or("origin missing")?;
+    let recovery = MultipartRecovery::read(&journal, first)?;
+    let expected = recovery.intent().clone();
+    let allowance = recovery.remaining_budget();
+    let (_root, mut parent, mut tree) = property()?;
+    let mut transport = MemoryTransport::default();
+    let mut owner = StagedUpload::recover(
+        &mut parent,
+        &mut tree,
+        &mut transport,
+        &mut journal,
+        recovery,
+        &expected,
+        spec("operation:namespace-upload", allowance)?,
+        TimestampNs(4),
+    )?;
+    owner.start(&tree, TimestampNs(5))?;
+    drop(owner);
+    let head = journal.head().ok_or("later head missing")?;
+    assert!(head.sequence > first.sequence);
+    assert_eq!(journal.origin_binding(), Some(origin));
+    assert_eq!(
+        MultipartRecovery::read(&journal, first)?.origin_binding(),
+        Some(origin)
+    );
+    drop(journal);
+    let reopened = FileUploadJournal::open(&path, limits(), Arc::new(HostSpoolIo), head)?;
+    assert_eq!(reopened.origin_binding(), Some(origin));
+    let restored = MultipartRecovery::read(&reopened, head)?;
+    restored.validate_restore(&reopened, TimestampNs(6))?;
+    assert_eq!(restored.origin_binding(), Some(origin));
+    Ok(())
+}
+
+#[test]
+fn explicitly_adopted_legacy_copies_do_not_share_a_native_custody_origin() -> Test {
+    let directory = Directory::new()?;
+    let (seeded, _) = seed(&directory.0.join("source"), false)?;
+    let checkpoint = seeded.latest().ok_or("checkpoint missing")?.to_vec();
+    drop(seeded);
+    let mut origins = Vec::new();
+    let mut original_pins = Vec::new();
+    for name in ["legacy-first", "legacy-second"] {
+        let path = directory.0.join(name);
+        let minimum = legacy(&path, &checkpoint)?;
+        original_pins.push(minimum);
+        let (mut reader, tree) = local_authority(RuntimeGrant::ObserveStatus, RESOURCE, false)?;
+        let report = inspect_upload_journal(
+            &path,
+            limits(),
+            minimum,
+            RESOURCE,
+            &mut reader,
+            &tree,
+            TimestampNs(4),
+        )?;
+        assert!(report.legacy_read_only());
+        let request = LegacyJournalAdoption {
+            minimum,
+            namespace: report.namespace_binding(),
+            resource: RESOURCE.into(),
+        };
+        let (mut owner, tree) = local_authority(RuntimeGrant::LedgerAppend, RESOURCE, true)?;
+        let adopted = FileUploadJournal::adopt_legacy(
+            &path,
+            limits(),
+            Arc::new(HostSpoolIo),
+            &request,
+            &mut owner,
+            &tree,
+            TimestampNs(4),
+        )?;
+        let origin = adopted.origin_binding().ok_or("adopted origin missing")?;
+        assert_eq!(adopted.latest(), Some(checkpoint.as_slice()));
+        assert!(adopted.contains(minimum));
+        drop(adopted);
+        let reopened = FileUploadJournal::open(&path, limits(), Arc::new(HostSpoolIo), minimum)?;
+        assert_eq!(reopened.origin_binding(), Some(origin));
+        origins.push(origin);
+    }
+    assert_eq!(original_pins[0], original_pins[1]);
+    assert_ne!(origins[0], origins[1]);
+    Ok(())
+}
+
+#[test]
 fn copied_directory_cannot_create_an_independent_writer_for_the_same_intent() -> Test {
     let directory = Directory::new()?;
     let original = directory.0.join("original");

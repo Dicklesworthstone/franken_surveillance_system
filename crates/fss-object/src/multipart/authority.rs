@@ -2,7 +2,8 @@
 //! Resource-specific admission for each actual multipart transport operation.
 
 use fss_core::{
-    BudgetVector, RegionId, RegionKind, RegionTree, RegionTreeIdentity, RuntimeGrant, TimestampNs,
+    BudgetVector, ContentDigest, RegionId, RegionKind, RegionTree, RegionTreeIdentity,
+    RuntimeGrant, TimestampNs,
 };
 use fss_runtime::authority::AuthorityCx;
 
@@ -30,6 +31,7 @@ pub struct TransportCx<'a> {
     persistence: Option<&'a mut dyn TransportPersistence>,
     durable_upload_owner: bool,
     read_only_observation: bool,
+    observation_origin: Option<ContentDigest>,
 }
 
 impl<'a> TransportCx<'a> {
@@ -89,6 +91,17 @@ impl<'a> TransportCx<'a> {
     #[must_use]
     pub const fn is_read_only_observation(&self) -> bool {
         self.read_only_observation
+    }
+    /// Stable verified journal origin, distinct from semantic intent identity.
+    /// Native creation can bind this into provider metadata before dispatch;
+    /// recovery and later read-only observation retain the same exact value.
+    /// Non-durable and unproven storage returns None, never a guessed nonce.
+    #[must_use]
+    pub fn origin_binding(&self) -> Option<ContentDigest> {
+        self.persistence
+            .as_ref()
+            .and_then(|persistence| persistence.origin_binding())
+            .or(self.observation_origin)
     }
     /// Recheck owner, capability, deadline and cancellation before transport I/O.
     /// Cleanup observes existing effects after cancellation; it cannot publish a root.
@@ -167,6 +180,7 @@ impl<'a> TransportCx<'a> {
             persistence,
             durable_upload_owner,
             read_only_observation: self.read_only_observation,
+            observation_origin: self.observation_origin,
         }
     }
 
@@ -327,6 +341,7 @@ pub(super) fn admit<'a>(
         persistence: None,
         durable_upload_owner: false,
         read_only_observation: false,
+        observation_origin: None,
     })
 }
 
@@ -375,6 +390,7 @@ fn check_observation(
 pub(crate) fn admit_observation<'a>(
     io: UploadIo<'a>,
     resource: &str,
+    origin_binding: Option<ContentDigest>,
 ) -> Result<TransportCx<'a>, MultipartError> {
     check_observation(io.authority, io.tree, resource, io.now)?;
     let mut cost = BudgetVector::ZERO;
@@ -393,5 +409,6 @@ pub(crate) fn admit_observation<'a>(
         persistence: None,
         durable_upload_owner: false,
         read_only_observation: true,
+        observation_origin: origin_binding,
     })
 }

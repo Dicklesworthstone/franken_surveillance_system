@@ -242,6 +242,9 @@ struct FailingRestoreJournal {
 }
 
 impl UploadJournal for FailingRestoreJournal {
+    fn origin_binding(&self) -> Option<ContentDigest> {
+        self.inner.origin_binding()
+    }
     fn head(&self) -> Option<UploadJournalPin> {
         self.inner.head()
     }
@@ -503,6 +506,9 @@ struct StopBeforeSettlement {
 }
 
 impl UploadJournal for StopBeforeSettlement {
+    fn origin_binding(&self) -> Option<ContentDigest> {
+        self.inner.origin_binding()
+    }
     fn head(&self) -> Option<UploadJournalPin> {
         self.inner.head()
     }

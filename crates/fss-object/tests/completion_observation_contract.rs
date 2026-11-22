@@ -749,3 +749,152 @@ fn retained_observation_rejects_truncation_extra_bytes_and_changed_result_tag() 
     assert!(CompletionObservationReceipt::decode(&changed).is_err());
     Ok(())
 }
+
+struct OriginSnapshot<'a> {
+    journal: &'a Journal,
+    origin: Option<ContentDigest>,
+}
+impl UploadJournal for OriginSnapshot<'_> {
+    fn origin_binding(&self) -> Option<ContentDigest> {
+        self.origin
+    }
+    fn head(&self) -> Option<UploadJournalPin> {
+        self.journal.head()
+    }
+    fn latest(&self) -> Option<&[u8]> {
+        self.journal.latest()
+    }
+    fn contains(&self, pin: UploadJournalPin) -> bool {
+        self.journal.contains(pin)
+    }
+    fn append(
+        &mut self,
+        _: Option<UploadJournalPin>,
+        _: &[u8],
+    ) -> Result<UploadJournalPin, MultipartError> {
+        Err(MultipartError::Persistence(
+            "read-only origin fixture".into(),
+        ))
+    }
+}
+
+struct OriginProbe {
+    inner: Probe,
+    expected: ContentDigest,
+}
+impl MultipartTransport for OriginProbe {
+    fn initiate(
+        &mut self,
+        cx: &mut TransportCx<'_>,
+        intent: &UploadIntent,
+    ) -> Result<UploadId, String> {
+        self.inner.initiate(cx, intent)
+    }
+    fn upload_part(
+        &mut self,
+        cx: &mut TransportCx<'_>,
+        upload: &UploadId,
+        chunk: &PlannedChunk,
+        bytes: &[u8],
+        digest: ContentDigest,
+    ) -> Result<PartReceipt, String> {
+        self.inner.upload_part(cx, upload, chunk, bytes, digest)
+    }
+    fn complete(
+        &mut self,
+        cx: &mut TransportCx<'_>,
+        upload: &UploadId,
+        intent: &UploadIntent,
+        parts: &[PartReceipt],
+    ) -> Result<(), String> {
+        self.inner.complete(cx, upload, intent, parts)
+    }
+    fn abort(
+        &mut self,
+        cx: &mut TransportCx<'_>,
+        upload: &UploadId,
+        intent: &UploadIntent,
+    ) -> Result<(), String> {
+        self.inner.abort(cx, upload, intent)
+    }
+    fn reconcile(
+        &mut self,
+        cx: &mut TransportCx<'_>,
+        intent: &UploadIntent,
+    ) -> Result<Reconciliation, String> {
+        assert_eq!(cx.origin_binding(), Some(self.expected));
+        self.inner.reconcile(cx, intent)
+    }
+}
+
+#[test]
+fn immutable_custody_origin_reaches_the_fresh_read_only_transport() -> Test {
+    let f = fixture(None)?;
+    assert_eq!(f.recovery.origin_binding(), None);
+    let origin = ContentDigest::sha256(b"fixture-only-independent-custody-origin");
+    let journal = OriginSnapshot {
+        journal: &f.journal,
+        origin: Some(origin),
+    };
+    let recovery = MultipartRecovery::read(&journal, f.recovery.head())?;
+    let (_root, mut parent, mut tree) = property()?;
+    let mut transport = OriginProbe {
+        inner: Probe(MemoryTransport {
+            store: f.store.clone(),
+        }),
+        expected: origin,
+    };
+    let mut observation = CompletionObservation::begin(
+        &mut parent,
+        &mut tree,
+        &journal,
+        &recovery,
+        &f.intent,
+        observation_spec()?,
+        TimestampNs(100),
+    )?;
+    let receipt = observation.observe(&mut tree, &mut transport, TimestampNs(101))?;
+    assert_eq!(receipt.outcome(), CompletionObservationOutcome::Completed);
+    assert_eq!(recovery.origin_binding(), Some(origin));
+    assert_eq!(f.journal.head(), Some(f.recovery.head()));
+    Ok(())
+}
+
+#[test]
+fn same_checkpoint_and_head_cannot_hide_changed_or_lost_custody_origin() -> Test {
+    let f = fixture(None)?;
+    let origin = ContentDigest::sha256(b"first-fixture-origin");
+    let original = OriginSnapshot {
+        journal: &f.journal,
+        origin: Some(origin),
+    };
+    let recovery = MultipartRecovery::read(&original, f.recovery.head())?;
+    for changed in [None, Some(ContentDigest::sha256(b"other-fixture-origin"))] {
+        let journal = OriginSnapshot {
+            journal: &f.journal,
+            origin: changed,
+        };
+        assert_eq!(journal.head(), original.head());
+        assert_eq!(journal.latest(), original.latest());
+        assert!(matches!(
+            recovery.validate_restore(&journal, TimestampNs(100)),
+            Err(MultipartError::RecoveryPinMismatch)
+        ));
+        let (_root, mut parent, mut tree) = property()?;
+        assert!(
+            CompletionObservation::begin(
+                &mut parent,
+                &mut tree,
+                &journal,
+                &recovery,
+                &f.intent,
+                observation_spec()?,
+                TimestampNs(100)
+            )
+            .is_err()
+        );
+        assert_eq!(*parent.budget().consumed(), BudgetVector::ZERO);
+    }
+    assert_eq!(f.store.borrow().calls.len(), 3);
+    Ok(())
+}
