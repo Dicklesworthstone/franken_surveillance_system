@@ -862,3 +862,17 @@ Source refusals retain their existing `onvif.query`, `onvif.tracks`,
 `onvif.lifecycle` and `onvif.zones` identities. Metadata read failures after a
 cooperative refusal can retain their underlying deployment or budget classification;
 none permits partial result delivery.
+
+## Cooperative metadata-read cancellation
+
+| Stable error | Meaning | Recovery |
+|---|---|---|
+| `ERR-CLI-READ-CANCELLED-001` | A started doctor, event query or unsessioned orientation observed its request owner's cancellation before it could deliver a complete read; no fresh verified response anchor is available | Start a new explicitly owned request if desired. Do not interpret this refusal as a missing/corrupt deployment, healthy doctor verdict, empty query or physical absence. No automatic retry, store initialization, journal repair or effect rollback occurs. |
+
+This diagnostic uses `fss.cli_diagnostic.v1` and `EXIT-AGENT-REFUSED-005`.
+A query or unsessioned orientation that already has a complete verified snapshot
+uses the existing agent response envelope with `outcome: cancelled`, null payload
+and no continuation or affordances. Its anchor describes that completed observation;
+rendering cancellation never reopens storage to manufacture a fresher anchor.
+Cancellation is cooperative at bounded read boundaries and cannot preempt an
+in-progress operating-system call or pure bounded projection phase.

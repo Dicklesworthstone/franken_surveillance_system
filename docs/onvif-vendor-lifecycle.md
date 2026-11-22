@@ -221,4 +221,10 @@ Those pinned parse/module-resolution checks pass; native typechecking remains
 separate. See [source-verified vendor zones](onvif-vendor-zones.md) for the independent
 geometry query and exact original-occurrence correlation.
 
-The current CLI v2 immutable-owner integration and its new fault/process tests are source implemented and independently reviewed. They have not been compiled or executed in the disconnected session; earlier pure-projector results above do not qualify this new owner. FSS-046 and physical-device/Profile M qualification remain open.
+The current CLI v2 immutable-owner integration and its new fault/process tests are
+source implemented and independently reviewed. Pinned formatting and schema/catalog
+checks completed after the host recovered, but dependency compilation and a
+lower-memory type check were killed by host resource pressure before project
+diagnostics. The new native tests remain unexecuted; earlier pure-projector results
+above do not qualify this new owner. FSS-046 and physical-device/Profile M
+qualification remain open.

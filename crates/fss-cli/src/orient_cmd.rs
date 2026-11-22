@@ -1884,44 +1884,112 @@ pub(crate) fn execute_orient_with_time(
     args: &OrientArgs,
     clock: crate::session_time::Clock<'_>,
 ) -> (String, ExitIdentity) {
+    execute_orient_with_control(args, clock, &crate::RequestControl::uncancelled())
+}
+
+/// Keep unsessioned reads under their request owner's cooperative cancellation.
+/// Bound-session writes retain their existing clock, durable owner and outcome semantics.
+pub(crate) fn execute_orient_with_control(
+    args: &OrientArgs,
+    clock: crate::session_time::Clock<'_>,
+    control: &crate::RequestControl<'_>,
+) -> (String, ExitIdentity) {
     if let Some(session_id) = &args.session {
         return execute_session_orient(args, session_id, clock);
     }
+    if control.is_cancelled() {
+        return crate::request_control::cancelled_read("orient", &args.root);
+    }
     let limits = OrientLimits::default();
-    let snapshot = match read_deployment(&args.root, &limits) {
-        Ok(snapshot) => snapshot,
-        Err(error) => return read_refusal("orient", &args.root, &error),
-    };
+    let (snapshot, _) =
+        match history::read_with_control("orient", &args.root, &limits, None, control) {
+            Ok(snapshot) => snapshot,
+            Err(refusal) => return refusal,
+        };
     let request = OrientRequest {
         view: args.view,
         principal: args.principal.clone(),
         budget_tokens: args.budget_tokens,
     };
     let request_digest = request.digest_at(&snapshot.anchor);
-    let trauma_warnings =
-        match fss_reference::deployment_session::trauma_guard::derive_trauma_guard_warnings(
+    let cancelled = || {
+        crate::request_control::cancelled_snapshot_read(
+            crate::request_control::CancelledRead {
+                command: "orient",
+                operation: "session.orient",
+                root: &args.root,
+                request_digest,
+                principal: &args.principal,
+                view: args.view,
+                capability: CAPABILITY_SITUATION_READ,
+                payload_schema: "fss.situation_capsule.v1",
+            },
+            &snapshot,
+        )
+    };
+    if control.is_cancelled() {
+        return cancelled();
+    }
+    let trauma_result =
+        fss_reference::deployment_session::trauma_guard::derive_trauma_guard_warnings(
             &args.root,
             &args.principal,
             snapshot.latest_evidence_time.0.max(0),
-        ) {
-            Ok(warnings) => warnings,
-            Err(error) => {
-                return crate::session_cmd::refuse(
-                    &crate::session_cmd::Operation {
-                        command: "orient",
-                        name: "session.orient",
-                        capability: CAPABILITY_SITUATION_READ,
-                        payload_schema: "fss.situation_capsule.v1",
-                        view: args.view,
-                        root: args.root.clone(),
-                        principal: args.principal.clone(),
-                        request: request_digest.to_text().into_bytes(),
-                    },
-                    error,
-                );
-            }
-        };
-    match orient_deployment_with_advisories(&snapshot, &request, &limits, Some(&trauma_warnings)) {
+        );
+    if control.is_cancelled() {
+        return cancelled();
+    }
+    let trauma_warnings = match trauma_result {
+        Ok(warnings) => warnings,
+        Err(error) => {
+            let operation = crate::session_cmd::Operation {
+                command: "orient",
+                name: "session.orient",
+                capability: CAPABILITY_SITUATION_READ,
+                payload_schema: "fss.situation_capsule.v1",
+                view: args.view,
+                root: args.root.clone(),
+                principal: args.principal.clone(),
+                request: request_digest.to_text().into_bytes(),
+            };
+            // Preserve the native refusal without reopening history after this read's
+            // snapshot. In particular, cancellation rendering never seeks another anchor.
+            let response = match error {
+                fss_reference::deployment_session::DeploymentSessionError::Time(
+                    fss_reference::deployment_session::SessionTimeError::Cancelled,
+                ) => return cancelled(),
+                fss_reference::deployment_session::DeploymentSessionError::Read(error) => {
+                    read_refusal("orient", &args.root, &error)
+                }
+                other => match crate::session_cmd::classify(other) {
+                    Ok(refusal) => rendered(
+                        crate::session_cmd::refusal_response(
+                            &operation,
+                            &snapshot.anchor,
+                            snapshot.latest_evidence_time.0,
+                            refusal,
+                            None,
+                        ),
+                        ExitIdentity::AGENT_REFUSED,
+                        "orient",
+                        &args.root,
+                    ),
+                    Err(_) => internal_failure("orient", &args.root),
+                },
+            };
+            return if control.is_cancelled() {
+                cancelled()
+            } else {
+                response
+            };
+        }
+    };
+    let orientation =
+        orient_deployment_with_advisories(&snapshot, &request, &limits, Some(&trauma_warnings));
+    if control.is_cancelled() {
+        return cancelled();
+    }
+    let response = match orientation {
         Ok(orientation) => rendered(
             orient_response(&orientation, None),
             ExitIdentity::SUCCESS,
@@ -1958,7 +2026,11 @@ pub(crate) fn execute_orient_with_time(
         Err(OrientError::UnsupportedView(_) | OrientError::Contract(_)) => {
             internal_failure("orient", &args.root)
         }
+    };
+    if control.is_cancelled() {
+        return cancelled();
     }
+    response
 }
 
 /// Refuse a complete bound-session projection that cannot fit its registered wire fields.

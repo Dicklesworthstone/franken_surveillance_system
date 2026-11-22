@@ -7,8 +7,8 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use fss_core::{
     BudgetVector, CaptureInterval, ContentDigest, ContextAuthority, EffectIntent, EffectState,
@@ -550,15 +550,10 @@ fn track_query_does_not_reconcile_prepared_or_committed_effects() -> Test {
     Ok(())
 }
 
-
 // Include directories and exact file bytes so immutable queries cannot create lock/staging
 // entries, repair journals or reconcile effects without this comparison observing the change.
 fn immutable_tree(root: &Path) -> Test<BTreeMap<PathBuf, Option<Vec<u8>>>> {
-    fn visit(
-        root: &Path,
-        path: &Path,
-        entries: &mut BTreeMap<PathBuf, Option<Vec<u8>>>,
-    ) -> Test {
+    fn visit(root: &Path, path: &Path, entries: &mut BTreeMap<PathBuf, Option<Vec<u8>>>) -> Test {
         for entry in fs::read_dir(path)? {
             let entry = entry?;
             let path = entry.path();
@@ -693,8 +688,7 @@ fn immutable_native_exact_allowances_include_both_passes_and_final_history() -> 
     let mut exact = NativeOnvifReadLimits::default();
     // The final empty effects-journal probe still needs one byte of remaining allowance.
     exact.max_deployment_read_bytes = usize::try_from(measured.deployment_read_bytes)? + 1;
-    exact.max_deployment_read_attempts =
-        usize::try_from(measured.deployment_read_attempts)?;
+    exact.max_deployment_read_attempts = usize::try_from(measured.deployment_read_attempts)?;
     exact.source.custody.max_read_bytes = usage.peak_reserved_read_bytes;
     exact.source.custody.max_io_calls = usage.io_calls;
     exact.source.custody.max_catalogue_entries = usage.completed_roots;
@@ -702,14 +696,7 @@ fn immutable_native_exact_allowances_include_both_passes_and_final_history() -> 
     exact.source.custody.max_edges = usage.edges;
     exact.source.max_work_units = measured.native.reserved_work_units;
     let before = immutable_tree(&dir.0)?;
-    let admitted = NativeOnvifRead::open(
-        &dir.0,
-        SITE,
-        &pins,
-        &analysis,
-        exact,
-        &dir.cx()?,
-    )?;
+    let admitted = NativeOnvifRead::open(&dir.0, SITE, &pins, &analysis, exact, &dir.cx()?)?;
     assert_eq!(admitted.native.read_usage, usage);
     assert_eq!(
         admitted.native.reserved_work_units,
@@ -740,15 +727,7 @@ fn immutable_native_exact_allowances_include_both_passes_and_final_history() -> 
             _ => return Err("unexpected immutable allowance dimension".into()),
         }
         assert!(
-            NativeOnvifRead::open(
-                &dir.0,
-                SITE,
-                &pins,
-                &analysis,
-                short,
-                &dir.cx()?,
-            )
-            .is_err(),
+            NativeOnvifRead::open(&dir.0, SITE, &pins, &analysis, short, &dir.cx()?,).is_err(),
             "one-unit-short immutable allowance {dimension} released a report"
         );
         assert_eq!(immutable_tree(&dir.0)?, before);
@@ -894,7 +873,6 @@ fn immutable_native_missing_root_and_mismatched_context_never_initialize_a_store
     assert_eq!(fs::read_dir(&dir.0)?.count(), 0);
     Ok(())
 }
-
 
 #[test]
 fn immutable_native_non_sync_admission_stops_between_selected_source_reads() -> Test {

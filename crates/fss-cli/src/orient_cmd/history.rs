@@ -13,7 +13,8 @@ use fss_core::{
 };
 use fss_reference::agent_follow::{AnchorToken, history_anchor_token, resolve_anchor};
 use fss_reference::agent_orient::{
-    DeploymentHistory, DeploymentReadError, DeploymentSnapshot, OrientLimits, read_deployment,
+    DeploymentHistory, DeploymentReadError, DeploymentSnapshot, OrientLimits,
+    read_deployment_cancellable,
 };
 
 use crate::error::{CliError, ExitIdentity};
@@ -153,13 +154,46 @@ pub(crate) fn read(
     limits: &OrientLimits,
     at: Option<&AnchorToken>,
 ) -> Result<(DeploymentSnapshot, Option<HistoricalScope>), (String, ExitIdentity)> {
-    let Some(at) = at else {
-        return read_deployment(root, limits)
-            .map(|snapshot| (snapshot, None))
-            .map_err(|error| read_refusal(command, root, &error));
+    read_with_control(
+        command,
+        root,
+        limits,
+        at,
+        &crate::RequestControl::uncancelled(),
+    )
+}
+
+/// Keep the same request owner's cancellation through current and historical reconstruction.
+/// Cancellation takes precedence over a partial inspector's missing/corrupt classification.
+pub(crate) fn read_with_control(
+    command: &str,
+    root: &Path,
+    limits: &OrientLimits,
+    at: Option<&AnchorToken>,
+    control: &crate::RequestControl<'_>,
+) -> Result<(DeploymentSnapshot, Option<HistoricalScope>), (String, ExitIdentity)> {
+    let cancelled = || control.is_cancelled();
+    let refusal = |error| {
+        if control.is_cancelled() {
+            crate::request_control::cancelled_read(command, root)
+        } else {
+            read_refusal(command, root, &error)
+        }
     };
-    let history = DeploymentHistory::read(root, limits)
-        .map_err(|error| read_refusal(command, root, &error))?;
+    if control.is_cancelled() {
+        return Err(crate::request_control::cancelled_read(command, root));
+    }
+    let Some(at) = at else {
+        let snapshot = read_deployment_cancellable(root, limits, &cancelled).map_err(refusal)?;
+        if control.is_cancelled() {
+            return Err(crate::request_control::cancelled_read(command, root));
+        }
+        return Ok((snapshot, None));
+    };
+    let history = DeploymentHistory::read_cancellable(root, limits, &cancelled).map_err(refusal)?;
+    if control.is_cancelled() {
+        return Err(crate::request_control::cancelled_read(command, root));
+    }
     // Refuse foreign, unknown, forged and future tokens before selecting any source object.
     let unavailable = || {
         (
@@ -172,12 +206,19 @@ pub(crate) fn read(
             ExitIdentity::AGENT_REFUSED,
         )
     };
-    let position = resolve_anchor(&history, at).map_err(|_| unavailable())?;
+    let position = resolve_anchor(&history, at);
+    if control.is_cancelled() {
+        return Err(crate::request_control::cancelled_read(command, root));
+    }
+    let position = position.map_err(|_| unavailable())?;
     let head = history_anchor_token(&history, history.head()).ok_or_else(unavailable)?;
     let (_, head_root, _) = history.roots_at(history.head()).ok_or_else(unavailable)?;
     let snapshot = history
-        .snapshot_at(position)
-        .map_err(|error| read_refusal(command, root, &error))?;
+        .snapshot_at_cancellable(position, &cancelled)
+        .map_err(refusal)?;
+    if control.is_cancelled() {
+        return Err(crate::request_control::cancelled_read(command, root));
+    }
     Ok((
         snapshot,
         Some(HistoricalScope {

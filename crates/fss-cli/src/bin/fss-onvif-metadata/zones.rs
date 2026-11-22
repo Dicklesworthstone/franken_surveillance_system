@@ -165,10 +165,7 @@ fn parse(args: &[OsString]) -> Result<Options, &'static str> {
     request.u64(limits.projection.max_work_units);
     request.u64(POLICY_READ_BYTES);
     common.approval = ContentDigest::sha256(&request.finish_checked().map_err(|_| ARGUMENT_ERROR)?);
-    Ok(Options {
-        common,
-        policy,
-    })
+    Ok(Options { common, policy })
 }
 
 fn run(options: Options) -> Result<(CommandOutput, bool), &'static str> {

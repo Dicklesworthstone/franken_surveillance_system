@@ -1234,3 +1234,150 @@ fn why_not_explanation_and_h2_graph_neighborhood_work_end_to_end() -> TestResult
     fs::remove_dir_all(&root)?;
     Ok(())
 }
+
+#[test]
+fn cancellable_history_preserves_retained_and_historical_snapshot_semantics() -> TestResult {
+    let root = empty_deployment("cancellable-history")?;
+    let limits = OrientLimits::default();
+    let initial = super::DeploymentHistory::read(&root, &limits)?.head();
+    let authority = ContextAuthority::new_root(RootAuthoritySpec {
+        trace_id: "trace:cancellable-history".to_owned(),
+        operation_id: OperationId::parse("operation:cancellable-history")?,
+        principal: "operator:cancellable-history".to_owned(),
+        capabilities: vec![ADP_REPLAY_ROW_ID.to_owned()],
+        deadline: None,
+        priority: 10,
+        budgets: BudgetVector::default(),
+        privacy_scope: "privacy:internal".to_owned(),
+        retention_scope: "retention:ephemeral".to_owned(),
+        anchor_universe: ContentDigest::sha256(b"cancellable-history"),
+        generation: 1,
+    })?;
+    let cx = ReplayCx::new(ReplayIoAuthority::from_context_authority(
+        &authority,
+        root.join("cancellable-history-cx"),
+    )?);
+    let mut deployment = ReferenceDeployment::open(&root, "site:orient-unit", &cx)?;
+    deployment.publish_event(
+        &crate::ReferencePolicyDecision {
+            event: synthetic_event(0)?.event,
+            action: crate::ReferencePolicyAction::Hold,
+        },
+        &cx,
+    )?;
+    drop(deployment);
+    let ordinary = super::DeploymentHistory::read(&root, &limits)?;
+    let admitted = super::DeploymentHistory::read_cancellable(&root, &limits, &|| false)?;
+    assert_eq!(ordinary.head(), admitted.head());
+    for position in [initial, ordinary.head()] {
+        assert_eq!(
+            ordinary.snapshot_at(position)?,
+            admitted.snapshot_at_cancellable(position, &|| false)?,
+        );
+    }
+    let snapshot = read_deployment(&root, &limits)?;
+    let cancellable = super::read_deployment_cancellable(&root, &limits, &|| false)?;
+    assert_eq!(snapshot, cancellable);
+    assert_eq!(
+        orient_deployment(&snapshot, &request(AgentView::Brief)?, &limits)?
+            .capsule()
+            .decision_fingerprint()?,
+        orient_deployment(&cancellable, &request(AgentView::Brief)?, &limits)?
+            .capsule()
+            .decision_fingerprint()?,
+    );
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn cancelled_legacy_reads_cannot_report_missing_roots_or_empty_successes() -> TestResult {
+    let missing = fresh_root("cancelled-missing-read")?;
+    let limits = OrientLimits::default();
+    let failure = super::read_deployment_cancellable(&missing, &limits, &|| true);
+    assert!(matches!(
+        failure,
+        Err(DeploymentReadError::Corrupt { reason })
+            if reason == "retained read authority cancelled"
+    ));
+    assert!(!missing.exists());
+    assert_eq!(
+        read_deployment(&missing, &limits),
+        super::read_deployment_cancellable(&missing, &limits, &|| false),
+    );
+    let root = empty_deployment("cancelled-empty-snapshot")?;
+    let history = super::DeploymentHistory::read(&root, &limits)?;
+    assert!(
+        history
+            .snapshot_at_cancellable(history.head(), &|| true)
+            .is_err()
+    );
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn reader_discards_a_payload_when_cancellation_arrives_at_any_read_checkpoint() -> TestResult {
+    use std::cell::Cell;
+
+    let root = fresh_root("read-checkpoints")?;
+    fs::create_dir_all(&root)?;
+    let path = root.join("payload");
+    fs::write(&path, b"retained payload")?;
+    let calls = Cell::new(0_usize);
+    let count = || {
+        calls.set(calls.get() + 1);
+        false
+    };
+    let mut baseline = Reader {
+        files_read: 0,
+        bytes_read: 0,
+        budget: None,
+        cancelled: Some(&count),
+    };
+    assert_eq!(
+        baseline.read_file(&path, 64)?,
+        Some(b"retained payload".to_vec())
+    );
+    for cut in 1..=calls.get() {
+        let observed = Cell::new(0_usize);
+        let cancel = || {
+            observed.set(observed.get() + 1);
+            observed.get() >= cut
+        };
+        let budget = MetadataReadBudget::new(64, 1);
+        let mut reader = Reader {
+            files_read: 0,
+            bytes_read: 0,
+            budget: Some(budget.clone()),
+            cancelled: Some(&cancel),
+        };
+        assert!(reader.read_file(&path, 64).is_err(), "cut {cut}");
+        assert!(budget.ensure_valid().is_err(), "cut {cut}");
+        assert_eq!(reader.files_read, 0, "cut {cut}");
+    }
+    assert_eq!(fs::read(&path)?, b"retained payload");
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn ordinary_ledger_adapter_discards_bytes_when_cancelled_during_read() -> TestResult {
+    use fss_ledger::JournalReadIo;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let root = fresh_root("journal-read-checkpoints")?;
+    fs::create_dir_all(&root)?;
+    let path = root.join("journal");
+    fs::write(&path, b"ledger bytes")?;
+    let calls = AtomicUsize::new(0);
+    let cancel_after_read = || calls.fetch_add(1, Ordering::SeqCst) >= 1;
+    let journal = super::CancellableHistoryJournal {
+        cancelled: &cancel_after_read,
+    };
+    assert!(journal.read_bounded(&path, 64).is_err());
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(fs::read(&path)?, b"ledger bytes");
+    fs::remove_dir_all(root)?;
+    Ok(())
+}

@@ -51,6 +51,9 @@ use crate::reference_deployment::{
 };
 use crate::situation_guard::EFFECT_RECONCILE_AFFORDANCE;
 
+mod cancellation;
+pub use cancellation::{inspect_deployment_cancellable, inspect_deployment_with_cancellation};
+
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Schema identity of doctor output (SCHEMA-DOCTOR-001).

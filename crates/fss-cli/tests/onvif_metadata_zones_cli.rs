@@ -562,13 +562,8 @@ fn policy_errors_resource_bounds_and_missing_store_refuse_without_json_or_initia
     Ok(())
 }
 
-
 fn immutable_tree(root: &Path) -> Test<BTreeMap<PathBuf, Option<Vec<u8>>>> {
-    fn visit(
-        root: &Path,
-        path: &Path,
-        entries: &mut BTreeMap<PathBuf, Option<Vec<u8>>>,
-    ) -> Test {
+    fn visit(root: &Path, path: &Path, entries: &mut BTreeMap<PathBuf, Option<Vec<u8>>>) -> Test {
         for entry in fs::read_dir(path)? {
             let entry = entry?;
             let path = entry.path();
@@ -628,11 +623,18 @@ fn native_zones_runs_with_live_writer_and_refuses_torn_effect_history_without_re
         text(tracks, "schema")?,
         "fss.onvif_vendor_tracklets_report.v2"
     );
-    assert_eq!(text(tracks, "read_owner")?, "fss.onvif_native_immutable_read.v1");
+    assert_eq!(
+        text(tracks, "read_owner")?,
+        "fss.onvif_native_immutable_read.v1"
+    );
     let usage = field(tracks, "usage")?;
     assert_eq!(field(usage, "publisher_opened")?.boolean(), Some(false));
     assert_eq!(field(usage, "recovery_performed")?.boolean(), Some(false));
-    assert!(field(usage, "source_io_calls")?.integer().is_some_and(|v| v > 0));
+    assert!(
+        field(usage, "source_io_calls")?
+            .integer()
+            .is_some_and(|v| v > 0)
+    );
     assert!(
         field(usage, "deployment_read_attempts")?
             .integer()

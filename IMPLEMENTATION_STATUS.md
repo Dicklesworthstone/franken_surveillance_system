@@ -4,6 +4,38 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Cooperative legacy metadata reads — 2026-11-22
+
+The existing MCP/native `RequestControl` now reaches `doctor --root`, current
+and historical event queries, and unsessioned orientation. Doctor admits each
+read-only filesystem, journal and lock-table capability call before and after it
+runs; observed cancellation discards the partial report. History and snapshot
+reconstruction check the same request owner around bounded reads, including empty
+snapshots and final delivery. Existing synchronous entrypoints remain available.
+
+Before a complete verified snapshot exists, `ERR-CLI-READ-CANCELLED-001`
+distinguishes cancellation from missing/corrupt storage. After verification,
+query/orient return the existing cancelled envelope with null payload, no
+continuation and no affordances. Rendering uses the completed observation and
+never reopens storage to invent a newer anchor. Ordinary read budgets and semantic
+identities remain unchanged; no session/effect owner or durable receipt is replaced.
+
+Nine core and six CLI regressions are authored for zero-I/O pre-cancellation,
+sticky capability refusal, post-read cancellation, current/historical parity,
+late delivery, complete request identities and cancellation rendering without a
+store. Independent source review, pinned formatting, schema validation and generated
+robot-document checks completed. The restored host killed the test build in unchanged
+Asupersync and a lower-memory type check in libc before project diagnostics; no Rust
+test pass is claimed. The whole-tree manifest gate reports 511 existing findings,
+none on the 30 changed paths checked at that point. The docs qualifier was interrupted
+under host pressure after reporting environment and existing policy issues. Local
+qualification remains incomplete; see the handoff for exact attempts and limits.
+
+Cancellation remains cooperative: a running bounded OS call or pure projection
+phase cannot be preempted. Trauma-guard derivation is bracketed as one existing
+bounded phase. Explain and broader request-envelope admission/qualification remain
+outstanding. FSS-177 / `fss-x4a.25.2` stays open.
+
 ## Immutable native ONVIF analysis and commands — 2026-11-22
 
 The new `NativeOnvifRead` API reconstructs complete tracks, lifecycle and zone
@@ -16,10 +48,11 @@ refuse the complete report. Native synchronous task admission can remain non-Syn
 
 Seven integration regressions are authored for complete XML/RTP/empty reports,
 writer-held reads, exact shared bounds, absent/torn journals, final-check races,
-cancellation and missing roots. They have received independent source review but
-have **not been compiled or executed**: the session execution host disconnected
-after its filesystem was already full. The native `tracks`, `lifecycle` and `zones` commands now use this owner with
-read authority only, retaining complete native rows and explicit vendor-value
+cancellation and missing roots. Independent source review and pinned formatting
+completed. Native compilation and test execution remain unverified after dependency
+builds were killed by host resource pressure. The native `tracks`, `lifecycle` and
+`zones` commands now use this owner with read authority only, retaining complete
+native rows and explicit vendor-value
 disclosure. Their v2 envelopes expose source filesystem calls and separate
 metadata payload counters; v1 schemas and pure projection identities remain
 unchanged. Actual-process writer-held and no-repair regressions are also authored

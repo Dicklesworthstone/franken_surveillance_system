@@ -11,11 +11,11 @@ use std::path::Path;
 use fss_core::{CanonicalEncode, CanonicalEncoder, ContentDigest, LedgerAnchor};
 use fss_object::{HostSpoolIo, SpoolIo};
 
-use super::read_view::{read_analysis_with_admission, validate_pins};
-use super::tracks::{TrackReadLimits, TrackSourcePin};
 pub use super::read_view::{
     OnvifAnalysis, OnvifAnalysisResult, OnvifReadError, OnvifReadLimits, OnvifReadResult,
 };
+use super::read_view::{read_analysis_with_admission, validate_pins};
+use super::tracks::{TrackReadLimits, TrackSourcePin};
 use crate::agent_orient::{
     DeploymentHistory, DeploymentReadError, DeploymentSnapshot, MetadataReadBudget, OrientLimits,
 };
@@ -73,7 +73,10 @@ impl NativeOnvifReadLimits {
     pub fn validate(&self, analysis: &OnvifAnalysis) -> Result<(), NativeOnvifReadError> {
         let ceiling = OrientLimits::default();
         for (value, maximum) in [
-            (self.max_deployment_read_bytes, MAX_NATIVE_DEPLOYMENT_READ_BYTES),
+            (
+                self.max_deployment_read_bytes,
+                MAX_NATIVE_DEPLOYMENT_READ_BYTES,
+            ),
             (
                 self.max_deployment_read_attempts,
                 MAX_NATIVE_DEPLOYMENT_READ_ATTEMPTS,
@@ -91,7 +94,9 @@ impl NativeOnvifReadLimits {
                 return Err(NativeOnvifReadError::InvalidRequest);
             }
         }
-        self.source.validate(analysis).map_err(NativeOnvifReadError::Source)
+        self.source
+            .validate(analysis)
+            .map_err(NativeOnvifReadError::Source)
     }
 }
 
@@ -184,8 +189,7 @@ impl NativeOnvifRead {
         cx: &ReplayCx<impl ReplayAdmission>,
     ) -> Result<Self, NativeOnvifReadError> {
         limits.validate(analysis)?;
-        validate_pins(pins, limits.source.max_sources)
-            .map_err(NativeOnvifReadError::Source)?;
+        validate_pins(pins, limits.source.max_sources).map_err(NativeOnvifReadError::Source)?;
         if root != cx.root_dir()
             || !root.is_absolute()
             || crate::reference_deployment::validate_site_lineage(site).is_err()
@@ -199,13 +203,9 @@ impl NativeOnvifRead {
             limits.max_deployment_read_attempts,
         );
         let refused = || cx.checkpoint("onvif_native_read:read").is_err();
-        let history = DeploymentHistory::read_metadata_cancellable(
-            root,
-            &limits.snapshot,
-            &budget,
-            &refused,
-        )
-        .map_err(NativeOnvifReadError::Deployment)?;
+        let history =
+            DeploymentHistory::read_metadata_cancellable(root, &limits.snapshot, &budget, &refused)
+                .map_err(NativeOnvifReadError::Deployment)?;
         if history.site_lineage() != site {
             return Err(NativeOnvifReadError::InvalidRequest);
         }
@@ -276,7 +276,9 @@ impl NativeOnvifRead {
         encoded.u64(deployment_read_bytes);
         encoded.u64(deployment_read_attempts);
         let snapshot_digest = ContentDigest::sha256(
-            &encoded.finish_checked().map_err(|_| NativeOnvifReadError::InvalidRequest)?,
+            &encoded
+                .finish_checked()
+                .map_err(|_| NativeOnvifReadError::InvalidRequest)?,
         );
         Ok(Self {
             native,

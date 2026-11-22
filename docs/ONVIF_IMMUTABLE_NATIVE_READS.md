@@ -146,9 +146,12 @@ source I/O. Native process tests exercise command routing and the versioned
 accounting/disclosure contract.
 
 The implementation and tests were independently source-reviewed in the
-2026-11-22 session. The execution environment disconnected before these changes
-could be compiled or run. No executed-test, host qualification, live camera,
-Profile M conformance or broader FSS-046 completion claim follows from this work.
+2026-11-22 session. After the execution host recovered, pinned formatting, schema
+validation and generated-document checks completed. The test build was killed
+while compiling unchanged Asupersync; a lower-memory type check was also killed
+in libc before project diagnostics. The new Rust tests remain unexecuted.
+No host qualification, live-camera, Profile M conformance or broader FSS-046
+completion claim follows from this work.
 
 When execution is available, run the existing pinned/offline owners:
 

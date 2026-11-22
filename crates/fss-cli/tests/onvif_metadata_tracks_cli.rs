@@ -318,7 +318,13 @@ fn required_root_duplicate_source_and_tiny_budget_refuse_without_partial_json() 
     metadata_bytes.extend(["--max-deployment-read-bytes".into(), "1".into()]);
     let mut metadata_attempts = base.clone();
     metadata_attempts.extend(["--max-deployment-read-attempts".into(), "1".into()]);
-    for args in [unpinned, duplicated, limited, metadata_bytes, metadata_attempts] {
+    for args in [
+        unpinned,
+        duplicated,
+        limited,
+        metadata_bytes,
+        metadata_attempts,
+    ] {
         let output = run(&args)?;
         assert!(!output.status.success());
         assert!(output.stdout.is_empty());
@@ -551,7 +557,6 @@ fn lifecycle_preserves_frozen_v1_and_refuses_limits_or_missing_store_without_jso
     Ok(())
 }
 
-
 fn immutable_accounting(tracks: &Value) -> Test {
     assert_eq!(
         field(tracks, "read_owner")?.text(),
@@ -577,11 +582,7 @@ fn immutable_accounting(tracks: &Value) -> Test {
 }
 
 fn immutable_tree(root: &Path) -> Test<BTreeMap<PathBuf, Option<Vec<u8>>>> {
-    fn visit(
-        root: &Path,
-        path: &Path,
-        entries: &mut BTreeMap<PathBuf, Option<Vec<u8>>>,
-    ) -> Test {
+    fn visit(root: &Path, path: &Path, entries: &mut BTreeMap<PathBuf, Option<Vec<u8>>>) -> Test {
         for entry in fs::read_dir(path)? {
             let entry = entry?;
             let path = entry.path();
@@ -681,7 +682,13 @@ fn native_tracks_and_lifecycle_run_while_writer_and_unreconciled_effects_are_liv
         } else {
             &report
         };
-        for name in ["report_digest", "sources", "frames", "occurrences", "tracklets"] {
+        for name in [
+            "report_digest",
+            "sources",
+            "frames",
+            "occurrences",
+            "tracklets",
+        ] {
             assert_eq!(field(tracks, name)?, field(&original_tracks, name)?);
         }
         immutable_accounting(tracks)?;

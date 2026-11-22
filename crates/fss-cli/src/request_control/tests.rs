@@ -297,3 +297,185 @@ fn session_time_cancellation_preserves_native_cancelled_outcome_without_rollback
     cx.drain_and_finalize();
     Ok(())
 }
+
+fn metadata_command(name: &str, root: &Path) -> Result<FssCommand, crate::CliError> {
+    parse_fss_args([
+        OsString::from(name),
+        OsString::from("--json"),
+        OsString::from("--root"),
+        root.as_os_str().to_owned(),
+    ])
+}
+
+#[test]
+fn legacy_metadata_reads_cancel_after_dispatch_without_inspecting_an_absent_root() -> Test {
+    let scratch = Scratch::new("legacy-not-started")?;
+    for name in ["doctor", "query", "orient"] {
+        let observations = AtomicUsize::new(0);
+        let probe = || observations.fetch_add(1, Ordering::AcqRel) != 0;
+        let (body, exit) = execute_live_fss_with_control(
+            metadata_command(name, &scratch.root())?,
+            &RequestControl::new(&probe),
+        )
+        .ok_or("started metadata read lost its cancellation")?;
+        assert_eq!(exit, ExitIdentity::AGENT_REFUSED, "{name}: {body}");
+        assert!(
+            body.contains(crate::ERR_CLI_READ_CANCELLED),
+            "{name}: {body}"
+        );
+        assert!(
+            !body.contains(crate::ERR_DOCTOR_NOT_A_DEPLOYMENT),
+            "{name}: {body}"
+        );
+        assert!(!body.contains("\"verdict\""), "{name}: {body}");
+        assert!(!body.contains("\"ledgerAnchor\""), "{name}: {body}");
+    }
+    assert!(fs::read_dir(&scratch.0)?.next().is_none());
+    Ok(())
+}
+
+#[test]
+fn legacy_metadata_reads_keep_uncancelled_output_and_gate_final_delivery() -> Test {
+    let scratch = Scratch::new("legacy-final-delivery")?;
+    let (deployment, cx) = scratch.initialize()?;
+    drop(deployment);
+    let before = tree(&scratch.root())?;
+    for name in ["doctor", "query", "orient"] {
+        let observations = AtomicUsize::new(0);
+        let never = || {
+            observations.fetch_add(1, Ordering::AcqRel);
+            false
+        };
+        let observed = execute_live_fss_with_control(
+            metadata_command(name, &scratch.root())?,
+            &RequestControl::new(&never),
+        )
+        .ok_or("uncancelled metadata read did not start")?;
+        assert_eq!(
+            observed,
+            crate::execute_live_fss_with_exit(metadata_command(name, &scratch.root())?),
+            "{name} changed its uncancelled output",
+        );
+        assert_eq!(observed.1, ExitIdentity::SUCCESS, "{name}: {}", observed.0);
+        let checkpoints = observations.load(Ordering::Acquire);
+        assert!(
+            checkpoints > 4,
+            "{name} has no internal cooperative checkpoints"
+        );
+        let attempts = AtomicUsize::new(0);
+        // The same immutable fixture takes the same path. Refuse the final delivery probe,
+        // after native work/rendering, without adding another filesystem read for an anchor.
+        let cancel_last = || attempts.fetch_add(1, Ordering::AcqRel) >= checkpoints - 1;
+        let (body, exit) = execute_live_fss_with_control(
+            metadata_command(name, &scratch.root())?,
+            &RequestControl::new(&cancel_last),
+        )
+        .ok_or("late cancellation erased a started read")?;
+        assert_eq!(exit, ExitIdentity::AGENT_REFUSED, "{name}: {body}");
+        if name == "doctor" {
+            assert!(body.contains(crate::ERR_CLI_READ_CANCELLED), "{body}");
+            assert!(!body.contains("\"verdict\""), "{body}");
+        } else {
+            let value = crate::json_input::parse(&body)?;
+            let fields = value.object().ok_or("cancelled response")?;
+            assert_eq!(
+                fields
+                    .get("outcome")
+                    .and_then(crate::json_input::Value::text),
+                Some("cancelled"),
+                "{name}: {body}",
+            );
+            assert_eq!(fields.get("payload"), Some(&crate::json_input::Value::Null));
+            assert_eq!(fields.get("errorId"), Some(&crate::json_input::Value::Null));
+            assert!(body.contains("no storage was reread"), "{body}");
+        }
+        assert_eq!(
+            tree(&scratch.root())?,
+            before,
+            "{name} changed retained state"
+        );
+    }
+    cx.drain_and_finalize();
+    Ok(())
+}
+
+#[test]
+fn historical_event_query_retains_cancellation_through_selected_snapshot() -> Test {
+    let scratch = Scratch::new("historical-cancellation")?;
+    let (deployment, cx) = scratch.initialize()?;
+    drop(deployment);
+    let snapshot = fss_reference::agent_orient::read_deployment(
+        &scratch.root(),
+        &fss_reference::agent_orient::OrientLimits::default(),
+    )?;
+    let anchor = fss_reference::agent_follow::snapshot_anchor_token(&snapshot);
+    let command = || {
+        parse_fss_args([
+            OsString::from("query"),
+            OsString::from("--json"),
+            OsString::from("--root"),
+            scratch.root().into_os_string(),
+            OsString::from("--at"),
+            OsString::from(&anchor),
+        ])
+    };
+    let before = tree(&scratch.root())?;
+    let observations = AtomicUsize::new(0);
+    let never = || {
+        observations.fetch_add(1, Ordering::AcqRel);
+        false
+    };
+    let original = execute_live_fss_with_control(command()?, &RequestControl::new(&never))
+        .ok_or("historical query did not start")?;
+    assert_eq!(original.1, ExitIdentity::SUCCESS, "{}", original.0);
+    assert!(original.0.contains("Historical metadata"), "{}", original.0);
+    let checkpoints = observations.load(Ordering::Acquire);
+    assert!(checkpoints > 4);
+    let attempts = AtomicUsize::new(0);
+    let cancelled = || attempts.fetch_add(1, Ordering::AcqRel) >= checkpoints - 1;
+    let (body, exit) = execute_live_fss_with_control(command()?, &RequestControl::new(&cancelled))
+        .ok_or("historical query lost its cancellation")?;
+    assert_eq!(exit, ExitIdentity::AGENT_REFUSED, "{body}");
+    assert!(body.contains("\"outcome\":\"cancelled\""), "{body}");
+    assert!(body.contains("\"payload\":null"), "{body}");
+    assert!(!body.contains("committed_index_exhausted"), "{body}");
+    assert_eq!(tree(&scratch.root())?, before);
+    cx.drain_and_finalize();
+    Ok(())
+}
+
+#[test]
+fn cancelled_snapshot_render_does_not_reopen_a_missing_deployment() -> Test {
+    let scratch = Scratch::new("cancelled-render")?;
+    let (deployment, cx) = scratch.initialize()?;
+    drop(deployment);
+    let snapshot = fss_reference::agent_orient::read_deployment(
+        &scratch.root(),
+        &fss_reference::agent_orient::OrientLimits::default(),
+    )?;
+    let root = scratch.0.join("never-created");
+    let principal = PrincipalId::parse("principal:request-control")?;
+    let (body, exit) = super::cancelled_snapshot_read(
+        super::CancelledRead {
+            command: "query",
+            operation: "query",
+            root: &root,
+            request_digest: ContentDigest::sha256(b"cancelled-complete-request"),
+            principal: &principal,
+            view: fss_core::AgentView::Case,
+            capability: fss_reference::agent_query::CAPABILITY_QUERY,
+            payload_schema: fss_core::AgentCognitiveEnvelope::SCHEMA,
+        },
+        &snapshot,
+    );
+    assert_eq!(exit, ExitIdentity::AGENT_REFUSED, "{body}");
+    assert!(body.contains("\"outcome\":\"cancelled\""), "{body}");
+    assert!(
+        body.contains(&snapshot.anchor.state_root.to_text()),
+        "{body}"
+    );
+    assert!(!body.contains(crate::ERR_DOCTOR_NOT_A_DEPLOYMENT), "{body}");
+    assert!(!root.exists());
+    cx.drain_and_finalize();
+    Ok(())
+}

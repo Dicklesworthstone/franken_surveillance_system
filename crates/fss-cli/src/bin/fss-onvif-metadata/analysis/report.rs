@@ -67,7 +67,10 @@ fn write_report(
     include_values: bool,
     original: &str,
 ) -> fmt::Result {
-    let OnvifAnalysisResult::Lifecycle { report, documents, .. } = &retained.native.analysis else {
+    let OnvifAnalysisResult::Lifecycle {
+        report, documents, ..
+    } = &retained.native.analysis
+    else {
         return Err(fmt::Error);
     };
     let parse = retained.limits.source.parse;

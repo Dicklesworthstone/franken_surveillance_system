@@ -60,7 +60,7 @@ use fss_core::{
 };
 use fss_object::ObjectManifest;
 
-use crate::doctor::{DoctorVerdict, inspect_deployment};
+use crate::doctor::{DoctorVerdict, inspect_deployment, inspect_deployment_cancellable};
 use crate::ingest::calibration_adoption::{AdoptionError, retained_adoptions_from_batches};
 use crate::ingest::recorded_coverage::CoverageRecord;
 use crate::ingest::source_coverage::{
@@ -504,6 +504,39 @@ impl MetadataReadBudget {
     }
 }
 
+/// Admission wrapper for the ordinary, unmetered ledger inspection path. It preserves the
+/// native inspector's absent-file, invalid-layout, bound, and replay classifications.
+struct CancellableHistoryJournal<'a> {
+    cancelled: &'a (dyn Fn() -> bool + Sync),
+}
+
+impl CancellableHistoryJournal<'_> {
+    fn admitted<T>(&self, read: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
+        if (self.cancelled)() {
+            return Err(io::Error::other("retained read authority cancelled"));
+        }
+        let result = read();
+        if (self.cancelled)() {
+            return Err(io::Error::other("retained read authority cancelled"));
+        }
+        result
+    }
+}
+
+impl fss_ledger::JournalReadIo for CancellableHistoryJournal<'_> {
+    fn symlink_metadata(&self, path: &Path) -> io::Result<fss_ledger::JournalFileMetadata> {
+        self.admitted(|| {
+            fss_ledger::JournalReadIo::symlink_metadata(&fss_ledger::HostJournalReadIo, path)
+        })
+    }
+
+    fn read_bounded(&self, path: &Path, maximum: usize) -> io::Result<Vec<u8>> {
+        self.admitted(|| {
+            fss_ledger::JournalReadIo::read_bounded(&fss_ledger::HostJournalReadIo, path, maximum)
+        })
+    }
+}
+
 struct Reader<'a> {
     files_read: u64,
     bytes_read: u64,
@@ -529,7 +562,9 @@ impl Reader<'_> {
             Some(budget) => budget.allowance(max)?,
             None => max,
         };
-        let meta = match fs::symlink_metadata(path) {
+        let metadata = fs::symlink_metadata(path);
+        self.admit()?;
+        let meta = match metadata {
             Ok(meta) => meta,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error),
@@ -540,10 +575,13 @@ impl Reader<'_> {
         if meta.len() > max as u64 {
             return Err(io::Error::other("file exceeds its read bound"));
         }
+        self.admit()?;
+        let opened = File::open(path);
+        self.admit()?;
         let mut bytes = Vec::new();
-        File::open(path)?
-            .take(max as u64 + 1)
-            .read_to_end(&mut bytes)?;
+        let read = opened?.take(max as u64 + 1).read_to_end(&mut bytes);
+        self.admit()?;
+        read?;
         if bytes.len() > max {
             return Err(io::Error::other("file exceeds its read bound"));
         }
@@ -569,7 +607,10 @@ impl Reader<'_> {
                 .map_err(|_| corrupt("metadata read budget exhausted"))?,
             None => max,
         };
-        let bytes = fss_publication::read_verified(objects, digest, max).map_err(|error| {
+        let result = fss_publication::read_verified(objects, digest, max);
+        self.admit()
+            .map_err(|_| corrupt("retained read authority cancelled"))?;
+        let bytes = result.map_err(|error| {
             if let Some(budget) = &self.budget {
                 budget.fail();
             }
@@ -651,7 +692,61 @@ impl DeploymentHistory {
             }
             DoctorVerdict::Healthy | DoctorVerdict::AttentionRequired => {}
         }
-        Self::read_inner(root, limits, doctor_verdict, None, None)
+        Self::read_inner(root, limits, doctor_verdict, None, None, None)
+    }
+
+    /// Reads committed history under a request-owned cancellation probe.
+    ///
+    /// The doctor and journal capabilities check cancellation before and after each admitted
+    /// call. Cancellation is sticky for this read and never produces a successful partial
+    /// history. A bounded host call already in progress cannot be preempted. The caller must
+    /// classify a stopped request from its cancellation authority, rather than from a health
+    /// verdict or an integrity error.
+    pub fn read_cancellable(
+        root: &Path,
+        limits: &OrientLimits,
+        cancelled: &(dyn Fn() -> bool + Sync),
+    ) -> Result<Self, DeploymentReadError> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let observed = AtomicBool::new(false);
+        let stopped = || {
+            if observed.load(Ordering::Acquire) || cancelled() {
+                observed.store(true, Ordering::Release);
+                true
+            } else {
+                false
+            }
+        };
+        let doctor_verdict = inspect_deployment_cancellable(root, &stopped)
+            .ok_or_else(|| corrupt("retained read authority cancelled"))?
+            .verdict;
+        match doctor_verdict {
+            DoctorVerdict::NotADeployment => {
+                return Err(DeploymentReadError::NotADeployment {
+                    reason: "the root is missing, is not a directory, or has no valid LAYOUT \
+                             (see `fss doctor --json --root <dir>`)"
+                        .to_owned(),
+                });
+            }
+            DoctorVerdict::Unreadable => {
+                return Err(DeploymentReadError::Unreadable {
+                    reason: "the deployment root or its LAYOUT cannot be read".to_owned(),
+                });
+            }
+            DoctorVerdict::Healthy | DoctorVerdict::AttentionRequired => {}
+        }
+        let journal = CancellableHistoryJournal {
+            cancelled: &stopped,
+        };
+        Self::read_inner(
+            root,
+            limits,
+            doctor_verdict,
+            None,
+            Some(&stopped),
+            Some(&journal),
+        )
     }
 
     /// Bounded metadata-only history. Skips the global spool doctor (which hydrates media).
@@ -675,7 +770,12 @@ impl DeploymentHistory {
             budget.fail();
             return Err(corrupt("retained read authority cancelled"));
         }
-        if !fs::symlink_metadata(root)
+        let metadata = fs::symlink_metadata(root);
+        if cancelled() {
+            budget.fail();
+            return Err(corrupt("retained read authority cancelled"));
+        }
+        if !metadata
             .map_err(|_| DeploymentReadError::NotADeployment {
                 reason: "missing deployment root".to_owned(),
             })?
@@ -692,6 +792,7 @@ impl DeploymentHistory {
             DoctorVerdict::AttentionRequired,
             Some(budget.clone()),
             Some(cancelled),
+            None,
         )
     }
 
@@ -701,6 +802,7 @@ impl DeploymentHistory {
         doctor_verdict: DoctorVerdict,
         budget: Option<MetadataReadBudget>,
         cancelled: Option<&dyn Fn() -> bool>,
+        journal_io: Option<&dyn fss_ledger::JournalReadIo>,
     ) -> Result<Self, DeploymentReadError> {
         let mut reader = Reader {
             files_read: 0,
@@ -745,7 +847,14 @@ impl DeploymentHistory {
                     path.push(component.as_os_str());
                     let directory =
                         index + 1 < components.len() || relative == &layout.objects_relpath;
-                    match fs::symlink_metadata(&path) {
+                    reader
+                        .admit()
+                        .map_err(|_| corrupt("retained read authority cancelled"))?;
+                    let metadata = fs::symlink_metadata(&path);
+                    reader
+                        .admit()
+                        .map_err(|_| corrupt("retained read authority cancelled"))?;
+                    match metadata {
                         Ok(meta)
                             if !meta.file_type().is_symlink()
                                 && (!directory || meta.file_type().is_dir()) => {}
@@ -788,6 +897,13 @@ impl DeploymentHistory {
                 site.clone(),
                 limits.max_journal_bytes,
             )
+        } else if let Some(journal_io) = journal_io {
+            fss_ledger::inspect_durable_with_io(
+                journal_io,
+                root.join(&layout.ledger_relpath),
+                site.clone(),
+                limits.max_journal_bytes,
+            )
         } else {
             fss_ledger::inspect_durable(
                 root.join(&layout.ledger_relpath),
@@ -796,6 +912,9 @@ impl DeploymentHistory {
             )
         }
         .map_err(|error| corrupt(format!("authority ledger replay failed: {error}")))?;
+        reader
+            .admit()
+            .map_err(|_| corrupt("retained read authority cancelled"))?;
         if ledger.status == fss_ledger::DurableLedgerStatus::Absent {
             return Err(DeploymentReadError::Unreadable {
                 reason: "the authority ledger is missing; retained history cannot be reconstructed from an empty replacement"
@@ -839,6 +958,9 @@ impl DeploymentHistory {
                 (Some(bytes), recovery.records().to_vec(), tail)
             }
         };
+        reader
+            .admit()
+            .map_err(|_| corrupt("retained read authority cancelled"))?;
         Ok(Self {
             site_lineage: site,
             objects: root.join(&layout.objects_relpath),
@@ -1084,11 +1206,20 @@ impl DeploymentHistory {
         self.snapshot_at_cancellable(position, &|| false)
     }
 
-    pub(crate) fn snapshot_at_cancellable(
+    /// Compiles one committed snapshot while admitting every bounded payload read through
+    /// the request's cancellation probe. No successful partial snapshot is returned after
+    /// cancellation; an already-running bounded host read cannot be preempted.
+    pub fn snapshot_at_cancellable(
         &self,
         position: HistoryPosition,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<DeploymentSnapshot, DeploymentReadError> {
+        if cancelled() {
+            if let Some(budget) = &self.metadata_budget {
+                budget.fail();
+            }
+            return Err(corrupt("retained read authority cancelled"));
+        }
         let not_committed = || DeploymentReadError::NotCommitted {
             reason: format!(
                 "commit {} with {} effect record(s) is not a committed prefix of this deployment",
@@ -1155,6 +1286,9 @@ impl DeploymentHistory {
         let mut evidence_ledger_root = None;
         let mut import_ledger_root = None;
         for (index, batch) in batches.iter().enumerate() {
+            reader
+                .admit()
+                .map_err(|_| corrupt("retained read authority cancelled"))?;
             let record_root = self
                 .ledger_positions
                 .get(index)
@@ -1468,6 +1602,9 @@ impl DeploymentHistory {
             })
             .map_err(|error| corrupt(format!("retained sensor liveness: {error}")))?;
 
+        reader
+            .admit()
+            .map_err(|_| corrupt("retained read authority cancelled"))?;
         Ok(DeploymentSnapshot {
             site_lineage: self.site_lineage.clone(),
             doctor_verdict: self.doctor_verdict,
@@ -1526,6 +1663,20 @@ pub fn read_deployment(
 ) -> Result<DeploymentSnapshot, DeploymentReadError> {
     let history = DeploymentHistory::read(root, limits)?;
     history.snapshot_at(history.head())
+}
+
+/// Reads the committed head under a request-owned cancellation probe.
+///
+/// This is the cancellable counterpart of [`read_deployment`], with the same successful
+/// snapshot, history position, byte accounting, and semantic identities. A cancellation
+/// refusal must be classified by the caller's cancellation authority, not as a corrupt root.
+pub fn read_deployment_cancellable(
+    root: &Path,
+    limits: &OrientLimits,
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<DeploymentSnapshot, DeploymentReadError> {
+    let history = DeploymentHistory::read_cancellable(root, limits, cancelled)?;
+    history.snapshot_at_cancellable(history.head(), cancelled)
 }
 
 /// One read-only orient request.

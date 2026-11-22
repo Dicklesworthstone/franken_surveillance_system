@@ -8,9 +8,9 @@
 use std::path::PathBuf;
 
 use fss_core::{
-    AgentCognitiveEnvelope, AgentView, BudgetVector, CognitiveAnswerClass, Completeness,
-    EnvelopeBudget, EnvelopeContinuity, EnvelopeProposition, EventId, EventKind, EventState,
-    KnowledgeState, ResponseOutcome, ResponseSafeRetry,
+    AgentCognitiveEnvelope, AgentView, BudgetVector, CanonicalEncode, CognitiveAnswerClass,
+    Completeness, EnvelopeBudget, EnvelopeContinuity, EnvelopeProposition, EventId, EventKind,
+    EventState, KnowledgeState, ResponseOutcome, ResponseSafeRetry,
 };
 use fss_reference::agent_follow::{AnchorToken, snapshot_anchor_token};
 use fss_reference::agent_orient::{
@@ -406,6 +406,17 @@ fn refusal(
 /// registered answer. Neither a smaller page nor an empty match set bypasses a scan failure.
 #[must_use]
 pub fn execute_query(args: &QueryArgs) -> (String, ExitIdentity) {
+    execute_query_with_control(args, &crate::RequestControl::uncancelled())
+}
+
+/// Retain one request owner's cancellation through history, projection and delivery.
+pub(crate) fn execute_query_with_control(
+    args: &QueryArgs,
+    control: &crate::RequestControl<'_>,
+) -> (String, ExitIdentity) {
+    if control.is_cancelled() {
+        return crate::request_control::cancelled_read("query", &args.root);
+    }
     // Public library callers can construct QueryArgs directly. Preserve the same exclusion
     // before opening the deployment rather than reinterpreting a current-head precondition.
     if args.at.is_some() && args.request.expected_anchor.is_some() {
@@ -420,15 +431,29 @@ pub fn execute_query(args: &QueryArgs) -> (String, ExitIdentity) {
         );
     }
     let limits = OrientLimits::default();
-    let (snapshot, historical) = match history::read("query", &args.root, &limits, args.at.as_ref())
-    {
-        Ok(read) => read,
-        Err(refusal) => return refusal,
+    let (snapshot, historical) =
+        match history::read_with_control("query", &args.root, &limits, args.at.as_ref(), control) {
+            Ok(read) => read,
+            Err(refusal) => return refusal,
+        };
+    let deliver = |response: (String, ExitIdentity)| {
+        if control.is_cancelled() {
+            cancelled_query(args, &snapshot)
+        } else {
+            response
+        }
     };
-    let query = match query_deployment(&snapshot, &args.request) {
+    if control.is_cancelled() {
+        return cancelled_query(args, &snapshot);
+    }
+    let query_result = query_deployment(&snapshot, &args.request);
+    if control.is_cancelled() {
+        return cancelled_query(args, &snapshot);
+    }
+    let query = match query_result {
         Ok(query) => query,
         Err(error) => {
-            return rendered(
+            return deliver(rendered(
                 refusal(
                     args,
                     &snapshot,
@@ -441,7 +466,7 @@ pub fn execute_query(args: &QueryArgs) -> (String, ExitIdentity) {
                 ExitIdentity::AGENT_REFUSED,
                 "query",
                 &args.root,
-            );
+            ));
         }
     };
     let orient_request = OrientRequest {
@@ -449,18 +474,26 @@ pub fn execute_query(args: &QueryArgs) -> (String, ExitIdentity) {
         principal: args.request.principal.clone(),
         budget_tokens: None,
     };
-    let orientation = match orient_deployment(&snapshot, &orient_request, &limits) {
+    let orientation_result = orient_deployment(&snapshot, &orient_request, &limits);
+    if control.is_cancelled() {
+        return cancelled_query(args, &snapshot);
+    }
+    let orientation = match orientation_result {
         Ok(orientation) => orientation,
         Err(error) => {
-            return rendered(
+            return deliver(rendered(
                 refusal(args, &snapshot, &error.to_string(), false),
                 ExitIdentity::AGENT_REFUSED,
                 "query",
                 &args.root,
-            );
+            ));
         }
     };
-    match query_response(args, &query, &orientation, historical.as_ref()) {
+    let response = query_response(args, &query, &orientation, historical.as_ref());
+    if control.is_cancelled() {
+        return cancelled_query(args, &snapshot);
+    }
+    deliver(match response {
         Ok(output) if output.len() <= MAX_QUERY_OUTPUT_BYTES => (output, ExitIdentity::SUCCESS),
         Ok(_) => rendered(
             refusal(
@@ -474,7 +507,42 @@ pub fn execute_query(args: &QueryArgs) -> (String, ExitIdentity) {
             &args.root,
         ),
         Err(_) => internal_failure("query", &args.root),
-    }
+    })
+}
+
+fn cancelled_query(args: &QueryArgs, snapshot: &DeploymentSnapshot) -> (String, ExitIdentity) {
+    let digest = request_identity("fss.cli.query.cancelled.v1", |encoder| {
+        encoder.text(&snapshot_anchor_token(snapshot));
+        args.request.principal.encode_canonical(encoder);
+        args.request.filter.encode_canonical(encoder);
+        encoder.u64(u64::from(args.request.max_entries));
+        for token in [
+            args.request
+                .expected_anchor
+                .as_ref()
+                .map(AnchorToken::as_str),
+            args.request.continuation.as_deref(),
+            args.at.as_ref().map(AnchorToken::as_str),
+        ] {
+            encoder.bool(token.is_some());
+            if let Some(token) = token {
+                encoder.text(token);
+            }
+        }
+    });
+    crate::request_control::cancelled_snapshot_read(
+        crate::request_control::CancelledRead {
+            command: "query",
+            operation: "query",
+            root: &args.root,
+            request_digest: digest,
+            principal: &args.request.principal,
+            view: AgentView::Case,
+            capability: CAPABILITY_QUERY,
+            payload_schema: AgentCognitiveEnvelope::SCHEMA,
+        },
+        snapshot,
+    )
 }
 
 #[cfg(test)]

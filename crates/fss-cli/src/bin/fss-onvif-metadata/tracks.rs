@@ -250,8 +250,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<Options, &'static str> {
         60_000,
     )? * 1_000_000;
     limits.validate().map_err(|_| ARGUMENT_ERROR)?;
-    let mut read_limits =
-        NativeOnvifReadLimits::from_tracks(limits).map_err(|_| ARGUMENT_ERROR)?;
+    let mut read_limits = NativeOnvifReadLimits::from_tracks(limits).map_err(|_| ARGUMENT_ERROR)?;
     read_limits.max_deployment_read_bytes = number(
         &values,
         "--max-deployment-read-bytes",
@@ -264,7 +263,9 @@ pub(super) fn parse(args: &[OsString]) -> Result<Options, &'static str> {
         read_limits.max_deployment_read_attempts as u64,
         MAX_NATIVE_DEPLOYMENT_READ_ATTEMPTS as u64,
     )? as usize;
-    read_limits.validate(&OnvifAnalysis::Tracks).map_err(|_| ARGUMENT_ERROR)?;
+    read_limits
+        .validate(&OnvifAnalysis::Tracks)
+        .map_err(|_| ARGUMENT_ERROR)?;
     let mut approval = CanonicalEncoder::new();
     approval.text("fss.onvif_vendor_tracklet_cli_request.v2");
     approval.text(root.to_str().ok_or(ARGUMENT_ERROR)?);
@@ -302,9 +303,7 @@ fn run(options: Options) -> Result<(CommandOutput, bool), &'static str> {
     let storage_operations = (options.limits.max_work_units as u64)
         .checked_mul(4)
         .and_then(|n| n.checked_add(4 * options.limits.max_indexed_reads + 4096))
-        .and_then(|n| {
-            n.checked_add(4 * options.read_limits.max_deployment_read_attempts as u64)
-        })
+        .and_then(|n| n.checked_add(4 * options.read_limits.max_deployment_read_attempts as u64))
         .ok_or(LIMIT_ERROR)?;
     let bytes = options
         .limits

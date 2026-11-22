@@ -220,3 +220,69 @@ fn exact_anchor_and_wrong_cursor_refusals_are_not_empty_successes() -> TestResul
     assert_eq!(snapshot(&root)?, before);
     Ok(())
 }
+
+#[test]
+fn cancelled_query_identity_keeps_filters_page_and_history_preconditions() -> TestResult {
+    let (_directory, root) = Directory::deployment("cancelled-identity")?;
+    let snapshot = read_deployment(&root, &OrientLimits::default())?;
+    let token = snapshot_anchor_token(&snapshot);
+    let base = parse(&[])?;
+    let original = cancelled_query(&base, &snapshot);
+    assert_eq!(original.1, ExitIdentity::AGENT_REFUSED);
+    for extra in [
+        vec!["--zone", "door"],
+        vec!["--max-entries", "1"],
+        vec!["--from-ns", "1"],
+        vec!["--through-ns", "2"],
+        vec!["--principal", "principal:another"],
+        vec!["--anchor", token.as_str()],
+        vec!["--at", token.as_str()],
+        vec!["--continuation", "continuation:cancelled"],
+    ] {
+        let changed = cancelled_query(&parse(&extra)?, &snapshot);
+        assert_eq!(changed.1, ExitIdentity::AGENT_REFUSED);
+        let read_id = |body: &str| -> TestResult<String> {
+            let value = crate::json_input::parse(body)?;
+            let object = value.object().ok_or("cancelled response object")?;
+            object
+                .get("requestId")
+                .and_then(crate::json_input::Value::text)
+                .map(str::to_owned)
+                .ok_or_else(|| "cancelled request identity".into())
+        };
+        assert_ne!(read_id(&original.0)?, read_id(&changed.0)?, "{extra:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn cancellation_during_query_refusal_rendering_keeps_the_cancelled_outcome() -> TestResult {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let (_directory, root) = Directory::deployment("cancelled-refusal-delivery")?;
+    let mut args = parse(&["--continuation", "continuation:wrong-stream"])?;
+    args.root = root.clone();
+    let before = snapshot(&root)?;
+    let observations = AtomicUsize::new(0);
+    let never = || {
+        observations.fetch_add(1, Ordering::AcqRel);
+        false
+    };
+    let (original, exit) = execute_query_with_control(&args, &crate::RequestControl::new(&never));
+    assert_eq!(exit, ExitIdentity::AGENT_REFUSED, "{original}");
+    assert!(original.contains("\"outcome\":\"refused\""), "{original}");
+    let checkpoints = observations.load(Ordering::Acquire);
+    assert!(checkpoints > 4);
+    let attempts = AtomicUsize::new(0);
+    let cancel_last = || attempts.fetch_add(1, Ordering::AcqRel) >= checkpoints - 1;
+    let (cancelled, exit) =
+        execute_query_with_control(&args, &crate::RequestControl::new(&cancel_last));
+    assert_eq!(exit, ExitIdentity::AGENT_REFUSED, "{cancelled}");
+    assert!(
+        cancelled.contains("\"outcome\":\"cancelled\""),
+        "{cancelled}"
+    );
+    assert!(cancelled.contains("\"payload\":null"), "{cancelled}");
+    assert_eq!(snapshot(&root)?, before);
+    Ok(())
+}

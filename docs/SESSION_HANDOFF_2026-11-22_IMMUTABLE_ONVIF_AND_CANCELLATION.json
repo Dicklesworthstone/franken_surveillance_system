@@ -1,0 +1,134 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-22",
+  "date_timezone": "America/New_York",
+  "mission": "Prioritize substantial remaining functionality from the comprehensive plan and Beads; implement and commit meaningful changes directly to main through the authorized GitHub connector, without PRs.",
+  "basis": {
+    "started_at": "2aa80b85eb241589550e96eae111fd29e9985913",
+    "integration_base": "bbad2de992c38535580bb7c649e7c510fe1601e5",
+    "plan": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+    "backlog": ".beads/issues.jsonl",
+    "backlog_access": "The 11.5 MB JSONL initially exceeded the connector content limit. Relevant Bead rows were first recovered from recent commit diffs and checked against code/status. After the execution host recovered, the complete 1,834-row JSONL was read from the checkout and the owning FSS-046/FSS-177 rows confirmed open. Broad Beads were not closed or rewritten; this handoff records narrower implementation progress.",
+    "priorities": [
+      {
+        "bead": "fss-x4a.11.4",
+        "external_ref": "FSS-046",
+        "gap": "Native ONVIF tracks/lifecycle/zones opened a publication owner despite existing immutable canonical-query reconstruction, making analytical reads compete with live capture.",
+        "status": "materially advanced; broad bead remains open and unqualified"
+      },
+      {
+        "bead": "fss-x4a.25.2",
+        "external_ref": "FSS-177",
+        "gap": "Existing borrowed MCP/native request cancellation was absent inside doctor, legacy event queries and unsessioned orient.",
+        "status": "materially advanced; broader request admission and qualification remain open"
+      }
+    ],
+    "rejected_stale_gap": "Recent archive Bead notes still described missing multipart driver pieces already implemented in StagedUpload. Source review identified native S3 write transport as the real remaining archive gap; no duplicate uploader was built."
+  },
+  "authority": {
+    "repository": "Explicit user authorization for direct main commits. Every ref update uses expected_sha with force=false. No PRs or protection changes.",
+    "onvif": "Existing owned local source pins, explicit root/site and read-only native authority. No camera acquisition, publisher opening, recovery, effect reconciliation or source-value disclosure expansion.",
+    "cancellation": "RequestControl borrows the existing transport owner's probe. Read-only results are suppressed after observed cancellation; admitted effects/session writes retain their original owner, receipts and outcome semantics.",
+    "fleet": "Fleet waits and registry reviewed; no live device or network acquisition attempted."
+  },
+  "delivered": [
+    {
+      "commit": "4f40ac461d5b7afdc2bd65cd0a6671499891699b",
+      "feature": "Immutable native ONVIF analysis owner",
+      "scope": "Complete source-verified tracks/lifecycle/zones, two source passes, final deployment authority/effect/deletion checks, separate nonrenewing source/metadata budgets and non-Sync native admission."
+    },
+    {
+      "commit": "bbad2de992c38535580bb7c649e7c510fe1601e5",
+      "feature": "Native ONVIF command integration",
+      "scope": "Read-only tracks/lifecycle/zones during capture, complete native rows, v2 closed schemas, precise custody accounting, preserved v1 types/projection identities/disclosure and documentation."
+    },
+    {
+      "commit": "this_commit",
+      "feature": "Cooperative legacy metadata reads",
+      "scope": "Cancellable doctor capabilities, current/historical history and snapshot reconstruction, event query and unsessioned orient phase/delivery checks, typed pre-snapshot diagnostic and snapshot-only cancelled responses."
+    }
+  ],
+  "contracts": {
+    "onvif": "Refuse the whole report on missing/torn histories, source changes, metadata drift, deletion, exhausted bounds or failed admission. Repeated bounded observations are not an atomic filesystem lease.",
+    "report_compatibility": "Native command output schema advances to v2 because filesystem-call accounting differs from the original indexed publisher reads. Original pure projection/source handles and vendor-value opt-in remain unchanged; v1 schemas and legacy Retained APIs remain.",
+    "legacy_reads": "Uncancelled successful behavior, native ledger error semantics, snapshot accounting and semantic identities are preserved. No success is delivered after cancellation observed at a completion gate.",
+    "cancellation_classification": "Without a complete verified snapshot, use ERR-CLI-READ-CANCELLED-001 / EXIT-AGENT-REFUSED-005. With a complete snapshot, use outcome=cancelled, null payload, no continuation/affordances; do not reread storage to fabricate an anchor.",
+    "limits": "Cooperative cancellation cannot terminate an in-progress bounded syscall. Pure query/orientation and trauma-guard derivation have phase gates. Final ONVIF metadata verification is one bounded finalization admitted before it starts; CLI delivery gates cancellation/deadline afterward."
+  },
+  "validation": {
+    "executed_rustfmt": true,
+    "executed_rust_tests": false,
+    "executed_local_qualification": false,
+    "source_review": "Separate reviewers inspected ONVIF and cancellation core/CLI paths. A cancellation operation-name mismatch and a trauma-refusal reread were corrected before the cancellation commit. Query refusal rendering also passes the final delivery gate.",
+    "static_checks": [
+      "New v2 JSON parses; internal schema references resolve and pure projection $defs match v1 exactly.",
+      "Renderer format argument counts and envelope key sets were inspected.",
+      "Generated robot schema/error catalog formatting was reproduced byte-for-byte against the baseline before applying new registry rows.",
+      "Touched-file SHA-256 rows were refreshed in the layered manifest using a hash implementation checked against known vectors and existing repository entries.",
+      "Each direct main update was protected by the expected parent SHA.",
+      "Pinned rustfmt completed successfully on all 27 Rust files changed in the session.",
+      "scripts/schema_validate.py passed: 199 evaluated schemas, 3,383 resolved references, 0 errors; constitution has 208 declarations, 949 digest domains and 0 unregistered declarations.",
+      "scripts/generate_robot_docs.py --check and scripts/robot_docs_checker.py passed with 208 schemas and 653 errors.",
+      "Three focused digest-domain structure tests passed.",
+      "git diff --check passed after formatting.",
+      "Changed-path manifest coverage passed with zero findings on 30 paths; whole-tree audit reported 511 existing findings with none on those changed paths."
+    ],
+    "authored_regressions": {
+      "onvif_core": 7,
+      "onvif_cli": 3,
+      "cancellation_core": 9,
+      "cancellation_cli": 6,
+      "scope": "Writer-held complete XML/RTP/empty reports; metadata/source budgets; missing/torn histories and no repair; late authority changes; non-Sync admission; zero-I/O and sticky cancellation; current/historical semantics; final delivery; exact query identity; no storage reread for cancelled rendering."
+    },
+    "environment_blocker": "The initial root filesystem was full and execution disconnected. The restored host allowed a full checkout, full Beads read, exact pinned toolchain discovery, dependency fetch and static checks. Concurrent host memory pressure then killed both native build attempts despite one job and no debug information. Task-owned target/cache were removed afterward. The host disconnected again during final documentation synchronization; formatted source and review drafts survived in the connector workflow, and final documentation was reconstructed there before the direct-main commit.",
+    "hosted_checks": "Eight existing workflows for bbad2de were queued/pending when inspected; no passing result was observed. Hosted checks are supplementary and cannot substitute for repository-owned local qualification.",
+    "complete_gate_result": "not passed; source/static checks succeeded, native builds and qualification remain blocked",
+    "additional_attempt": "The complete tests/test_schema_validate.py suite started after its three focused regressions passed; final output was not observed before the host disconnected again. No full-suite pass is claimed.",
+    "attempted_rust_builds": true,
+    "completed_rust_builds": false,
+    "attempted_local_docs_qualification": true,
+    "toolchain": {
+      "channel": "nightly-2026-08-31",
+      "rustc": "1.100.0-nightly (908501772 2026-08-30)",
+      "cargo": "1.100.0-nightly (e8cb624d5 2026-08-22)",
+      "rustfmt": "1.10.0-nightly (9085017724 2026-08-30)"
+    },
+    "build_attempts": [
+      {
+        "command": "cargo test -p fss-reference --lib doctor::cancellation --locked --offline",
+        "result": "blocked",
+        "detail": "Unchanged asupersync 0.5.0 compiler process received SIGKILL before fss-reference. One job, debug info disabled, incremental compilation disabled; no project diagnostic or test result."
+      },
+      {
+        "command": "cargo check -p fss-reference --tests --locked --offline",
+        "result": "blocked",
+        "detail": "Host killed the process with exit 137 while checking libc 0.2.191; no project diagnostic."
+      }
+    ],
+    "local_docs_qualification": {
+      "command": "scripts/qualify.sh docs --receipt-dir /tmp/fss-qualification-docs",
+      "result": "interrupted, exit 130",
+      "detail": "Netseal and capacity preflight passed. Policy log reported missing rustup in the qualifier PATH plus existing dependency/toolchain/registration violations. The owner interrupted the run under host resource pressure; no completed docs/full qualification receipt is claimed."
+    }
+  },
+  "remaining": [
+    "Run pinned-nightly compilation and focused Rust regressions, then required local qualification, on a host with sufficient available memory. Preserve the existing qualification failures; do not weaken lanes.",
+    "FSS-046 retains broader acquisition/device/performance qualification and native read release evidence.",
+    "FSS-177 retains explain cancellation propagation, full request-envelope admission and integrated transport/request lifetime qualification.",
+    "Native S3 write transport remains an archive functionality gap; existing multipart/staging implementation must be reused."
+  ],
+  "focused_verification_commands": [
+    "cargo +nightly-2026-08-31 fmt --all -- --check",
+    "cargo +nightly-2026-08-31 test -p fss-reference --test onvif_metadata_tracks_custody",
+    "cargo +nightly-2026-08-31 test -p fss-cli --test onvif_metadata_tracks_cli --test onvif_metadata_zones_cli",
+    "cargo +nightly-2026-08-31 test -p fss-cli --bin fss-onvif-metadata",
+    "cargo +nightly-2026-08-31 test -p fss-reference --lib doctor::cancellation",
+    "cargo +nightly-2026-08-31 test -p fss-reference --lib agent_orient::tests",
+    "cargo +nightly-2026-08-31 test -p fss-cli --lib request_control::tests",
+    "cargo +nightly-2026-08-31 test -p fss-cli --lib query_cmd::tests",
+    "python3 -B scripts/manifest_delta_gate.py --worktree",
+    "python3 -B scripts/generate_robot_docs.py --check",
+    "scripts/qualify.sh"
+  ],
+  "readiness": "Source-reviewed and formatted implementation, schema/catalog checks and authored regressions committed. Native compilation, runtime tests, fleet and release readiness are not established."
+}

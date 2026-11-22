@@ -25,6 +25,8 @@ pub const ERR_CLI_UNEXPECTED_POSITIONAL: &str = "ERR-CLI-UNEXPECTED-POSITIONAL-0
 pub const ERR_CLI_TRAILING_ARGUMENT: &str = "ERR-CLI-TRAILING-ARGUMENT-001";
 /// Stable error identity for runtime execution failure.
 pub const ERR_CLI_RUNTIME_FAILURE: &str = "ERR-CLI-RUNTIME-FAILURE-001";
+/// Stable error identity for cancellation before a read obtains a verified snapshot.
+pub const ERR_CLI_READ_CANCELLED: &str = "ERR-CLI-READ-CANCELLED-001";
 /// Stable error identity for doctor inspection requiring attention.
 pub const ERR_DOCTOR_ATTENTION_REQUIRED: &str = "ERR-DOCTOR-ATTENTION-REQUIRED-001";
 /// Stable error identity when target is not a recognized deployment.

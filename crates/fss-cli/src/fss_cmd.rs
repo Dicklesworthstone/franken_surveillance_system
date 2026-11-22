@@ -24,7 +24,7 @@ use crate::negative_evidence_cmd::{
 use crate::onvif_query_cmd::{OnvifQueryArgs, execute_onvif_query_with_control};
 use crate::orient_cmd::{ExplainArgs, OrientArgs, parse_explain_args, parse_orient_args};
 use crate::qsr_query_cmd::{QsrQueryArgs, execute_qsr_query_with_control};
-use crate::query_cmd::{QueryArgs, execute_query};
+use crate::query_cmd::QueryArgs;
 use crate::recording_query_cmd::discover::{
     RecordingDiscoveryQueryArgs, execute_recording_discovery_query_with_control,
 };
@@ -575,7 +575,11 @@ fn execute_fss_with_clock_and_control(
         FssCommand::Doctor(DoctorArgs {
             root: Some(ref root),
         }) => {
-            let report = fss_reference::doctor::inspect_deployment(root);
+            let Some(report) = fss_reference::doctor::inspect_deployment_cancellable(root, &|| {
+                control.is_cancelled()
+            }) else {
+                return crate::request_control::cancelled_read("doctor", root);
+            };
             let exit_id = match report.verdict {
                 fss_reference::doctor::DoctorVerdict::Healthy => ExitIdentity::SUCCESS,
                 fss_reference::doctor::DoctorVerdict::AttentionRequired => {
@@ -586,17 +590,23 @@ fn execute_fss_with_clock_and_control(
                 }
                 fss_reference::doctor::DoctorVerdict::Unreadable => ExitIdentity::RUNTIME_FAILURE,
             };
-            (report.to_json(), exit_id)
+            let output = report.to_json();
+            if control.is_cancelled() {
+                return crate::request_control::cancelled_read("doctor", root);
+            }
+            (output, exit_id)
         }
         FssCommand::Status(ref args) => execute_status_with_control(args, control),
         FssCommand::Site(ref command) => execute_site(command),
         FssCommand::NegativeEvidence(ref action) => execute_negative_evidence(action),
-        FssCommand::Orient(ref args) => crate::orient_cmd::execute_orient_with_time(args, clock),
+        FssCommand::Orient(ref args) => {
+            crate::orient_cmd::execute_orient_with_control(args, clock, control)
+        }
         FssCommand::Explain(ref args) => crate::orient_cmd::execute_explain_with_time(args, clock),
         FssCommand::Follow(ref args) => {
             crate::follow_cmd::execute_follow_with_request_control(args, clock, control)
         }
-        FssCommand::Query(ref args) => execute_query(args),
+        FssCommand::Query(ref args) => crate::query_cmd::execute_query_with_control(args, control),
         FssCommand::FootageQuery(ref args) => execute_footage_query_with_control(args, control),
         FssCommand::OnvifQuery(ref args) => execute_onvif_query_with_control(args, control),
         FssCommand::QsrQuery(ref args) => execute_qsr_query_with_control(args, control),

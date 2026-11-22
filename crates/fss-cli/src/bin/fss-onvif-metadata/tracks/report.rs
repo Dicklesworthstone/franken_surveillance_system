@@ -8,9 +8,7 @@ mod projection;
 use std::fmt::{self, Write};
 
 use fss_core::{CanonicalEncode, ContentDigest};
-use fss_reference::onvif::metadata::native_read::{
-    NATIVE_ONVIF_READ_SCHEMA, NativeOnvifRead,
-};
+use fss_reference::onvif::metadata::native_read::{NATIVE_ONVIF_READ_SCHEMA, NativeOnvifRead};
 use fss_reference::onvif::metadata::tracks::contract::TRACKLET_GENERATION;
 
 /// Hard complete JSON byte bound, independent of the canonical projection's byte ceiling.

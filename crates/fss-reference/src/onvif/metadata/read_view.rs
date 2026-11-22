@@ -309,7 +309,16 @@ pub(crate) fn read_analysis(
     cancelled: &(impl Fn() -> bool + Sync),
 ) -> Result<OnvifReadResult, OnvifReadError> {
     read_analysis_inner(
-        io, archive_root, site, batches, deletions, pins, analysis, limits, cancelled, cancelled,
+        io,
+        archive_root,
+        site,
+        batches,
+        deletions,
+        pins,
+        analysis,
+        limits,
+        cancelled,
+        cancelled,
     )
 }
 
@@ -330,7 +339,16 @@ pub(crate) fn read_analysis_with_admission(
     refused: &dyn Fn() -> bool,
 ) -> Result<OnvifReadResult, OnvifReadError> {
     read_analysis_inner(
-        io, archive_root, site, batches, deletions, pins, analysis, limits, &|| false, refused,
+        io,
+        archive_root,
+        site,
+        batches,
+        deletions,
+        pins,
+        analysis,
+        limits,
+        &|| false,
+        refused,
     )
 }
 

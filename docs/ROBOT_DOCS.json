@@ -932,6 +932,11 @@
       "id": "ERR-CLI-MISSING-VALUE-001"
     },
     {
+      "description": "A started doctor, event query or unsessioned orientation observed its request owner's cancellation before it could deliver a complete read; no fresh verified response anchor is available",
+      "guidance": "Start a new explicitly owned request if desired. Do not interpret this refusal as a missing/corrupt deployment, healthy doctor verdict, empty query or physical absence. No automatic retry, store initialization, journal repair or effect rollback occurs.",
+      "id": "ERR-CLI-READ-CANCELLED-001"
+    },
+    {
       "description": "runtime error occurred during validated command execution",
       "guidance": "inspect diagnostic and address failure cause",
       "id": "ERR-CLI-RUNTIME-FAILURE-001"
@@ -1670,6 +1675,11 @@
       "description": "a file import's operator capture hint would place capture after the bytes were received: the hint starts after `receive_time` (`CaptureHintAfterReceive`) or some frame's interval `start + i / fps + uncertainty` would end after it (`CaptureHintLatestAfterReceive`, fss-roeq0); refused before anything is staged and never clamped, since receive time bounds capture; an interval ending exactly at `receive_time` is admitted",
       "guidance": "correct the hint (earlier start, smaller uncertainty, or the true frame rate) or the receive time; do not retry unchanged",
       "id": "ERR-INGEST-CAPTURE-HINT-AFTER-RECEIVE-001"
+    },
+    {
+      "description": "the complete standard AVC FLV file was refused: malformed framing or previous-tag size, filtered/vendor/non-AVC video, missing or changed configuration, contradictory keyframe assertion, invalid NAL framing, duplicate/reversing/wrapped decoding timestamps, video after end-of-sequence, a torn tag or an exhausted parse bound; no partial import is published",
+      "guidance": "preserve the original; repair or remux a separate copy to the admitted standard AVC profile; do not infer a timestamp epoch, drop tags or retry unchanged",
+      "id": "ERR-INGEST-FLV-REFUSED-001"
     },
     {
       "description": "an Annex-B file's first NAL unit header is valid as both H.264 and H.265 and no media format was declared; the importer never guesses the codec",
@@ -4978,11 +4988,25 @@
       "schema": "fss.onvif_vendor_lifecycle_report.v1"
     },
     {
+      "authority": "immutable source-verified derived cognition over vendor claims",
+      "compatibilityRule": "Complete original tracks-v1 grouping in the v2 immutable custody envelope plus unchanged full lifecycle/document rows and parser policies. Native projections, source handles and disclosure stay unchanged; current authority and separate source/deployment accounting use the immutable snapshot domain. At most 32 MiB, no hidden 32-row query ceiling, publisher opening, journal repair or effect authority.",
+      "file": "schemas/onvif_vendor_lifecycle_report.v2.json",
+      "id": "SCHEMA-ONVIF-VENDOR-LIFECYCLE-REPORT-002",
+      "schema": "fss.onvif_vendor_lifecycle_report.v2"
+    },
+    {
       "authority": "source-verified derived cognition over vendor claims",
       "compatibilityRule": "Complete ordered XML/RTP source pins, current authority anchor, original source/document/frame/object handles, conservative vendor-local ObjectId runs and explicit processing limitations. Both source-reconstruction passes share finite read/work allowances; independent sources, missing observations, unknown lifecycle, clock and transform boundaries prevent continuity. At most 32 source pins, 1024 frames, 4096 object occurrences, 4096 tracklets and 16 MiB complete JSON. Raw module, ObjectId and vendor UTC values are null unless explicitly disclosed; nanosecond timestamps are exact decimal strings. Canonical identities bind frozen generation, source pins, policy, complete rows and accounting; emitted JSON is not an authority credential. No physical identity, authenticated origin, coverage, absence, calibrated geometry, event authority or effect permission.",
       "file": "schemas/onvif_vendor_tracklets_report.v1.json",
       "id": "SCHEMA-ONVIF-VENDOR-TRACKLETS-REPORT-001",
       "schema": "fss.onvif_vendor_tracklets_report.v1"
+    },
+    {
+      "authority": "immutable source-verified derived cognition over vendor claims",
+      "compatibilityRule": "Complete unchanged tracks-v1 source/row/projection identities and disclosure in a writer-independent native envelope. Explicit source closure bytes/all filesystem calls and separate deployment metadata payload-byte/read-attempt accounting, original nonrenewing balances through final revalidation, immutable owner/request/decision commitments and false publisher/recovery flags. Missing/torn journals refuse without repair. At most 32 pins/1024 frames/4096 occurrences and 16 MiB; no synopsis truncation, physical identity, coverage, absence or effect authority. V1 schemas/APIs retain original meanings.",
+      "file": "schemas/onvif_vendor_tracklets_report.v2.json",
+      "id": "SCHEMA-ONVIF-VENDOR-TRACKLETS-REPORT-002",
+      "schema": "fss.onvif_vendor_tracklets_report.v2"
     },
     {
       "authority": "explicit operator raw-coordinate declaration; no calibration",
@@ -4997,6 +5021,13 @@
       "file": "schemas/onvif_vendor_zones_report.v1.json",
       "id": "SCHEMA-ONVIF-VENDOR-ZONES-REPORT-001",
       "schema": "fss.onvif_vendor_zones_report.v1"
+    },
+    {
+      "authority": "immutable source-verified derived cognition over vendor claims",
+      "compatibilityRule": "Complete unchanged native tracks and zone matrices/policies/transition handles in the v2 immutable custody envelope. Exact policy-file bytes remain separately committed; source and deployment allowances remain explicit and nonrenewing. At most 32 MiB; same disclosure/unknown semantics, no publisher opening, journal repair, calibrated geometry, physical identity, coverage or effect authority.",
+      "file": "schemas/onvif_vendor_zones_report.v2.json",
+      "id": "SCHEMA-ONVIF-VENDOR-ZONES-REPORT-002",
+      "schema": "fss.onvif_vendor_zones_report.v2"
     },
     {
       "authority": "effect truth",
