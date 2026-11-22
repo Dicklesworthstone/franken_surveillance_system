@@ -846,3 +846,19 @@ Invalid CLI arguments, archive-open failures and output failures retain the exis
 error identities. Unusable per-sample replay extensions are explicit unknown rows with
 the packet error code where applicable; they do not erase the sample or fail a sound
 original's custody verification.
+
+## Immutable native ONVIF reads
+
+| Stable error | Meaning | Recovery |
+|---|---|---|
+| `onvif.native_read.invalid_request` | Invalid exact deployment root, site, source pins or explicit limits | Correct the explicit request before retrying. No source fallback is selected. |
+| `onvif.native_read.deployment` | Opening or final deployment metadata is missing, corrupt or unreadable | Inspect the retained deployment; refusal does not establish an empty result. |
+| `onvif.native_read.incomplete_history` | The effects journal is absent or either authority journal has an uncommitted tail | Complete explicit owner recovery and make a fresh read. This read never repairs journals. |
+| `onvif.native_read.changed` | Authority, layout, effect history or deletion restrictions changed during the read | Make a fresh complete read against current authority. No partial report is released. |
+| `onvif.native_read.cancelled` | Native admission refused a cooperative cancellation, authority or deadline checkpoint | Use a fresh authorized owner if a new read is desired; the interrupted request returns no partial report. |
+| `onvif.native_read.metadata_budget` | The single deployment metadata allowance was exhausted or poisoned | Narrow the request or explicitly admit a larger bounded allowance. Opening and final verification do not refill it. |
+
+Source refusals retain their existing `onvif.query`, `onvif.tracks`,
+`onvif.lifecycle` and `onvif.zones` identities. Metadata read failures after a
+cooperative refusal can retain their underlying deployment or budget classification;
+none permits partial result delivery.

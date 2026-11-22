@@ -308,10 +308,52 @@ pub(crate) fn read_analysis(
     limits: OnvifReadLimits,
     cancelled: &(impl Fn() -> bool + Sync),
 ) -> Result<OnvifReadResult, OnvifReadError> {
+    read_analysis_inner(
+        io, archive_root, site, batches, deletions, pins, analysis, limits, cancelled, cancelled,
+    )
+}
+
+/// Native synchronous owners can borrow a non-Sync task authority. Source reconstruction
+/// brackets every manifest/child read and each complete-root revalidation with this admission;
+/// pure replay and projection also cooperate. Individual filesystem syscalls remain bounded
+/// parts of one admitted read and are not preempted. The flat reader still meters every call.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn read_analysis_with_admission(
+    io: &dyn SpoolIo,
+    archive_root: &Path,
+    site: &str,
+    batches: &[EvidenceDeltaBatch],
+    deletions: &DeletionIndex,
+    pins: &[TrackSourcePin],
+    analysis: &OnvifAnalysis,
+    limits: OnvifReadLimits,
+    refused: &dyn Fn() -> bool,
+) -> Result<OnvifReadResult, OnvifReadError> {
+    read_analysis_inner(
+        io, archive_root, site, batches, deletions, pins, analysis, limits, &|| false, refused,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn read_analysis_inner(
+    io: &dyn SpoolIo,
+    archive_root: &Path,
+    site: &str,
+    batches: &[EvidenceDeltaBatch],
+    deletions: &DeletionIndex,
+    pins: &[TrackSourcePin],
+    analysis: &OnvifAnalysis,
+    limits: OnvifReadLimits,
+    io_cancelled: &(impl Fn() -> bool + Sync),
+    cancelled: &dyn Fn() -> bool,
+) -> Result<OnvifReadResult, OnvifReadError> {
     limits.validate(analysis)?;
     validate_pins(pins, limits.max_sources)?;
+    if cancelled() {
+        return Err(OnvifReadError::Cancelled);
+    }
     let request_digest = request_digest(site, pins, analysis, limits)?;
-    let mut reader = PinnedClosureReader::new(io, archive_root, limits.custody, cancelled)?;
+    let mut reader = PinnedClosureReader::new(io, archive_root, limits.custody, io_cancelled)?;
     let mut work = WorkBudget::new(limits.max_work_units);
     let first = read_pass(
         &mut reader,
@@ -361,6 +403,9 @@ pub(crate) fn read_analysis(
     drop(second);
     // Prepay only bounded pure commitment work before the final I/O/admission boundary.
     work.reserve(4096 + first.sources.len() * 1024 + first.references.len() * 64)?;
+    if cancelled() {
+        return Err(OnvifReadError::Cancelled);
+    }
     let read_usage = reader.finish()?;
     let decision_digest = decision_digest(request_digest, &first, read_usage, work.used())?;
     Ok(OnvifReadResult {

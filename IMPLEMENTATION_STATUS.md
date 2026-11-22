@@ -1,8 +1,25 @@
 # Implementation status
 
-**As of:** 2026-11-21 UTC (dated feature sections retain their original verification scope)
+**As of:** 2026-11-22 UTC (dated feature sections retain their original verification scope)
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
+
+## Immutable native ONVIF analysis owner — 2026-11-22
+
+The new `NativeOnvifRead` API reconstructs complete tracks, lifecycle and zone
+reports through the existing immutable source verifier while a capture writer
+retains its publication lock. Two complete source passes share one custody/work
+allowance. Opening and final authority observations share a separate bounded
+metadata allowance; neither creates a store, repairs a journal nor reconciles
+effects. Missing or torn authority histories, deletion, drift and failed admission
+refuse the complete report. Native synchronous task admission can remain non-Sync.
+
+Seven integration regressions are authored for complete XML/RTP/empty reports,
+writer-held reads, exact shared bounds, absent/torn journals, final-check races,
+cancellation and missing roots. They have received independent source review but
+have **not been compiled or executed**: the session execution host disconnected
+after its filesystem was already full. CLI migration is the next integration
+chunk. This implementation is not local qualification or closure of FSS-046.
 
 ## MCP request regions and original deadlines — 2026-11-20
 

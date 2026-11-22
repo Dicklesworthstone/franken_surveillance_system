@@ -9,6 +9,8 @@
 
 /// Additive source-verified vendor lifecycle relationships over unchanged tracklets.
 pub mod lifecycle;
+/// Complete immutable native analysis without publisher or effect recovery authority.
+pub mod native_read;
 /// Shared frozen source reconstruction through an explicitly supplied read capability.
 pub(crate) mod read_source;
 /// Immutable, source-verified projections used by canonical agent queries.
