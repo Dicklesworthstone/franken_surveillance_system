@@ -1,0 +1,146 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-22",
+  "date_timezone": "America/New_York",
+  "mission": "Implement the most important unfinished functionality from the comprehensive plan and Beads, committing meaningful slices directly to main through the authorized GitHub connector with no PRs.",
+  "basis": {
+    "started_at": "44b560b58da679b0832fc81a9e90808acdb4dead",
+    "plan": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+    "backlog": ".beads/issues.jsonl",
+    "prior_handoff": "docs/SESSION_HANDOFF_2026-11-22_IMMUTABLE_ONVIF_AND_CANCELLATION.json",
+    "priority": {
+      "bead": "fss-x4a.13.4",
+      "external_ref": "FSS-064",
+      "status": "in_progress; materially advanced, not closed",
+      "gap": "The owned multipart protocol, durable journal and read-only inspection existed, but no native S3 write transport or operational archive upload command connected them."
+    },
+    "related_beads": [
+      "fss-x4a.13.3 / FSS-063 (already closed protocol-owner slice)",
+      "fss-x4a.13.14 / FSS-130 (already closed multipart protocol slice)"
+    ],
+    "source_corrections": [
+      "Existing multipart state already treats provider ETags as opaque and binds independent checksums; old Bead notes claiming digest ETags were stale.",
+      "Existing StagedUpload already provides durable ownership, cancellation, root-last completion and indeterminate settlement. This session reuses it rather than implementing another uploader."
+    ],
+    "review": "Root AGENTS and comprehensive plan reviewed; relevant archive contracts and exact Bead rows rechecked against current source. The complete backlog was available in the checkout."
+  },
+  "authority": {
+    "repository": "User explicitly authorized repeated direct-main commits. Each GitHub ref update uses the verified expected parent SHA and force=false; no PR, force push, workflow or protection change.",
+    "runtime": "The actual ObjectStore child reaches every native request. AdapterNet, AdapterAuth, ObjectStage and ObjectPublish remain scoped to the exact route resource; source/credential/journal access uses a separate metered live owner.",
+    "network": "No live device, real provider account or remote archive was contacted. Loopback scenarios were authored but not executed. Public-address plaintext, DNS, redirects and ambient credentials are not admitted.",
+    "filesystem": "Linux x86-64/AArch64 bounded regular source/credential reads and existing exclusive journal custody. Credential values are supplied by an owner-private file, never argv or reports."
+  },
+  "delivered": [
+    {
+      "commit": "49aaf07bd231e717bddd6450a4870e2d2d7e280f",
+      "feature": "Fallible bounded multipart source driver",
+      "scope": "Exact PlannedChunk callback; bounds and source/payload/cleanup allowance before reads; durable source spend before callbacks; post-read cancellation/time checks; typed failures retain owner and acknowledged parts."
+    },
+    {
+      "commit": "5117218e4a3922d9bf57bd902e70273004e11e9b",
+      "feature": "Native signed local S3 multipart transport",
+      "scope": "Pinned approved local endpoint; existing HMAC/SHA256 and Asupersync HTTP codec; SigV4; independent part and composite checksums; opaque ETags; conditional completion; bounded clean abort; exact cold recovery; conservative unknown after ambiguous dispatch; authentication restriction retained by durable owned metadata."
+    },
+    {
+      "commit": "this_commit",
+      "feature": "Archive prepare/resume/abort operator path",
+      "scope": "Full-source SHA256 verification before effects, independently retained preparation pin, exact intent/original allowance checks on resume, remaining-budget restoration, separately scoped filesystem ownership, private credentials, bounded redacted report, process regressions and operator documentation."
+    }
+  ],
+  "contracts": {
+    "payload": "Exactly one object, at most 64 MiB. Part default 5 MiB; admitted part ceiling 64 MiB. The manifest_root on this path is the independently supplied complete source SHA256, not an invented archive-graph closure proof.",
+    "publication": "Complete only after all planned parts are independently checksum-confirmed; If-None-Match:*; validate complete success XML and composite checksum. HTTP200 embedded errors remain failures.",
+    "recovery": "Prepare returns its durable pin without provider contact or credential reads. Resume/abort require a separately retained minimum, exact route/source/operation/plan and original allowance. Only remaining transfer allowance is admitted; acknowledged parts are not repeated.",
+    "uncertainty": "Ambiguous native create/part/complete/abort never implies absence or rollback. CLI records explicit local indeterminate closure and the pre-settlement journal head as follow-up. Cold reopening that owner reports uncertainty without new provider/credential access. Native positive reconciliation is not implemented.",
+    "local_failure": "Ambiguous journal writes poison the owner and require cold reopening. Prepared/refused-but-known work remains explicitly pending in its durable journal, without a detached socket or task. Terminal local settlement is separately reported.",
+    "compatibility": "Existing upload_chunks, protocol checkpoint formats and upload-inspect report remain. Additive native recovery accessors and durable-owner guards preserve the existing owned-vs-protocol recovery distinction. New report: fss.s3_upload_cli.v1; endpoint domain: fss.s3_local_endpoint.v1.",
+    "claims_not_established": [
+      "Public-cloud TLS",
+      "Client-side encryption",
+      "Archive graph publication/closure",
+      "Independent retrievability",
+      "Replica independence",
+      "Conclusive reconciliation of lost acknowledgements",
+      "Live NAS/MinIO/B2/R2/AWS compatibility",
+      "Release qualification"
+    ]
+  },
+  "validation": {
+    "executed_rustfmt": true,
+    "executed_rust_tests": false,
+    "project_typecheck_completed": false,
+    "executed_local_qualification": false,
+    "authored_regressions": {
+      "fallible_source": 10,
+      "native_unit": 5,
+      "native_integration": 6,
+      "scoped_filesystem": 6,
+      "actual_process": 4,
+      "total": 31
+    },
+    "source_review": "Independent review checked protocol-vs-owner restoration, authentication narrowing, exact source/route binding, cancellation/budgets, conditional completion/checksums, embedded errors, socket ownership/timeouts, and source/API compatibility. Corrected local latency admission, increased journal record ceiling and refreshed/clamped per-I/O deadlines before publication.",
+    "static_checks": [
+      "Pinned nightly-2026-08-31 rustfmt parsed/formatted all 15 session-touched Rust files using skip_children=true.",
+      "git diff --check passed.",
+      "schema_validate.py passed: 199 evaluated schemas, 3383 references, 0 errors; constitution has 209 schema declarations and 950 digest domains, 0 unregistered.",
+      "generate_robot_docs.py --check passed.",
+      "robot_docs_checker.py passed with 209 schemas and 653 errors.",
+      "Exact Asupersync0.5.0 HTTP codec/Response/BytesMut/Decoder APIs and existing fss_tutk hmac_sha256 were checked against dependency source.",
+      "Local bytes and GitHub staged blob source hashes were compared before meaningful direct-main commits.",
+      "Session-touched layered manifest rows are refreshed and verified; inherited whole-tree drift is not rewritten."
+    ],
+    "build_attempts": [
+      {
+        "command": "cargo test -p fss-object --test uploader_family --locked --offline",
+        "settings": "Pinned nightly, jobs=1, incremental=0, dev/test debug=0",
+        "outcome": "SIGKILL compiling unchanged syn3.0.9; no FSS diagnostics or test execution. Host later disconnected and that transient checkout/cache disappeared."
+      },
+      {
+        "command": "cargo check -p fss-cli --bin fss-archive --locked --offline",
+        "settings": "Pinned nightly, jobs=1, incremental=0, dev/test debug=0; native-only dependency cache",
+        "outcome": "SIGKILL checking unchanged Asupersync0.5.0 metadata before FSS diagnostics.",
+        "log_sha256": "1593eff4a68ec7be663314d2a26ea7303a45d267979df48a7c82300ae08abc7f",
+        "log_bytes": 20861
+      },
+      {
+        "command": "cargo --config profile.dev.package.asupersync.codegen-units=256 --config profile.test.package.asupersync.codegen-units=256 --config profile.dev.package.fss-reference.codegen-units=256 --config profile.test.package.fss-reference.codegen-units=256 check -p fss-cli --bin fss-archive --locked --offline",
+        "rustflags": "-Zunstable-options --jobs-frontend=1 --jobs-backend=1 --jobs-linker=1 -Zmir-opt-level=0 -Zfewer-names=yes",
+        "basis": "Exact developer-only lower-memory settings recorded as successful in docs/SESSION_HANDOFF_2026-11-09_ONVIF_AGENT_QUERY.json; flags accepted by current pinned rustc.",
+        "outcome": "SIGKILL checking unchanged Asupersync0.5.0 metadata before FSS diagnostics; exit101.",
+        "wall_seconds": 117.839,
+        "child_max_rss_kib": 2214432,
+        "log_sha256": "093bdb90b19d629bc030ba2a535eda06f82979df7f64b372ddf8f10af36b057f",
+        "log_bytes": 21560
+      }
+    ],
+    "qualification_limits": "No dependency/source/features/gates were weakened. No successful Rust compile or test execution is claimed. An ordinary recursive rustfmt traversal also encounters inherited formatting drift in unchanged fss-reference/src/agent_orient/trauma_guard.rs; it was left untouched. Hosted CI is supplementary and no passing hosted result was observed."
+  },
+  "obligations": [
+    {
+      "state": "pending",
+      "owner": "next qualified native build host",
+      "work": "Compile and execute the 31 authored regressions, existing multipart/uploader/journal regressions and archive qualification lane with pinned dependencies, preserving failures and receipts."
+    },
+    {
+      "state": "pending",
+      "owner": "FSS-064 native provider reconciliation",
+      "work": "Implement conclusive intent-bound read-only reconciliation for ambiguous native outcomes. Never treat missing objects or partial listings as proof of absence; preserve exact upload/part/intent binding."
+    },
+    {
+      "state": "pending",
+      "owner": "WP-070 secure archive integration",
+      "work": "Admit secure TLS transport/credential ownership, compose client-side encryption and graph-root publication, qualify actual providers and independently retrieve/check archived data."
+    }
+  ],
+  "continuations": [
+    "Run cargo test -p fss-object --test uploader_source_contract --test uploader_family --test durable_upload_contract --test recovered_upload_authority with sufficient native capacity.",
+    "Run cargo test -p fss-reference --lib s3_upload and --test s3_upload_native_contract on a sufficient pinned host.",
+    "Run cargo test -p fss-cli --bin fss-archive and --test archive_s3_upload_process; these include scoped filesystem and actual subprocess behavior.",
+    "Run repository-owned archive qualification; retain canonical receipts before upgrading the requirement or release claim."
+  ],
+  "documentation": [
+    "docs/NATIVE_S3_OBJECT_UPLOADS.md",
+    "docs/OWNED_ARCHIVE_UPLOADS.md",
+    "IMPLEMENTATION_STATUS.md"
+  ]
+}

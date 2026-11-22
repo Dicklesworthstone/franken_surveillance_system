@@ -4,6 +4,41 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Native local S3 object upload path — 2026-11-22
+
+The existing durable multipart owner now has a native signed HTTP transport and
+three archive operator commands: `upload-s3-prepare`, `upload-s3-resume`, and
+`upload-s3-abort`. Preparation verifies the entire independently pinned source and
+retains the initial journal before provider work. Resume requires that minimum
+pin, the exact original route/source/operation/plan and original allowance;
+acknowledged parts and spent work survive cold recovery. Known staging can abort;
+uncertain provider outcomes retain explicit local indeterminate settlement.
+
+The native adapter uses the existing first-party HMAC/SHA-256 implementation and
+Asupersync HTTP codec. Every signing/socket boundary checks actual scoped authority,
+bounded work and time. It verifies independent part checksums, preserves opaque
+ETags, conditionally completes without overwrite, and validates the full success
+XML plus composite checksum. An HTTP 200 error body is not successful completion.
+A fallible source driver durably admits exact planned ranges before callbacks and
+rechecks cancellation/deadline afterward. The CLI adds separate scoped filesystem
+ownership, private credential-file admission and a complete redacted v1 report.
+
+The admitted scope is one object up to 64 MiB, Linux x86-64/AArch64 local filesystem
+ownership, and explicitly approved pinned loopback/private HTTP endpoints. This
+adds no public-cloud TLS, client-side encryption, archive graph closure, conclusive
+native reconciliation after lost ACK, or independent retrievability claim. Broader
+FSS-064 remains in progress; previous closed FSS-063/FSS-130 protocol slices are not
+mistaken for end-to-end provider qualification.
+
+Pinned formatting, source/API review and schema/digest/robot-document checks passed.
+New Rust regressions cover source/cancellation/journal faults, AWS SigV4 vectors,
+native sockets and cold journal reuse, filesystem ownership and actual CLI processes.
+Their execution is not claimed: the normal pinned integration check was killed
+while checking unchanged Asupersync metadata before new FSS diagnostics. Exact
+validation results and any subsequent attempt are in the
+[typed handoff](docs/SESSION_HANDOFF_2026-11-22_NATIVE_S3_UPLOADS.json).
+See the [operator guide](docs/NATIVE_S3_OBJECT_UPLOADS.md).
+
 ## Cooperative legacy metadata reads — 2026-11-22
 
 The existing MCP/native `RequestControl` now reaches `doctor --root`, current

@@ -122,7 +122,11 @@ impl<E> std::fmt::Display for ChunkUploadError<E> {
                 chunk.index, chunk.len, maximum,
             ),
             Self::Source { chunk, .. } => {
-                write!(f, "upload source read failed for planned chunk {}", chunk.index)
+                write!(
+                    f,
+                    "upload source read failed for planned chunk {}",
+                    chunk.index
+                )
             }
         }
     }
@@ -1148,9 +1152,11 @@ impl<'a, T: MultipartTransport> StagedUpload<'a, T> {
         self.check_source_access(tree, now)?;
         self.require_forward_work()?;
         let maximum = max_chunk_bytes.min(usize::MAX as u64);
-        if let Some(chunk) = self.plan.chunks.iter().find(|chunk| {
-            self.session.confirmed_part(chunk.index).is_none() && chunk.len > maximum
-        }) {
+        if let Some(chunk) =
+            self.plan.chunks.iter().find(|chunk| {
+                self.session.confirmed_part(chunk.index).is_none() && chunk.len > maximum
+            })
+        {
             return Err(ChunkUploadError::SourceLimit {
                 chunk: *chunk,
                 maximum,

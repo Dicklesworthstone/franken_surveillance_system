@@ -13,9 +13,7 @@ use fss_object::multipart::{
     UploadJournalPin, validate_checkpoint_transition,
 };
 use fss_object::planner::{ChunkPolicy, MIN_PART_SIZE, PlannedChunk};
-use fss_object::uploader::{
-    ChunkUploadError, StagedUpload, UploaderError, minimum_upload_budget,
-};
+use fss_object::uploader::{ChunkUploadError, StagedUpload, UploaderError, minimum_upload_budget};
 use multipart_support::{MemoryTransport, RESOURCE, Test, budget, property, spec};
 
 fn policy() -> ChunkPolicy {
@@ -64,9 +62,7 @@ fn source_bound_refuses_before_initiation_or_source_access() -> Test {
                 &tree,
                 maximum,
                 || TimestampNs(2),
-                |_| -> Result<Vec<u8>, io::Error> {
-                    panic!("oversized source must not be read")
-                },
+                |_| -> Result<Vec<u8>, io::Error> { panic!("oversized source must not be read") },
             )
             .expect_err("source buffer bound must reject");
         assert!(matches!(
@@ -151,8 +147,16 @@ fn exact_offsets_and_tail_are_supplied_once_per_unconfirmed_part() -> Test {
     assert_eq!(
         observed,
         vec![
-            PlannedChunk { index: 0, offset: 0, len: MIN_PART_SIZE },
-            PlannedChunk { index: 1, offset: MIN_PART_SIZE, len: 3 },
+            PlannedChunk {
+                index: 0,
+                offset: 0,
+                len: MIN_PART_SIZE
+            },
+            PlannedChunk {
+                index: 1,
+                offset: MIN_PART_SIZE,
+                len: 3
+            },
         ]
     );
     let consumed = *upload.budget().consumed();
@@ -162,9 +166,7 @@ fn exact_offsets_and_tail_are_supplied_once_per_unconfirmed_part() -> Test {
         &tree,
         0,
         || TimestampNs(3),
-        |_| -> Result<Vec<u8>, io::Error> {
-            panic!("confirmed part must not be reread")
-        },
+        |_| -> Result<Vec<u8>, io::Error> { panic!("confirmed part must not be reread") },
     )?;
     assert_eq!(*upload.budget().consumed(), consumed);
     upload.finish(&mut tree, TimestampNs(4))?;
@@ -267,13 +269,11 @@ fn cancellation_before_source_does_not_initiate_remote_work() -> Test {
             &tree,
             3,
             || TimestampNs(2),
-            |_| -> Result<Vec<u8>, io::Error> {
-                panic!("cancelled source must not be read")
-            },
+            |_| -> Result<Vec<u8>, io::Error> { panic!("cancelled source must not be read") },
         ),
-        Err(ChunkUploadError::Upload(UploaderError::CancellationRequested {
-            confirmed_parts: 0,
-        }))
+        Err(ChunkUploadError::Upload(
+            UploaderError::CancellationRequested { confirmed_parts: 0 }
+        ))
     ));
     assert!(store.borrow().calls.is_empty());
     upload.cancel(&mut tree, TimestampNs(3))?;
@@ -413,13 +413,18 @@ fn failed_source_work_is_durable_before_read_and_survives_cold_recovery() -> Tes
     let intent = upload.intent().clone();
     let minimum = upload.attach_journal(&tree, TimestampNs(1), &mut journal)?;
     assert!(matches!(
-        upload.try_upload_chunks(&tree, 3, || TimestampNs(2), |_| {
-            let durable = *observed.borrow();
-            assert_eq!(durable.bytes, 3);
-            assert_eq!(durable.network_bytes, 0);
-            assert_eq!(durable.storage_operations, 2);
-            Err(source_failure())
-        }),
+        upload.try_upload_chunks(
+            &tree,
+            3,
+            || TimestampNs(2),
+            |_| {
+                let durable = *observed.borrow();
+                assert_eq!(durable.bytes, 3);
+                assert_eq!(durable.network_bytes, 0);
+                assert_eq!(durable.storage_operations, 2);
+                Err(source_failure())
+            }
+        ),
         Err(ChunkUploadError::Source { .. })
     ));
     drop(upload);
@@ -472,14 +477,16 @@ fn ambiguous_source_admission_append_never_calls_the_source() -> Test {
     let mut upload = stage(&mut parent, &mut tree, &mut transport, 3, budget(), None)?;
     let minimum = upload.attach_journal(&tree, TimestampNs(1), &mut journal)?;
     assert!(
-        upload.try_upload_chunks(
-            &tree,
-            3,
-            || TimestampNs(2),
-            |_| -> Result<Vec<u8>, io::Error> {
-                panic!("unacknowledged source admission must block the read")
-            },
-        ).is_err()
+        upload
+            .try_upload_chunks(
+                &tree,
+                3,
+                || TimestampNs(2),
+                |_| -> Result<Vec<u8>, io::Error> {
+                    panic!("unacknowledged source admission must block the read")
+                },
+            )
+            .is_err()
     );
     assert!(upload.durability_failed());
     assert_eq!(store.borrow().calls, vec![TransportOperation::Initiate]);

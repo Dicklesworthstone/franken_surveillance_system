@@ -287,3 +287,11 @@ prepared-pin inspection, uncertain transfer accounting and redaction, independen
 corruption refusal without mutation, indeterminate follow-up redaction, and cancelled or expired
 uploads restricted to cleanup. Production compilation uses the repository's pinned compiler and
 unchanged dependency closure.
+
+## Native local S3 operator path
+
+The native wire adapter and the three native S3 preparation/resume/abort commands compose
+this owner with signed, bounded local HTTP requests and independently verified source bytes.
+See [NATIVE_S3_OBJECT_UPLOADS.md](NATIVE_S3_OBJECT_UPLOADS.md) for the operator flow, retained
+minimum pin, endpoint/platform limits and unresolved reconciliation, TLS and graph-closure
+work. Existing inspection semantics are unchanged.
