@@ -110,9 +110,10 @@ indeterminate settlement, using the pre-settlement journal head as a follow-up r
 It does not blindly recreate, complete again, or delete a possibly committed object. Cold
 reopening of locally settled uncertainty reports that state without credentials or provider I/O.
 
-This native profile does not yet conclusively reconcile ambiguous remote outcomes. Missing
-objects, partial listings and timeouts are insufficient evidence. Independent provider
-reconciliation is needed before a separate repair/replacement workflow can be authorized.
+An uncertain completion can now be observed through the bounded read-only path below. Missing
+objects, partial listings and timeouts remain insufficient evidence. Lost initiation, part and
+abort acknowledgements still require other conclusive provider evidence before a separate
+repair/replacement workflow can be authorized.
 An upload interrupted between acknowledged operations can resume using its original upload ID
 and confirmed part receipts.
 
@@ -123,6 +124,79 @@ changed original budget ceiling, missing pin, revoked capability or exhausted al
 The fss.s3_upload_cli.v1 report carries intent/source/plan identities, pins, acknowledged part
 counts, cumulative/remaining transfer work, local work, receipt, uncertainty, local settlement
 and next action. Credentials, provider tokens, paths, object keys and source bytes are excluded.
+
+## Observe an indeterminate completion after restart
+
+**upload-s3-reconcile** handles an upload whose complete request became uncertain and whose
+local owner was closed as indeterminate. It opens the original journal at an independently
+retained minimum pin, validates the exact original intent and complete acknowledged inventory,
+and creates a new owner with only network, authentication and status-observation grants.
+
+The new operation has its own finite deadline and explicit allowance. The old upload deadline
+may have expired; its original budget is neither enlarged nor spent again. Original identity,
+privacy and retention restrictions remain, and persisted network/authentication revocations
+still refuse the read. This command does not need the source file's contents.
+
+The native probe sends one signed HEAD with checksum mode enabled. A positive result requires
+the exact initiation metadata (intent, plan, root and journal custody origin), complete
+multipart SHA-256 checksum and part-count suffix, exact planned length, valid opaque ETag and
+unambiguous response framing. A different journal using the same operation/source/route has a
+different custody origin, so an older matching object cannot mask its unfinished upload.
+
+The origin is bound before initiation from the verified physical journal namespace and its
+first committed record. Copied journals cannot supply another owner. Older uploads made without
+this metadata, and unbound/non-durable transports, cannot obtain positive HEAD reconciliation;
+they remain unknown even if ordinary intent/checksum metadata matches. No historic checkpoint
+format is rewritten or upgraded by observing it.
+
+Supply the same original source identity, source path, route, part size and **upload operation**.
+The deadline and transfer bounds on this command authorize the **new observation**. Choose a
+distinct observation operation and a new receipt pathname outside the original journal, source
+and credential paths. Its parent directory must already exist:
+
+    fss-archive upload-s3-reconcile \
+      --source /absolute/path/object.bin \
+      --source-sha256 sha256:INDEPENDENT_SOURCE_SHA256_HEX \
+      --source-bytes EXACT_SOURCE_LENGTH \
+      --journal /absolute/path/original-upload-journal \
+      --peer 127.0.0.1:9000 --host 127.0.0.1:9000 \
+      --region us-east-1 --bucket evidence --key objects/EXACT_OBJECT_KEY \
+      --credentials /absolute/path/private-s3-credentials \
+      --plaintext-approval sha256:INDEPENDENT_APPROVAL_SHA256_HEX \
+      --operation operation:original-archive-object-transfer \
+      --deadline-ns FRESH_ABSOLUTE_UTC_NANOSECOND_DEADLINE \
+      --max-memory-bytes 16777216 --max-wire-bytes 2097152 --max-requests 1 \
+      --max-local-bytes 1073741824 --max-local-operations 4000000 \
+      --minimum-sequence RETAINED_SEQUENCE \
+      --minimum-root sha256:RETAINED_JOURNAL_ROOT_HEX \
+      --observation-operation operation:independent-completion-observation \
+      --observation-receipt /absolute/path/new-observation.bin
+
+If the original plan used a nondefault part size, include the same --part-bytes value.
+The receipt is canonical binary data, at most 64 KiB, with strict decode/reencoding through
+CompletionObservationReceipt. It binds the source journal head and historical indeterminate
+receipt to the exact new authority, time, spend and result. The CLI creates it exclusively with
+private permissions, fsyncs it, reads back the exact bytes, verifies stable file identity and
+timestamps, and fsyncs its parent. Existing receipts are never overwritten, including after an
+ambiguous write.
+
+| Observation result | Meaning | CLI status |
+|---|---|---|
+| completed | Exact positive evidence establishes the bound object completion; the separate receipt is durably verified. | Success only when local settlement and receipt durability also succeed. |
+| unknown | A read was attempted, but missing, denied, conflicting, incomplete or malformed evidence did not prove completion. | Failure, with uncertainty and any durable observation receipt retained. |
+| not_observed | No provider observation was admitted, for example because credentials were unavailable. | Failure, with a separately settled receipt where possible. |
+
+The JSON report uses **fss.s3_completion_observation_cli.v1**. It reports old upload spend and
+new observation spend separately, the unchanged source pin, old indeterminate proof, observation
+and optional completion digests, and whether the receipt is durably confirmed. Unknown and
+not_observed never imply that the upload failed, was aborted or can be recreated.
+
+The historical upload owner remains indeterminate even after a positive observation. Retain
+the new receipt as the linked completion evidence; upload-s3-resume continues to report the old
+owner without contacting the provider. No repeated complete, part upload or abort is permitted
+through the observation owner. If delivery or receipt writing fails, retain the original pin
+and inspect the new receipt path before authorizing a separate bounded observation. Matching
+provider metadata is still distinct from downloading and independently verifying source bytes.
 
 ## Implementation and validation
 
@@ -135,7 +209,8 @@ Protocol references:
 [SigV4](https://docs.aws.amazon.com/AmazonS3/latest/developerguide/sig-v4-header-based-auth.html),
 [CreateMultipartUpload](https://docs.aws.amazon.com/AmazonS3/latest/API/API_CreateMultipartUpload.html),
 [UploadPart](https://docs.aws.amazon.com/AmazonS3/latest/API/API_UploadPart.html), and
-[CompleteMultipartUpload](https://docs.aws.amazon.com/AmazonS3/latest/API/API_CompleteMultipartUpload.html).
+[CompleteMultipartUpload](https://docs.aws.amazon.com/AmazonS3/latest/API/API_CompleteMultipartUpload.html),
+and [HeadObject](https://docs.aws.amazon.com/AmazonS3/latest/API/API_HeadObject.html).
 
 Source and executable validation are recorded separately in the session handoff. Authored tests
 do not establish live MinIO/NAS/B2/R2/AWS compatibility or complete the broader FSS-064 archive

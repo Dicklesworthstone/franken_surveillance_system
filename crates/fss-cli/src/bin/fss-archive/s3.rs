@@ -5,6 +5,8 @@
 //! retained preparation pin; neither journal bytes nor endpoint discovery grant
 //! authority. Provider object completion is not graph closure or retrievability.
 
+#[path = "s3_observation.rs"]
+mod observation;
 #[path = "s3_io.rs"]
 mod s3_io;
 
@@ -47,7 +49,7 @@ const MAX_REPORT_BYTES: usize = 16 * 1024;
 const LOCAL_RUNTIME_NS: i128 = 600_000_000_000;
 const PRINCIPAL: &str = "principal:archive-s3-operator";
 
-pub(super) const HELP: &str = "fss-archive upload-s3-prepare | upload-s3-resume | upload-s3-abort\n\
+pub(super) const HELP: &str = "fss-archive upload-s3-prepare | upload-s3-resume | upload-s3-abort | upload-s3-reconcile\n\
   Required: --source ABSOLUTE_FILE --source-sha256 sha256:HEX --source-bytes U64\n\
             --journal ABSOLUTE_DIR --peer IP:PORT --host HOST:PORT --region NAME\n\
             --bucket NAME --key OBJECT_KEY --credentials ABSOLUTE_FILE\n\
@@ -55,11 +57,16 @@ pub(super) const HELP: &str = "fss-archive upload-s3-prepare | upload-s3-resume 
             --deadline-ns I128 --max-memory-bytes U64 --max-wire-bytes U64\n\
             --max-requests U64 --max-local-bytes U64 --max-local-operations U64\n\
   Optional: --part-bytes U64 (default 5 MiB, maximum 64 MiB)\n\
-  Resume/abort additionally require: --minimum-sequence U64 --minimum-root sha256:HEX\n\
+  Resume/abort/reconcile additionally require: --minimum-sequence U64 --minimum-root sha256:HEX\n\
+  Reconcile additionally requires: --observation-operation OPERATION_ID\n\
+                                  --observation-receipt NEW_ABSOLUTE_FILE\n\
   Prepare verifies the complete source and creates a durable pending journal without\n\
   provider contact. Independently retain its journal pin before resume or abort.\n\
   Resume skips acknowledged parts and completes the exact object without overwriting.\n\
   Abort addresses only known owned staging; an uncertain dispatch is never blindly retried.\n\
+  Reconcile observes a locally closed indeterminate completion using a new read-only owner.\n\
+  Its deadline and transfer bounds authorize only the new observation; the original upload\n\
+  stays closed. The source file is not read. A separate immutable receipt records the result.\n\
   Credentials file: access key, secret key, optional session token, one per LF-terminated\n\
   line. The file must be private to its owner. Credential values never enter argv/reports.\n\
   Only explicitly approved loopback/private S3-compatible HTTP endpoints are admitted.\n\
@@ -71,6 +78,7 @@ enum Command {
     Prepare,
     Resume,
     Abort,
+    Reconcile,
 }
 impl Command {
     fn name(self) -> &'static str {
@@ -78,14 +86,20 @@ impl Command {
             Self::Prepare => "prepare",
             Self::Resume => "resume",
             Self::Abort => "abort",
+            Self::Reconcile => "reconcile",
         }
     }
 }
 pub(super) fn handles(args: &[OsString]) -> bool {
     args.first().is_some_and(|value| {
-        ["upload-s3-prepare", "upload-s3-resume", "upload-s3-abort"]
-            .iter()
-            .any(|name| value == OsStr::new(name))
+        [
+            "upload-s3-prepare",
+            "upload-s3-resume",
+            "upload-s3-abort",
+            "upload-s3-reconcile",
+        ]
+        .iter()
+        .any(|name| value == OsStr::new(name))
     })
 }
 
@@ -119,10 +133,16 @@ struct Options {
     transfer: BudgetVector,
     local: BudgetVector,
     minimum: Option<UploadJournalPin>,
+    observation: Option<ObservationOptions>,
+}
+
+struct ObservationOptions {
+    operation: OperationId,
+    receipt: PathBuf,
 }
 
 fn parse(args: &[OsString]) -> Result<Options> {
-    const ALLOWED: [&str; 21] = [
+    const ALLOWED: [&str; 23] = [
         "--source",
         "--source-sha256",
         "--source-bytes",
@@ -144,6 +164,8 @@ fn parse(args: &[OsString]) -> Result<Options> {
         "--part-bytes",
         "--minimum-sequence",
         "--minimum-root",
+        "--observation-operation",
+        "--observation-receipt",
     ];
     if !handles(args)
         || args.len() > 1 + ALLOWED.len() * 2
@@ -157,6 +179,7 @@ fn parse(args: &[OsString]) -> Result<Options> {
         Some("upload-s3-prepare") => Command::Prepare,
         Some("upload-s3-resume") => Command::Resume,
         Some("upload-s3-abort") => Command::Abort,
+        Some("upload-s3-reconcile") => Command::Reconcile,
         _ => return Err(malformed("unknown S3 upload command")),
     };
     let mut values = BTreeMap::new();
@@ -261,7 +284,7 @@ fn parse(args: &[OsString]) -> Result<Options> {
         }),
         _ => {
             return Err(malformed(
-                "resume and abort require an independently retained minimum pin",
+                "resume, abort and reconcile require an independently retained minimum pin",
             ));
         }
     };
@@ -289,6 +312,35 @@ fn parse(args: &[OsString]) -> Result<Options> {
             "source, credentials and journal must have separate paths",
         ));
     }
+    let operation = OperationId::parse(text("--operation")?)
+        .map_err(|_| malformed("invalid stable operation identity"))?;
+    let observation = if command == Command::Reconcile {
+        let observation_operation = OperationId::parse(text("--observation-operation")?)
+            .map_err(|_| malformed("invalid observation operation identity"))?;
+        if observation_operation == operation {
+            return Err(malformed(
+                "observation requires a distinct operation identity",
+            ));
+        }
+        let receipt = path("--observation-receipt")?;
+        if [&source, &credentials, &journal]
+            .iter()
+            .any(|other| receipt.starts_with(other) || other.starts_with(&receipt))
+        {
+            return Err(malformed("observation receipt must have a separate path"));
+        }
+        Some(ObservationOptions {
+            operation: observation_operation,
+            receipt,
+        })
+    } else {
+        if values.contains_key("--observation-operation")
+            || values.contains_key("--observation-receipt")
+        {
+            return Err(malformed("observation options require upload-s3-reconcile"));
+        }
+        None
+    };
     let part_size = if values.contains_key("--part-bytes") {
         number("--part-bytes", MIN_PART_SIZE, MAX_SOURCE_BYTES)?
     } else {
@@ -297,7 +349,11 @@ fn parse(args: &[OsString]) -> Result<Options> {
     let mut transfer = BudgetVector::ZERO;
     transfer.bytes = number("--max-memory-bytes", 1, 1024 * 1024 * 1024)?;
     transfer.network_bytes = number("--max-wire-bytes", 1, 1024 * 1024 * 1024)?;
-    transfer.storage_operations = number("--max-requests", 4, 65_536)?;
+    transfer.storage_operations = number(
+        "--max-requests",
+        if command == Command::Reconcile { 1 } else { 4 },
+        65_536,
+    )?;
     let mut local = BudgetVector::ZERO;
     local.latency_ms = (LOCAL_RUNTIME_NS / 1_000_000) as u64;
     local.bytes = number("--max-local-bytes", 1, 1024 * 1024 * 1024)?;
@@ -312,10 +368,10 @@ fn parse(args: &[OsString]) -> Result<Options> {
         transfer,
         local,
         minimum,
+        observation,
         source_digest: digest("--source-sha256")?,
         source_bytes: number("--source-bytes", 0, MAX_SOURCE_BYTES)?,
-        operation: OperationId::parse(text("--operation")?)
-            .map_err(|_| malformed("invalid stable operation identity"))?,
+        operation,
         policy: ChunkPolicy { part_size },
     })
 }
@@ -384,13 +440,27 @@ fn local_io(options: &Options, origin: TimestampNs, started: Instant) -> Result<
     for (grant, path) in [
         (RuntimeGrant::ReadMedia, &options.source),
         (RuntimeGrant::AdapterAuth, &options.credentials),
-        (RuntimeGrant::ObjectStage, &options.journal),
     ] {
         let resource = path
             .to_str()
             .ok_or(Error::Runtime("path scope is not UTF-8"))?;
         scopes = scopes.with_scope(grant, [resource.to_owned()].into_iter().collect());
     }
+    let mut output_scopes = std::collections::BTreeSet::from([options
+        .journal
+        .to_str()
+        .ok_or(Error::Runtime("journal scope is not UTF-8"))?
+        .to_owned()]);
+    if let Some(observation) = &options.observation {
+        output_scopes.insert(
+            observation
+                .receipt
+                .to_str()
+                .ok_or(Error::Runtime("observation scope is not UTF-8"))?
+                .to_owned(),
+        );
+    }
+    scopes = scopes.with_scope(RuntimeGrant::ObjectStage, output_scopes);
     authority
         .narrow_grants(scopes)
         .map_err(|_| Error::Runtime("local path scope refused"))?;
@@ -399,6 +469,10 @@ fn local_io(options: &Options, origin: TimestampNs, started: Instant) -> Result<
             options.journal.clone(),
             options.source.clone(),
             options.credentials.clone(),
+            options
+                .observation
+                .as_ref()
+                .map(|value| value.receipt.clone()),
             authority,
             tree,
             started,
@@ -821,10 +895,24 @@ fn drive<T: fss_object::multipart::MultipartTransport>(
                 .map_err(|_| ()),
             MultipartPhase::Uncertain(_) => {
                 dispatch_requested = true;
-                upload
-                    .reconcile(&mut tree, wall_now()?)
-                    .map(|_| ())
-                    .map_err(|_| ())
+                match upload.reconcile(&mut tree, wall_now()?) {
+                    Ok(MultipartPhase::Completed) => upload
+                        .finish(&mut tree, wall_now()?)
+                        .map(|value| {
+                            receipt = Some(value.digest());
+                            settled = true;
+                        })
+                        .map_err(|_| ()),
+                    Ok(MultipartPhase::Aborted) => upload
+                        .cancel(&mut tree, wall_now()?)
+                        .map(|value| {
+                            receipt = Some(value.digest());
+                            settled = true;
+                        })
+                        .map_err(|_| ()),
+                    Ok(_) => Ok(()),
+                    Err(_) => Err(()),
+                }
             }
             MultipartPhase::Prepared | MultipartPhase::Uploading
                 if options.command == Command::Abort =>
@@ -1029,6 +1117,9 @@ fn execute_in(options: &Options, local: &Arc<ScopedS3Io>) -> Result<Report> {
 }
 
 fn execute(options: &Options) -> Result<(String, bool)> {
+    if options.command == Command::Reconcile {
+        return observation::execute(options);
+    }
     let started = Instant::now();
     let local = local_io(options, wall_now()?, started)?;
     let result = execute_in(options, &local);
@@ -1047,6 +1138,7 @@ fn execute(options: &Options) -> Result<(String, bool)> {
             Command::Prepare => report.phase == MultipartPhase::Prepared,
             Command::Resume => report.phase == MultipartPhase::Completed && report.settled,
             Command::Abort => report.phase == MultipartPhase::Aborted && report.settled,
+            Command::Reconcile => false,
         };
     Ok((report.render(options)?, success))
 }

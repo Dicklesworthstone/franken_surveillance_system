@@ -10,7 +10,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{DirEntry, File, FileType, Metadata, OpenOptions, ReadDir, TryLockError};
-use std::io::{self, Read};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Instant;
@@ -24,11 +24,13 @@ pub(super) const MAX_CREDENTIAL_BYTES: u64 = 8192;
 const MAX_JOURNAL_CALL_BYTES: u64 = 17 * 1024 * 1024;
 const READ_CHUNK: usize = 64 * 1024;
 const MAX_HANDLES: usize = 4096;
+const MAX_OBSERVATION_RECEIPT_BYTES: usize = 64 * 1024;
 
 pub(super) struct ScopedS3Io {
     journal_root: PathBuf,
     source: PathBuf,
     credentials: PathBuf,
+    observation_receipt: Option<PathBuf>,
     started: Instant,
     origin: TimestampNs,
     state: Mutex<State>,
@@ -87,6 +89,7 @@ impl ScopedS3Io {
         journal_root: PathBuf,
         source: PathBuf,
         credentials: PathBuf,
+        observation_receipt: Option<PathBuf>,
         mut authority: AuthorityCx,
         tree: RegionTree,
         started: Instant,
@@ -104,6 +107,15 @@ impl ScopedS3Io {
         for path in [&journal_root, &source, &credentials] {
             validate_path(path)?;
         }
+        if let Some(path) = &observation_receipt {
+            validate_path(path)?;
+            if [&journal_root, &source, &credentials]
+                .iter()
+                .any(|other| path.starts_with(other) || other.starts_with(path))
+            {
+                return Err(denied());
+            }
+        }
         if source == credentials
             || source.starts_with(&journal_root)
             || credentials.starts_with(&journal_root)
@@ -120,8 +132,18 @@ impl ScopedS3Io {
         }
         // Intersections preserve any restrictions already held by the supplied authority.
         let mut grants = authority.grants().clone();
+        let mut journal_scopes = BTreeSet::from([resource(&journal_root)?.to_owned()]);
+        authority
+            .require_grant_for(RuntimeGrant::ObjectStage, resource(&journal_root)?)
+            .map_err(|_| denied())?;
+        if let Some(path) = &observation_receipt {
+            authority
+                .require_grant_for(RuntimeGrant::ObjectStage, resource(path)?)
+                .map_err(|_| denied())?;
+            journal_scopes.insert(resource(path)?.to_owned());
+        }
+        grants = grants.with_scope(RuntimeGrant::ObjectStage, journal_scopes);
         for (grant, path) in [
-            (RuntimeGrant::ObjectStage, &journal_root),
             (RuntimeGrant::ReadMedia, &source),
             (RuntimeGrant::AdapterAuth, &credentials),
         ] {
@@ -136,6 +158,7 @@ impl ScopedS3Io {
             journal_root,
             source,
             credentials,
+            observation_receipt,
             started,
             origin,
             state: Mutex::new(State {
@@ -285,6 +308,135 @@ impl ScopedS3Io {
             MAX_CREDENTIAL_BYTES,
             true,
         )
+    }
+
+    /// Refuse an occupied or unscoped receipt destination before any provider probe.
+    /// The later exclusive create rechecks this preflight; no existing evidence is replaced.
+    pub(super) fn preflight_observation_receipt(&self) -> io::Result<()> {
+        let path = self.observation_receipt.as_ref().ok_or_else(denied)?;
+        if self
+            .inspect(path, RuntimeGrant::ObjectStage, path, true)?
+            .is_some()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "observation receipt already exists",
+            ));
+        }
+        let parent = path.parent().ok_or_else(denied)?;
+        let metadata = self
+            .inspect(parent, RuntimeGrant::ObjectStage, path, false)?
+            .ok_or_else(denied)?;
+        if !metadata.is_dir() {
+            return Err(denied());
+        }
+        self.admit(RuntimeGrant::ObjectStage, path, 0, 0)
+    }
+
+    /// Persist one bounded immutable canonical observation receipt. Creation is exclusive;
+    /// partial/ambiguous writes are retained for inspection and never retried in place.
+    /// Success includes file fsync, exact readback and parent-directory fsync.
+    pub(super) fn write_observation_receipt(&self, bytes: &[u8]) -> io::Result<()> {
+        if bytes.is_empty() || bytes.len() > MAX_OBSERVATION_RECEIPT_BYTES {
+            return Err(limit());
+        }
+        self.preflight_observation_receipt()?;
+        let path = self.observation_receipt.as_ref().ok_or_else(denied)?;
+        let grant = RuntimeGrant::ObjectStage;
+        let size = bytes.len() as u64;
+        // Charge the written bytes and full verification buffer before creating a file.
+        self.admit(
+            grant,
+            path,
+            size.checked_mul(2)
+                .and_then(|n| n.checked_add(1))
+                .ok_or_else(limit)?,
+            1,
+        )?;
+        let mut options = nofollow_options()?;
+        let mut file = options
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map_err(native)?;
+        self.admit(grant, path, 0, 1)?;
+        let opened = identity(&file.metadata().map_err(native)?)?;
+        let mut offset = 0;
+        let mut interrupted = 0;
+        while offset < bytes.len() {
+            self.admit(grant, path, 0, 1)?;
+            let end = offset.saturating_add(READ_CHUNK).min(bytes.len());
+            match file.write(&bytes[offset..end]) {
+                Ok(0) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WriteZero,
+                        "observation receipt write stopped",
+                    ));
+                }
+                Ok(count) => {
+                    offset += count;
+                    interrupted = 0;
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted && interrupted < 8 => {
+                    interrupted += 1;
+                }
+                Err(error) => return Err(native(error)),
+            }
+        }
+        self.admit(grant, path, 0, 1)?;
+        file.sync_all().map_err(native)?;
+        self.admit(grant, path, 0, 1)?;
+        let written = stamp(&file.metadata().map_err(native)?)?;
+        if written.identity != opened || written.len != size {
+            return Err(changed());
+        }
+        self.admit(grant, path, 0, 1)?;
+        file.seek(SeekFrom::Start(0)).map_err(native)?;
+        let mut readback = buffer(size + 1)?;
+        let read = self.read_chunks(&mut file, &mut readback.0, grant, path)?;
+        if read != bytes.len() || &readback.0[..read] != bytes {
+            return Err(changed());
+        }
+        self.admit(grant, path, 0, 1)?;
+        let metadata = file.metadata().map_err(native)?;
+        if stamp(&metadata)? != written {
+            return Err(changed());
+        }
+        let named = self
+            .inspect(path, grant, path, false)?
+            .ok_or_else(changed)?;
+        if stamp(&named)? != stamp(&metadata)? {
+            return Err(changed());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if metadata.mode() & 0o077 != 0 || metadata.nlink() != 1 {
+                return Err(denied());
+            }
+        }
+        let parent = path.parent().ok_or_else(denied)?;
+        if !self
+            .inspect(parent, grant, path, false)?
+            .ok_or_else(denied)?
+            .is_dir()
+        {
+            return Err(denied());
+        }
+        self.admit(grant, path, 0, 1)?;
+        HostSpoolIo.sync_directory(parent).map_err(native)?;
+        self.admit(grant, path, 0, 1)?;
+        if stamp(&file.metadata().map_err(native)?)? != written
+            || stamp(
+                &self
+                    .inspect(path, grant, path, false)?
+                    .ok_or_else(changed)?,
+            )? != written
+        {
+            return Err(changed());
+        }
+        self.admit(grant, path, 0, 0)
     }
 
     fn read_exact_file(
@@ -902,6 +1054,15 @@ mod tests {
         source: PathBuf,
         bytes: u64,
     ) -> TestResult<ScopedS3Io> {
+        owner_with_receipt(directory, source, None, bytes)
+    }
+
+    fn owner_with_receipt(
+        directory: &Directory,
+        source: PathBuf,
+        receipt: Option<PathBuf>,
+        bytes: u64,
+    ) -> TestResult<ScopedS3Io> {
         let budget = BudgetVector::builder()
             .bytes(bytes)
             .storage_operations(20_000)
@@ -937,6 +1098,7 @@ mod tests {
             directory.0.join("journal"),
             source,
             directory.0.join("credentials"),
+            receipt,
             authority,
             tree,
             Instant::now(),
@@ -1054,6 +1216,73 @@ mod tests {
         io.finalize()?;
         assert!(io.check().is_err());
         assert!(io.consumed()?.storage_operations > 0);
+        Ok(())
+    }
+
+    #[test]
+    fn observation_receipts_are_private_readback_verified_and_never_overwritten() -> TestResult {
+        let directory = Directory::new()?;
+        let output = directory.0.join("observation.bin");
+        let io = owner_with_receipt(
+            &directory,
+            directory.0.join("source"),
+            Some(output.clone()),
+            1024,
+        )?;
+        io.preflight_observation_receipt()?;
+        io.write_observation_receipt(b"canonical observation")?;
+        assert_eq!(std::fs::read(&output)?, b"canonical observation");
+        assert_eq!(std::fs::metadata(&output)?.permissions().mode() & 0o077, 0);
+        assert!(io.write_observation_receipt(b"replacement").is_err());
+        assert_eq!(std::fs::read(&output)?, b"canonical observation");
+        assert!(io.consumed()?.storage_operations > 0);
+        assert_eq!(
+            io.consumed()?.bytes,
+            2 * b"canonical observation".len() as u64 + 1
+        );
+        io.finalize()?;
+        assert!(io.preflight_observation_receipt().is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn observation_receipt_scope_symlinks_and_preallocation_budget_fail_before_create() -> TestResult
+    {
+        use std::os::unix::fs::symlink;
+        let directory = Directory::new()?;
+        let source = directory.0.join("source");
+        let output = directory.0.join("receipt");
+        let small = owner_with_receipt(&directory, source.clone(), Some(output.clone()), 2)?;
+        assert!(small.write_observation_receipt(b"abc").is_err());
+        assert!(!output.exists());
+        assert_eq!(small.consumed()?.bytes, 0);
+        let target = directory.0.join("target");
+        std::fs::create_dir(&target)?;
+        symlink(&target, directory.0.join("link"))?;
+        let aliased = owner_with_receipt(
+            &directory,
+            source.clone(),
+            Some(directory.0.join("link/receipt")),
+            1024,
+        )?;
+        assert!(aliased.preflight_observation_receipt().is_err());
+        assert!(aliased.write_observation_receipt(b"abc").is_err());
+        assert!(!target.join("receipt").exists());
+        assert!(owner_with_receipt(&directory, source.clone(), Some(source), 1024).is_err());
+        assert!(
+            owner_with_receipt(
+                &directory,
+                directory.0.join("source"),
+                Some(directory.0.join("journal/receipt")),
+                1024
+            )
+            .is_err()
+        );
+        assert!(
+            owner(&directory, 1024)?
+                .write_observation_receipt(b"abc")
+                .is_err()
+        );
         Ok(())
     }
 }

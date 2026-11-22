@@ -4,6 +4,50 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Native S3 completion reconciliation and independent observations — 2026-11-22
+
+The native archive path can now resolve an uncertain complete request using one
+signed, bounded, read-only HEAD observation. Positive evidence requires exact
+intent/plan/root metadata, the complete composite SHA-256 and part-count suffix,
+planned object length, opaque ETag and unambiguous response framing. A stable
+journal custody origin is signed before initiation and must match the observed
+object. This prevents an older object from another journal with the same semantic
+intent from falsely closing a still-active upload. Missing, denied, conflicting,
+legacy-without-origin and malformed evidence preserves uncertainty.
+
+`CompletionObservation` supplies a fresh single-attempt owner for uploads already
+closed locally as indeterminate. It uses a distinct operation, finite deadline and
+separate allowance, retaining original identity/privacy restrictions and persisted
+network/authentication revocations. Only network, authentication and status-read
+grants are present. The historical journal, old indeterminate receipt, mutation
+owner and original spend remain unchanged. Its bounded canonical receipt separates
+Completed, Unknown and NotObserved, with strict decoding and exact source pin,
+authority, time and consumption bindings. Existing checkpoint formats are unchanged.
+
+`fss-archive upload-s3-reconcile` makes this usable after restart and after the
+original upload deadline. It verifies the journal/intent before credential access,
+needs no source-media read, and writes a separate immutable private receipt using
+exclusive creation, exact stable readback and file/parent fsync. The new
+`fss.s3_completion_observation_cli.v1` report separates historical upload state,
+new observation result, local settlement and receipt durability. A successful
+pending-owner reconciliation also now reports its terminal receipt and closes its
+parent scopes correctly.
+
+Twenty-eight new regression functions cover native HEAD framing/proof faults,
+actual cold journals, same-intent/different-journal collisions, fresh observation
+authority/cancellation/time/budget, origin continuity, strict receipt decoding,
+private immutable receipt files and real CLI subprocess flows. These are authored,
+not executed. Independent source/API reviews, pinned formatting, schema/robot-doc
+checks and touched layered manifests passed. The exact pinned production check
+was killed with SIGKILL in unchanged Asupersync 0.5.0 metadata before FSS diagnostics;
+no project typecheck, Rust test pass, live provider or release qualification is claimed.
+
+FSS-064 remains in progress. Lost initiation/part/abort acknowledgements still need
+other conclusive evidence. Public-cloud TLS, client-side encryption, encrypted
+archive-graph publication and independent byte retrieval remain larger outstanding
+archive integrations. See the [operator guide](docs/NATIVE_S3_OBJECT_UPLOADS.md)
+and [session handoff](docs/SESSION_HANDOFF_2026-11-22_S3_COMPLETION_RECONCILIATION.json).
+
 ## Native local S3 object upload path — 2026-11-22
 
 The existing durable multipart owner now has a native signed HTTP transport and
@@ -25,8 +69,9 @@ ownership, private credential-file admission and a complete redacted v1 report.
 
 The admitted scope is one object up to 64 MiB, Linux x86-64/AArch64 local filesystem
 ownership, and explicitly approved pinned loopback/private HTTP endpoints. This
-adds no public-cloud TLS, client-side encryption, archive graph closure, conclusive
-native reconciliation after lost ACK, or independent retrievability claim. Broader
+initial slice added no public-cloud TLS, client-side encryption, archive graph closure,
+conclusive native reconciliation after lost ACK, or independent retrievability claim;
+the later completion-reconciliation section above advances that specific gap. Broader
 FSS-064 remains in progress; previous closed FSS-063/FSS-130 protocol slices are not
 mistaken for end-to-end provider qualification.
 

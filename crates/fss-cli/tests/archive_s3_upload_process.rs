@@ -21,6 +21,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use fss_cli::json_input::{Value, parse};
 use fss_core::ContentDigest;
+use fss_object::uploader::{CompletionObservationOutcome, CompletionObservationReceipt};
 
 type Test<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const BODY: &[u8] = b"owner supplied archive object";
@@ -154,6 +155,66 @@ fn with_pin(
     Ok(args)
 }
 
+fn observation_arguments(
+    resume: &[String],
+    directory: &Directory,
+    label: &str,
+) -> Test<Vec<String>> {
+    let mut args = resume.to_vec();
+    args[0] = "upload-s3-reconcile".into();
+    let deadline = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos() + 180_000_000_000;
+    for (name, value) in [
+        ("--deadline-ns", deadline.to_string()),
+        ("--max-memory-bytes", (16_u64 * 1024 * 1024).to_string()),
+        ("--max-wire-bytes", (2_u64 * 1024 * 1024).to_string()),
+        ("--max-requests", "1".into()),
+    ] {
+        let index = args
+            .iter()
+            .position(|argument| argument == name)
+            .ok_or("observation argument")?
+            + 1;
+        args[index] = value;
+    }
+    args.extend([
+        "--observation-operation".into(),
+        format!("operation:independent-completion-observation:{label}"),
+        "--observation-receipt".into(),
+        directory
+            .0
+            .join(format!("observation-{label}.bin"))
+            .display()
+            .to_string(),
+    ]);
+    Ok(args)
+}
+
+fn journal_bytes(directory: &Directory) -> Test<BTreeMap<PathBuf, Vec<u8>>> {
+    let root = directory.0.join("journal");
+    let mut pending = vec![root.clone()];
+    let mut result = BTreeMap::new();
+    while let Some(path) = pending.pop() {
+        for entry in fs::read_dir(path)? {
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            if kind.is_dir() {
+                pending.push(entry.path());
+            } else if kind.is_file() {
+                result.insert(
+                    entry.path().strip_prefix(&root)?.to_owned(),
+                    fs::read(entry.path())?,
+                );
+            } else {
+                return Err("unexpected journal fixture entry".into());
+            }
+            if result.len() + pending.len() > 65_536 {
+                return Err("fixture journal inventory bound".into());
+            }
+        }
+    }
+    Ok(result)
+}
+
 fn b64(bytes: &[u8]) -> String {
     let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut result = String::new();
@@ -248,8 +309,28 @@ struct Server {
     stop: Arc<AtomicBool>,
     worker: Option<JoinHandle<Result<Vec<Request>, String>>>,
 }
+#[derive(Clone, Copy)]
+enum HeadOutcome {
+    Completed,
+    Absent,
+    WrongChecksum,
+    WrongIntent,
+    WrongOrigin,
+}
 impl Server {
     fn new(fail_completion: bool) -> Test<Self> {
+        Self::configured(fail_completion, false, None)
+    }
+
+    fn lost_completion(outcome: HeadOutcome) -> Test<Self> {
+        Self::configured(false, true, Some(outcome))
+    }
+
+    fn configured(
+        fail_completion: bool,
+        lose_completion: bool,
+        observation: Option<HeadOutcome>,
+    ) -> Test<Self> {
         let listener = TcpListener::bind("127.0.0.1:0")?;
         listener.set_nonblocking(true)?;
         let peer = listener.local_addr()?;
@@ -258,7 +339,8 @@ impl Server {
         let worker = thread::spawn(move || {
             let deadline = Instant::now() + Duration::from_secs(25);
             let mut received = Vec::new();
-            while received.len() < 3 {
+            let expected_requests = if observation.is_some() { 4 } else { 3 };
+            while received.len() < expected_requests {
                 if cancelled.load(Ordering::SeqCst) {
                     return Err("oracle stopped".into());
                 }
@@ -288,6 +370,66 @@ impl Server {
                     != Some(&ContentDigest::sha256(&request.body).to_text()[7..].to_owned())
                 {
                     return Err("signed body digest mismatch".into());
+                }
+                if received.len() == 3 {
+                    if request.first != "HEAD /test-archive/object.bin HTTP/1.1"
+                        || !request.body.is_empty()
+                        || request
+                            .headers
+                            .get("x-amz-checksum-mode")
+                            .map(String::as_str)
+                            != Some("ENABLED")
+                    {
+                        return Err("reconciliation was not an exact checksum-enabled HEAD".into());
+                    }
+                    let outcome = observation.ok_or("unexpected observation")?;
+                    let head = if matches!(outcome, HeadOutcome::Absent) {
+                        "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                            .into()
+                    } else {
+                        let original: &Request = received.first().ok_or("initiation absent")?;
+                        let checksum = if matches!(outcome, HeadOutcome::WrongChecksum) {
+                            b64(&ContentDigest::sha256(b"other composite").bytes())
+                        } else {
+                            b64(&ContentDigest::sha256(&ContentDigest::sha256(BODY).bytes())
+                                .bytes())
+                        };
+                        let mut metadata = String::new();
+                        for name in [
+                            "x-amz-meta-fss-intent",
+                            "x-amz-meta-fss-plan",
+                            "x-amz-meta-fss-root",
+                            "x-amz-meta-fss-origin",
+                        ] {
+                            let value = if name == "x-amz-meta-fss-intent"
+                                && matches!(outcome, HeadOutcome::WrongIntent)
+                            {
+                                ContentDigest::sha256(b"other intent").to_text()[7..].to_owned()
+                            } else if name == "x-amz-meta-fss-origin"
+                                && matches!(outcome, HeadOutcome::WrongOrigin)
+                            {
+                                ContentDigest::sha256(b"another journal's earlier object").to_text()
+                                    [7..]
+                                    .to_owned()
+                            } else {
+                                original
+                                    .headers
+                                    .get(name)
+                                    .ok_or("original metadata absent")?
+                                    .clone()
+                            };
+                            metadata.push_str(&format!("{name}: {value}\r\n"));
+                        }
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nETag: \"opaque-completed-object\"\r\nx-amz-checksum-sha256: {checksum}-1\r\nx-amz-checksum-type: COMPOSITE\r\n{metadata}Connection: close\r\n\r\n",
+                            BODY.len()
+                        )
+                    };
+                    stream
+                        .write_all(head.as_bytes())
+                        .map_err(|e| e.to_string())?;
+                    received.push(request);
+                    continue;
                 }
                 let (headers, body) = match received.len() {
                     0 => {
@@ -346,6 +488,11 @@ impl Server {
                         }
                     }
                 };
+                if lose_completion && received.len() == 2 {
+                    // Provider commits, then closes without acknowledging the request.
+                    received.push(request);
+                    continue;
+                }
                 let head = format!(
                     "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n{headers}\r\n",
                     body.len()
@@ -524,5 +671,250 @@ fn prepared_abort_requires_no_source_or_credentials_and_preserves_terminal_pin()
     );
     let repeated = run(&abort)?;
     assert!(repeated.status.success());
+    Ok(())
+}
+
+#[test]
+fn lost_completion_is_observed_after_restart_without_source_or_old_owner_mutation() -> Test {
+    let directory = Directory::new("observe-complete")?;
+    let server = Server::lost_completion(HeadOutcome::Completed)?;
+    let args = arguments(&directory, server.peer, "upload-s3-prepare")?;
+    let prepared = run(&args)?;
+    assert!(
+        prepared.status.success(),
+        "{}",
+        String::from_utf8_lossy(&prepared.stderr)
+    );
+    let resume = with_pin(args, &fields(&prepared)?, "upload-s3-resume")?;
+    let failed = run(&resume)?;
+    assert!(!failed.status.success());
+    let failed = fields(&failed)?;
+    assert_eq!(
+        failed.get("uncertain_operation").and_then(Value::text),
+        Some("complete")
+    );
+    assert_eq!(failed.get("locally_settled"), Some(&Value::Bool(true)));
+    let before = journal_bytes(&directory)?;
+    fs::remove_file(directory.0.join("source"))?;
+    let observation = observation_arguments(&resume, &directory, "complete")?;
+    let output = run(&observation)?;
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = fields(&output)?;
+    assert_eq!(
+        report.get("schema").and_then(Value::text),
+        Some("fss.s3_completion_observation_cli.v1")
+    );
+    assert_eq!(
+        report.get("observation_outcome").and_then(Value::text),
+        Some("completed")
+    );
+    assert_eq!(
+        report
+            .get("original_local_owner_state")
+            .and_then(Value::text),
+        Some("indeterminate")
+    );
+    assert_eq!(
+        report.get("observation_receipt_durable"),
+        Some(&Value::Bool(true))
+    );
+    assert_eq!(
+        report.get("source_verified_this_invocation"),
+        Some(&Value::Bool(false))
+    );
+    assert_eq!(
+        report.get("independent_retrievability_verified"),
+        Some(&Value::Bool(false))
+    );
+    assert_eq!(
+        report.get("original_upload_consumed"),
+        failed.get("upload_consumed")
+    );
+    assert_eq!(
+        report.get("original_upload_remaining"),
+        failed.get("upload_remaining")
+    );
+    assert_eq!(
+        report.get("original_indeterminate_receipt_digest"),
+        failed.get("receipt_digest")
+    );
+    let receipt_path = directory.0.join("observation-complete.bin");
+    let canonical = fs::read(&receipt_path)?;
+    let receipt = CompletionObservationReceipt::decode(&canonical)?;
+    assert_eq!(receipt.outcome(), CompletionObservationOutcome::Completed);
+    assert_eq!(receipt.consumed().storage_operations, 1);
+    assert_eq!(receipt.budget().storage_operations, 1);
+    assert_eq!(
+        report
+            .get("observation_receipt_digest")
+            .and_then(Value::text),
+        Some(receipt.digest()?.to_text().as_str())
+    );
+    assert_eq!(
+        report.get("source_journal_head"),
+        failed.get("journal_head")
+    );
+    assert_eq!(fs::metadata(&receipt_path)?.permissions().mode() & 0o077, 0);
+    assert_eq!(journal_bytes(&directory)?, before);
+    let requests = server.finish()?;
+    assert_eq!(requests.len(), 4);
+    assert!(
+        requests
+            .last()
+            .ok_or("HEAD request absent")?
+            .first
+            .starts_with("HEAD ")
+    );
+    fs::remove_file(directory.0.join("credentials"))?;
+    let repeated = run(&observation)?;
+    assert!(!repeated.status.success());
+    assert!(repeated.stdout.is_empty());
+    assert_eq!(fs::read(&receipt_path)?, canonical);
+    // The old mutation command still reports its historical indeterminate owner.
+    let old_status = run(&resume)?;
+    assert!(!old_status.status.success());
+    let old_status = fields(&old_status)?;
+    assert_eq!(
+        old_status.get("phase").and_then(Value::text),
+        Some("uncertain")
+    );
+    assert_eq!(
+        old_status.get("provider_work_requested_this_invocation"),
+        Some(&Value::Bool(false))
+    );
+    assert_eq!(journal_bytes(&directory)?, before);
+    Ok(())
+}
+
+#[test]
+fn missing_or_conflicting_object_retains_unknown_in_a_separate_durable_receipt() -> Test {
+    for (label, outcome) in [
+        ("absent", HeadOutcome::Absent),
+        ("checksum", HeadOutcome::WrongChecksum),
+        ("intent", HeadOutcome::WrongIntent),
+        ("origin", HeadOutcome::WrongOrigin),
+    ] {
+        let directory = Directory::new(label)?;
+        let server = Server::lost_completion(outcome)?;
+        let args = arguments(&directory, server.peer, "upload-s3-prepare")?;
+        let prepared = run(&args)?;
+        assert!(
+            prepared.status.success(),
+            "{}",
+            String::from_utf8_lossy(&prepared.stderr)
+        );
+        let resume = with_pin(args, &fields(&prepared)?, "upload-s3-resume")?;
+        let failed = run(&resume)?;
+        assert!(!failed.status.success());
+        let before = journal_bytes(&directory)?;
+        fs::remove_file(directory.0.join("source"))?;
+        let observation = observation_arguments(&resume, &directory, label)?;
+        let output = run(&observation)?;
+        assert!(!output.status.success());
+        let report = fields(&output)?;
+        assert_eq!(
+            report.get("observation_outcome").and_then(Value::text),
+            Some("unknown"),
+            "{label}"
+        );
+        assert_eq!(
+            report.get("observation_receipt_durable"),
+            Some(&Value::Bool(true))
+        );
+        assert_eq!(report.get("completion_receipt_digest"), Some(&Value::Null));
+        let receipt = CompletionObservationReceipt::decode(&fs::read(
+            directory.0.join(format!("observation-{label}.bin")),
+        )?)?;
+        assert_eq!(receipt.outcome(), CompletionObservationOutcome::Unknown);
+        assert_eq!(receipt.consumed().storage_operations, 1);
+        assert_eq!(journal_bytes(&directory)?, before);
+        assert_eq!(server.finish()?.len(), 4);
+    }
+    Ok(())
+}
+
+#[test]
+fn reconciliation_rejects_wrong_intent_operation_pin_or_deadline_before_secret_access() -> Test {
+    let directory = Directory::new("observe-refusal")?;
+    let server = Server::new(true)?;
+    let args = arguments(&directory, server.peer, "upload-s3-prepare")?;
+    let prepared = run(&args)?;
+    assert!(prepared.status.success());
+    let resume = with_pin(args, &fields(&prepared)?, "upload-s3-resume")?;
+    assert!(!run(&resume)?.status.success());
+    assert_eq!(server.finish()?.len(), 3);
+    fs::remove_file(directory.0.join("source"))?;
+    fs::remove_file(directory.0.join("credentials"))?;
+    let before = journal_bytes(&directory)?;
+    for (name, value) in [
+        (
+            "--source-sha256",
+            ContentDigest::sha256(b"another source").to_text(),
+        ),
+        (
+            "--minimum-root",
+            ContentDigest::sha256(b"unretained root").to_text(),
+        ),
+        (
+            "--observation-operation",
+            "operation:native-s3-process".into(),
+        ),
+        ("--deadline-ns", "1".into()),
+    ] {
+        let mut observation = observation_arguments(&resume, &directory, "refused")?;
+        let index = observation
+            .iter()
+            .position(|argument| argument == name)
+            .ok_or("test argument")?
+            + 1;
+        observation[index] = value;
+        let output = run(&observation)?;
+        assert!(!output.status.success(), "{name}");
+        assert!(output.stdout.is_empty(), "{name}");
+        assert!(!directory.0.join("observation-refused.bin").exists());
+        assert_eq!(journal_bytes(&directory)?, before);
+    }
+    Ok(())
+}
+
+#[test]
+fn missing_observation_secret_records_not_observed_without_reopening_upload() -> Test {
+    let directory = Directory::new("observe-no-secret")?;
+    let server = Server::new(true)?;
+    let args = arguments(&directory, server.peer, "upload-s3-prepare")?;
+    let prepared = run(&args)?;
+    assert!(prepared.status.success());
+    let resume = with_pin(args, &fields(&prepared)?, "upload-s3-resume")?;
+    assert!(!run(&resume)?.status.success());
+    assert_eq!(server.finish()?.len(), 3);
+    fs::remove_file(directory.0.join("credentials"))?;
+    let before = journal_bytes(&directory)?;
+    let observation = observation_arguments(&resume, &directory, "no-secret")?;
+    let output = run(&observation)?;
+    assert!(!output.status.success());
+    let report = fields(&output)?;
+    assert_eq!(
+        report.get("observation_outcome").and_then(Value::text),
+        Some("not_observed")
+    );
+    assert_eq!(
+        report.get("provider_work_requested_this_invocation"),
+        Some(&Value::Bool(false))
+    );
+    assert_eq!(
+        report.get("observation_receipt_durable"),
+        Some(&Value::Bool(true))
+    );
+    let receipt = CompletionObservationReceipt::decode(&fs::read(
+        directory.0.join("observation-no-secret.bin"),
+    )?)?;
+    assert_eq!(receipt.outcome(), CompletionObservationOutcome::NotObserved);
+    assert_eq!(receipt.consumed().storage_operations, 0);
+    assert_eq!(journal_bytes(&directory)?, before);
     Ok(())
 }

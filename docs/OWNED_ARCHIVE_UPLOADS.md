@@ -295,3 +295,15 @@ this owner with signed, bounded local HTTP requests and independently verified s
 See [NATIVE_S3_OBJECT_UPLOADS.md](NATIVE_S3_OBJECT_UPLOADS.md) for the operator flow, retained
 minimum pin, endpoint/platform limits and unresolved reconciliation, TLS and graph-closure
 work. Existing inspection semantics are unchanged.
+
+A separate `CompletionObservation` can now observe an owner already closed as indeterminate,
+under a distinct operation, finite deadline and read-only allowance. It never reactivates the
+historical uploader. The canonical observation receipt links the old journal pin/indeterminate
+proof to new Completed, Unknown or NotObserved evidence and separately charged work. Native S3
+completion proofs additionally require the exact stable journal custody origin signed before
+initiation, preventing two journals with the same intent from claiming each other's object.
+
+`upload-s3-reconcile` validates that source and writes the resulting receipt to an exclusively
+created private file with exact readback and file/parent fsync. Legacy objects without the origin
+metadata remain unknown. No existing checkpoint format changes, original budget replenishment,
+new upload/complete/abort dispatch or independent retrievability claim occurs.

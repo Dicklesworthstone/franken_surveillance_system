@@ -1,0 +1,166 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-22",
+  "date_timezone": "America/New_York",
+  "mission": "Implement the most important unfinished FSS functionality from the comprehensive plan and Beads, committing meaningful slices directly to main through the explicitly authorized GitHub connector; no PRs.",
+  "basis": {
+    "started_at": "50cf2dd7c14576ef3204b5b31e59abddc2e232ce",
+    "plan": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+    "plan_sections": [
+      "13.3 object store abstraction",
+      "13.4 root-last publication",
+      "13.5 encryption",
+      "13.9 retrievability",
+      "28.8 WP-070"
+    ],
+    "backlog": ".beads/issues.jsonl",
+    "prior_handoff": "docs/SESSION_HANDOFF_2026-11-22_NATIVE_S3_UPLOADS.json",
+    "requirement": {
+      "bead": "fss-x4a.13.4",
+      "external_ref": "FSS-064",
+      "priority": 0,
+      "status": "in_progress; advanced, not closed"
+    },
+    "gap": "The previous native uploader preserved uncertain outcomes but always returned Unknown on reconciliation; the CLI then closed the local owner as indeterminate, leaving no independently owned native observation path after restart."
+  },
+  "authority": {
+    "repository": "User repeatedly authorized direct-main commits. Each connector update uses a verified expected parent and force=false. No PR, force push, branch-policy or workflow changes.",
+    "runtime": "The old mutation owner remains terminal. A fresh bounded ObjectStore child has exactly AdapterNet, AdapterAuth and ObserveStatus under the exact resource, with separate operation/deadline/budget. Original identity/privacy/retention restrictions and persisted network/auth revocations remain effective.",
+    "network": "No real provider account, live NAS/device or remote archive was contacted. Loopback fixtures and process cases were authored but not executed. The existing explicit approved local/private plaintext profile remains.",
+    "filesystem": "Original journal is exclusively opened and borrowed immutably for observation. Source media is not read. A separate exactly scoped private receipt path uses exclusive creation, finite accounting, stable readback and file/parent fsync."
+  },
+  "delivered": [
+    {
+      "commit": "4409017e758f143bc1030532070e20500c73c0ed",
+      "feature": "Native intent/checksum-bound HEAD completion observation",
+      "scope": "Method-aware HEAD framing through the exact admitted Asupersync implementation; signed metadata/size/composite-checksum proof; unknown on insufficient evidence; bounded admissions and cold recovery."
+    },
+    {
+      "commit": "90f74c1455cf9fdcd6be06cdb49ed50af321f287",
+      "feature": "Independent completion observation owner",
+      "scope": "One fresh read-only attempt after local indeterminate closure, including after the original upload deadline; exact positive inventory validation, separate NotObserved/Unknown/Completed canonical receipt, strict decoding, accounting and explicit finalization."
+    },
+    {
+      "commit": "4786605c798dfdb5ac875894b837ee27ae5f4472",
+      "feature": "Exact journal custody origin for completion evidence",
+      "scope": "Closes the same-intent/different-journal false-completion gap identified during review. Origin binds physical namespace and first committed pin, is signed before initiation and required in HEAD. Recovery revalidates it; existing canonical record formats remain unchanged."
+    },
+    {
+      "commit": "this_commit",
+      "feature": "Operational upload-s3-reconcile command and immutable receipt",
+      "scope": "Exact pinned source/intent validation before credentials, fresh observation operation/deadline/allowance, no source read, private new receipt with durability/readback proof, complete bounded redacted report, actual-process and filesystem regressions, operator guide and status."
+    }
+  ],
+  "findings": [
+    {
+      "state": "addressed_by_source_change; regression authored, not executed",
+      "finding": "HEAD metadata/checksums alone could match an older completed object from a different journal with identical semantic intent while the current conditional completion returned 412 and staging remained active.",
+      "repair": "Require exact signed pre-initiation custody origin. The fixture uses two real journals, distinct UploadIds/origins, identical semantic metadata, a first successful completion and a second 412; the second must remain uncertain."
+    },
+    {
+      "state": "addressed_by_source_change",
+      "finding": "The CLI pending-owner reconciliation branch did not report terminal receipt/local settlement when StagedUpload::reconcile successfully settled the child.",
+      "repair": "Retrieve its idempotent terminal receipt, mark settlement and close actual parent scopes without another provider mutation."
+    },
+    {
+      "state": "addressed_by_source_change",
+      "finding": "Receipt writing needed a stable stamp across exact readback and parent fsync to reject same-size rewrites during verification.",
+      "repair": "Compare full descriptor and pathname identity/length/mtime/ctime before and after readback and after parent fsync."
+    }
+  ],
+  "contracts": {
+    "native_positive_proof": [
+      "Uncertain Complete with complete acknowledged inventory and known upload",
+      "Exact trusted custody origin signed before initiation",
+      "Exact intent, plan and root metadata",
+      "Exact composite SHA-256 including part-count suffix and COMPOSITE type",
+      "Exact planned object length and valid opaque ETag",
+      "No ambiguous duplicate integrity/framing headers, range response or positive deletion marker"
+    ],
+    "origin": "SHA256 of canonical fss.multipart_custody_origin.v1, namespace digest, first committed sequence and root. Default unproven journal binding is None. The original independently retained pin and full verified namespace-bound history remain required.",
+    "old_uploads": "Objects created before origin metadata was added cannot be positively reconciled by this HEAD path. Missing origin metadata remains Unknown; ordinary successfully acknowledged uploads retain their original meaning.",
+    "observation": "The historical upload's phase, local indeterminate proof and original spend remain unchanged. The new receipt is separately linked evidence, not a reopened uploader or a rewritten checkpoint. One admitted read per owner; no auto retry, Create, UploadPart, Complete or Abort.",
+    "receipt": "fss.multipart_completion_observation.v1 canonical bytes, at most64KiB; exact source pin, old closure proof, original and fresh operations, immutable intent/plan/root, full inert authority, timestamps, spend, explicit outcome and optional completion digest. No object path, provider tokens, credentials, body or media.",
+    "cli": "upload-s3-reconcile retains original source/route/operation/plan plus independent minimum pin, adds --observation-operation and --observation-receipt; its deadline/memory/wire/request bounds authorize only fresh observation. Result schema fss.s3_completion_observation_cli.v1 is complete JSON at most16KiB.",
+    "durability": "Receipt output uses create_new with private permissions, finite admissions, complete writes, file fsync, exact stable readback and parent fsync. Ambiguous/partial outputs remain for inspection and are never overwritten. Success requires conclusive completion and confirmed durable receipt.",
+    "compatibility": "No checkpoint, owner or journal-record encoding changes. UploadJournal origin accessor defaults to None; transparent fault wrappers delegate it. Existing mutation commands and v1 report remain. Native non-durable acknowledged uploads still work, but cannot acquire positive HEAD completion evidence.",
+    "claims_not_established": [
+      "Public-cloud TLS",
+      "Client-side encryption",
+      "Encrypted archive graph closure/publication",
+      "Independent original-byte retrievability",
+      "Replica independence",
+      "Conclusive lost initiation/part/abort reconciliation",
+      "Live provider compatibility",
+      "Successful Rust compilation or test execution",
+      "Release qualification"
+    ]
+  },
+  "validation": {
+    "authored_new_regression_functions": {
+      "native_http_unit": 2,
+      "native_integration": 5,
+      "completion_observation_contract": 12,
+      "real_file_custody_origin": 3,
+      "receipt_filesystem": 2,
+      "actual_cli_process": 4,
+      "total": 28
+    },
+    "executed_rust_tests": false,
+    "project_typecheck_completed": false,
+    "executed_local_qualification": false,
+    "static_checks": [
+      "All18 touched Rust files parsed/formatted with pinned nightly-2026-08-31 rustfmt --check --edition2024 --config skip_children=true.",
+      "git diff --check passed.",
+      "schema_validate.py:199 evaluated schemas,3383 references,0errors;210 declared schemas,952 digest domains,0 unregistered.",
+      "Generated robot docs match registries; robot_docs_checker.py:14 operations,8 views,15 resources,210 schemas,12 capabilities,653 error identities.",
+      "Independent source/API reviews covered native HTTP HEAD parsing, owner/grants/time/budget/settlement, receipt durability, exact origin propagation and same-intent/different-journal refusal.",
+      "Touched content hashes matched connector-staged Git blob identities; layered manifest rows refreshed only for touched paths."
+    ],
+    "build_attempts": [
+      {
+        "command": "cargo check -p fss-cli --bin fss-archive --locked --offline",
+        "toolchain": "nightly-2026-08-31; rustc1.100.0-nightly (908501772 2026-08-30), cargo1.100.0-nightly (e8cb624d5 2026-08-22)",
+        "settings": "One job, incremental=0, dev/test debug=0; -Zunstable-options --jobs-frontend=1 --jobs-backend=1 --jobs-linker=1 -Zmir-opt-level=0 -Zfewer-names=yes; asupersync and fss-reference developer/test codegen-units256; target/cache on disk.",
+        "outcome": "SIGKILL while checking unchanged Asupersync0.5.0 metadata before FSS diagnostics or test execution; exit101. Shared-host available memory fell during build. No source/dependency/features/gates were weakened.",
+        "wall_seconds": 177.245,
+        "child_max_rss_kib": 3777308,
+        "log_bytes": 25302,
+        "log_sha256": "dfd17cd67e25ef578f09fe3b19d4692f9f3979c34e84815be822e8f407ca7328",
+        "cargo_lock_sha256_unchanged": "f574abd4fccfc0cd949ef6d82a98135bc44bf28e32d316b6a0b62051e4dd0c8c"
+      }
+    ],
+    "retry_decision": "Later capacity checks remained below the proposed sufficient-capacity threshold; no repeated build was started. No compiler remains running.",
+    "proof_limit": "Authored scenarios and static reviews are not executed Rust or live-provider proof. Hosted CI was not used as release authority."
+  },
+  "obligations": [
+    {
+      "state": "pending",
+      "owner": "sufficient-capacity pinned native host",
+      "work": "Compile and run new observation/origin/native/CLI regressions plus existing multipart, journal and uploader families and repository archive qualification; retain exact results before upgrading requirement claims."
+    },
+    {
+      "state": "pending",
+      "owner": "FSS-064 provider reconciliation",
+      "work": "Conclusive evidence for lost initiation, part or abort; preserve uncertainty and bound staging cleanup. Legacy objects without custody-origin metadata need other authoritative evidence."
+    },
+    {
+      "state": "pending",
+      "owner": "WP-070 secure archive integration",
+      "work": "Secure admitted TLS/credential transport, client-side encryption and graph-root publication, independent retrieval verification, provider sandbox qualification and recovery evidence."
+    }
+  ],
+  "continuations": [
+    "cargo test -p fss-object --test completion_observation_contract --test upload_journal_namespace --test durable_upload_contract --test recovered_upload_authority --locked --offline",
+    "cargo test -p fss-reference --lib s3_upload --locked --offline",
+    "cargo test -p fss-reference --test s3_upload_native_contract --locked --offline",
+    "cargo test -p fss-cli --bin fss-archive --locked --offline",
+    "cargo test -p fss-cli --test archive_s3_upload_process --locked --offline",
+    "Run repository-owned QL-ARCHIVE-001 qualification with sufficient pinned native capacity; do not weaken gates."
+  ],
+  "documentation": [
+    "docs/NATIVE_S3_OBJECT_UPLOADS.md",
+    "docs/OWNED_ARCHIVE_UPLOADS.md",
+    "IMPLEMENTATION_STATUS.md"
+  ]
+}

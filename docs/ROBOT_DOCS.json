@@ -5205,6 +5205,13 @@
       "schema": "fss.rtsp_replay_import_operator.v1"
     },
     {
+      "authority": "independently authorized read-only completion observation",
+      "compatibilityRule": "Owner: fss-cli::fss-archive::s3::observation and fss-object::uploader::CompletionObservation. At most 16 KiB complete JSON binds exact source intent/plan/digest/size, retained minimum and unchanged source journal head, original operation/indeterminate closure and original spend, distinct observation operation and fresh allowance/spend/time, NotObserved/Unknown/Completed result, optional completion digest, separate canonical receipt digest and explicit durability outcome, local work and next action. Source media is not read. Provider writes are unavailable; the old owner remains closed and its budget unchanged. Receipt creation is exclusive, private, bounded, synced and read back. Credentials, object key, provider tokens, paths and response bytes are excluded. Observation does not establish encryption, graph closure or independent retrievability. Changed meaning requires a new schema.",
+      "file": "CLI output",
+      "id": "SCHEMA-S3-COMPLETION-OBSERVATION-CLI-001",
+      "schema": "fss.s3_completion_observation_cli.v1"
+    },
+    {
       "authority": "exact owner-approved local object transfer",
       "compatibilityRule": "Owner: fss-cli::fss-archive::s3 and fss-reference::s3_upload. At most 16 KiB complete JSON for prepare/resume/abort of one SHA-256-verified source object of at most 64 MiB. Binds exact operation, route resource, plan, source digest/length, independent minimum and confirmed journal head, acknowledged parts, cumulative upload/remaining/local work, phase/uncertain operation, optional receipt, local settlement and cold-reopen requirement. Credentials, provider tokens, object key and file paths are excluded. Explicit local plaintext approval and independently retained preparation pin are required before provider writes; source, provider completion, archive graph closure, encryption and independent retrievability remain distinct. Changed meaning requires a new schema.",
       "file": "CLI output",
