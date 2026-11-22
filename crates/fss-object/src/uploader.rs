@@ -31,7 +31,7 @@ use crate::multipart::{
     MultipartSession, MultipartTransport, PartReceipt, TransportOperation, UploadIntent, UploadIo,
     UploadJournal, UploadJournalPin,
 };
-use crate::planner::{ChunkPlan, ChunkPolicy, PlannerError, plan_chunks};
+use crate::planner::{ChunkPlan, ChunkPolicy, PlannedChunk, PlannerError, plan_chunks};
 
 /// Upload refusal. All methods after preparation borrow rather than consume the owner.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -79,6 +79,63 @@ impl From<MultipartError> for UploaderError {
 }
 fn authority(error: impl std::fmt::Display) -> UploaderError {
     UploaderError::Authority(error.to_string())
+}
+
+/// Fallible source-driver refusal, retaining the upload owner for explicit cleanup.
+///
+/// Display deliberately omits the source error's text: filesystem and adapter
+/// diagnostics may contain private paths. Callers may inspect the typed source
+/// error under their own diagnostic/privacy policy.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ChunkUploadError<E> {
+    /// Authority, protocol, budget or persistence refused further work.
+    Upload(UploaderError),
+    /// A remaining planned chunk exceeds the caller's source-buffer bound.
+    SourceLimit {
+        /// Exact planned range that cannot be buffered.
+        chunk: PlannedChunk,
+        /// Maximum addressable bytes admitted for one source buffer.
+        maximum: u64,
+    },
+    /// The source failed before this part was dispatched to the provider.
+    Source {
+        /// Exact planned range requested from the source.
+        chunk: PlannedChunk,
+        /// Original caller-owned error; never interpolated into Display.
+        error: E,
+    },
+}
+
+impl<E> From<UploaderError> for ChunkUploadError<E> {
+    fn from(error: UploaderError) -> Self {
+        Self::Upload(error)
+    }
+}
+
+impl<E> std::fmt::Display for ChunkUploadError<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Upload(error) => std::fmt::Display::fmt(error, f),
+            Self::SourceLimit { chunk, maximum } => write!(
+                f,
+                "upload source chunk {} needs {} bytes, above its {} byte buffer bound",
+                chunk.index, chunk.len, maximum,
+            ),
+            Self::Source { chunk, .. } => {
+                write!(f, "upload source read failed for planned chunk {}", chunk.index)
+            }
+        }
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for ChunkUploadError<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Upload(error) => Some(error),
+            Self::Source { error, .. } => Some(error),
+            Self::SourceLimit { .. } => None,
+        }
+    }
 }
 
 /// Maximum UTF-8 byte length of an operator's unresolved-upload recovery note.
@@ -520,6 +577,8 @@ fn validated_recovery_owner(
 /// and one abort. Additional attempts require explicit additional reservation.
 /// Network bytes cover payload here; a real transport must separately admit its
 /// framing/response I/O rather than treating this estimate as measured wire usage.
+/// Fallible source reads additionally require one source-work byte per object
+/// byte and one storage operation per attempt; retries retain that source spend.
 pub fn minimum_upload_budget(
     object_bytes: u64,
     policy: ChunkPolicy,
@@ -1055,6 +1114,120 @@ impl<'a, T: MultipartTransport> StagedUpload<'a, T> {
             let bytes = bytes_for(chunk.index);
             self.upload_part(tree, clock(), chunk.index, &bytes)?;
         }
+        Ok(())
+    }
+
+    /// Read and upload each remaining exact planned range through a fallible source.
+    ///
+    /// Oversized remaining chunks are refused before initiation or source access.
+    /// Before each callback this owner rechecks authority, cancellation and time,
+    /// and durably charges `chunk.len` source-work bytes plus one storage operation.
+    /// This is additional to the protocol's payload/network charge; failed reads
+    /// and retries cannot recover the allowance already admitted for source work.
+    /// The admission leaves enough allowance for this part and one cleanup call.
+    ///
+    /// The callback owns its independent source capability and must read at most
+    /// the supplied range within its own I/O bounds. This method does not grant
+    /// access to a path or acquire a source. It rejects a returned buffer whose
+    /// length differs from the plan, without dispatching that part.
+    ///
+    /// Time, cancellation and ownership are rechecked after every callback,
+    /// including failed reads. A new admission refusal takes precedence over a
+    /// source error. Otherwise the original typed source error is retained, the
+    /// phase remains Uploading, and the caller may retry the source or abort.
+    /// A lost provider acknowledgement remains uncertain and requires reconciliation.
+    /// Confirmed parts are never read again and completion remains explicit.
+    pub fn try_upload_chunks<E>(
+        &mut self,
+        tree: &RegionTree,
+        max_chunk_bytes: u64,
+        mut clock: impl FnMut() -> TimestampNs,
+        mut bytes_for: impl FnMut(PlannedChunk) -> Result<Vec<u8>, E>,
+    ) -> Result<(), ChunkUploadError<E>> {
+        let now = clock();
+        self.check_source_access(tree, now)?;
+        self.require_forward_work()?;
+        let maximum = max_chunk_bytes.min(usize::MAX as u64);
+        if let Some(chunk) = self.plan.chunks.iter().find(|chunk| {
+            self.session.confirmed_part(chunk.index).is_none() && chunk.len > maximum
+        }) {
+            return Err(ChunkUploadError::SourceLimit {
+                chunk: *chunk,
+                maximum,
+            });
+        }
+        if self.session.phase() == MultipartPhase::Prepared {
+            self.start(tree, now)?;
+        }
+        if self.session.phase() != MultipartPhase::Uploading {
+            return Err(ChunkUploadError::Upload(
+                MultipartError::WrongState {
+                    operation: TransportOperation::UploadPart,
+                    state: self.session.phase(),
+                }
+                .into(),
+            ));
+        }
+        // Copy one small plan row at a time; do not clone the full chunk vector
+        // or accumulate payload buffers across parts.
+        for position in 0..self.plan.chunks.len() {
+            let chunk = self.plan.chunks[position];
+            if self.session.confirmed_part(chunk.index).is_some() {
+                continue;
+            }
+            self.admit_source_read(tree, clock(), chunk)?;
+            let source = bytes_for(chunk);
+            let after_source = clock();
+            self.check_source_access(tree, after_source)?;
+            let bytes = source.map_err(|error| ChunkUploadError::Source { chunk, error })?;
+            if u64::try_from(bytes.len()).ok() != Some(chunk.len) {
+                return Err(ChunkUploadError::Upload(
+                    MultipartError::PartConflict { index: chunk.index }.into(),
+                ));
+            }
+            self.upload_part(tree, after_source, chunk.index, &bytes)?;
+        }
+        Ok(())
+    }
+
+    fn admit_source_read(
+        &mut self,
+        tree: &RegionTree,
+        now: TimestampNs,
+        chunk: PlannedChunk,
+    ) -> Result<(), UploaderError> {
+        self.check_source_access(tree, now)?;
+        self.require_forward_work()?;
+        let remaining = self.authority.budget().remaining();
+        // One source operation, one part dispatch, and one retained cleanup
+        // operation. Protocol admission independently rechecks that reserve.
+        if remaining.storage_operations < 3 {
+            return Err(MultipartError::CleanupReserve.into());
+        }
+        let mut required = BudgetVector::ZERO;
+        required.bytes = chunk
+            .len
+            .checked_mul(2)
+            .ok_or_else(|| authority("source and payload byte allowance overflow"))?;
+        required.network_bytes = chunk.len;
+        required.storage_operations = 3;
+        if !required.fits_within(remaining) {
+            return Err(authority(
+                "insufficient source, payload or cleanup allowance before source access",
+            ));
+        }
+        let mut source_cost = BudgetVector::ZERO;
+        source_cost.bytes = chunk.len;
+        source_cost.storage_operations = 1;
+        self.authority
+            .budget_mut(tree)
+            .map_err(authority)?
+            .spend_vector(&source_cost)
+            .map_err(authority)?;
+        // A failed or ambiguous append cannot permit even a local source read.
+        // A cold owner must retain this admitted work rather than refill it.
+        let record = self.owner_record(tree)?;
+        self.persist_record(tree, now, record)?;
         Ok(())
     }
 
