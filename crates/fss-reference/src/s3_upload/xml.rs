@@ -235,15 +235,18 @@ pub(super) fn completion(parts: &[PartReceipt]) -> Result<Vec<u8>, S3Error> {
     Ok(out)
 }
 
-pub(super) fn composite_checksum(parts: &[PartReceipt]) -> String {
-    let mut bytes = Vec::with_capacity(parts.len() * 32);
+pub(super) fn composite_checksum<'a>(
+    parts: impl ExactSizeIterator<Item = &'a PartReceipt>,
+) -> String {
+    let count = parts.len();
+    let mut bytes = Vec::with_capacity(count * 32);
     for part in parts {
         bytes.extend_from_slice(&part.content_digest.bytes());
     }
     format!(
         "{}-{}",
         signing::base64(&ContentDigest::sha256(&bytes).bytes()),
-        parts.len()
+        count
     )
 }
 
@@ -285,7 +288,7 @@ mod tests {
         assert!(body.contains(
             "<ChecksumSHA256>ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=</ChecksumSHA256>"
         ));
-        assert!(composite_checksum(&parts).ends_with("-1"));
+        assert!(composite_checksum(parts.iter()).ends_with("-1"));
         let mut invalid = parts;
         invalid[0].index = 1;
         assert!(completion(&invalid).is_err());

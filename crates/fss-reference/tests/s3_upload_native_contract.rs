@@ -189,6 +189,87 @@ enum End {
     LostCreate,
     BadChecksum,
     Abort,
+    Reconcile(HeadProof),
+}
+
+#[derive(Clone, Copy, Debug)]
+enum HeadProof {
+    Exact,
+    Missing,
+    Denied,
+    Redirect,
+    WrongIntent,
+    WrongPlan,
+    WrongRoot,
+    WrongChecksum,
+    WrongChecksumType,
+    WrongSize,
+    DuplicateMetadata,
+    DuplicateChecksum,
+    DuplicateLength,
+    Range,
+    DeleteMarker,
+    MissingEtag,
+    UnexpectedBody,
+}
+
+fn request_value<'a>(head: &'a str, name: &str) -> &'a str {
+    head.lines()
+        .find_map(|line| line.strip_prefix(&format!("{name}: ")))
+        .unwrap()
+}
+
+fn head_proof(listener: &TcpListener, metadata: &[String], proof: HeadProof) {
+    let mut socket = accept(listener);
+    let (head, body) = request(&mut socket);
+    assert!(head.starts_with(&format!("HEAD {TARGET} HTTP/1.1\r\n")));
+    assert!(body.is_empty());
+    assert!(head.contains("x-amz-checksum-mode: ENABLED\r\n"));
+    assert!(request_value(&head, "authorization").contains(";x-amz-checksum-mode;"));
+    let status = match proof {
+        HeadProof::Missing => 404,
+        HeadProof::Denied => 403,
+        HeadProof::Redirect => 301,
+        _ => 200,
+    };
+    let wrong = "0".repeat(64);
+    let mut values: Vec<(&str, String)> = [
+        ("x-amz-meta-fss-intent", metadata[0].clone()),
+        ("x-amz-meta-fss-plan", metadata[1].clone()),
+        ("x-amz-meta-fss-root", metadata[2].clone()),
+        ("x-amz-checksum-sha256", COMPOSITE.to_owned()),
+        ("x-amz-checksum-type", "COMPOSITE".to_owned()),
+        ("Content-Length", "3".to_owned()),
+        ("ETag", "\"opaque-whole-token\"".to_owned()),
+    ]
+    .into_iter()
+    .collect();
+    match proof {
+        HeadProof::WrongIntent => values[0].1 = wrong,
+        HeadProof::WrongPlan => values[1].1 = wrong,
+        HeadProof::WrongRoot => values[2].1 = wrong,
+        HeadProof::WrongChecksum => values[3].1 = CHECKSUM.to_owned(),
+        HeadProof::WrongChecksumType => values[4].1 = "FULL_OBJECT".to_owned(),
+        HeadProof::WrongSize => values[5].1 = "4".to_owned(),
+        HeadProof::DuplicateMetadata => values.push(values[0].clone()),
+        HeadProof::DuplicateChecksum => values.push(values[3].clone()),
+        HeadProof::DuplicateLength => values.push(values[5].clone()),
+        HeadProof::Range => values.push(("Content-Range", "bytes 0-2/3".to_owned())),
+        HeadProof::DeleteMarker => values.push(("x-amz-delete-marker", "true".to_owned())),
+        HeadProof::MissingEtag => {
+            values.pop();
+        }
+        _ => {}
+    }
+    let mut response = format!("HTTP/1.1 103 Early Hints\r\n\r\nHTTP/1.1 {status} Fixture\r\n");
+    for (name, value) in values {
+        response.push_str(&format!("{name}: {value}\r\n"));
+    }
+    response.push_str("Connection: close\r\n\r\n");
+    if matches!(proof, HeadProof::UnexpectedBody) {
+        response.push_str("not a HEAD body");
+    }
+    socket.write_all(response.as_bytes()).unwrap();
 }
 
 fn server(listener: TcpListener, ending: End) {
@@ -196,6 +277,14 @@ fn server(listener: TcpListener, ending: End) {
     let (head, body) = request(&mut socket);
     assert!(head.starts_with(&format!("POST {TARGET}?uploads= HTTP/1.1\r\n")));
     assert!(body.is_empty());
+    let metadata: Vec<_> = [
+        "x-amz-meta-fss-intent",
+        "x-amz-meta-fss-plan",
+        "x-amz-meta-fss-root",
+    ]
+    .into_iter()
+    .map(|name| request_value(&head, name).to_owned())
+    .collect();
     for header in [
         "x-amz-checksum-algorithm: SHA256\r\n",
         "x-amz-checksum-type: COMPOSITE\r\n",
@@ -257,6 +346,13 @@ fn server(listener: TcpListener, ending: End) {
     assert!(body.contains("<PartNumber>1</PartNumber>"));
     assert!(body.contains("<ETag>&quot;opaque-part-token&quot;</ETag>"));
     assert!(body.contains(&format!("<ChecksumSHA256>{CHECKSUM}</ChecksumSHA256>")));
+    if let End::Reconcile(proof) = ending {
+        // The provider accepted the exact complete request, but its TCP reply
+        // disappears. The only subsequent request allowed is a read-only HEAD.
+        drop(socket);
+        head_proof(&listener, &metadata, proof);
+        return;
+    }
     let body = if matches!(ending, End::Error) {
         "<Error><Code>InternalError</Code><Message>not an acknowledgement</Message></Error>"
             .to_owned()
@@ -271,6 +367,10 @@ fn server(listener: TcpListener, ending: End) {
     socket
         .write_all(format!("{:X}\r\n{body}\r\n0\r\n\r\n", body.len()).as_bytes())
         .unwrap();
+    if matches!(ending, End::Error) {
+        drop(socket);
+        head_proof(&listener, &metadata, HeadProof::Missing);
+    }
 }
 
 fn run(ending: End) {
@@ -363,6 +463,131 @@ fn lost_create_bad_checksum_and_http200_error_preserve_uncertainty() {
     run(End::LostCreate);
     run(End::BadChecksum);
     run(End::Error);
+}
+
+fn reconcile_lost_completion(proof: HeadProof) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = endpoint(listener.local_addr().unwrap());
+    let resource = endpoint.resource().to_owned();
+    let (_root, mut parent, mut tree) = property(&resource);
+    let mut transport =
+        NativeS3Transport::new(endpoint, credentials(), S3Limits::default(), Clock).unwrap();
+    std::thread::scope(|scope| {
+        let server = scope.spawn(move || server(listener, End::Reconcile(proof)));
+        let mut upload = StagedUpload::stage(
+            &mut parent,
+            &mut tree,
+            &mut transport,
+            spec(allowance()).operation_id,
+            3,
+            ChunkPolicy {
+                part_size: MIN_PART_SIZE,
+            },
+            ContentDigest::sha256(b"abc"),
+            spec(allowance()),
+            &resource,
+            NOW,
+        )
+        .unwrap();
+        upload.start(&tree, NOW).unwrap();
+        upload.upload_part(&tree, NOW, 0, b"abc").unwrap();
+        assert!(upload.finish(&mut tree, NOW).is_err());
+        assert_eq!(
+            upload.phase(),
+            MultipartPhase::Uncertain(TransportOperation::Complete)
+        );
+        // Neither ordinary resume nor abort is permitted to repeat the effect.
+        assert!(upload.finish(&mut tree, NOW).is_err());
+        let consumed = *upload.budget().consumed();
+        let reconciled = upload.reconcile(&mut tree, NOW);
+        assert_eq!(
+            upload.budget().consumed().storage_operations,
+            consumed.storage_operations + 1
+        );
+        assert!(upload.budget().consumed().network_bytes > consumed.network_bytes);
+        if matches!(proof, HeadProof::Exact) {
+            assert_eq!(reconciled.unwrap(), MultipartPhase::Completed);
+            assert_eq!(
+                tree.get(upload.region()).unwrap().state,
+                RegionState::Closed
+            );
+            let receipt = upload.finish(&mut tree, NOW).unwrap();
+            assert_eq!(receipt.upload.0, "owned/+upload=");
+            assert_eq!(
+                receipt.parts[0].content_digest,
+                ContentDigest::sha256(b"abc")
+            );
+            assert_eq!(receipt.parts[0].etag.0, "\"opaque-part-token\"");
+        } else {
+            assert_eq!(
+                upload.phase(),
+                MultipartPhase::Uncertain(TransportOperation::Complete)
+            );
+            if matches!(
+                proof,
+                HeadProof::DuplicateMetadata
+                    | HeadProof::DuplicateChecksum
+                    | HeadProof::DuplicateLength
+                    | HeadProof::UnexpectedBody
+            ) {
+                assert!(reconciled.is_err(), "{proof:?}");
+            } else {
+                assert_eq!(reconciled.unwrap(), upload.phase(), "{proof:?}");
+            }
+            assert!(upload.finish(&mut tree, NOW).is_err());
+            assert!(upload.cancel(&mut tree, NOW).is_err());
+            upload
+                .settle_indeterminate(
+                    &mut tree,
+                    NOW,
+                    "read-only proof did not establish completion",
+                    ContentDigest::sha256(b"independent follow-up reference"),
+                )
+                .unwrap();
+            assert_eq!(
+                tree.get(upload.region()).unwrap().state,
+                RegionState::Closed
+            );
+        }
+        server.join().unwrap();
+    });
+}
+
+#[test]
+fn lost_complete_is_resolved_only_by_exact_read_only_head_proof() {
+    reconcile_lost_completion(HeadProof::Exact);
+}
+
+#[test]
+fn missing_denied_redirected_or_conflicting_head_cannot_resolve_completion() {
+    for proof in [
+        HeadProof::Missing,
+        HeadProof::Denied,
+        HeadProof::Redirect,
+        HeadProof::WrongIntent,
+        HeadProof::WrongPlan,
+        HeadProof::WrongRoot,
+        HeadProof::WrongChecksum,
+        HeadProof::WrongChecksumType,
+        HeadProof::WrongSize,
+        HeadProof::Range,
+        HeadProof::DeleteMarker,
+        HeadProof::MissingEtag,
+    ] {
+        reconcile_lost_completion(proof);
+    }
+}
+
+#[test]
+fn duplicate_integrity_headers_and_unexpected_head_body_preserve_uncertainty() {
+    for proof in [
+        HeadProof::DuplicateMetadata,
+        HeadProof::DuplicateChecksum,
+        HeadProof::DuplicateLength,
+        HeadProof::UnexpectedBody,
+    ] {
+        reconcile_lost_completion(proof);
+    }
 }
 
 #[test]
@@ -568,6 +793,110 @@ mod durable {
                 tree.get(upload.region()).unwrap().state,
                 RegionState::Closed
             );
+            server.join().unwrap();
+        });
+    }
+
+    #[test]
+    fn cold_native_reconciliation_preserves_part_size_identity_and_settles_journal() {
+        let directory = Directory::new();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = endpoint(listener.local_addr().unwrap());
+        let resource = endpoint.resource().to_owned();
+        std::thread::scope(|scope| {
+            let server = scope.spawn(move || server(listener, End::Reconcile(HeadProof::Exact)));
+            let (minimum, expected) = {
+                let mut journal =
+                    FileUploadJournal::create(&directory.0, limits(), Arc::new(HostSpoolIo))
+                        .unwrap();
+                let (_root, mut parent, mut tree) = property(&resource);
+                let mut transport = NativeS3Transport::new(
+                    endpoint.clone(),
+                    credentials(),
+                    S3Limits::default(),
+                    Clock,
+                )
+                .unwrap();
+                let mut upload = StagedUpload::stage(
+                    &mut parent,
+                    &mut tree,
+                    &mut transport,
+                    spec(allowance()).operation_id,
+                    3,
+                    ChunkPolicy {
+                        part_size: MIN_PART_SIZE,
+                    },
+                    ContentDigest::sha256(b"abc"),
+                    spec(allowance()),
+                    &resource,
+                    NOW,
+                )
+                .unwrap();
+                let minimum = upload.attach_journal(&tree, NOW, &mut journal).unwrap();
+                let expected = upload.intent().clone();
+                upload.start(&tree, NOW).unwrap();
+                upload.upload_part(&tree, NOW, 0, b"abc").unwrap();
+                assert!(upload.finish(&mut tree, NOW).is_err());
+                assert_eq!(
+                    upload.phase(),
+                    MultipartPhase::Uncertain(TransportOperation::Complete)
+                );
+                (minimum, expected)
+            };
+            {
+                let mut journal =
+                    FileUploadJournal::open(&directory.0, limits(), Arc::new(HostSpoolIo), minimum)
+                        .unwrap();
+                let recovery = MultipartRecovery::read(&journal, minimum).unwrap();
+                assert_eq!(
+                    recovery.phase(),
+                    MultipartPhase::Uncertain(TransportOperation::Complete)
+                );
+                let consumed = recovery.consumed();
+                let child_spec = spec(recovery.remaining_budget());
+                let mut transport = NativeS3Transport::from_recovery(
+                    endpoint,
+                    credentials(),
+                    S3Limits::default(),
+                    Clock,
+                    &recovery,
+                )
+                .unwrap();
+                let (_root, mut parent, mut tree) = property(&resource);
+                let mut upload = StagedUpload::recover(
+                    &mut parent,
+                    &mut tree,
+                    &mut transport,
+                    &mut journal,
+                    recovery,
+                    &expected,
+                    child_spec,
+                    NOW,
+                )
+                .unwrap();
+                assert_eq!(
+                    upload.reconcile(&mut tree, NOW).unwrap(),
+                    MultipartPhase::Completed
+                );
+                assert!(
+                    upload.cumulative_consumed().unwrap().storage_operations
+                        > consumed.storage_operations
+                );
+                assert_eq!(
+                    tree.get(upload.region()).unwrap().state,
+                    RegionState::Closed
+                );
+                assert_eq!(
+                    upload.finish(&mut tree, NOW).unwrap().parts[0].etag.0,
+                    "\"opaque-part-token\""
+                );
+            }
+            let journal =
+                FileUploadJournal::open(&directory.0, limits(), Arc::new(HostSpoolIo), minimum)
+                    .unwrap();
+            let recovery = MultipartRecovery::read(&journal, minimum).unwrap();
+            assert_eq!(recovery.phase(), MultipartPhase::Completed);
+            assert!(recovery.completion_receipt().is_ok());
             server.join().unwrap();
         });
     }

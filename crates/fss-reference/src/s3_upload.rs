@@ -6,7 +6,8 @@
 //! uses its real TransportCx and one owned, bounded socket. Public-address
 //! plaintext, DNS, redirects, credential discovery, automatic retries and TLS
 //! are deliberately unsupported. A lost acknowledgement remains uncertain;
-//! absence from an object listing cannot authorize another create or complete.
+//! a read-only, intent/checksum-bound HEAD can prove an uncertain completion.
+//! Absence from an object listing cannot authorize another create or complete.
 
 mod http;
 mod signing;
@@ -291,11 +292,13 @@ impl S3Limits {
         }
         let calls = part_count as u64 + 5;
         let completion = xml::completion_bound(part_count)? as u64;
+        let observation =
+            part_count as u64 * (std::mem::size_of::<PartReceipt>() as u64 + 1024 + 32) + 1024;
         let mut budget = BudgetVector::ZERO;
         budget.bytes = self
             .memory_per_call()
             .checked_mul(calls)
-            .and_then(|n| n.checked_add(completion * 2))
+            .and_then(|n| n.checked_add(completion * 2 + observation))
             .ok_or(S3Error::Limit)?;
         budget.network_bytes = ((self.header_bytes + self.wire_bytes) as u64)
             .checked_mul(calls)
@@ -316,6 +319,7 @@ pub struct NativeS3Transport<C: S3Clock> {
     intent: Option<UploadIntent>,
     upload: Option<UploadId>,
     parts: BTreeMap<u64, PartReceipt>,
+    confirmed_bytes: u64,
     phase: MultipartPhase,
 }
 impl<C: S3Clock> fmt::Debug for NativeS3Transport<C> {
@@ -344,6 +348,7 @@ impl<C: S3Clock> NativeS3Transport<C> {
             intent: None,
             upload: None,
             parts: BTreeMap::new(),
+            confirmed_bytes: 0,
             phase: MultipartPhase::Prepared,
         })
     }
@@ -370,6 +375,20 @@ impl<C: S3Clock> NativeS3Transport<C> {
             .part_receipts()
             .map(|part| (part.index, part.clone()))
             .collect();
+        for part in result.parts.values() {
+            let index = usize::try_from(part.index).map_err(|_| S3Error::Binding)?;
+            let chunk = recovery.plan().chunks.get(index).ok_or(S3Error::Binding)?;
+            result.confirmed_bytes = result
+                .confirmed_bytes
+                .checked_add(chunk.len)
+                .ok_or(S3Error::Limit)?;
+        }
+        if recovery.phase() == MultipartPhase::Uncertain(TransportOperation::Complete)
+            && (result.parts.len() != recovery.plan().chunks.len()
+                || result.confirmed_bytes != recovery.plan().object_bytes)
+        {
+            return Err(S3Error::Binding);
+        }
         result.phase = recovery.phase();
         Ok(result)
     }
@@ -459,6 +478,7 @@ impl<C: S3Clock> NativeS3Transport<C> {
             now,
             &head,
             body,
+            method == "HEAD",
         )
     }
 
@@ -537,6 +557,10 @@ impl<C: S3Clock> NativeS3Transport<C> {
                 Err(S3Error::Binding)
             };
         }
+        let confirmed_bytes = self
+            .confirmed_bytes
+            .checked_add(chunk.len)
+            .ok_or(S3Error::Limit)?;
         self.phase = MultipartPhase::Uncertain(TransportOperation::UploadPart);
         let checksum = signing::base64(&content_digest.bytes());
         let part_number = (chunk.index + 1).to_string();
@@ -566,6 +590,7 @@ impl<C: S3Clock> NativeS3Transport<C> {
             etag: ETag(etag.to_owned()),
         };
         self.parts.insert(chunk.index, receipt.clone());
+        self.confirmed_bytes = confirmed_bytes;
         self.phase = MultipartPhase::Uploading;
         Ok(receipt)
     }
@@ -617,7 +642,7 @@ impl<C: S3Clock> NativeS3Transport<C> {
         let etag = xml::required(&fields, "ETag")?;
         if etag.is_empty()
             || etag.len() > 1024
-            || xml::required(&fields, "ChecksumSHA256")? != xml::composite_checksum(parts)
+            || xml::required(&fields, "ChecksumSHA256")? != xml::composite_checksum(parts.iter())
             || fields
                 .get("ChecksumType")
                 .is_some_and(|kind| kind != "COMPOSITE")
@@ -656,6 +681,110 @@ impl<C: S3Clock> NativeS3Transport<C> {
         }
         self.phase = MultipartPhase::Aborted;
         Ok(())
+    }
+
+    fn reconcile_inner(
+        &mut self,
+        cx: &mut TransportCx<'_>,
+        intent: &UploadIntent,
+    ) -> Result<Reconciliation, S3Error> {
+        self.check(cx, TransportOperation::Reconcile)?;
+        self.bind(intent)?;
+        let mut observation = Reconciliation {
+            intent_digest: intent.digest(),
+            state: ProviderUploadState::Unknown,
+        };
+        // A standard S3 listing cannot establish that a lost initiation, part or
+        // abort did not run. Only this owner's previously dispatched Complete
+        // has the complete acknowledged inventory needed for a positive proof.
+        if self.phase != MultipartPhase::Uncertain(TransportOperation::Complete) {
+            return Ok(observation);
+        }
+        if self.upload.is_none()
+            || self.parts.is_empty()
+            || self.parts.len() > 10_000
+            || self
+                .parts
+                .values()
+                .enumerate()
+                .any(|(index, part)| part.index != index as u64)
+        {
+            return Err(S3Error::Binding);
+        }
+        let response = self.exchange(
+            cx,
+            "HEAD",
+            "",
+            &[("x-amz-checksum-mode", "ENABLED".to_owned())],
+            &[],
+            ContentDigest::sha256(b""),
+            false,
+        )?;
+        // Missing, denied, redirected or conflicting objects say nothing about
+        // whether the original request committed. No observation here ever
+        // authorizes another Complete, UploadPart, Abort or Initiate request.
+        if response.0.status != 200 {
+            return Ok(observation);
+        }
+        // The checksum scratch scales with part count, independently of the
+        // configured response/header bounds. Admit it before allocating it.
+        cx.charge_io(cx.now(), self.parts.len() as u64 * 32, 0)
+            .map_err(|_| S3Error::Authority)?;
+        for (name, expected) in [
+            (
+                "x-amz-meta-fss-intent",
+                signing::hex(&intent.digest().bytes()),
+            ),
+            (
+                "x-amz-meta-fss-plan",
+                signing::hex(&intent.plan_digest().bytes()),
+            ),
+            (
+                "x-amz-meta-fss-root",
+                signing::hex(&intent.manifest_root().bytes()),
+            ),
+            (
+                "x-amz-checksum-sha256",
+                xml::composite_checksum(self.parts.values()),
+            ),
+            ("x-amz-checksum-type", "COMPOSITE".to_owned()),
+            ("content-length", self.confirmed_bytes.to_string()),
+        ] {
+            if response.optional_header(name)? != Some(expected.as_str()) {
+                return Ok(observation);
+            }
+        }
+        if response.optional_header("content-range")?.is_some()
+            || response
+                .optional_header("x-amz-delete-marker")?
+                .is_some_and(|value| value != "false")
+            || !response.optional_header("etag")?.is_some_and(|value| {
+                !value.is_empty() && value.len() <= 1024 && !value.chars().any(char::is_control)
+            })
+        {
+            return Ok(observation);
+        }
+        let upload = self.upload.as_ref().ok_or(S3Error::Binding)?;
+        let inventory_bytes =
+            self.parts
+                .values()
+                .try_fold(upload.0.len() as u64, |sum, part| {
+                    sum.checked_add(
+                        std::mem::size_of::<PartReceipt>() as u64 + part.etag.0.len() as u64,
+                    )
+                    .ok_or(S3Error::Limit)
+                })?;
+        cx.charge_io(cx.now(), inventory_bytes, 0)
+            .map_err(|_| S3Error::Authority)?;
+        observation.state = ProviderUploadState::Completed {
+            upload: upload.clone(),
+            manifest_root: intent.manifest_root(),
+            parts: self.parts.values().cloned().collect(),
+        };
+        // The owning protocol validates and durably records this observation.
+        // Keep the adapter's uncertain phase so a failed journal append or a
+        // separately owned read-only observation cannot reactivate old work.
+        Ok(observation)
     }
 }
 impl<C: S3Clock> MultipartTransport for NativeS3Transport<C> {
@@ -706,15 +835,7 @@ impl<C: S3Clock> MultipartTransport for NativeS3Transport<C> {
         cx: &mut TransportCx<'_>,
         intent: &UploadIntent,
     ) -> Result<Reconciliation, String> {
-        self.check(cx, TransportOperation::Reconcile)
-            .map_err(|error| error.to_string())?;
-        self.bind(intent).map_err(|error| error.to_string())?;
-        // Standard S3 has no intent-key lookup for a lost CreateMultipartUpload
-        // response. Missing objects/listings also cannot prove completion/abort
-        // did not run. Keep the journal's owned uncertainty without any resend.
-        Ok(Reconciliation {
-            intent_digest: intent.digest(),
-            state: ProviderUploadState::Unknown,
-        })
+        self.reconcile_inner(cx, intent)
+            .map_err(|error| error.to_string())
     }
 }
