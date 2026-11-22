@@ -10,6 +10,7 @@
 mod authority;
 pub mod recovery;
 
+pub(crate) use authority::admit_observation;
 pub use authority::{TransportCx, UploadIo};
 pub use recovery::{
     MultipartRecovery, UploadJournal, UploadJournalPin, validate_checkpoint_transition,

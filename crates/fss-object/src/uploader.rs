@@ -33,6 +33,12 @@ use crate::multipart::{
 };
 use crate::planner::{ChunkPlan, ChunkPolicy, PlannedChunk, PlannerError, plan_chunks};
 
+mod observation;
+pub use observation::{
+    CompletionObservation, CompletionObservationOutcome, CompletionObservationReceipt,
+    MAX_COMPLETION_OBSERVATION_BYTES,
+};
+
 /// Upload refusal. All methods after preparation borrow rather than consume the owner.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum UploaderError {

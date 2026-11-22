@@ -29,6 +29,7 @@ pub struct TransportCx<'a> {
     now: TimestampNs,
     persistence: Option<&'a mut dyn TransportPersistence>,
     durable_upload_owner: bool,
+    read_only_observation: bool,
 }
 
 impl<'a> TransportCx<'a> {
@@ -55,10 +56,12 @@ impl<'a> TransportCx<'a> {
     /// Current forward-work deadline for bounding one blocking I/O offer.
     /// Cleanup may outlive that deadline and must supply its own finite bound.
     pub fn deadline(&self) -> Result<Option<TimestampNs>, MultipartError> {
-        if matches!(
-            self.operation,
-            TransportOperation::Abort | TransportOperation::Reconcile
-        ) {
+        if !self.read_only_observation
+            && matches!(
+                self.operation,
+                TransportOperation::Abort | TransportOperation::Reconcile
+            )
+        {
             return Ok(None);
         }
         Ok(self
@@ -80,6 +83,13 @@ impl<'a> TransportCx<'a> {
     pub fn has_durable_upload_owner(&self) -> bool {
         self.persistence.is_some() && self.durable_upload_owner
     }
+    /// A separately authorized observation of an immutable, locally settled
+    /// upload. This context cannot admit staging, publication or abort and its
+    /// own finite deadline and cancellation remain effective during the read.
+    #[must_use]
+    pub const fn is_read_only_observation(&self) -> bool {
+        self.read_only_observation
+    }
     /// Recheck owner, capability, deadline and cancellation before transport I/O.
     /// Cleanup observes existing effects after cancellation; it cannot publish a root.
     pub fn checkpoint(&mut self, now: TimestampNs) -> Result<(), MultipartError> {
@@ -89,13 +99,17 @@ impl<'a> TransportCx<'a> {
         // Observing a later clock boundary is not undone by a deadline/cancellation refusal.
         // The session retains this time even when the transport returns an error afterward.
         self.now = now;
-        let result = check(
-            self.authority,
-            self.tree,
-            &self.resource,
-            self.operation,
-            now,
-        );
+        let result = if self.read_only_observation {
+            check_observation(self.authority, self.tree, &self.resource, now)
+        } else {
+            check(
+                self.authority,
+                self.tree,
+                &self.resource,
+                self.operation,
+                now,
+            )
+        };
         // Even refused later time/cancellation observations must survive reopen.
         // An adapter cannot turn a failed journal append into another I/O attempt.
         self.persist()?;
@@ -152,6 +166,7 @@ impl<'a> TransportCx<'a> {
             now: self.now,
             persistence,
             durable_upload_owner,
+            read_only_observation: self.read_only_observation,
         }
     }
 
@@ -311,5 +326,72 @@ pub(super) fn admit<'a>(
         now: io.now,
         persistence: None,
         durable_upload_owner: false,
+        read_only_observation: false,
+    })
+}
+
+fn check_observation(
+    cx: &AuthorityCx,
+    tree: &RegionTree,
+    resource: &str,
+    now: TimestampNs,
+) -> Result<(), MultipartError> {
+    let cancelled = cx.is_cancel_requested(tree).map_err(authority)?;
+    validate_lifetime(cx, tree, now)?;
+    if cx.kind() != RegionKind::ObjectStore {
+        return Err(MultipartError::OwnerMismatch);
+    }
+    if cancelled {
+        return Err(MultipartError::CancellationRequested);
+    }
+    let node = tree.get(cx.region()).map_err(authority)?;
+    if node.state != fss_core::RegionState::Active {
+        return Err(MultipartError::OwnerMismatch);
+    }
+    if node
+        .authority
+        .deadline
+        .is_none_or(|deadline| now >= deadline)
+    {
+        return Err(MultipartError::Deadline);
+    }
+    for grant in [
+        RuntimeGrant::AdapterNet,
+        RuntimeGrant::AdapterAuth,
+        RuntimeGrant::ObserveStatus,
+    ] {
+        cx.require_grant_for(grant, resource).map_err(authority)?;
+    }
+    // A read-only observer never carries a spare effect grant, even when a
+    // caller supplied a more powerful parent. These three are the entire set.
+    if cx.grants().len() != 3 {
+        return Err(MultipartError::OwnerMismatch);
+    }
+    Ok(())
+}
+
+/// Restricted construction used only by the independently owned completion
+/// observation. It never restores or mutates the old upload's authority.
+pub(crate) fn admit_observation<'a>(
+    io: UploadIo<'a>,
+    resource: &str,
+) -> Result<TransportCx<'a>, MultipartError> {
+    check_observation(io.authority, io.tree, resource, io.now)?;
+    let mut cost = BudgetVector::ZERO;
+    cost.storage_operations = 1;
+    io.authority
+        .budget_mut(io.tree)
+        .map_err(authority)?
+        .spend_vector(&cost)
+        .map_err(authority)?;
+    Ok(TransportCx {
+        authority: io.authority,
+        tree: io.tree,
+        resource: resource.to_owned(),
+        operation: TransportOperation::Reconcile,
+        now: io.now,
+        persistence: None,
+        durable_upload_owner: false,
+        read_only_observation: true,
     })
 }
