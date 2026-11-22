@@ -28,6 +28,7 @@ pub struct TransportCx<'a> {
     operation: TransportOperation,
     now: TimestampNs,
     persistence: Option<&'a mut dyn TransportPersistence>,
+    durable_upload_owner: bool,
 }
 
 impl<'a> TransportCx<'a> {
@@ -50,6 +51,34 @@ impl<'a> TransportCx<'a> {
     #[must_use]
     pub const fn now(&self) -> TimestampNs {
         self.now
+    }
+    /// Current forward-work deadline for bounding one blocking I/O offer.
+    /// Cleanup may outlive that deadline and must supply its own finite bound.
+    pub fn deadline(&self) -> Result<Option<TimestampNs>, MultipartError> {
+        if matches!(
+            self.operation,
+            TransportOperation::Abort | TransportOperation::Reconcile
+        ) {
+            return Ok(None);
+        }
+        Ok(self
+            .tree
+            .get(self.authority.region())
+            .map_err(authority)?
+            .authority
+            .deadline)
+    }
+    /// Whether this call's admissions are persisted before I/O.
+    #[must_use]
+    pub fn is_durable(&self) -> bool {
+        self.persistence.is_some()
+    }
+    /// Whether the validated journal also carries the StagedUpload owner recipe,
+    /// including all narrowed resource grants and its drain obligation.
+    /// Protocol-only legacy checkpoints preserve only the protocol's three grants.
+    #[must_use]
+    pub fn has_durable_upload_owner(&self) -> bool {
+        self.persistence.is_some() && self.durable_upload_owner
     }
     /// Recheck owner, capability, deadline and cancellation before transport I/O.
     /// Cleanup observes existing effects after cancellation; it cannot publish a root.
@@ -110,6 +139,7 @@ impl<'a> TransportCx<'a> {
     pub(super) fn with_persistence<'call>(
         self,
         persistence: Option<&'call mut dyn TransportPersistence>,
+        durable_upload_owner: bool,
     ) -> TransportCx<'call>
     where
         'a: 'call,
@@ -121,6 +151,7 @@ impl<'a> TransportCx<'a> {
             operation: self.operation,
             now: self.now,
             persistence,
+            durable_upload_owner,
         }
     }
 
@@ -279,5 +310,6 @@ pub(super) fn admit<'a>(
         operation,
         now: io.now,
         persistence: None,
+        durable_upload_owner: false,
     })
 }

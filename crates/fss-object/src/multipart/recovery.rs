@@ -198,6 +198,19 @@ impl MultipartRecovery {
     pub const fn phase(&self) -> MultipartPhase {
         self.checkpoint.phase
     }
+    /// Exact provider staging identity, if initiation was acknowledged.
+    /// This inert value grants no transport or cleanup authority.
+    #[must_use]
+    pub fn upload_id(&self) -> Option<&UploadId> {
+        self.checkpoint.upload.as_ref()
+    }
+
+    /// Every acknowledged part in canonical order, for an explicitly bound
+    /// native transport's cold recovery. Provider ETags remain opaque data.
+    pub fn part_receipts(&self) -> impl Iterator<Item = &PartReceipt> {
+        self.checkpoint.parts.iter().flatten()
+    }
+
     /// Count of checksum-confirmed parts without exposing provider tokens.
     #[must_use]
     pub fn confirmed_parts(&self) -> usize {

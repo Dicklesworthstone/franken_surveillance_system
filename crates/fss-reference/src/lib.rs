@@ -126,6 +126,8 @@ pub mod reference_deployment;
 /// Retained screened movie derivatives and exact local reviewer access/revocation.
 pub mod review_media;
 pub mod rtsp;
+/// Native, scoped S3-compatible multipart writes to explicitly approved local endpoints.
+pub mod s3_upload;
 pub mod scalar_executor;
 /// Bounded sans-I/O site manifest and probe-receipt onboarding contracts.
 pub mod site;

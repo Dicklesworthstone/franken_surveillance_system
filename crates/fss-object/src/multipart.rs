@@ -818,7 +818,10 @@ impl<'a, T: MultipartTransport> MultipartSession<'a, T> {
             let persistence = writer
                 .as_mut()
                 .map(|writer| writer as &mut dyn TransportPersistence);
-            let mut cx = cx.with_persistence(persistence);
+            let durable_upload_owner = pending
+                .as_ref()
+                .is_some_and(|checkpoint| !checkpoint.owner_metadata.is_empty());
+            let mut cx = cx.with_persistence(persistence, durable_upload_owner);
             let result = invoke(self.transport, &mut cx, &self.intent, self.upload.as_ref());
             (
                 result,
