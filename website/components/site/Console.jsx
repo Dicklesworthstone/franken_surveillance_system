@@ -7,6 +7,7 @@ import Feed from "./Feed";
 import SiteTwin from "./SiteTwin";
 import Timeline from "./Timeline";
 import { AgentLog, LedgerLog } from "./Transcript";
+import { Badge } from "./ui";
 
 /** The camera with the largest unobstructed view of the first person it can find. */
 function bestCamera(take, summary, frame) {
@@ -123,7 +124,8 @@ export default function Console({ summary, story, spans, sceneUrl, sceneDigest, 
   // Detector boxes from the project's binaries, when the take has been analysed.
   const detector = useVerifiedJson(boxesUrl, boxesDigest, near, detectorCameras);
 
-  const [selected, setSelected] = useState(summary.cameras[1]?.id ?? summary.cameras[0].id);
+  // Nobody is in view at the start, so the replay opens on the camera that faces the house.
+  const [selected, setSelected] = useState((summary.cameras.find((cam) => cam.id === "entry") ?? summary.cameras[0]).id);
   const [presentation, setPresentation] = useState(null);
   const [follow, setFollow] = useState(true);
   const [view, setView] = useState("model");
@@ -187,6 +189,32 @@ export default function Console({ summary, story, spans, sceneUrl, sceneDigest, 
           Detector results unavailable. {detector.error} <button type="button" onClick={detector.retry}>Retry detector results</button>
         </p>
       )}
+      <div className="console__bar">
+        <div className="console__id">
+          <span className="console__rec" aria-hidden="true" />
+          <p className="micro">Replay, five films on one clock</p>
+        </div>
+        <div className="console__controls-bar">
+          {boxesUrl && (
+            <div className="switch console__overlay-switch" role="group" aria-label="Box overlays">
+              {[
+                ["both", "Both boxes"],
+                ["staged", "Staged"],
+                ["measured", "Detector"],
+              ].map(([mode, label]) => (
+                <button key={mode} type="button" aria-pressed={overlayMode === mode} onClick={() => setOverlayMode(mode)}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
+          <label className="console__follow">
+            <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} />
+            Follow the person between cameras
+          </label>
+        </div>
+      </div>
+
       <div className="console__stage">
         <div className="console__feeds" role="group" aria-label="Cameras">
           {summary.cameras.map((cam, i) => (
@@ -207,36 +235,13 @@ export default function Console({ summary, story, spans, sceneUrl, sceneDigest, 
           ))}
           <div className="console__caption">
             <p className="console__caption-info">
+              <b className="console__chip" aria-hidden="true">CAM {summary.cameras.indexOf(camera) + 1}</b>
               <strong>{camera.name}.</strong> {camera.product}, {camera.mode === "infrared" ? "infrared night mode" : "colour night mode"}.{" "}
               {picture == null ? <>Its clock is {skew}.</> : <>
                 Its clock reads <span className="data">{stamp(summary, picture / summary.fps, camera.offset)}</span>, {skew}.
               </>}
               {" "}<span className="console__detector-status">{detectorStatus}</span>
             </p>
-            <div className="console__controls-bar">
-              {boxesUrl && (
-                <div className="console__overlay-switch" role="group" aria-label="Box overlays">
-                  {[
-                    ["both", "Both boxes"],
-                    ["staged", "Staged"],
-                    ["measured", "Detector"],
-                  ].map(([mode, label]) => (
-                    <button
-                      key={mode}
-                      type="button"
-                      aria-pressed={overlayMode === mode}
-                      onClick={() => setOverlayMode(mode)}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-              )}
-              <label className="console__follow">
-                <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} />
-                Follow the person between cameras
-              </label>
-            </div>
           </div>
           {summary.cameras.map((cam, i) => {
             const seen = take ? summary.actors.filter((a) => boxAt(take, cam.id, a.id, frame)) : [];
@@ -268,15 +273,10 @@ export default function Console({ summary, story, spans, sceneUrl, sceneDigest, 
             );
           })}
         </div>
-        <div className="console__readouts">
-          {people.map((p) => (
-            <Readout key={p.actor.id} {...p} summary={summary} status={take ? "ready" : positions.error ? "failed" : "loading"} />
-          ))}
-        </div>
         <div className="console__site">
           <SiteTwin summary={summary} take={take} frame={frame} selected={selected} onSelect={pick} mode={view} />
           {summary.twin.front && (
-            <div className="console__view" role="group" aria-label="View of the site">
+            <div className="switch console__view" role="group" aria-label="View of the site">
               <button type="button" aria-pressed={view === "model"} onClick={() => setView("model")}>
                 Model
               </button>
@@ -285,6 +285,11 @@ export default function Console({ summary, story, spans, sceneUrl, sceneDigest, 
               </button>
             </div>
           )}
+        </div>
+        <div className="console__readouts">
+          {people.map((p) => (
+            <Readout key={p.actor.id} {...p} summary={summary} status={take ? "ready" : positions.error ? "failed" : "loading"} />
+          ))}
         </div>
       </div>
 
@@ -296,7 +301,7 @@ export default function Console({ summary, story, spans, sceneUrl, sceneDigest, 
             <h3 id="agent-log" className="console__heading">
               The agent
             </h3>
-            <span className="source source--staged">Staged script</span>
+            <Badge kind="staged">Staged script</Badge>
           </div>
           <AgentLog rows={story.agent} t={t} clock={clock} />
         </section>
@@ -305,11 +310,28 @@ export default function Console({ summary, story, spans, sceneUrl, sceneDigest, 
             <h3 id="ledger-log" className="console__heading">
               The ledger
             </h3>
-            <span className="source source--staged">Staged script</span>
+            <Badge kind="staged">Staged script</Badge>
           </div>
           <LedgerLog rows={story.ledger} t={t} clock={clock} />
         </section>
       </div>
+
+      <ul className="console__key" aria-label="How to read the replay">
+        <li>
+          <Badge kind="staged">Dashed outline</Badge> Staged position of a person.
+        </li>
+        {boxesUrl && (
+          <li>
+            <Badge kind="measured">Solid green outline</Badge> The detector's own box for that frame.
+          </li>
+        )}
+        <li>
+          <Badge kind="browser">Bounds on the model</Badge> Computed in your browser from camera geometry.
+        </li>
+        <li>
+          <Badge kind="staged">Amber fans</Badge> Each lens on open ground, not cut by walls or trees.
+        </li>
+      </ul>
     </div>
   );
 }

@@ -2,7 +2,10 @@
 @import "./base.css";
 @import "./chrome.css";
 @import "./hero.css";
+@import "./chapter.css";
+@import "./figure.css";
 @import "./console.css";
 @import "./story.css";
+@import "./measured.css";
 @import "./architecture.css";
-@import "./day.css";
+@import "./closing.css";

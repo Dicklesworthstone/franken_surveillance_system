@@ -2,6 +2,7 @@
 // take's film files. Nothing here is scripted, with one exception that every
 // panel names: whether a match landed on a staged person is worked out by
 // comparing the tool's ground point with the scripted positions.
+import { Badge, Figure } from "./ui";
 
 const pct = (n) => Math.round(n * 100) + "%";
 // Integer parts per million need at most four decimal places as a percentage.
@@ -53,21 +54,28 @@ function Code({ children }) {
   );
 }
 
-function MiniBar({ ratio, tone = "seen" }) {
+// A share drawn in the data colour. Lamp amber is for actions, so a low share is not recoloured as a warning.
+function MiniBar({ ratio }) {
   const clamped = Math.max(0, Math.min(1, ratio));
   return (
-    <span className={"minibar minibar--" + tone} aria-hidden="true">
+    <span className="minibar" aria-hidden="true">
       <i style={{ width: `${(clamped * 100).toFixed(1)}%` }} />
     </span>
   );
 }
 
-function Panel({ title = "Measured on these films", children, className = "" }) {
+function Panel({ eyebrow, title, badge = "Measured on these films", note, children, className = "" }) {
   return (
-    <aside className={"measured " + className}>
-      <p className="source source--measured">{title}</p>
+    <Figure
+      className={"measured " + className}
+      eyebrow={eyebrow}
+      title={title}
+      titleId={"measured-" + title.toLowerCase().replace(/[^a-z]+/g, "-")}
+      badge={<Badge kind="measured">{badge}</Badge>}
+      note={note}
+    >
       {children}
-    </aside>
+    </Figure>
   );
 }
 
@@ -131,7 +139,7 @@ export function Matches({ native, names, staged = [] }) {
   );
   if (!hits.length)
     return (
-      <Panel>
+      <Panel eyebrow="Cross-camera matching" title="What two cameras agreed on.">
         <p>No pair of cameras produced a match on these films.</p>
         {tried}
       </Panel>
@@ -142,7 +150,19 @@ export function Matches({ native, names, staged = [] }) {
   const shared = kindsOf(hits, "shared");
   const held = shared.length > 0 && shared.every((kind) => kind.action === "hold");
   return (
-    <Panel>
+    <Panel
+      eyebrow="Cross-camera matching"
+      title="What two cameras agreed on, and whether anyone was there."
+      note={
+        <p>
+          Whether a match is on a person is not something the tools know. This page works it out: it takes each matched
+          point, finds how far the scripted person gets from it in the sampled frames spanning the two observations, and
+          applies the tools' own {native.gate} m distance gate. Those distances are this page's arithmetic. They are not
+          tool output.
+        </p>
+      }
+    >
+      <div className="pairs">
       {hits.map((p) => {
         const people = p.separate.list.filter((m) => m.onPerson);
         const empty = p.separate.list.filter((m) => m.near && !m.onPerson);
@@ -157,10 +177,19 @@ export function Matches({ native, names, staged = [] }) {
                 ? "Nobody was at either spot"
                 : "Nobody was at any of those spots";
         return (
-          <p key={p.cameras.join()} data-camera-pair={p.cameras.join("+")}>
-            <strong>
-              {names[p.cameras[0]]} and {names[p.cameras[1]]}:
-            </strong>{" "}
+          <div key={p.cameras.join()} className="pair" data-camera-pair={p.cameras.join("+")}>
+            <h5>
+              {names[p.cameras[0]]} and {names[p.cameras[1]]}
+            </h5>
+            <div className="pair__dots" aria-hidden="true">
+              {p.separate.list.map((m) => (
+                <i key={m.eventId} className={m.onPerson ? "is-person" : m.near ? "is-empty" : "is-unplaced"} />
+              ))}
+              <span>
+                <b>{people.length}</b> of {p.separate.count} on a staged person
+              </span>
+            </div>
+            <p>
             {count(p.separate.count, "match", "matches")}
             {p.cell ? ` on ${p.cell} m ground cells` : ""},{" "}
             {p.separate.residual ? `${span(p.separate.residual)} m apart on the ground` : "distance on the ground not stated"} and{" "}
@@ -175,9 +204,36 @@ export function Matches({ native, names, staged = [] }) {
             {empty.length > 0 &&
               `${nobody}. The nearest staged person was about ${Math.min(...far).toFixed(1)} m away.`}
             {unplaced > 0 && ` The scripted position was unavailable for ${count(unplaced, "match", "matches")}.`}
-          </p>
+            </p>
+          </div>
         );
       })}
+      <div className="pair pair--verdict">
+        <h5>What each match becomes</h5>
+        <dl>
+          <div>
+            <dt>Sources declared as separate devices, as in the story</dt>
+            <dd>
+              <Kinds kinds={separate} />
+            </dd>
+          </div>
+          {shared.length > 0 && (
+            <div>
+              <dt>Declared as views from one renderer, which is what they are</dt>
+              <dd>
+                <Kinds kinds={shared} />
+              </dd>
+            </div>
+          )}
+        </dl>
+        <p>
+          Sources that share a cause cannot corroborate each other.
+          {held && " Told the truth about these films, the software holds the alert."}
+          {lit.length > 0 && " A lighting change visible in two pictures is one possible shared cause."}
+        </p>
+      </div>
+      </div>
+      <div className="flags">
       <details className="measured__calls">
         <summary>Retained comparisons at the earlier camera frame</summary>
         <ul>
@@ -212,42 +268,8 @@ export function Matches({ native, names, staged = [] }) {
           </p>
         );
       })}
-      <p className="measured__aside">
-        Whether a match is on a person is not something the tools know. This page works it out: it takes each matched
-        point, finds how far the scripted person gets from it in the sampled frames spanning the two observations, and applies the tools'
-        own {native.gate} m distance gate. Those distances are this page's arithmetic. They are not tool output.
-      </p>
       {tried}
-      <table className="measured__table">
-        <thead>
-          <tr>
-            <th scope="col">Sources declared as</th>
-            <th scope="col">Each match becomes</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>Separate devices, as in the story</td>
-            <td>
-              <Kinds kinds={separate} />
-            </td>
-          </tr>
-          {shared.length > 0 && (
-            <tr>
-              <td>Views from one renderer, which is what they are</td>
-              <td>
-                <Kinds kinds={shared} />
-              </td>
-            </tr>
-          )}
-        </tbody>
-      </table>
-      <p className="measured__aside">
-        Sources that share a cause cannot corroborate each other.
-        {held && " Told the truth about these films, the software holds the alert."}
-        {lit.length > 0 &&
-          " A lighting change visible in two pictures is one possible shared cause."}
-      </p>
+      </div>
     </Panel>
   );
 }
@@ -258,8 +280,34 @@ export function Detector({ native, names }) {
   const stuck = native.cameras.filter((c) => c.fixed.length > 0);
   const stuckBoxes = sum(stuck, (c) => sum(c.fixed, (spot) => spot.boxes));
   return (
-    <Panel title="Measured: the detector on these frames">
-      <table className="measured__table">
+    <Panel
+      eyebrow={`${native.model.name}, the one detector the project ships`}
+      title="How often the detector found a person who was there."
+      badge="Measured on these frames"
+      note={
+        <>
+          <p>
+            {native.rule ??
+              "Found counts each staged person in each frame. A person is in view when at least a quarter of them is unobstructed and they stand at least 5% of the frame tall. A detector box finds them when the two boxes overlap by 0.3 or more, as intersection over union."}
+          </p>
+          {stuckBoxes > 0 && (
+            <p>
+              {stuckBoxes} of the {extra} extra boxes are the detector calling something that does not move a person:{" "}
+              {listed(
+                stuck.map(
+                  (c) =>
+                    `${count(c.fixed.length, "spot")} on the ${names[c.id].toLowerCase()} camera (${listed(c.fixed.map((spot) => String(spot.boxes)))} boxes)`,
+                ),
+              )}
+              . They are the solid boxes with nobody in them in the replay.
+            </p>
+          )}
+          <p>Its scores are not calibrated, and rendered frames say nothing about its accuracy on real footage.</p>
+        </>
+      }
+    >
+      <div className="detector">
+      <table className="measured__table measured__table--bars">
         <thead>
           <tr>
             <th scope="col">Camera</th>
@@ -273,29 +321,25 @@ export function Detector({ native, names }) {
           {native.cameras.map((c) => (
             <tr key={c.id}>
               <th scope="row">{names[c.id]}</th>
-              <td className="num">{c.inferred ?? "not run"}</td>
-              <td className="num">
+              <td className="num" data-label="Frames run">{c.inferred ?? "not run"}</td>
+              <td className="num" data-label="Staged person found">
                 {c.compared == null
                   ? "n/a"
                   : c.compared
                     ? <>
                         <span>{c.matched} of {c.compared} ({pct(c.matched / c.compared)})</span>
-                        <MiniBar ratio={c.matched / c.compared} tone={c.matched / c.compared >= 0.5 ? "seen" : "lamp"} />
+                        <MiniBar ratio={c.matched / c.compared} />
                       </>
                     : "none in view"}
               </td>
-              <td className="num">{c.overlap != null && c.compared ? c.overlap.toFixed(2) : "n/a"}</td>
-              <td className="num">{c.extra ?? "n/a"}</td>
+              <td className="num" data-label="Box overlap">{c.overlap != null && c.compared ? c.overlap.toFixed(2) : "n/a"}</td>
+              <td className="num" data-label="Extra boxes">{c.extra ?? "n/a"}</td>
             </tr>
           ))}
         </tbody>
       </table>
-      <p className="measured__aside">
-        {native.rule ??
-          "Found counts each staged person in each frame. A person is in view when at least a quarter of them is unobstructed and they stand at least 5% of the frame tall. A detector box finds them when the two boxes overlap by 0.3 or more, as intersection over union."}
-      </p>
       {native.sizes.length > 0 && (
-        <table className="measured__table">
+        <table className="measured__table measured__table--bars">
           <thead>
             <tr>
               <th scope="col">Person's height in the frame</th>
@@ -305,32 +349,17 @@ export function Detector({ native, names }) {
           <tbody>
             {native.sizes.map((band) => (
               <tr key={band.key}>
-                <td>{band.label}</td>
-                <td className="num">
+                <td className="measured__whole" data-label="Person's height in the frame">{band.label}</td>
+                <td className="num" data-label="Found">
                   <span>{band.matched} of {band.compared} ({pct(band.matched / band.compared)})</span>
-                  <MiniBar ratio={band.matched / band.compared} tone={band.matched / band.compared >= 0.5 ? "seen" : "lamp"} />
+                  <MiniBar ratio={band.matched / band.compared} />
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
       )}
-      {stuckBoxes > 0 && (
-        <p className="measured__aside">
-          {stuckBoxes} of the {extra} extra boxes are the detector calling something that does not move a person:{" "}
-          {listed(
-            stuck.map(
-              (c) =>
-                `${count(c.fixed.length, "spot")} on the ${names[c.id].toLowerCase()} camera (${listed(c.fixed.map((spot) => String(spot.boxes)))} boxes)`,
-            ),
-          )}
-          . They are the solid boxes with nobody in them in the films above.
-        </p>
-      )}
-      <p className="measured__aside">
-        {native.model.name}, the one detector the project ships. Its scores are not calibrated, and rendered frames say
-        nothing about its accuracy on real footage.
-      </p>
+      </div>
     </Panel>
   );
 }
@@ -342,8 +371,19 @@ export function CoverageRuns({ native, names }) {
   const certified = rows.some((c) => c.coverage.certified);
   const broken = rows.filter((c) => c.coverage.failed.length > 0);
   return (
-    <Panel title="Measured: coverage witnesses for these films">
-      <table className="measured__table">
+    <Panel
+      eyebrow="Coverage witnesses"
+      title="The seconds each camera can vouch for."
+      note={
+        <p>
+          A witness says one camera decoded its zone without a gap over one stretch of time.{" "}
+          {certified
+            ? "A “yes” means this watch recorded no confirmed foreground-track entry into that zone during the witnessed interval. Outside it, the watch makes no such claim."
+            : "No report in this run certifies an interval free of confirmed foreground-track entries."}
+        </p>
+      }
+    >
+      <table className="measured__table measured__table--bars">
         <thead>
           <tr>
             <th scope="col">Camera</th>
@@ -357,23 +397,23 @@ export function CoverageRuns({ native, names }) {
             <tr key={c.id}>
               <th scope="row">{names[c.id]}</th>
               {c.coverage.refusal ? (
-                <td colSpan={3}>
+                <td colSpan={3} className="measured__whole">
                   <span className="data">refused</span>
                   <small>{c.coverage.refusal}</small>
                 </td>
               ) : (
                 <>
-                  <td className="num">{c.coverage.records ?? "n/a"}</td>
-                  <td className="num">
+                  <td className="num" data-label="Witnesses kept">{c.coverage.records ?? "n/a"}</td>
+                  <td className="num" data-label="Seconds covered">
                     <span>
                       {c.coverage.seconds != null ? c.coverage.seconds.toFixed(1) : "n/a"}
                       {c.coverage.seconds != null && c.seconds != null && ` of ${c.seconds.toFixed(0)}`}
                     </span>
                     {c.coverage.seconds != null && c.seconds > 0 && (
-                      <MiniBar ratio={c.coverage.seconds / c.seconds} tone="seen" />
+                      <MiniBar ratio={c.coverage.seconds / c.seconds} />
                     )}
                   </td>
-                  <td>
+                  <td className="measured__whole" data-label="No confirmed zone entry inside witnesses">
                     {c.coverage.certified == null ? "not stated" : c.coverage.certified ? "yes" : "no"}
                     {c.coverage.report && <small><a href={c.coverage.report} aria-label={`First retained coverage report for ${names[c.id]}`}>First report</a></small>}
                   </td>
@@ -391,12 +431,6 @@ export function CoverageRuns({ native, names }) {
           witness.
         </p>
       ))}
-      <p className="measured__aside">
-        A witness says one camera decoded its zone without a gap over one stretch of time.{" "}
-        {certified
-          ? "A “yes” means this watch recorded no confirmed foreground-track entry into that zone during the witnessed interval. Outside it, the watch makes no such claim."
-          : "No report in this run certifies an interval free of confirmed foreground-track entries."}
-      </p>
     </Panel>
   );
 }
@@ -412,7 +446,7 @@ export function FusionRuns({ native, children }) {
   const fusion = native.fusion;
   if (!fusion.variants.length) {
     return (
-      <Panel title="Fusion on these films">
+      <Panel eyebrow="Evidence fusion" title="Fusion on these films.">
         {children}
         <p>{fusion.outcome === "not_run" ? "Fusion did not run." : "No fusion result was recorded."}
           {fusion.reason && ` Reason: ${fusion.reason}.`}</p>
@@ -420,12 +454,21 @@ export function FusionRuns({ native, children }) {
     );
   }
   return (
-    <Panel title="Measured: the fusion tool on these films">
+    <Panel
+      eyebrow="Evidence fusion"
+      title="The same films, under different declarations."
+      note={
+        <p>
+          The measured scores have no calibration for this site. The illustrative runs assign each camera an assumed
+          evidence weight.
+        </p>
+      }
+    >
       {children}
-      <p>
+      <p className="measured__hypothesis">
         Hypothesis: <q>{fusion.hypothesis}</q>
       </p>
-      <table className="measured__table">
+      <table className="measured__table measured__table--bars">
         <thead>
           <tr>
             <th scope="col">Told that</th>
@@ -436,12 +479,20 @@ export function FusionRuns({ native, children }) {
         <tbody>
           {fusion.variants.map((v) => (
             <tr key={v.id}>
-              <td>{VARIANT[v.id] ?? v.id}</td>
-              <td className="num">
-                {v.outcome === "ok" && v.ppm
-                  ? `${chance(v.ppm[0])} to ${chance(v.ppm[1])}%` : "Unavailable"}
+              <td className="measured__whole" data-label="Told that">{VARIANT[v.id] ?? v.id}</td>
+              <td className="num" data-label="Probability">
+                {v.outcome === "ok" && v.ppm ? (
+                  <>
+                    <span>{`${chance(v.ppm[0])} to ${chance(v.ppm[1])}%`}</span>
+                    <span className="interval" aria-hidden="true">
+                      <i style={{ left: `min(${chance(v.ppm[0])}%, 100% - 4px)`, width: `max(4px, ${chance(v.ppm[1]) - chance(v.ppm[0])}%)` }} />
+                    </span>
+                  </>
+                ) : (
+                  "Unavailable"
+                )}
               </td>
-              <td>
+              <td data-label="Decision">
                 <Code>{v.outcome === "ok" ? v.decision : v.outcome}</Code>
                 {v.reason && <small>{v.reason}</small>}
               </td>
@@ -449,9 +500,6 @@ export function FusionRuns({ native, children }) {
           ))}
         </tbody>
       </table>
-      <p className="measured__aside">
-        The measured scores have no calibration for this site. The illustrative runs assign each camera an assumed evidence weight.
-      </p>
     </Panel>
   );
 }
@@ -482,18 +530,30 @@ export function Briefing({ native }) {
     ["Blocked", b.control.blocked],
   ].filter(([, list]) => list?.length);
   return (
-    <Panel title="Measured: what the agent session was told" className="measured--briefing">
-      <p>
-        <strong>
-          The {b.view} view, {b.tokens.toLocaleString("en")} of {b.target.toLocaleString("en")} tokens.
-        </strong>{" "}
-        {refusedPulse && `The smaller pulse view was refused: ${refusedPulse.reason ?? refusedPulse.error}.`}
-      </p>
-      {b.target > 0 && (
-        <div className="measured__meter" aria-hidden="true">
-          <i style={{ width: `${Math.min(100, (b.tokens / b.target) * 100).toFixed(1)}%` }} />
-        </div>
-      )}
+    <Panel
+      eyebrow="SituationCapsule"
+      title="What the agent session was told."
+      badge="Measured on this take"
+      className="measured--briefing"
+    >
+      <div className="brief">
+        <p className="brief__count">
+          <b className="num">{b.tokens.toLocaleString("en")}</b>
+          <span>
+            of {b.target.toLocaleString("en")} tokens, the {b.view} view.
+          </span>
+        </p>
+        {b.target > 0 && (
+          <div className="measured__meter" aria-hidden="true">
+            <i style={{ width: `${Math.min(100, (b.tokens / b.target) * 100).toFixed(1)}%` }} />
+          </div>
+        )}
+        {refusedPulse && (
+          <p className="brief__pulse">
+            The smaller pulse view was refused: {refusedPulse.reason ?? refusedPulse.error}.
+          </p>
+        )}
+      </div>
       {laterFailed.length > 0 && (
         <p className="measured__flag">
           This briefing was taken before the coverage witnesses were stored
@@ -666,6 +726,14 @@ function RelayComparison({ replay }) {
   const lost = branch("lost-ack");
   const held = branch("held");
   const frames = [...new Set(replay.source.cameras.map((camera) => camera.source_frame))];
+  // What came back. "None" is only said where no request was made, and "no reply" where the receiver is known to have sent none.
+  const reply = (key, branch, call) => {
+    if (key === "accepted" && Number.isInteger(branch?.relay?.response_status)) return ["is-back", branch.relay.response_status];
+    if (key === "lost-ack" && branch?.relay?.response_disposition === "connection_closed_without_response")
+      return ["is-lost", "no reply"];
+    if (call?.requests_received === 0) return ["is-held", "none"];
+    return ["is-unknown", "unknown"];
+  };
   const attempts = [
     { key: "accepted", label: "Approved dispatch", branch: accepted, call: step(accepted, "dispatch") },
     { key: "repeat", label: "Same approval again", branch: accepted, call: step(accepted, "repeat") },
@@ -682,9 +750,19 @@ function RelayComparison({ replay }) {
         No person was notified.{" "}
         <a href="/watch/intrusion/relay-replay.json">Replay inputs and results</a>.</p>
       <dl className="relay-outcomes">
-        {attempts.map(({ key, label, branch, call }) => (
+        {attempts.map(({ key, label, branch, call }) => {
+          const [came, answer] = reply(key, branch, call);
+          return (
           <div key={key} data-relay-case={key}>
             <dt>{label}</dt>
+            <dd className="relay-outcomes__lane" aria-hidden="true">
+              <i>FSS</i>
+              <b className={!knownCount(call?.requests_received) ? "is-unknown" : call.requests_received ? "is-sent" : "is-held"}>
+                {knownCount(call?.requests_received) ? count(call.requests_received, "POST") : "unknown"}
+              </b>
+              <i>Receiver</i>
+              <b className={came}>{answer}</b>
+            </dd>
             <dd>
               {knownCount(call?.requests_received)
                 ? <><strong>{count(call.requests_received, "POST")}</strong> received during this call.</>
@@ -710,7 +788,8 @@ function RelayComparison({ replay }) {
               </span>
             </dd>
           </div>
-        ))}
+          );
+        })}
       </dl>
     </section>
   );
@@ -725,7 +804,7 @@ export function AlertRun({ native }) {
     ...(a ? alertDetails(native).steps : []),
   ].filter(Boolean);
   return (
-    <Panel title="Measured alert delivery">
+    <Panel eyebrow="Alert delivery" title="What reached the receiver, in four cases." badge="Measured against a local receiver">
       <RelayComparison replay={native.relayReplay} />
       {steps.length > 0 && (
         <details className="measured__calls">
@@ -766,7 +845,7 @@ export function Custody({ native, names }) {
   const published = (native.ledger.entries ?? []).map((entry) => entry.seq).filter((seq) => seq != null);
   const final = native.ledger.final;
   return (
-    <Panel title="Measured: custody and ledger for these films">
+    <Panel eyebrow="Custody and ledger" title="Five films, sealed before decode.">
       <table className="measured__table">
         <thead>
           <tr>
@@ -817,7 +896,7 @@ export function Custody({ native, names }) {
 }
 
 /** One list of everything measured, for the status section. */
-export function MeasuredSummary({ native, names }) {
+export function MeasuredSummary({ native }) {
   const imported = native.cameras.filter((c) => c.custody === "ok");
   const frames = sum(imported, (c) => c.frames);
   const inferred = sum(native.cameras, (c) => c.inferred);

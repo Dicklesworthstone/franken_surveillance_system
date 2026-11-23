@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { sectionIndex } from "./chapters";
 import { useFilm } from "./Feed";
+import { Badge, Figure, Lit } from "./ui";
 import styles from "./DeliveryDropout.module.css";
 
 const base = "/watch/delivery-dropout/";
@@ -85,9 +87,23 @@ export default function DeliveryDropout({ replay }) {
   }, [playing, replay.fps, total]);
   function seek(i) { setPlaying(false); setIndex(i); }
   return (
-    <section ref={section} id="delivery-dropout" className={styles.exhibit} data-dropout-digest={replay.digest} aria-labelledby="dropout-title">
-      <h3 id="dropout-title">The missing two seconds</h3>
-      <p>A courier approaches the porch of this same house. Compare the uninterrupted take with a copy that lost {total - replay.dropout.samples} camera frames. Both follow the original scene clock.</p>
+    <section ref={section} id="delivery-dropout" className="section" data-dropout-digest={replay.digest} aria-labelledby="dropout-title">
+      <div className="wrap">
+      <div className="section__head reveal">
+        <div>
+          <p className="section__eyebrow">
+            <span className="data">{sectionIndex("delivery-dropout")}</span>
+            <i aria-hidden="true" />
+            <span className="micro">A gap in the video</span>
+          </p>
+          <h3 className="display-3" id="dropout-title"><Lit text="The missing [two seconds]." /></h3>
+        </div>
+        <div className="section__words">
+          <p className="prose">A courier approaches the porch of this same house. Compare the uninterrupted take with a copy that lost {total - replay.dropout.samples} camera frames. Both follow the original scene clock. Where the picture is missing, the record says so and claims nothing.</p>
+        </div>
+      </div>
+      <div className="section__figures">
+      <Figure as="div" className={styles.exhibit} eyebrow="One recording, twice" title={`The same courier, with and without ${total - replay.dropout.samples} frames.`} badge={<Badge kind="measured">Staged delivery, measured receipts</Badge>}>
       <div className={styles.pair}>
         {["complete","dropout"].map(name => <Recording key={name} name={name} side={replay[name]} index={index} fps={replay.fps} seconds={replay.seconds} visible={visible} />)}
       </div>
@@ -101,7 +117,7 @@ export default function DeliveryDropout({ replay }) {
           }
           setPlaying(!playing);
         }}>{playing ? "Pause" : "Play"}</button>
-        <input type="range" aria-label="Delivery replay time" min="0" max={total-1} value={index}
+        <input type="range" className="range" style={{ "--done": index / (total - 1) * 100 + "%" }} aria-label="Delivery replay time" min="0" max={total-1} value={index}
           aria-valuetext={time(index/replay.fps)} onChange={e => seek(Number(e.target.value))} />
         <output>{time(index / replay.fps)}</output>
       </div>
@@ -119,6 +135,9 @@ export default function DeliveryDropout({ replay }) {
           <a href={base+name+".mkv"}>Download recording</a>
         </li>)}</ul>
       </details>
+      </Figure>
+      </div>
+      </div>
     </section>
   );
 }

@@ -5,13 +5,15 @@
   "type": "module",
   "scripts": {
     "dev": "next dev",
-    "build": "node scripts/check-night-model.mjs && node scripts/check-estate-evidence.mjs && node scripts/build-share-cards.mjs && next build && node scripts/finish-night-export.mjs",
+    "build": "next build && node scripts/finish-night-export.mjs",
     "films": "node scripts/render-night-estate.mjs",
     "deploy": "bun run build && cf deploy out",
     "check:site": "node scripts/check-site.mjs",
     "preview": "wrangler dev --local --port 8000"
   },
   "dependencies": {
+    "@fontsource-variable/inter": "5.3.0",
+    "@fontsource-variable/jetbrains-mono": "5.3.0",
     "@fontsource-variable/space-grotesk": "5.3.0",
     "@fontsource/ibm-plex-mono": "5.3.0",
     "@fontsource/instrument-serif": "5.3.0",

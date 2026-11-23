@@ -1,3 +1,10 @@
+// The observatory routes carry their own fonts and stylesheet so that pages
+// outside this wrapper are not styled by them.
+import "@fontsource-variable/space-grotesk/index.css";
+import "@fontsource/ibm-plex-mono/latin-400.css";
+import "@fontsource/instrument-serif/latin-400.css";
+import "@fontsource/instrument-serif/latin-400-italic.css";
+import "../app/estate.css";
 import NightObservatory from "../components/night/NightObservatory";
 import { nightData } from "./night/data";
 import { exhibits, pathFor } from "./night/catalog";

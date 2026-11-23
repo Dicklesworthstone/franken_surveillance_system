@@ -1,17 +1,26 @@
 "use client";
-import { Pause, Play } from "lucide-react";
+import { ChevronLeft, ChevronRight, Pause, Play } from "lucide-react";
 import { stamp } from "../../lib/watch/take";
 import { usePlaying } from "./clock";
 
 /** Named moments, alternating above and below the lanes so the labels have room. */
-function Marks({ markers, t, clock, pct, row }) {
+function Marks({ markers, t, clock, pct, duration, row }) {
   return (
     <ol className={"timeline__marks" + (row ? " timeline__marks--below" : "")}>
       {markers.map(
         (m, i) =>
           i % 2 === row && (
-            <li key={m.id} style={{ left: pct(m.t) }}>
-              <button type="button" onClick={() => clock.seek(m.t)} className={m.t <= t + 0.01 ? "is-past" : ""}>
+            <li
+              key={m.id}
+              className={m.t / duration > 0.8 ? "is-end" : ""}
+              style={{ left: pct(m.t) }}
+            >
+              <button
+                type="button"
+                onClick={() => clock.seek(m.t)}
+                className={m.t <= t + 0.01 ? "is-past" : ""}
+                title={`${m.label} (${m.clock})`}
+              >
                 {m.label}
               </button>
             </li>
@@ -31,18 +40,50 @@ export default function Timeline({ summary, spans, markers, belief, clock, frame
   const t = frame / summary.fps;
   const pct = (s) => (s / summary.duration) * 100 + "%";
   const current = markers.filter((m) => m.t <= t + 0.01).at(-1);
+  const prevMarker = markers.filter((m) => m.t < t - 0.15).at(-1);
+  const nextMarker = markers.find((m) => m.t > t + 0.15);
   const held = belief.filter((step) => step.from <= t + 0.01).at(-1);
   return (
     <div className="timeline">
       <div className="timeline__controls">
-        <button
-          type="button"
-          className="timeline__play"
-          onClick={() => (playing ? clock.pause() : clock.play())}
-          aria-label={playing ? "Pause" : "Play"}
-        >
-          {playing ? <Pause size={20} aria-hidden="true" /> : <Play size={20} aria-hidden="true" />}
-        </button>
+        <div className="timeline__transport">
+          <button
+            type="button"
+            className="timeline__play"
+            onClick={() => (playing ? clock.pause() : clock.play())}
+            aria-label={playing ? "Pause" : "Play"}
+          >
+            {playing ? <Pause size={20} aria-hidden="true" /> : <Play size={20} aria-hidden="true" />}
+          </button>
+          <div className="timeline__steppers">
+            <button
+              type="button"
+              className="timeline__step"
+              aria-label="Previous moment"
+              disabled={!prevMarker}
+              onClick={() => {
+                clock.pause();
+                if (prevMarker) clock.seek(prevMarker.t);
+              }}
+              title={prevMarker ? `Jump back to ${prevMarker.label}` : "At start"}
+            >
+              <ChevronLeft size={16} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className="timeline__step"
+              aria-label="Next moment"
+              disabled={!nextMarker}
+              onClick={() => {
+                clock.pause();
+                if (nextMarker) clock.seek(nextMarker.t);
+              }}
+              title={nextMarker ? `Jump forward to ${nextMarker.label}` : "At end"}
+            >
+              <ChevronRight size={16} aria-hidden="true" />
+            </button>
+          </div>
+        </div>
         <p className="timeline__now">
           <span className="data">{stamp(summary, t)}</span>
           <span className="timeline__beat">{current ? current.label : "Quiet"}</span>
@@ -61,7 +102,7 @@ export default function Timeline({ summary, spans, markers, belief, clock, frame
         </p>
       </div>
       <div className="timeline__chart" style={{ "--at": t / summary.duration }}>
-        <Marks markers={markers} t={t} clock={clock} pct={pct} row={0} />
+        <Marks markers={markers} t={t} clock={clock} pct={pct} duration={summary.duration} row={0} />
         <div className="timeline__lanes">
           <div className="timeline__lane timeline__lane--case">
             <span className="timeline__name">Assessment</span>
@@ -108,7 +149,7 @@ export default function Timeline({ summary, spans, markers, belief, clock, frame
             aria-valuetext={stamp(summary, t)}
           />
         </div>
-        <Marks markers={markers} t={t} clock={clock} pct={pct} row={1} />
+        <Marks markers={markers} t={t} clock={clock} pct={pct} duration={summary.duration} row={1} />
         <div className="timeline__scale data" aria-hidden="true">
           <span>{stamp(summary, 0)}</span>
           <span>{stamp(summary, summary.duration / 2)}</span>

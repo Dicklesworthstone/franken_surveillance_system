@@ -1,27 +1,72 @@
+.skip {
+  position: fixed;
+  left: 12px;
+  top: -80px;
+  z-index: 90;
+  padding: 11px 16px;
+  border-radius: 12px;
+  background: var(--lamp);
+  color: var(--lamp-ink);
+  font-weight: 750;
+  text-decoration: none;
+}
+.skip:focus {
+  top: 12px;
+}
+
+/* Glass: the header and the phone dock, which float over the page. The only blurred surfaces on it. */
+.glass {
+  background: rgb(7 10 15 / 0.8);
+  border: 1px solid rgb(255 255 255 / 0.1);
+  backdrop-filter: blur(16px) saturate(135%);
+  -webkit-backdrop-filter: blur(16px) saturate(135%);
+  box-shadow:
+    0 10px 40px -10px rgb(0 0 0 / 0.75),
+    inset 0 1px 0 rgb(255 255 255 / 0.06);
+}
+
 .topbar {
   position: fixed;
-  inset: 0 0 auto 0;
-  z-index: 40;
-  background: rgb(8 11 16 / 0.95);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  border-bottom: 1px solid rgb(255 255 255 / 0.09);
+  inset: 0 0 auto;
+  z-index: 60;
+  padding: 14px var(--gutter) 0;
+  pointer-events: none;
 }
-.topbar__row {
+.topbar__pill {
+  position: relative;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 20px;
-  height: 64px;
+  gap: 14px;
+  width: min(100%, 1400px);
+  height: 58px;
+  margin-inline: auto;
+  padding: 0 9px 0 16px;
+  border: 1px solid transparent;
+  border-radius: 20px;
+  pointer-events: auto;
+  transition:
+    background-color 420ms,
+    border-color 420ms,
+    box-shadow 420ms;
+}
+.topbar.is-scrolled .topbar__pill {
+  background: rgb(7 10 15 / 0.84);
+  border-color: rgb(255 255 255 / 0.1);
+  backdrop-filter: blur(16px) saturate(135%);
+  -webkit-backdrop-filter: blur(16px) saturate(135%);
+  box-shadow:
+    0 10px 40px -12px rgb(0 0 0 / 0.8),
+    inset 0 1px 0 rgb(255 255 255 / 0.06);
 }
 .wordmark {
   display: inline-flex;
   align-items: center;
-  gap: 11px;
-  font-stretch: 118%;
-  font-weight: 700;
-  font-size: 1.02rem;
-  letter-spacing: -0.012em;
+  gap: 10px;
+  flex: none;
+  font-size: 0.96rem;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  color: #fff;
   text-decoration: none;
   white-space: nowrap;
 }
@@ -29,131 +74,204 @@
   width: 26px;
   height: 26px;
   flex: none;
+  filter: drop-shadow(0 0 9px rgb(255 194 77 / 0.45));
 }
-.topbar nav ul {
+.topbar__nav {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  min-width: 0;
+}
+.topbar__nav ul {
+  display: flex;
+  gap: 2px;
+}
+.topbar__nav a {
   display: flex;
   align-items: center;
-  gap: clamp(14px, 2vw, 28px);
-}
-.topbar nav a {
-  font-size: 0.93rem;
-  font-weight: 520;
+  gap: 8px;
+  padding: 9px 13px;
+  border-radius: 12px;
+  font-size: 0.84rem;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: #b9c3d2;
   text-decoration: none;
-  padding: 10px 0;
-  color: color-mix(in srgb, var(--night-text) 84%, transparent);
-  transition: color 120ms, border-color 120ms;
+  white-space: nowrap;
+  transition:
+    color 180ms,
+    background-color 180ms;
 }
-.topbar nav a:hover {
+.topbar__nav a:hover {
   color: #fff;
-  text-decoration: underline;
+  background: rgb(255 255 255 / 0.05);
 }
-.topbar nav a.is-current {
-  color: var(--sign);
+.topbar__nav a .sphere {
+  width: 8px;
+  height: 8px;
+  opacity: 0.5;
+  transition:
+    opacity 260ms,
+    transform 260ms var(--ease);
 }
-.topbar nav a.topbar__source {
-  padding: 6px 12px;
-  border: 1px solid rgb(255 255 255 / 0.22);
-  border-radius: 3px;
-  color: var(--night-text);
+.topbar__nav a:hover .sphere {
+  opacity: 0.85;
 }
-.topbar nav a.topbar__source:hover {
-  border-color: var(--sign);
-  color: var(--sign);
+.topbar__nav a.is-current {
+  color: #fff;
+  background: rgb(255 255 255 / 0.075);
+}
+.topbar__nav a.is-current .sphere {
+  opacity: 1;
+  transform: scale(1.25);
+}
+.topbar__nav .data {
+  font-size: 0.7rem;
+  color: var(--faint);
+}
+.topbar__source {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex: none;
+  height: 40px;
+  padding: 0 15px;
+  margin-left: auto;
+  border-radius: 13px;
+  background: var(--lamp);
+  color: var(--lamp-ink);
+  font-size: 0.84rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
   text-decoration: none;
+  transition: background-color 180ms;
 }
-.topbar__mobile {
+.topbar__source:hover {
+  background: var(--lamp-hot);
+}
+.topbar__source svg {
+  width: 14px;
+  height: 14px;
+}
+/* How far down the page the reader is. */
+.topbar__progress {
+  position: absolute;
+  inset: auto 18px 0;
+  height: 1px;
+  background: rgb(255 255 255 / 0.05);
+  opacity: 0;
+  transition: opacity 420ms;
+}
+.topbar.is-scrolled .topbar__progress {
+  opacity: 1;
+}
+.topbar__progress i {
+  display: block;
+  height: 100%;
+  transform-origin: left;
+  transform: scaleX(0);
+  background: linear-gradient(90deg, var(--lamp), #ff8352);
+}
+
+/* Phones: the chapters in a dock where a thumb reaches them. */
+.dock {
   display: none;
 }
-@media (max-width: 720px) {
-  .topbar__row {
-    height: 50px;
-    gap: 12px;
-  }
-  .wordmark {
-    font-size: 0.95rem;
-    gap: 9px;
-  }
-  .wordmark svg {
-    width: 22px;
-    height: 22px;
-  }
-  .topbar nav li:not(.topbar__keep) {
+@media (max-width: 1080px) {
+  .topbar__nav .data {
     display: none;
   }
-  .topbar nav a.topbar__source {
-    padding: 4px 10px;
-    font-size: 0.84rem;
+  .topbar__nav a {
+    padding: 9px 10px;
   }
-  .topbar__mobile {
+}
+@media (max-width: 899px) {
+  .topbar {
+    padding-top: 8px;
+  }
+  .topbar__pill {
+    height: 52px;
+    padding: 0 7px 0 12px;
+    border-radius: 17px;
+  }
+  .topbar__nav {
+    display: none;
+  }
+  .topbar__source {
+    height: 38px;
+  }
+  .dock {
+    position: fixed;
+    inset: auto 0 0;
+    z-index: 60;
     display: block;
-    border-top: 1px solid rgb(255 255 255 / 0.08);
-    background: rgb(8 11 16 / 0.94);
+    padding: 0 12px max(10px, env(safe-area-inset-bottom));
+    pointer-events: none;
   }
-  .topbar__mobile-row {
+  .dock ul {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    max-width: 460px;
+    margin-inline: auto;
+    padding: 4px;
+    border-radius: 20px;
+    pointer-events: auto;
+  }
+  .dock a {
     display: flex;
+    flex-direction: column;
     align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    height: 34px;
-  }
-  .topbar__mobile-row a {
-    font-size: 0.78rem;
-    font-weight: 560;
-    color: var(--night-soft);
+    justify-content: center;
+    gap: 4px;
+    min-height: 52px;
+    border-radius: 15px;
+    font-size: 0.66rem;
+    font-weight: 650;
+    letter-spacing: 0;
+    color: #b3bdcc;
     text-decoration: none;
-    padding: 6px 2px;
-    white-space: nowrap;
+    -webkit-tap-highlight-color: transparent;
   }
-  .topbar__mobile-row a:hover,
-  .topbar__mobile-row a.is-current {
-    color: var(--sign);
+  .dock a svg {
+    width: 18px;
+    height: 18px;
   }
-}
-
-.footer {
-  padding: 56px 0 64px;
-  border-top: 1px solid var(--day-line);
-}
-.footer__grid {
-  display: grid;
-  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
-  gap: 40px;
-}
-.footer h2 {
-  font-size: var(--step-1);
-  font-stretch: 112%;
-  font-weight: 660;
-  letter-spacing: -0.01em;
-}
-.footer p {
-  max-width: 56ch;
-}
-.footer__links {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px 28px;
-  margin-top: 18px;
-  font-weight: 560;
-}
-@media (max-width: 820px) {
-  .footer__grid {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 24px;
+  .dock a:active {
+    background: rgb(255 255 255 / 0.06);
+  }
+  .dock a.is-current {
+    color: #fff;
+    background: rgb(255 255 255 / 0.08);
+  }
+  .dock a.is-current svg {
+    color: var(--sphere);
+    filter: drop-shadow(0 0 8px color-mix(in srgb, var(--sphere) 70%, transparent));
   }
 }
-
-.skip {
-  position: absolute;
-  left: 12px;
-  top: -60px;
-  z-index: 60;
-  padding: 10px 14px;
-  border-radius: 3px;
-  background: var(--sign);
-  color: var(--sign-ink);
-  font-weight: 620;
-  text-decoration: none;
+/* A phone on its side has little height to spare. */
+@media (max-width: 899px) and (max-height: 480px) {
+  .dock ul {
+    max-width: 560px;
+  }
+  .dock a {
+    flex-direction: row;
+    gap: 7px;
+    min-height: 40px;
+  }
 }
-.skip:focus {
-  top: 12px;
+/* The narrowest phones: the name and the button still have to share one line. */
+@media (max-width: 359px) {
+  .topbar__pill {
+    gap: 8px;
+    padding-left: 9px;
+  }
+  .wordmark {
+    gap: 8px;
+    font-size: 0.86rem;
+  }
+  .topbar__source {
+    gap: 4px;
+    padding: 0 10px;
+    font-size: 0.78rem;
+  }
 }

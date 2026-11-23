@@ -1,270 +1,437 @@
 .hero {
+  --words: 31rem;
   position: relative;
-  min-height: min(100svh, 940px);
-  display: grid;
-  align-items: end;
   isolation: isolate;
   overflow: clip;
+  min-height: min(100svh, 1040px);
+  display: grid;
+  align-items: center;
+  background: var(--ink);
 }
-.hero__plate {
+/* The surveyor's grid, faded at its edges. */
+.hero::before {
+  content: "";
+  position: absolute;
+  inset: 0 50% 0 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgb(196 214 255 / 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(196 214 255 / 0.04) 1px, transparent 1px);
+  background-size: 52px 52px;
+  mask-image: radial-gradient(ellipse at 22% 30%, black 10%, transparent 66%);
+  -webkit-mask-image: radial-gradient(ellipse at 22% 30%, black 10%, transparent 66%);
+}
+.hero__media {
   position: absolute;
   inset: 0;
-  z-index: -2;
+  z-index: -1;
 }
-.hero__plate img,
-.hero__plate video {
+.hero__plate {
+  /* The share of the width on the left that the film leaves to the words. */
+  --from: 28;
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  container-type: size;
+}
+/* The film's own 16:9 frame, sized to cover the right of the hero, so the outline drawn in it lands on the man. */
+.hero__frame {
+  --room: calc((100 - var(--from)) * 1cqw);
+  --w: max(var(--room), 177.78cqh);
+  --h: max(100cqh, calc(var(--room) * 0.5625));
+  position: absolute;
+  width: var(--w);
+  height: var(--h);
+  left: calc(var(--from) * 1cqw + (var(--room) - var(--w)) * 0.66);
+  top: calc((100cqh - var(--h)) * 0.5);
+}
+.hero__frame img,
+.hero__frame video {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
-  object-position: var(--focus, 50% 45%);
 }
-.hero__plate video {
+.hero__frame video {
   opacity: 0;
-  transition: opacity 700ms;
 }
-.hero__plate video.is-ready {
+.hero__frame video[data-shown] {
   opacity: 1;
 }
-/* Darken only where the type sits; the rest of the frame stays as rendered. */
-.hero::after {
+.hero__box {
+  position: absolute;
+  border: 2px dashed var(--track-a);
+  border-radius: 2px;
+  box-shadow: 0 0 34px -4px rgb(255 122 77 / 0.65);
+}
+.hero__box b {
+  position: absolute;
+  left: -2px;
+  bottom: 100%;
+  padding: 1px 7px;
+  background: var(--track-a);
+  color: #170500;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.5;
+  letter-spacing: 0;
+}
+/* The film dissolves into the ground on its left and at its foot. This is paint over the film and
+   not a mask on it: a mask would have to be applied again to every frame. The hero's own glow is
+   painted here too, so the ground has no seam where the film starts. */
+.hero__plate::after {
   content: "";
   position: absolute;
   inset: 0;
-  z-index: -1;
+  pointer-events: none;
   background:
-    linear-gradient(to top, rgb(8 11 16 / 0.96) 0%, rgb(8 11 16 / 0.76) 30%, rgb(8 11 16 / 0) 64%),
-    linear-gradient(to right, rgb(8 11 16 / 0.66) 0%, rgb(8 11 16 / 0) 58%),
-    linear-gradient(to bottom, rgb(8 11 16 / 0.68) 0%, rgb(8 11 16 / 0) 22%);
+    radial-gradient(52rem 36rem at 4% 8%, rgb(255 194 77 / 0.1), transparent 64%),
+    radial-gradient(44rem 34rem at 10% 108%, rgb(164 188 255 / 0.07), transparent 62%),
+    linear-gradient(
+      to right,
+      var(--ink) calc(var(--from) * 1%),
+      rgb(5 7 11 / 0.86) calc(var(--from) * 1% + 9%),
+      rgb(5 7 11 / 0.36) calc(var(--from) * 1% + 23%),
+      transparent calc(var(--from) * 1% + 37%)
+    ),
+    linear-gradient(to bottom, rgb(5 7 11 / 0.6) 0%, transparent 17%),
+    linear-gradient(to top, var(--ink) 0%, rgb(5 7 11 / 0.5) 12%, transparent 27%);
 }
-.hero__body {
-  padding: 136px 0 40px;
+.hero .hero__reticle {
+  --reticle: rgb(255 255 255 / 0.5);
+  inset: 96px var(--gutter) 30px auto;
+  width: 62.5%;
+}
+.hero .hero__reticle i {
+  width: 18px;
+  height: 18px;
+}
+.hero__hud {
+  position: absolute;
+  right: calc(var(--gutter) + 20px);
+  bottom: 50px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  /* Never over the words: what they take of the width, and a gap. Its rows wrap instead. */
+  max-width: calc(100% - 2 * var(--gutter) - 20px - var(--words) - 28px);
+  padding: 14px 14px 14px 22px;
+  border: 1px solid rgb(255 255 255 / 0.1);
+  border-radius: 20px;
+  /* Not glass: a blur over the film would be worked out again for every frame of it. */
+  background: rgb(7 10 15 / 0.86);
+  box-shadow: 0 10px 40px -10px rgb(0 0 0 / 0.75);
+}
+.hero__hud dl {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 26px;
+}
+.hero__hud dt {
+  font-size: 0.62rem;
+}
+.hero__hud dd {
+  margin-top: 5px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  line-height: 1.25;
+  color: #fff;
+  white-space: nowrap;
+}
+.hero__hud dd.data {
+  font-weight: 500;
+}
+.hero__lights {
+  min-width: 3.2ch;
+}
+.hero__lights[data-on] {
+  color: var(--lamp);
+  text-shadow: 0 0 16px rgb(255 194 77 / 0.8);
+}
+.hero__action {
+  min-width: 14.5ch;
+}
+.hero__action::first-letter {
+  text-transform: uppercase;
+}
+.hero__seen ol {
+  display: flex;
+  gap: 5px;
+}
+.hero__seen li {
+  padding: 2px 9px;
+  border: 1px solid rgb(255 255 255 / 0.12);
+  border-radius: 8px;
+  font-size: 0.74rem;
+  font-weight: 600;
+  line-height: 1.45;
+  /* No transition: a lamp that fades would disagree with the clock beside it. */
+  color: #8f9bad;
+}
+.hero__seen li[data-on] {
+  color: #ffd9cb;
+  border-color: rgb(255 122 77 / 0.7);
+  background: rgb(255 122 77 / 0.2);
+}
+.hero__pause {
+  flex: none;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: end;
-  gap: 32px 48px;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border: 1px solid rgb(255 255 255 / 0.14);
+  border-radius: 14px;
+  color: #fff;
+  transition:
+    border-color 180ms,
+    color 180ms;
+}
+.hero__pause:hover {
+  border-color: rgb(255 194 77 / 0.6);
+  color: var(--lamp-hot);
+}
+.hero__pause svg {
+  width: 17px;
+  height: 17px;
+  fill: currentColor;
+}
+.hero__credit {
+  position: absolute;
+  top: 112px;
+  right: calc(var(--gutter) + 18px);
+  z-index: 2;
+}
+.hero__credit .badge {
+  background: rgb(5 7 11 / 0.74);
+  border-color: rgb(255 255 255 / 0.16);
+}
+.hero__words {
+  position: relative;
+  z-index: 1;
+  width: min(100% - 2 * var(--gutter), 1400px);
+  margin-inline: auto;
+  padding: 104px 0 56px;
+  pointer-events: none;
+}
+.hero__words > * {
+  pointer-events: auto;
 }
 .hero__eyebrow {
-  margin-bottom: 14px;
-  font-size: 0.74rem;
-  letter-spacing: 0.09em;
-  color: var(--sign);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.hero__eyebrow .micro {
+  color: var(--lamp-hot);
 }
 .hero h1 {
-  max-width: 15ch;
+  max-width: 8.4em;
+  margin-top: 22px;
+  font-size: clamp(2.7rem, 1.1rem + 3.75vw, 5.6rem);
 }
 .hero__lede {
-  margin-top: 20px;
-  max-width: 56ch;
-  font-size: clamp(1.04rem, 0.94rem + 0.45vw, 1.24rem);
-  line-height: 1.46;
-  color: color-mix(in srgb, var(--night-text) 92%, transparent);
-  text-wrap: pretty;
+  max-width: var(--words);
+  margin-top: 24px;
+  font-size: clamp(1.04rem, 0.98rem + 0.22vw, 1.18rem);
 }
 .hero__actions {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
-  gap: 10px 12px;
-  margin-top: 28px;
+  gap: 12px;
+  margin-top: 30px;
 }
-/* The caption is the camera's own stamp for the frame behind the headline. */
-.hero__stamp {
-  text-align: right;
-  font-size: 0.8rem;
-  line-height: 1.5;
-  color: color-mix(in srgb, var(--night-text) 78%, transparent);
+.hero__foot {
+  max-width: var(--words);
+  margin-top: 22px;
+  font-size: 0.87rem;
+  line-height: 1.55;
+  color: #a5b0c0;
 }
-.hero__stamp strong {
-  display: block;
-  font-family: var(--mono);
-  font-stretch: 87.5%;
-  font-weight: 500;
-  font-size: 0.86rem;
-  color: var(--night-text);
-  font-variant-numeric: tabular-nums;
-}
-.hero__status {
-  border-top: 1px solid rgb(255 255 255 / 0.14);
-  background: rgb(8 11 16 / 0.8);
-}
-.hero__status-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px 28px;
-  padding: 13px 0;
-}
-.hero__status p {
-  font-size: 0.92rem;
-  color: var(--night-soft);
-  max-width: 72ch;
-}
-.hero__status a {
-  color: var(--night-text);
-}
-.hero__status .hero__telemetry {
-  font-size: 0.76rem;
-  color: var(--seen);
-  white-space: nowrap;
+.hero__foot a {
+  color: var(--lamp-hot);
 }
 
-/* On a phone the picture sits above the words and stays compact so headline + primary CTA sit above the fold. */
-@media (max-width: 860px) {
-  .hero {
-    min-height: 0;
-    display: block;
-    padding-top: 64px;
-  }
-  .hero__plate {
-    position: relative;
-    height: clamp(195px, 28svh, 290px);
-  }
-  .hero::after {
-    top: 64px;
-    bottom: auto;
-    height: clamp(195px, 28svh, 290px);
-    background:
-      linear-gradient(to top, rgb(8 11 16 / 1) 0%, rgb(8 11 16 / 0) 36%),
-      linear-gradient(to bottom, rgb(8 11 16 / 0.55) 0%, rgb(8 11 16 / 0) 26%);
-  }
-  .hero__body {
-    grid-template-columns: minmax(0, 1fr);
-    padding: 12px 0 26px;
-    gap: 16px;
-  }
-  .hero__eyebrow {
-    margin-bottom: 10px;
-    font-size: 0.63rem;
-    letter-spacing: 0.04em;
-  }
-  .hero .display {
-    font-size: clamp(2.05rem, 1.35rem + 3.4vw, 3.1rem);
-    line-height: 1.03;
-  }
-  .hero__lede {
-    margin-top: 12px;
-    font-size: 0.98rem;
-    line-height: 1.42;
-  }
-  .hero__actions {
-    margin-top: 18px;
-    gap: 8px 10px;
-  }
-  .hero__actions .button {
-    min-height: 42px;
-    padding: 0 0.95em;
-    font-size: 0.92rem;
-  }
-  .hero__stamp {
-    text-align: left;
-  }
+/* Four facts, each with its own qualification. */
+.specs {
+  position: relative;
+  border-block: 1px solid var(--line);
+  background: rgb(0 0 0 / 0.25);
 }
-@media (max-width: 720px) {
-  .hero {
-    padding-top: 85px;
-  }
-  .hero::after {
-    top: 85px;
-  }
-  .hero__status .hero__telemetry {
-    white-space: normal;
-  }
-}
-
-/* The claim, in three sentences, between the picture and the demonstration. */
-.pitch {
-  padding: clamp(48px, 7vw, 92px) 0 0;
-}
-.pitch__grid {
-  display: grid;
-  grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
-  gap: 36px clamp(32px, 5.5vw, 88px);
-  align-items: start;
-}
-.pitch h2 {
-  padding-bottom: 12px;
-  font-size: 0.95rem;
-  font-weight: 620;
-  color: var(--night-soft);
-}
-.pitch ol {
-  counter-reset: step;
-}
-.pitch ol li {
-  counter-increment: step;
-  border-top: 1px solid var(--night-line);
-}
-.pitch ol li a {
-  display: grid;
-  grid-template-columns: 1.6em minmax(0, 1fr);
-  gap: 8px;
-  padding: 12px 0;
-  line-height: 1.35;
-  text-decoration: none;
-}
-.pitch ol li a::before {
-  content: counter(step);
-  font-variant-numeric: tabular-nums;
-  color: var(--sign);
-  font-weight: 640;
-}
-.pitch ol li a:hover {
-  color: var(--sign);
-}
-.pitch__thesis {
-  max-width: 26ch;
-  font-size: clamp(1.45rem, 1rem + 2vw, 2.45rem);
-  font-stretch: 108%;
-  font-weight: 560;
-  line-height: 1.18;
-  letter-spacing: -0.015em;
-  text-wrap: balance;
-}
-.pitch__thesis em {
-  font-style: normal;
-  color: var(--night-soft);
-}
-
-/* Four architectural differentiators, laid out cleanly on hairlines without card clutter. */
-.pillars {
+.specs dl {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 20px 28px;
-  margin-top: clamp(36px, 5vw, 56px);
-  padding-top: 24px;
-  border-top: 1px solid var(--night-line);
+  width: min(100%, 1400px);
+  margin-inline: auto;
 }
-.pillars li {
-  font-size: 0.9rem;
-  line-height: 1.48;
-  color: var(--night-soft);
+.specs dl > div {
+  padding: 34px 30px 36px;
 }
-.pillars strong {
+.specs dl > div + div {
+  border-left: 1px solid var(--line);
+}
+.specs dt {
+  color: var(--lamp);
+  font-size: 0.64rem;
+}
+.specs dd b {
   display: block;
-  margin-bottom: 5px;
-  font-size: 0.96rem;
-  font-stretch: 106%;
-  font-weight: 650;
-  color: var(--night-text);
+  margin-top: 10px;
+  font-size: clamp(1.7rem, 1.2rem + 1.2vw, 2.4rem);
+  font-weight: 800;
+  line-height: 1.05;
+  letter-spacing: -0.045em;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
 }
-@media (max-width: 980px) {
-  .pitch__grid {
-    grid-template-columns: minmax(0, 1fr);
+/* At 320 px the word "operations" at the usual minimum is wider than its column. */
+@media (max-width: 360px) {
+  .specs dd b {
+    font-size: 1.5rem;
   }
-  .pillars {
+}
+.specs dd span {
+  display: block;
+  margin-top: 10px;
+  font-size: 0.86rem;
+  line-height: 1.5;
+  color: var(--soft);
+}
+
+@media (max-width: 1180px) {
+  /* Less width to share: the words give some up and the man stands further right, so the two never meet. */
+  .hero {
+    --words: 27rem;
+  }
+  .hero__plate {
+    --from: 22;
+  }
+  .hero__frame {
+    left: calc(var(--from) * 1cqw + (var(--room) - var(--w)) * 0.52);
+  }
+  .hero__seen {
+    display: none;
+  }
+}
+@media (max-width: 899px) {
+  .hero {
+    display: block;
+    min-height: 0;
+  }
+  .hero__media {
+    position: relative;
+    inset: auto;
+    padding-bottom: 12px;
+  }
+  .hero__plate {
+    --from: 0;
+    position: relative;
+    inset: auto;
+    height: clamp(300px, 46svh, 470px);
+  }
+  .hero__frame {
+    left: calc((100cqw - var(--w)) * 0.62);
+  }
+  .hero__plate::after {
+    background:
+      linear-gradient(to bottom, rgb(5 7 11 / 0.72) 0%, transparent 30%),
+      linear-gradient(to top, var(--ink) 0%, transparent 36%);
+  }
+  .hero .hero__reticle {
+    inset: 70px 14px auto;
+    width: auto;
+    height: calc(clamp(300px, 46svh, 470px) - 130px);
+  }
+  .hero__credit {
+    top: 80px;
+    right: 24px;
+    left: 24px;
+  }
+  .hero__credit .badge {
+    flex-shrink: 1;
+    border-radius: 12px;
+    font-size: 0.62rem;
+  }
+  .hero__hud {
+    position: relative;
+    right: auto;
+    bottom: auto;
+    max-width: none;
+    margin: -46px var(--gutter) 0;
+    padding: 12px 12px 12px 16px;
+    gap: 10px;
+    align-items: flex-start;
+    justify-content: space-between;
+    border-radius: 18px;
+  }
+  .hero__hud dl {
+    flex: 1;
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 11px 22px;
+  }
+  .hero__hud dt {
+    letter-spacing: 0.12em;
+  }
+  .hero__hud dd {
+    margin-top: 3px;
+    font-size: 0.88rem;
+  }
+  /* What he is doing gets a line of its own, so it is never cut short. */
+  .hero__hud dl > div:nth-child(3) {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+  }
+  .hero__action {
+    min-width: 0;
+  }
+  .hero__seen {
+    display: block;
+    grid-column: 1 / -1;
+    margin-right: -54px;
+  }
+  .hero__seen ol {
+    flex-wrap: wrap;
+    margin-top: 3px;
+  }
+  .hero__seen li {
+    padding: 2px 8px;
+    font-size: 0.7rem;
+  }
+  .hero__words {
+    padding: 26px 0 54px;
+  }
+  .hero h1 {
+    max-width: 13ch;
+    margin-top: 16px;
+  }
+  .hero__lede {
+    margin-top: 18px;
+  }
+  .hero__actions {
+    margin-top: 26px;
+  }
+  .hero__actions .button {
+    flex: 1 1 auto;
+  }
+  .specs dl {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-}
-@media (max-width: 560px) {
-  .pillars {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 16px;
+  .specs dl > div {
+    padding: 22px var(--gutter) 24px;
   }
-  .pillars li + li {
-    padding-top: 14px;
-    border-top: 1px solid rgb(255 255 255 / 0.07);
+  .specs dl > div:nth-child(odd) {
+    border-left: 0;
+  }
+  .specs dl > div:nth-child(n + 3) {
+    border-top: 1px solid var(--line);
+  }
+  .specs dd span {
+    font-size: 0.8rem;
   }
 }

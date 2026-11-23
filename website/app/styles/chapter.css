@@ -1,0 +1,622 @@
+/* The thesis, and the chain from five cameras to one answer. */
+.thesis {
+  padding: clamp(88px, 11vw, 168px) 0 clamp(40px, 5vw, 72px);
+}
+.thesis__line {
+  max-width: 23em;
+  font-size: clamp(1.95rem, 1.1rem + 2.7vw, 3.7rem);
+  font-weight: 800;
+  line-height: 1.04;
+  letter-spacing: -0.044em;
+  color: #fff;
+  text-wrap: balance;
+}
+.thesis__line em {
+  font-style: normal;
+  color: #7c8899;
+}
+.thesis__grid {
+  display: grid;
+  gap: clamp(28px, 3.4vw, 52px);
+}
+.thesis__side {
+  justify-self: end;
+  width: min(100%, 47ch);
+  padding-left: 24px;
+  border-left: 1px solid rgb(255 194 77 / 0.5);
+  font-size: 1.06rem;
+}
+
+.chain {
+  padding-bottom: clamp(56px, 7vw, 104px);
+}
+/* The pulses move only while they are on screen (RevealController sets data-live). */
+.chain:not([data-live]) .is-live {
+  animation-play-state: paused;
+}
+.chain__flow {
+  display: grid;
+  grid-template-columns: minmax(0, 2.1fr) minmax(48px, 0.8fr) minmax(0, 5fr) minmax(48px, 0.8fr) minmax(0, 2.7fr);
+  align-items: stretch;
+}
+.chain__cams {
+  display: grid;
+  grid-template-rows: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+.chain__cam {
+  position: relative;
+  overflow: hidden;
+  min-height: 74px;
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  background: #000;
+}
+.chain__cam img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.chain__cam::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to top, rgb(5 7 11 / 0.92), rgb(5 7 11 / 0.1) 70%);
+}
+.chain__cam span {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 8px;
+  z-index: 1;
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1.25;
+  color: #fff;
+}
+.chain__cam small {
+  display: block;
+  font-family: var(--mono);
+  font-size: 0.64rem;
+  font-weight: 400;
+  color: #b3bdcc;
+}
+.chain__wires {
+  position: relative;
+}
+.chain__wires svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.chain__wires path {
+  fill: none;
+  stroke: rgb(255 194 77 / 0.28);
+  stroke-width: 1.5px;
+  vector-effect: non-scaling-stroke;
+}
+.chain__wires path.is-live {
+  stroke: var(--lamp);
+  stroke-width: 2px;
+  stroke-dasharray: 9 236;
+  stroke-linecap: round;
+  animation: wire 3.4s linear infinite;
+  animation-delay: var(--delay, 0s);
+}
+@keyframes wire {
+  from {
+    stroke-dashoffset: 245;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+.chain__model {
+  position: relative;
+  overflow: hidden;
+  min-height: 470px;
+  border: 1px solid rgb(255 194 77 / 0.28);
+  border-radius: var(--r-lg);
+  background: #04060a;
+  box-shadow: 0 0 90px -30px rgb(255 194 77 / 0.5);
+}
+.chain__model > img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: 54% 60%;
+  filter: brightness(0.78) saturate(0.85) contrast(1.06);
+}
+.chain__model::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse at 52% 55%, transparent 30%, rgb(4 6 10 / 0.72) 92%),
+    linear-gradient(to top, rgb(4 6 10 / 0.95) 0%, transparent 46%);
+}
+.chain__model > .badge {
+  position: absolute;
+  top: 18px;
+  left: 18px;
+  z-index: 2;
+  background: rgb(4 6 10 / 0.74);
+}
+.chain__model div {
+  position: absolute;
+  inset: auto 28px 26px;
+  z-index: 2;
+}
+.chain__model strong {
+  display: block;
+  margin-top: 8px;
+  font-size: clamp(1.4rem, 1rem + 1vw, 2rem);
+  font-weight: 800;
+  line-height: 1.08;
+  letter-spacing: -0.035em;
+  color: #fff;
+}
+.chain__model p:last-child {
+  max-width: 46ch;
+  margin-top: 8px;
+  font-size: 0.94rem;
+  line-height: 1.5;
+  color: #cfd7e3;
+}
+.chain__outs {
+  display: grid;
+  grid-template-rows: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.chain__out {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 18px 20px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: linear-gradient(180deg, rgb(255 255 255 / 0.035), transparent 60%), var(--ink-1);
+  text-decoration: none;
+  transition:
+    border-color 260ms,
+    transform 360ms var(--ease);
+}
+.chain__out:hover {
+  border-color: rgb(255 194 77 / 0.5);
+  transform: translateY(-2px);
+}
+.chain__out strong {
+  margin-top: 8px;
+  font-size: 1.1rem;
+  font-weight: 750;
+  line-height: 1.22;
+  letter-spacing: -0.025em;
+  color: #fff;
+}
+.chain__out span:last-child {
+  margin-top: 6px;
+  font-size: 0.87rem;
+  line-height: 1.48;
+  color: var(--soft);
+}
+.chain__steps {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  margin-top: 34px;
+  border-top: 1px solid var(--line);
+  counter-reset: step;
+}
+.chain__steps a {
+  display: block;
+  position: relative;
+  height: 100%;
+  padding: 20px 18px 6px 0;
+  font-size: 0.88rem;
+  line-height: 1.42;
+  color: var(--soft);
+  text-decoration: none;
+  transition: color 180ms;
+}
+.chain__steps a::before {
+  counter-increment: step;
+  content: counter(step, decimal-leading-zero);
+  display: block;
+  margin-bottom: 8px;
+  font-family: var(--mono);
+  font-size: 0.74rem;
+  color: var(--lamp);
+}
+.chain__steps a::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: -1px;
+  width: 100%;
+  height: 1px;
+  background: var(--lamp);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 480ms var(--ease);
+}
+.chain__steps a:hover {
+  color: #fff;
+}
+.chain__steps a:hover::after {
+  transform: scaleX(1);
+}
+
+/* A chapter opens over a render of the scene. */
+.opener {
+  position: relative;
+  isolation: isolate;
+  overflow: clip;
+  /* Under the header, so a jump to the chapter shows the whole opener. */
+  min-height: min(calc(100svh - 92px), 900px);
+  display: grid;
+  align-items: end;
+}
+/* The picture runs the full width and dissolves into the page at its foot, where the words are. */
+.opener__plate {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  mask-image: linear-gradient(to bottom, transparent 0%, black 13%, black 58%, transparent 98%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 13%, black 58%, transparent 98%);
+}
+.opener__plate img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: 50% 40%;
+}
+.opener__plate::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(54rem 24rem at 30% 0%, color-mix(in srgb, var(--chapter) 12%, transparent), transparent 70%),
+    radial-gradient(90% 86% at 0% 100%, rgb(5 7 11 / 0.95) 0%, rgb(5 7 11 / 0.72) 40%, transparent 78%),
+    linear-gradient(to top, rgb(5 7 11 / 0.72) 0%, transparent 46%);
+}
+/* A hairline across the page, lit at the chapter's bulb. */
+.opener::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--chapter) 55%, transparent) 22%, transparent 70%);
+}
+.opener__grid {
+  display: grid;
+  grid-template-columns: minmax(0, 8fr) minmax(0, 3fr);
+  gap: 32px clamp(32px, 5vw, 80px);
+  align-items: end;
+  padding-block: clamp(140px, 20vw, 290px) clamp(32px, 3.4vw, 52px);
+}
+.opener__eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.opener h2 {
+  max-width: 13ch;
+  margin-top: 22px;
+  text-shadow: 0 2px 40px rgb(5 7 11 / 0.8);
+}
+.opener .lede {
+  max-width: 44rem;
+  margin-top: 24px;
+  text-shadow: 0 1px 24px rgb(5 7 11 / 0.95);
+}
+.opener__side {
+  position: relative;
+}
+/* Drawn as an outline so it is architecture, not text to read. */
+.opener__numeral {
+  display: block;
+  font-family: var(--mono);
+  font-size: clamp(7rem, 13vw, 13.5rem);
+  font-weight: 500;
+  line-height: 0.8;
+  letter-spacing: -0.07em;
+  text-align: right;
+  color: transparent;
+  -webkit-text-stroke: 1.25px color-mix(in srgb, var(--chapter) 72%, transparent);
+  user-select: none;
+}
+.opener__index {
+  margin-top: 34px;
+  padding-left: 20px;
+  border-left: 1px solid rgb(255 255 255 / 0.18);
+}
+.opener__index a {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 7px 0;
+  font-size: 0.93rem;
+  font-weight: 550;
+  color: #d4dbe6;
+  text-decoration: none;
+  text-shadow: 0 1px 14px rgb(5 7 11 / 0.95);
+}
+.opener__index a:hover {
+  color: #fff;
+}
+.opener__index .data {
+  font-size: 0.72rem;
+  color: var(--chapter);
+}
+.opener__credit {
+  position: absolute;
+  right: var(--gutter);
+  bottom: 10px;
+  font-size: 0.56rem;
+  letter-spacing: 0.12em;
+  color: rgb(255 255 255 / 0.5);
+}
+
+/* A section: its heading and words, then figures at full width. */
+.section {
+  padding: clamp(56px, 6.5vw, 104px) 0;
+}
+.section__head {
+  display: grid;
+  grid-template-columns: minmax(0, 7fr) minmax(0, 6fr);
+  gap: 22px clamp(32px, 6vw, 96px);
+  align-items: start;
+}
+/* The words start level with the heading, below its numbered line. */
+.section__words {
+  padding-top: 42px;
+}
+.section__eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.section__eyebrow .data {
+  font-size: 0.74rem;
+  font-weight: 500;
+  color: var(--chapter);
+}
+.section__eyebrow i {
+  width: 26px;
+  height: 1px;
+  background: color-mix(in srgb, var(--chapter) 60%, transparent);
+}
+.section__figures {
+  display: grid;
+  gap: 18px;
+  margin-top: clamp(30px, 3.6vw, 52px);
+}
+.section__figures > * {
+  min-width: 0;
+}
+/* A time in the take. Pressing it moves the replay there. */
+.seek {
+  display: inline-flex;
+  align-items: center;
+  gap: 11px;
+  margin-top: 22px;
+  padding: 5px 16px 5px 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.02);
+  font-size: 0.86rem;
+  font-weight: 550;
+  line-height: 1.3;
+  text-align: left;
+  color: var(--soft);
+  transition:
+    color 180ms,
+    border-color 180ms;
+}
+.seek .data {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  background: var(--lamp);
+  color: var(--lamp-ink);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+.seek .data svg {
+  width: 10px;
+  height: 10px;
+  fill: currentColor;
+}
+.seek:hover {
+  color: #fff;
+  border-color: rgb(255 194 77 / 0.55);
+}
+
+/* Where a section stands. */
+.standing {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+  gap: 0 40px;
+  margin-top: 30px;
+  border-top: 1px solid var(--line);
+}
+.standing__row {
+  padding: 20px 0 6px;
+  font-size: 0.87rem;
+  line-height: 1.58;
+  color: var(--soft);
+}
+.standing__row strong {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 7px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #fff;
+}
+/* Shape as well as colour: full, half, empty, dashed. */
+.standing__row strong::before,
+.effects__status::before,
+.status__col h4::before {
+  content: "";
+  flex: none;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 1.5px solid var(--tone, var(--unseen));
+  background: var(--fill, transparent);
+}
+.standing__row--runs,
+.effects__row--runs,
+.status__col--runs {
+  --tone: var(--seen);
+  --fill: var(--seen);
+}
+.standing__row--built,
+.status__col--built {
+  --tone: var(--lamp);
+  --fill: linear-gradient(90deg, var(--lamp) 50%, transparent 50%);
+}
+.standing__row--planned,
+.effects__row--planned,
+.status__col--planned {
+  --tone: var(--unseen);
+}
+.effects__row--demo .effects__status::before {
+  border-style: dashed;
+}
+
+@media (max-width: 1080px) {
+  .chain__flow {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+  .chain__cams {
+    grid-template-rows: none;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+  .chain__cam {
+    aspect-ratio: 4 / 3;
+    min-height: 0;
+  }
+  .chain__wires {
+    height: 52px;
+  }
+  .chain__wires svg {
+    display: none;
+  }
+  .chain__wires::before {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 8px;
+    bottom: 8px;
+    width: 2px;
+    background: linear-gradient(to bottom, rgb(255 194 77 / 0.2), var(--lamp));
+    border-radius: 2px;
+  }
+  .chain__model {
+    min-height: 360px;
+  }
+  .chain__outs {
+    grid-template-rows: none;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .chain__steps {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+@media (max-width: 899px) {
+  .thesis__grid,
+  .section__head {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .section__words {
+    padding-top: 0;
+  }
+  .opener {
+    display: block;
+    min-height: 0;
+  }
+  .opener__plate {
+    position: relative;
+    inset: auto;
+    height: 46svh;
+    max-height: 420px;
+    mask-image: linear-gradient(to bottom, transparent 0%, black 18%, black 58%, transparent 100%);
+    -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 18%, black 58%, transparent 100%);
+  }
+  .opener__plate::after {
+    background: radial-gradient(30rem 16rem at 50% 0%, color-mix(in srgb, var(--chapter) 16%, transparent), transparent 70%);
+  }
+  .opener__grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 24px;
+    margin-top: -84px;
+    padding-block: 0 20px;
+  }
+  .opener__numeral {
+    display: none;
+  }
+  .opener__index {
+    margin-top: 0;
+  }
+  .opener__index a {
+    padding: 10px 0;
+  }
+  .opener__credit {
+    display: none;
+  }
+}
+@media (max-width: 640px) {
+  .chain__cams {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .chain__cam {
+    grid-column: span 2;
+  }
+  .chain__cam:nth-child(n + 4) {
+    grid-column: span 3;
+    aspect-ratio: 16 / 9;
+  }
+  .chain__cam small {
+    display: none;
+  }
+  .chain__model {
+    min-height: 330px;
+  }
+  .chain__model div {
+    inset: auto 20px 20px;
+  }
+  .chain__outs {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .chain__steps {
+    grid-template-columns: minmax(0, 1fr);
+    border-top: 0;
+  }
+  .chain__steps a {
+    display: grid;
+    grid-template-columns: 2.4em minmax(0, 1fr);
+    align-items: baseline;
+    padding: 14px 0;
+    border-top: 1px solid var(--line);
+    font-size: 0.95rem;
+  }
+  .chain__steps a::before {
+    margin: 0;
+  }
+  .section {
+    padding: 44px 0;
+  }
+}

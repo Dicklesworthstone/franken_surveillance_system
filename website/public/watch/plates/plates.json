@@ -1,0 +1,137 @@
+{
+  "schema": "fss.site.plates.v1",
+  "made_by": "website/scripts/make-plates.mjs",
+  "files": {
+    "gate-960.webp": {
+      "source": "watch/intrusion/stills/watch.jpg",
+      "source_sha256": "854b5ce705e3c3d3688dc5f29db429138f8fd74a6c4a0f7f7679fbd0356e8fb0",
+      "sha256": "e05b98ad9dc396dad4e22c38b5a32c764f8440dcdab96469a2eb1007de6dbdc1",
+      "bytes": 37574
+    },
+    "gate-1600.webp": {
+      "source": "watch/intrusion/stills/watch.jpg",
+      "source_sha256": "854b5ce705e3c3d3688dc5f29db429138f8fd74a6c4a0f7f7679fbd0356e8fb0",
+      "sha256": "1f8623ecae4c8863645e31ebfab20bb936a7de70c0056906fd9802b0507cfc0d",
+      "bytes": 90440
+    },
+    "gate-2400.webp": {
+      "source": "watch/intrusion/stills/watch.jpg",
+      "source_sha256": "854b5ce705e3c3d3688dc5f29db429138f8fd74a6c4a0f7f7679fbd0356e8fb0",
+      "sha256": "adff2161a81d7544acad0c8d3ba735d3e78244011747f16ddd0fccb8f9202d5c",
+      "bytes": 161830
+    },
+    "lawn-960.webp": {
+      "source": "watch/intrusion/stills/floods.jpg",
+      "source_sha256": "6b5e474224efd65523c94c9351b37a4c1e5d6485d6a17a53bc2ba1f5eeb4bd2e",
+      "sha256": "5f10d40d56ed18fbf4efc85c2c2183ad0f07ede9f6ff5fde8d7e6d2ea5f0b68d",
+      "bytes": 51910
+    },
+    "lawn-1600.webp": {
+      "source": "watch/intrusion/stills/floods.jpg",
+      "source_sha256": "6b5e474224efd65523c94c9351b37a4c1e5d6485d6a17a53bc2ba1f5eeb4bd2e",
+      "sha256": "93adb357718a40f4db8289249901390706390450e0a824a9409b3ad813e9c522",
+      "bytes": 132866
+    },
+    "lawn-2400.webp": {
+      "source": "watch/intrusion/stills/floods.jpg",
+      "source_sha256": "6b5e474224efd65523c94c9351b37a4c1e5d6485d6a17a53bc2ba1f5eeb4bd2e",
+      "sha256": "f88d976d124783e8efe82842bfcdd7395895fe6650a8ed66821865261964407d",
+      "bytes": 244954
+    },
+    "drive-960.webp": {
+      "source": "watch/intrusion/stills/drive.jpg",
+      "source_sha256": "ee7d124605ecb0dd9c5263d8d97589094babfa8a2eaff9618f8ccb06ba2a7540",
+      "sha256": "53777dd9ff23be559a6ca29937f36b2ce98b069d0808d111e57dd28944a10586",
+      "bytes": 51732
+    },
+    "drive-1600.webp": {
+      "source": "watch/intrusion/stills/drive.jpg",
+      "source_sha256": "ee7d124605ecb0dd9c5263d8d97589094babfa8a2eaff9618f8ccb06ba2a7540",
+      "sha256": "92f809f712c8ab6c57666b9b565a689fc0460aa8d1b3a77dbb81e0fbe5e83894",
+      "bytes": 136870
+    },
+    "drive-2400.webp": {
+      "source": "watch/intrusion/stills/drive.jpg",
+      "source_sha256": "ee7d124605ecb0dd9c5263d8d97589094babfa8a2eaff9618f8ccb06ba2a7540",
+      "sha256": "9106574a0da557cc0cc797f374ad5956265ae7c08e8557906e3e7c73cc4bbf44",
+      "bytes": 263252
+    },
+    "door-960.webp": {
+      "source": "watch/intrusion/stills/door.jpg",
+      "source_sha256": "ff19c8a1578a08eb878cd5aea0a554bccd3166b5f5638e73dd569742925c9190",
+      "sha256": "09869104d735b0852aa11785a7a06fe7da8cccb8741297f65811cfdd1dab89c8",
+      "bytes": 16066
+    },
+    "door-1600.webp": {
+      "source": "watch/intrusion/stills/door.jpg",
+      "source_sha256": "ff19c8a1578a08eb878cd5aea0a554bccd3166b5f5638e73dd569742925c9190",
+      "sha256": "3135e6203bddd1fe9159381890e32dfcad930a6ac528bda43ee2da587fdb8d49",
+      "bytes": 30616
+    },
+    "door-2400.webp": {
+      "source": "watch/intrusion/stills/door.jpg",
+      "source_sha256": "ff19c8a1578a08eb878cd5aea0a554bccd3166b5f5638e73dd569742925c9190",
+      "sha256": "2d2cc34ff2e7a510367b6050248f2822fbc8d7cb5e35b63a540dfbc91709a21c",
+      "bytes": 47968
+    },
+    "dusk-960.webp": {
+      "source": "estate/stills/overview.jpg",
+      "source_sha256": "69ddf0efa6323fb56bf55b2b68ea4b4f8652fa450997b28b6ec3255595e71431",
+      "sha256": "15096372004d02976e5e61d2049ab4a4211c59189f5cd1fb6c89ccda0308b1d0",
+      "bytes": 41710
+    },
+    "dusk-1600.webp": {
+      "source": "estate/stills/overview.jpg",
+      "source_sha256": "69ddf0efa6323fb56bf55b2b68ea4b4f8652fa450997b28b6ec3255595e71431",
+      "sha256": "53b83cb4d789838343a29dabd9f406f9212dd2158b4b9fded392bb1744dd9308",
+      "bytes": 94048
+    },
+    "dusk-1920.webp": {
+      "source": "estate/stills/overview.jpg",
+      "source_sha256": "69ddf0efa6323fb56bf55b2b68ea4b4f8652fa450997b28b6ec3255595e71431",
+      "sha256": "c08813914139287e337ead8e4ebf411ceb0f7a7ca98e5242b18adea9cd3a2f97",
+      "bytes": 124368
+    },
+    "cam-gate.webp": {
+      "source": "watch/intrusion/gate.jpg",
+      "source_sha256": "a254442f374f2b3962c0dcc9b95df80f2741408c72fbf8697436955f74852a95",
+      "sha256": "3b1c221313158efbc535602db9472ec2aa48e97213f9a165868eeb21f595eecf",
+      "bytes": 15828
+    },
+    "cam-driveway.webp": {
+      "source": "watch/intrusion/driveway.jpg",
+      "source_sha256": "8cabd29ed999278539db94e701d7c2dcf0b662f6492c637266230b5d80c79ad1",
+      "sha256": "7925ae863544f873d9a0e789cf92cbdaebeec41787142cf66d43e2c2781cff29",
+      "bytes": 10866
+    },
+    "cam-doorbell.webp": {
+      "source": "watch/intrusion/doorbell.jpg",
+      "source_sha256": "137def91eaa55f8059475c2e152fc0df9c94bdf84f128a327d35a3e6a560a8d6",
+      "sha256": "0c8a17de4d8f714f8ba650473c5af191408d3387a7c96db25a2d673d524b9a67",
+      "bytes": 10074
+    },
+    "cam-porch.webp": {
+      "source": "watch/intrusion/porch.jpg",
+      "source_sha256": "2661e19a06614d49dfeb534616d6bfbdfae6f368f3a1c2bcd0a67a94db531fc3",
+      "sha256": "ca7c98fed449b6d2407ccdaa220c95720ad22e5b5ebac0745e1182b4716946ca",
+      "bytes": 12624
+    },
+    "cam-entry.webp": {
+      "source": "watch/intrusion/entry.jpg",
+      "source_sha256": "1d7ab5b403a60ead499eb5773790a912af4de4afd28d246212325cccae6f6110",
+      "sha256": "9f71841f0f7025576f560e666e323de446fe5ace1958e971b174d223abff4e92",
+      "bytes": 10216
+    },
+    "model.webp": {
+      "source": "watch/intrusion/twin/axo_lit.jpg",
+      "source_sha256": "265a07b303c264a253465cd4586b1596792b939996daa7135a92a9352ad65028",
+      "sha256": "a120f7e247ef154504d7ce0cbe09604a6f291e017430cf3de5619dd3159dda85",
+      "bytes": 134002
+    },
+    "grain.png": {
+      "source": null,
+      "sha256": "ad0aab425ef231f34ebc42b6c48431c09095e7a085bd411d0c038a2d63e5aa0a",
+      "bytes": 3675
+    }
+  }
+}

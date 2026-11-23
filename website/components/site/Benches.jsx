@@ -1,11 +1,13 @@
 "use client";
+import { Play } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { EVIDENCE, chance as chanceOf } from "../../lib/watch/evidence";
 import { ellipse, information } from "../../lib/watch/geometry";
 import { lensOf, stamp } from "../../lib/watch/take";
+import { Badge, Figure } from "./ui";
 
 /** Moves the console's clock to a moment and brings the console into view. */
-export function SeekLink({ t, children }) {
+export function SeekLink({ t, clock, children }) {
   return (
     <button
       type="button"
@@ -15,7 +17,11 @@ export function SeekLink({ t, children }) {
         (document.getElementById("console") ?? document.getElementById("minute"))?.scrollIntoView({ block: "start" });
       }}
     >
-      {children}
+      <span className="data">
+        <Play aria-hidden="true" />
+        {clock}
+      </span>
+      <span>{children}</span>
     </button>
   );
 }
@@ -30,7 +36,7 @@ export function ClockStrip({ summary, t }) {
   return (
     <div className="clocks">
       <div className="clocks__head">
-        <div className="clocks__switch" role="group" aria-label="Camera clocks">
+        <div className="switch" role="group" aria-label="Camera clocks">
           <button type="button" aria-pressed={!aligned} onClick={() => setAligned(false)}>
             As stamped
           </button>
@@ -38,7 +44,9 @@ export function ClockStrip({ summary, t }) {
             Aligned
           </button>
         </div>
-        <span className="clocks__status data">{(aligned ? 0 : spread).toFixed(1)} s spread</span>
+        <p className="clocks__status" aria-live="polite">
+          <b className="num">{(aligned ? 0 : spread).toFixed(1)} s</b> apart
+        </p>
       </div>
       <ol className="clocks__rows">
         {summary.cameras.map((cam) => {
@@ -48,10 +56,7 @@ export function ClockStrip({ summary, t }) {
           const stemWidth = Math.abs(pos - 50);
           return (
             <li key={cam.id}>
-              <span className="clocks__name">
-                {cam.name}
-                <small>{cam.product}</small>
-              </span>
+              <span className="clocks__name">{cam.name}</span>
               <span className="clocks__axis" aria-hidden="true">
                 <b className="clocks__stem" style={{ left: `${stemLeft}%`, width: `${stemWidth}%` }} />
                 <i style={{ left: `${pos}%` }} />
@@ -72,10 +77,10 @@ export function ClockStrip({ summary, t }) {
       </ol>
       <div className="clocks__scale data" aria-hidden="true">
         <span>−{span.toFixed(1)} s</span>
-        <span>0.0 s true time</span>
+        <span>true time</span>
         <span>+{span.toFixed(1)} s</span>
       </div>
-      <p className="source source--staged">
+      <p className="clocks__note">
         Staged offsets, written into each film's on-screen clock. Aligning clocks from shared events is planned.
       </p>
     </div>
@@ -158,7 +163,14 @@ export function FusionBench({ summary }) {
     setOn(Object.fromEntries(summary.cameras.map((cam) => [cam.id, preset.cams[cam.id] ?? true])));
   };
   return (
-    <div className="bench">
+    <Figure
+      className="fig--flush bench"
+      eyebrow="Position bound, one standard deviation"
+      title="Put a person anywhere on the front of the lot."
+      titleId="bench-title"
+      badge={<Badge kind="browser" />}
+      note="Computed from this scene's camera positions and lenses. Walls, trees and cars are left out, so the amber fans pass through them."
+    >
       <svg
         ref={svg}
         className="bench__plan twin"
@@ -240,7 +252,7 @@ export function FusionBench({ summary }) {
         })}
       </svg>
       <div className="bench__side">
-        <div className="bench__presets" role="group" aria-label="Geometry presets">
+        <div className="switch bench__presets" role="group" aria-label="Geometry presets">
           {PRESETS.map((preset) => {
             const active =
               Math.hypot(at[0] - preset.pos[0], at[1] - preset.pos[1]) < 0.05 &&
@@ -253,7 +265,7 @@ export function FusionBench({ summary }) {
           })}
         </div>
         <fieldset className="bench__cameras">
-          <legend>Cameras</legend>
+          <legend className="micro">Cameras</legend>
           {summary.cameras.map((cam) => (
             <label key={cam.id}>
               <input
@@ -265,19 +277,36 @@ export function FusionBench({ summary }) {
             </label>
           ))}
         </fieldset>
-        <div className="bench__metrics data" aria-hidden="true">
-          <span>{seeing.length} of {summary.cameras.length} lenses</span>
-          <span>{bound ? `${bound.major.toFixed(1)} x ${bound.minor.toFixed(1)} m` : "unbounded"}</span>
-        </div>
-        <p className="bench__verdict" aria-live="polite">
+        <dl className="bench__metrics" aria-hidden="true">
+          <div>
+            <dt className="micro">Lenses on them</dt>
+            <dd>
+              {seeing.length}
+              <small> of {summary.cameras.length}</small>
+            </dd>
+          </div>
+          <div>
+            <dt className="micro">Position bound</dt>
+            <dd>
+              {bound ? (
+                <>
+                  {bound.major.toFixed(1)}
+                  <small> × </small>
+                  {bound.minor.toFixed(1)}
+                  <small> m</small>
+                </>
+              ) : (
+                <small className="bench__none">unbounded</small>
+              )}
+            </dd>
+          </div>
+        </dl>
+        <p className={"bench__verdict bench__verdict--" + verdict[0]} aria-live="polite">
           <strong className="data">{verdict[0]}</strong>
           {verdict[1]}
         </p>
-        <p className="source source--browser">
-          Computed in your browser from this scene's camera positions and lenses. Walls, trees and cars are left out.
-        </p>
       </div>
-    </div>
+    </Figure>
   );
 }
 
@@ -295,7 +324,14 @@ export function BeliefSum() {
   const chance = chanceOf(total);
   const scale = 2000;
   return (
-    <div className="belief">
+    <Figure
+      className="belief"
+      eyebrow="Weight of evidence, in millibans"
+      title="Untick a sighting and the conclusion is worked out again without it."
+      titleId="belief-fig"
+      badge={<Badge kind="staged">Example weights</Badge>}
+      note="These weights are invented for the example. The software adds its own the same way. A thousand millibans multiplies the odds by ten."
+    >
       <div className="belief__axis-head data" aria-hidden="true">
         <span>Evidence item</span>
         <span className="belief__axis-marks">
@@ -336,18 +372,22 @@ export function BeliefSum() {
           </li>
         ))}
       </ol>
-      <div className="belief__gauge" aria-hidden="true">
-        <i style={{ width: `${Math.max(chance * 100, 1)}%` }} />
+      <div className="belief__foot">
+        <p className="belief__total" aria-live="polite">
+          <strong>{(chance * 100).toFixed(chance > 0.995 || chance < 0.005 ? 1 : 0)}%</strong>
+          <span>
+            that a stranger is on the property, from a sum of{" "}
+            <span className="data">
+              {total > 0 ? "+" : total < 0 ? "−" : ""}
+              {Math.abs(total)} mB
+            </span>
+          </span>
+        </p>
+        <div className="belief__gauge" aria-hidden="true">
+          <i style={{ width: `${Math.max(chance * 100, 1)}%` }} />
+        </div>
       </div>
-      <p className="belief__total" aria-live="polite">
-        <span>
-          Sum <span className="data">{total > 0 ? "+" : total < 0 ? "−" : ""}{Math.abs(total)} mB</span>
-        </span>
-        <strong>{(chance * 100).toFixed(chance > 0.995 || chance < 0.005 ? 1 : 0)}%</strong>
-        <span>that a stranger is on the property</span>
-      </p>
-      <p className="source source--staged">These weights are invented for the example. The software adds its own the same way.</p>
-    </div>
+    </Figure>
   );
 }
 
@@ -389,6 +429,7 @@ export function ByteCheck({ text }) {
       live = false;
     };
   }, [text, value]);
+  const known = digests.root !== "";
   const same = digests.root === digests.now;
   const tamperOneByte = () => {
     const mutated = value.replace(/("at": "\d\d:\d\d:\d\d\.)(\d)(")/, (_, p, d, s) => `${p}${(Number(d) + 1) % 10}${s}`);
@@ -397,24 +438,25 @@ export function ByteCheck({ text }) {
   };
   if (!able)
     return (
-      <div className="bytes">
-        <p className="bytes__label">A stored object and its digest.</p>
+      <Figure className="bytes" title="A stored object and its digest." titleId="bytes-title">
         <p className="soft">
           This browser will not compute SHA-256 for a page loaded over plain HTTP, so the check cannot run here.
         </p>
-      </div>
+      </Figure>
     );
   return (
-    <div className={"bytes" + (same ? "" : " is-changed")}>
+    <Figure
+      className={"bytes" + (same ? "" : " is-changed")}
+      eyebrow="A stored object"
+      title="Change any character. The root notices."
+      titleId="bytes-title"
+      badge={<Badge kind="browser" />}
+    >
       <div className="bytes__head">
-        <label className="bytes__label" htmlFor="bytes-object">
-          A stored object. Change any character.
+        <label className="bytes__label micro" htmlFor="bytes-object">
+          The object's bytes
         </label>
-        <button
-          type="button"
-          className="bytes__tamper data"
-          onClick={same ? tamperOneByte : () => setValue(text)}
-        >
+        <button type="button" className="bytes__tamper" disabled={!known} onClick={same ? tamperOneByte : () => setValue(text)}>
           {same ? "Flip 1 character" : "Restore original"}
         </button>
       </div>
@@ -424,7 +466,7 @@ export function ByteCheck({ text }) {
         value={value}
         onChange={(event) => setValue(event.target.value)}
         spellCheck="false"
-        rows={7}
+        rows={8}
       />
       <dl>
         <div>
@@ -438,15 +480,13 @@ export function ByteCheck({ text }) {
           </dd>
         </div>
       </dl>
-      <p className="bytes__verdict" aria-live="polite">
-        {same ? "Match. This is the object the root points at." : "No match. A reader checking the root would reject this copy."}
-        {!same && (
-          <button type="button" onClick={() => setValue(text)}>
-            Restore
-          </button>
-        )}
+      <p className={"bytes__verdict" + (known ? "" : " is-unknown")} aria-live="polite">
+        {!known
+          ? "Not checked yet. The digest is worked out in this browser."
+          : same
+            ? "Match. This is the object the root points at."
+            : "No match. A reader checking the root would reject this copy."}
       </p>
-      <p className="source source--browser">SHA-256 computed in your browser</p>
-    </div>
+    </Figure>
   );
 }

@@ -1,55 +1,90 @@
-# Franken Surveillance demo
+# Franken Surveillance website
 
-The Franken Surveillance site follows three residential security incidents through one fictional property. A resident reports someone outside after hours, a courier approaches the entrance, and a raccoon crosses the grounds. The site keeps the scene script, rendered camera views and native FSS observations distinct. [Open the observatory](https://franken-surveillance.com/)
+One page at [franken-surveillance.com](https://franken-surveillance.com/). It plays a staged one-minute intrusion at a fictional house as five camera films on one clock, beside a model of the site with the tracked people, a chart of which camera saw whom, the agent's calls and the ledger rows. Five chapters explain each capability and state what runs today, what is built but unproven and what is planned.
 
-The Three.js viewer loads the same estate geometry, rigged characters and calibrated camera plan used to record the films. Switch to a mounted viewpoint, scrub the take or change the person's stature and walking pace. Changing a parameter makes a new reconstruction. The native reports remain attached to the original camera film.
+Figures carry one of four marks that say where their contents come from. Staged figures come from the scene script. Measured figures are output of the repository's own binaries run over the five film files. Browser figures are computed on the page from the scene's camera geometry. Design figures list what the project's registries and plan define, or are our own comparison and say so.
 
-The lead case begins with a fictional resident's report at 02:14. The scene clock gives the local story time. The frame counter and native reports give the time since the recording began. The authored stop near the entrance and the tracker’s sampled time inside an image zone are separate measurements.
+## Layout
 
-Each case links its FFmpeg film, sampled MJPEG import, native import receipt, watch report and detector inspections. Cross-camera candidates are conditional on the authored calibration and shared clock. A published local event includes the original approval, idempotent retry, custody audit and addressed object bytes. The agent desk exposes the native orientation, handoff, resumed workspace and any notification-plan refusal. These replays authorize no physical actions.
+| Path | Holds |
+|---|---|
+| `app/page.jsx`, `app/layout.jsx`, `app/styles/` | The route, its metadata and its styles. |
+| `components/site/` | The page. `chapters.js` names the chapters and their sections; `ui.jsx` holds the shared parts (headings, chapters, sections, framed figures, provenance badges). |
+| `lib/watch/` | Reading the take, the geometry, the staged account and the reducer for measured output. See its README. |
+| `public/watch/intrusion/` | The films, `scene.json`, site backdrops, hero loop, stills and credits. |
+| `art/estate/` | The Blender source for the house, the people and the films. See its README. |
+| `scripts/watch-evidence.py` | Runs the FSS binaries over the films and writes `native.json` and `native-boxes.json`. |
+| `scripts/check-site.mjs` | Browser check of a running copy of the site. |
+| `scripts/make-plates.mjs` | Resizes renders already in the repository into `public/watch/plates/`. It uses the copy of `sharp` that Next.js installs. |
+| `scripts/make-share-cards.mjs` | Draws `app/opengraph-image.jpg` and `app/twitter-image.jpg` in the page's own type and colours. |
+| `scripts/test-hero-truth.mjs` | Checks the staged outline over the hero loop against the scene file and the loop's lens. Run it with `node --test`. |
 
-## Build and preview
+## Design
 
-Run the following from this directory with Bun, Node.js and the committed assets. The production build verifies the model, film, JPEG and evidence digests before exporting static HTML and section-specific share images.
+The page is dark throughout, because night footage is only readable against a dark surround. `app/styles/tokens.css` explains the roles: `ink` is the ground, `lamp` is for actions and the one lit phrase in a heading, and each chapter wears one kind of light a night camera has to deal with (sodium, moonlight, infrared, phosphor, dawn). Chapter colours are for numerals, eyebrows and frames. Data colours (`--track-a`, `--track-b`, `--seen`) mean the same thing everywhere and are used for nothing else.
+
+Five films can play at once, so the page adds nothing over them that the browser would have to work out again per frame: no grain layer, no mask on a playing video, no rounded clip round the console, and no blur behind the readout over the hero loop. Over a console film there are only its outlines and their labels. The header and the phone dock are blurred glass and do pass over the films while the page scrolls.
+
+Type is Inter with its optical sizes and JetBrains Mono, both self-hosted from Fontsource through `next/font/local`.
+
+## Build and check
+
+Run from this directory with Bun, Node.js and FFmpeg's `ffprobe` on PATH. The static export checks each imported camera film’s stream, frame count and duration against its displayed measurements.
 
 ```sh
 bun install --frozen-lockfile
 bun run build
 bun run preview
-```
-
-With the local Cloudflare preview running, exercise the camera controls, WebGL, evidence links and mobile layout in Chromium.
-
-```sh
 bun run check:site http://127.0.0.1:8000
 ```
 
-## Regenerate the recordings and native evidence
+`bun run build` exports static HTML to `out/` and keeps only `public/watch` from the public folder. The check loads the page at four widths, plays and scrubs the five films, uses each interactive figure and confirms that retired addresses return 404. Set `CHROME_BIN` if Google Chrome is not at `/usr/bin/google-chrome`.
 
-The architectural source is in `art/estate/`. Its asset lock identifies the input materials, vegetation and furnishings. For a different generation of the property, build and freeze the Blender scene and use that same frozen file for the hero, calibrated photographs and interactive mesh. Given its path in `ALDER_BLEND`, the following commands produce the camera plates and compressed scene. Mesh packing requires Pillow and the pinned gltfpack installation.
+The delivery replay at `/#delivery-dropout` plays a complete porch recording beside a copy missing two seconds. Both use the night film’s fictional house. Pick the last frame before the gap or the first frame after it to inspect where the native reader can place a picture. The receipts below the player link to both recordings, their presentation times and the intervals covered by a watch. Run `node scripts/check-delivery-dropout-browser.mjs http://127.0.0.1:8000` to exercise the controls and media recovery.
 
-```sh
-stage_dir=$(mktemp -d)
-blender -b "$ALDER_BLEND" -P lib/night-scene/export-estate.py -- "$stage_dir/estate.glb"
-python3 scripts/pack-estate.py "$stage_dir/estate.glb" public/estate
-blender -b "$ALDER_BLEND" -P lib/night-scene/build-plates.py -- public/estate/estate.json "$stage_dir/plates" --preview
-python3 lib/night-scene/bind-plates.py "$stage_dir/plates" public
-blender -b "$ALDER_BLEND" -P art/estate/render_stills.py -- --views hero --size 2560x1440 --samples 192 --out "$PWD/public/estate"
-mkdir -p public/estate/stills
-blender -b "$ALDER_BLEND" -P art/estate/render_stills.py -- --views hero_east,terrace_view,pool --size 1920x1080 --samples 112 --out "$PWD/public/estate/stills"
-python3 -B art/estate/stills_receipt.py "${ALDER_BLEND%.blend}.json"
-```
+## Regenerate the films and the measured output
 
-Set `CHROME_BIN` if Google Chrome is installed outside `/usr/bin/google-chrome`. The capture script requires FFmpeg. Set `FSS_BIN_DIR` to the directory containing the repository's native CLI binaries. The detector package lives under the repository's `models/` directory.
+The films are path-traced in Blender from a frozen copy of the estate, with scanned people driven by motion capture. The steps and the asset licences are in `art/estate/README.md`, under Films. `camera_looks.py` grades and encodes each camera and writes `scene.json`.
+
+After the films change, run the project's binaries over them. `FSS_BIN_DIR` is the directory holding the release binaries.
 
 ```sh
-bun run films
-python3 -B scripts/render-estate-briefing.py
-python3 -B scripts/estate-evidence.py
-bun run build
+FSS_BIN_DIR=/path/to/target/release python3 -B scripts/watch-evidence.py public/watch/intrusion
 ```
 
-The fictional estate and actors are lab assets. The FSS media and inference crates perform the native analysis. The pinned Cloudflare CLI deploys `out/` as static assets. Both CLIs read the same custom domain and Worker name from `wrangler.jsonc`.
+The script imports the film bytes into a private deployment and runs custody, motion watch, detection, tracking, two-camera corroboration and fusion. For a corroborated event it exercises the alert workflow against its own loopback relay. New recordings count relay requests separately for dispatch and retry. The original take retained one aggregate request count. The page shows refusals and missing observations alongside successful results.
+
+The original `native.json` includes an author’s note that understates coverage. Each retained watch report states whether its pipeline recorded an interval without a confirmed foreground-track entry into the watched zone. The page reads those reports directly. A gap between witnesses can contain a recorded entry.
+
+## Reproduce the edited two-camera fusion excerpt
+
+From the repository root, run the following with the release binaries and FFmpeg installed. The work directory must be new.
+
+```sh
+python3 scripts/check_residential_class_fusion.py --bins target/release --work /tmp/fss-residential-replay
+cmp /tmp/fss-residential-replay/fusion-replay.json website/public/watch/intrusion/fusion-replay.json
+diff -qr /tmp/fss-residential-replay/fusion-replay website/public/watch/intrusion/fusion-replay
+```
+
+The replay holds frame 240 seven times and then uses frames 343 through 347 from both films. The script checks the model scores, the held-out calibration bins, the common-cause group and the result of removing the group. If you publish a new qualified excerpt, update its digest in `lib/watch/fusion-excerpt.mjs` together with both generated files.
+
+## Reproduce the notification comparison
+
+From the repository root, run the same camera excerpt through a private loopback HTTP receiver. Choose a new directory for the run.
+
+```sh
+python3 -B scripts/check_residential_relay.py --bins /path/to/target/release --work /tmp/fss-relay-example
+```
+
+The receiver counts every POST and retains its body. One branch returns HTTP 200. A second reads the same request and closes the connection before acknowledging it. Inspect `relay-replay.json` in the run directory for the native outcome of each approval, retry and inspection. The held event exercises the earlier policy decision. The website displays one pinned run. A fresh run can have different timestamps and a different loopback port.
+
+## Credits
+
+The house is fictional and modelled for this project. The two people are Renderpeople scans published under CC BY 4.0, moved by clips from the CMU motion capture database. `public/watch/intrusion/CREDITS.txt` lists every third-party asset, its licence and what was changed, and ships with the site.
+
+## Deploy
+
+The pinned Cloudflare CLI deploys `out/` as static assets. It reads the custom domain and Worker name from `wrangler.jsonc`.
 
 ```sh
 bun run deploy

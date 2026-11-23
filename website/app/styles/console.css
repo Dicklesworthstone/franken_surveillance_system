@@ -1,45 +1,78 @@
-.minute {
-  padding: clamp(56px, 8vw, 104px) 0 clamp(56px, 8vw, 96px);
+.replay {
+  padding: clamp(8px, 2vw, 28px) 0 clamp(64px, 8vw, 120px);
 }
-.minute__intro {
-  display: grid;
-  grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
-  gap: 20px 56px;
-  align-items: end;
-  margin-bottom: 34px;
-}
-.minute__key {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 22px;
-  margin-top: 14px;
-}
-
 .console {
+  position: relative;
   display: grid;
-  gap: 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: 30px;
+  /* Not clipped to its corners: a rounded clip round five films makes the browser draw the whole
+     console to one side on every frame. Nothing inside reaches a corner. */
+  background: linear-gradient(180deg, rgb(255 255 255 / 0.035), transparent 240px), #070a0f;
+  box-shadow: 0 0 110px -50px rgb(255 194 77 / 0.5);
 }
 .console:focus:not(:focus-visible) {
   outline: none;
 }
 .console__error {
-  padding: 10px 14px;
-  border-left: 3px solid var(--track-a);
-  background: var(--night-raised);
+  padding: 12px 22px;
+  border-bottom: 1px solid rgb(255 111 111 / 0.4);
+  background: rgb(255 111 111 / 0.1);
   font-size: 0.92rem;
 }
 .console__error button {
+  font-weight: 700;
   text-decoration: underline;
   text-underline-offset: 0.18em;
 }
-/* Films on the left; the plan runs the full height on the right. */
+.console__bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 24px;
+  padding: 13px 20px 13px 24px;
+  border-bottom: 1px solid var(--line);
+}
+.console__id {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.console__rec {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--track-a);
+  box-shadow: 0 0 14px rgb(255 122 77 / 0.9);
+}
+.console__controls-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 20px;
+}
+.console__follow {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.86rem;
+  font-weight: 550;
+  color: var(--soft);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* Films on the left; the site model and what is known about each person on the right. */
 .console__stage {
   display: grid;
-  grid-template-columns: minmax(0, 1.92fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 2.15fr) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto;
   grid-template-areas:
     "feeds site"
-    "read  site";
-  gap: 14px 16px;
+    "feeds read";
+  gap: 16px 18px;
+  padding: 18px;
 }
 /* One element per camera. The selected one sits in the large slot on row 1. */
 .console__feeds {
@@ -48,79 +81,43 @@
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 0 10px;
   align-items: start;
+  align-content: start;
 }
-.console__readouts {
-  grid-area: read;
-}
-.console__site {
-  grid-area: site;
+/* Beside the film and not over it: anything drawn over a playing film is put together again with every frame. */
+.console__chip {
+  display: inline-block;
+  margin-right: 9px;
+  padding: 1px 8px;
+  border-radius: 6px;
+  background: var(--lamp);
+  color: var(--lamp-ink);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0;
 }
 .console__caption {
   grid-column: 1 / -1;
   grid-row: 2;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 10px 20px;
-  flex-wrap: wrap;
-  margin: 10px 0 14px;
+  margin: 13px 2px 14px;
   font-size: 0.9rem;
-  color: var(--night-soft);
+  line-height: 1.5;
+  color: var(--soft);
 }
+/* Two lines are kept so the strip below does not move when the sentence changes length. */
 .console__caption-info {
-  flex: 1 1 320px;
-  min-width: 0;
-  line-height: 1.42;
+  min-height: 3em;
 }
 .console__caption strong {
-  color: var(--night-text);
-  font-weight: 640;
-}
-.console__controls-bar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px 16px;
-}
-.console__overlay-switch {
-  display: inline-flex;
-  padding: 2px;
-  border: 1px solid var(--night-line);
-  border-radius: 4px;
-  background: var(--night-raised);
-}
-.console__overlay-switch button {
-  padding: 4px 9px;
-  border-radius: 3px;
-  font-size: 0.76rem;
-  font-weight: 580;
-  color: var(--night-soft);
-  white-space: nowrap;
-}
-.console__overlay-switch button:hover {
-  color: var(--night-text);
-}
-.console__overlay-switch button[aria-pressed="true"] {
-  background: var(--night-text);
-  color: #0b0d10;
-}
-.console__follow {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  white-space: nowrap;
-  cursor: pointer;
-}
-.console__follow input {
-  width: 16px;
-  height: 16px;
-  margin: 0;
-  accent-color: var(--sign);
+  font-weight: 700;
+  color: #fff;
 }
 .console__site {
+  grid-area: site;
   position: relative;
-  min-height: 320px;
-  border-radius: 4px;
+  min-height: 340px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
   overflow: hidden;
   background: #05070a;
 }
@@ -130,129 +127,117 @@
   width: 100%;
   height: 100%;
 }
-/* Model or plan */
 .console__view {
   position: absolute;
-  top: 10px;
-  right: 10px;
-  display: flex;
-  padding: 2px;
-  background: rgb(5 7 10 / 0.72);
-  border-radius: 4px;
-}
-.console__view button {
-  padding: 5px 11px;
-  border-radius: 3px;
-  font-size: 0.8rem;
-  font-weight: 600;
-  color: var(--night-soft);
-}
-.console__view button:hover {
-  color: var(--night-text);
-}
-.console__view button[aria-pressed="true"] {
-  background: var(--night-text);
-  color: #0b0d10;
+  top: 12px;
+  right: 12px;
+  background: rgb(5 7 11 / 0.78);
 }
 .console__readouts {
+  grid-area: read;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
-  align-content: start;
-}
-.console__logs {
-  display: grid;
-  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
-  gap: 16px 28px;
-  margin-top: 10px;
-}
-.console__log-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 10px;
-}
-.console__heading {
-  font-size: 1rem;
-  font-stretch: 110%;
-  font-weight: 650;
-  margin-bottom: 10px;
-}
-.console__log-head .console__heading {
-  margin-bottom: 0;
 }
 
 /* A camera */
 .feed {
   position: relative;
   aspect-ratio: 16 / 9;
-  background: #000;
-  border-radius: 4px;
+  border-radius: 12px;
   overflow: hidden;
+  background: #000;
   pointer-events: none;
+}
+.feed--large {
+  border-radius: 20px;
+}
+.feed__waiting {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 6px;
+  background: repeating-linear-gradient(-45deg, #090d13, #090d13 10px, #0e131b 10px, #0e131b 12px);
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  line-height: 1.3;
+  text-align: center;
+  color: var(--soft);
+}
+/* A thumbnail is under 50 px wide on a small phone; its waiting word has to fit there. */
+.feed:not(.feed--large) .feed__waiting {
+  padding: 2px;
+  font-size: 0.56rem;
+  line-height: 1.15;
+}
+/* Narrower than that, the stripes alone say "no picture yet"; the words stay for screen readers. */
+@media (max-width: 360px) {
+  .feed:not(.feed--large) .feed__waiting {
+    font-size: 0;
+  }
 }
 /* The strip under the main screen: one fixed place per camera. */
 .slot {
   grid-row: 3;
   display: block;
   text-align: left;
+  -webkit-tap-highlight-color: transparent;
 }
+/* Its outline runs just outside the film that covers it, so it needs no layer of its own above the film. */
 .slot__frame {
   display: grid;
   place-items: center;
   aspect-ratio: 16 / 9;
-  border-radius: 4px;
-  outline: 2px solid transparent;
-  outline-offset: -2px;
-  font-size: 0.72rem;
-  line-height: 1.2;
+  border-radius: 12px;
+  outline: 1px solid var(--line-strong);
+  outline-offset: 0;
   text-align: center;
-  color: var(--night-soft);
-  transition: outline-color 140ms;
+  transition: outline-color 160ms;
 }
 .slot.is-selected .slot__frame {
-  outline-color: var(--sign);
-  background: rgb(255 210 0 / 0.07);
+  outline: 2px solid var(--lamp);
+  outline-offset: -2px;
+  background: rgb(255 194 77 / 0.1);
+}
+.slot:hover:not(.is-selected) .slot__frame {
+  outline: 2px solid rgb(255 255 255 / 0.7);
 }
 .slot__active {
   display: inline-flex;
   flex-direction: column;
   align-items: center;
-  gap: 3px;
+  gap: 4px;
   padding: 2px 4px;
 }
 .slot__active b {
-  padding: 1px 6px;
-  border-radius: 2px;
-  background: var(--sign);
-  color: var(--sign-ink);
-  font-size: 0.65rem;
+  padding: 1px 8px;
+  border-radius: 6px;
+  background: var(--lamp);
+  color: var(--lamp-ink);
+  font-size: 0.66rem;
   font-weight: 700;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.04em;
 }
 .slot__active span {
-  font-size: 0.68rem;
-  color: var(--night-soft);
-}
-.slot:hover .slot__frame {
-  outline-color: rgb(255 255 255 / 0.5);
+  font-size: 0.7rem;
+  line-height: 1.25;
+  color: var(--soft);
 }
 .slot__name {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-top: 6px;
+  margin: 8px 2px 0;
   font-size: 0.82rem;
-  font-weight: 540;
-  color: var(--night-soft);
+  font-weight: 600;
+  color: var(--soft);
 }
 .slot.is-selected .slot__name {
-  color: var(--night-text);
+  color: #fff;
 }
 .slot__name i {
-  width: 7px;
-  height: 7px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
 }
 /* Full height of the frame at the film's own shape, so a square doorbell picture is not cropped. */
@@ -286,7 +271,7 @@
 }
 .feed:not(.feed--large) .feed__staged {
   stroke-width: 1.5px;
-  stroke-dasharray: none;
+  stroke-dasharray: 4 2.5;
 }
 .feed__measured {
   stroke: var(--seen);
@@ -298,19 +283,21 @@
 .feed__label {
   position: absolute;
   transform: translateY(-100%);
-  padding: 1px 6px 0;
-  font-size: 0.72rem;
+  padding: 1px 7px 0;
+  font-family: var(--mono);
+  font-size: 0.74rem;
   font-weight: 700;
   line-height: 1.5;
   color: #0b0d10;
   white-space: nowrap;
 }
-/* The plan */
+
+/* The site */
 .twin {
   display: block;
 }
 .twin__plate {
-  filter: brightness(0.62) saturate(0.9) contrast(1.04);
+  filter: brightness(0.6) saturate(0.88) contrast(1.06);
 }
 .twin__plate--lit {
   opacity: 0;
@@ -322,22 +309,24 @@
 }
 /* Coverage is a soft wash; only the camera in use and cameras with someone in view get an edge. */
 .twin__cover {
-  fill: rgb(255 226 120 / 0.055);
+  fill: rgb(255 214 120 / 0.06);
   stroke: transparent;
   stroke-width: 1.25px;
   vector-effect: non-scaling-stroke;
-  transition: fill 180ms, stroke 180ms;
+  transition:
+    fill 180ms,
+    stroke 180ms;
 }
 .twin__cover.is-selected {
-  stroke: rgb(255 210 0 / 0.55);
+  stroke: rgb(255 194 77 / 0.6);
 }
 .twin__cover.is-watching {
-  fill: rgb(255 210 0 / 0.09);
-  stroke: rgb(255 210 0 / 0.7);
+  fill: rgb(255 194 77 / 0.11);
+  stroke: rgb(255 194 77 / 0.78);
 }
 /* The gate once it has shut: the backdrops show it open. */
 .twin__gate {
-  stroke: var(--night-text);
+  stroke: var(--text);
   stroke-width: 3px;
   stroke-linecap: round;
   vector-effect: non-scaling-stroke;
@@ -349,7 +338,7 @@
   stroke-linecap: round;
   stroke-linejoin: round;
   vector-effect: non-scaling-stroke;
-  opacity: 0.85;
+  opacity: 0.9;
 }
 .twin__bound {
   fill: currentColor;
@@ -385,6 +374,7 @@
 /* --m is the number of drawing units in one metre for the view in use. */
 .twin__tag {
   font: 700 calc(1.55px * var(--m, 1)) var(--sans);
+  letter-spacing: 0;
   fill: currentColor;
   paint-order: stroke;
   stroke: #05070a;
@@ -400,11 +390,11 @@
   vector-effect: non-scaling-stroke;
 }
 .twin__mast {
-  stroke: rgb(255 210 0 / 0.55);
+  stroke: rgb(255 194 77 / 0.55);
   stroke-width: 1.25px;
 }
 .twin__camera circle {
-  fill: var(--sign);
+  fill: var(--lamp);
   stroke: #05070a;
   stroke-width: 1.5px;
   vector-effect: non-scaling-stroke;
@@ -417,7 +407,8 @@
   stroke-width: 2px;
 }
 .twin__camera text {
-  font: 600 calc(1.3px * var(--m, 1)) var(--sans);
+  font: 650 calc(1.3px * var(--m, 1)) var(--sans);
+  letter-spacing: 0;
   fill: #fff;
   paint-order: stroke;
   stroke: rgb(5 7 10 / 0.85);
@@ -425,20 +416,30 @@
   stroke-linejoin: round;
 }
 .twin__camera.is-selected text {
-  fill: var(--sign);
+  fill: var(--lamp);
 }
 
 /* What is known about each person right now */
 .readout {
-  padding: 10px 14px 12px;
-  background: var(--night-raised);
-  border-left: 3px solid var(--who);
-  border-radius: 0 4px 4px 0;
+  position: relative;
+  padding: 12px 16px 13px 20px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgb(255 255 255 / 0.022);
+  overflow: hidden;
 }
-.readout--not_observable,
-.readout--closed,
-.readout--none {
-  border-left-style: dashed;
+.readout::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  background: var(--who);
+}
+/* Not seen, or no longer followed: the edge is broken, not merely dimmer. */
+.readout--not_observable::before,
+.readout--closed::before,
+.readout--none::before {
+  background: repeating-linear-gradient(var(--who) 0 6px, transparent 6px 12px);
 }
 .readout__head {
   display: flex;
@@ -447,165 +448,174 @@
   gap: 12px;
 }
 .readout__track {
+  font-family: var(--mono);
   font-weight: 700;
-  font-stretch: 110%;
   color: var(--who);
 }
 .readout__state {
-  font-size: 0.86rem;
-  font-weight: 600;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #fff;
 }
 .readout__detail {
+  min-height: 2.9em;
   margin-top: 3px;
-  font-size: 0.88rem;
-  line-height: 1.4;
-  color: var(--night-soft);
-  min-height: 2.8em;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  color: var(--soft);
 }
 
 /* Who saw whom, when */
 .timeline {
   display: grid;
-  grid-template-columns: 148px minmax(0, 1fr);
-  gap: 16px 20px;
-  padding: 18px 22px 14px 20px;
-  background: var(--night-raised);
-  border-radius: 6px;
+  grid-template-columns: 196px minmax(0, 1fr);
+  gap: 18px 30px;
+  padding: 22px 26px 20px;
+  border-block: 1px solid var(--line);
+  background: rgb(0 0 0 / 0.28);
 }
 .timeline__controls {
   display: grid;
-  gap: 12px;
+  gap: 14px;
   align-content: start;
 }
 .timeline__transport {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
 }
 .timeline__play {
-  width: 54px;
-  height: 54px;
-  border-radius: 50%;
+  flex: none;
   display: grid;
   place-items: center;
-  flex: none;
-  background: var(--sign);
-  color: var(--sign-ink);
+  width: 62px;
+  height: 62px;
+  border-radius: 22px;
+  background: var(--lamp);
+  color: var(--lamp-ink);
+  box-shadow: 0 0 44px -8px rgb(255 194 77 / 0.75);
+  transition:
+    background-color 180ms,
+    transform 260ms var(--ease);
 }
 .timeline__play:hover {
-  background: #ffe04d;
+  background: var(--lamp-hot);
+}
+.timeline__play:active {
+  transform: scale(0.95);
 }
 .timeline__play svg {
+  width: 24px;
+  height: 24px;
   fill: currentColor;
 }
 .timeline__steppers {
   display: inline-flex;
-  gap: 5px;
+  gap: 6px;
 }
 .timeline__step {
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  border: 1px solid var(--night-line);
-  background: rgb(255 255 255 / 0.03);
-  color: var(--night-text);
   display: grid;
   place-items: center;
-  transition: border-color 120ms, color 120ms, background-color 120ms;
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  color: #fff;
+  transition:
+    border-color 160ms,
+    color 160ms;
 }
 .timeline__step:hover:not(:disabled) {
-  border-color: var(--sign);
-  color: var(--sign);
+  border-color: rgb(255 194 77 / 0.6);
+  color: var(--lamp-hot);
 }
 .timeline__step:disabled {
-  opacity: 0.3;
+  opacity: 0.32;
   cursor: not-allowed;
 }
 .timeline__now .data {
   display: block;
-  font-size: 1.22rem;
+  font-size: 1.6rem;
+  font-weight: 500;
+  line-height: 1.1;
+  letter-spacing: -0.04em;
+  color: #fff;
 }
 .timeline__beat {
   display: block;
-  margin-top: 2px;
+  margin-top: 4px;
   font-size: 0.9rem;
-  color: var(--night-soft);
+  font-weight: 550;
+  color: var(--soft);
 }
 .timeline__case {
-  font-size: 0.86rem;
-  line-height: 1.3;
-  color: var(--night-soft);
+  min-height: 2.7em;
+  font-size: 0.82rem;
+  line-height: 1.35;
+  color: var(--soft);
 }
 .timeline__case strong {
   display: block;
-  font-size: 1.5rem;
-  font-stretch: 110%;
-  font-weight: 680;
+  font-size: 1.75rem;
+  font-weight: 800;
   line-height: 1.1;
-  color: var(--night-text);
-}
-.timeline__lane--case .timeline__track {
-  height: 34px;
-  margin-bottom: 5px;
-  background: none;
-  border-bottom: 1px solid var(--night-faint);
-  border-radius: 0;
-}
-.timeline__level {
-  position: absolute;
-  bottom: 0;
-  background: var(--lamp);
-  opacity: 0.85;
+  letter-spacing: -0.045em;
+  color: var(--lamp);
 }
 .timeline__chart {
-  --name: 88px;
+  --name: 96px;
   position: relative;
   min-width: 0;
 }
+/* Above the slider, whose reach runs a little past the lanes; only the marks themselves take the pointer. */
 .timeline__marks {
   position: relative;
-  height: 24px;
+  z-index: 1;
+  height: 26px;
   margin-left: var(--name);
+  pointer-events: none;
+}
+.timeline__marks button {
+  pointer-events: auto;
 }
 .timeline__marks li {
   position: absolute;
   top: 0;
   bottom: 0;
-  border-left: 1px solid var(--night-faint);
+  border-left: 1px solid rgb(255 255 255 / 0.22);
 }
 .timeline__marks li.is-end {
   border-left: 0;
-  border-right: 1px solid var(--night-faint);
+  border-right: 1px solid rgb(255 255 255 / 0.22);
   transform: translateX(-100%);
-}
-.timeline__marks--below button {
-  padding-top: 9px;
 }
 .timeline__marks button {
   display: block;
-  padding: 0 0 0 6px;
+  padding: 1px 4px 8px 8px;
   font-size: 0.78rem;
+  font-weight: 550;
   line-height: 1.2;
   white-space: nowrap;
-  color: var(--night-faint);
+  color: var(--faint);
+  transition: color 160ms;
+}
+.timeline__marks--below button {
+  padding: 11px 4px 1px 8px;
 }
 .timeline__marks li.is-end button {
-  padding: 0 6px 0 0;
+  padding-inline: 4px 8px;
   text-align: right;
 }
-.timeline__marks--below li.is-end button {
-  padding-top: 9px;
-}
 .timeline__marks button.is-past {
-  color: var(--night-text);
+  color: #fff;
 }
 .timeline__marks button:hover {
-  color: var(--sign);
+  color: var(--lamp);
 }
 .timeline__lanes {
   position: relative;
   display: grid;
-  gap: 5px;
+  gap: 6px;
 }
 .timeline__lane {
   display: grid;
@@ -614,13 +624,27 @@
 }
 .timeline__name {
   font-size: 0.8rem;
-  color: var(--night-soft);
+  font-weight: 550;
+  color: var(--soft);
 }
 .timeline__track {
   position: relative;
-  height: 14px;
-  background: rgb(255 255 255 / 0.055);
-  border-radius: 2px;
+  height: 16px;
+  border-radius: 5px;
+  background: rgb(255 255 255 / 0.05);
+}
+.timeline__lane--case .timeline__track {
+  height: 46px;
+  margin-bottom: 6px;
+  border-radius: 0;
+  border-bottom: 1px solid rgb(255 255 255 / 0.2);
+  background: none;
+}
+.timeline__level {
+  position: absolute;
+  bottom: 0;
+  background: linear-gradient(to top, rgb(255 194 77 / 0.18), rgb(255 194 77 / 0.75));
+  border-top: 1.5px solid var(--lamp-hot);
 }
 .timeline__bar {
   position: absolute;
@@ -630,25 +654,40 @@
 .timeline__bar--a {
   top: 0;
   background: var(--track-a);
+  border-radius: 4px 4px 0 0;
 }
 .timeline__bar--b {
   top: 50%;
   background: var(--track-b);
+  border-radius: 0 0 4px 4px;
 }
 .timeline__head {
   position: absolute;
-  top: -7px;
-  bottom: -7px;
+  top: -8px;
+  bottom: -8px;
   left: calc(var(--name) + (100% - var(--name)) * var(--at));
   width: 2px;
   margin-left: -1px;
-  background: var(--sign);
+  background: #fff;
+  box-shadow: 0 0 8px rgb(255 194 77 / 0.9);
   pointer-events: none;
+}
+.timeline__head::before {
+  content: "";
+  position: absolute;
+  top: -5px;
+  left: 50%;
+  width: 10px;
+  height: 10px;
+  margin-left: -5px;
+  border-radius: 50%;
+  background: var(--lamp);
+  border: 2px solid #fff;
 }
 .timeline__slider {
   position: absolute;
-  top: -7px;
-  bottom: -7px;
+  top: -10px;
+  bottom: -10px;
   left: var(--name);
   width: calc(100% - var(--name));
   height: auto;
@@ -657,6 +696,8 @@
   cursor: ew-resize;
   -webkit-appearance: none;
   appearance: none;
+  /* A sideways drag scrubs; an up or down swipe still scrolls the page. */
+  touch-action: pan-y;
 }
 .timeline__slider::-webkit-slider-thumb {
   -webkit-appearance: none;
@@ -667,54 +708,93 @@
   width: 2px;
   border: 0;
 }
-.timeline__lanes:focus-within .timeline__head {
-  outline: 2px solid var(--sign);
-  outline-offset: 2px;
+.timeline__lanes:has(.timeline__slider:focus-visible) .timeline__head {
+  outline: 2px solid var(--lamp);
+  outline-offset: 3px;
 }
 .timeline__scale {
   display: flex;
   justify-content: space-between;
-  margin: 9px 0 0 var(--name);
+  margin: 10px 0 0 var(--name);
   font-size: 0.7rem;
-  color: var(--night-faint);
+  color: var(--faint);
 }
 
 /* Lists that follow the clock */
+.console__logs {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+}
+.console__logs > section {
+  min-width: 0;
+  padding: 24px 26px 26px;
+}
+.console__logs > section + section {
+  border-left: 1px solid var(--line);
+}
+.console__log-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.console__heading {
+  font-size: 1.16rem;
+  font-weight: 750;
+  letter-spacing: -0.025em;
+}
 .follow {
   position: relative;
-  max-height: 348px;
+  max-height: 372px;
   overflow-y: auto;
-  border-top: 1px solid var(--night-line);
+  overscroll-behavior: auto;
   scrollbar-width: thin;
-  scrollbar-color: var(--night-line) transparent;
+  scrollbar-color: #27303e transparent;
+  padding-bottom: 12px;
+  border-block: 1px solid var(--line);
 }
 .follow li {
-  border-bottom: 1px solid var(--night-line);
-  transition: opacity 200ms;
+  transition: opacity 260ms;
+}
+.follow li + li {
+  border-top: 1px solid var(--line);
 }
 .follow li.is-ahead {
-  opacity: 0.34;
+  opacity: 0.6;
 }
 .follow button {
+  position: relative;
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
-  gap: 12px;
+  gap: 16px;
   width: 100%;
-  padding: 11px 10px 12px 11px;
+  padding: 13px 14px 14px;
+  border-radius: 14px;
   text-align: left;
-  border-left: 3px solid transparent;
+  transition: background-color 200ms;
 }
 .follow button:hover {
   background: rgb(255 255 255 / 0.035);
 }
 .follow li.is-now button {
-  border-left-color: var(--sign);
-  background: rgb(255 255 255 / 0.05);
+  background: linear-gradient(90deg, rgb(255 194 77 / 0.14), rgb(255 194 77 / 0.02));
+}
+.follow li.is-now button::before {
+  content: "";
+  position: absolute;
+  inset: 13px auto 13px 0;
+  width: 3px;
+  border-radius: 3px;
+  background: var(--lamp);
 }
 .follow__when {
   padding-top: 2px;
-  font-size: 0.76rem;
-  color: var(--night-soft);
+  font-size: 0.75rem;
+  color: var(--faint);
+}
+.follow li.is-now .follow__when {
+  color: var(--lamp-hot);
 }
 .follow__what {
   display: block;
@@ -722,99 +802,211 @@
 }
 .follow__op {
   display: block;
-  margin-bottom: 3px;
-  font-size: 0.75rem;
+  margin-bottom: 4px;
+  font-size: 0.76rem;
   font-weight: 600;
-  color: var(--lamp);
+  color: var(--lamp-hot);
 }
 .follow__line {
   display: block;
-  font-size: 0.93rem;
-  line-height: 1.42;
+  font-size: 0.92rem;
+  line-height: 1.5;
+  color: #e3e9f2;
 }
 .follow__hash {
   display: block;
-  margin-top: 3px;
+  margin-top: 4px;
   font-size: 0.7rem;
-  color: var(--night-faint);
+  color: var(--faint);
+}
+.console__key {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 30px;
+  padding: 18px 26px 22px;
+  border-top: 1px solid var(--line);
+  font-size: 0.82rem;
+  color: var(--faint);
+}
+.console__key li {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
 }
 
-@media (max-width: 980px) {
-  .minute__intro {
-    grid-template-columns: minmax(0, 1fr);
-  }
+@media (max-width: 1080px) {
   .console__stage {
     grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: none;
     grid-template-areas: "feeds" "site" "read";
+  }
+  .console__site {
+    aspect-ratio: 6 / 5;
+    min-height: 0;
+  }
+  .console__readouts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .console__logs {
     grid-template-columns: minmax(0, 1fr);
   }
-  .console__site {
-    aspect-ratio: 5 / 6;
-    min-height: 0;
+  .console__logs > section + section {
+    border-left: 0;
+    border-top: 1px solid var(--line);
   }
   .follow {
-    max-height: 300px;
+    max-height: 320px;
   }
 }
-@media (max-width: 640px) {
+@media (max-width: 767px) {
+  .console {
+    display: flex;
+    flex-direction: column;
+    border-radius: 22px;
+  }
+  /* The film, its controls and the timeline come first, so playing and watching fit one screen. */
+  .console__stage {
+    display: contents;
+  }
+  .console__bar {
+    order: 3;
+    padding: 14px;
+    border-bottom: 0;
+  }
+  .console__id {
+    display: none;
+  }
+  .console__error {
+    order: 0;
+  }
+  .console__controls-bar {
+    justify-content: space-between;
+    width: 100%;
+  }
+  .console__follow {
+    white-space: normal;
+    line-height: 1.3;
+  }
+  .console__overlay-switch {
+    flex: 1 1 100%;
+  }
+  .console__overlay-switch button {
+    flex: 1;
+    padding-inline: 8px;
+  }
   .console__feeds {
-    column-gap: 6px;
+    order: 1;
+    gap: 0 6px;
+    padding: 10px 10px 14px;
+  }
+  .feed--large {
+    border-radius: 14px;
+  }
+  .console__caption {
+    margin: 10px 4px 12px;
+    font-size: 0.85rem;
+  }
+  .console__caption-info {
+    min-height: 4.5em;
+  }
+  .slot__frame,
+  .feed:not(.feed--large) {
+    border-radius: 9px;
   }
   .slot__name {
+    flex-wrap: wrap;
+    margin-top: 6px;
     font-size: 0.68rem;
-    gap: 3px;
+    letter-spacing: -0.02em;
+    gap: 3px 4px;
+    line-height: 1.2;
   }
   .slot__active span {
     display: none;
   }
   .slot__active b {
-    font-size: 0.58rem;
-    padding: 1px 4px;
-  }
-  .console__readouts {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .console__follow {
-    white-space: normal;
+    padding: 1px 5px;
+    font-size: 0.56rem;
   }
   .timeline {
+    order: 2;
     grid-template-columns: minmax(0, 1fr);
-    padding: 14px 14px 12px;
+    padding: 16px 14px 14px;
   }
   .timeline__controls {
     grid-template-columns: auto minmax(0, 1fr);
     align-items: center;
+    gap: 12px 16px;
+  }
+  /* Beside the transport buttons on a 320 px phone the clock has about 80 px. */
+  .timeline__now .data {
+    font-size: clamp(1rem, 5vw, 1.4rem);
   }
   .timeline__case {
     grid-column: 1 / -1;
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    min-height: 2em;
+  }
+  .timeline__case strong {
+    font-size: 1.4rem;
   }
   .timeline__chart {
-    --name: 84px;
+    --name: 78px;
   }
   .timeline__marks {
-    height: 16px;
+    height: 24px;
   }
+  .timeline__marks li,
   .timeline__marks li.is-end {
     border-right: 0;
-    border-left: 1px solid var(--night-faint);
+    border-left: 1px solid rgb(255 255 255 / 0.3);
     transform: none;
   }
   .timeline__marks button,
   .timeline__marks li.is-end button {
-    width: 16px;
-    height: 16px;
-    margin-left: -8px;
+    width: 24px;
+    height: 24px;
+    margin-left: -12px;
     padding: 0;
     font-size: 0;
   }
   .timeline__name {
-    font-size: 0.72rem;
+    font-size: 0.73rem;
+  }
+  .timeline__track {
+    height: 18px;
+  }
+  .console__site {
+    order: 4;
+    aspect-ratio: 5 / 6;
+    margin: 0 10px;
+  }
+  .console__readouts {
+    order: 5;
+    grid-template-columns: minmax(0, 1fr);
+    margin: 10px 10px 14px;
+  }
+  .console__logs {
+    order: 6;
+    border-top: 1px solid var(--line);
+  }
+  .console__logs > section {
+    padding: 20px 14px;
+  }
+  .console__key {
+    order: 7;
+    padding: 16px 16px 20px;
+  }
+  .follow {
+    max-height: 340px;
   }
   .follow button {
-    gap: 9px;
-    padding-inline: 8px 6px;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 3px;
+    padding-inline: 14px 8px;
   }
 }
 
@@ -822,26 +1014,28 @@
 .film-error {
   position: absolute;
   inset: 0;
-  z-index: 2;
+  z-index: 5;
   display: grid;
   place-content: center;
   justify-items: center;
-  gap: 6px;
+  gap: 8px;
   padding: 8px;
-  background: rgb(8 11 16 / 0.92);
-  color: var(--night-text);
-  font-size: 0.86rem;
-  line-height: 1.3;
+  background: rgb(5 7 11 / 0.94);
+  color: var(--text);
+  font-size: 0.88rem;
+  line-height: 1.35;
   text-align: center;
 }
 .film-error button {
   pointer-events: auto;
+  font-weight: 700;
+  color: var(--lamp-hot);
   text-decoration: underline;
   text-underline-offset: 0.18em;
 }
-/* A failed film sits above its slot button so that its own button can be pressed. */
+/* A failed film sits above its slot button, and above the frame drawn over it, so that its own button can be pressed. */
 .feed:has(.film-error) {
-  z-index: 1;
+  z-index: 4;
 }
 .feed:not(.feed--large) .film-error:has(button) > span {
   display: none;

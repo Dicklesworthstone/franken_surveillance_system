@@ -1,0 +1,170 @@
+// The page's shared parts: headings with one lit phrase, the reticle, chapters,
+// sections, and the framed figure with its provenance badge.
+import { sectionIndex } from "./chapters";
+
+/** A heading whose [bracketed] words are the lit phrase. */
+export function Lit({ text, glow = false }) {
+  return text.split(/(\[[^\]]+\])/).map((part, i) =>
+    part.startsWith("[") ? (
+      <span key={i} className={glow ? "lit lit--glow" : "lit"}>
+        {part.slice(1, -1)}
+      </span>
+    ) : (
+      part
+    ),
+  );
+}
+
+/** Four corner ticks, the frame every detector draws round what it has found. */
+export function Reticle({ className = "" }) {
+  return (
+    <span className={"reticle " + className} aria-hidden="true">
+      <i />
+      <i />
+      <i />
+      <i />
+    </span>
+  );
+}
+
+const KIND = {
+  staged: "Staged",
+  measured: "Measured",
+  browser: "Computed in your browser",
+  design: "From the design registry",
+};
+
+/** Where a figure's numbers or pictures come from. */
+export function Badge({ kind, children }) {
+  return <span className={"badge badge--" + kind}>{children ?? KIND[kind]}</span>;
+}
+
+/**
+ * A framed figure: what it is, where its numbers come from, the figure itself,
+ * and the source note at its foot.
+ */
+export function Figure({ as: Tag = "section", id, eyebrow, title, titleId, badge, note, className = "", children, ...rest }) {
+  return (
+    <Tag id={id} className={"fig " + className} aria-labelledby={title ? titleId : undefined} {...rest}>
+      <Reticle />
+      {(eyebrow || title || badge) && (
+        <div className="fig__head">
+          <div>
+            {eyebrow && <p className="micro micro--chapter">{eyebrow}</p>}
+            {title && (
+              <h4 className="fig__title" id={titleId}>
+                {title}
+              </h4>
+            )}
+          </div>
+          {badge}
+        </div>
+      )}
+      <div className="fig__body">{children}</div>
+      {note && <div className="fig__note">{note}</div>}
+    </Tag>
+  );
+}
+
+const STANDING = { runs: "Runs in tests", built: "Built, not yet proven", planned: "Planned", demo: "This demo only" };
+
+/** What exists behind a section, by how far it has got. */
+export function Standing({ rows }) {
+  return (
+    <ul className="standing reveal" aria-label="Where this stands">
+      {rows.map(([kind, text]) => (
+        <li key={kind + text} className={"standing__row standing__row--" + kind}>
+          <strong>{STANDING[kind]}</strong>
+          <span>{text}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+export const standingLabel = (kind) => STANDING[kind];
+
+/** A chapter: its opener over a render of the scene, then its sections. */
+export function Chapter({ chapter, children }) {
+  const heading = `ch-${chapter.id}`;
+  const file = (width) => `/watch/plates/${chapter.plate}-${width}.webp`;
+  const widths = chapter.plateWidths ?? [960, 1600, 2400];
+  return (
+    <div className="chapter" data-chapter={chapter.id} style={{ "--chapter": `var(--${chapter.light})` }}>
+      <section className="opener" id={chapter.id} aria-labelledby={heading}>
+        <div className="opener__plate" aria-hidden="true">
+          <img
+            src={file(1600)}
+            srcSet={widths.map((width) => `${file(width)} ${width}w`).join(", ")}
+            sizes="100vw"
+            width="1600"
+            height="900"
+            loading="lazy"
+            decoding="async"
+            alt=""
+          />
+        </div>
+        <div className="wrap opener__grid">
+          <div className="reveal opener__words">
+            <p className="opener__eyebrow">
+              <span className="sphere" aria-hidden="true" />
+              <span className="micro micro--chapter">
+                Chapter {chapter.number} · {chapter.label}
+              </span>
+            </p>
+            <h2 className="display-2" id={heading}>
+              <Lit text={chapter.title} />
+            </h2>
+            <p className="lede">{chapter.thesis}</p>
+          </div>
+          <div className="opener__side reveal" style={{ "--delay": "0.08s" }}>
+            <span className="opener__numeral" aria-hidden="true">
+              {chapter.number}
+            </span>
+            {chapter.sections.length > 1 && (
+              <ol className="opener__index">
+                {chapter.sections.map(([id, label], i) => (
+                  <li key={id}>
+                    <a href={"#" + id}>
+                      <span className="data">
+                        {chapter.number}.{i + 1}
+                      </span>
+                      {label}
+                    </a>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </div>
+        </div>
+        <p className="opener__credit micro">Rendered scene, fictional house</p>
+      </section>
+      {children}
+    </div>
+  );
+}
+
+/** A section: a numbered heading with its words beside it, then full-width figures. */
+export function Section({ id, eyebrow, title, when, words, children, standing }) {
+  return (
+    <section className="section" id={id} aria-labelledby={id + "-title"}>
+      <div className="wrap">
+        <div className="section__head reveal">
+          <div>
+            <p className="section__eyebrow">
+              <span className="data">{sectionIndex(id)}</span>
+              <i aria-hidden="true" />
+              <span className="micro">{eyebrow}</span>
+            </p>
+            <h3 className="display-3" id={id + "-title"}>
+              <Lit text={title} />
+            </h3>
+            {when}
+          </div>
+          <div className="section__words">{words}</div>
+        </div>
+        <div className="section__figures">{children}</div>
+        {standing && <Standing rows={standing} />}
+      </div>
+    </section>
+  );
+}

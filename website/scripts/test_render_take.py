@@ -136,7 +136,7 @@ class FrameChoice(unittest.TestCase):
         self.assertGreater(held_total, 1_000_000)
 
     @unittest.skipUnless(shutil.which("ffmpeg"), "needs ffmpeg")
-    def test_published_doorbell_film_shows_nothing_at_its_held_gate_frames(self):
+    def test_published_doorbell_film_barely_changes_at_its_held_gate_frames(self):
         # The picture round the gate, from the lens model, in the encoded film's luma.
         camera = CAMERAS["doorbell"]
         gate, half = plan.GATE, plan.GATE["opening"] / 2

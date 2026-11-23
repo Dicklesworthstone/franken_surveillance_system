@@ -2,6 +2,7 @@
 import { fromReports, objectReader, renderIdentity, sha256 } from "./retained.mjs";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { heroTruth } from "./hero.js";
 import { distill } from "./native.js";
 import { readFusionExcerpt } from "./fusion-excerpt.mjs";
 import { readRelayReplay } from "./relay-replay.mjs";
@@ -113,6 +114,7 @@ export function loadTake() {
     id,
     renderDigest: renderIdentity(sceneBytes, nativeBytes, boxesDigest, twinBytes, fusionReplay, relayReplay),
     hero,
+    heroTruth: heroTruth(take),
     // How much of the films is one held picture: spans the renderer did not re-render because nobody was in view.
     films: {
       frames: take.frames * take.cameras.length,

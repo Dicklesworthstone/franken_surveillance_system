@@ -1,0 +1,283 @@
+/* The instrument's frame. */
+.reticle {
+  position: absolute;
+  inset: 10px;
+  z-index: 4;
+  pointer-events: none;
+}
+.reticle i {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border: 0 solid var(--reticle, color-mix(in srgb, var(--chapter) 60%, transparent));
+}
+.reticle i:nth-child(1) {
+  top: 0;
+  left: 0;
+  border-width: 1px 0 0 1px;
+}
+.reticle i:nth-child(2) {
+  top: 0;
+  right: 0;
+  border-width: 1px 1px 0 0;
+}
+.reticle i:nth-child(3) {
+  bottom: 0;
+  left: 0;
+  border-width: 0 0 1px 1px;
+}
+.reticle i:nth-child(4) {
+  right: 0;
+  bottom: 0;
+  border-width: 0 1px 1px 0;
+}
+
+/* A surface one step above the ink: an edge and a light from above, no blur. */
+.fig {
+  position: relative;
+  min-width: 0;
+  padding: clamp(20px, 2.4vw, 34px);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: linear-gradient(180deg, rgb(255 255 255 / 0.032), rgb(255 255 255 / 0) 42%), var(--ink-1);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.04);
+}
+.fig--flush {
+  padding: 0;
+  overflow: hidden;
+}
+.fig__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px 24px;
+  margin-bottom: clamp(18px, 2vw, 28px);
+}
+.fig--flush > .fig__head {
+  margin: 0;
+  padding: clamp(20px, 2.4vw, 34px) clamp(20px, 2.4vw, 34px) 18px;
+}
+.fig__title {
+  margin-top: 6px;
+  font-size: clamp(1.16rem, 1.02rem + 0.5vw, 1.45rem);
+  font-weight: 750;
+  letter-spacing: -0.028em;
+}
+.fig__note {
+  margin-top: clamp(18px, 2vw, 26px);
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  font-size: 0.82rem;
+  line-height: 1.6;
+  color: var(--faint);
+}
+.fig__note p + p {
+  margin-top: 0.7em;
+}
+.fig--flush > .fig__note {
+  margin: 0;
+  padding: 16px clamp(20px, 2.4vw, 34px) 22px;
+}
+.figs-2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+.figs-2 > * {
+  min-width: 0;
+}
+
+/* Where a figure's numbers come from, by shape as well as colour. */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  padding: 5px 12px 5px 10px;
+  border: 1px solid color-mix(in srgb, var(--tone) 45%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--tone) 9%, transparent);
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: 0.01em;
+  color: color-mix(in srgb, var(--tone) 82%, #fff);
+}
+.badge::before {
+  content: "";
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--tone);
+}
+.badge--measured {
+  --tone: var(--seen);
+}
+.badge--browser {
+  --tone: var(--lamp);
+}
+.badge--browser::before {
+  border-radius: 2px;
+}
+.badge--staged {
+  --tone: #b8c4d6;
+}
+.badge--staged::before {
+  background: none;
+  border: 1.5px dashed var(--tone);
+}
+.badge--design {
+  --tone: #a9b6ff;
+}
+.badge--design::before {
+  border-radius: 2px;
+  transform: rotate(45deg);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: rgb(255 255 255 / 0.025);
+  font-size: 0.74rem;
+  line-height: 1.4;
+  color: #d5dce7;
+}
+.chip--bin {
+  border-color: color-mix(in srgb, var(--chapter) 32%, transparent);
+  color: color-mix(in srgb, var(--chapter) 75%, #fff);
+}
+
+/* One of a few choices. */
+.switch {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: rgb(0 0 0 / 0.35);
+}
+.switch button {
+  min-height: 34px;
+  padding: 5px 14px;
+  border-radius: 10px;
+  font-size: 0.8rem;
+  font-weight: 620;
+  letter-spacing: -0.015em;
+  color: var(--soft);
+  white-space: nowrap;
+  transition:
+    color 160ms,
+    background-color 160ms;
+}
+.switch button:hover {
+  color: #fff;
+}
+.switch button[aria-pressed="true"] {
+  background: var(--lamp);
+  color: var(--lamp-ink);
+  font-weight: 750;
+}
+
+.bench input[type="checkbox"],
+.belief input[type="checkbox"],
+.console__follow input {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  border: 1.5px solid rgb(255 255 255 / 0.28);
+  border-radius: 7px;
+  background: rgb(0 0 0 / 0.3);
+  cursor: pointer;
+  transition:
+    background-color 160ms,
+    border-color 160ms;
+}
+.bench input[type="checkbox"]:checked,
+.belief input[type="checkbox"]:checked,
+.console__follow input:checked {
+  border-color: var(--lamp);
+  background: var(--lamp);
+}
+.bench input[type="checkbox"]:checked::before,
+.belief input[type="checkbox"]:checked::before,
+.console__follow input:checked::before {
+  content: "";
+  width: 5px;
+  height: 9px;
+  margin-top: -2px;
+  border: solid var(--lamp-ink);
+  border-width: 0 2.25px 2.25px 0;
+  transform: rotate(45deg);
+}
+.belief input[type="checkbox"]:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Range inputs. */
+.range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 28px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 4px;
+  background: linear-gradient(to right, var(--lamp) var(--done, 50%), rgb(255 255 255 / 0.15) var(--done, 50%));
+}
+.range::-moz-range-track {
+  height: 4px;
+  border-radius: 4px;
+  background: rgb(255 255 255 / 0.15);
+}
+.range::-moz-range-progress {
+  height: 4px;
+  border-radius: 4px;
+  background: var(--lamp);
+}
+.range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 20px;
+  height: 20px;
+  margin-top: -8px;
+  border: 4px solid var(--ink-1);
+  border-radius: 50%;
+  background: var(--lamp);
+  box-shadow: 0 0 0 1px rgb(255 194 77 / 0.7), 0 0 18px rgb(255 194 77 / 0.5);
+}
+.range::-moz-range-thumb {
+  width: 13px;
+  height: 13px;
+  border: 4px solid var(--ink-1);
+  border-radius: 50%;
+  background: var(--lamp);
+  box-shadow: 0 0 0 1px rgb(255 194 77 / 0.7), 0 0 18px rgb(255 194 77 / 0.5);
+}
+
+@media (max-width: 899px) {
+  .figs-2 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .switch button {
+    min-height: 40px;
+  }
+  .fig {
+    border-radius: 22px;
+  }
+}

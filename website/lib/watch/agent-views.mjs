@@ -1,0 +1,100 @@
+// The registered fss/1 agent views, copied word for word from architecture/agent_views.json
+// (id, name, owner, purpose, targetTokens, maximumTokens, requiredSections), in registry order,
+// and the evidence hydration levels from architecture/semantic_hydration.json (id, meaning,
+// raw_private_media; the one-word labels are the page's own).
+// scripts/agent-views.test.mjs fails if these copies and the registries drift apart.
+export const HYDRATION_LEVELS = [
+  { id: "H0", label: "Identity", meaning: "identity, source, bounds, authority, availability, privacy class, level inventory, and priced expansion metadata", raw: false },
+  { id: "H1", label: "Synopsis", meaning: "typed semantic synopsis, provenance, contradictions, quality, completeness, and omissions", raw: false },
+  { id: "H2", label: "Artifact", meaning: "privacy-transformed decision artifact such as a crop, keyframe, trajectory, or graph neighborhood", raw: false },
+  { id: "H3", label: "Source", meaning: "authorized exact source evidence such as packets, immutable object bytes, or full-resolution media", raw: true },
+  { id: "H4", label: "Debug", meaning: "qualification or explicitly granted debugging expansion", raw: true },
+];
+
+export const AGENT_VIEWS = [
+  {
+    id: "AVIEW-001",
+    name: "pulse",
+    owner: "fss-context-pack",
+    purpose: "tiny high-severity meaningful delta, sensor-health, coverage-loss, effect-uncertainty, and obligation heartbeat",
+    target: 120,
+    max: 300,
+    sections: ["criticalChanges", "coverageChanges", "effectUncertainty", "urgentObligations", "continuity"],
+  },
+  {
+    id: "AVIEW-002",
+    name: "brief",
+    owner: "fss-situation",
+    purpose:
+      "primary mission SituationCapsule answering what is established, what materially different worlds remain possible, what changed, why it matters, and what is robustly or conditionally safe to do next",
+    target: 800,
+    max: 1600,
+    sections: ["now", "certified", "possible", "changed", "why", "unknown", "atRisk", "controlEnvelope", "next"],
+  },
+  {
+    id: "AVIEW-003",
+    name: "case",
+    owner: "fss-investigation",
+    purpose: "investigation question, competing hypotheses, evidence, contradictions, unknowns, discriminators, and stop rule",
+    target: 3000,
+    max: 5000,
+    sections: ["question", "hypotheses", "evidence", "contradictions", "unknowns", "discriminators", "stopRule"],
+  },
+  {
+    id: "AVIEW-004",
+    name: "forensic",
+    owner: "fss-context-pack",
+    purpose: "broad exact evidence graph, source spans, receipts, alternative derivations, and replay handles",
+    target: 8000,
+    max: 16000,
+    sections: ["evidenceGraph", "sourceHandles", "receipts", "derivations", "replay"],
+  },
+  {
+    id: "AVIEW-005",
+    name: "operation",
+    owner: "fss-obligation",
+    purpose: "one durable plan/effect/task, progress, expected terminal proof, obligations, and reconciliation",
+    target: 600,
+    max: 1200,
+    sections: ["state", "progress", "proofExpected", "obligations", "reconciliation"],
+  },
+  {
+    id: "AVIEW-006",
+    name: "handoff",
+    owner: "fss-handoff",
+    purpose: "minimum sufficient state for another agent to resume without rediscovery or hidden staleness",
+    target: 1800,
+    max: 3200,
+    sections: ["mission", "situation", "cases", "plans", "obligations", "unknowns", "budgets", "authority", "next"],
+  },
+  {
+    id: "AVIEW-007",
+    name: "decision_diff",
+    owner: "fss-explain",
+    purpose: "why a conclusion, priority, hypothesis, plan, or preferred affordance changed",
+    target: 900,
+    max: 1800,
+    sections: ["basisBefore", "basisAfter", "changedEvidence", "invalidatedAssumptions", "decisionImpact", "whatWouldReverse"],
+  },
+  {
+    id: "AVIEW-008",
+    name: "epistemic_map",
+    owner: "fss-knowledge",
+    purpose:
+      "known/estimated/unknown/conflicted/stale/not-observable/redacted/indeterminate map plus certified core, material alternative worlds, adversarial residuals, and discriminators",
+    target: 1500,
+    max: 3000,
+    sections: [
+      "states",
+      "certifiedCore",
+      "certifiedAbsences",
+      "materialAlternatives",
+      "adversarialResiduals",
+      "coverage",
+      "contradictions",
+      "gaps",
+      "redactions",
+      "nextDiscriminators",
+    ],
+  },
+];

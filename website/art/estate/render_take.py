@@ -8,10 +8,10 @@ disk are skipped, so a second process started with `--reverse` on another GPU
 shares the work. The frames folder records which staging and render settings it
 was made with, and the script stops if either differs. Needs an NVIDIA card: the
 device and the denoiser are OptiX. With `auto` the script renders every film
-frame in which a person is in view or something in view is changing. The other
-frames are held: each lighting state that has any gets one empty plate, which
-they reuse. It writes manifest.json naming the EXR behind every film frame.
-Film frame f is scene frame 1 + 2 f.
+frame in which a person is in view or something in view is changing. The rest
+are held: the script renders one empty plate for each lighting state that has
+held frames, and they reuse it. It writes manifest.json naming the EXR behind
+every film frame. Film frame f is scene frame 1 + 2 f.
 """
 import argparse
 import json

@@ -1,44 +1,50 @@
 /*
-  Two grounds. "Night" carries the footage and the live console, because night
-  footage is only readable against a dark surround. "Day" carries the written
-  record that is read afterwards. The yellow is the yellow of a camera warning
-  sign and is the only brand colour; the track colours appear inside data views
-  only.
+  The FrankenSuite laboratory, at night.
+
+  - ink: the dark the footage sits in. Every surface is a small step above it.
+  - lamp: warm light in a dark window. Actions, the one lit phrase in a heading, the playhead.
+  - chapter: each chapter wears one kind of light a night camera has to deal with. It colours
+    chrome only (numerals, eyebrows, spheres), never data.
+  - track-a, track-b, seen: data only. Who a person is, and what the software itself measured.
 */
 :root {
-  --night: #080b10;
-  --night-raised: #10151c;
-  --night-line: #232b36;
-  --night-text: #e8ebef;
-  --night-soft: #a3adba;
-  --night-faint: #6f7a88;
+  --ink: #05070b;
+  --ink-1: #090d13;
+  --line: rgb(196 214 255 / 0.09);
+  --line-strong: rgb(196 214 255 / 0.18);
 
-  --day: #f1f2ee;
-  --day-raised: #ffffff;
-  --day-line: #d5d8d1;
-  --day-text: #11151a;
-  --day-soft: #4a525c;
+  --text: #eef2f8;
+  --soft: #b3bdcc;
+  --faint: #8592a4;
 
-  --sign: #ffd200;
-  --sign-ink: #171300;
+  --lamp: #ffc24d;
+  --lamp-hot: #ffd98c;
+  --lamp-ink: #1d1300;
 
-  --track-a: #ff7448;
+  --track-a: #ff7a4d;
   --track-b: #4cc3f5;
-  --lamp: #ffc27a;
-  --seen: #86d8a0;
+  --seen: #7fe3a7;
   --unseen: #8d97a5;
+  --alarm: #ff6f6f;
 
-  --sans: "Archivo Variable", "Archivo", system-ui, -apple-system, "Segoe UI", sans-serif;
-  --mono: "Martian Mono Variable", "Martian Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  /* Five kinds of light. */
+  --sodium: #ffc24d;
+  --moon: #a4bcff;
+  --infrared: #d0a2ff;
+  --phosphor: #cdee62;
+  --dawn: #ffb49c;
+  --chapter: var(--sodium);
 
-  --step--1: 0.8125rem;
-  --step-0: 1.0625rem;
-  --step-1: 1.25rem;
-  --step-2: 1.625rem;
-  --step-3: clamp(1.9rem, 1.2rem + 2.2vw, 2.9rem);
-  --step-4: clamp(2.5rem, 1.1rem + 4.6vw, 4.9rem);
+  --sans: var(--font-sans, "Inter"), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: var(--font-mono, "JetBrains Mono"), ui-monospace, "SF Mono", Menlo, monospace;
 
-  --gutter: clamp(16px, 4vw, 56px);
+  --r-lg: 28px;
+  --r-md: 18px;
+
   --page: 1320px;
-  --measure: 62ch;
+  --wide: 1560px;
+  --gutter: clamp(16px, 3.6vw, 48px);
+  --ease: cubic-bezier(0.19, 1, 0.22, 1);
+
+  color-scheme: dark;
 }

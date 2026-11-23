@@ -1,12 +1,15 @@
+import { ArrowDown } from "lucide-react";
 import { loadTake } from "../../lib/watch/load";
-import { stamp } from "../../lib/watch/take";
 import ArchitectureDeck from "./ArchitectureDeck";
+import { CHAPTERS } from "./chapters";
 import Console from "./Console";
 import HeroMedia from "./HeroMedia";
 import { MeasuredSummary } from "./Measured";
+import RevealController from "./RevealController";
 import Status, { Footer } from "./Status";
 import Story from "./Story";
-import TopBar, { REPO } from "./TopBar";
+import TopBar from "./TopBar";
+import { Badge, Chapter, Lit } from "./ui";
 
 const CREDITS = (
   <ul>
@@ -33,7 +36,7 @@ const CREDITS = (
 
 const STEPS = [
   ["#inputs", "Take video from any mix of cameras and put it on one clock"],
-  ["#fusion", "Place every camera in one model of the site, and count each person once"],
+  ["#fusion", "Place every camera in one model, and count each person once"],
   ["#coverage", "Know which ground it can see, and say so when it cannot"],
   ["#belief", "Weigh what each sighting means and show the arithmetic"],
   ["#agent", "Brief an AI agent in under 1,600 tokens"],
@@ -41,172 +44,214 @@ const STEPS = [
   ["#record", "Keep an append-only record of all of it"],
 ];
 
-const PILLARS = [
-  [
-    "Pure-Rust substrate.",
-    "First-party H.264/H.265/JPEG decoders, CPU model runtime, TUTK/Tuya/ONVIF/RTSP and 27 graph algorithms. Zero unsafe code, zero FFmpeg, OpenCV or Python in production.",
-  ],
-  [
-    "Witnessed absence.",
-    "A working camera that saw nobody and a dead, blocked or masked camera are never collapsed. Every claim carries one of nine typed knowledge states.",
-  ],
-  [
-    "Decomposable belief.",
-    "Evidence adds in whole millibans with Wilson intervals and common-cause ablation, so two cameras sharing a model or lighting change cannot double-count.",
-  ],
-  [
-    "Prepared, bounded effects.",
-    "Models propose and never authorize. Consequential actions commit by digest, verify against cameras, and stay indeterminate instead of resending blindly.",
-  ],
-];
+// The frame of the loop that the still was taken from.
+const STILL_FRAME = 112;
+
+/** Curves from each of `n` rows on one side to the middle of the other. */
+function Wires({ n, fan }) {
+  const rows = Array.from({ length: n }, (_, i) => ((i + 0.5) / n) * 100);
+  const path = (y) => (fan ? `M0 50C55 50 45 ${y} 100 ${y}` : `M0 ${y}C55 ${y} 45 50 100 50`);
+  return (
+    <div className="chain__wires" aria-hidden="true">
+      <svg viewBox="0 0 100 100" preserveAspectRatio="none">
+        {rows.map((y) => (
+          <path key={y} d={path(y)} />
+        ))}
+        {rows.map((y, i) => (
+          <path key={"live" + y} d={path(y)} className="is-live" style={{ "--delay": `${-i * 0.67}s` }} />
+        ))}
+      </svg>
+    </div>
+  );
+}
 
 export default function Home() {
-  const { summary, story, spans, sceneUrl, sceneDigest, renderDigest, native, boxesUrl, boxesDigest, hero, plate, films } = loadTake();
-  const names = Object.fromEntries(summary.cameras.map((cam) => [cam.id, cam.name]));
-  const totalMeasuredFrames = native
+  const { summary, story, spans, sceneUrl, sceneDigest, renderDigest, native, boxesUrl, boxesDigest, hero, heroTruth, films } =
+    loadTake();
+  const measuredFrames = native
     ? native.cameras.reduce((sum, c) => sum + (c.custody === "ok" ? (c.frames ?? 0) : 0), 0)
     : null;
+  const count = { 5: "Five" }[summary.cameras.length] ?? String(summary.cameras.length);
+  const minute = CHAPTERS[0];
+  // What the hero needs to print a clock and name the cameras; not the whole take.
+  const heroTake = { start: summary.start, zone: summary.zone, cameras: summary.cameras.map(({ id, name }) => ({ id, name })) };
   return (
     <>
       <TopBar />
+      <RevealController />
       <main id="top" data-take-digest={renderDigest}>
-        <section className="hero night">
+        <section className="hero" data-outside aria-labelledby="hero-title">
           <HeroMedia
             video={hero.video}
             still={hero.still}
+            stillFrame={STILL_FRAME}
+            truth={heroTruth}
+            take={heroTake}
             alt="A large white clapboard house at night with its floodlights on. A man in dark clothes runs down the porch steps, away from the front door."
           />
-          <div className="wrap hero__body">
-            <div>
-              <p className="hero__eyebrow data">PURE RUST · ZERO UNSAFE · LOCAL FIRST · 22 CRATES</p>
-              <h1 className="display">A security room for your house, built from $35 cameras.</h1>
-              <p className="hero__lede">
-                Franken Surveillance joins the cheap Wi-Fi cameras you already own, whatever the makers, into one
-                calibrated, local-first model of your property. It seals raw bytes before decode, separates silence from
-                blind spots, and gives an AI agent a bounded place to watch and act without vendor clouds.
-              </p>
-              <div className="hero__actions">
-                <a className="button button--sign" href="#minute">
-                  Watch one minute at 02:14
-                </a>
-                <a className="button button--line" href="#architecture">
-                  Inspect the Rust stack
-                </a>
-                <a className="button button--ghost" href={REPO}>
-                  Read the source
-                </a>
-              </div>
+          <div className="hero__words">
+            <p className="hero__eyebrow rise">
+              <span className="sphere" aria-hidden="true" />
+              <span className="micro">Pure Rust · local first · open source</span>
+            </p>
+            <h1 className="display-1 rise" id="hero-title" style={{ "--delay": "60ms" }}>
+              <Lit text="A security room for your house, built from [$35 cameras]." glow />
+            </h1>
+            <p className="lede hero__lede rise" style={{ "--delay": "140ms" }}>
+              Franken Surveillance joins the cheap Wi-Fi cameras you already own, whatever the makers, into one calibrated
+              model of your property. It records what it saw, says what it could not see, and gives an AI agent a bounded
+              place to watch and act. No vendor cloud.
+            </p>
+            <div className="hero__actions rise" style={{ "--delay": "210ms" }}>
+              <a className="button button--lamp" href="#console">
+                Watch one minute at 02:14 <ArrowDown aria-hidden="true" />
+              </a>
+              <a className="button button--line" href="#architecture">
+                Inspect the Rust stack
+              </a>
             </div>
-            <p className="hero__stamp">
-              <strong>{stamp(summary, summary.beats.lights_on ?? 0)}</strong>
-              Rendered scene, fictional house
+            <p className="hero__foot rise" style={{ "--delay": "270ms" }}>
+              Open source and unfinished. The scene on this page is staged: a rendered house, motion-captured actors and a
+              scripted agent. Each figure says whether the software measured it. <a href="#status">What runs today</a>
             </p>
           </div>
-          <div className="hero__status">
-            <div className="wrap hero__status-row">
-              <p>
-                Open source and unfinished. The scene on this page is staged: a rendered house, motion-captured actors and
-                a scripted agent. Each figure says whether the software measured it. <a href="#status">What runs today</a>
+        </section>
+
+        <section className="specs" data-outside aria-label="In four figures">
+          <dl>
+            <div>
+              <dt className="micro">A camera</dt>
+              <dd>
+                <b>$35</b>
+                <span>What a Wi-Fi camera costs now. The intelligence is in the software, on a machine you own.</span>
+              </dd>
+            </div>
+            <div>
+              <dt className="micro">Measured here</dt>
+              <dd>
+                <b>{measuredFrames == null ? "None yet" : measuredFrames.toLocaleString("en") + " frames"}</b>
+                <span>
+                  {measuredFrames == null
+                    ? "The project's binaries have not been run over these films."
+                    : `${count} films imported under SHA-256 custody by the project's own binaries. Rendered footage, so it says nothing about real cameras.`}
+                </span>
+              </dd>
+            </div>
+            <div>
+              <dt className="micro">Unsafe code</dt>
+              <dd>
+                <b>Zero</b>
+                <span>Forbidden in all 22 crates. No FFmpeg, OpenCV, Python or ONNX Runtime in production.</span>
+              </dd>
+            </div>
+            <div>
+              <dt className="micro">For an agent</dt>
+              <dd>
+                <b>14 operations</b>
+                <span>One grammar by command line and local MCP. A model may propose. It never authorizes.</span>
+              </dd>
+            </div>
+          </dl>
+        </section>
+
+        <section className="thesis" data-outside aria-label="The idea">
+          <div className="wrap thesis__grid">
+            <p className="thesis__line reveal">
+              Airports and borders have had this for decades: many sensors joined into one picture, watched around the
+              clock by trained staff. <em>The parts are cheap now, and an AI agent can do the watching.</em>
+            </p>
+            <div className="thesis__side reveal" style={{ "--delay": "0.1s" }}>
+              <p className="prose">
+                Franken Surveillance is the layer in between. It takes a bunch of cheap cameras from mixed makers, gives
+                them one clock and one map, and keeps the evidence straight enough that an agent can act on it.
               </p>
-              {totalMeasuredFrames != null && (
-                <p className="hero__telemetry data">
-                  {summary.cameras.length} films · {totalMeasuredFrames.toLocaleString("en")} frames measured · 14 fss/1 ops
-                </p>
-              )}
             </div>
           </div>
         </section>
 
-        <section className="pitch night" aria-label="The idea">
-          <div className="wrap">
-            <div className="pitch__grid">
-              <p className="pitch__thesis">
-                Airports and borders have had this for decades: many sensors joined into one picture, watched around the
-                clock by trained staff.{" "}
-                <em>
-                  The parts are cheap now. A Wi-Fi camera costs $35 and an AI agent can do the watching. Franken
-                  Surveillance is the deterministic evidence fabric in between.
-                </em>
-              </p>
-              <nav aria-labelledby="pitch-steps">
-                <h2 id="pitch-steps">What that software has to do</h2>
-                <ol>
-                  {STEPS.map(([href, text]) => (
-                    <li key={href}>
-                      <a href={href}>{text}</a>
-                    </li>
-                  ))}
-                </ol>
-              </nav>
+        <section className="chain" data-outside aria-label="From five cameras to one answer">
+          <div className="wrap wrap--wide">
+            <div className="chain__flow reveal">
+              <div className="chain__cams">
+                {summary.cameras.map((cam) => (
+                  <div className="chain__cam" key={cam.id}>
+                    <img src={`/watch/plates/cam-${cam.id}.webp`} width="640" height="360" loading="lazy" decoding="async" alt="" />
+                    <span>
+                      {cam.name}
+                      <small>{cam.product}</small>
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <Wires n={summary.cameras.length} />
+              <div className="chain__model">
+                <img
+                  src="/watch/plates/model.webp"
+                  width="1600"
+                  height="1000"
+                  loading="lazy"
+                  decoding="async"
+                  alt="The model of the property from above at night: the house, drive, lawn, pool and street wall."
+                />
+                <Badge kind="staged">Rendered model, fictional house</Badge>
+                <div>
+                  <p className="micro micro--chapter">One model of the property</p>
+                  <strong>Every sighting lands on the same ground.</strong>
+                  <p>Two views of one person become one track, with a stated bound on where they are.</p>
+                </div>
+              </div>
+              <Wires n={3} fan />
+              <div className="chain__outs">
+                <a className="chain__out" href="#belief">
+                  <span className="micro micro--chapter">Evidence</span>
+                  <strong>A probability you can take apart</strong>
+                  <span>Each source can be removed, and the answer recomputed without it.</span>
+                </a>
+                <a className="chain__out" href="#agent">
+                  <span className="micro micro--chapter">Agent</span>
+                  <strong>A briefing sized to its budget</strong>
+                  <span>What is known, what is not, and what it may do next.</span>
+                </a>
+                <a className="chain__out" href="#record">
+                  <span className="micro micro--chapter">Record</span>
+                  <strong>A ledger that only grows</strong>
+                  <span>Sightings, decisions and actions, each under its own digest.</span>
+                </a>
+              </div>
             </div>
-            <ul className="pillars" aria-label="Core architectural differences">
-              {PILLARS.map(([lead, body]) => (
-                <li key={lead}>
-                  <strong>{lead}</strong> {body}
+            <ol className="chain__steps" aria-label="What that software has to do">
+              {STEPS.map(([href, text]) => (
+                <li key={href}>
+                  <a href={href}>{text}</a>
                 </li>
               ))}
-            </ul>
+            </ol>
           </div>
         </section>
 
-        <section className="minute night" id="minute" aria-labelledby="minute-title">
-          <div className="wrap">
-            <div className="minute__intro">
-              <div>
-                <p className="eyebrow data">SYNCHRONIZED REPLAY · 02:14:00 TO 02:15:01</p>
-                <h2 className="title" id="minute-title">
-                  One minute, {summary.cameras.length === 5 ? "five" : summary.cameras.length} cameras, two people who should not be there.
-                </h2>
-              </div>
-              <div>
-                <p className="prose soft">
-                  At 02:14 one man comes in through the gate while another keeps watch outside it. Press play, step
-                  between moments or drag the timeline. The films, the site model, the agent and the ledger all run off
-                  one clock.
-                </p>
-                <p className="minute__key">
-                  <span className="source source--staged">Dashed outline: staged position</span>
-                  {boxesUrl && <span className="source source--measured">Solid outline: the detector's own box</span>}
-                  <span className="source source--browser">Bounds: computed in your browser from camera geometry</span>
-                  <span className="source source--staged">
-                    Yellow fans: each lens on open ground, not cut by walls or trees
-                  </span>
-                </p>
-              </div>
+        <Chapter chapter={minute}>
+          <section className="replay" aria-label="The replay">
+            <div className="wrap wrap--wide">
+              <Console
+                summary={summary}
+                story={story}
+                spans={spans}
+                sceneUrl={sceneUrl}
+                sceneDigest={sceneDigest}
+                boxesUrl={boxesUrl}
+                boxesDigest={boxesDigest}
+              />
             </div>
-            <Console
-              summary={summary}
-              story={story}
-              spans={spans}
-              sceneUrl={sceneUrl}
-              sceneDigest={sceneDigest}
-              boxesUrl={boxesUrl}
-              boxesDigest={boxesDigest}
-            />
-          </div>
-        </section>
+          </section>
+        </Chapter>
 
-        {plate && (
-          <figure className="plate night">
-            <img
-              src={plate + "-1280.jpg"}
-              srcSet={`${plate}-1280.jpg 1280w, ${plate}-2560.jpg 2560w`}
-              sizes="100vw"
-              width="2560"
-              height="1097"
-              loading="lazy"
-              alt="The front of the house with the floodlights on. A man in dark clothes runs across the lawn away from the porch, throwing a long shadow. A security camera on a post stands in the foreground."
-            />
-            <figcaption className="wrap">
-              <span className="data">{stamp(summary, summary.beats.a_turns_to_run + 3.6)}</span> from the lawn. A clean
-              render of the scene the five cameras filmed.
-            </figcaption>
-          </figure>
-        )}
-
-        <Story summary={summary} story={story} native={native} />
-        <ArchitectureDeck />
-        <Status measured={native && <MeasuredSummary native={native} names={names} />} films={films} />
+        <Story
+          summary={summary}
+          story={story}
+          native={native}
+          architecture={<ArchitectureDeck />}
+          status={<Status measured={native && <MeasuredSummary native={native} />} films={films} />}
+        />
       </main>
       <Footer credits={CREDITS} />
     </>

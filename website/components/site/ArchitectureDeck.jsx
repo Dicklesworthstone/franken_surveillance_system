@@ -1,13 +1,14 @@
 "use client";
 import { useRef, useState } from "react";
+import { Badge, Figure, Section } from "./ui";
 
 const SUBSTRATE_STATS = [
   ["22", "Safe Rust crates", "unsafe_code forbidden across every crate, binary and test"],
   ["48", "Compiled binaries", "capture, decode, infer, scene-fuse, graph, MCP and doctor"],
-  ["4", "Direct external crates", "asupersync, chacha20poly1305, zeroize, nix (no FFmpeg, OpenCV, Python, ONNX Runtime, Tokio or serde)"],
+  ["4", "Direct external crates", "asupersync, chacha20poly1305, zeroize, nix; no FFmpeg, OpenCV, Python, ONNX Runtime or Tokio anywhere in the build"],
   ["27", "Certified graph algorithms", "canonical tie-breaks, fail-closed work bounds and complexity witnesses"],
   ["14 / 8", "Agent ops and views", "shared fss/1 contract across CLI and local stdio MCP"],
-  ["0 ULP", "CPU kernel parity", "16x faster YOLOX-Nano executor bit-identical to scalar oracle (4.85 MB peak activations)"],
+  ["0 ULP", "CPU kernel parity", "YOLOX-Nano executor 16x faster than the scalar reference and bit-identical to it (4.85 MB peak activations)"],
 ];
 
 const PLANES = [
@@ -20,7 +21,7 @@ const PLANES = [
     forbids: "Cannot invent capture timestamps, claim physical continuity after a gap, decode audio by default, or mutate policy or alert state.",
     crates: ["fss-packet", "fss-container", "fss-codec-h264", "fss-codec-h265", "fss-codec-mjpeg", "fss-codec-jpeg-encode", "fss-tutk", "fss-tuya", "fss-provision"],
     binaries: ["fss-capture-rtsp", "fss-capture-tutk", "fss-capture-tuya", "fss-capture-onvif", "fss-discover", "fss-file", "fss-probe"],
-    proof: "Bit-exact H.264 High (27.3 to 50.6 fps on 1080p) and H.265 Main (26.7 fps) against offline FFmpeg oracles; Wyze Cam v4 LAN lifecycle live-proven on owner hardware.",
+    proof: "H.264 (Baseline, Main, High) and H.265 Main decode bit-exact against offline FFmpeg oracle fixtures. Single-threaded, codec only, at 1080p: H.264 at 27.3 fps on a busy test pattern and 39 to 51 fps on a mostly still scene, H.265 at 26.7 fps. Wyze Cam v4 LAN lifecycle live-proven on owner hardware.",
     standing: "runs",
   },
   {
@@ -40,7 +41,7 @@ const PLANES = [
     code: "PLANE 03",
     name: "Cognition",
     role: "Models, 3D geometry, calibrated fusion and certified graphs",
-    owns: "Frozen Model IR (v1/v2) + offline ONNX importer, scalar and 16x bit-identical CPU executors, YOLOX-Nano COCO-80 package, HOG/Kalman/Hungarian tracking, Schur-complement bundle adjustment, Brown-Conrady/fisheye rectification, FSATLAS1 localization, integer milliban fusion with Wilson/conformal/e-process math, and all 27 registered graph algorithms.",
+    owns: "Frozen Model IR (v1/v2) + offline ONNX importer, a scalar CPU executor and an optimized one 16x faster and bit-identical to it, YOLOX-Nano COCO-80 package, HOG/Kalman/Hungarian tracking, Schur-complement bundle adjustment, Brown-Conrady/fisheye rectification, FSATLAS1 localization, integer milliban fusion with Wilson/conformal/e-process math, and all 27 registered graph algorithms.",
     forbids: "Cognition is strictly derived and rebuildable. No detector score, tracker output, graph cut or VLM summary can alter canonical custody or grant effect authority.",
     crates: ["fss-tensor", "fss-model-ir", "fss-geometry", "fss-twin", "fss-fusion", "fss-graph-algorithms"],
     binaries: ["fss-infer", "fss-event", "fss-fuse", "fss-scene-fuse", "fss-evaluate", "fss-cover", "fss-clock-align"],
@@ -93,7 +94,7 @@ const COMPARISON = [
     nvr: "Proprietary C/C++ appliances or closed Windows/Linux binaries",
     homelab: "Glues Python, Node, FFmpeg, OpenCV, ONNX Runtime and MQTT",
     vlm: "Cloud API calls plus Python/JS orchestration glue",
-    fss: "100% safe pure Rust (unsafe forbidden), 4 direct deps, zero foreign production runtimes",
+    fss: "Safe pure Rust in every workspace crate (unsafe forbidden), 4 direct dependencies, no foreign production runtime",
   },
   {
     dim: "Belief and shared faults",
@@ -149,26 +150,22 @@ export default function ArchitectureDeck() {
   };
 
   return (
-    <section className="arch night" id="architecture" aria-labelledby="arch-title">
-      <div className="wrap">
-        <div className="arch__intro">
-          <div>
-            <p className="eyebrow data">CLOSED PURE-RUST SUBSTRATE</p>
-            <h2 className="title" id="arch-title">
-              Built like a flight recorder, not a home-lab script.
-            </h2>
-          </div>
-          <p className="prose soft">
-            Most camera stacks bolt Python or Node glue onto FFmpeg, OpenCV, ONNX Runtime and a vendor cloud. Franken
-            Surveillance owns the packet parser, video decoders, CPU model executor, 3D geometry solvers, graph kernels
-            and crash-safe ledger in one safe Rust workspace, with zero unsafe code and four direct external crates.
-          </p>
-        </div>
-
-        <dl className="substrate" aria-label="Verified workspace measurements">
+    <Section
+      id="architecture"
+      eyebrow="Closed pure-Rust substrate"
+      title="Built like a [flight recorder]."
+      words={
+        <p className="prose">
+          Most camera stacks bolt Python or Node glue onto FFmpeg, OpenCV, ONNX Runtime and a vendor cloud. Franken
+          Surveillance owns the packet parser, video decoders, CPU model executor, 3D geometry solvers, graph kernels and
+          crash-safe ledger in one safe Rust workspace, with zero unsafe code and four direct external crates.
+        </p>
+      }
+    >
+        <dl className="substrate reveal" aria-label="Verified workspace measurements">
           {SUBSTRATE_STATS.map(([value, label, note]) => (
             <div key={label} className="substrate__item">
-              <dt className="substrate__val data">{value}</dt>
+              <dt className="substrate__val num">{value}</dt>
               <dd>
                 <strong>{label}</strong>
                 <span>{note}</span>
@@ -177,19 +174,21 @@ export default function ArchitectureDeck() {
           ))}
         </dl>
 
-        <div className="planes" aria-labelledby="planes-title">
-          <div className="planes__head">
-            <h3 className="subtitle" id="planes-title">
-              Four separated planes and one agent operating membrane.
-            </h3>
-            <p className="soft">
-              A decoded frame is not source continuity. A model score is not physical fact. A webhook reply is not
-              verified delivery. Select a layer to inspect its boundary, crates and current proof.
+        <Figure
+          className="fig--flush planes"
+          eyebrow="Four planes and a membrane"
+          title="Four separated planes and one agent operating membrane."
+          titleId="planes-title"
+          badge={<Badge kind="design">From the plan and the workspace</Badge>}
+          note={
+            <p>
+              A decoded frame does not prove source continuity, a model score does not establish a physical fact, and a
+              webhook reply does not verify delivery. Each layer states its own boundary.
             </p>
-          </div>
-
+          }
+        >
           <div className="planes__layout">
-            <div className="planes__tabs" role="tablist" aria-label="Operational planes">
+            <div className="planes__tabs" role="tablist" aria-label="Operational planes" aria-orientation="vertical">
               {PLANES.map((item, i) => {
                 const selected = item.id === plane.id;
                 return (
@@ -201,7 +200,7 @@ export default function ArchitectureDeck() {
                     id={`plane-tab-${item.id}`}
                     tabIndex={selected ? 0 : -1}
                     aria-selected={selected}
-                    aria-controls={`plane-panel-${item.id}`}
+                    aria-controls={selected ? `plane-panel-${item.id}` : undefined}
                     className={"planes__tab" + (selected ? " is-active" : "")}
                     onKeyDown={(e) => onTabKeyDown(e, i)}
                     onClick={() => setActiveId(item.id)}
@@ -266,22 +265,22 @@ export default function ArchitectureDeck() {
               </dl>
             </div>
           </div>
-        </div>
+        </Figure>
 
-        <div className="compare" aria-labelledby="compare-title">
-          <div className="compare__head">
-            <h3 className="subtitle" id="compare-title">
-              How it differs from ordinary setups.
-            </h3>
-            <p className="soft">
+        <Figure
+          className="fig--flush compare"
+          eyebrow="Beside ordinary setups"
+          title="How it differs from what you could run tonight."
+          titleId="compare-title"
+          badge={<Badge kind="design">Our reading, not a benchmark</Badge>}
+          note={
+            <p>
               Incumbent NVRs and home-lab stacks are mature, proven tools with broad camera ecosystems today. Franken
               Surveillance is an unqualified reference implementation built around a stricter architectural thesis.
             </p>
-          </div>
-          <p className="compare__hint data" aria-hidden="true">
-            SCROLL SIDEWAYS TO COMPARE ALL FOUR APPROACHES
-          </p>
-          <div className="compare__scroll">
+          }
+        >
+          <div className="compare__scroll" tabIndex={0} role="group" aria-label="Comparison table, scrolls sideways">
             <table className="compare__table">
               <thead>
                 <tr>
@@ -307,8 +306,7 @@ export default function ArchitectureDeck() {
               </tbody>
             </table>
           </div>
-        </div>
-      </div>
-    </section>
+        </Figure>
+    </Section>
   );
 }

@@ -195,6 +195,10 @@ export default function Feed({
         ) : (
           <FilmFailure message="No recording is available for this camera." />
         )}
+        {/* Until the film has been fetched and its bytes checked, the slot says so. Black could pass for a dark picture. */}
+        {camera.video && !source && !failure && (
+          <span className="feed__waiting">{!wanted ? "Not loaded yet" : large ? "Fetching and checking this film" : "Checking"}</span>
+        )}
         <FilmFailure message={failure || (decodingFailed && "This browser could not decode the camera recording.")} retry={retry} />
         {picture != null && <svg className="feed__marks" viewBox="0 0 1 1" preserveAspectRatio="none" aria-hidden="true">
           {showStaged && people.map(({ actor, box }) => (

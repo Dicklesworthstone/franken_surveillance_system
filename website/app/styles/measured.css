@@ -1,0 +1,520 @@
+/* Panels that print what the project's own binaries returned. */
+.measured {
+  font-size: 0.94rem;
+  line-height: 1.6;
+  color: var(--soft);
+}
+.measured .fig__body > p + p {
+  margin-top: 0.8em;
+}
+.measured strong,
+.measured b {
+  color: #fff;
+}
+.measured q {
+  color: #fff;
+}
+.measured__links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 22px;
+  margin-top: 14px;
+  font-size: 0.88rem;
+  color: #fff;
+}
+.measured__aside {
+  font-size: 0.86rem;
+  line-height: 1.58;
+  color: var(--faint);
+}
+.measured__flag {
+  padding: 15px 18px;
+  border: 1px solid rgb(255 194 77 / 0.26);
+  border-radius: 14px;
+  background: rgb(255 194 77 / 0.06);
+  font-size: 0.89rem;
+  line-height: 1.56;
+  color: #f2e4c4;
+}
+.measured__hypothesis {
+  margin: 22px 0 10px;
+  font-size: 1.02rem;
+}
+.flags {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+}
+.measured--briefing .measured__flag {
+  margin: 18px 0;
+}
+
+/* Each pair of cameras, and who was really there */
+.pairs {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  overflow: hidden;
+}
+.pair {
+  padding: 24px 24px 26px;
+  box-shadow: 1px 0 0 var(--line), 0 1px 0 var(--line);
+}
+.pair h5 {
+  font-size: 1.08rem;
+}
+.pair > p {
+  margin-top: 14px;
+  font-size: 0.9rem;
+}
+.pair__dots {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+  font-size: 0.86rem;
+}
+.pair__dots i {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid var(--seen);
+}
+.pair__dots .is-person {
+  background: var(--seen);
+  box-shadow: 0 0 18px rgb(127 227 167 / 0.5);
+}
+.pair__dots .is-empty {
+  border-color: var(--lamp);
+  border-style: dashed;
+}
+.pair__dots .is-unplaced {
+  border-color: var(--unseen);
+  border-style: dotted;
+}
+.pair__dots span {
+  margin-left: 6px;
+}
+.pair--verdict {
+  background: rgb(255 255 255 / 0.018);
+}
+.pair--verdict dl {
+  margin-top: 14px;
+}
+.pair--verdict dl > div + div {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.pair--verdict dt {
+  font-size: 0.84rem;
+}
+.pair--verdict dd {
+  margin-top: 3px;
+  color: color-mix(in srgb, var(--chapter) 72%, #fff);
+  overflow-wrap: anywhere;
+}
+
+/* Tables */
+.measured__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.92rem;
+}
+.measured__table th,
+.measured__table td {
+  padding: 13px 18px 13px 0;
+  border-top: 1px solid var(--line);
+  text-align: left;
+  vertical-align: middle;
+}
+.measured__table th:last-child,
+.measured__table td:last-child {
+  padding-right: 0;
+}
+.measured__table thead th {
+  padding-top: 0;
+  border-top: 0;
+  font-size: 0.78rem;
+  font-weight: 550;
+  color: var(--faint);
+}
+.measured__table tbody th {
+  font-weight: 650;
+  color: #fff;
+  white-space: nowrap;
+}
+.measured__table small {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.78rem;
+  color: var(--faint);
+}
+.measured__table .num {
+  color: #e7edf5;
+  font-variant-numeric: tabular-nums;
+}
+.measured__table .data {
+  color: color-mix(in srgb, var(--chapter) 68%, #fff);
+  overflow-wrap: anywhere;
+}
+.minibar {
+  display: block;
+  width: 100%;
+  min-width: 90px;
+  height: 10px;
+  margin-top: 8px;
+  border-radius: 5px;
+  overflow: hidden;
+  background: rgb(255 255 255 / 0.06);
+}
+.minibar i {
+  display: block;
+  height: 100%;
+  border-radius: 5px;
+  background: linear-gradient(90deg, rgb(127 227 167 / 0.5), var(--seen));
+}
+.interval {
+  position: relative;
+  display: block;
+  min-width: 140px;
+  height: 14px;
+  margin-top: 8px;
+  border-radius: 7px;
+  background:
+    linear-gradient(90deg, transparent calc(50% - 0.5px), rgb(255 255 255 / 0.3) 0 calc(50% + 0.5px), transparent 0),
+    rgb(255 255 255 / 0.06);
+}
+.interval i {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  border-radius: 5px;
+  background: var(--seen);
+  box-shadow: 0 0 16px rgb(127 227 167 / 0.6);
+}
+.detector {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: 30px clamp(28px, 4vw, 64px);
+  align-items: start;
+}
+
+/* An excerpt with its own pictures */
+.measured__excerpt {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
+  gap: 24px clamp(24px, 3vw, 46px);
+  align-items: center;
+}
+.measured__excerpt h4 {
+  margin-bottom: 10px;
+  font-size: 1.15rem;
+}
+.measured__excerpt p + p {
+  margin-top: 0.75em;
+}
+.measured__excerpt:has(.relay-outcomes) {
+  display: block;
+}
+.measured__excerpt:has(.relay-outcomes) > p {
+  max-width: 86ch;
+}
+
+/* Four sends */
+.relay-outcomes {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-top: 24px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  overflow: hidden;
+}
+.relay-outcomes > div {
+  padding: 22px 20px 24px;
+}
+.relay-outcomes > div + div {
+  border-left: 1px solid var(--line);
+}
+.relay-outcomes dt {
+  font-size: 1.04rem;
+  font-weight: 700;
+  letter-spacing: -0.022em;
+  color: #fff;
+}
+.relay-outcomes dd {
+  margin-top: 14px;
+  font-size: 0.87rem;
+  line-height: 1.56;
+}
+.relay-outcomes__lane {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr) max-content;
+  align-items: center;
+  gap: 10px 8px;
+  font-family: var(--mono);
+  font-size: 0.7rem !important;
+}
+.relay-outcomes__lane i {
+  grid-row: span 2;
+  padding: 18px 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  font-style: normal;
+  color: #fff;
+}
+.relay-outcomes__lane i:nth-of-type(2) {
+  grid-column: 3;
+  grid-row: 1 / span 2;
+}
+.relay-outcomes__lane b {
+  grid-column: 2;
+  padding-bottom: 5px;
+  border-bottom: 2px solid var(--tone, var(--unseen));
+  font-weight: 500;
+  text-align: center;
+  color: var(--tone, var(--faint));
+  white-space: nowrap;
+}
+.relay-outcomes__lane .is-sent {
+  --tone: var(--lamp);
+}
+.relay-outcomes__lane .is-back {
+  --tone: var(--seen);
+}
+.relay-outcomes__lane .is-lost {
+  --tone: var(--alarm);
+  border-bottom-style: dashed;
+}
+.relay-outcomes__lane .is-held {
+  border-bottom-style: dotted;
+}
+/* Not recorded is not the same as none. */
+.relay-outcomes__lane .is-unknown {
+  border-bottom: 0;
+  font-style: italic;
+}
+.relay-outcomes__links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 10px;
+  font-size: 0.8rem;
+}
+
+/* The briefing */
+.brief {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+  gap: 10px 30px;
+}
+.brief__count {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+.brief__count b {
+  font-size: clamp(2.2rem, 1.6rem + 1.8vw, 3.4rem);
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.055em;
+  color: #fff;
+}
+.brief__pulse {
+  grid-column: 1 / -1;
+  font-size: 0.89rem;
+}
+.measured__meter {
+  height: 16px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: rgb(255 255 255 / 0.06);
+}
+.measured__meter i {
+  display: block;
+  height: 100%;
+  border-radius: 8px;
+  background: linear-gradient(90deg, rgb(127 227 167 / 0.4), var(--seen));
+}
+.measured__brief {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 clamp(24px, 4vw, 64px);
+  margin-top: 22px;
+}
+.measured__brief > div {
+  padding: 18px 0;
+  border-top: 1px solid var(--line);
+}
+.measured__brief dt {
+  margin-bottom: 7px;
+  font-size: 0.84rem;
+  font-weight: 700;
+  color: color-mix(in srgb, var(--chapter) 78%, #fff);
+}
+.measured__brief dd {
+  font-size: 0.92rem;
+}
+.measured__brief li + li {
+  margin-top: 6px;
+}
+.measured__brief .data {
+  color: #fff;
+  overflow-wrap: anywhere;
+}
+.measured__calls {
+  margin-top: 4px;
+}
+.fig__body > .measured__calls {
+  margin-top: 18px;
+}
+.measured__calls + p {
+  margin-top: 18px;
+}
+/* A column of bars gets the room; the columns of figures beside it do not need it. */
+.measured__table--bars td:has(.minibar),
+.measured__table--bars td:has(.interval) {
+  width: 46%;
+}
+.detector .measured__table--bars td:has(.minibar) {
+  width: 40%;
+}
+.measured__calls summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  padding: 6px 16px 6px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 13px;
+  font-size: 0.88rem;
+  font-weight: 620;
+  line-height: 1.35;
+  color: #fff;
+  cursor: pointer;
+  list-style: none;
+  transition: border-color 160ms;
+}
+.measured__calls summary::-webkit-details-marker {
+  display: none;
+}
+.measured__calls summary::before {
+  content: "";
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border: solid var(--seen);
+  border-width: 0 2px 2px 0;
+  transform: rotate(-45deg);
+  transition: transform 220ms;
+}
+.measured__calls[open] summary::before {
+  transform: rotate(45deg) translate(-2px, -2px);
+}
+.measured__calls summary:hover {
+  border-color: rgb(127 227 167 / 0.6);
+}
+.measured__calls > :not(summary) {
+  margin-top: 16px;
+}
+.measured__calls li + li {
+  margin-top: 6px;
+}
+.measured__steps {
+  counter-reset: call;
+}
+.measured__steps li {
+  display: grid;
+  grid-template-columns: 2.2em minmax(0, 1fr);
+  counter-increment: call;
+}
+.measured__steps li::before {
+  content: counter(call);
+  font-family: var(--mono);
+  font-size: 0.8em;
+  color: var(--faint);
+}
+.measured-summary li {
+  padding: 11px 0;
+  border-top: 1px solid var(--line);
+  font-size: 0.92rem;
+  line-height: 1.55;
+}
+.measured-summary li:first-child {
+  border-top: 0;
+}
+
+@media (max-width: 1080px) {
+  .relay-outcomes {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .relay-outcomes > div:nth-child(odd) {
+    border-left: 0;
+  }
+  .relay-outcomes > div:nth-child(n + 3) {
+    border-top: 1px solid var(--line);
+  }
+  .detector,
+  .measured__excerpt {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (max-width: 640px) {
+  .relay-outcomes {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .relay-outcomes > div + div {
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+  .brief,
+  .measured__brief {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .brief__count {
+    flex-wrap: wrap;
+  }
+  /* A wide table becomes one block per row, so nothing scrolls sideways. */
+  .measured__table--bars thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  .measured__table--bars,
+  .measured__table--bars tbody,
+  .measured__table--bars tr {
+    display: block;
+  }
+  .measured__table--bars tr {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px 16px;
+    padding: 16px 0;
+    border-top: 1px solid var(--line);
+  }
+  .measured__table--bars th,
+  .measured__table--bars td {
+    display: block;
+    padding: 0;
+    border: 0;
+  }
+  .measured__table--bars th,
+  .measured__table--bars .measured__whole,
+  .measured__table--bars td:has(.minibar),
+  .measured__table--bars td:has(.interval),
+  .detector .measured__table--bars td:has(.minibar) {
+    grid-column: 1 / -1;
+    width: auto;
+  }
+  .measured__table--bars td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    font-size: 0.74rem;
+    color: var(--faint);
+  }
+}

@@ -32,7 +32,6 @@ export function adapt(scene) {
     fisheye: c.lens?.model !== "rectilinear",
     video: c.video,
     videoDigest: c.video_sha256,
-    poster: c.poster,
     footprint: c.footprint ?? [],
     // Frame spans in which the renderer held one picture because nobody was in view.
     held: c.held_spans ?? [],
@@ -42,7 +41,7 @@ export function adapt(scene) {
     label: "Person " + (i + 1),
     track: "T" + (i + 1),
     description: a.description,
-    colour: COLOURS[a.id] ?? "var(--night-text)",
+    colour: COLOURS[a.id] ?? "var(--text)",
   }));
   return {
     id: scene.take,

@@ -11,11 +11,12 @@ The home page plays one staged take on a single clock: the camera films, a model
 | `story.js` | The staged account: agent calls, ledger rows, timeline markers and the running assessment, timed from the take's own beats. |
 | `evidence.js` | The weights behind the staged assessment. |
 | `native.js` | Reduces `native.json` to the figures the measured panels print. |
+| `hero.js` | Server side. The staged outline, camera lamps and action for each frame of the hero loop, from `scene.json` projected through the loop's own lens. `scripts/test-hero-truth.mjs` checks it against `take_hero.py`, `takes.py` and the scene file. |
 | `load.js` | Server side. Reads the published take at build time. |
 | `retained.mjs` | Server side. Reads the tools' retained reports by their SHA-256, checks the summary in `native.json` against them, and computes the digest that ties the rendered page to its inputs. |
 | `fusion-excerpt.mjs` | Server side. Reads the edited two-camera fusion replay and refuses it unless it matches the scene file, the films and its own recorded digests. |
 | `relay-replay.mjs` | Server side. Reads the alert relay comparison and refuses it unless it matches the fusion replay it was made from and the captured run it is pinned to. |
-| `delivery-dropout.mjs` | Server side. Reads the porch recording with two seconds missing and refuses it unless every file matches its recorded digest and the tool's coverage records stop at the gap. |
+| `delivery-dropout.mjs` | Server side. Reads the porch recording with two seconds missing and refuses it unless every file matches its recorded digest, the tool's coverage record marks the missing two seconds as uncovered and says it bounded confirmation to continuous decoded frames, and none of its no-entry witnesses reaches into them. |
 
 Components are in `components/site/`, styles in `app/styles/`.
 
@@ -33,13 +34,13 @@ Two facts are read from the tools' reports directly (`fromReports` in `retained.
 
 The tools do not know where the staged people were. `load.js` compares every cross-camera match with the scripted positions, using the tools' own distance gate, and the page says for each match whether it landed on a person. A match on nobody within a second and a half after the floodlights come on is flagged as coinciding with them. The page states the timing and does not claim a cause.
 
-`hero.mp4` is the loop behind the headline and `hero-still.jpg` the frame shown before it plays and when the visitor asks for reduced motion. `plates/` holds the wide still between the console and the walk-through, cut from `stills/floods.jpg`. `CREDITS.txt` lists every third-party asset, its licence and what was changed.
+`hero.mp4` is the loop behind the headline and `hero-still.jpg` the frame shown before it plays and when the visitor asks for reduced motion. `plates/` holds a wide cut of `stills/floods.jpg` that the page no longer shows. The pictures behind the chapter openers and the camera thumbnails are in `public/watch/plates/`, resized from renders by `scripts/make-plates.mjs`, with the SHA-256 of each source in `plates.json`. `CREDITS.txt` lists every third-party asset, its licence and what was changed.
 
 A second, separate recording is in `public/watch/delivery-dropout/`: eight seconds from a porch camera at the same fictional house, once complete and once with two seconds removed, with the tools' import, presentation and coverage reports for both. The walk-through step on coverage shows it.
 
 ## Sources of each figure
 
-The page uses three marks. Staged: positions, agent calls, ledger rows and effects, which come from the script. Measured: output of the FSS binaries. Computed in the browser: the position bounds, which are derived from camera geometry while you watch, and the SHA-256 in the byte check.
+The page uses four marks, each told apart by shape as well as colour. Staged (dashed ring): positions, agent calls, ledger rows and effects, which come from the script, and the readout over the hero loop. Measured (solid dot): output of the FSS binaries. Computed in the browser (square): the position bounds, which are derived from camera geometry while you watch, and the SHA-256 in the byte check. From the design registry (diamond): the knowledge states, agent views and operations, which are the project's own lists and not results.
 
 ## Playback
 
