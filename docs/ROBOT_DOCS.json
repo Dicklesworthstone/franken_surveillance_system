@@ -5240,6 +5240,13 @@
       "schema": "fss.s3_retrieval_observation_cli.v1"
     },
     {
+      "authority": "independently authorized media verification after observed indeterminate completion",
+      "compatibilityRule": "Owner: fss-cli::fss-archive::s3::retrieval and fss-object::uploader::RetrievalObservation. At most 16 KiB complete JSON preserves original uncertain-complete/indeterminate state and spend while binding an independently pinned positive completion observation, original indeterminate receipt, exact source journal head, observed completion inventory, origin and independent whole-object digest. Admission checks receipt digest, canonical bounds, source identity, scope, chronology and fresh distinct operation before credentials/provider work. Only complete native part and whole-digest checks under live ReadMedia authority can prove this observation's retrieval; HEAD alone cannot. Both source records remain immutable; no mutation authority, encryption, graph closure, replicas or future-availability claim. v1 remains unchanged for locally completed uploads.",
+      "file": "schemas/s3_retrieval_observation_cli.v2.json",
+      "id": "SCHEMA-S3-RETRIEVAL-OBSERVATION-CLI-002",
+      "schema": "fss.s3_retrieval_observation_cli.v2"
+    },
+    {
       "authority": "exact owner-approved local object transfer",
       "compatibilityRule": "Owner: fss-cli::fss-archive::s3 and fss-reference::s3_upload. At most 16 KiB complete JSON for prepare/resume/abort of one SHA-256-verified source object of at most 64 MiB. Binds exact operation, route resource, plan, source digest/length, independent minimum and confirmed journal head, acknowledged parts, cumulative upload/remaining/local work, phase/uncertain operation, optional receipt, local settlement and cold-reopen requirement. Credentials, provider tokens, object key and file paths are excluded. Explicit local plaintext approval and independently retained preparation pin are required before provider writes; source, provider completion, archive graph closure, encryption and independent retrievability remain distinct. Changed meaning requires a new schema.",
       "file": "CLI output",

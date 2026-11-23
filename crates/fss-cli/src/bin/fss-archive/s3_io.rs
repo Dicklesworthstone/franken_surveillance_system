@@ -32,6 +32,7 @@ pub(super) struct ScopedS3Io {
     source: PathBuf,
     credentials: PathBuf,
     observation_receipt: Option<PathBuf>,
+    completion_observation: Option<PathBuf>,
     started: Instant,
     origin: TimestampNs,
     state: Mutex<State>,
@@ -45,6 +46,7 @@ struct State {
     handles: BTreeMap<i64, Handle>,
     source_identity: Option<Identity>,
     credential_identity: Option<Identity>,
+    observation_identity: Option<Identity>,
 }
 
 #[derive(Clone)]
@@ -86,11 +88,13 @@ impl Drop for ReadBuffer {
 }
 
 impl ScopedS3Io {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         journal_root: PathBuf,
         source: PathBuf,
         credentials: PathBuf,
         observation_receipt: Option<PathBuf>,
+        completion_observation: Option<PathBuf>,
         mut authority: AuthorityCx,
         tree: RegionTree,
         started: Instant,
@@ -112,6 +116,16 @@ impl ScopedS3Io {
             validate_path(path)?;
             if [&journal_root, &source, &credentials]
                 .iter()
+                .any(|other| path.starts_with(other) || other.starts_with(path))
+            {
+                return Err(denied());
+            }
+        }
+        if let Some(path) = &completion_observation {
+            validate_path(path)?;
+            if [&journal_root, &source, &credentials]
+                .into_iter()
+                .chain(observation_receipt.iter())
                 .any(|other| path.starts_with(other) || other.starts_with(path))
             {
                 return Err(denied());
@@ -144,6 +158,15 @@ impl ScopedS3Io {
             journal_scopes.insert(resource(path)?.to_owned());
         }
         grants = grants.with_scope(RuntimeGrant::ObjectStage, journal_scopes);
+        if let Some(path) = &completion_observation {
+            authority
+                .require_grant_for(RuntimeGrant::ObserveStatus, resource(path)?)
+                .map_err(|_| denied())?;
+            grants = grants.with_scope(
+                RuntimeGrant::ObserveStatus,
+                BTreeSet::from([resource(path)?.to_owned()]),
+            );
+        }
         for (grant, path) in [
             (RuntimeGrant::ReadMedia, &source),
             (RuntimeGrant::AdapterAuth, &credentials),
@@ -161,6 +184,7 @@ impl ScopedS3Io {
             source,
             credentials,
             observation_receipt,
+            completion_observation,
             started,
             origin,
             state: Mutex::new(State {
@@ -171,6 +195,7 @@ impl ScopedS3Io {
                 handles: BTreeMap::new(),
                 source_identity: None,
                 credential_identity: None,
+                observation_identity: None,
             }),
         };
         result.check()?;
@@ -229,6 +254,7 @@ impl ScopedS3Io {
             source: PathBuf::new(),
             credentials,
             observation_receipt: Some(receipt),
+            completion_observation: None,
             started,
             origin,
             state: Mutex::new(State {
@@ -239,6 +265,7 @@ impl ScopedS3Io {
                 handles: BTreeMap::new(),
                 source_identity: None,
                 credential_identity: None,
+                observation_identity: None,
             }),
         };
         result.check()?;
@@ -391,6 +418,17 @@ impl ScopedS3Io {
             RuntimeGrant::AdapterAuth,
             None,
             MAX_CREDENTIAL_BYTES,
+            true,
+        )
+    }
+
+    /// Bounded immutable evidence input, admitted separately from media or secrets.
+    pub(super) fn read_completion_observation(&self) -> io::Result<Vec<u8>> {
+        self.read_exact_file(
+            self.completion_observation.as_ref().ok_or_else(denied)?,
+            RuntimeGrant::ObserveStatus,
+            None,
+            MAX_OBSERVATION_RECEIPT_BYTES as u64,
             true,
         )
     }
@@ -555,18 +593,20 @@ impl ScopedS3Io {
         }
         {
             let mut state = self.state.lock().map_err(|_| denied())?;
-            let other = if private {
-                state.source_identity
-            } else {
-                state.credential_identity
+            let (other_a, other_b) = match grant {
+                RuntimeGrant::ReadMedia => (state.credential_identity, state.observation_identity),
+                RuntimeGrant::AdapterAuth => (state.source_identity, state.observation_identity),
+                RuntimeGrant::ObserveStatus => (state.source_identity, state.credential_identity),
+                _ => return Err(denied()),
             };
-            if other == Some(before.identity) {
+            if [other_a, other_b].contains(&Some(before.identity)) {
                 return Err(denied());
             }
-            if private {
-                state.credential_identity = Some(before.identity);
-            } else {
-                state.source_identity = Some(before.identity);
+            match grant {
+                RuntimeGrant::ReadMedia => state.source_identity = Some(before.identity),
+                RuntimeGrant::AdapterAuth => state.credential_identity = Some(before.identity),
+                RuntimeGrant::ObserveStatus => state.observation_identity = Some(before.identity),
+                _ => return Err(denied()),
             }
         }
         let capacity = before.len.checked_add(1).ok_or_else(limit)?;
@@ -1151,24 +1191,38 @@ mod tests {
         receipt: Option<PathBuf>,
         bytes: u64,
     ) -> TestResult<ScopedS3Io> {
+        owner_with_completion_input(directory, source, receipt, None, bytes)
+    }
+
+    fn owner_with_completion_input(
+        directory: &Directory,
+        source: PathBuf,
+        receipt: Option<PathBuf>,
+        completion: Option<PathBuf>,
+        bytes: u64,
+    ) -> TestResult<ScopedS3Io> {
         let budget = BudgetVector::builder()
             .bytes(bytes)
             .storage_operations(20_000)
             .latency_ms(60_000)
             .build()?;
+        let mut capabilities: Vec<_> = [
+            RuntimeGrant::ObjectStage,
+            RuntimeGrant::ReadMedia,
+            RuntimeGrant::AdapterAuth,
+        ]
+        .into_iter()
+        .map(|grant| grant.as_str().to_owned())
+        .collect();
+        if completion.is_some() {
+            capabilities.push(RuntimeGrant::ObserveStatus.as_str().to_owned());
+        }
         let (authority, tree) = AuthorityCx::root(
             RootAuthoritySpec {
                 trace_id: "trace:s3-filesystem-test".into(),
                 operation_id: OperationId::parse("operation:s3-filesystem-test")?,
                 principal: "principal:owner".into(),
-                capabilities: [
-                    RuntimeGrant::ObjectStage,
-                    RuntimeGrant::ReadMedia,
-                    RuntimeGrant::AdapterAuth,
-                ]
-                .into_iter()
-                .map(|grant| grant.as_str().to_owned())
-                .collect(),
+                capabilities,
                 deadline: Some(TimestampNs(60_000_000_000)),
                 priority: 10,
                 budgets: budget,
@@ -1187,6 +1241,7 @@ mod tests {
             source,
             directory.0.join("credentials"),
             receipt,
+            completion,
             authority,
             tree,
             Instant::now(),
@@ -1267,6 +1322,41 @@ mod tests {
             format!("{io:?}"),
             "ScopedS3Io(exact files, bounded journal, owned authority)"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn completion_input_is_exact_bounded_private_and_separate_from_credentials() -> TestResult {
+        let directory = Directory::new()?;
+        let input = directory.0.join("completion.bin");
+        std::fs::write(&input, b"abc")?;
+        std::fs::set_permissions(&input, std::fs::Permissions::from_mode(0o600))?;
+        let denied_input = owner(&directory, 1024)?;
+        assert!(denied_input.read_completion_observation().is_err());
+        assert_eq!(denied_input.consumed()?.bytes, 0);
+        let small = owner_with_completion_input(
+            &directory,
+            directory.0.join("source"),
+            None,
+            Some(input.clone()),
+            3,
+        )?;
+        assert!(small.read_completion_observation().is_err());
+        assert_eq!(small.consumed()?.bytes, 0);
+        let io = owner_with_completion_input(
+            &directory,
+            directory.0.join("source"),
+            None,
+            Some(input.clone()),
+            1024,
+        )?;
+        assert_eq!(io.read_completion_observation()?, b"abc");
+        assert_eq!(io.consumed()?.bytes, 4);
+        std::fs::hard_link(&input, directory.0.join("credentials"))?;
+        assert!(io.read_credentials().is_err());
+        assert_eq!(io.consumed()?.bytes, 4);
+        io.finalize()?;
+        assert!(io.read_completion_observation().is_err());
         Ok(())
     }
 

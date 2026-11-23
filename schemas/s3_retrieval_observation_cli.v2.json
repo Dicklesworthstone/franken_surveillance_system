@@ -1,0 +1,369 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/s3_retrieval_observation_cli.v2.json",
+  "title": "Independent S3 byte verification after observed indeterminate completion",
+  "description": "Complete at-most-16-KiB operator report for independently pinned completion-observation evidence and an unchanged indeterminate upload journal. A fresh ReadMedia owner verifies every original acknowledged part and an independent whole-object SHA-256; a positive HEAD alone never proves retrieval. The completion observation must match the exact journal head, original indeterminate receipt, intent, part inventory, authority scope and chronology before credentials or provider work. The original upload stays indeterminate. JSON alone grants no authority and cannot establish the receipt digest, source custody, full byte equality, budgets, cancellation, deadlines or durability; native cross-field checks remain required. TLS, encryption, graph closure, replicas and future availability remain outside this result.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "kind",
+    "command",
+    "resource",
+    "intent_digest",
+    "source_digest",
+    "plan_digest",
+    "manifest_root",
+    "minimum_root",
+    "source_journal_head",
+    "observed_completion_receipt_digest",
+    "observation_receipt_digest",
+    "original_operation",
+    "observation_operation",
+    "source_bytes",
+    "source_verified_this_invocation",
+    "minimum_sequence",
+    "source_journal_sequence",
+    "original_phase",
+    "original_local_owner_state",
+    "original_upload_unchanged",
+    "original_upload_consumed",
+    "original_upload_remaining",
+    "observation_allowance",
+    "observation_consumed",
+    "local_work",
+    "observation_outcome",
+    "observed_at_ns",
+    "bytes_read",
+    "verified_parts",
+    "expected_parts",
+    "attempted_ranges",
+    "observation_receipt_durable",
+    "provider_work_requested_this_invocation",
+    "independent_retrievability_verified",
+    "error_kind",
+    "next_action",
+    "transport_profile",
+    "graph_closure_verified",
+    "client_side_encryption_performed",
+    "replication_verified",
+    "original_uncertain_operation",
+    "completion_observation_digest",
+    "original_indeterminate_receipt_digest"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.s3_retrieval_observation_cli.v2"
+    },
+    "kind": {
+      "const": "s3_retrieval_observation"
+    },
+    "command": {
+      "const": "verify"
+    },
+    "resource": {
+      "type": "string",
+      "pattern": "^archive:s3:[0-9a-f]{64}$"
+    },
+    "intent_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "source_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "plan_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "manifest_root": {
+      "$ref": "#/$defs/digest"
+    },
+    "minimum_root": {
+      "$ref": "#/$defs/digest"
+    },
+    "source_journal_head": {
+      "$ref": "#/$defs/digest"
+    },
+    "observation_receipt_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "original_operation": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "observation_operation": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "source_bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 67108864
+    },
+    "source_verified_this_invocation": {
+      "const": false
+    },
+    "minimum_sequence": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65536
+    },
+    "source_journal_sequence": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65536
+    },
+    "original_phase": {
+      "const": "uncertain"
+    },
+    "original_local_owner_state": {
+      "const": "indeterminate"
+    },
+    "original_upload_unchanged": {
+      "const": true
+    },
+    "original_upload_consumed": {
+      "$ref": "#/$defs/budget"
+    },
+    "original_upload_remaining": {
+      "$ref": "#/$defs/budget"
+    },
+    "observation_allowance": {
+      "$ref": "#/$defs/budget"
+    },
+    "observation_consumed": {
+      "$ref": "#/$defs/budget"
+    },
+    "local_work": {
+      "$ref": "#/$defs/budget"
+    },
+    "observation_outcome": {
+      "enum": [
+        "not_observed",
+        "unknown",
+        "mismatch",
+        "verified"
+      ]
+    },
+    "observed_at_ns": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "bytes_read": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 67108864
+    },
+    "verified_parts": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 10000
+    },
+    "expected_parts": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10000
+    },
+    "attempted_ranges": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 10256
+    },
+    "observation_receipt_durable": {
+      "type": "boolean"
+    },
+    "provider_work_requested_this_invocation": {
+      "type": "boolean"
+    },
+    "independent_retrievability_verified": {
+      "type": "boolean"
+    },
+    "error_kind": {
+      "enum": [
+        null,
+        "retrieval_verification_mismatch",
+        "retrieval_attempt_refused",
+        "retrieval_receipt_durability_unconfirmed"
+      ]
+    },
+    "next_action": {
+      "enum": [
+        "retain_source_pin_and_inspect_retrieval_receipt_before_new_verification",
+        "retain_retrieval_receipt_before_separate_graph_or_replica_verification",
+        "retain_source_pin_and_authorize_a_new_bounded_verification_if_needed"
+      ]
+    },
+    "transport_profile": {
+      "const": "approved_local_plaintext_sigv4"
+    },
+    "graph_closure_verified": {
+      "const": false
+    },
+    "client_side_encryption_performed": {
+      "const": false
+    },
+    "replication_verified": {
+      "const": false
+    },
+    "observed_completion_receipt_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "original_uncertain_operation": {
+      "const": "complete"
+    },
+    "completion_observation_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "original_indeterminate_receipt_digest": {
+      "$ref": "#/$defs/digest"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "observation_outcome": {
+            "const": "verified"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "independent_retrievability_verified": {
+            "const": true
+          },
+          "verified_parts": {
+            "minimum": 1
+          },
+          "attempted_ranges": {
+            "minimum": 1
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "independent_retrievability_verified": {
+            "const": false
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "observation_outcome": {
+            "const": "not_observed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "attempted_ranges": {
+            "const": 0
+          },
+          "bytes_read": {
+            "const": 0
+          },
+          "verified_parts": {
+            "const": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "observation_receipt_durable": {
+            "const": false
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "error_kind": {
+            "const": "retrieval_receipt_durability_unconfirmed"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "latencyMs",
+        "tokens",
+        "bytes",
+        "modelCalls",
+        "cpuMillis",
+        "acceleratorMillis",
+        "energyMilliJoules",
+        "networkBytes",
+        "storageOperations",
+        "privacyExposure",
+        "operatorAttentionSeconds"
+      ],
+      "properties": {
+        "latencyMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "modelCalls": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "cpuMillis": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "acceleratorMillis": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "energyMilliJoules": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "networkBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "storageOperations": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "privacyExposure": {
+          "type": "number",
+          "minimum": 0
+        },
+        "operatorAttentionSeconds": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

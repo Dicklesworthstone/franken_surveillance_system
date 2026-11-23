@@ -64,6 +64,9 @@ pub(super) const HELP: &str = "fss-archive upload-s3-prepare | upload-s3-resume 
   Resume/abort/reconcile/verify additionally require: --minimum-sequence U64 --minimum-root sha256:HEX\n\
   Reconcile/verify additionally require: --observation-operation OPERATION_ID\n\
                                   --observation-receipt NEW_ABSOLUTE_FILE\n\
+  Verify after indeterminate completion additionally accepts the paired options:\n\
+            --completion-observation ABSOLUTE_FILE\n\
+            --completion-observation-sha256 sha256:INDEPENDENT_RECEIPT_DIGEST\n\
   Prepare verifies the complete source and creates a durable pending journal without\n\
   provider contact. Independently retain its journal pin before resume or abort.\n\
   Resume skips acknowledged parts and completes the exact object without overwriting.\n\
@@ -158,6 +161,12 @@ struct Options {
     local: BudgetVector,
     minimum: Option<UploadJournalPin>,
     observation: Option<ObservationOptions>,
+    completion_observation: Option<CompletionInput>,
+}
+
+struct CompletionInput {
+    path: PathBuf,
+    digest: ContentDigest,
 }
 
 struct ObservationOptions {
@@ -166,7 +175,7 @@ struct ObservationOptions {
 }
 
 fn parse(args: &[OsString]) -> Result<Options> {
-    const ALLOWED: [&str; 23] = [
+    const ALLOWED: [&str; 25] = [
         "--source",
         "--source-sha256",
         "--source-bytes",
@@ -190,6 +199,8 @@ fn parse(args: &[OsString]) -> Result<Options> {
         "--minimum-root",
         "--observation-operation",
         "--observation-receipt",
+        "--completion-observation",
+        "--completion-observation-sha256",
     ];
     if !handles(args)
         || args.len() > 1 + ALLOWED.len() * 2
@@ -368,6 +379,36 @@ fn parse(args: &[OsString]) -> Result<Options> {
         }
         None
     };
+    let completion_observation = match (
+        values.contains_key("--completion-observation"),
+        values.contains_key("--completion-observation-sha256"),
+    ) {
+        (false, false) => None,
+        (true, true) if command == Command::Verify => {
+            let input = path("--completion-observation")?;
+            let output = &observation
+                .as_ref()
+                .ok_or(malformed("retrieval options absent"))?
+                .receipt;
+            if [&source, &credentials, &journal, output]
+                .iter()
+                .any(|other| input.starts_with(other) || other.starts_with(&input))
+            {
+                return Err(malformed(
+                    "completion observation input must have a separate path",
+                ));
+            }
+            Some(CompletionInput {
+                path: input,
+                digest: digest("--completion-observation-sha256")?,
+            })
+        }
+        _ => {
+            return Err(malformed(
+                "paired completion observation input and independent digest require upload-s3-verify",
+            ));
+        }
+    };
     let part_size = if values.contains_key("--part-bytes") {
         number("--part-bytes", MIN_PART_SIZE, MAX_SOURCE_BYTES)?
     } else {
@@ -400,6 +441,7 @@ fn parse(args: &[OsString]) -> Result<Options> {
         local,
         minimum,
         observation,
+        completion_observation,
         source_digest: digest("--source-sha256")?,
         source_bytes: number("--source-bytes", 0, MAX_SOURCE_BYTES)?,
         operation,
@@ -447,11 +489,14 @@ fn spec(
 }
 
 fn local_io(options: &Options, origin: TimestampNs, started: Instant) -> Result<Arc<ScopedS3Io>> {
-    let grants = [
+    let mut grants = vec![
         RuntimeGrant::ReadMedia,
         RuntimeGrant::AdapterAuth,
         RuntimeGrant::ObjectStage,
     ];
+    if options.completion_observation.is_some() {
+        grants.push(RuntimeGrant::ObserveStatus);
+    }
     let deadline = TimestampNs(
         origin
             .0
@@ -492,6 +537,16 @@ fn local_io(options: &Options, origin: TimestampNs, started: Instant) -> Result<
         );
     }
     scopes = scopes.with_scope(RuntimeGrant::ObjectStage, output_scopes);
+    if let Some(input) = &options.completion_observation {
+        scopes = scopes.with_scope(
+            RuntimeGrant::ObserveStatus,
+            std::collections::BTreeSet::from([input
+                .path
+                .to_str()
+                .ok_or(Error::Runtime("completion observation scope is not UTF-8"))?
+                .to_owned()]),
+        );
+    }
     authority
         .narrow_grants(scopes)
         .map_err(|_| Error::Runtime("local path scope refused"))?;
@@ -504,6 +559,10 @@ fn local_io(options: &Options, origin: TimestampNs, started: Instant) -> Result<
                 .observation
                 .as_ref()
                 .map(|value| value.receipt.clone()),
+            options
+                .completion_observation
+                .as_ref()
+                .map(|value| value.path.clone()),
             authority,
             tree,
             started,

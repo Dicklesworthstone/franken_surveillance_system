@@ -1,0 +1,141 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-22",
+  "date_timezone": "America/New_York",
+  "mission": "Close consequential feature gaps from the comprehensive plan and Beads, with meaningful direct-main GitHub commits and no PRs.",
+  "basis": {
+    "plan": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+    "backlog": ".beads/issues.jsonl",
+    "prior_handoff": "docs/SESSION_HANDOFF_2026-11-22_S3_RETRIEVAL_AND_LEARNING_CANCELLATION.json",
+    "prioritization": [
+      "Connect a positive completion observation of a locally indeterminate upload to independent retrieval without rewriting historical authority.",
+      "Prevent mutable native detector reports from laundering transplanted results or rehashed JSON into retained producer evidence.",
+      "Carry explicit GET_PARAMETER keepalive selection through automatic AVC control, authentication and fresh reconnect generations."
+    ]
+  },
+  "delivered": [
+    {
+      "feature": "Explicit automatic AVC keepalive selection",
+      "commit": "9caec7c99fd826452bea21502d9daf49b507d10c",
+      "publication_state": "committed_to_main",
+      "bead": "fss-x4a.11.7",
+      "requirement": "FSS-049",
+      "scope": "Automatic connection/recording owners select OPTIONS or empty GET_PARAMETER before preparing the first request. Selection freezes through Digest authentication and supervised reconnect generations, preserving deadlines, terminal source ownership and whole-run accounting. Refusals never trigger method fallback."
+    },
+    {
+      "feature": "Native detector producer binding",
+      "commit": "8eb0a1089d207c6efa2f047ddd3b18e4d8b7353d",
+      "publication_state": "committed_to_main",
+      "bead": "fss-gefi6",
+      "scope": "The shared native report finisher privately binds the original canonical record, full rendered JSON digest, complete capsule metadata and privacy policy. Public record conversion and retention verify that binding before staging or publication. Ordinary, sentinel and long-sentinel native reports share it; honest durable bytes and idempotent retries are unchanged.",
+      "boundary": "No public binding constructor/setter/decoder. This is one in-process producer boundary, not global Stage B origin authentication or retroactive historical attestation."
+    },
+    {
+      "feature": "Independent retrieval from observed indeterminate completion",
+      "commit": null,
+      "publication_state": "delivered_in_the_commit_containing_this_handoff",
+      "beads": [
+        "fss-x4a.13.4",
+        "fss-x4a.13.8"
+      ],
+      "requirements": [
+        "FSS-064",
+        "FSS-068"
+      ],
+      "scope": "A positive canonical CompletionObservationReceipt with an independent digest pin must bind the exact unchanged journal head, original indeterminate closure, intent, acknowledged part inventory, identity/privacy scope and chronology. A distinct fresh ReadMedia/AdapterNet/AdapterAuth owner then verifies all part hashes and an independent whole-object SHA-256 through signed ranges. Canonical and CLI v2 receipts link both evidence inputs; the original uncertain upload, owner, journal and spend remain unchanged. Completed-upload v1 encoding/reporting remains compatible.",
+      "operator_input": [
+        "--completion-observation ABSOLUTE_FILE",
+        "--completion-observation-sha256 sha256:INDEPENDENT_RECEIPT_DIGEST"
+      ],
+      "limits": {
+        "object_bytes": 67108864,
+        "range_bytes": 262144,
+        "completion_observation_input_bytes": 65536,
+        "canonical_receipt_bytes": 65536,
+        "cli_report_bytes": 16384
+      },
+      "filesystem": "Exact separately scoped private regular-file input, symlink/bounds/stability checks and digest validation precede credentials. The new output receipt is exclusively created with readback and file/parent fsync. Source media is not reread.",
+      "transport": "Existing explicitly approved pinned local/private plaintext SigV4 profile. HEAD alone never proves retrieved bytes; signed Range/If-Match reads retain exact origin, metadata and representation checks.",
+      "commit_location": "The commit containing this handoff; no self-referential hash is embedded."
+    }
+  ],
+  "validation": {
+    "pinned_toolchain": "nightly-2026-08-31",
+    "passed_execution": [
+      {
+        "command": "cargo +nightly-2026-08-31 test --locked --offline -p fss-core --test provenance_contract",
+        "passed": 79,
+        "failed": 0,
+        "scope": "Existing core provenance baseline only; does not execute newly added native detector, archive or AVC regressions.",
+        "environment": {
+          "CARGO_BUILD_JOBS": "1",
+          "CARGO_INCREMENTAL": "0",
+          "CARGO_PROFILE_DEV_DEBUG": "0",
+          "CARGO_PROFILE_TEST_DEBUG": "0"
+        }
+      }
+    ],
+    "normal_check": {
+      "command": "cargo +nightly-2026-08-31 check --locked --offline -p fss-reference --lib",
+      "result": "SIGKILL while compiling unchanged Asupersync 0.5.0 before edited-crate diagnostics; no new-crate typecheck pass established.",
+      "environment": {
+        "CARGO_BUILD_JOBS": "1",
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_PROFILE_DEV_DEBUG": "0"
+      }
+    },
+    "supplemental_object_test_build": {
+      "command": "cargo +nightly-2026-08-31 test --locked --offline -p fss-object --test retrieval_observation_contract",
+      "environment": {
+        "CARGO_BUILD_JOBS": "1",
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0",
+        "MALLOC_ARENA_MAX": "1",
+        "RUSTFLAGS": "-Zthreads=1"
+      },
+      "state": "blocked",
+      "exit_code": 101,
+      "result": "SIGKILL while compiling unchanged Asupersync 0.5.0 before edited-crate diagnostics; no native regression executed.",
+      "qualification": "Supplemental diagnostic attempt only. The added compiler-thread flag is not a sealed qualification configuration; dependency pins and repository configuration were unchanged."
+    },
+    "new_native_regressions": "Authored but unexecuted: both dependency build attempts were killed in unchanged Asupersync 0.5.0. No new-crate compilation or test pass is claimed.",
+    "static_evidence": [
+      "Pinned formatting and targeted whitespace checks.",
+      "Independent source reviews of producer construction, automatic AVC source/authentication ownership, and S3 admission/settlement/reporting.",
+      "Independent hashlib verification of the GET_PARAMETER SHA-256 Digest golden; the OPTIONS digest differs.",
+      "Exact renderer/schema field sets: v1 has 41 fields, v2 has 44, with no missing or extra keys.",
+      "New S3 v2 schema validation: one schema, zero errors, 15 references.",
+      "Generated docs/ROBOT_DOCS.md and docs/ROBOT_DOCS.json include the v2 schema; robot_docs_checker --json passed with an empty errors array.",
+      "Staged content-manifest coverage and whitespace checks passed for each feature commit."
+    ],
+    "qualification": "No live-device, real-provider or release qualification performed; authored tests and static checks do not close broad gates."
+  },
+  "continuations": [
+    "cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test package_event_reader_contract native_producer_binding_rejects_transplanted_results_and_rehashed_json",
+    "cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test package_event_reader_contract --test package_detect_immutable_contract --test long_sentinel_contract",
+    "cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test automatic_avc_keepalive_contract --test automatic_control_backpressure",
+    "cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib rtsp::live_avc::automatic::reconnect",
+    "cargo +nightly-2026-08-31 test --locked --offline -p fss-object --test retrieval_observation_contract --test completion_observation_contract",
+    "cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test s3_upload_native_contract",
+    "cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib s3_upload",
+    "cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-archive s3::s3_io::tests",
+    "cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --test archive_s3_upload_process",
+    "scripts/qualify.sh --lane archive"
+  ],
+  "remaining": [
+    "All four broad Beads remain in progress; no closure or global Stage B completion is claimed.",
+    "Run native regressions and affected suites on the exact pinned dependency/toolchain closure, then retain the relevant archive/acquisition qualification evidence.",
+    "Complete the global evidence-origin registry, interchange migration and other producer-family/H4 authentication work under fss-gefi6.",
+    "Complete broader FSS-049 transport-fallback/reconnect and device qualification; explicit keepalive selection is not TEST-RTSP-001, TEST-ONVIF-001 or GATE-030 completion.",
+    "Archive public-cloud TLS, client-side encryption, graph publication/closure, replica independence, repair, restore-file workflows and future-availability qualification remain outside this object-verification slice.",
+    "Lost initiation, part and abort acknowledgements still need conclusive evidence; this work admits only an independently observed uncertain Complete."
+  ],
+  "documentation": [
+    "IMPLEMENTATION_STATUS.md",
+    "docs/DETECTOR_PRODUCER_INTEGRITY.md",
+    "docs/NATIVE_S3_OBJECT_UPLOADS.md",
+    "schemas/s3_retrieval_observation_cli.v2.json",
+    "docs/LIVE_AVC_RECORDING.md"
+  ]
+}

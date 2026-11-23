@@ -4,7 +4,8 @@
 
 use super::*;
 use fss_object::uploader::{
-    RetrievalObservation, RetrievalOutcome, RetrievalReceipt, UploaderError,
+    CompletionObservationReceipt, RetrievalObservation, RetrievalOutcome, RetrievalReceipt,
+    UploaderError,
 };
 
 struct Report {
@@ -80,22 +81,64 @@ fn execute_in(options: &Options, local: &Arc<ScopedS3Io>) -> Result<Report> {
             })?;
     let recovery = MultipartRecovery::read(&journal, minimum)
         .map_err(|_| Error::Runtime("canonical retrieval source refused"))?;
-    RetrievalObservation::validate_source(&recovery, &expected, options.source_digest)
-        .map_err(|_| Error::Runtime("retrieval requires exact completed upload evidence"))?;
+    let completion_observation = if let Some(input) = &options.completion_observation {
+        let bytes = local
+            .read_completion_observation()
+            .map_err(|_| Error::Runtime("private bounded completion observation input refused"))?;
+        if ContentDigest::sha256(&bytes) != input.digest {
+            return Err(Error::Runtime(
+                "completion observation independent digest mismatch",
+            ));
+        }
+        let observation = CompletionObservationReceipt::decode(&bytes)
+            .map_err(|_| Error::Runtime("canonical completion observation input refused"))?;
+        RetrievalObservation::validate_observed_source(
+            &recovery,
+            &expected,
+            options.source_digest,
+            &observation,
+            input.digest,
+        )
+        .map_err(|_| {
+            Error::Runtime(
+                "retrieval completion observation does not bind the exact indeterminate upload",
+            )
+        })?;
+        Some((observation, input.digest))
+    } else {
+        RetrievalObservation::validate_source(&recovery, &expected, options.source_digest)
+            .map_err(|_| Error::Runtime("retrieval requires exact completed upload evidence or a pinned completion observation"))?;
+        None
+    };
     local
         .preflight_observation_receipt()
         .map_err(|_| Error::Runtime("new immutable retrieval receipt destination refused"))?;
     let (mut root, mut property, mut tree, child) = authority(options, now)?;
-    let mut owner = RetrievalObservation::begin(
-        &mut property,
-        &mut tree,
-        &journal,
-        &recovery,
-        &expected,
-        options.source_digest,
-        child,
-        now,
-    )
+    let mut owner = if let Some((observation, digest)) = &completion_observation {
+        RetrievalObservation::begin_from_observation(
+            &mut property,
+            &mut tree,
+            &journal,
+            &recovery,
+            &expected,
+            options.source_digest,
+            observation,
+            *digest,
+            child,
+            now,
+        )
+    } else {
+        RetrievalObservation::begin(
+            &mut property,
+            &mut tree,
+            &journal,
+            &recovery,
+            &expected,
+            options.source_digest,
+            child,
+            now,
+        )
+    }
     .map_err(|_| Error::Runtime("fresh read-media retrieval authority refused"))?;
     let mut provider_requested = false;
     let attempted = (|| -> Result<RetrievalReceipt> {
@@ -200,8 +243,16 @@ fn render(options: &Options, report: &Report, local_work: BudgetVector) -> Resul
     } else {
         "retain_source_pin_and_authorize_a_new_bounded_verification_if_needed"
     };
-    let mut rendered = object(&[
-        ("schema", string("fss.s3_retrieval_observation_cli.v1")),
+    let observed = receipt.completion_observation_digest().is_some();
+    let mut fields = vec![
+        (
+            "schema",
+            string(if observed {
+                "fss.s3_retrieval_observation_cli.v2"
+            } else {
+                "fss.s3_retrieval_observation_cli.v1"
+            }),
+        ),
         ("kind", string("s3_retrieval_observation")),
         ("command", string("verify")),
         ("resource", string(recovery.intent().resource())),
@@ -232,10 +283,24 @@ fn render(options: &Options, report: &Report, local_work: BudgetVector) -> Resul
             "source_journal_head",
             string(&recovery.head().root.to_text()),
         ),
-        ("original_phase", string("completed")),
-        ("original_local_owner_state", string("verified")),
         (
-            "original_completion_receipt_digest",
+            "original_phase",
+            string(if observed { "uncertain" } else { "completed" }),
+        ),
+        (
+            "original_local_owner_state",
+            string(if observed {
+                "indeterminate"
+            } else {
+                "verified"
+            }),
+        ),
+        (
+            if observed {
+                "observed_completion_receipt_digest"
+            } else {
+                "original_completion_receipt_digest"
+            },
             string(&receipt.completion_digest().to_text()),
         ),
         ("original_upload_unchanged", "true".into()),
@@ -275,7 +340,24 @@ fn render(options: &Options, report: &Report, local_work: BudgetVector) -> Resul
         ("graph_closure_verified", "false".into()),
         ("client_side_encryption_performed", "false".into()),
         ("replication_verified", "false".into()),
-    ]);
+    ];
+    if let (Some(observation), Some(indeterminate)) = (
+        receipt.completion_observation_digest(),
+        receipt.indeterminate_receipt_digest(),
+    ) {
+        fields.extend([
+            ("original_uncertain_operation", string("complete")),
+            (
+                "completion_observation_digest",
+                string(&observation.to_text()),
+            ),
+            (
+                "original_indeterminate_receipt_digest",
+                string(&indeterminate.to_text()),
+            ),
+        ]);
+    }
+    let mut rendered = object(&fields);
     rendered.push('\n');
     if rendered.len() > MAX_REPORT_BYTES {
         return Err(Error::Runtime("retrieval report exceeds its bound"));

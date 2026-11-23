@@ -7,7 +7,7 @@ use fss_core::{ContentDigest, DigestAlgorithm, RegionId};
 use fss_object::uploader::{MAX_RETRIEVAL_RANGE_BYTES, RetrievalCx, RetrievalTransport};
 
 use super::{NativeS3Transport, S3Clock, S3Error, signing};
-use fss_object::multipart::{MultipartPhase, TransportOperation, UploadIntent};
+use fss_object::multipart::{CompletionReceipt, MultipartPhase, TransportOperation, UploadIntent};
 
 #[derive(Default)]
 pub(super) struct ReadState {
@@ -21,6 +21,8 @@ struct ReadBinding {
     region: RegionId,
     expected_bytes: u64,
     expected_digest: ContentDigest,
+    completion_digest: ContentDigest,
+    completion_observation: Option<ContentDigest>,
 }
 
 /// Only strong quoted entity tags are valid If-Match pins. The provider token
@@ -45,9 +47,18 @@ impl<C: S3Clock> NativeS3Transport<C> {
     ) -> Result<Vec<u8>, S3Error> {
         let expected_bytes = cx.expected_bytes();
         let expected_digest = cx.expected_digest();
+        let completion_digest = cx.completion_digest();
+        let completion_observation = cx.completion_observation_digest();
         let cx = cx.transport_context();
         if !cx.is_media_retrieval()
-            || self.phase != MultipartPhase::Completed
+            || !matches!(
+                (self.phase, completion_observation),
+                (MultipartPhase::Completed, None)
+                    | (
+                        MultipartPhase::Uncertain(TransportOperation::Complete),
+                        Some(_)
+                    )
+            )
             || self.retrieval.refused
             || self.intent.as_ref() != Some(intent)
             || self.origin.is_none()
@@ -58,6 +69,15 @@ impl<C: S3Clock> NativeS3Transport<C> {
             || expected_digest.bytes() == [0; 32]
             || expected_digest.is_laboratory()
         {
+            return Err(S3Error::Binding);
+        }
+        let inventory = CompletionReceipt {
+            intent_digest: intent.digest(),
+            upload: self.upload.clone().ok_or(S3Error::Binding)?,
+            manifest_root: intent.manifest_root(),
+            parts: self.parts.values().cloned().collect(),
+        };
+        if inventory.digest() != completion_digest {
             return Err(S3Error::Binding);
         }
         self.check(cx, TransportOperation::Reconcile)?;
@@ -76,6 +96,8 @@ impl<C: S3Clock> NativeS3Transport<C> {
             if &binding.region != cx.authority().region()
                 || binding.expected_bytes != expected_bytes
                 || binding.expected_digest != expected_digest
+                || binding.completion_digest != completion_digest
+                || binding.completion_observation != completion_observation
             {
                 return Err(S3Error::Binding);
             }
@@ -84,6 +106,8 @@ impl<C: S3Clock> NativeS3Transport<C> {
                 region: cx.authority().region().clone(),
                 expected_bytes,
                 expected_digest,
+                completion_digest,
+                completion_observation,
             });
         }
         let mut headers = vec![

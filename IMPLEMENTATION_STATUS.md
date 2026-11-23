@@ -1,8 +1,53 @@
 # Implementation status
 
-**As of:** 2026-11-22 UTC (dated feature sections retain their original verification scope)
+**As of:** 2026-11-22 America/New_York (dated feature sections retain their original verification scope)
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
+
+## Recovered archive verification, native detector integrity and AVC liveness — 2026-11-22
+
+`upload-s3-verify` now also accepts a positive canonical completion observation of
+a locally closed indeterminate upload through paired `--completion-observation`
+and `--completion-observation-sha256` inputs. The private bounded receipt must
+match its independent pin, exact unchanged journal head, original indeterminate
+closure, intent, acknowledged part inventory, authority scope and chronology before
+credentials or fresh read authority are admitted. A distinct owner then verifies
+every original part and the independent whole-object SHA-256 through signed bounded
+GET ranges. Canonical and operator v2 receipts link both evidence inputs while
+preserving the original uncertain/indeterminate state and spend. The completed-upload
+v1 path remains compatible; a successful HEAD alone is never proof of byte retrieval.
+The existing approved local plaintext, 64 MiB object and 256 KiB range limits remain.
+Public-cloud TLS, client-side encryption, archive graph closure, independent replicas,
+repair and live-provider qualification remain outstanding.
+
+Native package detection now binds its actual producer output before exposing the
+public report fields. Conversion and retention verify the original canonical record,
+complete JSON digest, source-capsule metadata and privacy binding; transplanted
+inference/head results and edited JSON with recomputed hashes refuse before staging
+or publication. Ordinary, sentinel and long-sentinel reports share the boundary.
+Honest durable bytes and retries remain unchanged. This advances `fss-gefi6` Stage B
+for one native producer; the global origin registry/interchange migration and historical
+artifact attestation remain outside this slice. See
+[detector producer integrity](docs/DETECTOR_PRODUCER_INTEGRITY.md).
+
+Automatic AVC connection and recording owners now allow an explicit choice of
+OPTIONS (the default) or empty GET_PARAMETER before the first prepared request.
+The choice remains fixed through Digest authentication and supervised reconnect
+generations. It preserves original request deadlines, source transfers and shared
+resource accounting; a server refusal does not silently select another method.
+Full transport fallback/reconnect and device qualification remain open.
+
+Existing `fss-core` `provenance_contract` tests passed: **79 passed, 0 failed**. This
+baseline result does not execute the new detector, archive or AVC regressions.
+The normal pinned locked/offline `fss-reference --lib` check was killed by SIGKILL
+while compiling unchanged Asupersync 0.5.0, before edited-crate diagnostics. A separate
+single-frontend-thread object-test attempt ended with the same SIGKILL. No new-crate
+compilation or native regression execution is established; the supplemental compiler
+flag was diagnostic only and did not change repository configuration. Formatting, whitespace, independent
+source reviews and exact v1/v2 report/schema field checks are separate static evidence.
+All four broad Beads remain in progress. Exact commits, blocked validation and native
+rerun commands are in the
+[session handoff](docs/SESSION_HANDOFF_2026-11-22_RECOVERED_ARCHIVE_AND_PRODUCER_INTEGRITY.json).
 
 ## Request cancellation through selected learning explanations — 2026-11-22
 
@@ -54,9 +99,10 @@ checks were killed while compiling unchanged Asupersync 0.5.0, before project
 diagnostics. Pinned formatting, source review and static contract checks are
 recorded separately from executable qualification.
 
-This advances FSS-068 without closing broader archive qualification. Eligibility
-currently requires a locally Completed/Verified upload; a separate successful HEAD
-observation of an indeterminate completion is not yet an accepted retrieval input.
+This advances FSS-068 without closing broader archive qualification. The original
+v1 path requires a locally Completed/Verified upload; the recovered-archive extension
+above also accepts an independently pinned positive completion observation of an
+indeterminate completion under fresh read authority.
 Public-cloud TLS, client-side encryption, graph publication/closure, replica
 independence, repair scheduling and live provider qualification remain outstanding.
 See [verification commands, semantics and costs](docs/NATIVE_S3_OBJECT_UPLOADS.md).

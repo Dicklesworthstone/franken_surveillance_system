@@ -41,6 +41,8 @@ pub struct RetrievalCx<'a> {
     inner: TransportCx<'a>,
     expected_bytes: u64,
     expected_digest: ContentDigest,
+    completion_digest: ContentDigest,
+    completion_observation: Option<ContentDigest>,
 }
 
 impl<'a> RetrievalCx<'a> {
@@ -58,6 +60,17 @@ impl<'a> RetrievalCx<'a> {
     #[must_use]
     pub const fn expected_digest(&self) -> ContentDigest {
         self.expected_digest
+    }
+    /// Exact completion inventory independently bound to the source journal.
+    #[must_use]
+    pub const fn completion_digest(&self) -> ContentDigest {
+        self.completion_digest
+    }
+    /// Pinned positive read-only completion evidence for an indeterminate upload.
+    /// Its presence never changes the historical upload's phase or authority.
+    #[must_use]
+    pub const fn completion_observation_digest(&self) -> Option<ContentDigest> {
+        self.completion_observation
     }
 }
 
@@ -97,6 +110,7 @@ pub struct RetrievalObservation<'a> {
     expected_digest: ContentDigest,
     origin: ContentDigest,
     completion: ContentDigest,
+    completion_observation: Option<(ContentDigest, ContentDigest)>,
     started_at: TimestampNs,
     observed_at: TimestampNs,
     started: bool,
@@ -144,6 +158,68 @@ impl<'a> RetrievalObservation<'a> {
         Ok(())
     }
 
+    /// Bind an independently pinned positive completion observation to the exact
+    /// locally closed indeterminate upload. A HEAD result only admits a fresh
+    /// byte verification attempt; it does not itself prove any retrieved bytes.
+    pub fn validate_observed_source(
+        recovery: &MultipartRecovery,
+        expected_intent: &UploadIntent,
+        expected_digest: ContentDigest,
+        observation: &CompletionObservationReceipt,
+        expected_observation_digest: ContentDigest,
+    ) -> Result<(), UploaderError> {
+        CompletionObservation::validate_source(recovery, expected_intent)?;
+        let record =
+            validated_recovery_owner(recovery)?.ok_or(MultipartError::InvalidCheckpoint)?;
+        let indeterminate = record
+            .indeterminate_receipt
+            .ok_or(MultipartError::InvalidCheckpoint)?
+            .digest();
+        let completion = CompletionReceipt {
+            intent_digest: expected_intent.digest(),
+            upload: recovery
+                .upload_id()
+                .cloned()
+                .ok_or(MultipartError::InvalidCheckpoint)?,
+            manifest_root: expected_intent.manifest_root(),
+            parts: recovery.part_receipts().cloned().collect(),
+        }
+        .digest();
+        let original = recovery.effective_authority();
+        let observed = observation.authority();
+        if !(1..=MAX_RETRIEVAL_BYTES).contains(&recovery.plan().object_bytes)
+            || !recovery.origin_binding().is_some_and(good_digest)
+            || !good_digest(expected_digest)
+            || !good_digest(expected_observation_digest)
+            || observation.digest()? != expected_observation_digest
+            || observation.outcome() != CompletionObservationOutcome::Completed
+            || observation.source_pin() != recovery.head()
+            || observation.started_at() < recovery.observed_at()
+            || observed
+                .deadline
+                .is_none_or(|at| observation.observed_at() >= at)
+            || observation.source_operation() != expected_intent.operation()
+            || observation.indeterminate_receipt_digest() != indeterminate
+            || observation.intent_digest() != expected_intent.digest()
+            || observation.plan_digest() != expected_intent.plan_digest()
+            || observation.manifest_root() != expected_intent.manifest_root()
+            || observation.completion_digest() != Some(completion)
+            || observed.trace_id != original.trace_id
+            || observed.principal != original.principal
+            || observed.anchor_universe != original.anchor_universe
+            || observed.generation != original.generation
+            || observed.priority < original.priority
+            || observed.privacy_scope != original.privacy_scope
+            || observed.retention_scope != original.retention_scope
+            || observed.lease_fence != original.lease_fence
+            || observed.idempotency_key != original.idempotency_key
+            || observed.lab_controls != original.lab_controls
+        {
+            return Err(MultipartError::InvalidCheckpoint.into());
+        }
+        Ok(())
+    }
+
     /// Reserve a fresh object-store read child. The source journal is borrowed
     /// immutably, never reopened as a mutation owner; old deadlines and budgets
     /// are historical facts, not the new read's allowance.
@@ -159,6 +235,85 @@ impl<'a> RetrievalObservation<'a> {
         now: TimestampNs,
     ) -> Result<Self, UploaderError> {
         Self::validate_source(recovery, expected_intent, expected_digest)?;
+        Self::begin_validated(
+            parent,
+            tree,
+            journal,
+            recovery,
+            expected_intent,
+            expected_digest,
+            recovery.completion_receipt()?.digest(),
+            None,
+            child_spec,
+            now,
+        )
+    }
+
+    /// Reserve a distinct read owner from a retained completion observation.
+    /// Both evidence inputs remain immutable and the old owner stays terminal.
+    #[allow(clippy::too_many_arguments)]
+    pub fn begin_from_observation(
+        parent: &'a mut AuthorityCx,
+        tree: &mut RegionTree,
+        journal: &'a dyn UploadJournal,
+        recovery: &'a MultipartRecovery,
+        expected_intent: &UploadIntent,
+        expected_digest: ContentDigest,
+        observation: &CompletionObservationReceipt,
+        expected_observation_digest: ContentDigest,
+        child_spec: RootAuthoritySpec,
+        now: TimestampNs,
+    ) -> Result<Self, UploaderError> {
+        Self::validate_observed_source(
+            recovery,
+            expected_intent,
+            expected_digest,
+            observation,
+            expected_observation_digest,
+        )?;
+        // Validate that the retained observation could have seen this exact
+        // journal, and that a later reader cannot precede its evidence.
+        recovery.validate_restore(journal, observation.started_at())?;
+        if now < observation.observed_at() {
+            return Err(MultipartError::ClockRegression.into());
+        }
+        if &child_spec.operation_id == observation.operation() {
+            return Err(authority(
+                "retrieval requires a distinct operation from its completion observation",
+            ));
+        }
+        Self::begin_validated(
+            parent,
+            tree,
+            journal,
+            recovery,
+            expected_intent,
+            expected_digest,
+            observation
+                .completion_digest()
+                .ok_or(MultipartError::InvalidCheckpoint)?,
+            Some((
+                expected_observation_digest,
+                observation.indeterminate_receipt_digest(),
+            )),
+            child_spec,
+            now,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn begin_validated(
+        parent: &'a mut AuthorityCx,
+        tree: &mut RegionTree,
+        journal: &'a dyn UploadJournal,
+        recovery: &'a MultipartRecovery,
+        expected_intent: &UploadIntent,
+        expected_digest: ContentDigest,
+        completion: ContentDigest,
+        completion_observation: Option<(ContentDigest, ContentDigest)>,
+        child_spec: RootAuthoritySpec,
+        now: TimestampNs,
+    ) -> Result<Self, UploaderError> {
         recovery.validate_restore(journal, now)?;
         if parent.is_cancel_requested(tree)? {
             return Err(MultipartError::CancellationRequested.into());
@@ -219,7 +374,6 @@ impl<'a> RetrievalObservation<'a> {
         let origin = recovery
             .origin_binding()
             .ok_or(MultipartError::UnboundJournal)?;
-        let completion = recovery.completion_receipt()?.digest();
         let region = RegionId::new(format!(
             "region:upload-retrieval:{}",
             canonical.operation_id.as_str()
@@ -254,6 +408,7 @@ impl<'a> RetrievalObservation<'a> {
             expected_digest,
             origin,
             completion,
+            completion_observation,
             started_at: now,
             observed_at: now,
             started: false,
@@ -313,6 +468,8 @@ impl<'a> RetrievalObservation<'a> {
                     inner,
                     expected_bytes: self.source.plan().object_bytes,
                     expected_digest: self.expected_digest,
+                    completion_digest: self.completion,
+                    completion_observation: self.completion_observation.map(|value| value.0),
                 };
                 self.attempted_ranges += 1;
                 self.outcome = RetrievalOutcome::Unknown;
@@ -375,7 +532,7 @@ impl<'a> RetrievalObservation<'a> {
 
     /// Settle even after cancellation, expiry or a failed read. This records the
     /// exact result, closes only this child and returns its unused reservation.
-    /// It never contacts the provider or changes the original completed upload.
+    /// It never contacts the provider or changes the historical upload.
     pub fn settle(
         &mut self,
         tree: &mut RegionTree,
@@ -390,6 +547,7 @@ impl<'a> RetrievalObservation<'a> {
                 source_pin: self.source.head(),
                 source_operation: self.source.intent().operation().clone(),
                 completion_digest: self.completion,
+                completion_observation: self.completion_observation,
                 origin: self.origin,
                 intent_digest: self.source.intent().digest(),
                 plan_digest: self.source.intent().plan_digest(),

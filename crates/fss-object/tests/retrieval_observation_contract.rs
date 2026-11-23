@@ -6,13 +6,14 @@ use fss_core::{
     TimestampNs,
 };
 use fss_object::multipart::{
-    MultipartError, MultipartRecovery, UploadIntent, UploadJournal, UploadJournalPin,
-    validate_checkpoint_transition,
+    MultipartError, MultipartPhase, MultipartRecovery, TransportOperation, UploadIntent,
+    UploadJournal, UploadJournalPin, validate_checkpoint_transition,
 };
 use fss_object::planner::{ChunkPolicy, MIN_PART_SIZE};
 use fss_object::uploader::{
-    MAX_RETRIEVAL_RANGE_BYTES, RetrievalCx, RetrievalObservation, RetrievalOutcome,
-    RetrievalReceipt, RetrievalTransport, StagedUpload, UploaderError,
+    CompletionObservation, CompletionObservationReceipt, MAX_RETRIEVAL_RANGE_BYTES, RetrievalCx,
+    RetrievalObservation, RetrievalOutcome, RetrievalReceipt, RetrievalTransport, StagedUpload,
+    UploaderError,
 };
 use fss_runtime::authority::AuthorityCx;
 use multipart_support::{MemoryTransport, RESOURCE, Store, Test, budget, spec};
@@ -70,6 +71,7 @@ fn all_spec(operation: &str) -> Result<RootAuthoritySpec, Box<dyn std::error::Er
     value.capabilities.extend([
         RuntimeGrant::AdapterAuth.as_str().into(),
         RuntimeGrant::ReadMedia.as_str().into(),
+        RuntimeGrant::ObserveStatus.as_str().into(),
     ]);
     Ok(value)
 }
@@ -109,18 +111,27 @@ struct Fixture {
     recovery: MultipartRecovery,
     intent: UploadIntent,
     bytes: Vec<u8>,
+    store: Rc<RefCell<Store>>,
 }
 fn fixture(length: usize) -> Result<Fixture, Box<dyn std::error::Error>> {
+    fixture_with_completion(length, false)
+}
+fn fixture_with_completion(
+    length: usize,
+    lost: bool,
+) -> Result<Fixture, Box<dyn std::error::Error>> {
     let bytes: Vec<_> = (0..length).map(|i| (i % 251) as u8).collect();
     let mut journal = Journal::default();
     let store = Rc::new(RefCell::new(Store::default()));
     let intent = {
         let (_root, mut parent, mut tree) = property()?;
-        let mut transport = MemoryTransport { store };
+        let mut transport = MemoryTransport {
+            store: store.clone(),
+        };
         let mut child = all_spec("operation:completed-upload")?;
-        child
-            .capabilities
-            .retain(|cap| cap != RuntimeGrant::ReadMedia.as_str());
+        child.capabilities.retain(|cap| {
+            cap != RuntimeGrant::ReadMedia.as_str() && cap != RuntimeGrant::ObserveStatus.as_str()
+        });
         child.deadline = Some(TimestampNs(10));
         let mut upload = StagedUpload::stage(
             &mut parent,
@@ -143,7 +154,19 @@ fn fixture(length: usize) -> Result<Fixture, Box<dyn std::error::Error>> {
             || TimestampNs(2),
             |chunk| bytes[chunk.offset as usize..(chunk.offset + chunk.len) as usize].to_vec(),
         )?;
-        upload.finish(&mut tree, TimestampNs(3))?;
+        if lost {
+            store.borrow_mut().fault_once = Some(TransportOperation::Complete);
+            assert!(upload.finish(&mut tree, TimestampNs(3)).is_err());
+            let followup = upload.journal_pin().ok_or("missing source pin")?.root;
+            upload.settle_indeterminate(
+                &mut tree,
+                TimestampNs(4),
+                "completion acknowledgement lost",
+                followup,
+            )?;
+        } else {
+            upload.finish(&mut tree, TimestampNs(3))?;
+        }
         intent
     };
     let recovery = MultipartRecovery::read(&journal, journal.head().ok_or("missing head")?)?;
@@ -152,7 +175,38 @@ fn fixture(length: usize) -> Result<Fixture, Box<dyn std::error::Error>> {
         recovery,
         intent,
         bytes,
+        store,
     })
+}
+
+fn completion_observation(
+    f: &Fixture,
+) -> Result<CompletionObservationReceipt, Box<dyn std::error::Error>> {
+    let (_root, mut parent, mut tree) = property()?;
+    let mut child = all_spec("operation:observed-completion")?;
+    child.capabilities = [
+        RuntimeGrant::AdapterAuth,
+        RuntimeGrant::AdapterNet,
+        RuntimeGrant::ObserveStatus,
+    ]
+    .into_iter()
+    .map(|grant| grant.as_str().into())
+    .collect();
+    child.deadline = Some(TimestampNs(100));
+    let mut owner = CompletionObservation::begin(
+        &mut parent,
+        &mut tree,
+        &f.journal,
+        &f.recovery,
+        &f.intent,
+        child,
+        TimestampNs(12),
+    )?;
+    let mut probe = MemoryTransport {
+        store: f.store.clone(),
+    };
+    owner.observe(&mut tree, &mut probe, TimestampNs(13))?;
+    Ok(owner.settle(&mut tree, TimestampNs(14))?)
 }
 #[derive(Clone, Copy, Default)]
 enum Fault {
@@ -225,6 +279,253 @@ impl RetrievalTransport for Reader {
 }
 fn now() -> Result<TimestampNs, UploaderError> {
     Ok(TimestampNs(20))
+}
+
+#[test]
+fn observed_indeterminate_completion_can_be_verified_without_rewriting_either_source() -> Test {
+    let f = fixture_with_completion(MAX_RETRIEVAL_RANGE_BYTES as usize + 17, true)?;
+    let before = f.journal.0.clone();
+    let observation = completion_observation(&f)?;
+    let encoded_observation = observation.encode()?;
+    let pin = observation.digest()?;
+    assert!(
+        RetrievalObservation::validate_source(
+            &f.recovery,
+            &f.intent,
+            ContentDigest::sha256(&f.bytes)
+        )
+        .is_err()
+    );
+    let (_root, mut parent, mut tree) = property()?;
+    let mut reader = Reader::new(&f.bytes);
+    let mut owner = RetrievalObservation::begin_from_observation(
+        &mut parent,
+        &mut tree,
+        &f.journal,
+        &f.recovery,
+        &f.intent,
+        ContentDigest::sha256(&f.bytes),
+        &observation,
+        pin,
+        read_spec()?,
+        TimestampNs(20),
+    )?;
+    let receipt = owner.verify(&mut tree, &mut reader, now)?;
+    assert_eq!(receipt.outcome(), RetrievalOutcome::Verified);
+    assert_eq!(receipt.completion_observation_digest(), Some(pin));
+    assert_eq!(
+        receipt.indeterminate_receipt_digest(),
+        Some(observation.indeterminate_receipt_digest())
+    );
+    assert_eq!(
+        Some(receipt.completion_digest()),
+        observation.completion_digest()
+    );
+    assert_eq!(receipt.attempted_ranges(), 2);
+    assert_eq!(receipt.bytes_read(), f.bytes.len() as u64);
+    assert!(owner.is_settled());
+    let encoded = receipt.encode()?;
+    assert_eq!(RetrievalReceipt::decode(&encoded)?, receipt);
+    assert!(
+        encoded
+            .windows(b"fss.multipart_retrieval_observation.v2".len())
+            .any(|part| part == b"fss.multipart_retrieval_observation.v2")
+    );
+    let mut trailing = encoded.clone();
+    trailing.push(0);
+    assert!(RetrievalReceipt::decode(&trailing).is_err());
+    assert!(RetrievalReceipt::decode(&encoded[..encoded.len() - 1]).is_err());
+    assert_eq!(
+        f.recovery.phase(),
+        MultipartPhase::Uncertain(TransportOperation::Complete)
+    );
+    assert_eq!(f.journal.0, before);
+    assert_eq!(observation.encode()?, encoded_observation);
+    Ok(())
+}
+
+#[test]
+fn observed_source_rejects_unpinned_cross_journal_inventory_and_scope_evidence() -> Test {
+    let f = fixture_with_completion(73, true)?;
+    let observation = completion_observation(&f)?;
+    let whole = ContentDigest::sha256(&f.bytes);
+    assert!(
+        RetrievalObservation::validate_observed_source(
+            &f.recovery,
+            &f.intent,
+            whole,
+            &observation,
+            ContentDigest::sha256(b"unretained observation"),
+        )
+        .is_err()
+    );
+    for field in [
+        observation.source_pin().root,
+        observation.indeterminate_receipt_digest(),
+        observation.completion_digest().ok_or("completion absent")?,
+        observation.intent_digest(),
+        observation.plan_digest(),
+    ] {
+        let mut bytes = observation.encode()?;
+        let position = bytes
+            .windows(32)
+            .position(|part| part == field.bytes())
+            .ok_or("field absent")?;
+        bytes[position..position + 32]
+            .copy_from_slice(&ContentDigest::sha256(b"other source").bytes());
+        let changed = CompletionObservationReceipt::decode(&bytes)?;
+        assert!(
+            RetrievalObservation::validate_observed_source(
+                &f.recovery,
+                &f.intent,
+                whole,
+                &changed,
+                changed.digest()?,
+            )
+            .is_err()
+        );
+    }
+    let mut bytes = observation.encode()?;
+    let privacy = observation.authority().privacy_scope.as_bytes();
+    let position = bytes
+        .windows(privacy.len())
+        .position(|part| part == privacy)
+        .ok_or("privacy absent")?;
+    bytes[position + privacy.len() - 1] = b'x';
+    let changed = CompletionObservationReceipt::decode(&bytes)?;
+    assert!(
+        RetrievalObservation::validate_observed_source(
+            &f.recovery,
+            &f.intent,
+            whole,
+            &changed,
+            changed.digest()?,
+        )
+        .is_err()
+    );
+    let mut times = observation.started_at().0.to_be_bytes().to_vec();
+    times.extend_from_slice(&observation.observed_at().0.to_be_bytes());
+    let deadline = observation
+        .authority()
+        .deadline
+        .ok_or("observation deadline absent")?;
+    for at in [deadline.0, deadline.0 + 1] {
+        let mut bytes = observation.encode()?;
+        let position = bytes
+            .windows(times.len())
+            .position(|part| part == times.as_slice())
+            .ok_or("observation times absent")?;
+        bytes[position + 16..position + 32].copy_from_slice(&at.to_be_bytes());
+        // Generic receipts allow late local settlement; a positive completion
+        // admitted as new retrieval evidence must have been observed in time.
+        let expired = CompletionObservationReceipt::decode(&bytes)?;
+        assert!(
+            RetrievalObservation::validate_observed_source(
+                &f.recovery,
+                &f.intent,
+                whole,
+                &expired,
+                expired.digest()?,
+            )
+            .is_err()
+        );
+    }
+    f.store.borrow_mut().unknown = true;
+    let unknown = completion_observation(&f)?;
+    assert!(
+        RetrievalObservation::validate_observed_source(
+            &f.recovery,
+            &f.intent,
+            whole,
+            &unknown,
+            unknown.digest()?,
+        )
+        .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn observed_reader_requires_fresh_identity_and_time_before_reserving_authority() -> Test {
+    let f = fixture_with_completion(73, true)?;
+    let observation = completion_observation(&f)?;
+    for case in 0..3 {
+        let (_root, mut parent, mut tree) = property()?;
+        let mut child = read_spec()?;
+        let mut at = TimestampNs(20);
+        match case {
+            0 => child.operation_id = observation.operation().clone(),
+            1 => child.operation_id = f.intent.operation().clone(),
+            _ => at = TimestampNs(12),
+        }
+        assert!(
+            RetrievalObservation::begin_from_observation(
+                &mut parent,
+                &mut tree,
+                &f.journal,
+                &f.recovery,
+                &f.intent,
+                ContentDigest::sha256(&f.bytes),
+                &observation,
+                observation.digest()?,
+                child,
+                at,
+            )
+            .is_err()
+        );
+        assert_eq!(*parent.budget().consumed(), fss_core::BudgetVector::ZERO);
+    }
+    Ok(())
+}
+
+#[test]
+fn observed_completion_is_not_a_byte_proof_and_failed_reads_retain_provenance() -> Test {
+    let f = fixture_with_completion(73, true)?;
+    let observation = completion_observation(&f)?;
+    let before = f.journal.0.clone();
+    for cancelled in [false, true] {
+        let (_root, mut parent, mut tree) = property()?;
+        let mut reader = Reader::new(&f.bytes);
+        reader.fault = Fault::Corrupt;
+        let mut owner = RetrievalObservation::begin_from_observation(
+            &mut parent,
+            &mut tree,
+            &f.journal,
+            &f.recovery,
+            &f.intent,
+            ContentDigest::sha256(&f.bytes),
+            &observation,
+            observation.digest()?,
+            read_spec()?,
+            TimestampNs(20),
+        )?;
+        if cancelled {
+            tree.request_drain(
+                owner.region(),
+                Some("cancel observed-source read"),
+                TimestampNs(20),
+            )?;
+        }
+        assert!(owner.verify(&mut tree, &mut reader, now).is_err());
+        let receipt = owner.settle(&mut tree, TimestampNs(21))?;
+        assert_eq!(
+            receipt.outcome(),
+            if cancelled {
+                RetrievalOutcome::NotObserved
+            } else {
+                RetrievalOutcome::Mismatch
+            }
+        );
+        assert_eq!(
+            receipt.completion_observation_digest(),
+            Some(observation.digest()?)
+        );
+        assert_eq!(receipt.verified_parts(), 0);
+        assert_eq!(reader.calls.len(), usize::from(!cancelled));
+        assert_eq!(RetrievalReceipt::decode(&receipt.encode()?)?, receipt);
+        assert_eq!(f.journal.0, before);
+    }
+    Ok(())
 }
 #[test]
 fn cold_completed_upload_is_verified_after_its_deadline_without_changing_history() -> Test {

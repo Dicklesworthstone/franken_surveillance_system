@@ -200,8 +200,10 @@ provider metadata is still distinct from downloading and independently verifying
 
 ## Independent verification of completed object bytes
 
-`fss-object::uploader::RetrievalObservation` verifies a separately pinned,
-locally completed upload through `RetrievalTransport`. A new operation with exactly
+`fss-object::uploader::RetrievalObservation` verifies a separately pinned upload
+through `RetrievalTransport`. It accepts either a locally completed upload or a
+locally closed indeterminate completion with an independently pinned positive
+`CompletionObservationReceipt`. A new operation with exactly
 `ReadMedia`, `AdapterNet` and `AdapterAuth` grants receives its own finite deadline,
 budget, object-store child and drain obligation. It preserves the original principal,
 privacy, retention and resource restrictions. The historical upload journal, owner,
@@ -230,8 +232,11 @@ Its outcome is `NotObserved`, `Unknown`, `Mismatch` or `Verified`. Failed attemp
 still settle the fresh child and preserve their consumed work. Only `Verified`
 establishes complete byte equality at the observation time. This is not a restored
 file, encryption, graph closure, replica independence, future availability or repair
-certificate. Uploads whose original completion remains locally indeterminate are
-not yet eligible, even if a separate HEAD observation later succeeds.
+certificate. For an indeterminate upload, the separate
+`fss.multipart_retrieval_observation.v2` receipt additionally binds the completion
+observation digest and original indeterminate closure receipt. The unchanged v1
+encoding remains the format for locally completed uploads. Decoding either format
+creates inert evidence and never recreates live read or mutation authority.
 
 ### Verify from a cold operator process
 
@@ -278,11 +283,42 @@ The closed [JSON report schema](../schemas/s3_retrieval_observation_cli.v1.json)
 command even if byte verification completed. Inspect an ambiguously created receipt
 before choosing a different receipt path; the command never overwrites one.
 
-The completion observer's guidance to retain its receipt and pursue independent
-retrievability describes the remaining workflow goal. That receipt is not currently
-an input to `upload-s3-verify`: the original upload must itself have a locally
-verified completion. Neither a HEAD result nor a successful byte read reopens an
-old upload owner or grants graph publication, repair or deletion authority.
+### Verify after a lost completion acknowledgement
+
+After `upload-s3-reconcile` durably records a `completed` observation, retain that
+receipt and its reported `observation_receipt_digest` independently. Use the same
+`upload-s3-verify` arguments above, preserving the original upload identity and
+retained journal pin, and add both options:
+
+    --completion-observation /absolute/path/retained-completion-observation.bin \
+    --completion-observation-sha256 sha256:INDEPENDENT_COMPLETION_OBSERVATION_DIGEST_HEX
+
+Choose a retrieval operation distinct from both the original upload and the HEAD
+observation. Its receipt path must be new and separate from the completion input,
+journal, source and credential paths. The input must be a private regular file,
+at most 64 KiB, reached without symlink traversal. Reading it requires an exact
+local `ObserveStatus` scope and spends the separate local I/O allowance. A missing
+input option, unretained digest, malformed receipt, unknown observation, wrong
+journal head, wrong original closure proof, changed intent/part inventory or
+changed identity/privacy scope is refused before credential access or network I/O.
+The new reader must start after the retained observation; source-file contents
+remain unnecessary.
+
+This path emits the closed
+[v2 JSON report schema](../schemas/s3_retrieval_observation_cli.v2.json). It reports
+`original_phase: uncertain`, `original_uncertain_operation: complete` and
+`original_local_owner_state: indeterminate`, even when retrieval succeeds. The
+`completion_observation_digest`, `original_indeterminate_receipt_digest` and
+`observed_completion_receipt_digest` identify the linked evidence without calling
+the original upload locally completed. The original journal, original spend and
+completion observation remain byte-for-byte unchanged. Only hashing every
+acknowledged part and the independently pinned whole-object SHA-256 can yield
+`independent_retrievability_verified: true`; a positive HEAD remains insufficient.
+
+Neither a HEAD result nor a successful byte read reopens an old upload owner or
+grants graph publication, repair or deletion authority. The bounded native profile
+still requires approved local plaintext endpoints; this addition does not qualify
+public-cloud TLS, encryption, archive graph closure or independent replicas.
 
 ### Bounded work model
 

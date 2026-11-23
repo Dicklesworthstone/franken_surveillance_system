@@ -390,7 +390,8 @@ impl Server {
                 Some(_) => 1,
                 None => 0,
             };
-            let expected_requests = if observation.is_some() { 4 } else { 3 + reads };
+            let first_read = 3 + usize::from(observation.is_some());
+            let expected_requests = first_read + reads;
             while received.len() < expected_requests {
                 if cancelled.load(Ordering::SeqCst) {
                     return Err("oracle stopped".into());
@@ -422,9 +423,9 @@ impl Server {
                 {
                     return Err("signed body digest mismatch".into());
                 }
-                if received.len() >= 3 && retrieval.is_some() {
+                if received.len() >= first_read && retrieval.is_some() {
                     let outcome = retrieval.ok_or("retrieval fixture absent")?;
-                    let ordinal = received.len() - 3;
+                    let ordinal = received.len() - first_read;
                     let offset = ordinal * MAX_RETRIEVAL_RANGE_BYTES as usize;
                     let length = source
                         .len()
@@ -1090,6 +1091,319 @@ fn completed_retrieval_fixture(
     assert_eq!(report.get("phase").and_then(Value::text), Some("completed"));
     assert_eq!(report.get("locally_settled"), Some(&Value::Bool(true)));
     Ok((resume, report))
+}
+
+fn observed_retrieval_fixture(
+    directory: &Directory,
+    server: &Server,
+    bytes: &[u8],
+) -> Test<(
+    Vec<String>,
+    BTreeMap<String, Value>,
+    CompletionObservationReceipt,
+)> {
+    fs::write(directory.0.join("source"), bytes)?;
+    let mut args = arguments(directory, server.peer, "upload-s3-prepare")?;
+    replace_argument(
+        &mut args,
+        "--source-sha256",
+        ContentDigest::sha256(bytes).to_text(),
+    )?;
+    replace_argument(&mut args, "--source-bytes", bytes.len().to_string())?;
+    let prepared = run(&args)?;
+    assert!(
+        prepared.status.success(),
+        "{}",
+        String::from_utf8_lossy(&prepared.stderr)
+    );
+    let resume = with_pin(args, &fields(&prepared)?, "upload-s3-resume")?;
+    let failed = run(&resume)?;
+    assert!(!failed.status.success());
+    let failed = fields(&failed)?;
+    assert_eq!(
+        failed.get("uncertain_operation").and_then(Value::text),
+        Some("complete")
+    );
+    assert_eq!(failed.get("locally_settled"), Some(&Value::Bool(true)));
+    fs::remove_file(directory.0.join("source"))?;
+    let observed = run(&observation_arguments(&resume, directory, "completion")?)?;
+    assert!(
+        observed.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&observed.stdout),
+        String::from_utf8_lossy(&observed.stderr)
+    );
+    assert_eq!(
+        fields(&observed)?.get("independent_retrievability_verified"),
+        Some(&Value::Bool(false))
+    );
+    let receipt = CompletionObservationReceipt::decode(&fs::read(
+        directory.0.join("observation-completion.bin"),
+    )?)?;
+    assert_eq!(receipt.outcome(), CompletionObservationOutcome::Completed);
+    Ok((resume, failed, receipt))
+}
+
+fn observed_retrieval_arguments(
+    resume: &[String],
+    directory: &Directory,
+    observation: &CompletionObservationReceipt,
+) -> Test<Vec<String>> {
+    let mut args = retrieval_arguments(resume, directory, "observed-source")?;
+    args.extend([
+        "--completion-observation".into(),
+        directory
+            .0
+            .join("observation-completion.bin")
+            .display()
+            .to_string(),
+        "--completion-observation-sha256".into(),
+        observation.digest()?.to_text(),
+    ]);
+    Ok(args)
+}
+
+#[test]
+fn lost_completion_head_and_independent_get_survive_separate_processes_without_rewriting_history()
+-> Test {
+    let directory = Directory::new("verify-observed-completion")?;
+    let bytes: Vec<u8> = (0..MAX_RETRIEVAL_RANGE_BYTES as usize + 37)
+        .map(|index| (index % 251) as u8)
+        .collect();
+    let server = Server::configured(
+        false,
+        true,
+        Some(HeadOutcome::Completed),
+        Some(GetOutcome::Verified),
+        bytes.clone(),
+    )?;
+    let (resume, failed, observation) = observed_retrieval_fixture(&directory, &server, &bytes)?;
+    let before = journal_bytes(&directory)?;
+    let observed_path = directory.0.join("observation-completion.bin");
+    let observed_bytes = fs::read(&observed_path)?;
+    let args = observed_retrieval_arguments(&resume, &directory, &observation)?;
+    let output = run(&args)?;
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = fields(&output)?;
+    assert_eq!(
+        report.get("schema").and_then(Value::text),
+        Some("fss.s3_retrieval_observation_cli.v2")
+    );
+    assert_eq!(
+        report.get("original_phase").and_then(Value::text),
+        Some("uncertain")
+    );
+    assert_eq!(
+        report
+            .get("original_local_owner_state")
+            .and_then(Value::text),
+        Some("indeterminate")
+    );
+    assert_eq!(
+        report
+            .get("original_uncertain_operation")
+            .and_then(Value::text),
+        Some("complete")
+    );
+    assert_eq!(
+        report.get("original_indeterminate_receipt_digest"),
+        failed.get("receipt_digest")
+    );
+    assert_eq!(
+        report.get("original_upload_consumed"),
+        failed.get("upload_consumed")
+    );
+    assert_eq!(
+        report.get("original_upload_remaining"),
+        failed.get("upload_remaining")
+    );
+    assert_eq!(
+        report.get("source_journal_head"),
+        failed.get("journal_head")
+    );
+    assert!(!report.contains_key("original_completion_receipt_digest"));
+    for name in [
+        "independent_retrievability_verified",
+        "observation_receipt_durable",
+        "original_upload_unchanged",
+    ] {
+        assert_eq!(report.get(name), Some(&Value::Bool(true)), "{name}");
+    }
+    for name in [
+        "source_verified_this_invocation",
+        "graph_closure_verified",
+        "replication_verified",
+        "client_side_encryption_performed",
+    ] {
+        assert_eq!(report.get(name), Some(&Value::Bool(false)), "{name}");
+    }
+    let path = directory.0.join("observation-observed-source.bin");
+    let canonical = fs::read(&path)?;
+    let receipt = RetrievalReceipt::decode(&canonical)?;
+    assert_eq!(receipt.outcome(), RetrievalOutcome::Verified);
+    assert_eq!(
+        receipt.completion_observation_digest(),
+        Some(observation.digest()?)
+    );
+    assert_eq!(
+        receipt.indeterminate_receipt_digest(),
+        Some(observation.indeterminate_receipt_digest())
+    );
+    assert_eq!(receipt.bytes_read(), bytes.len() as u64);
+    assert_eq!(receipt.attempted_ranges(), 2);
+    assert_eq!(receipt.verified_parts(), 1);
+    assert_eq!(fs::read(&observed_path)?, observed_bytes);
+    assert_eq!(journal_bytes(&directory)?, before);
+    let requests = server.finish()?;
+    assert_eq!(requests.len(), 6);
+    assert!(requests[3].first.starts_with("HEAD "));
+    assert!(
+        requests[4..]
+            .iter()
+            .all(|request| request.first.starts_with("GET "))
+    );
+    fs::remove_file(directory.0.join("credentials"))?;
+    let repeated = run(&args)?;
+    assert!(!repeated.status.success());
+    assert!(repeated.stdout.is_empty());
+    assert_eq!(fs::read(&path)?, canonical);
+    assert_eq!(fs::read(&observed_path)?, observed_bytes);
+    assert_eq!(journal_bytes(&directory)?, before);
+    Ok(())
+}
+
+#[test]
+fn positive_completion_observation_does_not_hide_corrupted_remote_bytes() -> Test {
+    let directory = Directory::new("verify-observed-corruption")?;
+    let server = Server::configured(
+        false,
+        true,
+        Some(HeadOutcome::Completed),
+        Some(GetOutcome::Corrupt),
+        BODY.to_vec(),
+    )?;
+    let (resume, _, observation) = observed_retrieval_fixture(&directory, &server, BODY)?;
+    let before = journal_bytes(&directory)?;
+    let output = run(&observed_retrieval_arguments(
+        &resume,
+        &directory,
+        &observation,
+    )?)?;
+    assert!(!output.status.success());
+    let report = fields(&output)?;
+    assert_eq!(
+        report.get("observation_outcome").and_then(Value::text),
+        Some("mismatch")
+    );
+    assert_eq!(
+        report.get("independent_retrievability_verified"),
+        Some(&Value::Bool(false))
+    );
+    let receipt = RetrievalReceipt::decode(&fs::read(
+        directory.0.join("observation-observed-source.bin"),
+    )?)?;
+    assert_eq!(receipt.outcome(), RetrievalOutcome::Mismatch);
+    assert_eq!(
+        receipt.completion_observation_digest(),
+        Some(observation.digest()?)
+    );
+    assert_eq!(receipt.verified_parts(), 0);
+    assert_eq!(journal_bytes(&directory)?, before);
+    assert_eq!(server.finish()?.len(), 5);
+    Ok(())
+}
+
+#[test]
+fn completion_receipt_pin_binding_and_private_input_refusals_precede_credentials() -> Test {
+    use std::os::unix::fs::symlink;
+    let directory = Directory::new("verify-observed-refusal")?;
+    let server = Server::lost_completion(HeadOutcome::Completed)?;
+    let (resume, _, observation) = observed_retrieval_fixture(&directory, &server, BODY)?;
+    assert_eq!(server.finish()?.len(), 4);
+    fs::remove_file(directory.0.join("credentials"))?;
+    let before = journal_bytes(&directory)?;
+    let path = directory.0.join("observation-completion.bin");
+    let canonical = fs::read(&path)?;
+    let mut forged = canonical.clone();
+    let root = observation.source_pin().root.bytes();
+    let offset = forged
+        .windows(root.len())
+        .position(|bytes| bytes == root)
+        .ok_or("source pin absent")?;
+    forged[offset..offset + root.len()]
+        .copy_from_slice(&ContentDigest::sha256(b"another retained journal").bytes());
+    // Well-formed bytes with their own matching digest still cannot cross the journal boundary.
+    CompletionObservationReceipt::decode(&forged)?;
+    let forged_path = directory.0.join("forged-completion.bin");
+    fs::write(&forged_path, &forged)?;
+    fs::set_permissions(&forged_path, fs::Permissions::from_mode(0o600))?;
+    let linked = directory.0.join("linked-completion.bin");
+    symlink(&path, &linked)?;
+    let oversized = directory.0.join("oversized-completion.bin");
+    fs::write(&oversized, vec![0_u8; 64 * 1024 + 1])?;
+    fs::set_permissions(&oversized, fs::Permissions::from_mode(0o600))?;
+    for case in 0..8 {
+        let mut args = observed_retrieval_arguments(&resume, &directory, &observation)?;
+        match case {
+            0 => replace_argument(
+                &mut args,
+                "--completion-observation-sha256",
+                ContentDigest::sha256(b"wrong independent pin").to_text(),
+            )?,
+            1 => {
+                replace_argument(
+                    &mut args,
+                    "--completion-observation",
+                    forged_path.display().to_string(),
+                )?;
+                replace_argument(
+                    &mut args,
+                    "--completion-observation-sha256",
+                    ContentDigest::sha256(&forged).to_text(),
+                )?;
+            }
+            2 => replace_argument(
+                &mut args,
+                "--completion-observation",
+                linked.display().to_string(),
+            )?,
+            3 => replace_argument(
+                &mut args,
+                "--completion-observation",
+                oversized.display().to_string(),
+            )?,
+            4 => replace_argument(
+                &mut args,
+                "--observation-operation",
+                observation.operation().as_str().to_owned(),
+            )?,
+            5 => replace_argument(
+                &mut args,
+                "--observation-receipt",
+                path.display().to_string(),
+            )?,
+            6 => {
+                args.truncate(args.len() - 2);
+            }
+            _ => fs::set_permissions(&path, fs::Permissions::from_mode(0o644))?,
+        }
+        let output = run(&args)?;
+        assert!(!output.status.success(), "case {case}");
+        assert!(
+            output.stdout.is_empty(),
+            "case {case}: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(!directory.0.join("observation-observed-source.bin").exists());
+        assert_eq!(fs::read(&path)?, canonical);
+        assert_eq!(journal_bytes(&directory)?, before);
+    }
+    Ok(())
 }
 
 #[test]

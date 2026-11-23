@@ -6,6 +6,7 @@ use super::*;
 /// Maximum canonical receipt size, independent of media length.
 pub const MAX_RETRIEVAL_RECEIPT_BYTES: usize = 64 * 1024;
 const DOMAIN: &str = "fss.multipart_retrieval_observation.v1";
+const OBSERVED_DOMAIN: &str = "fss.multipart_retrieval_observation.v2";
 
 impl RetrievalReceipt {
     /// Strict canonical decoding rejects trailing, truncated or excessive input.
@@ -15,9 +16,11 @@ impl RetrievalReceipt {
             return Err(MultipartError::InvalidCheckpoint);
         }
         let mut d = CanonicalDecoder::new(bytes);
-        if d.text().map_err(checkpoint_error)? != DOMAIN {
-            return Err(MultipartError::InvalidCheckpoint);
-        }
+        let observed = match d.text().map_err(checkpoint_error)? {
+            DOMAIN => false,
+            OBSERVED_DOMAIN => true,
+            _ => return Err(MultipartError::InvalidCheckpoint),
+        };
         let source_pin = UploadJournalPin {
             sequence: d.u64().map_err(checkpoint_error)?,
             root: d.digest().map_err(checkpoint_error)?,
@@ -25,6 +28,14 @@ impl RetrievalReceipt {
         let source_operation =
             OperationId::parse(d.text().map_err(checkpoint_error)?).map_err(checkpoint_error)?;
         let completion_digest = d.digest().map_err(checkpoint_error)?;
+        let completion_observation = if observed {
+            Some((
+                d.digest().map_err(checkpoint_error)?,
+                d.digest().map_err(checkpoint_error)?,
+            ))
+        } else {
+            None
+        };
         let origin = d.digest().map_err(checkpoint_error)?;
         let intent_digest = d.digest().map_err(checkpoint_error)?;
         let plan_digest = d.digest().map_err(checkpoint_error)?;
@@ -52,6 +63,7 @@ impl RetrievalReceipt {
             source_pin,
             source_operation,
             completion_digest,
+            completion_observation,
             origin,
             intent_digest,
             plan_digest,
@@ -81,10 +93,20 @@ impl RetrievalReceipt {
     pub const fn source_pin(&self) -> UploadJournalPin {
         self.source_pin
     }
-    /// Original locally settled completion proof.
+    /// Exact completion inventory, established locally or by the pinned observer.
     #[must_use]
     pub const fn completion_digest(&self) -> ContentDigest {
         self.completion_digest
+    }
+    /// Independently pinned completion observation; absent for a locally completed upload.
+    #[must_use]
+    pub fn completion_observation_digest(&self) -> Option<ContentDigest> {
+        self.completion_observation.map(|value| value.0)
+    }
+    /// Original indeterminate closure proof, retained without replacement.
+    #[must_use]
+    pub fn indeterminate_receipt_digest(&self) -> Option<ContentDigest> {
+        self.completion_observation.map(|value| value.1)
     }
     /// Stable journal custody origin signed before upload.
     #[must_use]
@@ -186,12 +208,20 @@ impl RetrievalReceipt {
     pub fn encode(&self) -> Result<Vec<u8>, MultipartError> {
         self.validate()?;
         let mut e = CanonicalEncoder::new();
-        e.text(DOMAIN);
+        e.text(if self.completion_observation.is_some() {
+            OBSERVED_DOMAIN
+        } else {
+            DOMAIN
+        });
         e.u64(self.source_pin.sequence);
         e.digest(self.source_pin.root);
         e.text(self.source_operation.as_str());
+        e.digest(self.completion_digest);
+        if let Some((observation, indeterminate)) = self.completion_observation {
+            e.digest(observation);
+            e.digest(indeterminate);
+        }
         for digest in [
-            self.completion_digest,
             self.origin,
             self.intent_digest,
             self.plan_digest,
@@ -226,7 +256,7 @@ impl RetrievalReceipt {
 /// Byte verification is separate from completion and archive publication.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RetrievalOutcome {
-    /// No range was admitted; the old completed upload is unchanged.
+    /// No range was admitted; the historical upload is unchanged.
     NotObserved,
     /// A range was admitted but complete verification did not finish.
     Unknown,
@@ -243,6 +273,7 @@ pub struct RetrievalReceipt {
     pub(super) source_pin: UploadJournalPin,
     pub(super) source_operation: OperationId,
     pub(super) completion_digest: ContentDigest,
+    pub(super) completion_observation: Option<(ContentDigest, ContentDigest)>,
     pub(super) origin: ContentDigest,
     pub(super) intent_digest: ContentDigest,
     pub(super) plan_digest: ContentDigest,
@@ -264,6 +295,11 @@ impl RetrievalReceipt {
     pub(super) fn validate(&self) -> Result<(), MultipartError> {
         self.authority.validate().map_err(checkpoint_error)?;
         if self.source_pin.sequence == 0
+            || self
+                .completion_observation
+                .is_some_and(|(observation, indeterminate)| {
+                    !good_digest(observation) || !good_digest(indeterminate)
+                })
             || ![
                 self.source_pin.root,
                 self.completion_digest,
