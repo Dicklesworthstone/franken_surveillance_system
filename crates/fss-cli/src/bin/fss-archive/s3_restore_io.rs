@@ -5,6 +5,7 @@
 use super::*;
 use fss_core::ContentDigest;
 use fss_object::uploader::{RetrievalOutcome, VerifiedRetrievalBytes};
+use fss_reference::s3_upload::verification::VerifiedS3ObjectBytes;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(in super::super) struct RestoreOutputState {
@@ -98,9 +99,6 @@ impl ScopedS3Io {
         object: &VerifiedRetrievalBytes,
         state: &mut RestoreOutputState,
     ) -> io::Result<()> {
-        if state.created || state.verified || state.durable {
-            return Err(denied());
-        }
         let bytes = object.bytes();
         let receipt = object.receipt();
         if receipt.outcome() != RetrievalOutcome::Verified
@@ -108,6 +106,34 @@ impl ScopedS3Io {
             || bytes.len() as u64 > MAX_SOURCE_BYTES
             || bytes.len() as u64 != receipt.expected_bytes()
         {
+            return Err(denied());
+        }
+        self.write_verified_bytes(bytes, receipt.expected_digest(), state)
+    }
+
+    /// Independent object proof permits recovery without an original upload journal.
+    /// Empty objects are valid only through this independently verified proof type.
+    pub(in super::super) fn write_verified_s3_object(
+        &self,
+        object: &VerifiedS3ObjectBytes,
+        state: &mut RestoreOutputState,
+    ) -> io::Result<()> {
+        let bytes = object.bytes();
+        let pin = object.receipt().object();
+        if bytes.len() as u64 > MAX_SOURCE_BYTES || bytes.len() as u64 != pin.bytes {
+            return Err(denied());
+        }
+        self.write_verified_bytes(bytes, pin.digest, state)
+    }
+
+    // Only the opaque verified-object entry points above may call this publication helper.
+    fn write_verified_bytes(
+        &self,
+        bytes: &[u8],
+        digest: ContentDigest,
+        state: &mut RestoreOutputState,
+    ) -> io::Result<()> {
+        if state.created || state.verified || state.durable {
             return Err(denied());
         }
         self.preflight_restore_output()?;
@@ -211,7 +237,7 @@ impl ScopedS3Io {
         self.restore_parent_unchanged(parent, &pinned_parent, parent_identity)?;
         state.verified = true;
         state.bytes = bytes.len() as u64;
-        state.digest = Some(receipt.expected_digest());
+        state.digest = Some(digest);
 
         self.restore_admit(0, 1)?;
         pinned_parent.sync_all().map_err(native)?;

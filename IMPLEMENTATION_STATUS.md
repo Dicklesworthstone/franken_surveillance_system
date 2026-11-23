@@ -4,6 +4,40 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Journal-independent archive restoration — 2026-11-23
+
+`fss-archive restore-s3-object` restores an independently identified remote object
+when the original local source and upload journal are unavailable. The operator
+supplies the retained full-object SHA-256 and exact length, approved endpoint,
+fresh bounded operation, and new output and receipt paths. Existing signed range,
+stable ETag, complete digest and authority checks now release opaque verified
+bytes through `verify_s3_object_with_bytes` (core commit `4a6711b2`). Retained media
+requires an additional full-object allowance before allocation, remains bounded
+at 64 MiB, and is zeroized on failure or drop. Receipt-only verification keeps
+its streaming behavior. Independently pinned empty objects are supported.
+
+The CLI closes the remote read owner before publishing a private local output.
+Exact local authority rejects unsafe or occupied destinations before secret
+access or provider contact, then uses exclusive creation through a pinned parent,
+bounded writes, exact readback and file/directory sync under the original deadline.
+The new `fss.s3_object_restoration_cli.v1` report separates remote verification,
+receipt durability, output creation, verified local bytes and confirmed durability.
+A local failure may retain a valid remote receipt or a private partial output;
+neither is reported as completed restoration. Existing journal-bound restoration
+keeps its historical custody checks and original upload state.
+
+Seven native socket regressions and six process regressions cover multiple ranges,
+empty objects, changed or corrupt bytes, final authority boundaries, separate memory
+and local-publication budgets, absent source/journal files, unsafe destinations and
+immutable output reuse. Exact pinned formatting and independent source review
+passed. The standalone report schema passed the targeted repository audit and
+partial-output, empty-object and unavailable-accounting state checks.
+**Rust compilation and execution of these new regressions remain pending**;
+source and schema checks do not establish runtime qualification. FSS-068 /
+`fss-x4a.13.8` remains in progress. Incident graph reconstruction, encryption,
+independent replicas, future availability and public-cloud TLS remain open. See
+the [operator workflow](docs/NATIVE_S3_OBJECT_UPLOADS.md#restore-from-an-independent-object-identity-after-journal-loss).
+
 
 ## Retained M2TS import and operator command — 2026-11-23
 

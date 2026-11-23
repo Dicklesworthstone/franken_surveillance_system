@@ -229,11 +229,13 @@ impl ScopedS3Io {
     }
 
     /// Separate local authority for a read-only remote verification. This owner
-    /// has only one secret input and one new receipt output: no source pathname,
-    /// journal inspection, repair, lock or upload mutation is admitted.
+    /// has one secret input, one new receipt, and an optional independently verified
+    /// object output: no source pathname, journal inspection, repair, lock or upload
+    /// mutation is admitted. Media publication keeps the original read deadline.
     pub(super) fn verification(
         credentials: PathBuf,
         receipt: PathBuf,
+        restore_output: Option<(PathBuf, TimestampNs)>,
         mut authority: AuthorityCx,
         tree: RegionTree,
         started: Instant,
@@ -250,6 +252,16 @@ impl ScopedS3Io {
         }
         validate_path(&credentials)?;
         validate_path(&receipt)?;
+        if let Some((path, deadline)) = &restore_output {
+            validate_path(path)?;
+            if *deadline <= origin
+                || [&credentials, &receipt]
+                    .into_iter()
+                    .any(|other| path.starts_with(other) || other.starts_with(path))
+            {
+                return Err(denied());
+            }
+        }
         if credentials.starts_with(&receipt)
             || receipt.starts_with(&credentials)
             || authority.kind() != RegionKind::Process
@@ -262,6 +274,7 @@ impl ScopedS3Io {
             return Err(denied());
         }
         let mut grants = fss_runtime::grant::GrantSet::empty();
+        let mut output_scopes = BTreeSet::from([resource(&receipt)?.to_owned()]);
         for (grant, path) in [
             (RuntimeGrant::AdapterAuth, &credentials),
             (RuntimeGrant::ObjectStage, &receipt),
@@ -269,8 +282,17 @@ impl ScopedS3Io {
             authority
                 .require_grant_for(grant, resource(path)?)
                 .map_err(|_| denied())?;
-            grants = grants.with_scope(grant, BTreeSet::from([resource(path)?.to_owned()]));
+            if grant == RuntimeGrant::AdapterAuth {
+                grants = grants.with_scope(grant, BTreeSet::from([resource(path)?.to_owned()]));
+            }
         }
+        if let Some((path, _)) = &restore_output {
+            authority
+                .require_grant_for(RuntimeGrant::ObjectStage, resource(path)?)
+                .map_err(|_| denied())?;
+            output_scopes.insert(resource(path)?.to_owned());
+        }
+        grants = grants.with_scope(RuntimeGrant::ObjectStage, output_scopes);
         authority.narrow_grants(grants).map_err(|_| denied())?;
         let result = Self {
             journal_enabled: false,
@@ -281,7 +303,7 @@ impl ScopedS3Io {
             credentials,
             observation_receipt: Some(receipt),
             completion_observation: None,
-            restore_output: None,
+            restore_output,
             started,
             origin,
             state: Mutex::new(State {

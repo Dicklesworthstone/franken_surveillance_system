@@ -91,7 +91,7 @@ pub(super) const HELP: &str = "fss-archive upload-s3-prepare | upload-s3-resume 
   This transfers one object of at most 64 MiB. It does not encrypt source bytes, publish\n\
   an archive graph, verify replicas, or connect directly using TLS. Verify and restore prove the\n\
   exact object's independent retrieval for this observation.\n\n\
-fss-archive verify-s3-object\n\
+fss-archive verify-s3-object | restore-s3-object\n\
   Required: --object-sha256 sha256:HEX --object-bytes U64\n\
             --peer IP:PORT --host HOST:PORT --region NAME --bucket NAME --key OBJECT_KEY\n\
             --credentials ABSOLUTE_FILE --plaintext-approval sha256:HEX\n\
@@ -101,6 +101,11 @@ fss-archive verify-s3-object\n\
   Reads every byte in bounded signed ranges and verifies the independently retained\n\
   full-object SHA-256 and length. A fresh read owner stores an immutable verification\n\
   receipt; no upload journal is opened or changed. Object reads require media authority.\n\
+  Restore additionally requires --output NEW_ABSOLUTE_FILE. It retains the complete\n\
+  independently verified object (including empty objects) under an extra object-sized\n\
+  memory allowance, then writes a private exclusive output with exact readback and fsync.\n\
+  Neither a local source nor an original upload journal is needed. Failed publication\n\
+  may leave a private partial output; no existing file is overwritten or cleaned up.\n\
   This proves that one object was readable at that time, not future availability,\n\
   replica count, encryption or archive graph closure. The local HTTP profile still applies.\n";
 

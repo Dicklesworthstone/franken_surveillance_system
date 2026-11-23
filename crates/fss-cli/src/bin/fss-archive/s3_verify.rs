@@ -5,7 +5,8 @@
 use super::*;
 use fss_reference::s3_upload::verification::{
     MAX_VERIFIED_OBJECT_BYTES, S3ObjectPin, S3ReadClock, S3ReadIo, S3VerificationReceipt,
-    verification_budget, verify_s3_object,
+    verification_budget, verification_with_bytes_budget, verify_s3_object,
+    verify_s3_object_with_bytes,
 };
 
 const READ_GRANTS: [RuntimeGrant; 3] = [
@@ -15,8 +16,9 @@ const READ_GRANTS: [RuntimeGrant; 3] = [
 ];
 
 pub(super) fn handles(args: &[OsString]) -> bool {
-    args.first()
-        .is_some_and(|value| value == OsStr::new("verify-s3-object"))
+    args.first().is_some_and(|value| {
+        value == OsStr::new("verify-s3-object") || value == OsStr::new("restore-s3-object")
+    })
 }
 
 struct VerifyOptions {
@@ -24,6 +26,7 @@ struct VerifyOptions {
     endpoint: S3Endpoint,
     credentials: PathBuf,
     receipt: PathBuf,
+    restore_output: Option<PathBuf>,
     operation: OperationId,
     deadline: TimestampNs,
     transfer: BudgetVector,
@@ -31,7 +34,7 @@ struct VerifyOptions {
 }
 
 fn parse(args: &[OsString]) -> Result<VerifyOptions> {
-    const ALLOWED: [&str; 17] = [
+    const ALLOWED: [&str; 18] = [
         "--object-sha256",
         "--object-bytes",
         "--peer",
@@ -49,6 +52,7 @@ fn parse(args: &[OsString]) -> Result<VerifyOptions> {
         "--max-local-bytes",
         "--max-local-operations",
         "--receipt",
+        "--output",
     ];
     if !handles(args)
         || args.len() > 1 + ALLOWED.len() * 2
@@ -166,6 +170,23 @@ fn parse(args: &[OsString]) -> Result<VerifyOptions> {
     if receipt.starts_with(&credentials) || credentials.starts_with(&receipt) {
         return Err(malformed("receipt and credential paths must be separate"));
     }
+    let restore_output = if args[0] == OsStr::new("restore-s3-object") {
+        let output = path("--output")?;
+        if [&credentials, &receipt]
+            .into_iter()
+            .any(|other| output.starts_with(other) || other.starts_with(&output))
+        {
+            return Err(malformed(
+                "restoration output, receipt and credentials must be separate",
+            ));
+        }
+        Some(output)
+    } else {
+        if values.contains_key("--output") {
+            return Err(malformed("only restore-s3-object accepts an output file"));
+        }
+        None
+    };
     let mut transfer = BudgetVector::ZERO;
     transfer.bytes = number("--max-memory-bytes", 1, 1024 * 1024 * 1024)?;
     transfer.network_bytes = number("--max-wire-bytes", 1, 1024 * 1024 * 1024)?;
@@ -178,8 +199,12 @@ fn parse(args: &[OsString]) -> Result<VerifyOptions> {
         digest: digest("--object-sha256")?,
         bytes: number("--object-bytes", 0, MAX_VERIFIED_OBJECT_BYTES)?,
     };
-    let minimum = verification_budget(pin, S3Limits::default())
-        .map_err(|_| malformed("independent object identity or verification bounds refused"))?;
+    let minimum = if restore_output.is_some() {
+        verification_with_bytes_budget(pin, S3Limits::default())
+    } else {
+        verification_budget(pin, S3Limits::default())
+    }
+    .map_err(|_| malformed("independent object identity or verification bounds refused"))?;
     if !minimum.fits_within(transfer) {
         return Err(malformed(
             "transfer allowance cannot cover a complete bounded verification",
@@ -190,6 +215,7 @@ fn parse(args: &[OsString]) -> Result<VerifyOptions> {
         endpoint,
         credentials,
         receipt,
+        restore_output,
         deadline,
         transfer,
         local,
@@ -241,6 +267,10 @@ fn local_io(options: &VerifyOptions, now: TimestampNs, started: Instant) -> Resu
     ScopedS3Io::verification(
         options.credentials.clone(),
         options.receipt.clone(),
+        options
+            .restore_output
+            .as_ref()
+            .map(|path| (path.clone(), options.deadline)),
         authority,
         tree,
         started,
@@ -316,6 +346,7 @@ struct Report {
     receipt: Option<S3VerificationReceipt>,
     durable: bool,
     consumed: BudgetVector,
+    output: Option<RestoreOutputState>,
     failure: Option<&'static str>,
 }
 
@@ -340,6 +371,11 @@ fn execute_in(options: &VerifyOptions, local: &ScopedS3Io) -> Result<Report> {
     local
         .preflight_observation_receipt()
         .map_err(|_| Error::Runtime("new immutable verification receipt destination refused"))?;
+    if options.restore_output.is_some() {
+        local
+            .preflight_restore_output()
+            .map_err(|_| Error::Runtime("new private restoration output destination refused"))?;
+    }
     let secret = local
         .read_credentials()
         .map_err(|_| Error::Runtime("private bounded credential file refused"))?;
@@ -351,18 +387,32 @@ fn execute_in(options: &VerifyOptions, local: &ScopedS3Io) -> Result<Report> {
     }
     let (mut root, mut property, mut reader, mut tree) = read_owners(options, now)?;
     let mut clock = ReadClock { latest: now };
-    let result = verify_s3_object(
-        &options.endpoint,
-        &credentials,
-        S3Limits::default(),
-        &mut clock,
-        S3ReadIo {
-            authority: &mut reader,
-            tree: &tree,
-            now,
-        },
-        options.pin,
-    );
+    let read_io = S3ReadIo {
+        authority: &mut reader,
+        tree: &tree,
+        now,
+    };
+    let result = if options.restore_output.is_some() {
+        verify_s3_object_with_bytes(
+            &options.endpoint,
+            &credentials,
+            S3Limits::default(),
+            &mut clock,
+            read_io,
+            options.pin,
+        )
+        .map(|object| (object.receipt().clone(), Some(object)))
+    } else {
+        verify_s3_object(
+            &options.endpoint,
+            &credentials,
+            S3Limits::default(),
+            &mut clock,
+            read_io,
+            options.pin,
+        )
+        .map(|receipt| (receipt, None))
+    };
     let consumed = *reader.budget().consumed();
     // No new provider work is admitted during cleanup, including on error.
     let closed_at = wall_now().unwrap_or(clock.latest).max(clock.latest);
@@ -375,13 +425,18 @@ fn execute_in(options: &VerifyOptions, local: &ScopedS3Io) -> Result<Report> {
         .release_scope_reservation(&tree, &mut reader)
         .map_err(|_| Error::Runtime("object read reservation remained owned"))?;
     close_parents(&mut root, &mut property, &mut tree, closed_at)?;
-    let receipt = match result {
-        Ok(receipt) => receipt,
+    let mut output = options
+        .restore_output
+        .as_ref()
+        .map(|_| RestoreOutputState::default());
+    let (receipt, verified_bytes) = match result {
+        Ok(verified) => verified,
         Err(error) => {
             return Ok(Report {
                 receipt: None,
                 durable: false,
                 consumed,
+                output,
                 failure: Some(refusal(error)),
             });
         }
@@ -389,16 +444,28 @@ fn execute_in(options: &VerifyOptions, local: &ScopedS3Io) -> Result<Report> {
     let encoded = receipt
         .encode()
         .map_err(|_| Error::Runtime("canonical verification receipt refused"))?;
+    let mut failure = None;
+    if let (Some(verified), Some(state)) = (verified_bytes.as_ref(), output.as_mut())
+        && local.write_verified_s3_object(verified, state).is_err()
+    {
+        failure = Some(if state.created {
+            "restoration_output_durability_unconfirmed"
+        } else {
+            "restoration_output_refused"
+        });
+    }
+    // Retained media is erased before receipt publication and bounded report rendering.
+    drop(verified_bytes);
     let durable = local.write_observation_receipt(&encoded).is_ok();
+    if !durable {
+        failure = Some("verification_receipt_durability_unconfirmed");
+    }
     Ok(Report {
         receipt: Some(receipt),
         durable,
         consumed,
-        failure: if durable {
-            None
-        } else {
-            Some("verification_receipt_durability_unconfirmed")
-        },
+        output,
+        failure,
     })
 }
 
@@ -417,20 +484,80 @@ fn execute(options: &VerifyOptions) -> Result<(String, bool)> {
     let finalized = local
         .finalize()
         .map_err(|_| Error::Runtime("local receipt owner could not finalize"));
-    let report = attempted?;
-    let work = work?;
-    finalized?;
+    let mut report = attempted?;
+    if options.restore_output.is_some() {
+        // Preserve concrete output custody even if accounting or final cleanup failed.
+        if work.is_err() {
+            report.failure = Some("restoration_local_accounting_unavailable");
+        }
+        if finalized.is_err() {
+            report.failure = Some("restoration_local_settlement_refused");
+        }
+        render(options, &report, work.ok())
+    } else {
+        finalized?;
+        render(options, &report, Some(work?))
+    }
+}
+
+fn render(
+    options: &VerifyOptions,
+    report: &Report,
+    local_work: Option<BudgetVector>,
+) -> Result<(String, bool)> {
     let verified = report.receipt.is_some();
+    let restoring = options.restore_output.is_some();
     let receipt_digest = report
         .receipt
         .as_ref()
         .map(S3VerificationReceipt::digest)
         .transpose()
         .map_err(|_| Error::Runtime("verification receipt identity refused"))?;
-    let mut rendered = object(&[
-        ("schema", string("fss.s3_object_verification_cli.v1")),
-        ("kind", string("s3_object_verification")),
-        ("command", string("verify-s3-object")),
+    let next = if report
+        .output
+        .is_some_and(|output| output.created && !output.durable)
+    {
+        "inspect_private_partial_output_before_authorizing_a_new_restore"
+    } else if restoring && report.output.is_some_and(|output| output.durable) {
+        if report.durable && report.failure.is_none() {
+            "retain_restored_object_independent_identity_and_verification_receipt"
+        } else {
+            "retain_restored_object_and_inspect_receipt_or_local_settlement"
+        }
+    } else if restoring {
+        "retain_independent_object_identity_and_inspect_refusal_before_another_bounded_restore"
+    } else if report.durable {
+        "retain_independent_object_identity_and_verification_receipt"
+    } else if verified {
+        "retain_object_identity_and_inspect_receipt_before_another_verification"
+    } else {
+        "retain_uncertainty_and_inspect_refusal_before_another_bounded_read"
+    };
+    let mut fields = vec![
+        (
+            "schema",
+            string(if restoring {
+                "fss.s3_object_restoration_cli.v1"
+            } else {
+                "fss.s3_object_verification_cli.v1"
+            }),
+        ),
+        (
+            "kind",
+            string(if restoring {
+                "s3_object_restoration"
+            } else {
+                "s3_object_verification"
+            }),
+        ),
+        (
+            "command",
+            string(if restoring {
+                "restore-s3-object"
+            } else {
+                "verify-s3-object"
+            }),
+        ),
         ("resource", string(options.endpoint.resource())),
         ("operation", string(options.operation.as_str())),
         ("object_digest", string(&options.pin.digest.to_text())),
@@ -454,36 +581,54 @@ fn execute(options: &VerifyOptions) -> Result<(String, bool)> {
             "provider_work_requested_this_invocation",
             (report.consumed.storage_operations != 0).to_string(),
         ),
-        ("local_work", budget(&work)),
+        (
+            "local_work",
+            local_work.map_or_else(|| "null".into(), |work| budget(&work)),
+        ),
         (
             "error_kind",
             report.failure.map_or_else(|| "null".into(), string),
         ),
-        (
-            "next_action",
-            string(if report.durable {
-                "retain_independent_object_identity_and_verification_receipt"
-            } else if verified {
-                "retain_object_identity_and_inspect_receipt_before_another_verification"
-            } else {
-                "retain_uncertainty_and_inspect_refusal_before_another_bounded_read"
-            }),
-        ),
+        ("next_action", string(next)),
         (
             "transport_profile",
             string("approved_local_plaintext_sigv4"),
         ),
         ("graph_closure_verified", "false".into()),
         ("client_side_encryption_performed", "false".into()),
-        ("raw_media_exported", "false".into()),
-    ]);
+        (
+            "raw_media_exported",
+            report
+                .output
+                .is_some_and(|output| output.created)
+                .to_string(),
+        ),
+    ];
+    if let Some(output) = report.output {
+        fields.extend([
+            ("output_created", output.created.to_string()),
+            ("output_verified", output.verified.to_string()),
+            ("output_durable", output.durable.to_string()),
+            ("restored_bytes", output.bytes.to_string()),
+            (
+                "restored_digest",
+                output
+                    .digest
+                    .map_or_else(|| "null".into(), |digest| string(&digest.to_text())),
+            ),
+        ]);
+    }
+    let mut rendered = object(&fields);
     rendered.push('\n');
     if rendered.len() > MAX_REPORT_BYTES {
         return Err(Error::Runtime("verification report exceeds its bound"));
     }
     Ok((
         rendered,
-        verified && report.durable && report.failure.is_none(),
+        verified
+            && report.durable
+            && report.failure.is_none()
+            && report.output.is_none_or(|output| output.durable),
     ))
 }
 

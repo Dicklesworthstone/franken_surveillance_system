@@ -1,0 +1,569 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.local/schemas/s3_object_restoration_cli.v1.json",
+  "title": "Journal-independent S3 restoration from an independent object identity",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "kind",
+    "command",
+    "resource",
+    "operation",
+    "object_digest",
+    "object_bytes",
+    "object_bytes_verified",
+    "verified_at_ns",
+    "verification_receipt_digest",
+    "verification_receipt_durable",
+    "read_allowance",
+    "read_consumed",
+    "provider_work_requested_this_invocation",
+    "local_work",
+    "error_kind",
+    "next_action",
+    "transport_profile",
+    "graph_closure_verified",
+    "client_side_encryption_performed",
+    "raw_media_exported",
+    "output_created",
+    "output_verified",
+    "output_durable",
+    "restored_bytes",
+    "restored_digest"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.s3_object_restoration_cli.v1"
+    },
+    "kind": {
+      "const": "s3_object_restoration"
+    },
+    "command": {
+      "const": "restore-s3-object"
+    },
+    "resource": {
+      "type": "string",
+      "pattern": "^archive:s3:[0-9a-f]{64}$"
+    },
+    "operation": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "object_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "object_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 67108864
+    },
+    "object_bytes_verified": {
+      "type": "boolean"
+    },
+    "verified_at_ns": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "verification_receipt_digest": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/digest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "verification_receipt_durable": {
+      "type": "boolean"
+    },
+    "read_allowance": {
+      "$ref": "#/$defs/budget"
+    },
+    "read_consumed": {
+      "$ref": "#/$defs/budget"
+    },
+    "local_work": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/budget"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "provider_work_requested_this_invocation": {
+      "type": "boolean"
+    },
+    "error_kind": {
+      "enum": [
+        null,
+        "object_digest_mismatch",
+        "read_authority_refused",
+        "clock_refused",
+        "read_deadline_reached",
+        "read_bound_reached",
+        "object_read_io_refused",
+        "provider_status_refused",
+        "range_or_version_proof_refused",
+        "read_configuration_refused",
+        "restoration_output_refused",
+        "restoration_output_durability_unconfirmed",
+        "verification_receipt_durability_unconfirmed",
+        "restoration_local_accounting_unavailable",
+        "restoration_local_settlement_refused"
+      ]
+    },
+    "next_action": {
+      "enum": [
+        "inspect_private_partial_output_before_authorizing_a_new_restore",
+        "retain_restored_object_independent_identity_and_verification_receipt",
+        "retain_restored_object_and_inspect_receipt_or_local_settlement",
+        "retain_independent_object_identity_and_inspect_refusal_before_another_bounded_restore"
+      ]
+    },
+    "transport_profile": {
+      "const": "approved_local_plaintext_sigv4"
+    },
+    "graph_closure_verified": {
+      "const": false
+    },
+    "client_side_encryption_performed": {
+      "const": false
+    },
+    "raw_media_exported": {
+      "type": "boolean",
+      "description": "True exactly when exclusive output creation succeeded, including a possible partial output or an empty object."
+    },
+    "output_created": {
+      "type": "boolean"
+    },
+    "output_verified": {
+      "type": "boolean"
+    },
+    "output_durable": {
+      "type": "boolean"
+    },
+    "restored_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 67108864
+    },
+    "restored_digest": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/digest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "latencyMs",
+        "tokens",
+        "bytes",
+        "modelCalls",
+        "cpuMillis",
+        "acceleratorMillis",
+        "energyMilliJoules",
+        "networkBytes",
+        "storageOperations",
+        "privacyExposure",
+        "operatorAttentionSeconds"
+      ],
+      "properties": {
+        "latencyMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "modelCalls": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "cpuMillis": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "acceleratorMillis": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "energyMilliJoules": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "networkBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "storageOperations": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "privacyExposure": {
+          "type": "number",
+          "minimum": 0
+        },
+        "operatorAttentionSeconds": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "object_bytes_verified": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "verified_at_ns": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "verification_receipt_digest": {
+            "$ref": "#/$defs/digest"
+          },
+          "provider_work_requested_this_invocation": {
+            "const": true
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "verified_at_ns": {
+            "type": "null"
+          },
+          "verification_receipt_digest": {
+            "type": "null"
+          },
+          "verification_receipt_durable": {
+            "const": false
+          },
+          "output_created": {
+            "const": false
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "verification_receipt_durable": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "object_bytes_verified": {
+            "const": true
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "output_created": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "object_bytes_verified": {
+            "const": true
+          },
+          "raw_media_exported": {
+            "const": true
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "output_verified": {
+            "const": false
+          },
+          "output_durable": {
+            "const": false
+          },
+          "raw_media_exported": {
+            "const": false
+          },
+          "next_action": {
+            "const": "retain_independent_object_identity_and_inspect_refusal_before_another_bounded_restore"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "output_verified": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "output_created": {
+            "const": true
+          },
+          "object_bytes_verified": {
+            "const": true
+          },
+          "restored_digest": {
+            "$ref": "#/$defs/digest"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "output_durable": {
+            "const": false
+          },
+          "restored_bytes": {
+            "const": 0
+          },
+          "restored_digest": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "output_durable": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "output_verified": {
+            "const": true
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "error_kind": {
+            "type": "null"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "output_durable": {
+            "const": true
+          },
+          "verification_receipt_durable": {
+            "const": true
+          },
+          "local_work": {
+            "$ref": "#/$defs/budget"
+          },
+          "next_action": {
+            "const": "retain_restored_object_independent_identity_and_verification_receipt"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "local_work": {
+            "type": "null"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "error_kind": {
+            "enum": [
+              "restoration_local_accounting_unavailable",
+              "restoration_local_settlement_refused"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "error_kind": {
+            "const": "restoration_local_accounting_unavailable"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "local_work": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "object_bytes_verified": {
+            "const": true
+          },
+          "verification_receipt_durable": {
+            "const": false
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "error_kind": {
+            "enum": [
+              "verification_receipt_durability_unconfirmed",
+              "restoration_local_accounting_unavailable",
+              "restoration_local_settlement_refused"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "output_created": {
+            "const": true
+          },
+          "output_durable": {
+            "const": false
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "next_action": {
+            "const": "inspect_private_partial_output_before_authorizing_a_new_restore"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "output_durable": {
+            "const": true
+          },
+          "error_kind": {
+            "type": "string"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "next_action": {
+            "const": "retain_restored_object_and_inspect_receipt_or_local_settlement"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "object_bytes": {
+            "const": 0
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "object_digest": {
+            "const": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "restored_bytes": {
+            "const": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "object_bytes": {
+            "const": 0
+          },
+          "output_verified": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "restored_digest": {
+            "const": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "object_bytes": {
+            "minimum": 1
+          },
+          "output_verified": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "restored_bytes": {
+            "minimum": 1
+          }
+        }
+      }
+    }
+  ],
+  "description": "At-most-16-KiB report for one independently pinned object restored without a source file or upload journal. Signed bounded ranges verify the exact whole-object SHA-256 and length under a fresh read owner. Only after read-owner settlement may separately scoped local authority create a new private output, verify readback, and sync its file and pinned parent directory under the original deadline. Empty objects are supported. Remote verification, receipt custody, output creation, local verification and durability remain distinct. A local publication failure may leave a private partial file, and a durable remote verification receipt does not imply successful local publication. JSON is inert and cannot prove byte equality, cross-field digest/length equality, budget spend or durability without native checks. Historical upload custody, incident graphs, encryption, replicas and future availability are outside this result."
+}

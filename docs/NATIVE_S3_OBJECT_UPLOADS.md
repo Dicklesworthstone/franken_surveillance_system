@@ -569,3 +569,68 @@ pre-network authority refusal. They are local fixtures, not external-provider qu
 The standalone receipt does not certify an original FSS upload's journal, part inventory or
 custody-origin metadata. Use the journal-bound RetrievalObservation API above for those
 additional historical custody guarantees; neither receipt replaces the other's proof scope.
+
+### Restore from an independent object identity after journal loss
+
+**`restore-s3-object`** recovers the complete original bytes when the local source and upload
+journal are unavailable. Supply the independently retained full-object SHA-256, exact length,
+approved endpoint, fresh operation and deadline, and new output and receipt paths. This also
+supports an object produced outside the FSS uploader. The digest must come from an independent
+trusted record; a provider ETag, listing or HEAD response cannot replace it.
+
+    fss-archive restore-s3-object \
+      --object-sha256 sha256:INDEPENDENT_FULL_OBJECT_SHA256_HEX \
+      --object-bytes EXACT_OBJECT_LENGTH \
+      --peer 127.0.0.1:9000 --host 127.0.0.1:9000 \
+      --region us-east-1 --bucket evidence --key objects/EXACT_OBJECT_KEY \
+      --credentials /absolute/path/private-s3-credentials \
+      --plaintext-approval sha256:INDEPENDENT_APPROVAL_SHA256_HEX \
+      --operation operation:independent-object-restoration \
+      --deadline-ns NEW_ABSOLUTE_UTC_NANOSECOND_DEADLINE \
+      --max-memory-bytes 700000000 --max-wire-bytes 150000000 \
+      --max-requests 256 --max-local-bytes 150000000 --max-local-operations 100000 \
+      --receipt /absolute/path/new-restoration-verification-receipt.bin \
+      --output /absolute/path/new-restored-object.bin
+
+The same signed, exact range reads and stable ETag checks used by `verify-s3-object` verify
+every byte. Restoration additionally reserves the full object length before allocating its
+retained buffer, still bounded at 64 MiB. Native callers use `verification_with_bytes_budget`
+and `verify_s3_object_with_bytes`, which return opaque `VerifiedS3ObjectBytes` only after the
+complete digest and final authority checkpoint pass. Its borrowed byte slice cannot be obtained
+from a decoded receipt, and its buffer is zeroized on failure or drop. Receipt-only verification
+keeps its existing streaming memory profile and does not accept `--output`.
+
+The CLI finalizes the remote read owner before creating output. Its separate local owner has
+exact credential, receipt and output paths, with no source or upload-journal authority. Both
+destinations are checked before credential access or provider contact. The output must be new;
+existing files, aliases to credentials or the receipt, symlink components and absent parents
+refuse. A pinned parent descriptor controls exclusive private-file creation. Bounded writing,
+exact readback including EOF, file sync, parent-directory sync and final identity checks all
+use the original restoration deadline. An empty object requires a successful zero-length GET
+and the independently pinned SHA-256 of empty bytes, then produces a private durable empty file.
+
+The report schema is `fss.s3_object_restoration_cli.v1`. It retains the independently verified
+object and immutable verification receipt fields above, and separates local custody:
+
+| Field | Meaning |
+| --- | --- |
+| `output_created` | Exclusive creation succeeded; an incomplete private file may remain if later work failed. |
+| `output_verified` | Full local readback and file identity checks matched the verified remote bytes. |
+| `output_durable` | File and parent sync plus final identity and deadline checks completed. |
+| `restored_bytes` / `restored_digest` | Exact verified local length and digest; zero/null until local verification, including a non-null empty-object digest on successful empty restoration. |
+| `raw_media_exported` | An output was created, including a possible incomplete output or an empty object. |
+
+Exit 0 requires complete remote verification, durable local output, durable verification receipt,
+and successful local-owner finalization. A local publication failure can preserve a valid remote
+verification receipt while reporting no durable output. If any private partial output remains,
+the command keeps it for inspection and never truncates, overwrites, deletes or silently reuses
+it. A new attempt needs an independently authorized request and new unused paths. The receipt
+describes the remote byte verification; the output fields separately describe this invocation's
+local publication. Neither substitutes for the other.
+
+This restores one exactly identified object. Historical upload-part inventory, incident graph
+reconstruction, encryption, independent replicas and future availability require their separate
+proofs. The explicit local/private plaintext SigV4 profile still applies. The process regressions
+in `archive_s3_verification_process/restoration.rs` cover multiple ranges, empty objects,
+corruption and version changes, absent source/journal files, immutable output reuse refusal,
+unsafe destinations, expired requests and both transfer and local publication budget refusal.

@@ -17,6 +17,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use fss_core::ContentDigest;
 use fss_reference::s3_upload::verification::S3VerificationReceipt;
 
+#[path = "archive_s3_verification_process/restoration.rs"]
+mod restoration;
+
 type Test<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const BODY: &[u8] = b"independent archived object";
 const SECRET: &str = "verification-fixture-secret";
