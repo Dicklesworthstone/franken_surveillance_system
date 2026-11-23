@@ -136,6 +136,12 @@ SHA-256 values and all previously acknowledged opaque ETags must agree with the 
 journal. An absent upload or part, denial, redirect, malformed response, truncated page or
 conflicting field cannot authorize another write.
 
+A part observation cannot establish a terminal outcome. Protocol admission therefore requires
+at least two remaining storage operations and refuses before charging when only the cleanup
+operation remains. The native probe also reserves memory and wire allowance for another bounded
+exchange. Terminal Complete/Abort reconciliation can still spend the last operation to establish
+its existing terminal outcome. None of these checks renews the original deadline or allowance.
+
 The command also attempts this observation when a part reply is lost during the current
 resume invocation. A positive observation must confirm additional parts and advance the
 durable journal before continuation. The native adapter deliberately remains uncertain until

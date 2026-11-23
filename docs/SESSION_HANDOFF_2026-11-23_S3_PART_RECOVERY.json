@@ -1,0 +1,163 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-23",
+  "date_timezone": "America/New_York",
+  "mission": "Implement the most consequential remaining functionality from the comprehensive plan and Beads, with meaningful direct-main commits and no PRs.",
+  "basis": {
+    "plan": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+    "backlog": ".beads/issues.jsonl",
+    "prior_handoff": "docs/SESSION_HANDOFF_2026-11-22_RECOVERED_ARCHIVE_AND_PRODUCER_INTEGRITY.json",
+    "situation_root": "7286814285fa8c35912d6899f0605f035fcbfdba",
+    "priority": "P0 FSS-064 / fss-x4a.13.4: the native transport had positive Complete reconciliation, but could not recover any uncertain UploadPart."
+  },
+  "delivered": [
+    {
+      "feature": "Repair existing native CLI compilation blockers",
+      "commit": "6978ad9a70866c6bd0bf1ed4c74eced97f903f0f",
+      "publication_state": "committed_to_main",
+      "scope": "Pass a mutable archive verification child to reservation release; import the canonical sensor-health policy name; use the existing event-test deployment finalizer and return Result success; bind the existing inference immutable module to its actual path.",
+      "evidence": "Five compiler errors were observed in existing reference-rust run45106471590; fixes were source/API reviewed. A successful rebuild is not yet established."
+    },
+    {
+      "feature": "Positive bounded native ListParts reconciliation",
+      "commit": "595573fdeafb1d2f83e36ee46d6e07447294591f",
+      "publication_state": "committed_to_main",
+      "bead": "fss-x4a.13.4",
+      "requirement": "FSS-064",
+      "scope": "Verify one complete signed inventory against original upload identity, intended part digests and lengths, and previously acknowledged opaque ETags. Preserve forward lifetime and cleanup allowance. Return Active evidence without reactivating the native adapter; the owning protocol persists it before cold recovery.",
+      "limits": {
+        "maximum_dispatched_parts": 1000,
+        "list_pages": 1,
+        "part_number_marker": 0
+      },
+      "boundary": "Only the original still-pending durable owner; no replay from absence, no resurrection of historical indeterminate ownership, no checkpoint encoding migration."
+    },
+    {
+      "feature": "Preserve the final cleanup operation before part reconciliation admission",
+      "commit": null,
+      "publication_state": "delivered_in_the_commit_containing_this_handoff",
+      "scope": "Validate the original owner and refuse Uncertain(UploadPart) reconciliation below two remaining operations before dispatch, charge or journal advancement. Complete and Abort terminal reconciliation retain their final-operation semantics. Add two protocol regressions and update the native reserve regression."
+    }
+  ],
+  "validation": {
+    "pinned_toolchain": "nightly-2026-08-31",
+    "new_rust_execution": "The recovered local executor ran the pinned locked/offline native-test build. Initial ENOSPC was resolved by moving only this session's cache and target. The restarted build compiled fss-core and dependencies, then rustc was SIGKILLed in unchanged bincode_derive-next 3.1.1 before the new native implementation compiled or tests ran. The executor disconnected again. No native test pass or edited-functionality compilation pass is established.",
+    "executed_new_tests": [],
+    "authored_tests": {
+      "inventory_parser": 4,
+      "native_loopback": 4,
+      "protocol_cleanup": 2
+    },
+    "static_evidence": [
+      "Exact pinned rustfmt with repository settings was applied to this session's staged native/protocol Rust sources; a subsequent targeted --check passed. Concurrent CLI/HEVC formatting is not covered by that result.",
+      "Independent reviews of exact native and CLI Git blobs found no blocking source/API defect.",
+      "Reviewed recovery journal and pending/indeterminate ownership transitions, per-boundary authority checks and original budget accounting.",
+      "Reviewed existing native budget assertions and shared XML parser behavior for regressions.",
+      "Touched content-manifest rows are updated to the exact committed UTF-8 bytes.",
+      "The guarded main update rejected an overlapping concurrent CLI commit; its source, tests, documentation and integrity entries were reviewed and preserved instead of overwritten."
+    ],
+    "hosted_supplemental_runs": [
+      {
+        "sha": "6978ad9a70866c6bd0bf1ed4c74eced97f903f0f",
+        "url": "https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/45124668795",
+        "observed_state": "queued_without_assigned_runner"
+      },
+      {
+        "sha": "595573fdeafb1d2f83e36ee46d6e07447294591f",
+        "url": "https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/45125324330",
+        "observed_state": "cancelled_when_newer_pending_run_replaced_it"
+      },
+      {
+        "sha": "7c0c0d495a750e48e95497d02ce27dd4f5117d54",
+        "url": "https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/45125561785",
+        "observed_state": "pending_behind_compile_repair_run"
+      }
+    ],
+    "qualification": "Hosted status is a point-in-time observation and supplemental only. Repository-owned local qualification and retained DSR receipts remain release authority. No live provider/device or archive gate qualification was performed.",
+    "hosted_observed_at_utc": "2026-11-23T06:49:57Z",
+    "local_build_attempts": [
+      {
+        "command": "cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test s3_upload_native_contract",
+        "source_revision": "7c0c0d495a750e48e95497d02ce27dd4f5117d54",
+        "configuration": {
+          "CARGO_BUILD_JOBS": "1",
+          "CARGO_INCREMENTAL": "0",
+          "CARGO_PROFILE_DEV_DEBUG": "0",
+          "CARGO_PROFILE_TEST_DEBUG": "0"
+        },
+        "result": "ENOSPC while writing fss-core stub.rmeta, before edited-crate diagnostics. Cache and target then moved to a different temporary volume for another attempt."
+      },
+      {
+        "command": "cargo test --locked --offline -p fss-reference --test s3_upload_native_contract",
+        "source_revision": "7c0c0d495a750e48e95497d02ce27dd4f5117d54",
+        "toolchain": "rustc 1.100.0-nightly (908501772 2026-08-30)",
+        "configuration": {
+          "CARGO_BUILD_JOBS": "1",
+          "CARGO_INCREMENTAL": "0",
+          "CARGO_PROFILE_DEV_DEBUG": "0",
+          "CARGO_PROFILE_TEST_DEBUG": "0",
+          "storage": "Isolated cache/target/TMPDIR on a separate temporary volume"
+        },
+        "result": "SIGKILL compiling bincode_derive-next 3.1.1 before asupersync or the edited native implementation; no tests executed. Executor subsequently became unavailable."
+      }
+    ],
+    "retained_concurrent_cli_tests": 3
+  },
+  "cases": [
+    "Lost part ACK, exact positive inventory, durable protocol acceptance, cold native completion preserving the opaque token with no duplicate PUT. The retained concurrent CLI tests cover same-invocation continuation and remaining-part progress.",
+    "Missing/truncated/wrong checksum/identity/size/token, duplicate or nested XML, denied and absent upload responses preserve uncertainty.",
+    "Cancelled, expired or authentication-revoked authority, insufficient memory/wire reserve, and final-operation exhaustion refuse unauthorized contact.",
+    "Deadline crossing during the GET cannot restore active uploading.",
+    "Cold terminal status and historical indeterminate owners need neither source nor credentials and do not contact the provider.",
+    "With one operation left, part recovery refuses without spending it; with two, recovery can leave a successful final Abort. Uncertain Complete/Abort may still spend their last operation."
+  ],
+  "authority": {
+    "repository": "User explicitly authorized direct commits to main through GitHub; no PRs were created.",
+    "provider": "No live provider contact. Authored transport fixtures use loopback endpoints and dummy credentials.",
+    "runtime": "Original owner deadline, cancellation, operation, physical journal custody, scoped grants and remaining allowance constrain recovery."
+  },
+  "budgets": {
+    "new_intention_memory_charge_bytes": 256,
+    "positive_observation": "One original storage operation plus one bounded native exchange; at admission reserve one further storage operation and one native exchange for cleanup. Part reconciliation with fewer than two remaining operations refuses before the request charge.",
+    "recovery": "Original cumulative spend is retained; no budget or deadline reset. Source revalidation uses the existing separately accounted workflow."
+  },
+  "obligations": [
+    "FSS-064 and fss-x4a.13.4 remain in progress; broader archive gates remain open.",
+    "Compile and execute the new native/CLI regressions and existing affected suites with the pinned toolchain.",
+    "Retain local archive qualification evidence before claiming release readiness."
+  ],
+  "unknowns": [
+    "No edited-functionality compilation or executed regression result is established after filesystem exhaustion, dependency compiler SIGKILL and another executor outage.",
+    "Live S3-compatible provider acceptance of the strict ListParts profile remains unqualified."
+  ],
+  "invalidations": [
+    "The earlier blanket limitation that all lost part acknowledgements require a separate repair is narrowed: an exact positive inventory can recover a still-pending original owner.",
+    "Already locally indeterminate part owners, lost initiation/abort, and incomplete provider inventories retain their previous limits."
+  ],
+  "continuations": [
+    "cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib s3_upload",
+    "cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test s3_upload_native_contract",
+    "cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --test archive_s3_upload_process",
+    "cargo +nightly-2026-08-31 test --locked --offline -p fss-object --test multipart_family",
+    "cargo +nightly-2026-08-31 test --locked --offline -p fss-object --test durable_upload_contract --test completion_observation_contract",
+    "scripts/qualify.sh --lane archive",
+    "cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-archive --bin fss-event --bin fss-infer"
+  ],
+  "remaining_feature_gaps": [
+    "Lost initiation and abort reconciliation; independent repair for historical indeterminate part owners.",
+    "Multi-page inventories beyond this bounded positive profile.",
+    "Archive restore-to-file workflow, graph closure/publication, independent replicas and repair scheduling.",
+    "Public-cloud TLS, client-side encryption integration and real-provider qualification."
+  ],
+  "documentation": [
+    "docs/NATIVE_S3_OBJECT_UPLOADS.md",
+    "IMPLEMENTATION_STATUS.md"
+  ],
+  "preserved_concurrent": {
+    "cli_commit": "ae8e15f64390ddc0df22dc23d41f8bbb54e71009",
+    "scope": "Bounded same-invocation continuation after dropping the uncertain native adapter and reopening the durably advanced journal. One immutable verified source buffer and shared local owner remain; fresh transfer owners recover only remaining allowance. Fully confirmed recovery can complete without source reread.",
+    "process_tests": 3,
+    "review": "Root and independent reviewers checked source custody, original authority, cumulative budgets, progress bounds and exact process oracles. The separately drafted pending-only CLI variant was not installed.",
+    "other_main_changes": "Concurrent website and HEVC commits and their manifest entries were preserved."
+  }
+}

@@ -1046,6 +1046,15 @@ impl<'a, T: MultipartTransport> MultipartSession<'a, T> {
                 state: self.phase,
             });
         }
+        if self.phase == MultipartPhase::Uncertain(TransportOperation::UploadPart) {
+            self.validate_observed_owner(&io, TransportOperation::Reconcile)?;
+            // A part observation can only remain unknown or restore uploading.
+            // It cannot establish completion or abortion, so it must leave a
+            // cleanup request before any charge, journal append or transport I/O.
+            if io.authority.budget().remaining().storage_operations < 2 {
+                return Err(MultipartError::CleanupReserve);
+            }
+        }
         self.dispatch(
             io,
             TransportOperation::Reconcile,

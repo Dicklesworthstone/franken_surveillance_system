@@ -121,11 +121,16 @@ pub(super) fn verify(
                     // Provider account labels are not authority or part proof.
                     String::new()
                 }
-                "Bucket" | "Key" | "UploadId" | "PartNumberMarker"
-                | "NextPartNumberMarker" | "MaxParts" | "IsTruncated"
-                | "ChecksumAlgorithm" | "ChecksumType" | "StorageClass" => {
-                    xml::decode(&tail[..value_end])?
-                }
+                "Bucket"
+                | "Key"
+                | "UploadId"
+                | "PartNumberMarker"
+                | "NextPartNumberMarker"
+                | "MaxParts"
+                | "IsTruncated"
+                | "ChecksumAlgorithm"
+                | "ChecksumType"
+                | "StorageClass" => xml::decode(&tail[..value_end])?,
                 _ => return Err(S3Error::Protocol),
             };
             fields.insert(field.to_owned(), value);
@@ -247,8 +252,7 @@ mod tests {
 
     #[test]
     fn positive_inventory_preserves_known_receipts_and_recovers_only_exact_dispatched_bytes() {
-        let body =
-            response(&(row(0, b"abc", "&quot;known&quot;") + &row(1, b"def", "pending")));
+        let body = response(&(row(0, b"abc", "&quot;known&quot;") + &row(1, b"def", "pending")));
         let receipt = checked(&body).unwrap().unwrap();
         assert_eq!(receipt.len(), 2);
         assert_eq!(receipt[0].etag.0, "\"known\"");

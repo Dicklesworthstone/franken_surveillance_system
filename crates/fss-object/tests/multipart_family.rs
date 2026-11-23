@@ -3,7 +3,9 @@
 
 mod multipart_support;
 
-use fss_core::{ContentDigest, OperationId, RegionId, RegionKind, RegionTree, TimestampNs};
+use fss_core::{
+    BudgetVector, ContentDigest, OperationId, RegionId, RegionKind, RegionTree, TimestampNs,
+};
 use fss_object::multipart::{
     MultipartError, MultipartPhase, MultipartSession, ProviderUploadState, Reconciliation,
     TransportOperation, UploadId, UploadIo,
@@ -20,14 +22,20 @@ struct Owner {
 }
 impl Owner {
     fn new(deadline: Option<TimestampNs>) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::with_allowance(deadline, budget())
+    }
+    fn with_allowance(
+        deadline: Option<TimestampNs>,
+        allowance: BudgetVector,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let (root, mut property, mut tree) = property()?;
-        let mut child_spec = spec("operation:multipart", budget())?;
+        let mut child_spec = spec("operation:multipart", allowance)?;
         child_spec.deadline = deadline;
         let child = property.scope_down(
             &mut tree,
             RegionId::new("region:store")?,
             RegionKind::ObjectStore,
-            budget(),
+            allowance,
             child_spec,
             TimestampNs(0),
         )?;
@@ -676,5 +684,111 @@ fn negative_part_readback_never_allows_substituting_the_dispatched_payload() -> 
     assert_eq!(owner.child.budget().consumed().bytes, 6);
     session.complete(owner.io(5), &plan, root())?;
     emit("negative-readback-preserves-dispatched-content", 4);
+    Ok(())
+}
+
+#[test]
+fn part_reconciliation_preserves_the_final_cleanup_operation_before_dispatch() -> Test {
+    for remaining in [1, 2] {
+        let mut allowance = budget();
+        allowance.storage_operations = 2 + remaining;
+        let mut owner = Owner::with_allowance(None, allowance)?;
+        let mut transport = MemoryTransport::default();
+        let store = transport.store.clone();
+        let plan = plan()?;
+        let mut session = prepare(&mut transport, &plan)?;
+        session.start(owner.io(1))?;
+        store.borrow_mut().fault_once = Some(TransportOperation::UploadPart);
+        assert!(session.upload_part(owner.io(2), &plan, 0, b"abc").is_err());
+        assert_eq!(
+            session.phase(),
+            MultipartPhase::Uncertain(TransportOperation::UploadPart)
+        );
+        assert_eq!(
+            owner.child.budget().remaining().storage_operations,
+            remaining
+        );
+        let consumed = *owner.child.budget().consumed();
+        let calls = store.borrow().calls.clone();
+        if remaining == 1 {
+            // A low allowance cannot mask a forged owner, even on a call that
+            // will be rejected before spending its cleanup reserve.
+            let mut stranger_allowance = allowance;
+            stranger_allowance.storage_operations = 1;
+            let mut stranger = Owner::with_allowance(None, stranger_allowance)?;
+            assert!(matches!(
+                session.reconcile(stranger.io(3)),
+                Err(MultipartError::OwnerMismatch)
+            ));
+            assert!(matches!(
+                session.reconcile(owner.io(3)),
+                Err(MultipartError::CleanupReserve)
+            ));
+            assert_eq!(*owner.child.budget().consumed(), consumed);
+            assert_eq!(owner.child.budget().remaining().storage_operations, 1);
+            assert_eq!(store.borrow().calls, calls);
+            assert_eq!(session.observed_at(), TimestampNs(2));
+            assert_eq!(session.confirmed_parts(), 0);
+            assert_eq!(
+                session.phase(),
+                MultipartPhase::Uncertain(TransportOperation::UploadPart)
+            );
+        } else {
+            assert_eq!(session.reconcile(owner.io(3))?, MultipartPhase::Uploading);
+            assert_eq!(session.confirmed_parts(), 1);
+            assert_eq!(owner.child.budget().remaining().storage_operations, 1);
+            assert!(matches!(
+                session.complete(owner.io(4), &plan, root()),
+                Err(MultipartError::CleanupReserve)
+            ));
+            session.abort(owner.io(5))?;
+            assert_eq!(session.phase(), MultipartPhase::Aborted);
+            assert_eq!(owner.child.budget().remaining().storage_operations, 0);
+            assert_eq!(
+                store.borrow().calls,
+                vec![
+                    TransportOperation::Initiate,
+                    TransportOperation::UploadPart,
+                    TransportOperation::Reconcile,
+                    TransportOperation::Abort,
+                ]
+            );
+        }
+    }
+    emit("part-recovery-preserves-cleanup-operation", 2);
+    Ok(())
+}
+
+#[test]
+fn terminal_reconciliation_can_still_spend_the_last_operation() -> Test {
+    for fault in [TransportOperation::Complete, TransportOperation::Abort] {
+        let mut allowance = budget();
+        allowance.storage_operations = 4;
+        let mut owner = Owner::with_allowance(None, allowance)?;
+        let mut transport = MemoryTransport::default();
+        let store = transport.store.clone();
+        let plan = plan()?;
+        let mut session = prepare(&mut transport, &plan)?;
+        session.start(owner.io(1))?;
+        session.upload_part(owner.io(2), &plan, 0, b"abc")?;
+        store.borrow_mut().fault_once = Some(fault);
+        let failed = if fault == TransportOperation::Complete {
+            session.complete(owner.io(3), &plan, root()).map(|_| ())
+        } else {
+            session.abort(owner.io(3)).map(|_| ())
+        };
+        assert!(failed.is_err());
+        assert_eq!(session.phase(), MultipartPhase::Uncertain(fault));
+        assert_eq!(owner.child.budget().remaining().storage_operations, 1);
+        let expected = if fault == TransportOperation::Complete {
+            MultipartPhase::Completed
+        } else {
+            MultipartPhase::Aborted
+        };
+        assert_eq!(session.reconcile(owner.io(4))?, expected);
+        assert_eq!(owner.child.budget().remaining().storage_operations, 0);
+        assert_eq!(store.borrow().calls.len(), 4);
+    }
+    emit("terminal-recovery-may-use-final-operation", 2);
     Ok(())
 }

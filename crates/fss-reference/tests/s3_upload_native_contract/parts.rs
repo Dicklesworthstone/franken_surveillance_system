@@ -102,8 +102,7 @@ fn prepare_lost_part(
 ) -> (UploadJournalPin, UploadIntent) {
     let resource = endpoint.resource();
     let mut journal =
-        FileUploadJournal::create(&directory.0, journal_limits(), Arc::new(HostSpoolIo))
-            .unwrap();
+        FileUploadJournal::create(&directory.0, journal_limits(), Arc::new(HostSpoolIo)).unwrap();
     let (_root, mut parent, mut tree) = property(resource);
     let mut transport =
         NativeS3Transport::new(endpoint.clone(), credentials(), S3Limits::default(), clock)
@@ -170,8 +169,12 @@ fn lost_part_reconciles_durably_and_cold_completion_never_reuploads_its_bytes() 
             drop(socket);
             listener
         });
-        let (minimum, expected) =
-            prepare_lost_part(&directory, &endpoint, ControlledClock::new(), spec(allowance()));
+        let (minimum, expected) = prepare_lost_part(
+            &directory,
+            &endpoint,
+            ControlledClock::new(),
+            spec(allowance()),
+        );
         let spent = {
             let mut journal = FileUploadJournal::open(
                 &directory.0,
@@ -213,7 +216,10 @@ fn lost_part_reconciles_durably_and_cold_completion_never_reuploads_its_bytes() 
                 MultipartPhase::Uploading
             );
             assert_eq!(upload.confirmed_parts(), 1);
-            assert_eq!(tree.get(upload.region()).unwrap().state, RegionState::Active);
+            assert_eq!(
+                tree.get(upload.region()).unwrap().state,
+                RegionState::Active
+            );
             assert_eq!(
                 upload.cumulative_consumed().unwrap().storage_operations,
                 spent.storage_operations + 1
@@ -258,8 +264,14 @@ fn lost_part_reconciles_durably_and_cold_completion_never_reuploads_its_bytes() 
         let receipt = upload.finish(&mut tree, NOW).unwrap();
         assert_eq!(receipt.upload.0, UPLOAD);
         assert_eq!(receipt.parts[0].etag.0, ETAG);
-        assert_eq!(receipt.parts[0].content_digest, ContentDigest::sha256(b"abc"));
-        assert_eq!(tree.get(upload.region()).unwrap().state, RegionState::Closed);
+        assert_eq!(
+            receipt.parts[0].content_digest,
+            ContentDigest::sha256(b"abc")
+        );
+        assert_eq!(
+            tree.get(upload.region()).unwrap().state,
+            RegionState::Closed
+        );
         assert_no_extra_request(server.join().unwrap());
     });
 }
@@ -272,10 +284,16 @@ fn missing_partial_wrong_or_denied_inventory_cannot_authorize_part_replay() {
         (200, good.replace("<IsTruncated>false", "<IsTruncated>true")),
         (200, good.replace(UPLOAD, "some-other-upload")),
         (200, good.replace("<Size>3</Size>", "<Size>4</Size>")),
-        (200, good.replace(CHECKSUM, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")),
+        (
+            200,
+            good.replace(CHECKSUM, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="),
+        ),
         (200, good.replace("<PartNumber>1", "<PartNumber>2")),
         (200, good.replace("<MaxParts>1000", "<MaxParts>1")),
-        (200, good.replace("<Size>3</Size>", "<Size>3</Size><Size>3</Size>")),
+        (
+            200,
+            good.replace("<Size>3</Size>", "<Size>3</Size><Size>3</Size>"),
+        ),
         (403, "<Error><Code>AccessDenied</Code></Error>".into()),
         (404, "<Error><Code>NoSuchUpload</Code></Error>".into()),
     ];
@@ -433,7 +451,9 @@ fn active_part_recovery_preserves_lifetime_grants_and_cleanup_allowance() {
                 Refusal::Cancelled => upload.request_cancellation(&mut tree, NOW).unwrap(),
                 Refusal::Expired => {
                     now = EXPIRED;
-                    clock.0.store(u64::try_from(now.0).unwrap(), Ordering::SeqCst);
+                    clock
+                        .0
+                        .store(u64::try_from(now.0).unwrap(), Ordering::SeqCst);
                 }
                 Refusal::AuthenticationRevoked => {
                     let mut grants = GrantSet::empty();
@@ -458,6 +478,7 @@ fn active_part_recovery_preserves_lifetime_grants_and_cleanup_allowance() {
                     assert_eq!(upload.budget().remaining().storage_operations, 1);
                 }
             }
+            let consumed = upload.cumulative_consumed().unwrap();
             assert!(upload.reconcile(&mut tree, now).is_err(), "{refusal:?}");
             assert_eq!(
                 upload.phase(),
@@ -466,7 +487,8 @@ fn active_part_recovery_preserves_lifetime_grants_and_cleanup_allowance() {
             );
             assert_eq!(upload.confirmed_parts(), 0, "{refusal:?}");
             if matches!(refusal, Refusal::FinalOperation) {
-                assert_eq!(upload.budget().remaining().storage_operations, 0);
+                assert_eq!(upload.budget().remaining().storage_operations, 1);
+                assert_eq!(upload.cumulative_consumed().unwrap(), consumed);
             }
             upload
                 .settle_indeterminate(

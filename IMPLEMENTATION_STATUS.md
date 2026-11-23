@@ -5,6 +5,39 @@
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
 
+## Native part recovery and preserved cleanup allowance — 2026-11-23
+
+The native positive-only ListParts implementation in `595573f` binds the exact
+original upload, every dispatched part's length and SHA-256, and previously
+acknowledged opaque ETags. Original deadline/cancellation checks apply throughout
+the exchange; incomplete, denied, conflicting or malformed inventories remain
+unknown. The concurrent CLI continuation in `ae8e15f` is preserved and reviewed:
+it drops the uncertain adapter and reopens the durably accepted state before
+sending any remaining part or conditional completion.
+
+Part reconciliation now refuses **before admission** when only the final cleanup
+operation remains. Only this original uncertain-part phase receives the extra
+guard: Complete and Abort reconciliation may still spend their last operation
+to establish a terminal outcome. Two new protocol regressions check no-spend
+refusal, forged-owner precedence, a successful final Abort after recovery, and
+terminal cleanup compatibility. Together with four parser and four native socket
+tests, this session adds ten protocol/native regression functions. The three
+concurrent CLI process tests are retained.
+
+Five existing compiler errors in the archive, event-watch and inference-package
+paths were repaired in `6978ad9`. Source/API review and exact pinned formatting
+checks passed for this session's staged native/protocol Rust sources. An actual
+pinned, locked, offline native-test build first hit shared-filesystem ENOSPC;
+after moving this session's cache/target, it compiled fss-core and dependencies
+but rustc was SIGKILLed in unchanged bincode_derive-next 3.1.1 before compiling
+the new native implementation. The executor then disconnected again. No new
+native test ran, and no changed-functionality compilation or release pass is
+claimed. The hosted Rust run still had no assigned runner at the last check.
+
+FSS-064 / `fss-x4a.13.4` and broader archive gates remain open. Exact scope,
+blocked validation and targeted rerun commands are recorded in
+[the native recovery handoff](docs/SESSION_HANDOFF_2026-11-23_S3_PART_RECOVERY.json).
+
 ## Native S3 continuation and HEVC recording liveness — 2026-11-23
 
 `upload-s3-resume` now carries a positive lost-part reconciliation through to

@@ -391,7 +391,11 @@ impl<C: S3Clock> NativeS3Transport<C> {
         result.upload = recovery.upload_id().cloned();
         for (index, digest) in recovery.intended_parts() {
             let position = usize::try_from(index).map_err(|_| S3Error::Binding)?;
-            let chunk = recovery.plan().chunks.get(position).ok_or(S3Error::Binding)?;
+            let chunk = recovery
+                .plan()
+                .chunks
+                .get(position)
+                .ok_or(S3Error::Binding)?;
             if index >= 10_000 || chunk.index != index {
                 return Err(S3Error::Binding);
             }
@@ -922,7 +926,8 @@ impl<C: S3Clock> NativeS3Transport<C> {
             upload,
             &self.intended,
             &self.parts,
-        )? else {
+        )?
+        else {
             return Ok(observation);
         };
         // Parsing and checksum comparison cannot hide an expiry or revocation.
