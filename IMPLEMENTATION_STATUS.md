@@ -4,6 +4,38 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Version-correct ONNX 18 native model execution — 2026-11-23
+
+The bounded importer now explicitly admits default-domain opset **18** alongside
+13/17, with ONNX IR still limited to 7–9. ReduceMean and ReduceL2 consume static
+INT64 input axes under the new schema. Empty-axis Mean no-op preserves exact bits;
+L2 no-op still executes separate F32 square and square root, including signed-zero,
+underflow and overflow behavior. Split-18 requires explicit positive partitions
+or a matching one-to-eight `num_outputs`, with ceiling-sized leading chunks and
+a smaller positive final chunk. Pad/Resize admit only the equivalent existing
+numerical subset and explicit supported defaults; new modes remain refused.
+
+The implementation retains the original source-version gates and canonical
+13/17 graph/parameter encodings, existing operator allowlist, source-bound importer
+identity and original resource/cancellation limits. It adds no runtime opcode,
+production dependency, dynamic shape/control execution or activation authority.
+
+All **nine new opset-18 tests passed**, with zero failures, through the genuine
+pinned Cargo harness (17.56 seconds of execution). They exercise scalar-through-
+rank-eight reductions against independent ordered arithmetic, exact old-profile
+graph bytes, no-op special values, missing/empty/static axes, even/uneven splits,
+a composed pooled detector head, LayerNormalization/Where/Resize/Pad equivalence,
+schema refusals, exact resource limits and every cancellation checkpoint. Both
+production execution modes and canonical graph/Safetensors reload are exercised.
+The six changed Rust paths and Cargo.lock stayed unchanged during that run.
+
+An additional full attention regression run was stopped under substantial host
+slowdown after the focused tests passed; it is not a completed regression result.
+Earlier dated model results retain their own source scope. Package/CLI integration,
+complete-workspace/Clippy/DSR qualification and trained-model quality are not
+established by these tests. FSS-139 / `fss-x4a.14.10` remains open. See
+[opset 18 reductions and partitions](docs/onnx_import.md#opset-18-reductions-and-partitions).
+
 ## Resumable analysis through damaged native video — 2026-11-23
 
 `fss-event watch --stream-dwell --dwell-step-frames N --tolerate-decode-refusals`

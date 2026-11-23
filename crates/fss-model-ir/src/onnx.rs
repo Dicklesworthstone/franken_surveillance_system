@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Offline ONNX IR 7..=9 / default-domain opset 13 or 17 import into the frozen Model IR.
+//! Offline ONNX IR 7..=9 / default-domain opset 13, 17 or 18 import into frozen Model IR.
 //!
 //! This is deliberately a closed profile, not an ONNX interpreter. It supports static,
 //! positive F32 runtime shapes, finite F32 parameters, bounded static INT64 shape controls,
@@ -531,7 +531,7 @@ fn source_node<'a>(
         }
     }
     let op = op.ok_or(OnnxError::Malformed)?;
-    if op == "LayerNormalization" && version == 17 {
+    if op == "LayerNormalization" && matches!(version, 17 | 18) {
         // Empty optional output placeholders are not values. Requested statistics
         // have their own observable contract and are outside this inference profile.
         if outputs.is_empty() || outputs.len() > 3 || outputs[0].is_empty() {
@@ -563,7 +563,8 @@ fn source_node<'a>(
             | "Pad"
             | "Clip"
             | "ReduceSum"
-    ) && !(op == "LayerNormalization" && version == 17)
+    ) && !(op == "LayerNormalization" && matches!(version, 17 | 18))
+        && !(version == 18 && matches!(op.as_str(), "ReduceMean" | "ReduceL2"))
         && inputs.iter().any(String::is_empty)
     {
         return Err(OnnxError::Limit);
@@ -873,14 +874,14 @@ fn parse_opset(bytes: &[u8], a: &mut Admission<'_>) -> Result<u64> {
         }
     }
     match version {
-        Some(version @ (13 | 17)) => Ok(version),
+        Some(version @ (13 | 17 | 18)) => Ok(version),
         _ => Err(OnnxError::Unsupported),
     }
 }
 
 /// Import an exact ONNX source into native graph/parameters, without executing it.
 ///
-/// Only the closed default-domain opset 13 and 17 profiles are accepted.
+/// Only the closed default-domain opset 13, 17 and 18 profiles are accepted.
 /// Runtime inputs and initializers must be
 /// disjoint: this API does not silently freeze an overridable ONNX graph input.
 /// Every declared output/intermediate is checked against native shape inference.
@@ -889,6 +890,9 @@ fn parse_opset(bytes: &[u8], a: &mut Admission<'_>) -> Result<u64> {
 /// Inference BatchNormalization uses constant channel parameters and ordered native F32 math.
 /// Opset-17 LayerNormalization preserves F32 stash_type=1 arithmetic stages,
 /// including a separately rounded reciprocal before normalization multiplication.
+/// Opset-18 Mean/L2 reductions consume static input axes; L2 with no reduction axes
+/// still performs its F32 square and square root. Split-18 requires explicit static
+/// partitions or a matching num_outputs count with positive ceil-sized chunks.
 /// LeakyRelu admits exact finite F32 slopes in [0, 1] through existing native operators.
 /// Clip admits optional scalar F32 bounds, preserving finite values without overflow.
 /// HardSigmoid admits finite coefficients whose full finite F32 affine range cannot overflow.
@@ -1102,7 +1106,7 @@ pub fn import_onnx<'a>(
         } else if matches!(source.op.as_str(), "Expand" | "Tile") {
             broadcast::lower(source, &mut lowering)?;
         } else if matches!(source.op.as_str(), "ReduceMean" | "ReduceSum" | "ReduceL2") {
-            reduce::lower(source, &mut lowering)?;
+            reduce::lower(source, &mut lowering, source_opset)?;
         } else if matches!(source.op.as_str(), "AveragePool" | "GlobalAveragePool") {
             pooling::lower(source, &mut lowering)?;
         } else if source.op == "Resize" {
@@ -1110,7 +1114,7 @@ pub fn import_onnx<'a>(
         } else if source.op == "Pad" {
             pad::lower(source, &mut lowering)?;
         } else if source.op == "Split" {
-            split::lower(source, &mut lowering)?;
+            split::lower(source, &mut lowering, source_opset)?;
         } else if matches!(source.op.as_str(), "DepthToSpace" | "SpaceToDepth") {
             spatial_layout::lower(source, &mut lowering)?;
         } else if matches!(

@@ -1,7 +1,8 @@
 #![forbid(unsafe_code)]
-//! Static Split-13 partitions expressed as existing native Slice operators.
+//! Static Split-13/18 partitions expressed as existing native Slice operators.
 //!
 //! https://onnx.ai/onnx/operators/onnx__Split.html#split-13
+//! https://onnx.ai/onnx/operators/onnx__Split.html#split-18
 //! Partitioning preserves the exact source F32 bits and output order. No new
 //! runtime operator, integer execution, parameter tensor or framework is needed.
 
@@ -11,7 +12,11 @@ use crate::{AttrValue, AttributeMap, GraphNode, OpCode};
 /// Matches the existing compile-time INT64 control-vector bound.
 pub(super) const MAX_OUTPUTS: usize = 8;
 
-pub(super) fn lower(mut source: SourceNode<'_>, lowering: &mut Lowering<'_, '_>) -> Result<()> {
+pub(super) fn lower(
+    mut source: SourceNode<'_>,
+    lowering: &mut Lowering<'_, '_>,
+    version: u64,
+) -> Result<()> {
     let count = source.outputs.len();
     if !(1..=2).contains(&source.inputs.len())
         || source.inputs[0].is_empty()
@@ -23,6 +28,15 @@ pub(super) fn lower(mut source: SourceNode<'_>, lowering: &mut Lowering<'_, '_>)
         None => 0,
         Some(AttrValue::Int(value)) => value,
         Some(_) => return Err(OnnxError::Graph),
+    };
+    let num_outputs = if version == 18 {
+        match source.attrs.remove("num_outputs") {
+            None => None,
+            Some(AttrValue::Int(value)) if value == count as i64 => Some(value),
+            Some(_) => return Err(OnnxError::Graph),
+        }
+    } else {
+        None
     };
     if !source.attrs.is_empty() {
         return Err(OnnxError::Unsupported);
@@ -42,7 +56,28 @@ pub(super) fn lower(mut source: SourceNode<'_>, lowering: &mut Lowering<'_, '_>)
     let length =
         i64::try_from(input.shape().dims()[axis as usize]).map_err(|_| OnnxError::Limit)?;
     let parts = match source.inputs.get(1).filter(|name| !name.is_empty()) {
-        Some(name) => lowering.constant_i64_vector(name)?,
+        Some(name) => {
+            if num_outputs.is_some() {
+                return Err(OnnxError::Graph);
+            }
+            lowering.constant_i64_vector(name)?
+        }
+        None if version == 18 => {
+            let outputs = num_outputs.ok_or(OnnxError::Graph)?;
+            // Split-18 uses ceil-sized leading chunks, with the remainder in
+            // the final output. Every declared output must stay positive in the
+            // admitted native profile; do not clamp an empty/negative remainder.
+            let width = length.checked_add(outputs - 1).ok_or(OnnxError::Limit)? / outputs;
+            let last = length
+                .checked_sub(width.checked_mul(outputs - 1).ok_or(OnnxError::Limit)?)
+                .ok_or(OnnxError::Limit)?;
+            if last <= 0 {
+                return Err(OnnxError::Unsupported);
+            }
+            let mut parts = vec![width; count];
+            parts[count - 1] = last;
+            parts
+        }
         None => {
             if length % count as i64 != 0 {
                 return Err(OnnxError::Graph);

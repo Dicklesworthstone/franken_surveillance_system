@@ -544,10 +544,10 @@ status is recorded separately in `IMPLEMENTATION_STATUS.md`.
 ## Admitted model profile and bounds
 
 The command accepts ONNX IR 7–9 with exactly one default-domain opset import,
-either 13 or 17, under the bounded static F32 profile.
+one of 13, 17 or 18, under the bounded static F32 profile.
 Supported operators and their restrictions are specified in [onnx_import.md](onnx_import.md):
 Add, Sub, Mul, Div, bounded Pow, Sqrt, Erf, Relu, LeakyRelu, Clip, Sigmoid, HardSigmoid, Tanh, MatMul, Gemm, Softmax, Conv, ConvTranspose,
-BatchNormalization, InstanceNormalization, LayerNormalization (opset 17), MaxPool, AveragePool, GlobalAveragePool, Transpose,
+BatchNormalization, InstanceNormalization, LayerNormalization (opsets 17/18), MaxPool, AveragePool, GlobalAveragePool, Transpose,
 Concat, Constant, Reshape, Squeeze, Unsqueeze, Slice, Split, Resize, Expand, Tile,
 Gather, ReduceMean, ReduceSum, ReduceL2, Identity and Flatten.
 Bounded static Shape/Gather/INT64 control programs can supply layout and partition controls;
@@ -562,13 +562,13 @@ Runtime/data-dependent shapes, external tensors, custom operators, raw detector-
 profiles outside the explicit DFL or split-head assembly contracts and unsupported operators
 refuse explicitly. The command does not claim that an arbitrary ONNX detector can be imported.
 
-The opset-17 profile admits explicit inference `BatchNormalization.training_mode=0`,
+The opset-17/18 profiles admit explicit inference `BatchNormalization.training_mode=0`,
 `Reshape.allowzero=0`, and Shape's static `start`/`end` metadata slices. These
 attributes remain invalid under opset 13. Training mode, literal-zero Reshape
 mode, and other source opsets refuse. The existing F32 runtime and bounded INT64/BOOL
 control restrictions remain in force when a newer schema adds other dtypes.
 
-Opset-17 LayerNormalization accepts static positive F32 tensors of rank one
+LayerNormalization under opsets 17/18 accepts static positive F32 tensors of rank one
 through eight, a trailing normalization axis (default `-1`), positive finite F32
 epsilon (default `1e-5`), and `stash_type=1`. Scale and optional bias may be
 constant or runtime F32 tensors that broadcast to the input shape. Its native
@@ -581,6 +581,17 @@ Mean/InvStdDev outputs and other precision modes refuse; omitted bias and empty
 optional output placeholders are admitted. See
 [opset 17 and LayerNormalization](onnx_import.md#opset-17-and-layernormalization)
 for exact bounds, compatibility and execution tests.
+
+The explicit opset-18 profile also admits Mean/L2 reductions with static INT64
+input axes and Split with either explicit positive lengths or a matching
+`num_outputs`. Uneven splits use ceiling-sized leading chunks and a smaller
+positive final chunk. Empty-axis Mean no-op preserves sample bits; L2 no-op still
+executes square then square root, including native overflow/underflow behavior.
+Pad's omitted optional axes placeholder and Resize's equivalent defaults
+(`antialias=0`, aspect policy `stretch`, no subset axes) are accepted; new numerical
+modes remain unsupported. Source version 18 does not broaden the closed operator
+set or admit dynamic axes. See [opset 18 reductions and partitions](onnx_import.md#opset-18-reductions-and-partitions)
+for exact source forms, compatibility, budgets and native execution contracts.
 
 Sqrt and Erf admit unary static F32 tensors with no attributes and select the
 separate **Model IR v2** numerical contract. Sqrt preserves signed zero, uses

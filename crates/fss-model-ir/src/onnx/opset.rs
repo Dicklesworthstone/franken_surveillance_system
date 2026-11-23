@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Explicit schema admission at the two supported default-domain opsets.
+//! Explicit schema admission at the three supported default-domain opsets.
 //!
 //! Schema history: https://onnx.ai/onnx/operators/ . Between 13 and 17 the
 //! admitted F32 arithmetic and bounded INT64 controls retain their semantics.
@@ -8,6 +8,10 @@
 //! Reshape-14 and BatchNormalization-15 introduce mode attributes, which must
 //! never be silently interpreted using an earlier schema. Shape-15 adds a
 //! bounded metadata slice. LayerNormalization first exists at opset 17.
+//! The ONNX operator_sets.h version-18 registration changes only ReduceMean,
+//! ReduceL2, Split, Pad and Resize within this closed list. The reduction and
+//! partition lowerers receive the original source version. Pad/Resize retain
+//! only their earlier numerical subset, including explicit equivalent defaults.
 
 use super::{OnnxError, Result, SourceNode};
 use crate::AttrValue;
@@ -33,8 +37,38 @@ pub(super) fn admit(version: u64, source: &mut SourceNode<'_>) -> Result<()> {
             Ok(())
         };
     }
-    if version != 17 {
+    if !matches!(version, 17 | 18) {
         return Err(OnnxError::Unsupported);
+    }
+    if version == 18 {
+        match source.op.as_str() {
+            "Pad" => {
+                // Pad-18 adds optional input axes. An omitted placeholder has
+                // exactly the previous all-axis meaning; explicit axes remain
+                // outside this profile and must never be silently discarded.
+                if source.inputs.len() == 4 {
+                    if !source.inputs[3].is_empty() {
+                        return Err(OnnxError::Unsupported);
+                    }
+                    source.inputs.pop();
+                }
+            }
+            "Resize" => {
+                // Resize-18 adds subset axes, antialiasing and aspect policy.
+                // Retain the existing nearest/linear spatial resampler only.
+                if source.attrs.contains_key("axes") {
+                    return Err(OnnxError::Unsupported);
+                }
+                default_mode(source, "antialias")?;
+                match source.attrs.remove("keep_aspect_ratio_policy") {
+                    None => {}
+                    Some(AttrValue::String(value)) if value == "stretch" => {}
+                    Some(AttrValue::String(_)) => return Err(OnnxError::Unsupported),
+                    Some(_) => return Err(OnnxError::Graph),
+                }
+            }
+            _ => {}
+        }
     }
     match source.op.as_str() {
         "Reshape" => default_mode(source, "allowzero"),

@@ -16,6 +16,8 @@ mod matmul_vectors;
 mod maxpool_ceil;
 #[path = "onnx_attention_execution/one_dimensional.rs"]
 mod one_dimensional;
+#[path = "onnx_attention_execution/opset18.rs"]
+mod opset18;
 #[path = "onnx_attention_execution/reductions.rs"]
 mod reductions;
 #[path = "onnx_attention_execution/shape_selection.rs"]

@@ -1,9 +1,11 @@
 #![forbid(unsafe_code)]
-//! Opset-13 reductions with static axes and existing ordered F32 arithmetic.
+//! Versioned reductions with static axes and existing ordered F32 arithmetic.
 //!
 //! https://onnx.ai/onnx/operators/onnx__ReduceMean.html#reducemean-13
 //! https://onnx.ai/onnx/operators/onnx__ReduceSum.html#reducesum-13
 //! https://onnx.ai/onnx/operators/onnx__ReduceL2.html#reducel2-13
+//! https://onnx.ai/onnx/operators/onnx__ReduceMean.html#reducemean-18
+//! https://onnx.ai/onnx/operators/onnx__ReduceL2.html#reducel2-18
 //! Kept dimensions precede sorted reduced dimensions in a temporary permutation.
 //! A MatMul against exact ones sums each row from +0 in ascending F32 order.
 //! Mean divides by the exactly represented positive element count; L2 squares
@@ -171,14 +173,19 @@ fn append(
     Ok(output)
 }
 
-pub(super) fn lower(mut source: SourceNode<'_>, lowering: &mut Lowering<'_, '_>) -> Result<()> {
+pub(super) fn lower(
+    mut source: SourceNode<'_>,
+    lowering: &mut Lowering<'_, '_>,
+    version: u64,
+) -> Result<()> {
     let kind = match source.op.as_str() {
         "ReduceMean" => Kind::Mean,
         "ReduceSum" => Kind::Sum,
         "ReduceL2" => Kind::L2,
         _ => return Err(OnnxError::Unsupported),
     };
-    let maximum_inputs = if kind == Kind::Sum { 2 } else { 1 };
+    let input_axes = kind == Kind::Sum || version == 18;
+    let maximum_inputs = if input_axes { 2 } else { 1 };
     if source.inputs.is_empty()
         || source.inputs.len() > maximum_inputs
         || source.outputs.len() != 1
@@ -195,10 +202,10 @@ pub(super) fn lower(mut source: SourceNode<'_>, lowering: &mut Lowering<'_, '_>)
     }
     let dims = input.shape().dims().to_vec();
     lowering.admission.charge(1 + dims.len())?;
-    // Sum moved axes to an optional INT64 input in opset 13. Mean and L2
-    // still use the INTS attribute in this opset; never silently accept their
-    // later input-axes/noop forms or Sum's earlier attribute-axes form.
-    let raw_axes = if kind == Kind::Sum {
+    // Sum moved axes to an optional INT64 input in opset 13; Mean and L2
+    // follow in opset 18. The old source profiles and native graph bytes retain
+    // their original attribute/input distinction, including empty placeholders.
+    let raw_axes = if input_axes {
         match source.inputs.get(1).filter(|name| !name.is_empty()) {
             Some(name) => lowering.constant_i64_vector(name)?,
             None => Vec::new(),
@@ -211,11 +218,60 @@ pub(super) fn lower(mut source: SourceNode<'_>, lowering: &mut Lowering<'_, '_>)
         }
     };
     let keepdims = boolean_attribute(&mut source, "keepdims", true)?;
-    let noop = kind == Kind::Sum && boolean_attribute(&mut source, "noop_with_empty_axes", false)?;
+    let noop = input_axes && boolean_attribute(&mut source, "noop_with_empty_axes", false)?;
     if !source.attrs.is_empty() {
         return Err(OnnxError::Unsupported);
     }
     if noop && raw_axes.is_empty() {
+        if kind == Kind::L2 {
+            // The ReduceL2-18 function skips only ReduceSum. Mul and Sqrt still
+            // run, so signed zero, subnormal underflow and finite overflow are
+            // observably different from either identity or absolute value.
+            let limits = lowering.admission.limits;
+            if lowering
+                .nodes
+                .len()
+                .checked_add(2)
+                .ok_or(OnnxError::Limit)?
+                > limits.nodes
+                || lowering
+                    .known
+                    .len()
+                    .checked_add(2)
+                    .ok_or(OnnxError::Limit)?
+                    > limits.tensors
+                || lowering
+                    .reserved
+                    .len()
+                    .checked_add(1)
+                    .ok_or(OnnxError::Limit)?
+                    > limits.tensors
+            {
+                return Err(OnnxError::Limit);
+            }
+            lowering.admission.charge(2)?;
+            let mut remaining = 2;
+            let input = source.inputs[0].clone();
+            let square = append(
+                &source,
+                kind,
+                lowering,
+                &mut remaining,
+                OpCode::Mul,
+                vec![input.clone(), input],
+                AttributeMap::new(),
+            )?;
+            append(
+                &source,
+                kind,
+                lowering,
+                &mut remaining,
+                OpCode::Sqrt,
+                vec![square],
+                AttributeMap::new(),
+            )?;
+            return Ok(());
+        }
         // Identity must preserve signed zeros and subnormals bit-for-bit.
         // Summing a width-one row would change -0 to +0, so use Reshape.
         append(

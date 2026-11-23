@@ -35,7 +35,7 @@ including hand-computed dense and convolution/pooling results.
 ## Admitted source profile
 
 - ONNX IR versions 7 through 9, with exactly one default-domain opset import,
-  either 13 or 17. Intermediate and newer opsets are not implicitly admitted.
+  one of 13, 17 or 18. Other opsets are not implicitly admitted.
 - F32 runtime inputs/outputs and finite embedded F32 initializers. Raw little-endian
   data and packed/unpacked `float_data` are supported, including signed zero.
 - Embedded INT64 initializers, Constant values and bounded static shape programs
@@ -47,7 +47,7 @@ including hand-computed dense and convolution/pooling results.
 - Static positive dimensions, at most rank eight. Source-ordered acyclic graphs;
   declared outputs and intermediate value information must match native inference.
 - Add, Sub, Mul, Div, bounded Pow, Sqrt, Erf, Relu, LeakyRelu, Clip, Sigmoid, HardSigmoid, Tanh, MatMul, Gemm, Softmax, Conv, ConvTranspose,
-  BatchNormalization, InstanceNormalization, LayerNormalization (opset 17), MaxPool, AveragePool, GlobalAveragePool, Transpose,
+  BatchNormalization, InstanceNormalization, LayerNormalization (opsets 17/18), MaxPool, AveragePool, GlobalAveragePool, Transpose,
   Concat, Constant, Reshape, Squeeze, Unsqueeze, Slice, Split, Resize, Pad, Expand, Tile,
   DepthToSpace, SpaceToDepth,
   Gather, ReduceMean, ReduceSum, ReduceL2, Identity and Flatten.
@@ -83,7 +83,7 @@ executable merely by mentioning it in value-info metadata.
 ## Static Boolean masks selecting F32 data
 
 The importer admits ONNX [Where-9/16](https://onnx.ai/onnx/operators/onnx__Where.html)
-under its existing opset-13/17 profiles when the condition is known at import
+under its opset-13/17/18 profiles when the condition is known at import
 time and both value branches are F32 tensors. This supports fixed feature masks
 and attention masks while the selected values remain runtime model data.
 
@@ -132,7 +132,7 @@ current implementation status and session handoff.
 ## One-dimensional convolution and pooling
 
 Static F32 sequence tensors `[N,C,L]` now admit `Conv`, `MaxPool` and
-`AveragePool` under opsets 13 and 17. The importer appends a unit spatial axis,
+`AveragePool` under opsets 13, 17 and 18. The importer appends a unit spatial axis,
 runs the existing native spatial lowering on `[N,C,L,1]`, then restores the
 rank-three result. This permits temporal and sequence blocks inside an admitted
 model without adding an operator, foreign runtime or model wire format.
@@ -172,9 +172,58 @@ optimized executors, canonical graph/Safetensors reload, an independent grouped
 convolution oracle, pooling boundaries, compatibility, limits and cancellation.
 Current execution evidence is recorded in `IMPLEMENTATION_STATUS.md`.
 
+## Opset 18 reductions and partitions
+
+The explicit opset-18 profile uses the same closed operator allowlist and static
+F32 runtime. It implements the changed Mean/L2 and Split schemas; Pad and Resize
+admit only source forms equivalent to their existing supported numerical subset.
+Unchanged operators retain their existing attribute, shape, dtype and budget checks.
+ONNX IR remains limited to versions 7–9. Selecting opset 18 does not admit a new
+operator, runtime integer/Boolean computation, dynamic shapes or model activation.
+
+| Operator selected by opset 18 | Admitted source form | Explicit boundary |
+| --- | --- | --- |
+| [ReduceMean-18](https://onnx.ai/onnx/operators/onnx__ReduceMean.html#reducemean-18) | Optional static INT64 axes input, `keepdims` and `noop_with_empty_axes` | The former `axes` attribute and runtime axes refuse. |
+| [ReduceL2-18](https://onnx.ai/onnx/operators/onnx__ReduceL2.html#reducel2-18) | The same input-axis controls, retaining separate F32 square, reduction and square root | Empty-axis no-op skips only the reduction; square and square root still execute. |
+| [Split-18](https://onnx.ai/onnx/operators/onnx__Split.html#split-18) | Static positive split lengths **or** `num_outputs` equal to the declared one-to-eight output count | Exactly one form is required; zero-sized outputs and dynamic partitions refuse. |
+| [Pad-18](https://onnx.ai/onnx/operators/onnx__Pad.html#pad-18) | Existing all-axis padding, including an omitted fourth-input placeholder | An explicit axes input remains unsupported. |
+| [Resize-18](https://onnx.ai/onnx/operators/onnx__Resize.html#resize-18) | Existing nearest/linear spatial modes, omitted axes, `antialias=0` and `keep_aspect_ratio_policy="stretch"` | Subset axes, enabled antialiasing and other aspect policies refuse. |
+
+Mean/L2 axes can come from an initializer, Constant or the existing bounded static
+shape program. Omitted or empty axes reduce all dimensions by default. With
+`noop_with_empty_axes=1`, Mean emits a bit-preserving Reshape when axes are empty;
+L2 emits Mul followed by Sqrt, with no generated parameters. For L2 this can turn
+negative zero into positive zero, underflow small inputs or overflow finite inputs.
+Replacing it with identity or absolute value would change the specified arithmetic.
+Nonempty axes still perform the requested reduction even when the no-op flag is set.
+
+`Split.num_outputs` uses ceiling-sized leading chunks and a smaller final chunk
+when necessary. For example, a length-ten axis split three ways yields lengths
+`[4, 4, 2]`. Every output must remain positive in this profile. Native Slice nodes
+preserve output order and exact input bits; no generated weights are required.
+
+The expansion uses the original aggregate node, tensor, embedded/generated byte,
+work and cancellation limits. The two-node L2 no-op is preflighted as a complete
+expansion. Existing opset-13/17 control forms remain distinct and retain their
+canonical native graph and parameter encodings. The original ONNX digest and the
+source-bound importer identity still travel with exported artifacts.
+
+The `opset18` cases in `onnx_attention_execution` exercise rank-zero-through-eight
+reductions against independent ordered arithmetic, exact legacy graph bytes,
+empty-axis bit/overflow behavior, even/uneven partitions, a pooled feature head
+through Split and MatMul, existing LayerNormalization/Where/Resize/Pad compatibility,
+schema refusals, resource boundaries and cancellation. Execution results are recorded
+in `IMPLEMENTATION_STATUS.md`; these bounded contracts do not qualify arbitrary
+models or trained detector accuracy.
+
+```sh
+cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir --test onnx_attention_execution opset18
+```
+
 ## Opset 17 and LayerNormalization
 
-The importer has an explicit opset-17 operator allowlist. Existing lowerers still
+The importer has an explicit opset-17 operator allowlist, also used by the
+version-specific opset-18 admission above. Existing lowerers still
 check every attribute, dtype, shape and numerical restriction. Schema changes
 that only add types do not broaden the admitted F32 data or bounded INT64/BOOL
 control profile. Existing valid opset-13 graphs keep their native graph encoding
@@ -660,9 +709,10 @@ cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir --test onnx_at
 ```
 
 ReduceMean accepts static positive F32 shapes from scalars through rank eight.
-Its `axes` attribute may contain distinct positive or negative axes. Omitted
-or empty axes means all dimensions, as in the opset-13 reference; the later
-input-axes and `noop_with_empty_axes` forms are not admitted. `keepdims`
+Under opsets 13/17 its `axes` attribute may contain distinct positive or negative axes.
+Omitted or empty axes means all dimensions; those source versions refuse the later
+input-axes and `noop_with_empty_axes` forms. Opset 18 uses the separate input-axis
+contract above. `keepdims`
 defaults to one; zero removes reduced dimensions. Duplicate axes, invalid
 attribute types, unsupported attributes and conflicting output shapes refuse.
 An explicitly empty INTS attribute is accepted both as an absent repeated-field
@@ -723,8 +773,9 @@ its second input; ReduceL2 takes the `axes` INTS attribute. Sum axes may come fr
 an initializer, Constant node or the existing bounded static shape programs.
 They remain compile-time controls, never runtime integer parameters. Runtime
 axes, non-vector or non-INT64 controls, duplicate/out-of-range axes and unsupported
-attributes refuse. Sum's older attribute-axes form and L2's later input-axes and
-`noop_with_empty_axes` forms refuse explicitly.
+attributes refuse. Sum's older attribute-axes form refuses explicitly. L2's later
+input-axes and `noop_with_empty_axes` forms refuse under opsets 13/17; the explicit
+opset-18 profile admits them with the distinct empty-axis arithmetic described above.
 
 Omitted or empty axes reduce all dimensions by default. ReduceSum also accepts
 the empty optional-input placeholder and `noop_with_empty_axes=1`. With omitted
@@ -1156,7 +1207,8 @@ defaults to zero and may be negative. An embedded INT64 vector supplies positive
 partition lengths that must sum exactly to the input's selected dimension. With
 that optional input omitted, or an empty optional input name, the dimension must
 divide exactly into equal parts. Zero-sized outputs, dynamic lengths, the older
-`split` attribute and the later `num_outputs` attribute refuse.
+`split` attribute and, under opsets 13/17, the later `num_outputs` attribute refuse.
+Opset 18 has the separate explicit-partition/`num_outputs` contract above.
 
 Each output lowers to a native Slice over the original input. Output declaration
 order and F32 bits, including signed zero and subnormals, are preserved; no runtime
@@ -1366,8 +1418,10 @@ all source names, including later source values.
 value must still be one of the four Resize-13 enum values and have the proper type.
 Finite `cubic_coeff_a` and `extrapolation_value` attributes are validated but unused.
 Cubic interpolation, nonempty ROI, `exclude_outside=1`, crop/extrapolation modes,
-`tf_half_pixel_for_nn`, later-opset antialias/axes attributes and unknown attributes
-remain explicit refusals. No native operator ID, canonical graph version, production
+`tf_half_pixel_for_nn`, enabled antialiasing, subset axes and unknown attributes
+remain explicit refusals. Opsets 13/17 also reject the later antialias/axes/aspect
+attributes; opset 18 admits only the equivalent defaults specified above.
+No native operator ID, canonical graph version, production
 runtime dependency or model-activation authority changes. The new lowering/planner
 sources participate in the source-bound importer identity; original ONNX bytes remain
 intact.
