@@ -51,10 +51,16 @@ fn explicit_transport_parser_preserves_bindings_and_capture_assumptions() -> Tes
     assert!(request.file.rtp_binding.is_none());
     assert!(request.file.capture_hint.is_none());
     assert_eq!(request.selection, TsSelection::default());
+    assert_eq!(request.framing, TsFraming::Ts188);
     assert_eq!(request.transport_limits.max_input_bytes as u64, MAX_BYTES);
     assert_eq!(request.transport_limits.max_elementary_bytes as u64, MAX_BYTES);
     assert_eq!(request.file.limits.annexb_limits.max_input_bytes as u64, MAX_BYTES);
     assert_eq!(action.work_units, DEFAULT_WORK_UNITS);
+    let explicit_default = parsed_action(parsed(&args(&["--ts-framing", "ts188"]))?)?;
+    assert_eq!(explicit_default.request.digest()?, request.digest()?);
+    let m2ts = parsed_action(parsed(&args(&["--ts-framing", "m2ts192"]))?)?;
+    assert_eq!(m2ts.request.framing, TsFraming::M2ts192);
+    assert_ne!(m2ts.request.digest()?, request.digest()?);
 
     let selected = parsed_action(parsed(&args(&[
         "--ts-program", "65535", "--ts-video-pid", "8190",
@@ -102,6 +108,10 @@ fn transport_options_reject_cross_protocol_flags_invalid_scope_and_unbounded_wor
         ("--work-units", "-1"), ("--work-units", "+1"),
         ("--work-units", "4294967297"), ("--work-units", "18446744073709551616"),
         ("--capture-start-ns", "0"),
+        ("--ts-framing", "auto"),
+        ("--ts-framing", "188"),
+        ("--ts-framing", "192"),
+        ("--ts-framing", "M2TS192"),
     ] {
         assert!(parse_command(&args(&[key, value])).is_err(), "{key} {value}");
     }
@@ -113,6 +123,7 @@ fn transport_options_reject_cross_protocol_flags_invalid_scope_and_unbounded_wor
     for (key, value) in [
         ("--ts-program", "1"), ("--ts-video-pid", "256"),
         ("--max-elementary-bytes", "1024"), ("--max-ts-pes", "1"),
+        ("--ts-framing", "m2ts192"),
     ] {
         let mut ordinary = args(&[key, value]);
         ordinary[0] = OsString::from("import");
@@ -237,6 +248,8 @@ fn native_avc_and_hevc_dispatch_reopen_verified_custody_and_reuse_the_import() -
         let report = execute(&arguments)?;
         assert_eq!(field(&report, "operation")?, "import-ts");
         assert_eq!(field(&report, "transport_container")?, "mpegts");
+        assert_eq!(field(&report, "ts_framing")?, "ts188");
+        assert!(field(&report, "source_m2ts_prefix_clock").is_err());
         assert_eq!(field(&report, "video_codec")?, if codec == VideoCodec::Avc { "h264" } else { "h265" });
         assert_eq!(field(&report, "ts_program")?, "1");
         assert_eq!(field(&report, "ts_video_pid")?, "256");
@@ -341,6 +354,77 @@ fn damaged_original_or_final_cancellation_withholds_report_and_manifest_export()
         assert!(report.is_empty());
         assert!(!export.exists());
         cx.drain_and_finalize();
+    }
+    Ok(())
+}
+
+#[test]
+fn explicit_m2ts_command_reports_verified_custody_and_replays_without_the_loose_file() -> Test {
+    for codec in [VideoCodec::Avc, VideoCodec::Hevc] {
+        let directory = Directory::new(&format!("m2ts-{codec:?}"))?;
+        let root = directory.0.join("deployment");
+        let input = directory.0.join("recording.m2ts");
+        let (transport, elementary) = recording(codec);
+        let framed: Vec<u8> = transport
+            .chunks_exact(188)
+            .enumerate()
+            .flat_map(|(index, packet)| {
+                let prefix = u32::MAX.wrapping_sub((index as u32).wrapping_mul(0x4747_4747));
+                prefix
+                    .to_be_bytes()
+                    .into_iter()
+                    .chain(packet.iter().copied())
+            })
+            .collect();
+        fs::write(&input, &framed)?;
+        // A filename extension never changes the legacy default or authorizes framing guesses.
+        let mut refused = Vec::new();
+        assert!(run_command(parsed(&bound_args(&root, &input, &[]))?, &mut refused).is_err());
+        assert!(refused.is_empty());
+        let arguments = bound_args(&root, &input, &["--ts-framing", "m2ts192"]);
+        let report = execute(&arguments)?;
+        assert_eq!(field(&report, "operation")?, "import-ts");
+        assert_eq!(field(&report, "ts_framing")?, "m2ts192");
+        assert_eq!(
+            field(&report, "source_m2ts_prefix_clock")?,
+            "opaque_untrusted"
+        );
+        assert_eq!(field(&report, "capture_time_class")?, "unknown");
+        assert_eq!(field(&report, "source_pts_is_utc")?, "false");
+        assert_eq!(
+            field(&report, "original_ts_sha256")?,
+            ContentDigest::sha256(&framed).to_text()
+        );
+        assert_eq!(
+            field(&report, "original_ts_bytes")?.parse::<usize>()?,
+            framed.len()
+        );
+        assert_eq!(
+            field(&report, "verified_elementary_sha256")?,
+            ContentDigest::sha256(&elementary).to_text()
+        );
+        assert_eq!(
+            field(&report, "segment_count")?,
+            if codec == VideoCodec::Avc { "4" } else { "6" }
+        );
+        let identity = field(&report, "import_identity")?;
+        let retry = execute(&arguments)?;
+        assert_eq!(field(&retry, "import_identity")?, identity);
+        assert_eq!(field(&retry, "reused")?, "true");
+        fs::remove_file(&input)?;
+        let verify = [
+            OsString::from("verify"),
+            OsString::from("--root"),
+            root.as_os_str().to_owned(),
+            OsString::from("--site"),
+            OsString::from("site:ts-cli"),
+            OsString::from("--import-id"),
+            OsString::from(identity),
+        ];
+        assert_eq!(
+            field(&execute(&verify)?, "verified_source_sha256")?,
+            ContentDigest::sha256(&elementary).to_text()
+        );
     }
     Ok(())
 }

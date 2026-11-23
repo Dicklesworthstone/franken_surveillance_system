@@ -62,7 +62,9 @@ const HELP: &str = "fss-file <import|import-ts|inspect|verify|extract|select-mov
           header fits both codecs)\n\
           [--capture-start-ns N --capture-uncertainty-ns N --assumed-fps F]\n\
   import-ts: --input FILE --sensor ID --stream ID --receive-time-ns N\n\
-          Finite 188-byte MPEG-TS with one AVC/HEVC program/video PID; originals are retained.\n\
+          Finite MPEG-TS with one AVC/HEVC program/video PID; originals are retained.\n\
+          [--ts-framing ts188|m2ts192] (default ts188); M2TS uses a four-byte opaque prefix\n\
+          per 192-byte packet. Framing is explicit; prefix timestamps remain untrusted.\n\
           [--ts-program N (1..65535)] [--ts-video-pid N (16..8190)]; omitted selection must\n\
           be unambiguous. Same explicit capture hint as import; PTS/DTS are media ticks,\n\
           never UTC or trusted capture time. Segments are native Annex-B access units,\n\

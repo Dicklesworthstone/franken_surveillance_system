@@ -12,6 +12,10 @@ use fss_core::{
 };
 use std::collections::BTreeSet;
 
+#[cfg(test)]
+#[path = "provenance_tests.rs"]
+mod tests;
+
 pub(super) struct Proof {
     pub(super) request: MpegTsImportRequest,
     pub(super) receipt: TsExtractionReceipt,
@@ -31,9 +35,14 @@ fn size(d: &mut CanonicalDecoder<'_>) -> Result<usize, FileIngestError> {
 }
 fn request(bytes: &[u8]) -> Result<MpegTsImportRequest, FileIngestError> {
     let mut d = CanonicalDecoder::new(bytes);
-    if d.text()? != REQUEST_DOMAIN {
-        return Err(corrupt("request domain"));
-    }
+    let framing = match d.text()? {
+        REQUEST_DOMAIN => TsFraming::Ts188,
+        FRAMED_REQUEST_DOMAIN => match d.u8()? {
+            2 => TsFraming::M2ts192,
+            _ => return Err(corrupt("request framing")),
+        },
+        _ => return Err(corrupt("request domain")),
+    };
     let sensor = SensorId::parse(d.text()?)?;
     let stream = StreamId::parse(d.text()?)?;
     let receive = TimestampNs(d.i128()?);
@@ -88,6 +97,7 @@ fn request(bytes: &[u8]) -> Result<MpegTsImportRequest, FileIngestError> {
     file.capture_hint = capture_hint;
     let value = MpegTsImportRequest {
         file,
+        framing,
         selection: TsSelection { program, video_pid },
         transport_limits,
     };
@@ -109,6 +119,7 @@ impl Proof {
             || source_bytes > MAX_BYTES
             || self.receipt.elementary_bytes() == 0
             || self.receipt.elementary_bytes() > MAX_BYTES
+            || self.receipt.framing() != self.request.framing
             || self.receipt.selection() != self.request.selection
             || self.receipt.limits() != self.request.transport_limits
             || self.original_chunks.len() as u64 != count

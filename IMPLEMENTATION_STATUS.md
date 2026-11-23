@@ -5,6 +5,39 @@
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
 
+## Retained M2TS import and operator command — 2026-11-23
+
+`fss-file import-ts --ts-framing m2ts192` now selects the framed parser through
+the existing native retained-import owner. The default and explicit `ts188`
+paths keep their previous request identity. M2TS uses a separate canonical
+request version, and the original-source proof refuses disagreement between
+request framing and extraction framing. Retained verification reconstructs the
+complete original, including every prefix and unselected packet, under that
+committed framing. Capture time remains unknown or an explicit operator assumption.
+
+The command reports `ts_framing` and labels M2TS prefix clocks opaque/untrusted.
+Exact retries, original-byte verification and publication ordering remain with
+the existing owners. Eight native integration contracts, two proof-grammar unit
+contracts and seven CLI contracts include both codecs, cold replay without the
+loose source, corrupted prefix/unselected bytes, invalid framing and bounds,
+version mismatches and verified operator reporting. Stale fixture assertions
+now count all four AVC or six HEVC pictures in the repeated native recordings.
+
+The underlying parser/receipt suite passed 35 tests and the original model
+regression harness passed 118 tests, as recorded below. Native retained-import
+and CLI compilation/execution remain **unverified in this session**. The actual
+pinned, locked/offline reference integration metadata check first encountered
+shared-filesystem ENOSPC. After removing only reproducible installer copies,
+the retry reached unchanged Asupersync 0.5.0 and its metadata compiler was killed
+by signal 9, despite the documented serial compiler settings. It emitted no
+Rust source diagnostic and never reached the changed reference or CLI targets.
+No replacement dependencies, fake owners or weakened test assertions were used.
+Pinned formatting parsed all eight changed files; independent source review
+found no blocker. See [operator workflow](docs/FILE_IMPORT_WORKFLOW.md),
+[receipt semantics](docs/MPEG_TS_RECEIPTS.md) and
+[the session handoff](docs/SESSION_HANDOFF_2026-11-23_M2TS_AND_SEQUENCE_MODELS.json).
+FSS-054 / `fss-x4a.12.3` and broad media/release gates remain open.
+
 ## Verified archive media restoration — 2026-11-23
 
 The bounded S3 retrieval owner now retains verified bytes for actual restoration.
@@ -72,14 +105,17 @@ allowances. The separate importer fingerprint includes the new module. Existing
 GlobalAveragePool rank support and RGB package image-input requirements remain
 unchanged; this does not create an audio input or activate a model.
 
-The genuine core, tensor and model-IR libraries compiled with the pinned
-`nightly-2026-08-31` toolchain, and scoped rustfmt passed for all five feature
-source/test files. Eight new contracts cover independent convolution/pooling
+The genuine pinned `onnx_attention_execution` harness passed **118 tests, zero
+failures**, with one existing performance experiment intentionally ignored.
+All eight new feature tests passed, including independent convolution/pooling
 oracles, actual scalar/optimized execution, artifact reload, legacy graph bytes,
-malformed inputs, exact bounds and cancellation. The ordinary focused test build
-was killed by signal 9 while generating the test executable, with no Rust source
-diagnostic; no new test had executed at this checkpoint. A target-only compiler
-retry preserves the same source, dependencies and tests. See
+malformed inputs, exact bounds and cancellation. Scoped rustfmt passed for all
+five feature source/test files. The ordinary build was killed by signal 9 while
+generating the test executable; a target-only rebuild with the documented serial
+frontend/backend/linker, MIR0/fewer-names and codegen256 settings succeeded.
+The exact original Cargo-built binary then ran serially, with no substituted
+modules, removed assertions or changed dependencies. This is focused developer
+validation, not full reference-crate or release qualification. See
 [one-dimensional import](docs/onnx_import.md#one-dimensional-convolution-and-pooling).
 This advances FSS-139 (`fss-x4a.14.10`); broader model and release gates remain open.
 
@@ -98,13 +134,13 @@ verification, cancellation and corruption refusal remain enforced. New contracts
 cover both codecs, source mappings, duplicate packets with different prefixes,
 truncation/sync errors, exact limits and resealed version/framing substitutions.
 
-The genuine `fss-container` library compiled on `nightly-2026-08-31`. Independent
-comparison with the receipt encoder at `7286814285fa8c35912d6899f0605f035fcbfdba`
-confirmed byte-for-byte identical 299-byte AVC and HEVC v1 receipts; both vectors
-are retained as regression fixtures. The focused library suite is still pending
-execution on the heavily loaded shared host; compilation and compatibility
-comparison are not a passing test-suite claim. Native retained import and the
-operator command are separate integration work. See
+The genuine pinned Cargo library suite passed **35 tests, zero failures** with
+`cargo test --locked --offline -p fss-container --lib mpeg_ts -- --test-threads=1`.
+It includes all existing transport contracts, the new M2TS framing/receipt cases
+and the legacy byte fixtures. An independent comparison against the complete
+unmodified parser and receipt encoder at `7286814285fa8c35912d6899f0605f035fcbfdba`
+also confirmed identical 299-byte AVC and HEVC v1 receipts. Native retained import
+and the operator command have separate validation scope. See
 [MPEG-TS receipts](docs/MPEG_TS_RECEIPTS.md). This is scoped progress under
 FSS-054 (`fss-x4a.12.3`); broad media and release gates remain open.
 

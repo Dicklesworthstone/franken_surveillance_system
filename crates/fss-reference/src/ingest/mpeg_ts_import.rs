@@ -16,7 +16,7 @@ use std::io::Read;
 
 use fss_container::demux::VideoCodec;
 use fss_container::mpeg_ts::{
-    MpegTsVideo, TsError, TsLimits, TsSelection, receipt::TsExtractionReceipt,
+    MpegTsVideo, TsError, TsFraming, TsLimits, TsSelection, receipt::TsExtractionReceipt,
 };
 use fss_core::{CanonicalEncoder, ContentDigest, ContractError, TimestampNs};
 use fss_geometry::WorkBudget;
@@ -35,6 +35,7 @@ pub const ADAPTER: &str = "ADP-MPEGTS-FILE-001";
 pub(crate) const GENERATION: &str = "gen:mpegts-file:v1:";
 pub(crate) const DOMAIN: &str = "fss.mpegts_file_import.v1";
 const REQUEST_DOMAIN: &str = "fss.mpegts_file_import_request.v1";
+const FRAMED_REQUEST_DOMAIN: &str = "fss.mpegts_file_import_request.v2";
 const IDENTITY_DOMAIN: &str = "fss.mpegts_file_import_identity.v1";
 const SCAN_DOMAIN: &str = "fss.mpegts_file_import_scan.v1";
 const DETECTOR: &str = "native_mpegts:reconstructed_annexb:original_transport_retained";
@@ -52,6 +53,9 @@ pub struct MpegTsImportRequest {
     /// Existing file authority, sensor, stream, receive time, split and chunk limits.
     /// A media-format hint or recorded-RTP binding is refused for this explicit operation.
     pub file: FileIngestRequest,
+    /// Physical packet framing, supplied by the owner rather than inferred from source bytes.
+    /// Standard TS is the default; M2TS prefixes remain opaque original custody.
+    pub framing: TsFraming,
     /// Program and video PID; omitted values require unambiguous native selection.
     pub selection: TsSelection,
     /// Independent transport parsing and elementary-output limits.
@@ -69,6 +73,7 @@ impl MpegTsImportRequest {
         };
         Self {
             file,
+            framing: TsFraming::Ts188,
             selection: TsSelection::default(),
             transport_limits,
         }
@@ -123,7 +128,13 @@ impl MpegTsImportRequest {
         let file = &self.file;
         let limits = &file.limits;
         let mut e = CanonicalEncoder::new();
-        e.text(REQUEST_DOMAIN);
+        match self.framing {
+            TsFraming::Ts188 => e.text(REQUEST_DOMAIN),
+            TsFraming::M2ts192 => {
+                e.text(FRAMED_REQUEST_DOMAIN);
+                e.u8(2);
+            }
+        }
         e.text(file.sensor_id.as_str());
         e.text(file.stream_id.as_str());
         e.i128(file.receive_time.map_or(-1, |t| t.0));
@@ -301,6 +312,8 @@ pub struct MpegTsImportReceipt {
     pub original_bytes: u64,
     /// Exact number of reconstructed elementary bytes.
     pub elementary_bytes: u64,
+    /// Physical framing committed by the original-source extraction receipt.
+    pub framing: TsFraming,
     /// Video codec declared by the selected PMT and routed to the native splitter.
     pub codec: VideoCodec,
     /// Selected PAT program number.
@@ -426,8 +439,9 @@ pub fn import_mpeg_ts_file(
     }
     guard(destination, cx)?;
     work.charge(original.len() as u64).map_err(work_error)?;
-    let video = MpegTsVideo::parse_with_checkpoint(
+    let video = MpegTsVideo::parse_framed_with_checkpoint(
         &original,
+        request.framing,
         request.selection,
         request.transport_limits,
         &mut || checkpoint(cx).map_err(|_| TsError::Cancelled),

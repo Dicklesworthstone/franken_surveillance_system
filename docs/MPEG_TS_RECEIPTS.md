@@ -78,12 +78,22 @@ Recorded source lengths and packet counts must agree with the selected stride.
 Current-limit intersection and full original replay remain mandatory during
 bounded verification; changing only an opaque prefix invalidates the source pin.
 
+Native import requests likewise preserve the standard v1 encoding and select
+`fss.mpegts_file_import_request.v2` only for M2TS. The retained origin proof checks
+that request framing and extraction-receipt framing agree. A cold reader uses
+that committed framing to reconstruct bytes, without needing the loose source.
+`MpegTsImportRequest::new` still defaults to standard TS; set its `framing` field
+explicitly for M2TS. The operator command is
+`fss-file import-ts ... --ts-framing m2ts192`; see the
+[file import workflow](FILE_IMPORT_WORKFLOW.md#import-a-finite-mpeg-ts-recording).
+
 ## Native retained-import integration
 
 `fss_reference::ingest::mpeg_ts_import::import_mpeg_ts_file` uses this receipt to
 publish one bounded original transport recording through the existing native
 retained-media owners. `MpegTsImportRequest` carries a `FileIngestRequest`, an
-explicit or unambiguous `TsSelection`, and independent `TsLimits`. The caller also
+explicit `TsFraming`, an explicit or unambiguous `TsSelection`, and independent
+`TsLimits`. The caller also
 supplies its existing `ReplayCx` and one cumulative `WorkBudget`.
 
 The `ADP-MPEGTS-FILE-001` publication retains the complete original transport,
@@ -96,26 +106,33 @@ separate 64 MiB ceilings, with at most 65,536 native access units and original
 chunks. Retry can complete an unpublished suffix but cannot repair corrupted
 already-published originals from the loose input.
 
-Five integration contracts in `mpeg_ts_import_contract.rs` exercise this path
-using real native AVC/HEVC decoder fixtures. They are authored but unexecuted;
-run `cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test mpeg_ts_import_contract`
-on the qualification host before claiming retained decode success.
+Eight integration contracts in `mpeg_ts_import_contract.rs` exercise this path
+using real native AVC/HEVC decoder fixtures, including M2TS cold replay, original
+prefix/unselected-byte corruption and refusal before publication. Two additional
+proof-unit cases bind exact request versions and reject framing disagreement.
+These native tests remain unexecuted: the 2026-11-23 metadata-check retry was
+killed while compiling unchanged Asupersync 0.5.0, before reaching the reference
+target. Run
+`cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test mpeg_ts_import_contract`
+on a host that completes the real dependency before claiming retained decode
+success. The passing container suite below has narrower scope.
 
 ## Validation status
 
-The container library compiled on the pinned compiler on 2026-11-23. An
-independent harness compared the v1 receipt encoder from commit
-`7286814285fa8c35912d6899f0605f035fcbfdba` with the current encoder and established
-byte-for-byte equality for both AVC and HEVC fixtures (299 bytes each). The
+The complete focused MPEG-TS Cargo library suite passed **35 tests, zero
+failures** on the pinned compiler on 2026-11-23. An independent harness also
+compared the complete unmodified parser and v1 receipt encoder from commit
+`7286814285fa8c35912d6899f0605f035fcbfdba` with the current implementation and
+established byte-for-byte equality for both AVC and HEVC fixtures (299 bytes each). The
 fixed vectors are retained in `tests/fixtures/avc_i64.receipt-v1.hex` and
 `tests/fixtures/hevc_i64.receipt-v1.hex` under `crates/fss-container`.
 
-The focused library suite remains pending execution on the shared build host.
-It includes the earlier source/selection/policy/corruption/cancellation contracts
+The passing focused library suite includes the earlier
+source/selection/policy/corruption/cancellation contracts
 plus explicit M2TS source mappings, prefix custody, continuity, malformed framing,
-exact bounds, receipt version/tag refusals and legacy byte fixtures. Neither the
-compiled library nor the independent encoder comparison substitutes for that
-suite or the native retained-import tests.
+exact bounds, receipt version/tag refusals and legacy byte fixtures. This validates
+the finite parser and receipt contracts; native retained-import and operator-command
+execution have separate validation scope.
 
 Required focused command:
 

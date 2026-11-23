@@ -1,0 +1,146 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-23",
+  "date_timezone": "America/New_York",
+  "mission": "Implement consequential remaining functionality from the comprehensive plan and Beads, with meaningful direct-main GitHub commits and no PRs.",
+  "basis": {
+    "initial_commit": "7286814285fa8c35912d6899f0605f035fcbfdba",
+    "plan": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+    "backlog": ".beads/issues.jsonl",
+    "selection": "The plan, backlog and actual implementation were inspected before edits. Many broad open items already had implementations; selected concrete unsupported input profiles in the working media/model paths.",
+    "requirements": [
+      {
+        "bead": "fss-x4a.12.3",
+        "requirement": "FSS-054",
+        "state": "open; finite transport and retained-import capability advanced"
+      },
+      {
+        "bead": "fss-x4a.14.10",
+        "requirement": "FSS-139",
+        "state": "open; additional native model layers admitted"
+      }
+    ]
+  },
+  "authority": {
+    "repository": "User explicitly authorized direct commits to main through GitHub. Publications use verified parent trees and expected-head checks with force=false.",
+    "runtime": "Existing bounded source-read, cancellation, publication and inference owners remain authoritative. No live camera or external provider was contacted.",
+    "concurrent_work": "Concurrent website, native archive, recovery and HEVC changes were preserved. This session does not claim those changes as its deliverables."
+  },
+  "delivered": [
+    {
+      "feature": "Explicit M2TS parser and extraction receipts",
+      "commit": "136a67f3860c5f8f6b4a421ce1fe0e22b7f01601",
+      "scope": "192-byte framing with opaque four-byte prefixes; absolute original-source spans, complete original digests, inner-TS continuity and versioned receipts. Existing 188-byte entry points and receipt bytes retain their meaning."
+    },
+    {
+      "feature": "One-dimensional Conv, MaxPool and AveragePool import",
+      "commit": "d01fd524fa2cff84110084a06584ab948663cdcd",
+      "scope": "Static F32 NCW source tensors lower through existing spatial kernels and exact reshapes. Grouping, runtime weights, supported padding and finite resource/cancellation rules remain enforced. No operator, dependency or durable format added."
+    },
+    {
+      "feature": "Native retained M2TS import and operator command",
+      "commit": "the commit containing this handoff",
+      "scope": "Explicit --ts-framing ts188|m2ts192; v2 M2TS requests agree with extraction framing; retained original custody/replay and reports carry the selection. Existing default request identity is unchanged.",
+      "tests_authored": {
+        "native_integration": 8,
+        "proof_unit": 2,
+        "cli": 7
+      },
+      "validation": "Source-reviewed and formatting-parsed; native compilation/execution blocked before these targets."
+    }
+  ],
+  "validation": {
+    "toolchain": "nightly-2026-08-31; rustc 1.100.0-nightly (908501772 2026-08-30)",
+    "media": {
+      "command": "cargo test --locked --offline -p fss-container --lib mpeg_ts -- --test-threads=1",
+      "passed": 35,
+      "failed": 0,
+      "filtered_out": 142,
+      "scope": "Actual pinned Cargo library suite, including every new M2TS framing/receipt case and legacy byte vectors."
+    },
+    "legacy_compatibility": {
+      "baseline": "7286814285fa8c35912d6899f0605f035fcbfdba",
+      "method": "Compile and run the entire unmodified baseline MPEG-TS parser and receipt encoder, comparing with the current production implementation.",
+      "result": "AVC and HEVC v1 receipts are byte-for-byte identical, 299 bytes each; fixed hex vectors are checked by the passing Cargo suite."
+    },
+    "model": {
+      "target": "crates/fss-model-ir/tests/onnx_attention_execution.rs",
+      "focused_new_tests": {
+        "passed": 8,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 9.75
+      },
+      "whole_original_harness": {
+        "passed": 118,
+        "failed": 0,
+        "ignored": 1,
+        "filtered_out": 0,
+        "seconds": 93.51,
+        "ignored_case": "Existing release-mode profile_matmul_same_binary performance experiment."
+      },
+      "scope": "Real production scalar/optimized source and actual canonical graph/Safetensors reload. Same original full Cargo-built harness; no alternative host, stand-ins, removed assertions or dependency substitutions.",
+      "initial_build": "Production core/tensor/model-IR libraries compiled; ordinary test-executable code generation was terminated by SIGKILL 9.",
+      "successful_build": [
+        "cargo",
+        "rustc",
+        "--locked",
+        "--offline",
+        "-p",
+        "fss-model-ir",
+        "--test",
+        "onnx_attention_execution",
+        "--message-format=json",
+        "--",
+        "-Zunstable-options",
+        "--jobs-frontend=1",
+        "--jobs-backend=1",
+        "--jobs-linker=1",
+        "-Zmir-opt-level=0",
+        "-Zfewer-names=yes",
+        "-Ccodegen-units=256"
+      ],
+      "execution": "Run the exact emitted executable with --test-threads=1; focused eight cases then the unfiltered original harness."
+    },
+    "unique_passing_media_and_model_tests": 153,
+    "native_attempts": {
+      "command": "cargo check --locked --offline -p fss-reference --test mpeg_ts_import_contract",
+      "settings": "Pinned compiler; locked/offline; one Cargo job; debug/incremental disabled; documented serial frontend/backend/linker, MIR0/fewer-names flags; Asupersync and fss-reference codegen256 dev/test profiles.",
+      "first": {
+        "exit_code": 101,
+        "seconds": 100.789,
+        "result": "Shared-filesystem ENOSPC while crossbeam-queue attempted to create a metadata directory, before changed source."
+      },
+      "retry": {
+        "exit_code": 101,
+        "seconds": 123.611,
+        "result": "After removing only reproducible installer staging/archive copies, unchanged Asupersync 0.5.0 metadata compilation was terminated by SIGKILL 9. No source diagnostic; reference importer and CLI were not reached.",
+        "cause": "SIGKILL is confirmed; its underlying cause was not independently established."
+      },
+      "boundary": "No native importer/CLI compile or runtime pass is claimed. No heavier repeat or duplicate CLI check through the same killed dependency was attempted."
+    },
+    "formatting": "All five model source/test files pass pinned rustfmt. All eight native/CLI files parse with pinned rustfmt; five are fully clean, three retain only pre-existing formatting outside changed sections.",
+    "source_review": "Root and an independent model agent reviewed all eight native/CLI files for framing identity, request/receipt mismatch, original custody, bounded replay, authority and API consistency; no blocker found.",
+    "integrity": "Each meaningful publication carries touched layered-manifest rows; staged coverage/whitespace checks and exact published blob checks are used. No full-workspace, Clippy, live-device or release qualification is claimed."
+  },
+  "limits": [
+    "M2TS prefixes remain opaque; they do not establish capture time, clock synchronization, continuity or absence evidence.",
+    "The existing bounded AVC/HEVC finite-file subset and 64 MiB original/elementary native ceilings remain.",
+    "One-dimensional internal model layers do not add an audio input or change the RGB package's explicit image/head contract.",
+    "Runtime reshapes use existing accounted copy kernels; this is not a zero-copy or acceleration claim.",
+    "Native retained-import/CLI tests remain unexecuted until the genuine dependency graph completes on a suitable host.",
+    "Broad model/media Beads and repository-owned qualification/DSR requirements remain open."
+  ],
+  "continuations": [
+    "cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test mpeg_ts_import_contract",
+    "cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib ingest::mpeg_ts_import::provenance::tests",
+    "cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-file mpeg_ts"
+  ],
+  "documentation": [
+    "docs/FILE_IMPORT_WORKFLOW.md",
+    "docs/MPEG_TS_RECEIPTS.md",
+    "docs/onnx_import.md",
+    "docs/ONNX_PACKAGE_IMPORT.md",
+    "IMPLEMENTATION_STATUS.md"
+  ]
+}

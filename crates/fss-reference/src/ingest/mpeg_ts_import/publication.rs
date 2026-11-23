@@ -175,6 +175,7 @@ pub(super) fn publish(
         original_digest: extraction.source_digest(),
         original_bytes: extraction.source_bytes(),
         elementary_bytes: extraction.elementary_bytes(),
+        framing: extraction.framing(),
         capture_time_label: request.time_label(),
         proof: proof_digest,
         reused,

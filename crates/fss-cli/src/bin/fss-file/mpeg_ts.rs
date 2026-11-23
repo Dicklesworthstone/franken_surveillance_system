@@ -9,7 +9,7 @@ use std::io::{self, Write};
 use std::path::Path;
 
 use fss_container::demux::VideoCodec;
-use fss_container::mpeg_ts::{TsLimits, TsSelection};
+use fss_container::mpeg_ts::{TsFraming, TsLimits, TsSelection};
 use fss_geometry::WorkBudget;
 use fss_reference::ingest::mpeg_ts_import::{
     ADAPTER, MAX_BYTES, MpegTsImportReceipt, MpegTsImportRequest, import_mpeg_ts_file,
@@ -45,6 +45,7 @@ pub(super) fn accepts_option(command: &str, key: &str) -> bool {
                 | "--capture-uncertainty-ns"
                 | "--assumed-fps"
                 | "--ts-program"
+                | "--ts-framing"
                 | "--ts-video-pid"
                 | "--max-ts-packets"
                 | "--max-ts-psi-sections"
@@ -77,6 +78,15 @@ pub(super) fn parse(file: FileIngestRequest, values: &Values) -> ParseResult<Act
         return Err(malformed("import-ts does not accept media-format or RTP binding options"));
     }
     let mut request = MpegTsImportRequest::new(file);
+    request.framing = if values.contains_key("--ts-framing") {
+        match text(values, "--ts-framing")? {
+            "ts188" => TsFraming::Ts188,
+            "m2ts192" => TsFraming::M2ts192,
+            _ => return Err(malformed("--ts-framing must be ts188 or m2ts192")),
+        }
+    } else {
+        TsFraming::Ts188
+    };
     request.selection = TsSelection {
         program: values
             .contains_key("--ts-program")
@@ -201,6 +211,17 @@ fn report_verified(
     let mut report = Vec::new();
     source_read::metadata(deployment, &retained, receipt.import_identity, "import-ts", &mut report)?;
     writeln!(report, "transport_container=mpegts")?;
+    writeln!(
+        report,
+        "ts_framing={}",
+        match receipt.framing {
+            TsFraming::Ts188 => "ts188",
+            TsFraming::M2ts192 => "m2ts192",
+        }
+    )?;
+    if receipt.framing == TsFraming::M2ts192 {
+        writeln!(report, "source_m2ts_prefix_clock=opaque_untrusted")?;
+    }
     writeln!(report, "transport_origin_proof={}", receipt.proof)?;
     writeln!(report, "original_ts_sha256={}", receipt.original_digest)?;
     writeln!(report, "original_ts_bytes={}", receipt.original_bytes)?;

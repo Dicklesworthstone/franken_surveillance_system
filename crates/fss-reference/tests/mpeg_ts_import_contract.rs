@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use fss_container::demux::VideoCodec;
-use fss_container::mpeg_ts::{MpegTsVideo, TsLimits, TsSelection};
+use fss_container::mpeg_ts::{MpegTsVideo, TsFraming, TsLimits, TsSelection};
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{
     BudgetVector, CaptureInterval, ContentDigest, OperationId, SensorId, StreamId, TimestampNs,
@@ -112,7 +112,7 @@ fn transport(media: &[u8], codec: VideoCodec) -> Vec<u8> {
     bytes.extend(packet(0x1000, true, 0, &pmt));
     // Unselected audio is original custody, never appended to the video.
     bytes.extend(packet(0x101, true, 0, &[1, 2, 3, 4, 5]));
-    // One zero-length video PES contains two real access units; PTS is 2^33 - 1.
+    // One zero-length video PES contains two complete picture sequences; PTS is 2^33 - 1.
     let mut pes = vec![0, 0, 1, 0xe0, 0, 0, 0x80, 0x80, 5, 0x2f, 0xff, 0xff, 0xff, 0xff];
     pes.extend_from_slice(media);
     let first = packet(0x100, true, 14, &pes[..2]);
@@ -160,6 +160,25 @@ impl Fixture {
     fn target(&self) -> Test<&ReferenceDeployment> {
         self.target.as_ref().ok_or_else(|| "target closed".into())
     }
+    fn use_m2ts(&mut self) -> Test {
+        self.original = self
+            .original
+            .chunks_exact(188)
+            .enumerate()
+            .flat_map(|(index, packet)| {
+                // Distinct, wrapping and disordered arrival prefixes also cover the duplicate
+                // TS packet above. Prefix values never become receive/capture time.
+                let prefix = u32::MAX.wrapping_sub((index as u32).wrapping_mul(0x4747_4747));
+                prefix
+                    .to_be_bytes()
+                    .into_iter()
+                    .chain(packet.iter().copied())
+            })
+            .collect();
+        self.request.framing = TsFraming::M2ts192;
+        fs::write(&self.request.file.path, &self.original)?;
+        Ok(())
+    }
     fn run(&mut self) -> Test<MpegTsImportReceipt> {
         Ok(import_mpeg_ts_file(
             self.target.as_mut().ok_or("target closed")?, &self.request, &self.cx, &mut work(),
@@ -204,8 +223,12 @@ fn decode(f: &Fixture, receipt: &MpegTsImportReceipt) -> Test<Vec<(Vec<u8>, Capt
 }
 
 #[test]
-fn two_access_units_in_one_pes_decode_after_restart_and_loose_source_removal() -> Test {
+fn multiple_access_units_in_one_pes_decode_after_restart_and_loose_source_removal() -> Test {
     for codec in [VideoCodec::Avc, VideoCodec::Hevc] {
+        let pictures_per_copy = match codec {
+            VideoCodec::Avc => 2, // The fixture contains an I picture and a P picture.
+            VideoCodec::Hevc => 3,
+        };
         let mut f = Fixture::new(&format!("cold-{codec:?}"), codec, false)?;
         let video = MpegTsVideo::parse(&f.original, TsSelection::default(), TsLimits::default())?;
         assert_eq!(video.elementary_stream(), f.media);
@@ -213,7 +236,7 @@ fn two_access_units_in_one_pes_decode_after_restart_and_loose_source_removal() -
         assert_eq!(video.pes()[0].pts, Some((1u64 << 33) - 1));
         assert_eq!(video.duplicate_packets(), 1);
         let receipt = f.run()?;
-        assert_eq!(receipt.segments, 2);
+        assert_eq!(receipt.segments, 2 * pictures_per_copy);
         assert_eq!(receipt.original_digest, ContentDigest::sha256(&f.original));
         assert_eq!(receipt.elementary_bytes, f.media.len() as u64);
         assert_eq!(receipt.capture_time_label, "unknown");
@@ -237,8 +260,8 @@ fn two_access_units_in_one_pes_decode_after_restart_and_loose_source_removal() -
         }
         assert_eq!(retained.verify_source(f.target()?, RetainedReadLimits::default(), &f.cx)?, ContentDigest::sha256(&f.media));
         let frames = decode(&f, &receipt)?;
-        assert_eq!(frames.len(), 2);
-        assert_eq!(frames[0].0, frames[1].0);
+        assert_eq!(frames.len(), 2 * pictures_per_copy);
+        assert_eq!(frames[..pictures_per_copy], frames[pictures_per_copy..]);
         assert!(!frames[0].0.is_empty());
         let unknown = CaptureInterval::new(TimestampNs(0), TimestampNs(10_000_000_000))?;
         assert!(frames.iter().all(|(_, capture)| *capture == unknown));
@@ -334,5 +357,117 @@ fn capture_hint_and_every_split_limit_are_part_of_identity() -> Test {
     let first = f.request.digest()?;
     f.request.file.limits.annexb_limits.max_leading_garbage_bytes += 1;
     assert_ne!(first, f.request.digest()?);
+    Ok(())
+}
+
+#[test]
+fn m2ts_avc_and_hevc_reopen_and_decode_identically_with_all_original_prefixes_retained() -> Test {
+    for codec in [VideoCodec::Avc, VideoCodec::Hevc] {
+        let mut f = Fixture::new(&format!("m2ts-cold-{codec:?}"), codec, false)?;
+        let standard = f.run()?;
+        let expected = decode(&f, &standard)?;
+        assert!(!expected.is_empty());
+        let standard_request = f.request.digest()?;
+        f.use_m2ts()?;
+        assert_ne!(f.request.digest()?, standard_request);
+        let parsed = MpegTsVideo::parse_framed(
+            &f.original,
+            TsFraming::M2ts192,
+            TsSelection::default(),
+            TsLimits::default(),
+        )?;
+        assert_eq!(parsed.elementary_stream(), f.media);
+        assert_eq!(parsed.duplicate_packets(), 1);
+        let receipt = f.run()?;
+        assert_eq!(receipt.framing, TsFraming::M2ts192);
+        assert_ne!(receipt.import_identity, standard.import_identity);
+        assert_ne!(receipt.proof, standard.proof);
+        assert_eq!(receipt.segments, standard.segments);
+        assert_eq!(receipt.original_digest, ContentDigest::sha256(&f.original));
+        assert_eq!(receipt.original_bytes, f.original.len() as u64);
+        assert_eq!(receipt.elementary_bytes, standard.elementary_bytes);
+        assert_eq!(receipt.capture_time_label, "unknown");
+        f.reopen()?;
+        let head = f.target()?.current_anchor().clone();
+        let retried = f.run()?;
+        assert!(retried.reused);
+        assert_eq!(retried.import_root, receipt.import_root);
+        assert_eq!(f.target()?.current_anchor(), &head);
+        fs::remove_file(&f.request.file.path)?;
+        let retained = f.retained(&receipt)?;
+        assert_eq!(
+            retained.verify_source(f.target()?, RetainedReadLimits::default(), &f.cx)?,
+            ContentDigest::sha256(&f.media)
+        );
+        assert_eq!(decode(&f, &receipt)?, expected);
+    }
+    Ok(())
+}
+
+#[test]
+fn m2ts_prefix_and_unselected_payload_corruption_refuse_retained_reads_and_decode() -> Test {
+    let mut f = Fixture::new("m2ts-custody", VideoCodec::Avc, false)?;
+    f.use_m2ts()?;
+    let receipt = f.run()?;
+    let retained = f.retained(&receipt)?;
+    let original_path = f
+        .target()?
+        .publisher()
+        .spool()
+        .object_path(receipt.original_digest);
+    let batches = f.target()?.ledger().batches().len();
+    for byte in [0, 3 * 192 - 1] {
+        let mut damaged = f.original.clone();
+        damaged[byte] ^= 1;
+        let parsed = MpegTsVideo::parse_framed(
+            &damaged,
+            TsFraming::M2ts192,
+            TsSelection::default(),
+            TsLimits::default(),
+        )?;
+        assert_eq!(parsed.elementary_stream(), f.media);
+        fs::write(&original_path, &damaged)?;
+        assert!(
+            retained
+                .verify_source(f.target()?, RetainedReadLimits::default(), &f.cx)
+                .is_err()
+        );
+        assert!(
+            retained
+                .read_segment(f.target()?, 0, RetainedReadLimits::default(), &f.cx)
+                .is_err()
+        );
+        assert!(decode(&f, &receipt).is_err());
+        assert!(f.run().is_err());
+        assert_eq!(f.target()?.ledger().batches().len(), batches);
+        assert_eq!(fs::read(&original_path)?, damaged);
+        fs::write(&original_path, &f.original)?;
+    }
+    assert!(!decode(&f, &receipt)?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn explicit_m2ts_framing_and_packet_bounds_refuse_before_any_publication() -> Test {
+    let mut f = Fixture::new("m2ts-refusal", VideoCodec::Hevc, false)?;
+    f.use_m2ts()?;
+    let original_request = f.request.clone();
+    let batches = f.target()?.ledger().batches().len();
+    let roots = f.target()?.publisher().visible_roots().count();
+    for case in 0..4 {
+        f.request = original_request.clone();
+        match case {
+            0 => f.request.framing = TsFraming::Ts188,
+            1 => f.request.transport_limits.max_packets = f.original.len() / 192 - 1,
+            2 => f.request.transport_limits.max_input_bytes = f.original.len() - 1,
+            _ => fs::write(&f.request.file.path, &f.original[..f.original.len() - 1])?,
+        }
+        assert!(f.run().is_err(), "case {case}");
+        assert_eq!(f.target()?.ledger().batches().len(), batches);
+        assert_eq!(f.target()?.publisher().visible_roots().count(), roots);
+    }
+    f.request = original_request;
+    fs::write(&f.request.file.path, &f.original)?;
+    assert_eq!(f.run()?.framing, TsFraming::M2ts192);
     Ok(())
 }

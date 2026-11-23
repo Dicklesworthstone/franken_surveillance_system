@@ -53,6 +53,26 @@ recording contains multiple candidates, supply `--ts-program N` and/or
 `--ts-video-pid N` using decimal numbers. Generic `--media-format` and recorded-RTP
 binding options do not apply to this operation.
 
+Standard 188-byte TS is the default. For a recording whose packets have a
+four-byte M2TS prefix followed by the 188-byte TS packet, explicitly select
+`--ts-framing m2ts192`:
+
+```sh
+cargo run -p fss-cli --bin fss-file -- import-ts \
+  --root ./camera-evidence --site site:home \
+  --input ./recording.m2ts --sensor sensor:driveway --stream stream:main \
+  --receive-time-ns 1000000000 --ts-framing m2ts192
+```
+
+Only `ts188` and `m2ts192` are accepted; no framing is guessed from a filename,
+sync pattern or file length. Truncated packets and incorrect sync positions refuse.
+Every four-byte prefix is retained and covered by the original source digest.
+Elementary byte mappings use offsets in the complete original M2TS file, while
+transport duplicate checks compare only the inner 188-byte packets. The prefix
+clock remains opaque and untrusted; it does not establish capture time or live
+continuity. Reports identify `ts_framing`, and M2TS reports explicitly state
+`source_m2ts_prefix_clock=opaque_untrusted`.
+
 Both the original transport file and reconstructed elementary stream have separate
 64 MiB ceilings. The original includes unselected audio, transport headers, exact
 duplicate packets and other retained bytes; the import never replaces it with a
@@ -86,9 +106,12 @@ I/O reservations, including final verification; it defaults to 1 GiB and is capp
 at 4 GiB. These units are not elapsed time or CPU instructions. Cancellation is
 checked at bounded native work and publication boundaries.
 
-Source implementation and focused contracts are present, but the new import and
-CLI tests were not compiled or executed during the execution-environment outage.
-Decoder support remains the existing native subset. See
+The focused container parser/receipt suite passed 35 tests on the pinned compiler.
+Native retained-import and CLI tests are authored but remain uncompiled/unexecuted
+in this session: after a shared-disk failure was resolved, the genuine native
+metadata check was killed in unchanged Asupersync 0.5.0 before reaching these
+targets. No source diagnostic or native decode pass is claimed. Decoder support
+remains the existing native subset. See
 [MPEG_TS_RECEIPTS.md](MPEG_TS_RECEIPTS.md) for the extraction receipt contract.
 
 ## Reopen, verify and extract
