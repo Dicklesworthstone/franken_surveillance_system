@@ -1,7 +1,8 @@
 #![forbid(unsafe_code)]
 //! Standalone verification of one independently pinned remote object. A successful
 //! upload or HEAD is not used as a substitute for reading and hashing its bytes.
-//! No source bytes escape this owner; the only output is a bounded receipt.
+//! Callers may retain either a bounded receipt or the fully verified bytes and
+//! receipt. Retained media is admitted before allocation and zeroized on drop.
 //! This does not verify an upload journal, part inventory or historical custody origin.
 
 use fss_core::{
@@ -11,6 +12,7 @@ use fss_core::{
 };
 use fss_runtime::authority::AuthorityCx;
 use fss_runtime::grant::GrantSet;
+use zeroize::Zeroizing;
 
 use super::http::Boundary;
 use super::{S3Credentials, S3Endpoint, S3Error, S3Limits, http, signing};
@@ -94,6 +96,49 @@ pub fn verification_budget(pin: S3ObjectPin, limits: S3Limits) -> Result<BudgetV
         .ok_or(S3Error::Limit)?;
     budget.storage_operations = requests;
     Ok(budget)
+}
+
+/// Reservation for standalone verification that also retains the complete
+/// object. The entire media buffer is charged in addition to the streaming
+/// verification allowance, before allocation or network access.
+pub fn verification_with_bytes_budget(
+    pin: S3ObjectPin,
+    limits: S3Limits,
+) -> Result<BudgetVector, S3Error> {
+    let mut budget = verification_budget(pin, limits)?;
+    budget.bytes = budget.bytes.checked_add(pin.bytes).ok_or(S3Error::Limit)?;
+    Ok(budget)
+}
+
+/// Complete bytes checked against an independent object pin, alongside their
+/// immutable verification receipt. Construction requires every range, version,
+/// full-object digest and final authority check to succeed. This does not settle
+/// the caller-owned read region or authorize export; the caller must drain that
+/// owner and separately authorize any destination. Media zeroizes on drop.
+#[must_use = "verified media and its receipt require an authorized destination"]
+pub struct VerifiedS3ObjectBytes {
+    bytes: Zeroizing<Vec<u8>>,
+    receipt: S3VerificationReceipt,
+}
+impl VerifiedS3ObjectBytes {
+    /// Borrow the complete verified object; partial or unchecked bytes never escape.
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        self.bytes.as_slice()
+    }
+    /// Evidence describing this exact read and its admitted authority.
+    #[must_use]
+    pub fn receipt(&self) -> &S3VerificationReceipt {
+        &self.receipt
+    }
+}
+impl std::fmt::Debug for VerifiedS3ObjectBytes {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("VerifiedS3ObjectBytes")
+            .field("byte_len", &self.bytes.len())
+            .finish_non_exhaustive()
+    }
 }
 
 /// Immutable proof of a complete byte read at a particular time, not a promise
@@ -349,7 +394,48 @@ pub fn verify_s3_object<C: S3ReadClock>(
     io: S3ReadIo<'_>,
     pin: S3ObjectPin,
 ) -> Result<S3VerificationReceipt, S3Error> {
-    let required = verification_budget(pin, limits)?;
+    verify_inner(endpoint, credentials, limits, clock, io, pin, false).map(|result| result.receipt)
+}
+
+/// Read and retain a whole object pinned independently of any upload journal.
+/// Uses the same signed range, version, digest and authority checks as
+/// [`verify_s3_object`], with an additional up-front reservation for the complete
+/// media buffer. No retained bytes are returned on any refusal. The caller still
+/// owns read-region settlement and separately authorizes any durable output.
+pub fn verify_s3_object_with_bytes<C: S3ReadClock>(
+    endpoint: &S3Endpoint,
+    credentials: &S3Credentials,
+    limits: S3Limits,
+    clock: &mut C,
+    io: S3ReadIo<'_>,
+    pin: S3ObjectPin,
+) -> Result<VerifiedS3ObjectBytes, S3Error> {
+    let result = verify_inner(endpoint, credentials, limits, clock, io, pin, true)?;
+    Ok(VerifiedS3ObjectBytes {
+        bytes: result.bytes.ok_or(S3Error::Protocol)?,
+        receipt: result.receipt,
+    })
+}
+
+struct ReadResult {
+    receipt: S3VerificationReceipt,
+    bytes: Option<Zeroizing<Vec<u8>>>,
+}
+
+fn verify_inner<C: S3ReadClock>(
+    endpoint: &S3Endpoint,
+    credentials: &S3Credentials,
+    limits: S3Limits,
+    clock: &mut C,
+    io: S3ReadIo<'_>,
+    pin: S3ObjectPin,
+    retain_bytes: bool,
+) -> Result<ReadResult, S3Error> {
+    let required = if retain_bytes {
+        verification_with_bytes_budget(pin, limits)?
+    } else {
+        verification_budget(pin, limits)?
+    };
     let mut grants = GrantSet::empty();
     for grant in GRANTS {
         grants = grants.with_scope(
@@ -383,6 +469,18 @@ pub fn verify_s3_object<C: S3ReadClock>(
     let mut receipt_cost = BudgetVector::ZERO;
     receipt_cost.bytes = RECEIPT_RESERVATION;
     owner.charge(receipt_cost)?;
+    let mut retained = if retain_bytes {
+        let mut media_cost = BudgetVector::ZERO;
+        media_cost.bytes = pin.bytes;
+        owner.charge(media_cost)?;
+        let mut bytes = Zeroizing::new(Vec::new());
+        bytes
+            .try_reserve_exact(usize::try_from(pin.bytes).map_err(|_| S3Error::Limit)?)
+            .map_err(|_| S3Error::Limit)?;
+        Some(bytes)
+    } else {
+        None
+    };
     let mut hasher = Sha256Hasher::new();
     let mut etag: Option<String> = None;
     let mut offset = 0;
@@ -419,6 +517,16 @@ pub fn verify_s3_object<C: S3ReadClock>(
             etag = Some(observed_etag.to_owned());
         }
         hasher.update(&reply.0.body);
+        if let Some(bytes) = &mut retained {
+            let next_len = bytes
+                .len()
+                .checked_add(reply.0.body.len())
+                .ok_or(S3Error::Limit)?;
+            if next_len as u64 > pin.bytes || next_len > bytes.capacity() {
+                return Err(S3Error::Limit);
+            }
+            bytes.extend_from_slice(&reply.0.body);
+        }
         offset += len;
         if offset == pin.bytes {
             break;
@@ -429,6 +537,12 @@ pub fn verify_s3_object<C: S3ReadClock>(
         hasher.finalize().map_err(|_| S3Error::Limit)?,
     );
     if digest != pin.digest {
+        return Err(S3Error::Integrity);
+    }
+    if retained
+        .as_ref()
+        .is_some_and(|bytes| bytes.len() as u64 != pin.bytes)
+    {
         return Err(S3Error::Integrity);
     }
     let verified_at = owner.checkpoint()?;
@@ -443,5 +557,8 @@ pub fn verify_s3_object<C: S3ReadClock>(
         consumed: *owner.io.authority.budget().consumed(),
     };
     receipt.validate()?;
-    Ok(receipt)
+    Ok(ReadResult {
+        receipt,
+        bytes: retained,
+    })
 }

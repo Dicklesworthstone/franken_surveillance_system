@@ -19,6 +19,9 @@ use fss_reference::s3_upload::{S3Credentials, S3Endpoint, S3Error, S3Limits};
 use fss_runtime::authority::AuthorityCx;
 use fss_runtime::grant::GrantSet;
 
+#[path = "s3_retrieval_native_contract/retained.rs"]
+mod retained;
+
 const NOW: TimestampNs = TimestampNs(1_369_353_600_000_000_000);
 const DEADLINE: TimestampNs = TimestampNs(NOW.0 + 30_000_000_000);
 const READ_GRANTS: [RuntimeGrant; 3] = [
