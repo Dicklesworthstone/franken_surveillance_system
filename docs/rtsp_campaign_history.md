@@ -41,19 +41,31 @@ publications. A new camera session replenishes neither work nor retained
 capacity. The record ceiling must admit two records per planned attempt plus one
 terminal record. The maximum campaign is still 16 attempts.
 
-The destination must be a new absolute directory with an existing canonical
-parent path, separate from every archive, pin journal, source store and credential
-file. A symlinked parent that changes the approved path refuses before directory
-creation. The native camera owners retain their existing path, custody, secret,
-deadline, publication and resource checks.
+At execution, the destination must be a new absolute directory with an existing
+parent, separate from every archive, pin journal, source store and credential
+file. The current history owner resolves the parent under its authority and
+checks separation against the resolved attempt destinations. A parent-directory
+alias is supported; a symlink at the history root itself is refused. The approved
+path text stays in the immutable plan, and the authority separately binds it to
+the resolved I/O root. The native camera owners retain their existing path,
+custody, secret, deadline, publication and resource checks.
 
-First run the complete command without `--approve`. Planning does not create the
-history directory, read credentials or connect to the camera. The preview's
+First run the complete command without `--approve`. Planning does not inspect or
+create the history directory or its parent, read credentials, or connect to the
+camera. The parent may be created after planning without changing the approval.
+The preview's
 `campaign_history` object reports the frozen history plan digest and every
 ceiling. Its `approval` binds the history destination and limits as well as the
 unchanged child capture plans. Repeat the exact command with that outer approval.
 An old reconnect approval or an individual child's approval cannot enable
 history retention.
+
+Continuation and cold inspection must use the same approved history path text,
+even when another path reaches the same directory. The independently saved pin
+still selects the exact original plan and prefix. Older versions resolved a
+parent alias during planning; for a pin produced by such a version, use the
+canonical history path recorded in its original preview. An old plan digest is
+never silently rewritten to adopt a different path.
 
 History retains canonical metadata and exact native evidence coordinates. It does
 not copy media or credentials. The directory is created privately on Unix and is

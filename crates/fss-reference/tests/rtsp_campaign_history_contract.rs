@@ -1159,3 +1159,32 @@ fn cold_retry_refuses_missing_native_outcome_and_unresolved_custody() -> Test {
     }
     Ok(())
 }
+
+#[test]
+fn default_path_authority_cannot_publish_a_valid_plan_into_another_root() -> Test {
+    let mut fixture = Fixture::new("default-path-authority", 1, false)?;
+    let mut plan = fixture.plan.clone();
+    plan.history_path = fixture
+        .directory
+        .0
+        .join("another-history")
+        .to_str()
+        .ok_or("history path")?
+        .into();
+    let owner = Owner::new(&plan)?;
+    let mut writer = CampaignWriter::new(plan, CampaignHistoryLimits::default())?;
+    let before = tree(&fixture.root)?;
+    assert_eq!(
+        writer.start_attempt(
+            fixture.publisher.as_mut().ok_or("publisher")?,
+            1,
+            &owner,
+            &fixture.cx,
+            &mut fixture.work,
+        ),
+        Err(CampaignHistoryError::Denied)
+    );
+    assert_eq!(tree(&fixture.root)?, before);
+    assert!(!fixture.directory.0.join("another-history").exists());
+    Ok(())
+}

@@ -78,6 +78,13 @@ pub enum CampaignOperation {
 pub trait CampaignAuthority: Send + Sync {
     /// Check the exact frozen plan at every access boundary; there is no default grant.
     fn permit(&self, operation: CampaignOperation, plan: &CampaignPlan) -> bool;
+    /// Bind the approved history path to this I/O root. The default requires literal
+    /// equality. A native owner may admit a resolved parent alias only after scoped
+    /// resolution, while retaining the exact approved path and plan identity.
+    /// This never replaces the operation, principal or runtime-root checks.
+    fn permit_history_path(&self, plan: &CampaignPlan, root: &Path) -> bool {
+        Path::new(&plan.history_path) == root
+    }
     /// Check read authority before loading the plan object, including the exact selected pin.
     fn permit_read(&self, _expected: CampaignPin, _root: &Path, _principal: &str) -> bool {
         false
@@ -319,7 +326,7 @@ pub(super) fn check(
         || !cx.io_authority().is_valid()
         || cx.io_authority().principal() != plan.principal
         || cx.root_dir() != root
-        || Path::new(&plan.history_path) != root
+        || !authority.permit_history_path(plan, root)
         || !authority.permit(operation, plan)
     {
         return Err(CampaignHistoryError::Denied);

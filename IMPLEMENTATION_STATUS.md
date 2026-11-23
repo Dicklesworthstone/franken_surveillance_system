@@ -32,8 +32,12 @@ and local-publication budgets, absent source/journal files, unsafe destinations 
 immutable output reuse. Exact pinned formatting and independent source review
 passed. The standalone report schema passed the targeted repository audit and
 partial-output, empty-object and unavailable-accounting state checks.
-**Rust compilation and execution of these new regressions remain pending**;
-source and schema checks do not establish runtime qualification. FSS-068 /
+**The new reference/CLI code has no successful typecheck or test run.** Both an
+executable build and a bounded metadata-only check stopped when unchanged
+Asupersync 0.5.0 was killed by SIGKILL, before the changed targets. A separate
+serialized executable retry was stopped after thirteen minutes in dependencies.
+No validation compiler remains running. Source and schema checks do not establish
+runtime qualification. FSS-068 /
 `fss-x4a.13.8` remains in progress. Incident graph reconstruction, encryption,
 independent replicas, future availability and public-cloud TLS remain open. See
 the [operator workflow](docs/NATIVE_S3_OBJECT_UPLOADS.md#restore-from-an-independent-object-identity-after-journal-loss).

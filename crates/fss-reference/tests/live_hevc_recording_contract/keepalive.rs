@@ -256,7 +256,10 @@ fn rejected_get_parameter_preserves_the_response_and_never_falls_back_to_options
     else {
         return Err("rejected response was lost".into());
     };
-    assert_eq!(*reason, HevcClientError::Session(ClientError::Rejected(405)));
+    assert_eq!(
+        *reason,
+        HevcClientError::Session(ClientError::Rejected(405))
+    );
     assert_eq!(source.expose_wire(), raw);
     assert_eq!(f.transport.len(), 1);
     assert_eq!(f.transport[0].totals.sent_bytes, sent);

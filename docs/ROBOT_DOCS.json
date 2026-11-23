@@ -5226,6 +5226,13 @@
       "schema": "fss.s3_completion_observation_cli.v1"
     },
     {
+      "authority": "independently pinned object restored without a source file or upload journal",
+      "compatibilityRule": "Owner: fss-cli::fss-archive::s3::verification and fss-reference::s3_upload::verification. At most 16 KiB JSON binds independent full-object SHA-256/length, approved route, fresh operation, bounded read allowance/spend/time and canonical verification receipt. Complete signed-range verification and read-owner settlement precede private exclusive output creation, exact readback and file/pinned-parent sync under the original deadline. Empty objects are supported; retained-object memory is admitted before allocation or provider work. Remote verification, durable receipt, output creation, verified local bytes and confirmed durability remain distinct; a durable remote receipt can accompany failed local publication. Partial outputs remain for inspection, and unavailable local accounting is null. JSON excludes media, credentials and paths and grants no authority. No historical upload custody, encryption, graph closure, replica or future availability claim.",
+      "file": "schemas/s3_object_restoration_cli.v1.json",
+      "id": "SCHEMA-S3-OBJECT-RESTORATION-CLI-001",
+      "schema": "fss.s3_object_restoration_cli.v1"
+    },
+    {
       "authority": "fresh owner-authorized complete object read",
       "compatibilityRule": "Owner: fss-cli::fss-archive::s3::verification and fss-reference::s3_upload::verification. At most 16 KiB complete JSON binds independent full-object SHA-256/length, exact approved route, fresh operation/read allowance/spend/time, verification result and separate canonical receipt digest/durability, local work and bounded refusal. This standalone command opens neither source media nor an upload journal; the concurrent journal-bound retrieval observation remains unchanged. Success requires full bounded signed-range hashing under exact scoped network/authentication/ReadMedia authority, owner settlement and private immutable receipt custody. Credentials, tokens, paths and raw media are excluded. No encryption, graph closure, replica count or future availability claim.",
       "file": "schemas/s3_object_verification_cli.v1.json",

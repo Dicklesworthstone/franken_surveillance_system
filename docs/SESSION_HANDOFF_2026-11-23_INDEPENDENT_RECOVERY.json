@@ -1,0 +1,165 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-23",
+  "date_timezone": "America/New_York",
+  "mission": "Implement the most consequential remaining functionality from the comprehensive plan and Beads; publish meaningful changes directly to main through the authorized GitHub connector, without pull requests.",
+  "basis": {
+    "started_at": "fa1d4f2f93e2ecb690167bb8adc5ceb6c848bd47",
+    "plan": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+    "backlog": ".beads/issues.jsonl",
+    "priority_gap": "The journal-independent S3 verifier discarded verified bytes, so loss of the upload journal prevented recovery even when an independent whole-object SHA-256 and length survived.",
+    "requirements": [
+      {
+        "bead": "fss-x4a.13.8",
+        "external_ref": "FSS-068",
+        "status": "in_progress; single-object journal-independent recovery advanced, broader incident reconstruction and archive qualification remain open"
+      },
+      {
+        "bead": "fss-x4a.11.7",
+        "external_ref": "FSS-049",
+        "status": "in_progress; pure planning and exact campaign history continuation repaired, broader transport and deployment qualification remain open"
+      }
+    ],
+    "concurrent_main_preserved": [
+      "0a5e743e0560c3c718215620663f04957c10de16",
+      "a0c5c1aacf4a015d1c266ce4738556cb8d5ab3b6"
+    ]
+  },
+  "delivered": [
+    {
+      "commit": "4a6711b29ed22cd6e10be59cab0cc7fd2c49fd00",
+      "feature": "Independently verified S3 object bytes",
+      "behavior": "verify_s3_object_with_bytes returns opaque zeroizing bytes plus their canonical receipt after signed range/version checks, whole-object hashing and final authority validation. The full retained allocation is admitted before allocation or provider work. Existing receipt-only verification keeps its streaming costs and schema. Empty objects are supported. The caller still owns read-region settlement and destination authority."
+    },
+    {
+      "commit": "02a7f14ed2e6626d42128c3300e5ba35effdce74",
+      "feature": "Journal-independent restore-s3-object command",
+      "behavior": "Fresh exact read authority uses the independently retained object SHA-256 and length, without the source or upload journal. The CLI settles the read owner before private exclusive output publication, exact readback and file/parent sync under the original deadline. Output creation, local verification, output durability and receipt custody remain distinct, including partial failure and empty objects. Existing journal-based restoration remains available.",
+      "schema": "schemas/s3_object_restoration_cli.v1.json"
+    },
+    {
+      "commit": "the commit containing this handoff",
+      "feature": "Pure campaign planning and authorized parent-alias continuation",
+      "behavior": "History planning preserves the approved lexical path without filesystem reads. New capture, cold continuation and inspection resolve the parent only within current authority and bind that exact plan to the resolved runtime root. Core default path checks stay strict; the CLI override preserves principal, operation, root, plan and pin checks. Root-leaf symlinks and another approved path to the same graph remain refused. Old canonicalized approvals require their originally recorded canonical path.",
+      "operator_guide": "docs/rtsp_campaign_history.md"
+    },
+    {
+      "feature": "Discoverable restoration report contract",
+      "behavior": "SCHEMA-S3-OBJECT-RESTORATION-CLI-001 registers the new report and refreshes the generated robot catalogs."
+    }
+  ],
+  "authority": {
+    "repository": "Direct-main commits were explicitly authorized. Every reference update uses an observed expected head with force=false; concurrent source and manifest changes are preserved.",
+    "runtime": "No bypass of original read, export, publication, budget, deadline, cancellation, immutable history or selected-pin checks.",
+    "network": "No real camera, NAS, provider account or remote archive was accessed. Authored runtime tests use owned loopback fixtures.",
+    "limits": "Approved local plaintext SigV4 profile; independently pinned objects at most 64 MiB. No public TLS, encryption, replica, graph-closure, future-availability or release claim."
+  },
+  "validation": {
+    "pinned_toolchain": "nightly-2026-08-31; rustc 1.100.0-nightly (908501772 2026-08-30)",
+    "authored_regressions": {
+      "standalone_verified_bytes_native": 7,
+      "standalone_restore_process": 6,
+      "default_campaign_path_authority_native": 1,
+      "pure_history_preview_and_aliased_cold_continuation_process": 2
+    },
+    "static_checks": [
+      "Pinned rustfmt --check on touched Rust files.",
+      "Independent core/CLI ownership, authority, budget, settlement and partial-publication review.",
+      "Standalone report schema: repository audit passed; Draft 2020-12 meta-schema passed; 26-field renderer parity, 136 coherent shapes accepted and 23 contradictory states refused.",
+      "Existing robot documentation generator and --check passed.",
+      "Scoped git diff --check passed.",
+      "Layered manifest SHA-256 entries verified for the pending changed files; full sparse-checkout repository audit not claimed."
+    ],
+    "executable_attempts": [
+      {
+        "result": "unchanged Asupersync 0.5.0 rustc killed by SIGKILL before first-party compilation; no tests executed",
+        "elapsed_seconds": 168,
+        "settings": "Cargo jobs=1; dev/test debug=0; incremental=0; exact pinned dependency/toolchain",
+        "maximum_child_rss_kib": 3432868
+      },
+      {
+        "result": "bounded retry interrupted at parent request with exit 130; latest dependency was slab 0.4.12; no first-party compilation or test result",
+        "elapsed_seconds": 820,
+        "settings": "same exact toolchain/dependencies plus supported single frontend/backend compiler settings and fewer names"
+      }
+    ],
+    "metadata_check": {
+      "status": "blocked_before_changed_targets",
+      "scope": "current-workspace check of affected reference and CLI sources/tests; exact compiler and features, not sealed qualification",
+      "exit_code": 101,
+      "elapsed_seconds": 270.8486,
+      "maximum_child_rss_kib": 2983436,
+      "result": "Unchanged Asupersync 0.5.0 rustc was killed by SIGKILL while emitting metadata only. Unchanged fss-core metadata checked, but no changed fss-reference or CLI target was reached and no test executed. The six-minute wall bound did not cause the termination.",
+      "cleanup": "Cargo was reaped and all compiler sessions closed; no validation compiler remains active.",
+      "command": [
+        "cargo",
+        "+nightly-2026-08-31",
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "fss-reference",
+        "-p",
+        "fss-cli",
+        "--bin",
+        "fss-archive",
+        "--bin",
+        "fss-capture-rtsp",
+        "--test",
+        "s3_retrieval_native_contract",
+        "--test",
+        "rtsp_campaign_history_contract",
+        "--test",
+        "archive_s3_verification_process",
+        "--test",
+        "archive_s3_restore_process",
+        "--test",
+        "archive_s3_upload_process",
+        "--test",
+        "capture_rtsp_cli",
+        "--test",
+        "live_hevc_recording_contract",
+        "--test",
+        "supervised_hevc_recording_contract"
+      ],
+      "environment": {
+        "CARGO_BUILD_JOBS": "1",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0",
+        "CARGO_INCREMENTAL": "0",
+        "RUSTFLAGS": "-Zunstable-options --jobs-frontend=1 --jobs-backend=1 -Zfewer-names=yes"
+      }
+    },
+    "hosted_new_commits": "No completed successful Rust validation observed. Core reference run 45261542455 queued; CLI reference run 45262973098 pending. The core portable-qualification run was cancelled with no steps.",
+    "runtime_test_status": "All sixteen new Rust regression functions remain unexecuted, and the changed reference/CLI code has no successful typecheck. Static checks do not establish a runtime or release pass."
+  },
+  "excluded_findings": [
+    "The existing follow-session expiry test calls coordinate before explicitly enabling coordination; production work_claim already enables it. This is fixture setup drift, so production validation was not weakened.",
+    "The existing catalog read-count assertion expects four reads while receipt verification now adds six metadata reads. Verification was preserved; no production semantics were changed to satisfy the old count."
+  ],
+  "obligations": [
+    {
+      "state": "pending",
+      "action": "Complete affected Rust typechecks and execute the authored native and actual-process regressions on a sufficiently provisioned runner."
+    },
+    {
+      "state": "pending",
+      "action": "Run repository-owned qualification and retain DSR evidence before upgrading archive, camera, transport or release support claims."
+    }
+  ],
+  "continuations": [
+    "cargo test --locked -p fss-reference --test s3_retrieval_native_contract --test rtsp_campaign_history_contract",
+    "cargo test --locked -p fss-cli --test archive_s3_verification_process --test archive_s3_restore_process",
+    "cargo test --locked -p fss-cli --bin fss-capture-rtsp reconnect_history",
+    "Run capture_rtsp_cli process filters history_preview_is_pure and native_history_parent_alias, preserving the real native capture owners.",
+    "Continue incident graph reconstruction, independent replicas and encrypted/public-TLS provider support under their existing explicit authority and qualification requirements."
+  ],
+  "unknowns": [
+    "New source has not yet received an executable Rust regression pass.",
+    "Provider and live-device interoperability remain unqualified."
+  ],
+  "valid_next_affordances": [
+    "Review the exact direct-main commits and operator guides.",
+    "Continue from current main with preserved concurrent work and unchanged release gates."
+  ]
+}

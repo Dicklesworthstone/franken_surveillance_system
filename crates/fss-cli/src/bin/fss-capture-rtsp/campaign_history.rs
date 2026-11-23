@@ -100,12 +100,8 @@ impl Config {
                 .remove("--history-root")
                 .ok_or("--history-root required")?,
         )?;
-        // Resolve the parent once. Every later stage records, compares and publishes this path, and on
-        // macOS the temp root is itself a symlink (`/var` -> `/private/var`), so leaving it lexical makes
-        // the recorded path disagree with the resolved one and the first write is refused as Denied.
-        let parent = std::fs::canonicalize(root.parent().ok_or("--history-root parent")?)
-            .map_err(|_| "--history-root parent must exist")?;
-        let root = parent.join(root.file_name().ok_or("--history-root name")?);
+        // Planning binds the configured path without inspecting the filesystem.
+        // Resolve its parent only after execution admits current authority.
         let defaults = CampaignHistoryLimits::default();
         let mut bounded = |key: &str, default: u64, maximum: u64| {
             values
@@ -241,7 +237,7 @@ impl Config {
             duration_limited: plan.capture_duration_ns.is_some(),
             attempts,
         };
-        campaign.validate().map_err(|e| { eprintln!("DBG validate {e:?}"); ERROR })?;
+        campaign.validate().map_err(|_| ERROR)?;
         Ok(campaign)
     }
 
@@ -355,6 +351,10 @@ impl CampaignAuthority for Authority {
             && plan.digest().ok() == Some(self.plan)
     }
 
+    fn permit_history_path(&self, plan: &CampaignPlan, root: &Path) -> bool {
+        self.permit(CampaignOperation::Read, plan) && root == self.root
+    }
+
     fn permit_read(&self, expected: CampaignPin, root: &Path, principal: &str) -> bool {
         self.check().is_ok()
             && self.expected == Some(expected)
@@ -393,12 +393,9 @@ pub(super) struct ContinuationSeed {
 
 impl Recorder {
     pub(super) fn new(config: &Config, plan: &ReconnectPlan) -> Result<Self, &'static str> {
-        eprintln!("DBG Recorder::new");
-        config.validate(plan).map_err(|e| { eprintln!("DBG config.validate {e}"); e })?;
-        let campaign = config.campaign(plan).map_err(|e| { eprintln!("DBG campaign {e}"); e })?;
-        eprintln!("DBG A");
-        let writer = CampaignWriter::new(campaign.clone(), config.limits).map_err(|e| { eprintln!("DBG writer {e:?}"); ERROR })?;
-        eprintln!("DBG B");
+        config.validate(plan)?;
+        let campaign = config.campaign(plan)?;
+        let writer = CampaignWriter::new(campaign.clone(), config.limits).map_err(|_| ERROR)?;
         let mut authority = Authority::new(
             &campaign.principal,
             campaign.approval,
@@ -408,15 +405,11 @@ impl Recorder {
             None,
             true,
         )?;
-        eprintln!("DBG C");
         let root = resolved(&config.root, &authority)?;
-        // The canonical history graph binds the resolved path from here on. Do not compare it back to
-        // the configured text: on macOS the temp root is itself a symlink (`/var` -> `/private/var`), so
-        // an ordinary path never compares equal and every campaign run refused with ROOT.
+        // Keep the approved lexical path in the graph. Only this execution owner binds
+        // it to the resolved I/O root; an alias never rewrites the plan or its approval.
         for output in plan.output_paths()? {
-            eprintln!("DBG out {output:?}");
             if output != config.root && !separate(&root, &resolved(output, &authority)?) {
-                eprintln!("DBG notseparate {output:?}");
                 return Err(ROOT);
             }
         }
@@ -444,9 +437,7 @@ impl Recorder {
         authority.check()?;
         let cx =
             ReplayCx::from_context_authority(&authority.context, &root).map_err(|_| AUTHORITY)?;
-        eprintln!("DBG D {root:?}");
-        let publisher = LocalRootPublisher::open(&root, config.storage()).map_err(|e| { eprintln!("DBG publisher {e:?}"); ERROR })?;
-        eprintln!("DBG E");
+        let publisher = LocalRootPublisher::open(&root, config.storage()).map_err(|_| ERROR)?;
         authority.check()?;
         Ok(Self {
             writer,
@@ -466,11 +457,10 @@ impl Recorder {
         expected: CampaignPin,
     ) -> Result<(Self, ContinuationSeed), &'static str> {
         config.validate(plan)?;
-        let campaign = config.campaign(plan).map_err(|e| { eprintln!("DBG campaign {e}"); e })?;
+        let campaign = config.campaign(plan)?;
         if !campaign.continue_after_success && !plan.continue_retry_history {
             return Err(ERROR);
         }
-        eprintln!("DBG B");
         let mut authority = Authority::new(
             &campaign.principal,
             campaign.approval,
@@ -480,15 +470,9 @@ impl Recorder {
             Some(expected),
             true,
         )?;
-        eprintln!("DBG C");
         let root = resolved(&config.root, &authority)?;
-        if root != config.root {
-            return Err(ROOT);
-        }
         for output in plan.output_paths()? {
-            eprintln!("DBG out {output:?}");
             if output != config.root && !separate(&root, &resolved(output, &authority)?) {
-                eprintln!("DBG notseparate {output:?}");
                 return Err(ROOT);
             }
         }
@@ -503,9 +487,7 @@ impl Recorder {
         authority.check()?;
         let cx =
             ReplayCx::from_context_authority(&authority.context, &root).map_err(|_| AUTHORITY)?;
-        eprintln!("DBG D {root:?}");
-        let publisher = LocalRootPublisher::open(&root, config.storage()).map_err(|e| { eprintln!("DBG publisher {e:?}"); ERROR })?;
-        eprintln!("DBG E");
+        let publisher = LocalRootPublisher::open(&root, config.storage()).map_err(|_| ERROR)?;
         authority.check()?;
         let mut work = WorkBudget::new(config.work);
         let writer = CampaignWriter::resume_from_prefix(
@@ -557,7 +539,7 @@ impl Recorder {
                 &self.cx,
                 &mut self.work,
             )
-            .map_err(|e| { eprintln!("DBG start_attempt {e:?}"); ERROR })
+            .map_err(|_| ERROR)
     }
 
     pub(super) fn finish(
@@ -723,7 +705,7 @@ impl Inspection {
     }
 
     pub(crate) fn execute(&self) -> Result<(), &'static str> {
-        let authority = Authority::new(
+        let mut authority = Authority::new(
             &self.principal,
             self.pin.approval,
             self.pin.plan,
@@ -732,13 +714,15 @@ impl Inspection {
             Some(self.pin),
             false,
         )?;
+        let root = resolved(&self.config.root, &authority)?;
+        authority.root = root.clone();
         authority.check()?;
-        let cx = ReplayCx::from_context_authority_read_only(&authority.context, &self.config.root)
+        let cx = ReplayCx::from_context_authority_read_only(&authority.context, &root)
             .map_err(|_| AUTHORITY)?;
         let mut work = WorkBudget::new(self.config.work);
         let result = (|| {
             let history = VerifiedCampaignHistory::inspect(
-                &self.config.root,
+                &root,
                 self.pin,
                 self.config.limits,
                 self.config.storage(),

@@ -95,7 +95,10 @@ fn selection_before_the_first_attempt_is_pure_and_connect_freezes_it_before_cont
         ClientCommand::KeepAlive,
         ClientCommand::KeepAliveGetParameter,
     ] {
-        assert_eq!(driver.select_keepalive(method), Err(ReconnectRefusal::Scope));
+        assert_eq!(
+            driver.select_keepalive(method),
+            Err(ReconnectRefusal::Scope)
+        );
         assert_eq!(driver.resource_budget(), resources);
         assert_eq!(driver.totals(), Some(totals));
         assert_eq!(

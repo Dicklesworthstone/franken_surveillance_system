@@ -110,22 +110,49 @@ fn continuation_args(input: &[OsString], pin: &Value, retry: bool) -> Test<Vec<O
 #[test]
 fn native_failed_prefix_continues_after_restart_without_erasing_failure_or_reusing_an_epoch() -> Test
 {
-    cold_failed_prefix(true)
+    cold_failed_prefix(true, false)
 }
 
 #[test]
 fn native_ordinary_reconnect_continues_after_restart_and_stops_at_first_success() -> Test {
-    cold_failed_prefix(false)
+    cold_failed_prefix(false, false)
 }
 
-fn cold_failed_prefix(continue_after_success: bool) -> Test {
-    let directory = Directory::new(if continue_after_success {
+#[cfg(unix)]
+#[test]
+fn native_history_parent_alias_preserves_approval_across_capture_restart_and_inspection() -> Test {
+    cold_failed_prefix(true, true)
+}
+
+fn cold_failed_prefix(continue_after_success: bool, aliased_history: bool) -> Test {
+    let directory = Directory::new(if aliased_history {
+        "cold-aliased-history"
+    } else if continue_after_success {
         "cold-campaign-retry"
     } else {
         "cold-ordinary-retry"
     })?;
     let camera = listener()?;
     let mut input = history_args(&directory, camera.local_addr()?);
+    let history_path = if aliased_history {
+        #[cfg(unix)]
+        {
+            let alias = directory.0.join("history-parent");
+            std::os::unix::fs::symlink(&directory.0, &alias)?;
+            alias.join("history")
+        }
+        #[cfg(not(unix))]
+        {
+            return Err("parent-alias fixture requires Unix".into());
+        }
+    } else {
+        directory.0.join("history")
+    };
+    set(
+        &mut input,
+        "--history-root",
+        history_path.to_str().ok_or("history path")?,
+    );
     if !continue_after_success {
         let at = input
             .iter()
@@ -139,6 +166,10 @@ fn cold_failed_prefix(continue_after_success: bool) -> Test {
     set(&mut input, "--retry-delay-ms", "5000");
     set(&mut input, "--retry-max-delay-ms", "5000");
     let (approved, original) = campaign_approval(&input)?;
+    assert_eq!(
+        text(value(&original, "campaign_history")?, "root")?,
+        history_path.to_str().ok_or("history path")?
+    );
     let output = thread::scope(|scope| -> Test<Output> {
         let listener = camera.try_clone()?;
         let server = scope.spawn(move || serve(listener, Behavior::EofAfterOne));
@@ -177,6 +208,11 @@ fn cold_failed_prefix(continue_after_success: bool) -> Test {
     assert_eq!(
         value(&retry_preview, "attempts")?,
         value(&original, "attempts")?
+    );
+    assert_eq!(
+        value(&retry_preview, "campaign_history")?,
+        value(&original, "campaign_history")?,
+        "continuation rewrote the original history plan"
     );
     let mut stale_approval = retry.clone();
     set(&mut stale_approval, "--approve", &obsolete_approval);
@@ -240,10 +276,21 @@ fn cold_failed_prefix(continue_after_success: bool) -> Test {
     let remaining_pins = receipts(&output)?;
     assert_eq!(integer(&remaining_pins[0], "records")?, 3);
     let terminal_pin = remaining_pins.last().ok_or("terminal pin")?;
-    let cold = parse(&good(run(
-        "capture",
-        &inspect_args(&directory, terminal_pin)?,
-    )?)?)?;
+    let mut inspect = inspect_args(&directory, terminal_pin)?;
+    if aliased_history {
+        let changed_path = run("capture", &inspect)?;
+        assert!(
+            !changed_path.status.success(),
+            "another path adopted the same physical graph"
+        );
+        assert!(changed_path.stdout.is_empty());
+    }
+    set(
+        &mut inspect,
+        "--history-root",
+        history_path.to_str().ok_or("history path")?,
+    );
+    let cold = parse(&good(run("capture", &inspect)?)?)?;
     assert_eq!(
         text(&cold, "campaign_completion")?,
         if continue_after_success {
@@ -261,6 +308,19 @@ fn cold_failed_prefix(continue_after_success: bool) -> Test {
     let exhausted = continuation_args(&input, terminal_pin, true)?;
     assert!(!run("capture", &exhausted)?.status.success());
     assert_eq!(tree(&directory.0.join("history"))?, final_history);
+    if aliased_history {
+        // Even an unchanged approved path and exact pin cannot authorize following a
+        // substituted root leaf. Parent aliases are the only resolution admitted.
+        let moved = directory.0.join("moved-history");
+        fs::rename(directory.0.join("history"), &moved)?;
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&moved, directory.0.join("history"))?;
+        let moved_before = tree(&moved)?;
+        let refused = run("capture", &inspect)?;
+        assert!(!refused.status.success(), "root-leaf symlink was followed");
+        assert!(refused.stdout.is_empty());
+        assert_eq!(tree(&moved)?, moved_before);
+    }
     no_connection(&camera)?;
     Ok(())
 }

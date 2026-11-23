@@ -122,6 +122,38 @@ fn tree(root: &Path) -> Test<BTreeMap<PathBuf, TreeEntry>> {
 }
 
 #[test]
+fn history_preview_is_pure_before_its_parent_exists_and_keeps_the_same_approval() -> Test {
+    let directory = Directory::new("history-pure-preview")?;
+    let camera = listener()?;
+    let mut input = history_args(&directory, camera.local_addr()?);
+    let parent = directory.0.join("not-created-yet");
+    let history = parent.join("history");
+    set(
+        &mut input,
+        "--history-root",
+        history.to_str().ok_or("history path")?,
+    );
+    let before = tree(&directory.0)?;
+    let first = campaign_preview(&input)?;
+    assert_eq!(tree(&directory.0)?, before);
+    assert!(!parent.exists(), "planning created the history parent");
+    fs::create_dir(&parent)?;
+    let second = campaign_preview(&input)?;
+    assert_eq!(text(&first, "approval")?, text(&second, "approval")?);
+    assert_eq!(
+        value(&first, "campaign_history")?,
+        value(&second, "campaign_history")?
+    );
+    assert_eq!(
+        text(value(&first, "campaign_history")?, "root")?,
+        history.to_str().ok_or("history path")?
+    );
+    assert!(!history.exists(), "planning created the history root");
+    no_connection(&camera)?;
+    Ok(())
+}
+
+#[test]
 fn history_cold_exact_prefixes_preserve_independent_native_evidence_without_media_reads() -> Test {
     let directory = Directory::new("history-cold")?;
     let camera = listener()?;
