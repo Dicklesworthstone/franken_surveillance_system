@@ -32,6 +32,7 @@ pub struct TransportCx<'a> {
     durable_upload_owner: bool,
     read_only_observation: bool,
     media_retrieval: bool,
+    forward_reconciliation: bool,
     observation_origin: Option<ContentDigest>,
 }
 
@@ -60,6 +61,7 @@ impl<'a> TransportCx<'a> {
     /// Cleanup may outlive that deadline and must supply its own finite bound.
     pub fn deadline(&self) -> Result<Option<TimestampNs>, MultipartError> {
         if !self.read_only_observation
+            && !self.forward_reconciliation
             && matches!(
                 self.operation,
                 TransportOperation::Abort | TransportOperation::Reconcile
@@ -99,6 +101,21 @@ impl<'a> TransportCx<'a> {
     pub const fn is_media_retrieval(&self) -> bool {
         self.media_retrieval
     }
+    /// Narrow this reconciliation to the original forward-work lifetime.
+    /// A probe that can restore active uploading must honor cancellation and
+    /// expiry at every later checkpoint and socket deadline. Terminal cleanup
+    /// observations retain their existing, separately bounded drain semantics.
+    pub fn require_forward_reconciliation(&mut self) -> Result<(), MultipartError> {
+        if self.operation != TransportOperation::Reconcile || self.read_only_observation {
+            return Err(MultipartError::OwnerMismatch);
+        }
+        self.forward_reconciliation = true;
+        self.checkpoint(self.now)?;
+        if self.authority.budget().remaining().storage_operations == 0 {
+            return Err(MultipartError::CleanupReserve);
+        }
+        Ok(())
+    }
     /// Stable verified journal origin, distinct from semantic intent identity.
     /// Native creation can bind this into provider metadata before dispatch;
     /// recovery and later read-only observation retain the same exact value.
@@ -132,7 +149,11 @@ impl<'a> TransportCx<'a> {
                 self.authority,
                 self.tree,
                 &self.resource,
-                self.operation,
+                if self.forward_reconciliation {
+                    TransportOperation::UploadPart
+                } else {
+                    self.operation
+                },
                 now,
             )
         };
@@ -194,6 +215,7 @@ impl<'a> TransportCx<'a> {
             durable_upload_owner,
             read_only_observation: self.read_only_observation,
             media_retrieval: self.media_retrieval,
+            forward_reconciliation: self.forward_reconciliation,
             observation_origin: self.observation_origin,
         }
     }
@@ -356,6 +378,7 @@ pub(super) fn admit<'a>(
         durable_upload_owner: false,
         read_only_observation: false,
         media_retrieval: false,
+        forward_reconciliation: false,
         observation_origin: None,
     })
 }
@@ -461,6 +484,7 @@ fn admit_read<'a>(
         durable_upload_owner: false,
         read_only_observation: true,
         media_retrieval,
+        forward_reconciliation: false,
         observation_origin: origin_binding,
     })
 }

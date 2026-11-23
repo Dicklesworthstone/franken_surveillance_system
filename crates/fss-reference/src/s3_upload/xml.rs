@@ -12,10 +12,10 @@ use super::{S3Error, signing};
 
 const NAMESPACE: &str = "http://s3.amazonaws.com/doc/2006-03-01/";
 
-fn space(c: char) -> bool {
+pub(super) fn space(c: char) -> bool {
     matches!(c, ' ' | '\t' | '\r' | '\n')
 }
-fn name(value: &str) -> bool {
+pub(super) fn name(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 64
         && value.bytes().all(|byte| byte.is_ascii_alphanumeric())
@@ -26,7 +26,7 @@ fn valid_char(value: char) -> bool {
         || value >= ' ' && value != '\u{fffe}' && value != '\u{ffff}'
 }
 
-fn decode(value: &str) -> Result<String, S3Error> {
+pub(super) fn decode(value: &str) -> Result<String, S3Error> {
     if value.len() > 16 * 1024 || value.contains('<') || value.contains("]]>") {
         return Err(S3Error::Protocol);
     }
@@ -99,7 +99,7 @@ fn root(open: &str, expected: &str) -> Result<(), S3Error> {
     Ok(())
 }
 
-pub(super) fn response(bytes: &[u8], expected: &str) -> Result<BTreeMap<String, String>, S3Error> {
+pub(super) fn body<'a>(bytes: &'a [u8], expected: &str) -> Result<&'a str, S3Error> {
     if bytes.is_empty() || bytes.len() > 1024 * 1024 {
         return Err(S3Error::Protocol);
     }
@@ -126,15 +126,17 @@ pub(super) fn response(bytes: &[u8], expected: &str) -> Result<BTreeMap<String, 
     let text = text.strip_prefix('<').ok_or(S3Error::Protocol)?;
     let end = text.find('>').ok_or(S3Error::Protocol)?;
     root(&text[..end], expected)?;
-    let mut text = &text[end + 1..];
+    let text = &text[end + 1..];
     let closing = format!("</{expected}>");
+    text.strip_suffix(&closing).ok_or(S3Error::Protocol)
+}
+
+pub(super) fn response(bytes: &[u8], expected: &str) -> Result<BTreeMap<String, String>, S3Error> {
+    let mut text = body(bytes, expected)?;
     let mut fields = BTreeMap::new();
     loop {
         text = text.trim_start_matches(space);
-        if let Some(tail) = text.strip_prefix(&closing) {
-            if !tail.trim_matches(space).is_empty() {
-                return Err(S3Error::Protocol);
-            }
+        if text.is_empty() {
             return Ok(fields);
         }
         if fields.len() >= 32 {

@@ -8,11 +8,14 @@
 //! are deliberately unsupported. A lost acknowledgement remains uncertain;
 //! a read-only HEAD bound to journal origin, intent and checksum can prove an
 //! uncertain completion. Legacy objects without origin metadata stay uncertain.
+//! A complete checksum-bound ListParts response can also recover a lost part
+//! acknowledgement for a pending, unexpired owner. Missing parts stay uncertain.
 //! Absence from an object listing cannot authorize another create or complete.
 //! Independent retrieval uses a fresh media-read owner and sequential signed
 //! ranges pinned to one opaque ETag; the owner hashes the returned bytes itself.
 
 mod http;
+mod inventory;
 mod retrieval;
 mod signing;
 /// Separately authorized verification without an upload journal.
@@ -306,7 +309,7 @@ impl S3Limits {
         budget.bytes = self
             .memory_per_call()
             .checked_mul(calls)
-            .and_then(|n| n.checked_add(completion * 2 + observation))
+            .and_then(|n| n.checked_add(completion * 2 + observation + part_count as u64 * 256))
             .ok_or(S3Error::Limit)?;
         budget.network_bytes = ((self.header_bytes + self.wire_bytes) as u64)
             .checked_mul(calls)
@@ -327,6 +330,7 @@ pub struct NativeS3Transport<C: S3Clock> {
     intent: Option<UploadIntent>,
     origin: Option<ContentDigest>,
     upload: Option<UploadId>,
+    intended: BTreeMap<u64, (u64, ContentDigest)>,
     parts: BTreeMap<u64, PartReceipt>,
     confirmed_bytes: u64,
     phase: MultipartPhase,
@@ -358,6 +362,7 @@ impl<C: S3Clock> NativeS3Transport<C> {
             intent: None,
             origin: None,
             upload: None,
+            intended: BTreeMap::new(),
             parts: BTreeMap::new(),
             confirmed_bytes: 0,
             phase: MultipartPhase::Prepared,
@@ -384,6 +389,14 @@ impl<C: S3Clock> NativeS3Transport<C> {
         result.intent = Some(recovery.intent().clone());
         result.origin = recovery.origin_binding();
         result.upload = recovery.upload_id().cloned();
+        for (index, digest) in recovery.intended_parts() {
+            let position = usize::try_from(index).map_err(|_| S3Error::Binding)?;
+            let chunk = recovery.plan().chunks.get(position).ok_or(S3Error::Binding)?;
+            if index >= 10_000 || chunk.index != index {
+                return Err(S3Error::Binding);
+            }
+            result.intended.insert(index, (chunk.len, digest));
+        }
         result.parts = recovery
             .part_receipts()
             .map(|part| (part.index, part.clone()))
@@ -391,6 +404,9 @@ impl<C: S3Clock> NativeS3Transport<C> {
         for part in result.parts.values() {
             let index = usize::try_from(part.index).map_err(|_| S3Error::Binding)?;
             let chunk = recovery.plan().chunks.get(index).ok_or(S3Error::Binding)?;
+            if result.intended.get(&part.index) != Some(&(chunk.len, part.content_digest)) {
+                return Err(S3Error::Binding);
+            }
             result.confirmed_bytes = result
                 .confirmed_bytes
                 .checked_add(chunk.len)
@@ -590,6 +606,21 @@ impl<C: S3Clock> NativeS3Transport<C> {
                 Err(S3Error::Binding)
             };
         }
+        let intended = (chunk.len, content_digest);
+        if self
+            .intended
+            .get(&chunk.index)
+            .is_some_and(|original| *original != intended)
+        {
+            return Err(S3Error::Binding);
+        }
+        if !self.intended.contains_key(&chunk.index) {
+            // Admit the retained map entry before allocation. Its lifetime
+            // includes a lost ACK, so recovery can compare the original bytes.
+            cx.charge_io(cx.now(), 256, 0)
+                .map_err(|_| S3Error::Authority)?;
+            self.intended.insert(chunk.index, intended);
+        }
         let confirmed_bytes = self
             .confirmed_bytes
             .checked_add(chunk.len)
@@ -730,9 +761,12 @@ impl<C: S3Clock> NativeS3Transport<C> {
             intent_digest: intent.digest(),
             state: ProviderUploadState::Unknown,
         };
-        // A standard S3 listing cannot establish that a lost initiation, part or
-        // abort did not run. Only this owner's previously dispatched Complete
-        // has the complete acknowledged inventory needed for a positive proof.
+        if self.phase == MultipartPhase::Uncertain(TransportOperation::UploadPart) {
+            return self.reconcile_part(cx, intent);
+        }
+        // A standard S3 listing cannot establish that a lost initiation or
+        // abort did not run. Completion requires the complete acknowledged
+        // inventory and this journal's initiation metadata for a positive proof.
         if self.phase != MultipartPhase::Uncertain(TransportOperation::Complete) {
             return Ok(observation);
         }
@@ -829,6 +863,77 @@ impl<C: S3Clock> NativeS3Transport<C> {
         // The owning protocol validates and durably records this observation.
         // Keep the adapter's uncertain phase so a failed journal append or a
         // separately owned read-only observation cannot reactivate old work.
+        Ok(observation)
+    }
+
+    fn reconcile_part(
+        &mut self,
+        cx: &mut TransportCx<'_>,
+        intent: &UploadIntent,
+    ) -> Result<Reconciliation, S3Error> {
+        let mut observation = Reconciliation {
+            intent_digest: intent.digest(),
+            state: ProviderUploadState::Unknown,
+        };
+        // This first slice belongs to the original pending mutation owner.
+        // Observing a closed owner cannot resurrect it or confer write grants.
+        if self.origin.is_none() || !cx.is_durable() || cx.is_read_only_observation() {
+            return Ok(observation);
+        }
+        cx.require_forward_reconciliation()
+            .map_err(|_| S3Error::Authority)?;
+        // A nonterminal observation must leave one operation and native
+        // exchange allowance for aborting staging after a cold reopen.
+        let remaining = cx.authority().budget().remaining();
+        let memory_floor = self.limits.memory_per_call();
+        let wire_floor = (self.limits.header_bytes + self.limits.wire_bytes) as u64;
+        if remaining.bytes < memory_floor * 2 || remaining.network_bytes < wire_floor * 2 {
+            return Err(S3Error::Authority);
+        }
+        if self.intended.is_empty()
+            || self.intended.len() > inventory::MAX_PARTS
+            || self.intended.len() != self.parts.len() + 1
+        {
+            return Ok(observation);
+        }
+        let upload = self.upload.as_ref().ok_or(S3Error::Binding)?;
+        let query = signing::query(&[
+            ("max-parts", "1000"),
+            ("part-number-marker", "0"),
+            ("uploadId", &upload.0),
+        ]);
+        let response = self.exchange(
+            cx,
+            "GET",
+            &query,
+            &[],
+            &[],
+            ContentDigest::sha256(b""),
+            false,
+        )?;
+        if response.0.status != 200 {
+            return Ok(observation);
+        }
+        let upload = self.upload.as_ref().ok_or(S3Error::Binding)?;
+        let Some(parts) = inventory::verify(
+            &response.0.body,
+            &self.endpoint.bucket,
+            &self.endpoint.key,
+            upload,
+            &self.intended,
+            &self.parts,
+        )? else {
+            return Ok(observation);
+        };
+        // Parsing and checksum comparison cannot hide an expiry or revocation.
+        self.check(cx, TransportOperation::Reconcile)?;
+        observation.state = ProviderUploadState::Active {
+            upload: self.upload.clone().ok_or(S3Error::Binding)?,
+            parts,
+        };
+        // The protocol must durably accept this inventory before any new work.
+        // Keep the adapter uncertain; cold recovery from its committed journal
+        // creates the next active adapter. No same-call mutation is dispatched.
         Ok(observation)
     }
 }

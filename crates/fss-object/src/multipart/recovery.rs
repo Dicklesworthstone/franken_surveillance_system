@@ -233,6 +233,17 @@ impl MultipartRecovery {
         self.checkpoint.parts.iter().flatten()
     }
 
+    /// Every first-dispatched part digest in canonical index order, including
+    /// a part whose acknowledgement was lost. This is inert evidence, not
+    /// permission to repeat an uncertain write or replace its original bytes.
+    pub fn intended_parts(&self) -> impl Iterator<Item = (u64, ContentDigest)> {
+        self.checkpoint
+            .intended
+            .iter()
+            .enumerate()
+            .filter_map(|(index, digest)| digest.map(|digest| (index as u64, digest)))
+    }
+
     /// Count of checksum-confirmed parts without exposing provider tokens.
     #[must_use]
     pub fn confirmed_parts(&self) -> usize {

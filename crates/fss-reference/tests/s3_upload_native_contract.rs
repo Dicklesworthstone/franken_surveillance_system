@@ -5,6 +5,10 @@
 //! or TLS qualification.
 
 #[cfg(unix)]
+#[path = "s3_upload_native_contract/parts.rs"]
+mod parts;
+
+#[cfg(unix)]
 #[path = "s3_upload_native_contract/retrieval.rs"]
 mod retrieval;
 
