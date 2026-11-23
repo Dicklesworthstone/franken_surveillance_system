@@ -21,11 +21,15 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use fss_cli::json_input::{Value, parse};
 use fss_core::ContentDigest;
-use fss_object::uploader::{CompletionObservationOutcome, CompletionObservationReceipt};
+use fss_object::uploader::{
+    CompletionObservationOutcome, CompletionObservationReceipt, MAX_RETRIEVAL_RANGE_BYTES,
+    RetrievalOutcome, RetrievalReceipt,
+};
 
 type Test<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const BODY: &[u8] = b"owner supplied archive object";
 const SECRET: &str = "loopback-only-test-secret";
+const MAX_FIXTURE_BODY: usize = 512 * 1024;
 
 struct Directory(PathBuf);
 impl Directory {
@@ -189,6 +193,28 @@ fn observation_arguments(
     Ok(args)
 }
 
+fn replace_argument(args: &mut [String], name: &str, value: String) -> Test {
+    let index = args
+        .iter()
+        .position(|argument| argument == name)
+        .ok_or("fixture argument absent")?
+        + 1;
+    *args.get_mut(index).ok_or("fixture argument value absent")? = value;
+    Ok(())
+}
+
+fn retrieval_arguments(resume: &[String], directory: &Directory, label: &str) -> Test<Vec<String>> {
+    let mut args = observation_arguments(resume, directory, label)?;
+    args[0] = "upload-s3-verify".into();
+    replace_argument(&mut args, "--max-requests", "4".into())?;
+    replace_argument(
+        &mut args,
+        "--observation-operation",
+        format!("operation:independent-retrieval:{label}"),
+    )?;
+    Ok(args)
+}
+
 fn journal_bytes(directory: &Directory) -> Test<BTreeMap<PathBuf, Vec<u8>>> {
     let root = directory.0.join("journal");
     let mut pending = vec![root.clone()];
@@ -284,7 +310,7 @@ fn request(stream: &mut TcpStream) -> Result<Request, String> {
         .ok_or("missing body length")?
         .parse()
         .map_err(|_| "invalid body length")?;
-    if length > 16 * 1024 {
+    if length > MAX_FIXTURE_BODY {
         return Err("request body bound".into());
     }
     while bytes.len() - end < length {
@@ -317,19 +343,36 @@ enum HeadOutcome {
     WrongIntent,
     WrongOrigin,
 }
+#[derive(Clone, Copy)]
+enum GetOutcome {
+    Verified,
+    Corrupt,
+    Absent,
+    WrongOrigin,
+    ChangedEtag,
+}
 impl Server {
     fn new(fail_completion: bool) -> Test<Self> {
-        Self::configured(fail_completion, false, None)
+        Self::configured(fail_completion, false, None, None, BODY.to_vec())
     }
 
     fn lost_completion(outcome: HeadOutcome) -> Test<Self> {
-        Self::configured(false, true, Some(outcome))
+        Self::configured(false, true, Some(outcome), None, BODY.to_vec())
+    }
+
+    fn retrieval(bytes: &[u8], outcome: GetOutcome) -> Test<Self> {
+        if bytes.is_empty() || bytes.len() > MAX_FIXTURE_BODY {
+            return Err("retrieval fixture source bound".into());
+        }
+        Self::configured(false, false, None, Some(outcome), bytes.to_vec())
     }
 
     fn configured(
         fail_completion: bool,
         lose_completion: bool,
         observation: Option<HeadOutcome>,
+        retrieval: Option<GetOutcome>,
+        source: Vec<u8>,
     ) -> Test<Self> {
         let listener = TcpListener::bind("127.0.0.1:0")?;
         listener.set_nonblocking(true)?;
@@ -339,7 +382,15 @@ impl Server {
         let worker = thread::spawn(move || {
             let deadline = Instant::now() + Duration::from_secs(25);
             let mut received = Vec::new();
-            let expected_requests = if observation.is_some() { 4 } else { 3 };
+            let reads = match retrieval {
+                Some(GetOutcome::Verified) => {
+                    source.len().div_ceil(MAX_RETRIEVAL_RANGE_BYTES as usize)
+                }
+                Some(GetOutcome::ChangedEtag) => 2,
+                Some(_) => 1,
+                None => 0,
+            };
+            let expected_requests = if observation.is_some() { 4 } else { 3 + reads };
             while received.len() < expected_requests {
                 if cancelled.load(Ordering::SeqCst) {
                     return Err("oracle stopped".into());
@@ -371,6 +422,92 @@ impl Server {
                 {
                     return Err("signed body digest mismatch".into());
                 }
+                if received.len() >= 3 && retrieval.is_some() {
+                    let outcome = retrieval.ok_or("retrieval fixture absent")?;
+                    let ordinal = received.len() - 3;
+                    let offset = ordinal * MAX_RETRIEVAL_RANGE_BYTES as usize;
+                    let length = source
+                        .len()
+                        .saturating_sub(offset)
+                        .min(MAX_RETRIEVAL_RANGE_BYTES as usize);
+                    if length == 0
+                        || request.first != "GET /test-archive/object.bin HTTP/1.1"
+                        || !request.body.is_empty()
+                        || request.headers.get("range")
+                            != Some(&format!("bytes={offset}-{}", offset + length - 1))
+                        || request.headers.get("accept-encoding").map(String::as_str)
+                            != Some("identity")
+                        || !request
+                            .headers
+                            .get("authorization")
+                            .is_some_and(|value| value.contains(";range;"))
+                    {
+                        return Err("retrieval was not an exact signed bounded GET".into());
+                    }
+                    if ordinal == 0 {
+                        if request.headers.contains_key("if-match") {
+                            return Err("first retrieval used an unobserved ETag".into());
+                        }
+                    } else if request.headers.get("if-match").map(String::as_str)
+                        != Some("\"opaque-retrieval-token\"")
+                        || !request
+                            .headers
+                            .get("authorization")
+                            .is_some_and(|value| value.contains(";if-match;"))
+                    {
+                        return Err("later range lost its signed representation pin".into());
+                    }
+                    let original: &Request = received.first().ok_or("initiation absent")?;
+                    let mut metadata = String::new();
+                    for name in [
+                        "x-amz-meta-fss-intent",
+                        "x-amz-meta-fss-plan",
+                        "x-amz-meta-fss-root",
+                        "x-amz-meta-fss-origin",
+                    ] {
+                        let value = if name == "x-amz-meta-fss-origin"
+                            && matches!(outcome, GetOutcome::WrongOrigin)
+                        {
+                            ContentDigest::sha256(b"another journal's archived bytes").to_text()
+                                [7..]
+                                .to_owned()
+                        } else {
+                            original
+                                .headers
+                                .get(name)
+                                .ok_or("original metadata absent")?
+                                .clone()
+                        };
+                        metadata.push_str(&format!("{name}: {value}\r\n"));
+                    }
+                    let mut body = source[offset..offset + length].to_vec();
+                    if matches!(outcome, GetOutcome::Corrupt) {
+                        body[0] ^= 0xff;
+                    }
+                    let status = if matches!(outcome, GetOutcome::Absent) {
+                        body.clear();
+                        404
+                    } else {
+                        206
+                    };
+                    let etag = if matches!(outcome, GetOutcome::ChangedEtag) && ordinal > 0 {
+                        "\"replaced-object-token\""
+                    } else {
+                        "\"opaque-retrieval-token\""
+                    };
+                    let head = format!(
+                        "HTTP/1.1 {status} fixture\r\nContent-Length: {}\r\nContent-Range: bytes {offset}-{}/{}\r\nETag: {etag}\r\n{metadata}Connection: close\r\n\r\n",
+                        body.len(),
+                        offset + length - 1,
+                        source.len(),
+                    );
+                    stream
+                        .write_all(head.as_bytes())
+                        .and_then(|()| stream.write_all(&body))
+                        .map_err(|error| error.to_string())?;
+                    received.push(request);
+                    continue;
+                }
                 if received.len() == 3 {
                     if request.first != "HEAD /test-archive/object.bin HTTP/1.1"
                         || !request.body.is_empty()
@@ -391,8 +528,10 @@ impl Server {
                         let checksum = if matches!(outcome, HeadOutcome::WrongChecksum) {
                             b64(&ContentDigest::sha256(b"other composite").bytes())
                         } else {
-                            b64(&ContentDigest::sha256(&ContentDigest::sha256(BODY).bytes())
-                                .bytes())
+                            b64(
+                                &ContentDigest::sha256(&ContentDigest::sha256(&source).bytes())
+                                    .bytes(),
+                            )
                         };
                         let mut metadata = String::new();
                         for name in [
@@ -422,7 +561,7 @@ impl Server {
                         }
                         format!(
                             "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nETag: \"opaque-completed-object\"\r\nx-amz-checksum-sha256: {checksum}-1\r\nx-amz-checksum-type: COMPOSITE\r\n{metadata}Connection: close\r\n\r\n",
-                            BODY.len()
+                            source.len()
                         )
                     };
                     stream
@@ -447,10 +586,10 @@ impl Server {
                         ("", "<InitiateMultipartUploadResult><Bucket>test-archive</Bucket><Key>object.bin</Key><UploadId>fixture-upload</UploadId></InitiateMultipartUploadResult>".to_owned())
                     }
                     1 => {
-                        if !request.first.starts_with("PUT ") || request.body != BODY {
+                        if !request.first.starts_with("PUT ") || request.body != source {
                             return Err("source bytes or part method changed".into());
                         }
-                        let checksum = b64(&ContentDigest::sha256(BODY).bytes());
+                        let checksum = b64(&ContentDigest::sha256(&source).bytes());
                         if request.headers.get("x-amz-checksum-sha256") != Some(&checksum) {
                             return Err("independent part checksum absent".into());
                         }
@@ -476,9 +615,10 @@ impl Server {
                         if fail_completion {
                             ("", "<Error><Code>InternalError</Code><Message>fixture failure</Message></Error>".into())
                         } else {
-                            let composite =
-                                b64(&ContentDigest::sha256(&ContentDigest::sha256(BODY).bytes())
-                                    .bytes());
+                            let composite = b64(&ContentDigest::sha256(
+                                &ContentDigest::sha256(&source).bytes(),
+                            )
+                            .bytes());
                             (
                                 "",
                                 format!(
@@ -916,5 +1056,281 @@ fn missing_observation_secret_records_not_observed_without_reopening_upload() ->
     assert_eq!(receipt.outcome(), CompletionObservationOutcome::NotObserved);
     assert_eq!(receipt.consumed().storage_operations, 0);
     assert_eq!(journal_bytes(&directory)?, before);
+    Ok(())
+}
+
+fn completed_retrieval_fixture(
+    directory: &Directory,
+    server: &Server,
+    bytes: &[u8],
+) -> Test<(Vec<String>, BTreeMap<String, Value>)> {
+    fs::write(directory.0.join("source"), bytes)?;
+    let mut args = arguments(directory, server.peer, "upload-s3-prepare")?;
+    replace_argument(
+        &mut args,
+        "--source-sha256",
+        ContentDigest::sha256(bytes).to_text(),
+    )?;
+    replace_argument(&mut args, "--source-bytes", bytes.len().to_string())?;
+    let prepared = run(&args)?;
+    assert!(
+        prepared.status.success(),
+        "{}",
+        String::from_utf8_lossy(&prepared.stderr)
+    );
+    let resume = with_pin(args, &fields(&prepared)?, "upload-s3-resume")?;
+    let completed = run(&resume)?;
+    assert!(
+        completed.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&completed.stdout),
+        String::from_utf8_lossy(&completed.stderr)
+    );
+    let report = fields(&completed)?;
+    assert_eq!(report.get("phase").and_then(Value::text), Some("completed"));
+    assert_eq!(report.get("locally_settled"), Some(&Value::Bool(true)));
+    Ok((resume, report))
+}
+
+#[test]
+fn completed_object_is_independently_retrieved_after_source_removal_with_signed_ranges() -> Test {
+    let directory = Directory::new("verify-ranges")?;
+    let bytes: Vec<u8> = (0..MAX_RETRIEVAL_RANGE_BYTES as usize + 37)
+        .map(|index| (index % 251) as u8)
+        .collect();
+    let server = Server::retrieval(&bytes, GetOutcome::Verified)?;
+    let (resume, completed) = completed_retrieval_fixture(&directory, &server, &bytes)?;
+    let before = journal_bytes(&directory)?;
+    fs::remove_file(directory.0.join("source"))?;
+    let args = retrieval_arguments(&resume, &directory, "ranges")?;
+    let output = run(&args)?;
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.len() <= 16 * 1024);
+    let report = fields(&output)?;
+    assert_eq!(
+        report.get("schema").and_then(Value::text),
+        Some("fss.s3_retrieval_observation_cli.v1")
+    );
+    assert_eq!(report.get("command").and_then(Value::text), Some("verify"));
+    assert_eq!(
+        report.get("observation_outcome").and_then(Value::text),
+        Some("verified")
+    );
+    for field in [
+        "independent_retrievability_verified",
+        "observation_receipt_durable",
+        "original_upload_unchanged",
+    ] {
+        assert_eq!(report.get(field), Some(&Value::Bool(true)), "{field}");
+    }
+    for field in [
+        "source_verified_this_invocation",
+        "graph_closure_verified",
+        "client_side_encryption_performed",
+        "replication_verified",
+    ] {
+        assert_eq!(report.get(field), Some(&Value::Bool(false)), "{field}");
+    }
+    assert_eq!(
+        report.get("original_upload_consumed"),
+        completed.get("upload_consumed")
+    );
+    assert_eq!(
+        report.get("original_upload_remaining"),
+        completed.get("upload_remaining")
+    );
+    assert_eq!(
+        report.get("original_completion_receipt_digest"),
+        completed.get("receipt_digest")
+    );
+    assert_eq!(
+        report.get("source_journal_head"),
+        completed.get("journal_head")
+    );
+    let path = directory.0.join("observation-ranges.bin");
+    let canonical = fs::read(&path)?;
+    let receipt = RetrievalReceipt::decode(&canonical)?;
+    assert_eq!(receipt.outcome(), RetrievalOutcome::Verified);
+    assert_eq!(receipt.expected_digest(), ContentDigest::sha256(&bytes));
+    assert_eq!(receipt.expected_bytes(), bytes.len() as u64);
+    assert_eq!(receipt.bytes_read(), bytes.len() as u64);
+    assert_eq!(receipt.verified_parts(), 1);
+    assert_eq!(receipt.attempted_ranges(), 2);
+    assert_eq!(receipt.consumed().storage_operations, 2);
+    assert_eq!(receipt.budget().storage_operations, 4);
+    assert_eq!(
+        report
+            .get("observation_receipt_digest")
+            .and_then(Value::text),
+        Some(receipt.digest()?.to_text().as_str())
+    );
+    assert_eq!(fs::metadata(&path)?.permissions().mode() & 0o077, 0);
+    assert_eq!(journal_bytes(&directory)?, before);
+    let requests = server.finish()?;
+    assert_eq!(requests.len(), 5);
+    assert!(
+        requests[3..]
+            .iter()
+            .all(|request| request.first.starts_with("GET "))
+    );
+    fs::remove_file(directory.0.join("credentials"))?;
+    let repeated = run(&args)?;
+    assert!(!repeated.status.success());
+    assert!(repeated.stdout.is_empty());
+    assert_eq!(fs::read(&path)?, canonical);
+    assert_eq!(journal_bytes(&directory)?, before);
+    Ok(())
+}
+
+#[test]
+fn retrieval_corruption_missing_object_and_wrong_origin_keep_separate_failed_receipts() -> Test {
+    for (label, fault, expected) in [
+        ("corrupt", GetOutcome::Corrupt, RetrievalOutcome::Mismatch),
+        ("absent", GetOutcome::Absent, RetrievalOutcome::Unknown),
+        ("origin", GetOutcome::WrongOrigin, RetrievalOutcome::Unknown),
+    ] {
+        let directory = Directory::new(label)?;
+        let server = Server::retrieval(BODY, fault)?;
+        let (resume, completed) = completed_retrieval_fixture(&directory, &server, BODY)?;
+        let before = journal_bytes(&directory)?;
+        fs::remove_file(directory.0.join("source"))?;
+        let args = retrieval_arguments(&resume, &directory, label)?;
+        let output = run(&args)?;
+        assert!(!output.status.success(), "{label}");
+        let report = fields(&output)?;
+        assert_eq!(
+            report.get("observation_outcome").and_then(Value::text),
+            Some(if expected == RetrievalOutcome::Mismatch {
+                "mismatch"
+            } else {
+                "unknown"
+            })
+        );
+        assert_eq!(
+            report.get("independent_retrievability_verified"),
+            Some(&Value::Bool(false))
+        );
+        assert_eq!(
+            report.get("observation_receipt_durable"),
+            Some(&Value::Bool(true))
+        );
+        assert_eq!(
+            report.get("original_completion_receipt_digest"),
+            completed.get("receipt_digest")
+        );
+        let receipt = RetrievalReceipt::decode(&fs::read(
+            directory.0.join(format!("observation-{label}.bin")),
+        )?)?;
+        assert_eq!(receipt.outcome(), expected);
+        assert_eq!(receipt.verified_parts(), 0);
+        assert_eq!(receipt.attempted_ranges(), 1);
+        assert_eq!(journal_bytes(&directory)?, before);
+        assert_eq!(server.finish()?.len(), 4);
+    }
+    Ok(())
+}
+
+#[test]
+fn retrieval_refuses_replacement_between_ranges_and_preserves_partial_accounting() -> Test {
+    let directory = Directory::new("verify-replaced")?;
+    let bytes = vec![b'x'; MAX_RETRIEVAL_RANGE_BYTES as usize + 37];
+    let server = Server::retrieval(&bytes, GetOutcome::ChangedEtag)?;
+    let (resume, _) = completed_retrieval_fixture(&directory, &server, &bytes)?;
+    let before = journal_bytes(&directory)?;
+    fs::remove_file(directory.0.join("source"))?;
+    let output = run(&retrieval_arguments(&resume, &directory, "replaced")?)?;
+    assert!(!output.status.success());
+    let report = fields(&output)?;
+    assert_eq!(
+        report.get("observation_outcome").and_then(Value::text),
+        Some("unknown")
+    );
+    assert_eq!(
+        report.get("independent_retrievability_verified"),
+        Some(&Value::Bool(false))
+    );
+    let receipt =
+        RetrievalReceipt::decode(&fs::read(directory.0.join("observation-replaced.bin"))?)?;
+    assert_eq!(receipt.outcome(), RetrievalOutcome::Unknown);
+    assert_eq!(receipt.bytes_read(), MAX_RETRIEVAL_RANGE_BYTES);
+    assert_eq!(receipt.verified_parts(), 0);
+    assert_eq!(receipt.attempted_ranges(), 2);
+    assert_eq!(journal_bytes(&directory)?, before);
+    assert_eq!(server.finish()?.len(), 5);
+    Ok(())
+}
+
+#[test]
+fn retrieval_missing_secret_settles_not_observed_without_source_or_provider_read() -> Test {
+    let directory = Directory::new("verify-no-secret")?;
+    let server = Server::new(false)?;
+    let (resume, _) = completed_retrieval_fixture(&directory, &server, BODY)?;
+    assert_eq!(server.finish()?.len(), 3);
+    fs::remove_file(directory.0.join("source"))?;
+    fs::remove_file(directory.0.join("credentials"))?;
+    let before = journal_bytes(&directory)?;
+    let output = run(&retrieval_arguments(&resume, &directory, "no-secret")?)?;
+    assert!(!output.status.success());
+    let report = fields(&output)?;
+    assert_eq!(
+        report.get("observation_outcome").and_then(Value::text),
+        Some("not_observed")
+    );
+    assert_eq!(
+        report.get("provider_work_requested_this_invocation"),
+        Some(&Value::Bool(false))
+    );
+    assert_eq!(
+        report.get("observation_receipt_durable"),
+        Some(&Value::Bool(true))
+    );
+    let receipt =
+        RetrievalReceipt::decode(&fs::read(directory.0.join("observation-no-secret.bin"))?)?;
+    assert_eq!(receipt.outcome(), RetrievalOutcome::NotObserved);
+    assert_eq!(receipt.attempted_ranges(), 0);
+    assert_eq!(receipt.bytes_read(), 0);
+    assert_eq!(journal_bytes(&directory)?, before);
+    Ok(())
+}
+
+#[test]
+fn retrieval_rejects_wrong_identity_pin_or_expired_authority_before_secret_access() -> Test {
+    let directory = Directory::new("verify-refusal")?;
+    let server = Server::new(false)?;
+    let (resume, _) = completed_retrieval_fixture(&directory, &server, BODY)?;
+    assert_eq!(server.finish()?.len(), 3);
+    fs::remove_file(directory.0.join("source"))?;
+    fs::remove_file(directory.0.join("credentials"))?;
+    let before = journal_bytes(&directory)?;
+    for (name, value) in [
+        (
+            "--source-sha256",
+            ContentDigest::sha256(b"another source").to_text(),
+        ),
+        (
+            "--minimum-root",
+            ContentDigest::sha256(b"unretained root").to_text(),
+        ),
+        ("--operation", "operation:another-source-upload".into()),
+        (
+            "--observation-operation",
+            "operation:native-s3-process".into(),
+        ),
+        ("--key", "another-object.bin".into()),
+        ("--deadline-ns", "1".into()),
+    ] {
+        let mut args = retrieval_arguments(&resume, &directory, "refused")?;
+        replace_argument(&mut args, name, value)?;
+        let output = run(&args)?;
+        assert!(!output.status.success(), "{name}");
+        assert!(output.stdout.is_empty(), "{name}");
+        assert!(!directory.0.join("observation-refused.bin").exists());
+        assert_eq!(journal_bytes(&directory)?, before);
+    }
     Ok(())
 }

@@ -5212,6 +5212,13 @@
       "schema": "fss.s3_completion_observation_cli.v1"
     },
     {
+      "authority": "independently authorized completed-object media verification",
+      "compatibilityRule": "Owner: fss-cli::fss-archive::s3::retrieval and fss-object::uploader::RetrievalObservation. At most 16 KiB complete JSON binds the unchanged completed upload pin/operation/receipt/intent/plan/root, independent source digest/size, fresh read operation/allowance/spend/time, expected and verified parts, hashed bytes and admitted ranges. NotObserved/Unknown/Mismatch/Verified remain distinct. Only complete native part and whole-digest verification under live ReadMedia authority yields independent_retrievability_verified. The source file is not read; the historical upload and its spend are unchanged. A separate exclusive private canonical receipt has an explicit durability result; success requires verification, settlement and durable receipt. Credentials, provider tokens, paths and media are excluded. No encryption, graph closure, replica or future availability claim. Cross-field authority and custody validation remains native; changed meaning requires a new schema.",
+      "file": "schemas/s3_retrieval_observation_cli.v1.json",
+      "id": "SCHEMA-S3-RETRIEVAL-OBSERVATION-CLI-001",
+      "schema": "fss.s3_retrieval_observation_cli.v1"
+    },
+    {
       "authority": "exact owner-approved local object transfer",
       "compatibilityRule": "Owner: fss-cli::fss-archive::s3 and fss-reference::s3_upload. At most 16 KiB complete JSON for prepare/resume/abort of one SHA-256-verified source object of at most 64 MiB. Binds exact operation, route resource, plan, source digest/length, independent minimum and confirmed journal head, acknowledged parts, cumulative upload/remaining/local work, phase/uncertain operation, optional receipt, local settlement and cold-reopen requirement. Credentials, provider tokens, object key and file paths are excluded. Explicit local plaintext approval and independently retained preparation pin are required before provider writes; source, provider completion, archive graph closure, encryption and independent retrievability remain distinct. Changed meaning requires a new schema.",
       "file": "CLI output",

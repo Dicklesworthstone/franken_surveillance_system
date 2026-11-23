@@ -4,6 +4,38 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Independent native S3 object byte verification — 2026-11-22
+
+`fss-archive upload-s3-verify` now verifies one locally completed object without
+reading its original source file. A fresh read-only owner, distinct operation,
+deadline and allowance issue signed GET ranges of at most 256 KiB for objects up
+to 64 MiB. Each response must bind the exact custody origin, intent, plan, root,
+length/range and one strong ETag; later requests sign If-Match. The owner checks
+every original part checksum and a separate independent whole-object SHA-256.
+Metadata-only acknowledgement cannot produce a verified byte result.
+
+The original completed journal, upload owner and historical spend remain unchanged.
+The fresh child has exactly ReadMedia, AdapterNet and AdapterAuth, settles after
+failures/cancellation, and records an immutable bounded receipt with explicit
+NotObserved/Unknown/Mismatch/Verified outcome, partial counts and charged work.
+The operator report and private exclusive receipt distinguish byte verification
+from receipt durability; success requires both and local settlement.
+
+Twenty new regression functions cover core ownership/receipts, native range and
+framing faults, representation changes, corrupt bytes, budget/deadline/cancellation,
+and actual CLI upload-to-verification workflows with the source file removed.
+These tests are authored; Rust execution remains unverified. Both pinned single-job
+checks were killed while compiling unchanged Asupersync 0.5.0, before project
+diagnostics. Pinned formatting, source review and static contract checks are
+recorded separately from executable qualification.
+
+This advances FSS-068 without closing broader archive qualification. Eligibility
+currently requires a locally Completed/Verified upload; a separate successful HEAD
+observation of an indeterminate completion is not yet an accepted retrieval input.
+Public-cloud TLS, client-side encryption, graph publication/closure, replica
+independence, repair scheduling and live provider qualification remain outstanding.
+See [verification commands, semantics and costs](docs/NATIVE_S3_OBJECT_UPLOADS.md).
+
 ## Native S3 completion reconciliation and independent observations — 2026-11-22
 
 The native archive path can now resolve an uncertain complete request using one
@@ -44,8 +76,9 @@ no project typecheck, Rust test pass, live provider or release qualification is 
 
 FSS-064 remains in progress. Lost initiation/part/abort acknowledgements still need
 other conclusive evidence. Public-cloud TLS, client-side encryption, encrypted
-archive-graph publication and independent byte retrieval remain larger outstanding
-archive integrations. See the [operator guide](docs/NATIVE_S3_OBJECT_UPLOADS.md)
+archive-graph publication and general retrievability remain larger outstanding
+archive integrations. The bounded completed-object byte verification slice above
+advances the independent-read gap. See the [operator guide](docs/NATIVE_S3_OBJECT_UPLOADS.md)
 and [session handoff](docs/SESSION_HANDOFF_2026-11-22_S3_COMPLETION_RECONCILIATION.json).
 
 ## Native local S3 object upload path — 2026-11-22

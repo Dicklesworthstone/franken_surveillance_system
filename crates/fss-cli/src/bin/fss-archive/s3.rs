@@ -7,6 +7,8 @@
 
 #[path = "s3_observation.rs"]
 mod observation;
+#[path = "s3_retrieval.rs"]
+mod retrieval;
 #[path = "s3_io.rs"]
 mod s3_io;
 
@@ -49,7 +51,7 @@ const MAX_REPORT_BYTES: usize = 16 * 1024;
 const LOCAL_RUNTIME_NS: i128 = 600_000_000_000;
 const PRINCIPAL: &str = "principal:archive-s3-operator";
 
-pub(super) const HELP: &str = "fss-archive upload-s3-prepare | upload-s3-resume | upload-s3-abort | upload-s3-reconcile\n\
+pub(super) const HELP: &str = "fss-archive upload-s3-prepare | upload-s3-resume | upload-s3-abort | upload-s3-reconcile | upload-s3-verify\n\
   Required: --source ABSOLUTE_FILE --source-sha256 sha256:HEX --source-bytes U64\n\
             --journal ABSOLUTE_DIR --peer IP:PORT --host HOST:PORT --region NAME\n\
             --bucket NAME --key OBJECT_KEY --credentials ABSOLUTE_FILE\n\
@@ -57,8 +59,8 @@ pub(super) const HELP: &str = "fss-archive upload-s3-prepare | upload-s3-resume 
             --deadline-ns I128 --max-memory-bytes U64 --max-wire-bytes U64\n\
             --max-requests U64 --max-local-bytes U64 --max-local-operations U64\n\
   Optional: --part-bytes U64 (default 5 MiB, maximum 64 MiB)\n\
-  Resume/abort/reconcile additionally require: --minimum-sequence U64 --minimum-root sha256:HEX\n\
-  Reconcile additionally requires: --observation-operation OPERATION_ID\n\
+  Resume/abort/reconcile/verify additionally require: --minimum-sequence U64 --minimum-root sha256:HEX\n\
+  Reconcile/verify additionally require: --observation-operation OPERATION_ID\n\
                                   --observation-receipt NEW_ABSOLUTE_FILE\n\
   Prepare verifies the complete source and creates a durable pending journal without\n\
   provider contact. Independently retain its journal pin before resume or abort.\n\
@@ -67,11 +69,15 @@ pub(super) const HELP: &str = "fss-archive upload-s3-prepare | upload-s3-resume 
   Reconcile observes a locally closed indeterminate completion using a new read-only owner.\n\
   Its deadline and transfer bounds authorize only the new observation; the original upload\n\
   stays closed. The source file is not read. A separate immutable receipt records the result.\n\
+  Verify reads a completed object's bounded ranges under fresh read-media authority, checks\n\
+  each original part and the independent source digest, and retains a separate immutable\n\
+  retrieval receipt. It needs neither the source file nor the original transfer allowance.\n\
   Credentials file: access key, secret key, optional session token, one per LF-terminated\n\
   line. The file must be private to its owner. Credential values never enter argv/reports.\n\
   Only explicitly approved loopback/private S3-compatible HTTP endpoints are admitted.\n\
   This transfers one object of at most 64 MiB. It does not encrypt source bytes, publish\n\
-  an archive graph, verify independent retrievability, or connect directly using TLS.\n";
+  an archive graph, verify replicas, or connect directly using TLS. Only verify proves the\n\
+  exact object's independent retrieval for this observation.\n";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Command {
@@ -79,6 +85,7 @@ enum Command {
     Resume,
     Abort,
     Reconcile,
+    Verify,
 }
 impl Command {
     fn name(self) -> &'static str {
@@ -87,6 +94,7 @@ impl Command {
             Self::Resume => "resume",
             Self::Abort => "abort",
             Self::Reconcile => "reconcile",
+            Self::Verify => "verify",
         }
     }
 }
@@ -97,6 +105,7 @@ pub(super) fn handles(args: &[OsString]) -> bool {
             "upload-s3-resume",
             "upload-s3-abort",
             "upload-s3-reconcile",
+            "upload-s3-verify",
         ]
         .iter()
         .any(|name| value == OsStr::new(name))
@@ -180,6 +189,7 @@ fn parse(args: &[OsString]) -> Result<Options> {
         Some("upload-s3-resume") => Command::Resume,
         Some("upload-s3-abort") => Command::Abort,
         Some("upload-s3-reconcile") => Command::Reconcile,
+        Some("upload-s3-verify") => Command::Verify,
         _ => return Err(malformed("unknown S3 upload command")),
     };
     let mut values = BTreeMap::new();
@@ -284,7 +294,7 @@ fn parse(args: &[OsString]) -> Result<Options> {
         }),
         _ => {
             return Err(malformed(
-                "resume, abort and reconcile require an independently retained minimum pin",
+                "resume, abort, reconcile and verify require an independently retained minimum pin",
             ));
         }
     };
@@ -314,7 +324,7 @@ fn parse(args: &[OsString]) -> Result<Options> {
     }
     let operation = OperationId::parse(text("--operation")?)
         .map_err(|_| malformed("invalid stable operation identity"))?;
-    let observation = if command == Command::Reconcile {
+    let observation = if matches!(command, Command::Reconcile | Command::Verify) {
         let observation_operation = OperationId::parse(text("--observation-operation")?)
             .map_err(|_| malformed("invalid observation operation identity"))?;
         if observation_operation == operation {
@@ -337,7 +347,9 @@ fn parse(args: &[OsString]) -> Result<Options> {
         if values.contains_key("--observation-operation")
             || values.contains_key("--observation-receipt")
         {
-            return Err(malformed("observation options require upload-s3-reconcile"));
+            return Err(malformed(
+                "observation options require upload-s3-reconcile or upload-s3-verify",
+            ));
         }
         None
     };
@@ -351,7 +363,11 @@ fn parse(args: &[OsString]) -> Result<Options> {
     transfer.network_bytes = number("--max-wire-bytes", 1, 1024 * 1024 * 1024)?;
     transfer.storage_operations = number(
         "--max-requests",
-        if command == Command::Reconcile { 1 } else { 4 },
+        if matches!(command, Command::Reconcile | Command::Verify) {
+            1
+        } else {
+            4
+        },
         65_536,
     )?;
     let mut local = BudgetVector::ZERO;
@@ -1120,6 +1136,9 @@ fn execute(options: &Options) -> Result<(String, bool)> {
     if options.command == Command::Reconcile {
         return observation::execute(options);
     }
+    if options.command == Command::Verify {
+        return retrieval::execute(options);
+    }
     let started = Instant::now();
     let local = local_io(options, wall_now()?, started)?;
     let result = execute_in(options, &local);
@@ -1138,7 +1157,7 @@ fn execute(options: &Options) -> Result<(String, bool)> {
             Command::Prepare => report.phase == MultipartPhase::Prepared,
             Command::Resume => report.phase == MultipartPhase::Completed && report.settled,
             Command::Abort => report.phase == MultipartPhase::Aborted && report.settled,
-            Command::Reconcile => false,
+            Command::Reconcile | Command::Verify => false,
         };
     Ok((report.render(options)?, success))
 }

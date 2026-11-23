@@ -27,6 +27,13 @@
 > real footage, cloud archiving, and release qualification. See
 > [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md) and `fss capabilities --json`.
 
+The [native local S3 archive path](docs/NATIVE_S3_OBJECT_UPLOADS.md) supports
+journaled multipart upload, uncertain-completion observation, and independent
+verification of completed object bytes with `fss-archive upload-s3-verify`.
+Verification uses fresh read authority and a separate immutable receipt, and can
+run after the original local source file is gone. This bounded local-endpoint
+profile remains distinct from qualified encrypted cloud archiving.
+
 The **Franken Surveillance demo** places virtual cameras around a fictional home. Follow an
 after-hours report, an evening delivery or a wildlife encounter through synchronized recordings
 and the native Rust analysis of their sampled frames. The property viewer uses the same house,

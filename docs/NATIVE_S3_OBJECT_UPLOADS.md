@@ -233,6 +233,57 @@ file, encryption, graph closure, replica independence, future availability or re
 certificate. Uploads whose original completion remains locally indeterminate are
 not yet eligible, even if a separate HEAD observation later succeeds.
 
+### Verify from a cold operator process
+
+`fss-archive upload-s3-verify` exposes this path after restart. Supply the original
+source digest/length, upload operation, route, part policy and independently retained
+completed-journal pin. The source pathname remains an identity/scope argument, but
+the file may be absent. The deadline and transfer ceilings belong to this new read.
+Choose a new observation operation and an unused receipt pathname with an existing
+parent directory:
+
+    fss-archive upload-s3-verify \
+      --source /absolute/path/object.bin \
+      --source-sha256 sha256:INDEPENDENT_SOURCE_SHA256_HEX \
+      --source-bytes EXACT_SOURCE_LENGTH \
+      --journal /absolute/path/original-upload-journal \
+      --peer 127.0.0.1:9000 --host 127.0.0.1:9000 \
+      --region us-east-1 --bucket evidence --key objects/EXACT_OBJECT_KEY \
+      --credentials /absolute/path/private-s3-credentials \
+      --plaintext-approval sha256:INDEPENDENT_APPROVAL_SHA256_HEX \
+      --operation operation:original-archive-object-transfer \
+      --deadline-ns FRESH_ABSOLUTE_UTC_NANOSECOND_DEADLINE \
+      --max-memory-bytes 805306368 --max-wire-bytes 268435456 --max-requests 512 \
+      --max-local-bytes 1073741824 --max-local-operations 4000000 \
+      --minimum-sequence RETAINED_COMPLETED_SEQUENCE \
+      --minimum-root sha256:RETAINED_COMPLETED_JOURNAL_ROOT_HEX \
+      --observation-operation operation:independent-object-verification \
+      --observation-receipt /absolute/path/new-retrieval-receipt.bin
+
+Include the original `--part-bytes` value when it differs from the 5 MiB default.
+The example transfer ceilings cover the admitted 64 MiB profile under default native
+response limits; they authorize cumulative work, not allocation of one large buffer.
+Smaller explicit ceilings may be chosen using the work formula below.
+
+| Retrieval result | What happened | Exit status |
+|---|---|---|
+| verified | Every original part and the independent whole-object digest matched under current read authority. | Success only after fresh-owner settlement and durable receipt verification. |
+| mismatch | Returned length or computed bytes contradicted the retained independent evidence. | Failure; original upload remains unchanged. |
+| unknown | A range was admitted, but provider, framing, scope, clock or budget checks prevented complete verification. | Failure; partial counts and charged work remain explicit. |
+| not_observed | No range was admitted, for example because credentials were unavailable. | Failure; a fresh local receipt is retained where possible. |
+
+The closed [JSON report schema](../schemas/s3_retrieval_observation_cli.v1.json) is
+`fss.s3_retrieval_observation_cli.v1`. It separates the verification outcome from
+`observation_receipt_durable`. A failed receipt write cannot yield a successful
+command even if byte verification completed. Inspect an ambiguously created receipt
+before choosing a different receipt path; the command never overwrites one.
+
+The completion observer's guidance to retain its receipt and pursue independent
+retrievability describes the remaining workflow goal. That receipt is not currently
+an input to `upload-s3-verify`: the original upload must itself have a locally
+verified completion. Neither a HEAD result nor a successful byte read reopens an
+old upload owner or grants graph publication, repair or deletion authority.
+
 ### Bounded work model
 
 This implements a single-object verification component of `COST-RETRIEVE-001`;
