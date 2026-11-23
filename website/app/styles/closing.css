@@ -220,3 +220,12 @@
     padding-bottom: calc(96px + env(safe-area-inset-bottom));
   }
 }
+@media (max-width: 640px) {
+  .status__col {
+    padding: 20px 18px;
+  }
+  .status__col li {
+    padding: 11px 0;
+    font-size: 0.86rem;
+  }
+}

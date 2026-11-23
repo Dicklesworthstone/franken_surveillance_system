@@ -393,8 +393,12 @@ export default function Story({ summary, story, native, architecture, status }) 
           }
         >
           {native && <Briefing native={native} />}
-          <ViewZoomBench native={native} />
-          <Drawer kind="design" detail="All fourteen operations an agent can call, the same by command line and by local MCP.">
+          <Drawer
+            kind="design"
+            count={2}
+            detail="The eight views an agent can ask for, sized by token ceiling, and all fourteen operations it can call, the same by command line and by local MCP."
+          >
+            <ViewZoomBench native={native} />
             <Figure
               eyebrow="The whole grammar"
               title="Fourteen operations, the same by command line and by MCP."

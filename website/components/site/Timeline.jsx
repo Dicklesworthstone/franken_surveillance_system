@@ -3,8 +3,13 @@ import { ChevronLeft, ChevronRight, Pause, Play } from "lucide-react";
 import { stamp } from "../../lib/watch/take";
 import { usePlaying } from "./clock";
 
+// A label reads to the right of its tick unless the next label in its row starts closer than this
+// share of the minute; then it reads to the left, as the last labels do.
+const CROWDED = 0.14;
+
 /** Named moments, alternating above and below the lanes so the labels have room. */
 function Marks({ markers, t, clock, pct, duration, row }) {
+  const next = (i) => markers.find((m, j) => j > i && j % 2 === row);
   return (
     <ol className={"timeline__marks" + (row ? " timeline__marks--below" : "")}>
       {markers.map(
@@ -12,7 +17,9 @@ function Marks({ markers, t, clock, pct, duration, row }) {
           i % 2 === row && (
             <li
               key={m.id}
-              className={m.t / duration > 0.8 ? "is-end" : ""}
+              className={
+                m.t / duration > 0.8 || (next(i) && (next(i).t - m.t) / duration < CROWDED) ? "is-end" : ""
+              }
               style={{ left: pct(m.t) }}
             >
               <button

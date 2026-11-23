@@ -244,18 +244,123 @@
   .planes__tab {
     padding-block: 13px;
   }
-  .compare__table {
-    min-width: 860px;
-  }
-  .compare__table th,
-  .compare__table td {
-    padding: 14px;
-  }
   .compare__table tbody th {
     width: 104px;
     font-size: 0.8rem;
   }
   .compare__table thead th:first-child {
     width: 104px;
+  }
+}
+
+/* The plane's role is in its tab on wide screens and under its name in the panel on narrow ones. */
+.planes__panel-role {
+  display: none;
+}
+/* The comparison shows every setup at once on wide screens; the switch is for phones. */
+.compare__pick {
+  display: none;
+}
+@media (max-width: 1080px) {
+  .planes__tabs {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+    padding: 12px;
+  }
+  .planes__tab {
+    padding: 12px 14px 13px 22px;
+  }
+  .planes__tab:last-child {
+    grid-column: 1 / -1;
+  }
+  .planes__tab::before {
+    inset-block: 12px;
+  }
+  .planes__name {
+    font-size: 1rem;
+  }
+  .planes__role {
+    display: none;
+  }
+  .planes__panel-role {
+    display: block;
+    max-width: 40rem;
+    margin-top: 8px;
+    font-size: 0.94rem;
+    line-height: 1.5;
+    color: var(--soft);
+  }
+}
+/* Phones: one block per dimension, the chosen setup above this one, each with its name. */
+@media (max-width: 760px) {
+  .compare__pick {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    margin: 0 20px 16px;
+  }
+  .compare__pick button {
+    padding: 5px 6px;
+    font-size: 0.76rem;
+  }
+  .compare__scroll {
+    overflow-x: visible;
+  }
+  .compare__table,
+  .compare__table tbody,
+  .compare__table tr,
+  .compare__table th,
+  .compare__table td {
+    display: block;
+    width: auto;
+    min-width: 0;
+  }
+  .compare__table thead {
+    display: none;
+  }
+  .compare__table tr {
+    padding: 18px 20px 20px;
+    border-top: 1px solid var(--line);
+  }
+  .compare__table th,
+  .compare__table td {
+    padding: 0;
+    border-top: 0;
+  }
+  .compare__table tbody th {
+    position: static;
+    width: auto;
+    margin-bottom: 12px;
+    background: none;
+    font-size: 0.98rem;
+  }
+  .compare__table td {
+    margin-top: 10px;
+    padding-left: 13px;
+    border-left: 2px solid var(--line-strong);
+    font-size: 0.88rem;
+    line-height: 1.5;
+  }
+  .compare__table td::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 3px;
+    font-family: var(--mono);
+    font-size: 0.66rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--faint);
+  }
+  .compare__table td.is-fss {
+    background: none;
+    border-left: 2px solid var(--chapter);
+  }
+  .compare__table td.is-fss::before {
+    color: var(--chapter);
+  }
+  .compare__table[data-against="nvr"] :is(.is-homelab, .is-vlm),
+  .compare__table[data-against="homelab"] :is(.is-nvr, .is-vlm),
+  .compare__table[data-against="vlm"] :is(.is-nvr, .is-homelab) {
+    display: none;
   }
 }

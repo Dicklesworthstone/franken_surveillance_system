@@ -132,8 +132,16 @@ const STANDING_LABEL = {
   planned: "Planned",
 };
 
+// On a phone the comparison shows one other setup at a time beside this one.
+const AGAINST = [
+  ["nvr", "Ordinary NVR"],
+  ["homelab", "Home-lab glue"],
+  ["vlm", "VLM on frames"],
+];
+
 export default function ArchitectureDeck() {
   const [activeId, setActiveId] = useState("packet");
+  const [against, setAgainst] = useState("nvr");
   const tabRefs = useRef([]);
   const plane = PLANES.find((p) => p.id === activeId) ?? PLANES[0];
 
@@ -223,6 +231,7 @@ export default function ArchitectureDeck() {
                 <div>
                   <p className="planes__code data">{plane.code}</p>
                   <h4>{plane.name}</h4>
+                  <p className="planes__panel-role">{plane.role}</p>
                 </div>
                 <span className={"planes__standing planes__standing--" + plane.standing}>
                   {STANDING_LABEL[plane.standing]}
@@ -280,14 +289,27 @@ export default function ArchitectureDeck() {
             </p>
           }
         >
+          <div className="switch compare__pick" role="group" aria-label="Compare with">
+            {AGAINST.map(([id, label]) => (
+              <button key={id} type="button" aria-pressed={against === id} onClick={() => setAgainst(id)}>
+                {label}
+              </button>
+            ))}
+          </div>
           <div className="compare__scroll" tabIndex={0} role="group" aria-label="Comparison table, scrolls sideways">
-            <table className="compare__table">
+            <table className="compare__table" data-against={against}>
               <thead>
                 <tr>
                   <th scope="col">Dimension</th>
-                  <th scope="col">Ordinary NVR</th>
-                  <th scope="col">Home-lab glue</th>
-                  <th scope="col">VLM on frames</th>
+                  <th scope="col" className="is-nvr">
+                    Ordinary NVR
+                  </th>
+                  <th scope="col" className="is-homelab">
+                    Home-lab glue
+                  </th>
+                  <th scope="col" className="is-vlm">
+                    VLM on frames
+                  </th>
                   <th scope="col" className="is-fss">
                     Franken Surveillance
                   </th>
@@ -297,10 +319,18 @@ export default function ArchitectureDeck() {
                 {COMPARISON.map((row) => (
                   <tr key={row.dim}>
                     <th scope="row">{row.dim}</th>
-                    <td>{row.nvr}</td>
-                    <td>{row.homelab}</td>
-                    <td>{row.vlm}</td>
-                    <td className="is-fss">{row.fss}</td>
+                    <td className="is-nvr" data-label="Ordinary NVR">
+                      {row.nvr}
+                    </td>
+                    <td className="is-homelab" data-label="Home-lab glue">
+                      {row.homelab}
+                    </td>
+                    <td className="is-vlm" data-label="VLM on frames">
+                      {row.vlm}
+                    </td>
+                    <td className="is-fss" data-label="Franken Surveillance">
+                      {row.fss}
+                    </td>
                   </tr>
                 ))}
               </tbody>

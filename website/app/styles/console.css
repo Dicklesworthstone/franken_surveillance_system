@@ -858,6 +858,41 @@
   .follow {
     max-height: 320px;
   }
+  /* The minute is too narrow here for every name on one line; each wraps onto two short ones. */
+  .timeline__marks {
+    height: 36px;
+  }
+  .timeline__marks--below {
+    height: 40px;
+  }
+  .timeline__marks button {
+    width: max-content;
+    max-width: 6.6em;
+    font-size: 0.74rem;
+    white-space: normal;
+  }
+}
+/* Narrower still, the names do not fit even wrapped: each moment is a tick to tap, named by its title. */
+@media (max-width: 899px) {
+  .timeline__marks,
+  .timeline__marks--below {
+    height: 24px;
+  }
+  .timeline__marks li,
+  .timeline__marks li.is-end {
+    border-right: 0;
+    border-left: 1px solid rgb(255 255 255 / 0.3);
+    transform: none;
+  }
+  .timeline__marks button,
+  .timeline__marks li.is-end button {
+    width: 24px;
+    max-width: none;
+    height: 24px;
+    margin-left: -12px;
+    padding: 0;
+    font-size: 0;
+  }
 }
 @media (max-width: 767px) {
   .console {
