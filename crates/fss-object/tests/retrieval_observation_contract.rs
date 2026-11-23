@@ -794,3 +794,278 @@ fn receipt_is_strict_bounded_and_contains_no_media_or_provider_tokens() -> Test 
     assert!(!bytes.windows(f.bytes.len()).any(|window| window == f.bytes));
     Ok(())
 }
+
+#[test]
+fn restored_bytes_are_complete_settled_and_separately_budgeted() -> Test {
+    let f = fixture(MIN_PART_SIZE as usize + 17)?;
+    let before = f.journal.0.clone();
+    let old_spend = f.recovery.consumed();
+    let mut verified_cost: Option<fss_core::BudgetVector> = None;
+    for retain in [false, true] {
+        let (_root, mut parent, mut tree) = property()?;
+        let mut reader = Reader::new(&f.bytes);
+        let mut owner = RetrievalObservation::begin(
+            &mut parent,
+            &mut tree,
+            &f.journal,
+            &f.recovery,
+            &f.intent,
+            ContentDigest::sha256(&f.bytes),
+            read_spec()?,
+            TimestampNs(20),
+        )?;
+        let region = owner.region().clone();
+        let receipt = if retain {
+            let restored = owner.verify_with_bytes(&mut tree, &mut reader, now)?;
+            assert_eq!(restored.bytes(), f.bytes.as_slice());
+            assert_eq!(
+                ContentDigest::sha256(restored.bytes()),
+                restored.receipt().expected_digest()
+            );
+            assert_eq!(restored.receipt().source_pin(), f.recovery.head());
+            assert_eq!(
+                format!("{restored:?}"),
+                format!(
+                    "VerifiedRetrievalBytes {{ byte_len: {}, .. }}",
+                    f.bytes.len()
+                )
+            );
+            restored.receipt().clone()
+        } else {
+            owner.verify(&mut tree, &mut reader, now)?
+        };
+        assert!(owner.is_settled());
+        assert_eq!(receipt.outcome(), RetrievalOutcome::Verified);
+        assert_eq!(receipt.bytes_read(), f.bytes.len() as u64);
+        assert_eq!(receipt.verified_parts(), 2);
+        assert_eq!(receipt.attempted_ranges(), 21);
+        assert_eq!(RetrievalReceipt::decode(&receipt.encode()?)?, receipt);
+        if retain {
+            let mut expected = verified_cost.ok_or("streaming verification cost absent")?;
+            expected.bytes += f.bytes.len() as u64;
+            assert_eq!(receipt.consumed(), expected);
+        } else {
+            verified_cost = Some(receipt.consumed());
+        }
+        assert!(
+            owner
+                .verify_with_bytes(&mut tree, &mut reader, now)
+                .is_err()
+        );
+        assert_eq!(reader.calls.len(), 21);
+        drop(owner);
+        assert_eq!(tree.get(&region)?.state, RegionState::Closed);
+        assert_eq!(*parent.budget().consumed(), receipt.consumed());
+        assert_eq!(f.journal.0, before);
+        assert_eq!(f.recovery.consumed(), old_spend);
+    }
+    Ok(())
+}
+
+#[test]
+fn restore_buffer_allowance_is_admitted_before_any_provider_read() -> Test {
+    let f = fixture(73)?;
+    let (_root, mut parent, mut tree) = property()?;
+    let mut reader = Reader::new(&f.bytes);
+    let mut spec = read_spec()?;
+    spec.budgets.bytes = f.bytes.len() as u64 - 1;
+    let mut owner = RetrievalObservation::begin(
+        &mut parent,
+        &mut tree,
+        &f.journal,
+        &f.recovery,
+        &f.intent,
+        ContentDigest::sha256(&f.bytes),
+        spec,
+        TimestampNs(20),
+    )?;
+    assert!(
+        owner
+            .verify_with_bytes(&mut tree, &mut reader, now)
+            .is_err()
+    );
+    assert!(reader.calls.is_empty());
+    assert_eq!(owner.budget().consumed().bytes, 0);
+    let receipt = owner.settle(&mut tree, TimestampNs(21))?;
+    assert_eq!(receipt.outcome(), RetrievalOutcome::NotObserved);
+    assert_eq!(receipt.attempted_ranges(), 0);
+    assert_eq!(receipt.bytes_read(), 0);
+    assert!(owner.is_settled());
+    Ok(())
+}
+
+#[test]
+fn restoration_never_returns_partial_or_corrupt_media() -> Test {
+    let f = fixture(317)?;
+    for (fault, expected) in [
+        (Fault::Corrupt, ContentDigest::sha256(&f.bytes)),
+        (Fault::Short, ContentDigest::sha256(&f.bytes)),
+        (Fault::Transport, ContentDigest::sha256(&f.bytes)),
+        (Fault::Expire, ContentDigest::sha256(&f.bytes)),
+        (Fault::None, ContentDigest::sha256(b"another whole object")),
+    ] {
+        let (_root, mut parent, mut tree) = property()?;
+        let mut reader = Reader::new(&f.bytes);
+        reader.fault = fault;
+        let mut owner = RetrievalObservation::begin(
+            &mut parent,
+            &mut tree,
+            &f.journal,
+            &f.recovery,
+            &f.intent,
+            expected,
+            read_spec()?,
+            TimestampNs(20),
+        )?;
+        let error = owner
+            .verify_with_bytes(&mut tree, &mut reader, now)
+            .err()
+            .ok_or("unverified restore bytes escaped")?;
+        assert!(!error.to_string().contains("private provider"));
+        let receipt = owner.settle(&mut tree, owner.observed_at())?;
+        assert_eq!(
+            receipt.outcome(),
+            match fault {
+                Fault::Transport | Fault::Expire => RetrievalOutcome::Unknown,
+                _ => RetrievalOutcome::Mismatch,
+            }
+        );
+        assert_eq!(receipt.attempted_ranges(), 1);
+        assert_eq!(
+            receipt.verified_parts(),
+            u64::from(matches!(fault, Fault::None))
+        );
+        assert!(owner.is_settled());
+        assert_eq!(RetrievalReceipt::decode(&receipt.encode()?)?, receipt);
+    }
+    Ok(())
+}
+
+#[test]
+fn restore_stops_at_partial_budget_exhaustion_and_final_deadline() -> Test {
+    let f = fixture(MAX_RETRIEVAL_RANGE_BYTES as usize + 1)?;
+    let before = f.journal.0.clone();
+    for at_final_boundary in [false, true] {
+        let (_root, mut parent, mut tree) = property()?;
+        let mut reader = Reader::new(&f.bytes);
+        let mut spec = read_spec()?;
+        if !at_final_boundary {
+            spec.budgets.storage_operations = 1;
+        }
+        let mut owner = RetrievalObservation::begin(
+            &mut parent,
+            &mut tree,
+            &f.journal,
+            &f.recovery,
+            &f.intent,
+            ContentDigest::sha256(&f.bytes),
+            spec,
+            TimestampNs(20),
+        )?;
+        let mut clock_calls = 0;
+        assert!(
+            owner
+                .verify_with_bytes(&mut tree, &mut reader, || {
+                    clock_calls += 1;
+                    Ok(if at_final_boundary && clock_calls == 6 {
+                        TimestampNs(200)
+                    } else {
+                        TimestampNs(20)
+                    })
+                })
+                .is_err()
+        );
+        let receipt = owner.settle(&mut tree, owner.observed_at())?;
+        assert_eq!(receipt.outcome(), RetrievalOutcome::Unknown);
+        assert_eq!(
+            receipt.bytes_read(),
+            if at_final_boundary {
+                f.bytes.len() as u64
+            } else {
+                MAX_RETRIEVAL_RANGE_BYTES
+            }
+        );
+        assert_eq!(reader.calls.len(), if at_final_boundary { 2 } else { 1 });
+        assert_eq!(receipt.verified_parts(), u64::from(at_final_boundary));
+        assert!(owner.is_settled());
+        assert_eq!(f.journal.0, before);
+    }
+    Ok(())
+}
+
+#[test]
+fn cancelled_restore_never_allocates_or_reads_and_remains_settleable() -> Test {
+    let f = fixture(73)?;
+    let (_root, mut parent, mut tree) = property()?;
+    let mut reader = Reader::new(&f.bytes);
+    let mut owner = RetrievalObservation::begin(
+        &mut parent,
+        &mut tree,
+        &f.journal,
+        &f.recovery,
+        &f.intent,
+        ContentDigest::sha256(&f.bytes),
+        read_spec()?,
+        TimestampNs(20),
+    )?;
+    tree.request_drain(owner.region(), Some("cancel restore"), TimestampNs(20))?;
+    assert!(
+        owner
+            .verify_with_bytes(&mut tree, &mut reader, now)
+            .is_err()
+    );
+    assert!(reader.calls.is_empty());
+    assert_eq!(owner.budget().consumed().bytes, 0);
+    let receipt = owner.settle(&mut tree, TimestampNs(21))?;
+    assert_eq!(receipt.outcome(), RetrievalOutcome::NotObserved);
+    assert!(owner.is_settled());
+    Ok(())
+}
+
+#[test]
+fn independently_observed_indeterminate_upload_restores_without_rewriting_history() -> Test {
+    let f = fixture_with_completion(MAX_RETRIEVAL_RANGE_BYTES as usize + 17, true)?;
+    let before = f.journal.0.clone();
+    let old_spend = f.recovery.consumed();
+    let observation = completion_observation(&f)?;
+    let observed_bytes = observation.encode()?;
+    let observed_pin = observation.digest()?;
+    let (_root, mut parent, mut tree) = property()?;
+    let mut reader = Reader::new(&f.bytes);
+    let mut owner = RetrievalObservation::begin_from_observation(
+        &mut parent,
+        &mut tree,
+        &f.journal,
+        &f.recovery,
+        &f.intent,
+        ContentDigest::sha256(&f.bytes),
+        &observation,
+        observed_pin,
+        read_spec()?,
+        TimestampNs(20),
+    )?;
+    let restored = owner.verify_with_bytes(&mut tree, &mut reader, now)?;
+    assert_eq!(restored.bytes(), f.bytes.as_slice());
+    assert_eq!(
+        restored.receipt().completion_observation_digest(),
+        Some(observed_pin)
+    );
+    assert_eq!(
+        restored.receipt().indeterminate_receipt_digest(),
+        Some(observation.indeterminate_receipt_digest())
+    );
+    assert_eq!(restored.receipt().outcome(), RetrievalOutcome::Verified);
+    assert!(owner.is_settled());
+    assert_eq!(
+        RetrievalReceipt::decode(&restored.receipt().encode()?)?,
+        *restored.receipt()
+    );
+    assert_eq!(observation.encode()?, observed_bytes);
+    assert_eq!(f.journal.0, before);
+    assert_eq!(f.recovery.consumed(), old_spend);
+    assert_eq!(
+        f.recovery.phase(),
+        MultipartPhase::Uncertain(TransportOperation::Complete)
+    );
+    Ok(())
+}

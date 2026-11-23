@@ -43,6 +43,7 @@ pub use observation::{
 pub use retrieval::{
     MAX_RETRIEVAL_BYTES, MAX_RETRIEVAL_RANGE_BYTES, MAX_RETRIEVAL_RECEIPT_BYTES, RetrievalCx,
     RetrievalObservation, RetrievalOutcome, RetrievalReceipt, RetrievalTransport,
+    VerifiedRetrievalBytes,
 };
 
 /// Upload refusal. All methods after preparation borrow rather than consume the owner.

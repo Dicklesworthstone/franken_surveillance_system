@@ -14,6 +14,7 @@ use fss_object::planner::PlannedChunk;
 use fss_object::upload_journal::FileUploadJournal;
 use fss_object::uploader::{
     MAX_RETRIEVAL_RANGE_BYTES, RetrievalObservation, RetrievalOutcome, RetrievalReceipt,
+    VerifiedRetrievalBytes,
 };
 
 fn budget() -> BudgetVector {
@@ -604,4 +605,134 @@ fn insufficient_wire_budget_refuses_before_connect_and_preserves_upload() {
         std::io::ErrorKind::WouldBlock
     );
     assert_eq!(source.recovery.phase(), MultipartPhase::Completed);
+}
+
+fn restore(
+    source: &Source,
+    endpoint: S3Endpoint,
+    expected: ContentDigest,
+) -> (Option<VerifiedRetrievalBytes>, RetrievalReceipt) {
+    let original_pin = source.journal.head();
+    let original_record = source.journal.latest().unwrap().to_vec();
+    let original_spend = source.recovery.consumed();
+    let (_root, mut parent, mut tree) = reader_property(endpoint.resource());
+    let mut transport = NativeS3Transport::from_recovery(
+        endpoint,
+        credentials(),
+        S3Limits::default(),
+        Clock,
+        &source.recovery,
+    )
+    .unwrap();
+    let mut observation = RetrievalObservation::begin(
+        &mut parent,
+        &mut tree,
+        &source.journal,
+        &source.recovery,
+        source.recovery.intent(),
+        expected,
+        reader_spec(),
+        NOW,
+    )
+    .unwrap();
+    let result = observation.verify_with_bytes(&mut tree, &mut transport, || Ok(NOW));
+    let receipt = observation.settle(&mut tree, NOW).unwrap();
+    assert!(observation.is_settled());
+    assert_eq!(
+        result.is_ok(),
+        receipt.outcome() == RetrievalOutcome::Verified
+    );
+    if let Ok(restored) = &result {
+        assert_eq!(restored.receipt(), &receipt);
+    }
+    assert!(
+        observation
+            .verify_with_bytes(&mut tree, &mut transport, || Ok(NOW))
+            .is_err()
+    );
+    assert_eq!(source.journal.head(), original_pin);
+    assert_eq!(source.journal.latest().unwrap(), original_record);
+    assert_eq!(source.recovery.consumed(), original_spend);
+    (result.ok(), receipt)
+}
+
+#[test]
+fn native_restore_returns_exact_complete_media_after_all_parts_and_settlement() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = endpoint(listener.local_addr().unwrap());
+    let bytes: Vec<u8> = (0..MIN_PART_SIZE as usize + 37)
+        .map(|index| (index % 251) as u8)
+        .collect();
+    let source = Source::new(&endpoint, &bytes);
+    let metadata = source.metadata();
+    std::thread::scope(|scope| {
+        let server = scope.spawn(|| {
+            for chunk in &source.recovery.plan().chunks {
+                let mut within = 0;
+                while within < chunk.len {
+                    let length = (chunk.len - within).min(MAX_RETRIEVAL_RANGE_BYTES);
+                    get_reply(
+                        &listener,
+                        &metadata,
+                        &bytes,
+                        (chunk.offset + within) as usize,
+                        length as usize,
+                        ReplyKind::Exact,
+                    );
+                    within += length;
+                }
+            }
+        });
+        let (restored, receipt) = restore(&source, endpoint, ContentDigest::sha256(&bytes));
+        let restored = restored.expect("complete verified restore");
+        assert_eq!(restored.bytes(), bytes.as_slice());
+        assert_eq!(receipt.outcome(), RetrievalOutcome::Verified);
+        assert_eq!(receipt.bytes_read(), bytes.len() as u64);
+        assert_eq!(receipt.verified_parts(), 2);
+        assert_eq!(
+            receipt.attempted_ranges(),
+            MIN_PART_SIZE / MAX_RETRIEVAL_RANGE_BYTES + 1
+        );
+        assert_eq!(restored.receipt().source_pin(), source.recovery.head());
+        server.join().unwrap();
+        assert_eq!(
+            listener.accept().err().unwrap().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    });
+}
+
+#[test]
+fn native_restore_discards_corruption_and_changed_provider_representations() {
+    for kind in [ReplyKind::Corrupt, ReplyKind::ChangedEtag] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = endpoint(listener.local_addr().unwrap());
+        let range = MAX_RETRIEVAL_RANGE_BYTES as usize;
+        let bytes = vec![b'x'; range + 3];
+        let source = Source::new(&endpoint, &bytes);
+        let metadata = source.metadata();
+        std::thread::scope(|scope| {
+            let server = scope.spawn(|| {
+                get_reply(&listener, &metadata, &bytes, 0, range, ReplyKind::Exact);
+                get_reply(&listener, &metadata, &bytes, range, 3, kind);
+            });
+            let (restored, receipt) = restore(&source, endpoint, ContentDigest::sha256(&bytes));
+            assert!(restored.is_none(), "partial media escaped for {kind:?}");
+            assert_eq!(
+                receipt.outcome(),
+                if kind == ReplyKind::Corrupt {
+                    RetrievalOutcome::Mismatch
+                } else {
+                    RetrievalOutcome::Unknown
+                }
+            );
+            assert_eq!(receipt.attempted_ranges(), 2);
+            assert_eq!(receipt.verified_parts(), 0);
+            server.join().unwrap();
+            assert_eq!(
+                listener.accept().err().unwrap().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+        });
+    }
 }

@@ -97,6 +97,43 @@ impl Drop for ReadBytes {
     }
 }
 
+/// Exact object bytes returned only after independent part and whole-object
+/// verification, final authority/source checks, and successful reader settlement.
+///
+/// The bytes remain private, sensitive media. Possession grants no filesystem,
+/// disclosure, publication, or upload authority. A caller must separately admit
+/// any destination before writing them. There is deliberately no `Clone`, owned
+/// byte extraction, serialization, or media-bearing debug output. Drop clears the
+/// retained buffer; callers should keep the immutable borrowed view short-lived.
+#[must_use = "use the verified bytes under separately scoped destination authority"]
+pub struct VerifiedRetrievalBytes {
+    bytes: ReadBytes,
+    receipt: RetrievalReceipt,
+}
+
+impl VerifiedRetrievalBytes {
+    /// Complete, verified bytes in their original order, never a partial range.
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes.0
+    }
+
+    /// The exact settled retrieval proof for these bytes and their source pin.
+    /// It proves byte verification, not destination publication or durability.
+    #[must_use]
+    pub fn receipt(&self) -> &RetrievalReceipt {
+        &self.receipt
+    }
+}
+
+impl std::fmt::Debug for VerifiedRetrievalBytes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VerifiedRetrievalBytes")
+            .field("byte_len", &self.bytes.0.len())
+            .finish_non_exhaustive()
+    }
+}
+
 /// One independently authorized complete verification attempt. Inconclusive or
 /// corrupt reads still require settlement of this new child and its receipt.
 #[must_use = "settle the retrieval owner even when verification fails"]
@@ -428,8 +465,42 @@ impl<'a> RetrievalObservation<'a> {
         &mut self,
         tree: &mut RegionTree,
         transport: &mut T,
-        mut clock: impl FnMut() -> Result<TimestampNs, UploaderError>,
+        clock: impl FnMut() -> Result<TimestampNs, UploaderError>,
     ) -> Result<RetrievalReceipt, UploaderError> {
+        self.verify_inner(tree, transport, clock, false)
+            .map(|(receipt, _)| receipt)
+    }
+
+    /// Verify and retain the complete object for an explicitly authorized local
+    /// restore or other caller-owned destination. The reader is already settled
+    /// when this returns successfully, exactly as for [`Self::verify`].
+    ///
+    /// This opt-in path charges one additional full object against the original
+    /// byte allowance before allocating a bounded buffer or contacting the
+    /// provider. The existing streaming verifier's allocation and accounting are
+    /// unchanged. Any error, cancellation, corrupt range, final source drift, or
+    /// failed settlement clears the private buffer and returns no media. The
+    /// caller must still settle an unsuccessful attempt.
+    pub fn verify_with_bytes<T: RetrievalTransport>(
+        &mut self,
+        tree: &mut RegionTree,
+        transport: &mut T,
+        clock: impl FnMut() -> Result<TimestampNs, UploaderError>,
+    ) -> Result<VerifiedRetrievalBytes, UploaderError> {
+        let (receipt, bytes) = self.verify_inner(tree, transport, clock, true)?;
+        Ok(VerifiedRetrievalBytes {
+            bytes: bytes.ok_or_else(|| authority("verified retrieval buffer is absent"))?,
+            receipt,
+        })
+    }
+
+    fn verify_inner<T: RetrievalTransport>(
+        &mut self,
+        tree: &mut RegionTree,
+        transport: &mut T,
+        mut clock: impl FnMut() -> Result<TimestampNs, UploaderError>,
+        retain_bytes: bool,
+    ) -> Result<(RetrievalReceipt, Option<ReadBytes>), UploaderError> {
         let now = clock()?;
         self.validate_owner(tree, now)?;
         if self.started || self.receipt.is_some() {
@@ -439,6 +510,35 @@ impl<'a> RetrievalObservation<'a> {
         }
         self.source.validate_restore(self.journal, now)?;
         self.started = true;
+        let mut retained = if retain_bytes {
+            crate::multipart::check_retrieval(
+                &self.authority,
+                tree,
+                self.source.intent().resource(),
+                now,
+            )?;
+            let length = self.source.plan().object_bytes;
+            if !(1..=MAX_RETRIEVAL_BYTES).contains(&length) {
+                return Err(authority(
+                    "retrieved object exceeds the bounded restore profile",
+                ));
+            }
+            let capacity = usize::try_from(length)
+                .map_err(|_| authority("retrieved object is not addressable"))?;
+            let mut cost = BudgetVector::ZERO;
+            cost.bytes = length;
+            self.authority
+                .budget_mut(tree)?
+                .spend_vector(&cost)
+                .map_err(authority)?;
+            let mut bytes = Vec::new();
+            bytes
+                .try_reserve_exact(capacity)
+                .map_err(|_| authority("retrieval buffer allocation refused"))?;
+            Some(ReadBytes(bytes))
+        } else {
+            None
+        };
         let mut whole = Sha256Hasher::new();
         for (chunk, expected_part) in self
             .source
@@ -490,6 +590,15 @@ impl<'a> RetrievalObservation<'a> {
                     self.outcome = RetrievalOutcome::Mismatch;
                     return Err(MultipartError::ReconciliationMismatch.into());
                 }
+                if let Some(retained) = &mut retained {
+                    let end = retained.0.len().checked_add(bytes.0.len());
+                    if end.is_none_or(|end| {
+                        end as u64 > self.source.plan().object_bytes || end > retained.0.capacity()
+                    }) {
+                        return Err(authority("retrieval buffer exceeded its admitted bound"));
+                    }
+                    retained.0.extend_from_slice(&bytes.0);
+                }
                 whole.update(&bytes.0);
                 part.update(&bytes.0);
                 self.bytes_read += length;
@@ -527,7 +636,8 @@ impl<'a> RetrievalObservation<'a> {
             now,
         )?;
         self.outcome = RetrievalOutcome::Verified;
-        self.settle(tree, now)
+        let receipt = self.settle(tree, now)?;
+        Ok((receipt, retained))
     }
 
     /// Settle even after cancellation, expiry or a failed read. This records the
