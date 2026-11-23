@@ -153,7 +153,8 @@ impl CompletionObservationReceipt {
         let authority = ContextAuthority::decode_canonical(&mut d).map_err(checkpoint_error)?;
         let started_at = TimestampNs(d.i128().map_err(checkpoint_error)?);
         let observed_at = TimestampNs(d.i128().map_err(checkpoint_error)?);
-        let consumed = BudgetVector::decode_canonical(&mut d).map_err(checkpoint_error)?;
+        let consumed = <BudgetVector as fss_core::CanonicalDecode>::decode_canonical(&mut d)
+            .map_err(checkpoint_error)?;
         let outcome = match d.u8().map_err(checkpoint_error)? {
             0 => CompletionObservationOutcome::NotObserved,
             1 => CompletionObservationOutcome::Unknown,
