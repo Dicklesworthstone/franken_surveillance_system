@@ -72,19 +72,21 @@ impl Drop for Buffer {
     }
 }
 
-struct Gate<'a, 'call, C> {
+/// The same wire codec serves separately owned upload and media-read contexts.
+/// Implementations must revalidate their real authority before reading a clock
+/// and again after it, and must preserve the latest observed time on refusal.
+pub(super) trait Boundary {
+    fn checkpoint(&mut self) -> Result<TimestampNs, S3Error>;
+    fn deadline(&self) -> Result<Option<TimestampNs>, S3Error>;
+}
+
+struct UploadBoundary<'a, 'call, C> {
     endpoint: &'a S3Endpoint,
     clock: &'a mut C,
     cx: &'a mut TransportCx<'call>,
-    deadline: TimestampNs,
-    remaining: u64,
 }
-impl<C: S3Clock> Gate<'_, '_, C> {
-    fn boundary(&mut self) -> Result<TimestampNs, S3Error> {
-        if self.remaining == 0 {
-            return Err(S3Error::Limit);
-        }
-        self.remaining -= 1;
+impl<C: S3Clock> Boundary for UploadBoundary<'_, '_, C> {
+    fn checkpoint(&mut self) -> Result<TimestampNs, S3Error> {
         if self.cx.resource() != self.endpoint.resource() {
             return Err(S3Error::Binding);
         }
@@ -100,6 +102,26 @@ impl<C: S3Clock> Gate<'_, '_, C> {
             return Err(S3Error::Clock);
         }
         self.cx.checkpoint(now).map_err(|_| S3Error::Authority)?;
+        Ok(now)
+    }
+
+    fn deadline(&self) -> Result<Option<TimestampNs>, S3Error> {
+        self.cx.deadline().map_err(|_| S3Error::Authority)
+    }
+}
+
+struct Gate<'a, B> {
+    owner: &'a mut B,
+    deadline: TimestampNs,
+    remaining: u64,
+}
+impl<B: Boundary> Gate<'_, B> {
+    fn boundary(&mut self) -> Result<TimestampNs, S3Error> {
+        if self.remaining == 0 {
+            return Err(S3Error::Limit);
+        }
+        self.remaining -= 1;
+        let now = self.owner.checkpoint()?;
         if now >= self.deadline {
             return Err(S3Error::Deadline);
         }
@@ -272,19 +294,42 @@ pub(super) fn exchange<C: S3Clock>(
     body: &[u8],
     head_response: bool,
 ) -> Result<Reply, S3Error> {
+    let mut owner = UploadBoundary {
+        endpoint,
+        clock,
+        cx,
+    };
+    exchange_with_boundary(
+        endpoint,
+        limits,
+        &mut owner,
+        admitted_at,
+        head,
+        body,
+        head_response,
+    )
+}
+
+pub(super) fn exchange_with_boundary<B: Boundary>(
+    endpoint: &S3Endpoint,
+    limits: S3Limits,
+    owner: &mut B,
+    admitted_at: TimestampNs,
+    head: &[u8],
+    body: &[u8],
+    head_response: bool,
+) -> Result<Reply, S3Error> {
     let mut deadline = TimestampNs(
         admitted_at
             .0
             .checked_add(i128::from(limits.exchange_timeout_ns))
             .ok_or(S3Error::Clock)?,
     );
-    if let Some(owner_deadline) = cx.deadline().map_err(|_| S3Error::Authority)? {
+    if let Some(owner_deadline) = owner.deadline()? {
         deadline = deadline.min(owner_deadline);
     }
     let mut gate = Gate {
-        endpoint,
-        clock,
-        cx,
+        owner,
         deadline,
         remaining: limits.io_calls,
     };

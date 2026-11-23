@@ -15,6 +15,8 @@
 mod http;
 mod retrieval;
 mod signing;
+/// Separately authorized verification without an upload journal.
+pub mod verification;
 mod xml;
 
 use std::collections::BTreeMap;
@@ -48,6 +50,8 @@ pub enum S3Error {
     Io,
     /// HTTP framing, XML or independent checksum did not establish success.
     Protocol,
+    /// Downloaded bytes did not match the independently supplied object identity.
+    Integrity,
     /// A provider returned a non-success status; the upload owner remains uncertain.
     Status(u16),
     /// This adapter is already bound to another intent or upload.

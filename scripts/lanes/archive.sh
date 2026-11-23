@@ -15,10 +15,12 @@ if [[ -n "$TOOLCHAIN" ]]; then RUN=(rustup run "$TOOLCHAIN"); else RUN=(); fi
   --test retrieval_observation_contract
 
 "${RUN[@]}" cargo --offline test -q -p fss-reference \
-  --test s3_upload_native_contract
+  --test s3_upload_native_contract \
+  --test s3_retrieval_native_contract
 
 "${RUN[@]}" cargo --offline test -q -p fss-cli \
   --test archive_s3_upload_process \
+  --test archive_s3_verification_process \
   --test archive_operator_process \
   --test archive_pin_process \
   --test archive_replay_process \

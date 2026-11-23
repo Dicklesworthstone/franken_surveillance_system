@@ -26,6 +26,7 @@
     }
   },
   "registered_boundary_modules": [
+    "crates/fss-core/src/familiarity.rs",
     "crates/fss-core/src/abstraction/runtime_authority.rs",
     "crates/fss-core/src/effect.rs",
     "crates/fss-core/src/event.rs",
@@ -101,6 +102,13 @@
     "crates/fss-cli/src/orient_cmd/what_if.rs"
   ],
   "module_declarations": {
+    "crates/fss-core/src/familiarity.rs": "cognition",
+    "crates/fss-core/src/familiarity/input.rs": "support",
+    "crates/fss-core/src/familiarity/tests.rs": "support",
+    "crates/fss-cli/src/bin/fss-event/familiarity.rs": "cognition",
+    "crates/fss-reference/src/s3_upload/verification.rs": "authority",
+    "crates/fss-cli/src/bin/fss-archive/s3_verify.rs": "effect",
+    "crates/fss-cli/src/orient_cmd/cancellation_tests.rs": "support",
     "crates/fss-cli/src/bin/fss-event/optical_health.rs": "support",
     "crates/fss-reference/src/agent_qsr.rs": "ambiguous",
     "crates/fss-reference/src/agent_qsr/projection.rs": "cognition",
@@ -1065,6 +1073,76 @@
     "crates/fss-cli/tests/retained_localization_immutable_cli.rs": "support"
   },
   "types": {
+    "SignalKind": {
+      "file": "crates/fss-core/src/familiarity.rs",
+      "plane": "cognition",
+      "description": "Anonymous weak cue family; no physical identity or effect authority."
+    },
+    "AssertedCoverage": {
+      "file": "crates/fss-core/src/familiarity.rs",
+      "plane": "cognition",
+      "description": "Operator coverage assertion; even complete_asserted never certifies coverage or absence."
+    },
+    "AssertedRisk": {
+      "file": "crates/fss-core/src/familiarity.rs",
+      "plane": "cognition",
+      "description": "Operator risk screen retaining unknown and present concerns; clear is unverified."
+    },
+    "FamiliaritySignal": {
+      "file": "crates/fss-core/src/familiarity.rs",
+      "plane": "cognition",
+      "description": "Bounded scoped operator assertion with declared provenance, failure domains, opt-in and lifetime; references are not hydrated or authenticated."
+    },
+    "FamiliarityContext": {
+      "file": "crates/fss-core/src/familiarity.rs",
+      "plane": "cognition",
+      "description": "Strict anonymous operator input pinned to exact event, authority, privacy and policy; semantic integrity grants no factual validity or permissions."
+    },
+    "FamiliarityBasis": {
+      "file": "crates/fss-core/src/familiarity.rs",
+      "plane": "support",
+      "description": "Caller-supplied verified native read pins and explicit logical evaluation time, without a reusable authority credential."
+    },
+    "FamiliarityError": {
+      "file": "crates/fss-core/src/familiarity.rs",
+      "plane": "support",
+      "description": "Payload-free context, scope, generation or native-event refusal."
+    },
+    "SignalValidity": {
+      "file": "crates/fss-core/src/familiarity.rs",
+      "plane": "cognition",
+      "description": "Cue applicability under explicit time, full event interval, opt-in and model-receipt rules; not a factual validity certificate."
+    },
+    "AssessedSignal": {
+      "file": "crates/fss-core/src/familiarity.rs",
+      "plane": "cognition",
+      "description": "Complete original assertion and applicability; native digest membership does not hydrate or verify evidence."
+    },
+    "FamiliarityDisposition": {
+      "file": "crates/fss-core/src/familiarity.rs",
+      "plane": "cognition",
+      "description": "Non-authorizing anonymous advice preserving threats, contradictions, coverage gaps and unknown guards."
+    },
+    "FamiliarityAssessment": {
+      "file": "crates/fss-core/src/familiarity.rs",
+      "plane": "cognition",
+      "description": "Deterministic advisory inventory with protected unknowns and transitive declared common causes; event, alerts, identity and effect authority are unchanged."
+    },
+    "S3ObjectPin": {
+      "file": "crates/fss-reference/src/s3_upload/verification.rs",
+      "plane": "support",
+      "description": "Independently supplied expected complete-object SHA-256 and length; never inferred from provider metadata and not itself proof of remote bytes."
+    },
+    "S3ReadIo": {
+      "file": "crates/fss-reference/src/s3_upload/verification.rs",
+      "plane": "authority",
+      "description": "Borrowed fresh ObjectStore execution owner and exact cancellation tree; only exact scoped network/authentication/media-read grants are admitted."
+    },
+    "S3VerificationReceipt": {
+      "file": "crates/fss-reference/src/s3_upload/verification.rs",
+      "plane": "authority",
+      "description": "Canonical inert evidence of complete byte identity at a checked time under a fresh scoped read owner; grants no future availability, archive closure or executable authority."
+    },
     "AlertEffectRecord": {
       "file": "crates/fss-core/src/event.rs",
       "plane": "ambiguous",

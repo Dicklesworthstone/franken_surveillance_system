@@ -18,9 +18,9 @@ mod input;
 mod tests;
 
 /// Versioned, non-durable control input. No input bytes become canonical authority.
-pub const CONTEXT_SCHEMA: &str = "fss.event_familiarity_context.v1";
+pub const CONTEXT_SCHEMA: &str = FamiliarityContext::SCHEMA;
 /// Read-only advice schema.
-pub const ADVICE_SCHEMA: &str = "fss.event_familiarity_advice.v1";
+pub const ADVICE_SCHEMA: &str = FamiliarityAssessment::SCHEMA;
 /// Maximum complete context size; over-bound inputs are refused, never truncated.
 pub const MAX_CONTEXT_BYTES: usize = 65_536;
 /// Maximum number of asserted signals.
@@ -292,6 +292,11 @@ pub struct FamiliarityAssessment {
     pub valid_until_ns: Option<TimestampNs>,
 }
 
+impl FamiliarityAssessment {
+    /// Exact schema of this non-authorizing cognition projection.
+    pub const SCHEMA: &'static str = "fss.event_familiarity_advice.v1";
+}
+
 fn valid_digest(value: ContentDigest) -> bool {
     value.algorithm() == DigestAlgorithm::Sha256 && value.bytes() != [0; 32]
 }
@@ -300,6 +305,9 @@ fn valid_name(value: &str) -> bool {
 }
 
 impl FamiliarityContext {
+    /// Exact strict operator-assertion input and semantic-digest domain.
+    pub const SCHEMA: &'static str = "fss.event_familiarity_context.v1";
+
     /// Validate the complete input before allocating an assessment or interpreting support.
     pub fn validate(&self) -> Result<(), FamiliarityError> {
         let invalid = FamiliarityError::Malformed;

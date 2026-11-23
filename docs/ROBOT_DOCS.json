@@ -4694,6 +4694,20 @@
       "schema": "fss.event_counterfactual_request.v1"
     },
     {
+      "authority": "anonymous derived cognition over operator assertions",
+      "compatibilityRule": "Owner: fss-core::familiarity::FamiliarityAssessment and fss-cli::fss-event::familiarity. Complete sorted cue inventory, applicability, exact event/authority/privacy/policy pins, explicit logical evaluation time, expiry bound, semantic/raw context references, declared support groups, blockers and protected unknowns. The canonical decision binds semantic context, reference policy, time, disposition, groups and each cue validity/native digest membership plus all blockers/unknowns. All shared domains, including inactive bridges, merge transitively; threat, contrary context and degraded or unknown guards cannot become benign suppression. Supplied evidence is not hydrated and independence remains unverified. Native event state and fingerprint stay unchanged, identity stays unresolved, and alert suppression, absence certification and effects remain unauthorized. Complete output shares final cold custody revalidation; changed meaning requires a new schema.",
+      "file": "CLI output",
+      "id": "SCHEMA-EVENT-FAMILIARITY-ADVICE-001",
+      "schema": "fss.event_familiarity_advice.v1"
+    },
+    {
+      "authority": "explicit operator assertions; no factual or effect authority",
+      "compatibilityRule": "Owner: fss-core::familiarity::FamiliarityContext. Closed 64 KiB input pins the exact site, authority root, privacy scope, event revision and event policy generation. At most 32 complete anonymous cues, eight unique declared domains per cue, nonzero SHA-256 references, finite 24-hour lifetimes and 15-minute opt-in appearance with an exact event model receipt. Native admission checks canonical nanoseconds, whole event-interval coverage, expiry, revocation and generation equality. Semantic identity canonically encodes every typed field with sorted cues/domains; the raw file digest remains separate. Hashes and opt-in fields bind assertions only, not truth, consent, source currency or physical independence. No identity, whitelist, coverage, absence, alert-suppression or effect grant.",
+      "file": "schemas/event_familiarity_context.v1.json",
+      "id": "SCHEMA-EVENT-FAMILIARITY-CONTEXT-001",
+      "schema": "fss.event_familiarity_context.v1"
+    },
+    {
       "authority": "authority",
       "compatibilityRule": "immutable revisions; evidence required after hypothesis; enum widening for relation additions (sensor_tamper, sensor_integrity_restoration)",
       "file": "schemas/event_hypothesis.v1.json",
@@ -5210,6 +5224,13 @@
       "file": "CLI output",
       "id": "SCHEMA-S3-COMPLETION-OBSERVATION-CLI-001",
       "schema": "fss.s3_completion_observation_cli.v1"
+    },
+    {
+      "authority": "fresh owner-authorized complete object read",
+      "compatibilityRule": "Owner: fss-cli::fss-archive::s3::verification and fss-reference::s3_upload::verification. At most 16 KiB complete JSON binds independent full-object SHA-256/length, exact approved route, fresh operation/read allowance/spend/time, verification result and separate canonical receipt digest/durability, local work and bounded refusal. This standalone command opens neither source media nor an upload journal; the concurrent journal-bound retrieval observation remains unchanged. Success requires full bounded signed-range hashing under exact scoped network/authentication/ReadMedia authority, owner settlement and private immutable receipt custody. Credentials, tokens, paths and raw media are excluded. No encryption, graph closure, replica count or future availability claim.",
+      "file": "schemas/s3_object_verification_cli.v1.json",
+      "id": "SCHEMA-S3-OBJECT-VERIFICATION-CLI-001",
+      "schema": "fss.s3_object_verification_cli.v1"
     },
     {
       "authority": "independently authorized completed-object media verification",

@@ -27,6 +27,7 @@ const MAX_HANDLES: usize = 4096;
 const MAX_OBSERVATION_RECEIPT_BYTES: usize = 64 * 1024;
 
 pub(super) struct ScopedS3Io {
+    journal_enabled: bool,
     journal_root: PathBuf,
     source: PathBuf,
     credentials: PathBuf,
@@ -155,10 +156,79 @@ impl ScopedS3Io {
         }
         authority.narrow_grants(grants).map_err(|_| denied())?;
         let result = Self {
+            journal_enabled: true,
             journal_root,
             source,
             credentials,
             observation_receipt,
+            started,
+            origin,
+            state: Mutex::new(State {
+                authority,
+                tree,
+                last_now: origin,
+                charged_ms: 0,
+                handles: BTreeMap::new(),
+                source_identity: None,
+                credential_identity: None,
+            }),
+        };
+        result.check()?;
+        Ok(result)
+    }
+
+    /// Separate local authority for a read-only remote verification. This owner
+    /// has only one secret input and one new receipt output: no source pathname,
+    /// journal inspection, repair, lock or upload mutation is admitted.
+    pub(super) fn verification(
+        credentials: PathBuf,
+        receipt: PathBuf,
+        mut authority: AuthorityCx,
+        tree: RegionTree,
+        started: Instant,
+        origin: TimestampNs,
+    ) -> io::Result<Self> {
+        if !cfg!(all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "scoped archive filesystem is unsupported on this platform",
+            ));
+        }
+        validate_path(&credentials)?;
+        validate_path(&receipt)?;
+        if credentials.starts_with(&receipt)
+            || receipt.starts_with(&credentials)
+            || authority.kind() != RegionKind::Process
+            || authority.is_cancel_requested(&tree).map_err(|_| denied())?
+        {
+            return Err(denied());
+        }
+        let node = tree.get(authority.region()).map_err(|_| denied())?;
+        if origin < node.created_at || node.authority.deadline.is_none() {
+            return Err(denied());
+        }
+        let mut grants = fss_runtime::grant::GrantSet::empty();
+        for (grant, path) in [
+            (RuntimeGrant::AdapterAuth, &credentials),
+            (RuntimeGrant::ObjectStage, &receipt),
+        ] {
+            authority
+                .require_grant_for(grant, resource(path)?)
+                .map_err(|_| denied())?;
+            grants = grants.with_scope(grant, BTreeSet::from([resource(path)?.to_owned()]));
+        }
+        authority.narrow_grants(grants).map_err(|_| denied())?;
+        let result = Self {
+            journal_enabled: false,
+            // Disabled paths never reach native I/O: journal() and read_source()
+            // refuse before examining them.
+            journal_root: PathBuf::new(),
+            source: PathBuf::new(),
+            credentials,
+            observation_receipt: Some(receipt),
             started,
             origin,
             state: Mutex::new(State {
@@ -238,6 +308,9 @@ impl ScopedS3Io {
     }
 
     fn journal(&self, bytes: u64, operations: u64) -> io::Result<()> {
+        if !self.journal_enabled {
+            return Err(denied());
+        }
         self.admit(
             RuntimeGrant::ObjectStage,
             &self.journal_root,
@@ -247,7 +320,16 @@ impl ScopedS3Io {
     }
 
     pub(super) fn check(&self) -> io::Result<()> {
-        self.journal(0, 0)
+        if self.journal_enabled {
+            self.journal(0, 0)
+        } else {
+            self.admit(
+                RuntimeGrant::ObjectStage,
+                self.observation_receipt.as_ref().ok_or_else(denied)?,
+                0,
+                0,
+            )
+        }
     }
 
     pub(super) fn consumed(&self) -> io::Result<BudgetVector> {
@@ -288,6 +370,9 @@ impl ScopedS3Io {
 
     /// Full finite source snapshot. Refuses the advertised length before allocating its buffer.
     pub(super) fn read_source(&self, expected_bytes: u64) -> io::Result<Vec<u8>> {
+        if !self.journal_enabled {
+            return Err(denied());
+        }
         if expected_bytes > MAX_SOURCE_BYTES {
             return Err(limit());
         }
@@ -573,6 +658,9 @@ impl ScopedS3Io {
     }
 
     fn journal_path(&self, path: &Path, ancestors: bool) -> io::Result<()> {
+        if !self.journal_enabled {
+            return Err(denied());
+        }
         validate_absolute(path)?;
         if !path.starts_with(&self.journal_root)
             && !(ancestors && self.journal_root.starts_with(path))

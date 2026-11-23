@@ -1,0 +1,185 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.local/schemas/s3_object_verification_cli.v1.json",
+  "title": "Single-object independent S3 byte verification CLI report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "kind",
+    "command",
+    "resource",
+    "operation",
+    "object_digest",
+    "object_bytes",
+    "object_bytes_verified",
+    "verified_at_ns",
+    "verification_receipt_digest",
+    "verification_receipt_durable",
+    "read_allowance",
+    "read_consumed",
+    "provider_work_requested_this_invocation",
+    "local_work",
+    "error_kind",
+    "next_action",
+    "transport_profile",
+    "graph_closure_verified",
+    "client_side_encryption_performed",
+    "raw_media_exported"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.s3_object_verification_cli.v1"
+    },
+    "kind": {
+      "const": "s3_object_verification"
+    },
+    "command": {
+      "const": "verify-s3-object"
+    },
+    "resource": {
+      "type": "string",
+      "pattern": "^archive:s3:"
+    },
+    "operation": {
+      "type": "string",
+      "minLength": 1
+    },
+    "object_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "object_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 67108864
+    },
+    "object_bytes_verified": {
+      "type": "boolean"
+    },
+    "verified_at_ns": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "verification_receipt_digest": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/digest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "verification_receipt_durable": {
+      "type": "boolean"
+    },
+    "read_allowance": {
+      "type": "object"
+    },
+    "read_consumed": {
+      "type": "object"
+    },
+    "local_work": {
+      "type": "object"
+    },
+    "provider_work_requested_this_invocation": {
+      "type": "boolean"
+    },
+    "error_kind": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "next_action": {
+      "enum": [
+        "retain_independent_object_identity_and_verification_receipt",
+        "retain_object_identity_and_inspect_receipt_before_another_verification",
+        "retain_uncertainty_and_inspect_refusal_before_another_bounded_read"
+      ]
+    },
+    "transport_profile": {
+      "const": "approved_local_plaintext_sigv4"
+    },
+    "graph_closure_verified": {
+      "const": false
+    },
+    "client_side_encryption_performed": {
+      "const": false
+    },
+    "raw_media_exported": {
+      "const": false
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "object_bytes_verified": {
+            "const": false
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "verified_at_ns": {
+            "type": "null"
+          },
+          "verification_receipt_digest": {
+            "type": "null"
+          },
+          "verification_receipt_durable": {
+            "const": false
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "object_bytes_verified": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "verified_at_ns": {
+            "type": "integer"
+          },
+          "verification_receipt_digest": {
+            "$ref": "#/$defs/digest"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "verification_receipt_durable": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "object_bytes_verified": {
+            "const": true
+          },
+          "error_kind": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ]
+}
+

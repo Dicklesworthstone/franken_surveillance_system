@@ -1,4 +1,4 @@
-# Native local S3 object uploads
+# Native local S3 object uploads and verification
 
 The archive operator can send one independently identified object to an explicitly approved
 local S3-compatible HTTP endpoint. It uses the existing multipart owner, journal and region
@@ -321,3 +321,75 @@ Independent range verification follows
 Source and executable validation are recorded separately in the session handoff. Authored tests
 do not establish live MinIO/NAS/B2/R2/AWS compatibility or complete the broader FSS-064 archive
 reconciliation and retrievability requirements.
+
+## Independent byte verification
+
+Use **verify-s3-object** after retaining the original object's full SHA-256 and byte length.
+This command actually reads and hashes the remote bytes. It does not treat a successful upload,
+HEAD response, ETag or multipart composite checksum as the independent source identity. It can
+also verify an already existing object without any local source file or upload journal.
+
+    fss-archive verify-s3-object \
+      --object-sha256 sha256:INDEPENDENT_FULL_OBJECT_SHA256_HEX \
+      --object-bytes EXACT_OBJECT_LENGTH \
+      --peer 127.0.0.1:9000 --host 127.0.0.1:9000 \
+      --region us-east-1 --bucket evidence --key objects/EXACT_OBJECT_KEY \
+      --credentials /absolute/path/private-s3-credentials \
+      --plaintext-approval sha256:INDEPENDENT_APPROVAL_SHA256_HEX \
+      --operation operation:independent-object-verification \
+      --deadline-ns NEW_ABSOLUTE_UTC_NANOSECOND_DEADLINE \
+      --max-memory-bytes 600000000 --max-wire-bytes 150000000 \
+      --max-requests 256 --max-local-bytes 1048576 --max-local-operations 10000 \
+      --receipt /absolute/path/new-verification-receipt.bin
+
+The current CLI profile reads at most **64 MiB** in **256 KiB** ranges. Each nonempty response
+must have status 206, the exact Content-Range and Content-Length, no transfer encoding or
+content transformation, and one strong quoted ETag. Subsequent GETs sign If-Match with the first
+ETag. Every byte contributes to a streaming SHA-256 in source order. A zero-byte object instead
+requires one exact empty GET and the independently supplied SHA-256 of the empty byte sequence.
+There are no redirects, DNS resolution, retries, listings, uploads or payload exports.
+
+The native API accepts configurable bounded ranges of 1 KiB–1 MiB. A fresh ObjectStore owner
+must have **exactly** AdapterNet, AdapterAuth and ReadMedia, each scoped only to the selected
+endpoint resource; metadata-only observation authority is insufficient. The owner must also
+bind its anchor universe to the independent object digest. One finite owner deadline covers
+the entire read and is never renewed between ranges. Every attempted request reserves its
+conservative memory/wire ceiling and an operation before contact; failed work remains charged.
+These byte counters are cumulative reservations, not peak RSS or measured wire utilization.
+Use `verification_budget` when embedding the native API to calculate the full required allowance.
+
+Local credential access and immutable receipt custody have a separate path-scoped owner. An
+existing, aliased, unsafe or unavailable receipt destination refuses before provider contact.
+The command never opens an upload journal. It drains the remote owner on success or refusal
+and separately writes, syncs and reads back a new private receipt without overwriting one.
+
+The bounded report uses `fss.s3_object_verification_cli.v1`:
+
+- `object_bytes_verified=true` means the complete stream matched the independently supplied
+  object identity at `verified_at_ns`.
+- `verification_receipt_durable=true` additionally means immutable local receipt persistence
+  succeeded. The report includes its canonical SHA-256. Both claims are required for exit 0.
+- If the read fails, the report retains the charged work, gives a payload-free refusal reason,
+  and sets receipt digest/time to null. A failure does not prove that the object is absent.
+- If bytes verified but receipt persistence failed, the report preserves the byte result,
+  sets durability false, and exits unsuccessfully. Inspect any existing receipt before
+  authorizing another verification; a partial file is not silently overwritten.
+
+`fss_reference::s3_upload::verification::S3VerificationReceipt::decode` strictly decodes the
+bounded canonical receipt and rejects truncation, suffix bytes and invalid shapes. Decoding
+creates inert evidence, never execution authority. The receipt contains the independent
+object identity, approved endpoint digest, ETag digest, exact read authority recipe, times,
+range size and charged ceilings. It contains no object payload, key or credentials.
+
+This establishes a complete read of **one object at that time**. It does not establish archive
+graph closure, independent replicas, future availability, client-side encryption or public
+TLS support. The original upload journal and its completion/uncertainty outcome remain unchanged.
+
+Focused regressions are in `s3_retrieval_native_contract.rs` and
+`archive_s3_verification_process.rs`; they exercise actual loopback sockets and CLI processes,
+including corruption, version changes, malformed ranges, private receipt custody and
+pre-network authority refusal. They are local fixtures, not external-provider qualification.
+
+The standalone receipt does not certify an original FSS upload's journal, part inventory or
+custody-origin metadata. Use the journal-bound RetrievalObservation API above for those
+additional historical custody guarantees; neither receipt replaces the other's proof scope.

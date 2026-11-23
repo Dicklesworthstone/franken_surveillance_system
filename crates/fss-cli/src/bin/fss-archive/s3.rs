@@ -11,6 +11,8 @@ mod observation;
 mod retrieval;
 #[path = "s3_io.rs"]
 mod s3_io;
+#[path = "s3_verify.rs"]
+mod verification;
 
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
@@ -77,7 +79,19 @@ pub(super) const HELP: &str = "fss-archive upload-s3-prepare | upload-s3-resume 
   Only explicitly approved loopback/private S3-compatible HTTP endpoints are admitted.\n\
   This transfers one object of at most 64 MiB. It does not encrypt source bytes, publish\n\
   an archive graph, verify replicas, or connect directly using TLS. Only verify proves the\n\
-  exact object's independent retrieval for this observation.\n";
+  exact object's independent retrieval for this observation.\n\n\
+fss-archive verify-s3-object\n\
+  Required: --object-sha256 sha256:HEX --object-bytes U64\n\
+            --peer IP:PORT --host HOST:PORT --region NAME --bucket NAME --key OBJECT_KEY\n\
+            --credentials ABSOLUTE_FILE --plaintext-approval sha256:HEX\n\
+            --operation OPERATION_ID --deadline-ns I128 --receipt NEW_ABSOLUTE_FILE\n\
+            --max-memory-bytes U64 --max-wire-bytes U64 --max-requests U64\n\
+            --max-local-bytes U64 --max-local-operations U64\n\
+  Reads every byte in bounded signed ranges and verifies the independently retained\n\
+  full-object SHA-256 and length. A fresh read owner stores an immutable verification\n\
+  receipt; no upload journal is opened or changed. Object reads require media authority.\n\
+  This proves that one object was readable at that time, not future availability,\n\
+  replica count, encryption or archive graph closure. The local HTTP profile still applies.\n";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Command {
@@ -99,17 +113,18 @@ impl Command {
     }
 }
 pub(super) fn handles(args: &[OsString]) -> bool {
-    args.first().is_some_and(|value| {
-        [
-            "upload-s3-prepare",
-            "upload-s3-resume",
-            "upload-s3-abort",
-            "upload-s3-reconcile",
-            "upload-s3-verify",
-        ]
-        .iter()
-        .any(|name| value == OsStr::new(name))
-    })
+    verification::handles(args)
+        || args.first().is_some_and(|value| {
+            [
+                "upload-s3-prepare",
+                "upload-s3-resume",
+                "upload-s3-abort",
+                "upload-s3-reconcile",
+                "upload-s3-verify",
+            ]
+            .iter()
+            .any(|name| value == OsStr::new(name))
+        })
 }
 
 enum Error {
@@ -1163,6 +1178,9 @@ fn execute(options: &Options) -> Result<(String, bool)> {
 }
 
 pub(super) fn dispatch(args: &[OsString]) -> ExitCode {
+    if verification::handles(args) {
+        return verification::dispatch(args);
+    }
     match parse(args).and_then(|options| execute(&options)) {
         Ok((report, success)) => {
             if super::emit(&mut io::stdout().lock(), report.as_bytes()).is_err() {
