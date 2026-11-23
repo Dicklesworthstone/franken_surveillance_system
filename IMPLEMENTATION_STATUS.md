@@ -4,6 +4,31 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Request cancellation through selected learning explanations — 2026-11-22
+
+The caller's existing RequestControl now reaches `explain --learning-root` session
+admission, cancellable deployment reconstruction, selected publication/object and
+tombstone checks, final session verification, response construction and delivery.
+The original synchronous inspection API remains available. This completes the
+selected-learning increment on top of the concurrent event-explanation cancellation
+work, without changing its current/historical/custody/counterfactual behavior.
+
+Cancellation after a verified anchor returns a payload-free response using that
+retained anchor; it does not reopen storage to manufacture a diagnostic. A response
+that exceeds its context allowance also renders from the completed inspection.
+Already started runtime clock/expiry admission settles its journal and pin under
+the existing session lock, and its durable state is preserved even if private
+output is discarded. Cancellation remains cooperative at bounded native phases;
+one filesystem operation already in progress is not preempted.
+
+Four new native/CLI regressions cover cancellation before admission, selected-object
+read boundaries, current and retained learning selections, context-bound refusal,
+late cancellation after the deployment becomes unavailable, and durable clock
+watermark preservation. Pinned formatting, whitespace checks and independent
+source review passed; Rust tests remain unexecuted because the dependency build
+was killed in unchanged Asupersync 0.5.0. FSS-177 remains open for broader transport
+and qualification work. See the [session handoff](docs/SESSION_HANDOFF_2026-11-22_S3_RETRIEVAL_AND_LEARNING_CANCELLATION.json).
+
 ## Independent native S3 object byte verification — 2026-11-22
 
 `fss-archive upload-s3-verify` now verifies one locally completed object without

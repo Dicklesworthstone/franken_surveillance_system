@@ -1,0 +1,181 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-22",
+  "date_timezone": "America/New_York",
+  "mission": "Implement critical remaining product functionality identified in the comprehensive plan and Beads; commit meaningful slices directly to main through the authorized GitHub connector, without PRs.",
+  "basis": {
+    "started_at": "b6cc8287a3fbd4d920174c23cf97acadc17b5279",
+    "plan": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+    "backlog": ".beads/issues.jsonl",
+    "prior_handoff": "docs/SESSION_HANDOFF_2026-11-22_S3_COMPLETION_RECONCILIATION.json",
+    "requirements": [
+      {
+        "bead": "fss-x4a.13.8",
+        "requirement": "FSS-068",
+        "priority": 0,
+        "backlog_status": "open",
+        "implementation_state": "bounded completed-object retrieval/verification implemented; broader incident/archive qualification remains open"
+      },
+      {
+        "bead": "fss-x4a.25.2",
+        "requirement": "FSS-177",
+        "priority": 1,
+        "backlog_status": "open",
+        "implementation_state": "selected-learning explanation cancellation implemented; broader transport qualification remains open"
+      }
+    ],
+    "prioritization": [
+      "Provider acknowledgement and HEAD metadata could not prove actual source-byte retrieval. A native cold verification path closes a concrete archive integrity gap.",
+      "Selected learning explanations bypassed the existing request cancellation owner. Private reads and final output needed cooperative cancellation without rolling back completed clock admission."
+    ],
+    "concurrent_main_commits_preserved": [
+      "77a673ace5180fbde38f90fd2ac68238bfe6d8df",
+      "6fc16b63d62fdb2b8ee739cea1f880057b4a9a6e",
+      "d2b98b89a1c5817009d503725ef89c639d23f3bf"
+    ]
+  },
+  "delivered": [
+    {
+      "commit": "8297f56497e2aca306112fa1878f3112766154c2",
+      "feature": "Independent retrieval owner, canonical receipts and signed native S3 ranges",
+      "scope": "Fresh exact ReadMedia/AdapterNet/AdapterAuth authority, independent whole digest plus all original part hashes, immutable source journal, per-range accounting and deadlines, ETag-pinned representation and exact custody metadata."
+    },
+    {
+      "commit": "7842d397511ca6b8d6153d495b30bde6763f022f",
+      "feature": "upload-s3-verify operator command",
+      "scope": "Cold completed journal verification without the source file; separate private exclusive synced/readback receipt; complete closed 41-field report; process regressions, schema/operator docs and archive-lane wiring."
+    },
+    {
+      "commit": "this_commit",
+      "feature": "Selected-learning request cancellation",
+      "scope": "Borrowed request control reaches session admission, history, selected object/source/tombstone reads, final verification and delivery; saved-anchor cancellation/refusal avoids diagnostic rereads; completed clock/expiry journal and pin transitions remain durable."
+    }
+  ],
+  "authority": {
+    "repository": "User explicitly authorized direct-main commits. Connector ref updates use a freshly verified parent, expected_sha and force=false; concurrent changes are preserved. No PR, force push or branch-policy change.",
+    "retrieval": "Fresh finite child and drain obligation with exactly AdapterNet, AdapterAuth and ReadMedia for the original resource. No provider stage/publish/abort/delete grant. Original principal, trace, generation, privacy, retention, lease/idempotency restrictions and retained network/auth revocations remain bound.",
+    "filesystem": "Completed source journal is opened exclusively and borrowed immutably. No local source-media read. New private receipt uses exclusive creation, file/parent fsync, exact stable readback and separate local budget.",
+    "learning": "Cancellation borrows the existing Sync-backed request probe and grants no authority. Runtime clock admission already started still settles under the retained session lock. Cancelled outputs contain no private learning payload and do not reopen storage.",
+    "network": "No live device, NAS, cloud provider account or production archive was contacted. Loopback and process fixtures are authored but not executed."
+  },
+  "retrieval_contract": {
+    "eligible_source": "Exact independently pinned completed journal whose original owner is locally Verified, with full original part inventory, completion proof and proven custody origin.",
+    "limits": {
+      "object_bytes": 67108864,
+      "range_bytes": 262144,
+      "canonical_receipt_bytes": 65536,
+      "cli_report_bytes": 16384
+    },
+    "proof": "Every original part checksum and an independent whole-object SHA-256 must match. The expected whole digest is distinct from manifest_root in the core API. Final authority/deadline/source-history checks precede Verified.",
+    "wire": "Signed sequential Range GETs require HTTP 206, exact Content-Length and Content-Range, exact intent/plan/root/origin metadata and one strong opaque ETag. Subsequent requests sign If-Match. Encodings, redirects, ambiguous headers, changed representation or insufficient budgets refuse.",
+    "outcomes": [
+      "NotObserved",
+      "Unknown",
+      "Mismatch",
+      "Verified"
+    ],
+    "receipt": "fss.multipart_retrieval_observation.v1; strict bounded canonical decoding/reencoding; separate immutable source/authority/time/work proof, with no provider tokens, paths, credentials or media.",
+    "operator_schema": "schemas/s3_retrieval_observation_cli.v1.json",
+    "cost_model": {
+      "operation_family": "COST-RETRIEVE-001 component; broad sampling/repair operation remains unqualified",
+      "ranges": "N=sum(ceil(original_part_bytes/262144))",
+      "hash_work_bytes": "2*object_bytes",
+      "default_admitted_bytes": "object_bytes + N*2260992",
+      "default_admitted_network_bytes": "N*540672",
+      "admitted_storage_operations": "N",
+      "memory_semantics": "Cumulative conservative work admissions, not measured peak memory; only one returned range retained by the owner. Local credential/journal/receipt work is separate."
+    }
+  },
+  "validation": {
+    "rust_execution": "not established",
+    "new_test_functions": {
+      "core_retrieval": 8,
+      "native_loopback_retrieval": 6,
+      "native_etag_unit": 1,
+      "operator_retrieval_process": 5,
+      "selected_learning_native": 2,
+      "selected_learning_cli": 2,
+      "total": 24
+    },
+    "pinned_toolchain": {
+      "channel": "nightly-2026-08-31",
+      "rustc": "1.100.0-nightly",
+      "commit": "90850177249efe0321573c569aec5d12b257f8d6"
+    },
+    "compile_attempts": [
+      {
+        "scope": "fss-reference locked check",
+        "result": "dependency compilation failed; unchanged registry Asupersync 0.5.0 rustc killed with SIGKILL before FSS diagnostics",
+        "configuration": "one job, incremental off, development debug info off"
+      },
+      {
+        "scope": "fss-object locked check",
+        "result": "dependency compilation failed; unchanged registry Asupersync 0.5.0 rustc killed with SIGKILL before FSS diagnostics",
+        "configuration": "one job, incremental off, development debug info off, MALLOC_ARENA_MAX=1",
+        "elapsed_seconds": 133.03
+      }
+    ],
+    "passed_static_checks": [
+      "Pinned nightly rustfmt parsing/checks for changed Rust sources and regressions, including the corrected Sync callback signatures.",
+      "git diff --check.",
+      "Draft 2020-12 meta-schema validity and exact agreement between all 41 renderer keys, schema properties and required fields.",
+      "Registered schema identity check.",
+      "Generated robot docs freshness and consistency.",
+      "Staged layered-manifest coverage for the first two commits.",
+      "Independent source/API/ownership reviews; fixed the inherited BudgetVector decode trait-name collision, the Sync callback mismatch, and two denied test lint usages."
+    ],
+    "direct_qualifier": {
+      "command": "scripts/qualify.sh --lane archive",
+      "result": "interrupted without a completed qualification receipt after prolonged policy scanning; no pass claimed",
+      "observed_steps": [
+        "netseal reported env-only degradation",
+        "capacity authority unavailable on this host",
+        "entered check-policy.py --skip-manifest"
+      ],
+      "exit_code": 130
+    },
+    "standalone_policy_check": {
+      "result": "interrupted without a result after prolonged scanning",
+      "exit_code": 130
+    },
+    "baseline_registry_findings": "A direct digest-domain policy scan found 8 pre-existing unregistered ATP/remote-provider/image-kernel domains outside this work. The newly added retrieval domain is registered. Full repository policy qualification is not claimed.",
+    "provider_or_release_qualification": "not performed; requirements remain open"
+  },
+  "obligations": [
+    {
+      "state": "pending",
+      "owner": "pinned native qualification host",
+      "work": "Compile and execute all 24 new regressions and existing affected suites. Then run QL-ARCHIVE-001 and agent transport qualification with unchanged required gates; retain actual results before upgrading claims."
+    },
+    {
+      "state": "pending",
+      "owner": "FSS-068 archive retrieval",
+      "work": "Accept linked completion-observation receipts from locally indeterminate uploads through a separately validated binding. Current upload-s3-verify requires the original locally Completed/Verified record."
+    },
+    {
+      "state": "pending",
+      "owner": "WP-070 secure archive integration",
+      "work": "Admitted public-cloud TLS, client-side encryption, archive graph publication/closure, replica independence, repair scheduling, future availability auditing and live provider qualification."
+    }
+  ],
+  "continuations": [
+    "cargo test -p fss-object --test retrieval_observation_contract --test completion_observation_contract --locked --offline",
+    "cargo test -p fss-reference --test s3_upload_native_contract --locked --offline",
+    "cargo test -p fss-reference --lib s3_upload --locked --offline",
+    "cargo test -p fss-cli --test archive_s3_upload_process --locked --offline",
+    "cargo test -p fss-reference --lib deployment_session::learning::inspect::cancellation --locked --offline",
+    "cargo test -p fss-cli --test agent_effect_cli_contract learning_explain::cancellation --locked --offline",
+    "scripts/qualify.sh --lane archive"
+  ],
+  "documentation": [
+    "docs/NATIVE_S3_OBJECT_UPLOADS.md",
+    "schemas/s3_retrieval_observation_cli.v1.json",
+    "IMPLEMENTATION_STATUS.md"
+  ],
+  "nonclaims": [
+    "No restore file is written by verification.",
+    "No encryption, graph closure, replica or future availability proof follows from one successful object read.",
+    "Cancellation cannot preempt one blocking filesystem call already in progress.",
+    "Neither broad Bead is closed by authored tests or source presence."
+  ]
+}

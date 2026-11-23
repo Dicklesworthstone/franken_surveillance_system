@@ -760,7 +760,9 @@ pub(super) fn capture(
 }
 
 mod inspect;
-pub use inspect::{InspectLearningRequest, LearningInspection, inspect_learning};
+pub use inspect::{
+    InspectLearningRequest, LearningInspection, inspect_learning, inspect_learning_cancellable,
+};
 
 mod inventory;
 pub use inventory::MAX_CAPTURED_LEARNING;

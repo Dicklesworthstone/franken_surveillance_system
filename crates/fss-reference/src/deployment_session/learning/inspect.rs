@@ -13,7 +13,9 @@ use std::fs::{self, File, TryLockError};
 use std::io;
 use std::path::{Path, PathBuf};
 
-use fss_core::{AgentSession, AgentView, ContentDigest, LedgerAnchor, PrincipalId, SessionId};
+use fss_core::{
+    AgentSession, AgentView, ContentDigest, LedgerAnchor, PrincipalId, SessionId, TimestampNs,
+};
 use fss_object::ObjectManifest;
 use fss_publication::{
     LOCAL_LOCK_FILE, LOCAL_ROOTS_DIR, LOCAL_TOMBSTONES_DIR, MAX_ROOT_RECORD_BYTES,
@@ -33,9 +35,12 @@ use crate::agent_session::checkpoint::journal::projection::SessionProjection;
 use crate::agent_session::workspace::WorkspaceRevision;
 use crate::deployment_session::episode::EpisodeRecord;
 use crate::deployment_session::feedback::decode_proposal;
-use crate::deployment_session::orient::{AdmittedSessionRead, with_admitted_session_read};
+use crate::deployment_session::orient::{
+    AdmittedSessionRead, with_admitted_session_read_cancellable,
+};
 use crate::deployment_session::{
-    DeploymentSessionError, MissionRecord, PUBLICATIONS_RELPATH, evidence_now, read_bounded,
+    DeploymentSessionError, MissionRecord, PUBLICATIONS_RELPATH, SessionTimeError, evidence_now,
+    read_bounded,
 };
 
 /// One exact immutable publication selected under a currently admitted session.
@@ -107,6 +112,31 @@ pub fn inspect_learning(
     root: impl super::super::SessionRoot,
     request: &InspectLearningRequest,
 ) -> Result<LearningInspection, DeploymentSessionError> {
+    inspect_learning_cancellable(root, request, &|| false, |_, _| {})
+}
+
+fn checkpoint(cancelled: &dyn Fn() -> bool) -> Result<(), DeploymentSessionError> {
+    if cancelled() {
+        Err(SessionTimeError::Cancelled.into())
+    } else {
+        Ok(())
+    }
+}
+
+/// Inspect the same exact candidate under an existing request owner's cancellation probe.
+/// Checkpoints bracket bounded native reads; an in-flight blocking call is not preempted.
+/// Completed runtime clock admission remains durable when private output is discarded.
+/// The probe must remain cancelled after first returning true. `observed` receives only the
+/// completely verified deployment anchor and evidence time before clock admission; it grants
+/// no private learning access. Callers can retain that anchor for a cancellation without reopening
+/// storage, including when a subsequent session-clock admission has already committed.
+pub fn inspect_learning_cancellable(
+    root: impl super::super::SessionRoot,
+    request: &InspectLearningRequest,
+    cancelled: &(dyn Fn() -> bool + Sync),
+    observed: impl FnOnce(&LedgerAnchor, TimestampNs),
+) -> Result<LearningInspection, DeploymentSessionError> {
+    checkpoint(cancelled)?;
     if !matches!(request.view, AgentView::DecisionDiff | AgentView::Forensic) {
         return Err(OrientError::UnsupportedView(request.view).into());
     }
@@ -121,10 +151,16 @@ pub fn inspect_learning(
         }
         .into());
     }
-    let (mut inspection, session_bytes, session_files) =
-        with_admitted_session_read(root, &request.principal, &request.session_id, |read| {
-            inspect_admitted(read, request)
-        })?;
+    let inspection = with_admitted_session_read_cancellable(
+        root,
+        &request.principal,
+        &request.session_id,
+        cancelled,
+        |snapshot| observed(&snapshot.anchor, snapshot.latest_evidence_time),
+        |read| inspect_admitted(read, request, cancelled),
+    );
+    checkpoint(cancelled)?;
+    let (mut inspection, session_bytes, session_files) = inspection?;
     inspection.bytes_read += session_bytes;
     inspection.files_read += session_files;
     Ok(inspection)
@@ -133,7 +169,9 @@ pub fn inspect_learning(
 fn inspect_admitted(
     read: &AdmittedSessionRead<'_>,
     request: &InspectLearningRequest,
+    cancelled: &dyn Fn() -> bool,
 ) -> Result<LearningInspection, DeploymentSessionError> {
+    checkpoint(cancelled)?;
     if !read.session.capabilities.contains("CAP-AGENT-EXPLAIN-001") {
         return Err(DurableSessionError::Session(ReferenceSessionError::GrantEscalation).into());
     }
@@ -160,11 +198,12 @@ fn inspect_admitted(
     // This is the existing publisher lock, opened read-only. Holding it shared excludes a
     // cooperating standalone publisher as well as session writers excluded by the outer lock.
     // Drop closes the file and releases the lock on every return; no directory/file is created.
-    let _publication_lock = shared_publication_lock(&directory)?;
+    let _publication_lock = shared_publication_lock(&directory, cancelled)?;
     let mut reader = SelectedReader {
         directory,
         bytes_read: 0,
         files_read: 0,
+        cancelled,
     };
     let current_mission = verify_current_mission(&mut reader, read)?;
 
@@ -205,6 +244,7 @@ fn inspect_admitted(
     }
     let verified = verify_recovery_closure(&experience, metadata, &objects, &sessions)
         .map_err(|_| unavailable())?;
+    checkpoint(cancelled)?;
     let binding = verified.binding;
     if binding.mission_id != read.session.mission_id
         || binding.principal != read.session.principal_id
@@ -269,6 +309,7 @@ fn inspect_admitted(
         original_resource_use_json: episode.episode.resource_use_json,
     };
     objects.insert(request.publication_root, manifest_bytes);
+    checkpoint(cancelled)?;
     Ok(LearningInspection {
         runtime_time: read.runtime_time,
         learning,
@@ -292,20 +333,30 @@ fn inspect_admitted(
     })
 }
 
-fn shared_publication_lock(directory: &Path) -> Result<File, DeploymentSessionError> {
+fn shared_publication_lock(
+    directory: &Path,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<File, DeploymentSessionError> {
     for relative in [LOCAL_ROOTS_DIR, LOCAL_TOMBSTONES_DIR] {
+        checkpoint(cancelled)?;
         let metadata = fs::symlink_metadata(directory.join(relative)).map_err(|_| unavailable())?;
+        checkpoint(cancelled)?;
         if !metadata.file_type().is_dir() {
             return Err(unavailable());
         }
     }
     let path = directory.join(LOCAL_LOCK_FILE);
+    checkpoint(cancelled)?;
     let metadata = fs::symlink_metadata(&path).map_err(|_| unavailable())?;
+    checkpoint(cancelled)?;
     if !metadata.file_type().is_file() {
         return Err(unavailable());
     }
     let lock = File::open(&path).map_err(|_| unavailable())?;
-    match lock.try_lock_shared() {
+    checkpoint(cancelled)?;
+    let locked = lock.try_lock_shared();
+    checkpoint(cancelled)?;
+    match locked {
         Ok(()) => Ok(lock),
         Err(TryLockError::WouldBlock) => Err(DeploymentSessionError::StoreLocked),
         Err(TryLockError::Error(_)) => Err(unavailable()),
@@ -314,21 +365,24 @@ fn shared_publication_lock(directory: &Path) -> Result<File, DeploymentSessionEr
 
 /// Selected-root reads deliberately do not call publication::inspect: its whole-spool scan
 /// would make unrelated advisory inventory a prerequisite to recovering this exact candidate.
-struct SelectedReader {
+struct SelectedReader<'a> {
     directory: PathBuf,
     bytes_read: u64,
     files_read: u64,
+    cancelled: &'a dyn Fn() -> bool,
 }
 
-impl SelectedReader {
+impl SelectedReader<'_> {
     fn object(
         &mut self,
         digest: ContentDigest,
         maximum: usize,
     ) -> Result<Vec<u8>, DeploymentSessionError> {
         self.not_tombstoned(digest)?;
-        let bytes = fss_publication::read_verified(&self.directory, digest, maximum)
-            .map_err(|_| unavailable())?;
+        checkpoint(self.cancelled)?;
+        let bytes = fss_publication::read_verified(&self.directory, digest, maximum);
+        checkpoint(self.cancelled)?;
+        let bytes = bytes.map_err(|_| unavailable())?;
         self.bytes_read += bytes.len() as u64;
         self.files_read += 1;
         Ok(bytes)
@@ -341,8 +395,11 @@ impl SelectedReader {
         let name = digest.to_text().replacen(':', "-", 1);
         let tombstones = self.directory.join(LOCAL_TOMBSTONES_DIR);
         for suffix in ["", ROOT_INDETERMINATE_SUFFIX, ROOT_TEMP_SUFFIX] {
+            checkpoint(self.cancelled)?;
             let path = tombstones.join(format!("{name}{TOMBSTONE_RECORD_SUFFIX}{suffix}"));
-            match fs::symlink_metadata(path) {
+            let metadata = fs::symlink_metadata(path);
+            checkpoint(self.cancelled)?;
+            match metadata {
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                 _ => return Err(unavailable()),
             }
@@ -366,16 +423,20 @@ impl SelectedReader {
     ) -> Result<(), DeploymentSessionError> {
         let roots = self.directory.join(LOCAL_ROOTS_DIR);
         for suffix in [ROOT_INDETERMINATE_SUFFIX, ROOT_TEMP_SUFFIX] {
+            checkpoint(self.cancelled)?;
             let marker = roots.join(format!("{slot}{ROOT_RECORD_SUFFIX}{suffix}"));
-            match fs::symlink_metadata(marker) {
+            let metadata = fs::symlink_metadata(marker);
+            checkpoint(self.cancelled)?;
+            match metadata {
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                 _ => return Err(unavailable()),
             }
         }
         let path = roots.join(format!("{slot}{ROOT_RECORD_SUFFIX}"));
-        let Some(bytes) =
-            read_bounded(&path, MAX_ROOT_RECORD_BYTES as usize).map_err(|_| unavailable())?
-        else {
+        checkpoint(self.cancelled)?;
+        let bytes = read_bounded(&path, MAX_ROOT_RECORD_BYTES as usize);
+        checkpoint(self.cancelled)?;
+        let Some(bytes) = bytes.map_err(|_| unavailable())? else {
             return if required { Err(unavailable()) } else { Ok(()) };
         };
         self.bytes_read += bytes.len() as u64;
@@ -392,7 +453,7 @@ impl SelectedReader {
 }
 
 fn verify_current_mission(
-    reader: &mut SelectedReader,
+    reader: &mut SelectedReader<'_>,
     read: &AdmittedSessionRead<'_>,
 ) -> Result<MissionRecord, DeploymentSessionError> {
     let invalid = || {
@@ -431,7 +492,7 @@ fn verify_current_mission(
 /// A learning root retains its own complete historical graph, so a source slot need not still
 /// exist. An existing native source slot may not contradict that custody or be indeterminate.
 fn verify_source_slots(
-    reader: &mut SelectedReader,
+    reader: &mut SelectedReader<'_>,
     objects: &BTreeMap<ContentDigest, Vec<u8>>,
     binding: &super::recovery::CaptureBinding,
     episode: &EpisodeRecord,
@@ -481,6 +542,10 @@ fn verify_source_slots(
 }
 
 #[cfg(test)]
+#[path = "inspect/cancellation.rs"]
+mod cancellation;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
@@ -491,6 +556,7 @@ mod tests {
 
     use crate::agent_orient::{DeploymentHistory, OrientLimits};
     use crate::agent_session::workspace::{WorkspaceWrite, WorkspaceWriteMode};
+    use crate::deployment_session::orient::with_admitted_session_read;
     use crate::deployment_session::{
         CapsuleInput, SESSION_CAPABILITIES, SESSION_JOURNAL_FILE, SESSION_LEASE_NS,
         SESSION_PRIVACY_SCOPE, SESSION_ROOT_PIN_FILE, SESSIONS_RELPATH, SessionBriefs,

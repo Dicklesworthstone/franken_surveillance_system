@@ -2635,8 +2635,8 @@ pub(crate) fn execute_explain_with_time(
     execute_explain_with_control(args, clock, &crate::RequestControl::uncancelled())
 }
 
-/// Keep event metadata, optional custody and final delivery under the same request owner.
-/// Session-owned learning reads retain their existing admission clock and durable outcomes.
+/// Keep event metadata, selected learning, optional custody and final delivery under one owner.
+/// Completed session-clock admission retains its existing durable outcome on cancellation.
 pub(crate) fn execute_explain_with_control(
     args: &ExplainArgs,
     clock: crate::session_time::Clock<'_>,
@@ -2647,7 +2647,7 @@ pub(crate) fn execute_explain_with_control(
             session,
             publication_root,
         } => {
-            return learning_explain::execute(args, session, *publication_root, clock);
+            return learning_explain::execute(args, session, *publication_root, clock, control);
         }
         ExplainTarget::Event(event_id) => (event_id, fss_core::ExplainQuestion::Why),
         ExplainTarget::EventWhyNot(event_id) => (event_id, fss_core::ExplainQuestion::WhyNot),

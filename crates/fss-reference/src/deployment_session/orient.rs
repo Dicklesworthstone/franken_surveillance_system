@@ -224,13 +224,26 @@ pub(super) fn with_admitted_session_read<T>(
     session_id: &SessionId,
     read: impl FnOnce(&AdmittedSessionRead<'_>) -> Result<T, DeploymentSessionError>,
 ) -> Result<(T, u64, u64), DeploymentSessionError> {
+    with_admitted_session_read_cancellable(root, principal, session_id, &|| false, |_| {}, read)
+}
+
+/// Keep the caller's cancellation through admission and both verified history projections.
+/// A clock admission already started still settles under the retained session lock.
+pub(super) fn with_admitted_session_read_cancellable<T>(
+    root: impl SessionRoot,
+    principal: &PrincipalId,
+    session_id: &SessionId,
+    cancelled: &(dyn Fn() -> bool + Sync),
+    observed: impl FnOnce(&DeploymentSnapshot),
+    read: impl FnOnce(&AdmittedSessionRead<'_>) -> Result<T, DeploymentSessionError>,
+) -> Result<(T, u64, u64), DeploymentSessionError> {
     with_admitted_session_history(
         root,
         principal,
         session_id,
-        DeploymentHistory::read,
-        &|| false,
-        |_| {},
+        |root, limits| DeploymentHistory::read_cancellable(root, limits, cancelled),
+        cancelled,
+        observed,
         read,
     )
 }
@@ -269,10 +282,19 @@ fn with_admitted_session_history<T>(
     observed: impl FnOnce(&DeploymentSnapshot),
     read: impl FnOnce(&AdmittedSessionRead<'_>) -> Result<T, DeploymentSessionError>,
 ) -> Result<(T, u64, u64), DeploymentSessionError> {
+    let checkpoint = || -> Result<(), DeploymentSessionError> {
+        if cancelled() {
+            Err(SessionTimeError::Cancelled.into())
+        } else {
+            Ok(())
+        }
+    };
+    checkpoint()?;
     let context = root.session_context();
     // These existing layout/restore-fence checks perform reads only. In particular a restored
     // historical checkpoint cannot regain live session authority through this read operation.
     let root = ensure_agent_writable(context.root())?;
+    checkpoint()?;
     let directory = root.join(SESSIONS_RELPATH);
     let lock_file = match File::open(directory.join(SESSION_LOCK_FILE)) {
         Ok(file) => file,
@@ -281,6 +303,7 @@ fn with_admitted_session_history<T>(
         }
         Err(error) => return Err(io_failure("read-only session lock", &error)),
     };
+    checkpoint()?;
     let mut lock = Some(
         match SpoolLock::try_acquire(lock_file, Arc::new(HostSpoolIo)) {
             Ok(lock) => lock,
@@ -290,7 +313,9 @@ fn with_admitted_session_history<T>(
             }
         },
     );
+    checkpoint()?;
     ensure_agent_writable(&root)?;
+    checkpoint()?;
     let pin_path = directory.join(SESSION_ROOT_PIN_FILE);
     let mut pin_bytes = read_bounded(&pin_path, MAX_PIN_BYTES)
         .map_err(|error| io_failure("session root pin", &error))?
@@ -300,6 +325,7 @@ fn with_admitted_session_history<T>(
                     .to_owned(),
             )
         })?;
+    checkpoint()?;
     let mut pin = std::str::from_utf8(&pin_bytes)
         .ok()
         .and_then(|text| ContentDigest::parse(text.trim_end()).ok())
@@ -312,18 +338,23 @@ fn with_admitted_session_history<T>(
         .ok_or_else(|| {
             DeploymentSessionError::StoreInvalid("the pinned session journal is missing".to_owned())
         })?;
+    checkpoint()?;
     let mut store = SessionProjectionSnapshot::from_bytes(
         &bytes,
         pin,
         DurableSessionLimits::default(),
         WorkClaimLimits::default(),
     )?;
+    checkpoint()?;
     let limits = OrientLimits::default();
     let history = history(&root, &limits)?;
+    checkpoint()?;
     let head = history.snapshot_at_cancellable(history.head(), cancelled)?;
+    checkpoint()?;
     // Preserve the already verified historical anchor for a payload-free refusal. The private
     // hydration adapter copies only this observation; it performs no second read or callback.
     observed(&head);
+    checkpoint()?;
     let now = context.now(&head, principal)?;
     let mut latest_now = now;
     let mut runtime_journal = None;
@@ -350,6 +381,9 @@ fn with_admitted_session_history<T>(
         if journal.store.committed_root() == verified_tip {
             journal.pin(Some(pin))?;
         }
+        // Cancellation cannot interrupt the admitted clock's durable journal/pin settlement.
+        // Once settled it may stop verification without undoing that owned state transition.
+        checkpoint()?;
         admission_read_bytes = bytes.len() as u64 + pin_bytes.len() as u64;
         pin = journal.store.committed_root();
         pin_bytes = read_bounded(&pin_path, MAX_PIN_BYTES)
@@ -357,11 +391,13 @@ fn with_admitted_session_history<T>(
             .ok_or_else(|| {
                 DeploymentSessionError::StoreInvalid("session pin disappeared".into())
             })?;
+        checkpoint()?;
         bytes = read_bounded(&journal_path, MAX_SESSION_JOURNAL_BYTES)
             .map_err(|error| io_failure("runtime session journal", &error))?
             .ok_or_else(|| {
                 DeploymentSessionError::StoreInvalid("session journal disappeared".into())
             })?;
+        checkpoint()?;
         store = SessionProjectionSnapshot::from_bytes(
             &bytes,
             pin,
@@ -371,6 +407,7 @@ fn with_admitted_session_history<T>(
         runtime_journal = Some(journal);
     }
     let result = (|| {
+        checkpoint()?;
         let (session, revision, remaining_tokens) =
             store.session_workspace(principal, session_id, now)?;
         if !["CAP-AGENT-SESSION-READ-001", "CAP-AGENT-SITUATION-READ-001"]
@@ -434,6 +471,7 @@ fn with_admitted_session_history<T>(
             }
         }
 
+        checkpoint()?;
         let result = read(&AdmittedSessionRead {
             root: &root,
             store: &store,
@@ -447,15 +485,20 @@ fn with_admitted_session_history<T>(
             pinned_root: pin,
             admission_now: now,
             runtime_time: context.is_runtime(),
-        })?;
+        });
+        checkpoint()?;
+        let result = result?;
 
         // A cooperating writer is excluded by the existing lock. Out-of-contract drift observed
         // during metadata/custody reads must still withhold the answer rather than mix prefixes.
         ensure_agent_writable(&root)?;
+        checkpoint()?;
         let verified_journal = read_bounded(&journal_path, MAX_SESSION_JOURNAL_BYTES)
             .map_err(|error| io_failure("session journal verification", &error))?;
+        checkpoint()?;
         let verified_pin = read_bounded(&pin_path, MAX_PIN_BYTES)
             .map_err(|error| io_failure("session root pin verification", &error))?;
+        checkpoint()?;
         if verified_journal.as_deref() != Some(bytes.as_slice())
             || verified_pin.as_deref() != Some(pin_bytes.as_slice())
         {
@@ -474,6 +517,7 @@ fn with_admitted_session_history<T>(
             // Any refusal below persists this observation under the same retained lock.
             store.session_workspace(principal, session_id, latest_now)?;
         }
+        checkpoint()?;
         let bytes_read = (bytes.len() as u64 + pin_bytes.len() as u64) * 2 + admission_read_bytes;
         Ok((
             result,
@@ -508,5 +552,6 @@ fn with_admitted_session_history<T>(
             }
         }
     }
+    checkpoint()?;
     result
 }

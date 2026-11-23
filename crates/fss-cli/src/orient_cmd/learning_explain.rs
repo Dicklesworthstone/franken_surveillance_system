@@ -6,12 +6,12 @@ use fss_core::{
     AgentCognitiveEnvelope, BudgetVector, CanonicalEncode, CognitiveAnswerClass, Completeness,
     ContentDigest, EnvelopeBudget, EnvelopeContinuity, EnvelopeCoverage, EnvelopeEpistemic,
     EnvelopeProposition, ExecutionBoundary, KnowledgeState, ResponseOutcome, ResponseSafeRetry,
-    SessionId,
+    SessionId, TimestampNs,
 };
 use fss_reference::agent_orient::CAPABILITY_EXPLAIN;
 use fss_reference::deployment_session::DeploymentSessionError;
 use fss_reference::deployment_session::learning::{
-    InspectLearningRequest, LearningInspection, inspect_learning,
+    InspectLearningRequest, LearningInspection, inspect_learning_cancellable,
 };
 
 use super::{ERR_AGENT_CONTEXT_INCOMPLETE, ExplainArgs, RenderError, ResponseParts};
@@ -77,7 +77,11 @@ fn refuse(
     root: ContentDigest,
     error: DeploymentSessionError,
     runtime_time: bool,
+    control: &crate::RequestControl<'_>,
 ) -> (String, ExitIdentity) {
+    if control.is_cancelled() {
+        return crate::request_control::cancelled_read("explain", &args.root);
+    }
     let operation = operation(args, session, root);
     let refusal = match error {
         DeploymentSessionError::Read(read) => {
@@ -99,41 +103,118 @@ fn refuse(
             Err(_) => return super::internal_failure("explain", &args.root),
         },
     };
-    crate::session_cmd::refuse_typed_with_boundary(
-        &operation,
-        refusal,
+    let cancelled = || control.is_cancelled();
+    let snapshot = fss_reference::agent_orient::read_deployment_cancellable(
+        &args.root,
+        &fss_reference::agent_orient::OrientLimits::default(),
+        &cancelled,
+    );
+    if cancelled() {
+        return crate::request_control::cancelled_read("explain", &args.root);
+    }
+    let snapshot = match snapshot {
+        Ok(snapshot) => snapshot,
+        Err(error) => return super::read_refusal("explain", &args.root, &error),
+    };
+    let response = super::rendered(
+        crate::session_cmd::refusal_response(
+            &operation,
+            &snapshot.anchor,
+            snapshot.latest_evidence_time.0,
+            refusal,
+            Some(boundary(
+                "Selected learning inspection was refused without publishing private detail.",
+                runtime_time,
+            )),
+        ),
         ExitIdentity::AGENT_REFUSED,
-        Some(boundary(
-            "Selected learning inspection was refused without publishing private detail.",
+        "explain",
+        &args.root,
+    );
+    if cancelled() {
+        cancelled_response(
+            args,
+            ContentDigest::sha256(&operation.request),
+            &snapshot.anchor,
+            snapshot.latest_evidence_time,
             runtime_time,
-        )),
-    )
+        )
+    } else {
+        response
+    }
 }
 
 fn context_refusal(
     args: &ExplainArgs,
     session: &SessionId,
     root: ContentDigest,
-    runtime_time: bool,
+    read: &LearningInspection,
 ) -> (String, ExitIdentity) {
-    crate::session_cmd::refuse_typed_with_boundary(
-        &operation(args, session, root),
-        Refusal {
-            error_id: ERR_AGENT_CONTEXT_INCOMPLETE,
-            reason: "The complete selected learning metadata and mandatory uncertainty do not fit \
+    super::rendered(
+        crate::session_cmd::refusal_response(
+            &operation(args, session, root),
+            &read.current_anchor,
+            read.observed_at_ns,
+            Refusal {
+                error_id: ERR_AGENT_CONTEXT_INCOMPLETE,
+                reason:
+                    "The complete selected learning metadata and mandatory uncertainty do not fit \
                      the admitted response allowance."
-                .to_owned(),
-            guidance: "Request --view forensic with a sufficient --budget-tokens allowance within \
+                        .to_owned(),
+                guidance: "Request --view forensic with a sufficient --budget-tokens allowance within \
                        this session's current grant. No statement, condition, counterexample, \
                        source citation, or validation requirement is silently omitted.",
-            recovery_class: "never_unchanged",
-            safe_retry: ResponseSafeRetry::No,
-        },
+                recovery_class: "never_unchanged",
+                safe_retry: ResponseSafeRetry::No,
+            },
+            Some(boundary(
+                "Verified selected metadata; the complete response was withheld at its bound.",
+                read.runtime_time,
+            )),
+        ),
         ExitIdentity::AGENT_REFUSED,
-        Some(boundary(
-            "Verified selected metadata; the complete response was withheld at its bound.",
-            runtime_time,
-        )),
+        "explain",
+        &args.root,
+    )
+}
+
+fn cancelled_response(
+    args: &ExplainArgs,
+    request_digest: ContentDigest,
+    anchor: &fss_core::LedgerAnchor,
+    observed_at: TimestampNs,
+    runtime_time: bool,
+) -> (String, ExitIdentity) {
+    crate::request_control::cancelled_anchored_read_with_boundary(
+        crate::request_control::CancelledRead {
+            command: "explain",
+            operation: "explain",
+            root: &args.root,
+            request_digest,
+            principal: &args.principal,
+            view: args.view,
+            capability: CAPABILITY_EXPLAIN,
+            payload_schema: AgentCognitiveEnvelope::SCHEMA,
+        },
+        anchor,
+        observed_at.0,
+        ExecutionBoundary {
+            completed: vec![
+                "Observed request cancellation after verifying the deployment anchor; selected private output was discarded without reopening storage.".to_owned(),
+            ],
+            not_started: vec![
+                "Learning validation, promotion, activation, effect execution, and source-media disclosure.".to_owned(),
+            ],
+            possibly_occurred: if runtime_time {
+                vec!["Session-owned clock admission or expiry before cancellation may already be committed.".to_owned()]
+            } else {
+                Vec::new()
+            },
+            preserved_truth: vec![
+                "Earlier durable session state and effect outcomes are not rolled back. No private candidate content is delivered.".to_owned(),
+            ],
+            invalidated: Vec::new(),
+        },
     )
 }
 
@@ -702,7 +783,11 @@ pub(super) fn execute(
     session: &SessionId,
     publication_root: ContentDigest,
     clock: crate::session_time::Clock<'_>,
+    control: &crate::RequestControl<'_>,
 ) -> (String, ExitIdentity) {
+    if control.is_cancelled() {
+        return crate::request_control::cancelled_read("explain", &args.root);
+    }
     // Also protect internal typed callers; the public parser rejects mixed selectors before I/O.
     if args.at.is_some()
         || args.custody
@@ -711,7 +796,23 @@ pub(super) fn execute(
     {
         return super::internal_failure("explain", &args.root);
     }
-    let read = match inspect_learning(
+    let cancelled = || control.is_cancelled();
+    let observed: std::cell::RefCell<Option<(fss_core::LedgerAnchor, TimestampNs)>> =
+        std::cell::RefCell::new(None);
+    let interrupted_admission = || {
+        if let Some((anchor, observed_at)) = observed.borrow().as_ref() {
+            let operation = operation(args, session, publication_root);
+            let request_digest = super::request_identity(operation.name, |encoder| {
+                encoder.bytes(&operation.request);
+                operation.principal.encode_canonical(encoder);
+                anchor.encode_canonical(encoder);
+            });
+            cancelled_response(args, request_digest, anchor, *observed_at, clock.is_some())
+        } else {
+            crate::request_control::cancelled_read("explain", &args.root)
+        }
+    };
+    let read = match inspect_learning_cancellable(
         crate::session_time::context(&args.root, clock),
         &InspectLearningRequest {
             session_id: session.clone(),
@@ -720,9 +821,37 @@ pub(super) fn execute(
             view: args.view,
             budget_tokens: args.budget_tokens,
         },
+        &cancelled,
+        |anchor, observed_at| {
+            *observed.borrow_mut() = Some((anchor.clone(), observed_at));
+        },
     ) {
         Ok(read) => read,
-        Err(error) => return refuse(args, session, publication_root, error, clock.is_some()),
+        Err(error) => {
+            if cancelled()
+                || matches!(
+                    error,
+                    DeploymentSessionError::Time(
+                        fss_reference::deployment_session::SessionTimeError::Cancelled,
+                    )
+                )
+            {
+                return interrupted_admission();
+            }
+            let response = refuse(
+                args,
+                session,
+                publication_root,
+                error,
+                clock.is_some(),
+                control,
+            );
+            return if cancelled() {
+                interrupted_admission()
+            } else {
+                response
+            };
+        }
     };
     let request_digest =
         super::request_identity("fss.cli.learning_explain.request.v1", |encoder| {
@@ -745,39 +874,57 @@ pub(super) fn execute(
             read.journal_root.encode_canonical(encoder);
             encoder.text(&read.observed_at_ns.to_string());
         });
-    let decision_digest =
-        super::request_identity("fss.cli.learning_explain.decision.v1", |encoder| {
-            request_digest.encode_canonical(encoder);
-            read.learning.root.encode_canonical(encoder);
-            read.learning.proposal_digest.encode_canonical(encoder);
-            read.learning.experience_digest.encode_canonical(encoder);
-            read.captured_workspace_digest.encode_canonical(encoder);
-            encoder.text(&read.learning.original_resource_use_json);
-            for unknown in &read.learning.missing_evidence {
-                encoder.text(unknown);
-            }
-        });
-    let mut consumed = BudgetVector::ZERO;
-    consumed.bytes = read.bytes_read;
-    consumed.storage_operations = read.files_read;
-    // Account for the complete wire answer including its own budget fields. A bounded fixed
-    // point is deterministic and never silently drops required content to meet the ceiling.
-    for _ in 0..8 {
-        let answer = match render(args, &read, request_digest, decision_digest, &consumed) {
-            Ok(answer) => answer,
-            Err(_) => return context_refusal(args, session, publication_root, clock.is_some()),
-        };
-        let bytes = u64::try_from(answer.len()).unwrap_or(u64::MAX);
-        let tokens = bytes.saturating_add(3) / 4;
-        if answer.len() > MAX_RESPONSE_BYTES || tokens > read.effective_budget_tokens {
-            return context_refusal(args, session, publication_root, clock.is_some());
-        }
-        let total_bytes = read.bytes_read.saturating_add(bytes);
-        if consumed.tokens == tokens && consumed.bytes == total_bytes {
-            return (answer, ExitIdentity::SUCCESS);
-        }
-        consumed.tokens = tokens;
-        consumed.bytes = total_bytes;
+    let interrupted = || {
+        cancelled_response(
+            args,
+            request_digest,
+            &read.current_anchor,
+            TimestampNs(read.observed_at_ns),
+            read.runtime_time,
+        )
+    };
+    if cancelled() {
+        return interrupted();
     }
-    context_refusal(args, session, publication_root, clock.is_some())
+    let response = (|| {
+        let decision_digest =
+            super::request_identity("fss.cli.learning_explain.decision.v1", |encoder| {
+                request_digest.encode_canonical(encoder);
+                read.learning.root.encode_canonical(encoder);
+                read.learning.proposal_digest.encode_canonical(encoder);
+                read.learning.experience_digest.encode_canonical(encoder);
+                read.captured_workspace_digest.encode_canonical(encoder);
+                encoder.text(&read.learning.original_resource_use_json);
+                for unknown in &read.learning.missing_evidence {
+                    encoder.text(unknown);
+                }
+            });
+        let mut consumed = BudgetVector::ZERO;
+        consumed.bytes = read.bytes_read;
+        consumed.storage_operations = read.files_read;
+        // Account for the complete wire answer including its own budget fields. A bounded fixed
+        // point is deterministic and never silently drops required content to meet the ceiling.
+        for _ in 0..8 {
+            if cancelled() {
+                return interrupted();
+            }
+            let answer = match render(args, &read, request_digest, decision_digest, &consumed) {
+                Ok(answer) => answer,
+                Err(_) => return context_refusal(args, session, publication_root, &read),
+            };
+            let bytes = u64::try_from(answer.len()).unwrap_or(u64::MAX);
+            let tokens = bytes.saturating_add(3) / 4;
+            if answer.len() > MAX_RESPONSE_BYTES || tokens > read.effective_budget_tokens {
+                return context_refusal(args, session, publication_root, &read);
+            }
+            let total_bytes = read.bytes_read.saturating_add(bytes);
+            if consumed.tokens == tokens && consumed.bytes == total_bytes {
+                return (answer, ExitIdentity::SUCCESS);
+            }
+            consumed.tokens = tokens;
+            consumed.bytes = total_bytes;
+        }
+        context_refusal(args, session, publication_root, &read)
+    })();
+    if cancelled() { interrupted() } else { response }
 }

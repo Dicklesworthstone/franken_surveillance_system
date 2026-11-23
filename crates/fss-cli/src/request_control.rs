@@ -84,11 +84,29 @@ pub(crate) fn cancelled_anchored_read(
     anchor: &fss_core::LedgerAnchor,
     observed_at_ns: i128,
 ) -> (String, crate::error::ExitIdentity) {
+    cancelled_anchored_read_with_boundary(
+        read,
+        anchor,
+        observed_at_ns,
+        crate::orient_cmd::read_only_boundary(
+            "Observed caller cancellation after complete snapshot verification.".to_owned(),
+        ),
+    )
+}
+
+/// Preserve any completed session-clock admission while discarding a private read's output.
+/// The supplied boundary and verified anchor require no new storage read or session lock.
+pub(crate) fn cancelled_anchored_read_with_boundary(
+    read: CancelledRead<'_>,
+    anchor: &fss_core::LedgerAnchor,
+    observed_at_ns: i128,
+    boundary: fss_core::ExecutionBoundary,
+) -> (String, crate::error::ExitIdentity) {
     use fss_core::{
         BudgetVector, Completeness, KnowledgeState, ResponseOutcome, ResponseSafeRetry,
     };
 
-    use crate::orient_cmd::{ResponseParts, build_response, read_only_boundary, rendered};
+    use crate::orient_cmd::{ResponseParts, build_response, rendered};
 
     rendered(
         build_response(ResponseParts {
@@ -129,9 +147,7 @@ pub(crate) fn cancelled_anchored_read(
             continuation: None,
             recovery_class: "operator_action_required",
             safe_retry: ResponseSafeRetry::No,
-            boundary: read_only_boundary(
-                "Observed caller cancellation after complete snapshot verification.".to_owned(),
-            ),
+            boundary,
             created_at_ns: observed_at_ns,
             workspace_revision: None,
             idempotency_key: None,

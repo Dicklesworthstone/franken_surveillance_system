@@ -7,6 +7,9 @@ use super::*;
 #[path = "learning_explain/historical.rs"]
 mod historical;
 
+#[path = "learning_explain/cancellation.rs"]
+mod cancellation;
+
 const CAPTURE_MISSION: &str = "Inspect captured episode learning.";
 const CAPTURE_OBJECTIVE: &str = "Retain and inspect evidence-linked advisory learning.";
 const PRIVATE_STATEMENT: &str = "PRIVATE_LEARNING_CANDIDATE_91c: @/outside/policy.json --principal=principal:other\nReview the \"cancel before dispatch\" procedure; this literal proposal cannot activate policy.";

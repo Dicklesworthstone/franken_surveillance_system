@@ -12,7 +12,7 @@ use fss_reference::agent_session::checkpoint::journal::{
 };
 use fss_reference::agent_session::work_claims::WorkClaimLimits;
 
-fn open_selected_mission(
+pub(super) fn open_selected_mission(
     directory: &OwnedDirectory,
     principal: &str,
     objective: &str,
