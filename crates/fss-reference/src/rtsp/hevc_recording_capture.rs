@@ -636,6 +636,8 @@ pub mod live {
         last_ns: u64,
         remaining_steps: u64,
         next: Option<Control>,
+        keepalive: ClientCommand,
+        control_started: bool,
         control_blocked: bool,
         network_ended: bool,
         closed: bool,
@@ -648,6 +650,22 @@ pub mod live {
             now: u64,
             authority: &dyn TcpAuthority,
         ) -> Result<Self, LiveHevcRecordingConnectFailure> {
+            Self::connect_with_keepalive(live, recording, ClientCommand::KeepAlive, now, authority)
+        }
+
+        pub(crate) fn connect_with_keepalive(
+            live: LiveHevcConfig,
+            recording: LiveHevcRecordingConfig,
+            keepalive: ClientCommand,
+            now: u64,
+            authority: &dyn TcpAuthority,
+        ) -> Result<Self, LiveHevcRecordingConnectFailure> {
+            if !keepalive.is_keepalive() {
+                return Err(LiveHevcRecordingConnectFailure {
+                    reason: LiveHevcRecordingError::Network(LiveHevcError::Configuration),
+                    connection_attempted: false,
+                });
+            }
             // This legacy caller-supplied collector owner has no provisional
             // source contract. The journaled archive owner supports LearnOnce.
             if live.binding.ssrc_policy() != super::super::tcp::SsrcPolicy::Pinned {
@@ -691,11 +709,42 @@ pub mod live {
                 last_ns: now,
                 remaining_steps,
                 next: Some(Control::Request(ClientCommand::Describe)),
+                keepalive,
+                control_started: false,
                 control_blocked: false,
                 network_ended: false,
                 closed: false,
             })
         }
+        /// Choose OPTIONS or empty-body GET_PARAMETER before the first request is prepared.
+        /// No implicit fallback is allowed. The choice is immutable through authentication
+        /// and cannot be changed even while the first queued request remains unsent.
+        /// Selection performs no I/O, borrows no credentials and consumes no work allowance.
+        pub fn select_keepalive(
+            &mut self,
+            command: ClientCommand,
+        ) -> Result<(), LiveHevcRecordingFailure> {
+            if !command.is_keepalive()
+                || self.closed
+                || self.control_started
+                || self.state() != ClientState::Idle
+                || !self.totals().is_some_and(|totals| {
+                    totals.read_calls == 0 && totals.write_calls == 0 && totals.sent_bytes == 0
+                })
+            {
+                return Err(safe(LiveHevcRecordingError::Network(
+                    LiveHevcError::Configuration,
+                )));
+            }
+            self.keepalive = command;
+            Ok(())
+        }
+
+        /// Owner-selected liveness command, fixed after automatic control begins.
+        pub fn keepalive_command(&self) -> ClientCommand {
+            self.keepalive
+        }
+
         /// Original protocol state, not camera health or durable custody.
         pub fn state(&self) -> ClientState {
             self.connection.state()
@@ -795,6 +844,11 @@ pub mod live {
             if let Some(action) = self.next.filter(|_| !self.control_blocked) {
                 let result = match action {
                     Control::Request(command) => {
+                        let command = if command == ClientCommand::KeepAlive {
+                            self.keepalive
+                        } else {
+                            command
+                        };
                         self.connection
                             .request(command, credentials, cnonce, now, authority)
                     }
@@ -804,6 +858,7 @@ pub mod live {
                 };
                 return match result {
                     Ok(queued) => {
+                        self.control_started = true;
                         self.next = None;
                         Ok(AutomaticHevcRecordingStep::Queued(queued))
                     }

@@ -3,6 +3,8 @@
 //! Synthetic fixtures and owner-declared timing; not camera or detection-quality qualification.
 
 mod hevc_recording_support;
+#[path = "live_hevc_recording_contract/keepalive.rs"]
+mod keepalive;
 
 use fss_core::ContentDigest;
 use fss_object::SpoolLimits;
@@ -319,7 +321,11 @@ impl Fixture {
         Err("HEVC control reply bound".into())
     }
     fn playing(chunk: usize, digest: bool) -> Test<Self> {
+        Self::playing_with_keepalive(chunk, digest, ClientCommand::KeepAlive)
+    }
+    fn playing_with_keepalive(chunk: usize, digest: bool, keepalive: ClientCommand) -> Test<Self> {
         let mut f = Self::new(chunk)?;
+        f.driver.select_keepalive(keepalive)?;
         let (describe, wire) = f.command(0)?;
         assert_eq!(describe.command, ClientCommand::Describe);
         assert!(!std::str::from_utf8(&wire)?.contains("Authorization:"));

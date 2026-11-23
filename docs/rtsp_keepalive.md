@@ -63,9 +63,16 @@ The selected-configuration HEVC archive additionally exposes `select_keepalive` 
 `keepalive_command`. Selection must precede its first prepared RTSP request; invalid
 or late selection is non-consuming and performs no I/O. It cannot rewrite a pending
 Digest challenge or partly sent request. The capture CLI sets this choice before its
-first poll. The existing independent-configuration automatic HEVC recording wrapper
-and standalone automatic AVC wrappers retain their OPTIONS default; they are not
-silently reconfigured by the CLI option.
+first poll.
+
+The independently configured `AutomaticLiveHevcRecording` and
+`SupervisedHevcRecording` also expose `select_keepalive` and `keepalive_command`.
+The automatic recorder accepts selection only before its first request is prepared,
+including when that queued request has not yet reached the socket. The supervisor
+accepts selection before its first admitted connection attempt and retains it across
+backoff and fresh generations. Invalid or late choices do not consume work, open a
+connection, or discard retained media. These owners default to OPTIONS; library callers
+explicitly select GET_PARAMETER before starting their own recording run.
 
 Source collection, timing, source-first/root-last publication, independent checkpoint
 pins, privacy, finite work limits and reconnect refusal rules are unchanged. GET_PARAMETER
@@ -99,3 +106,25 @@ reconnect child selection, stale/invalid method refusal before I/O, exact empty 
 bytes, successful AVC/HEVC recording and catalog publication after liveness, and missing,
 wrong-session or rejected replies without fallback or fabricated recording success.
 They do not constitute real-camera testing or an authenticated live-camera support tuple.
+
+## Automatic and supervised HEVC recording coverage (2026-11-23)
+
+Six additional loopback contracts exercise the independently configured recording
+owners. They cover OPTIONS and GET_PARAMETER with plain and Digest negotiation at
+1-, 7- and 4096-byte transport chunk sizes; identical source-verified recording roots;
+invalid and late selection, including a queued but unsent first request; a challenged
+GET_PARAMETER retaining its original command and deadline; a rejected method without
+fallback; and selection preserved across drained EOF, backoff and a fresh generation.
+Old recording windows keep their original generation and source identity.
+
+Focused commands:
+
+```sh
+cargo test --locked -p fss-reference --test live_hevc_recording_contract
+cargo test --locked -p fss-reference --test supervised_hevc_recording_contract
+```
+
+The source and regression contracts were reviewed, but local Rust execution and
+rustfmt were blocked when the editing executor disconnected. The existing hosted
+native-supervision workflow is supplemental validation; no passing result or
+real-camera qualification is claimed by this source increment.

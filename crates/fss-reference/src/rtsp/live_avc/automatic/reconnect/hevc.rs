@@ -21,7 +21,7 @@ use super::{
     ReconnectStatus, ReconnectStop, ReservationLedger, Schedule, retryable_transport,
 };
 use crate::rtsp::authentication::{DigestCredentials, DigestPolicy};
-use crate::rtsp::client::{ClientConfig, ClientState};
+use crate::rtsp::client::{ClientCommand, ClientConfig, ClientState};
 use crate::rtsp::hevc_client::HevcClientPoll;
 use crate::rtsp::hevc_client::pictures::{HevcPictureClientPoll, HevcPictureWorkReason};
 use crate::rtsp::hevc_recording_capture::live::{
@@ -236,6 +236,7 @@ impl SourceEnd {
 pub struct SupervisedHevcRecording {
     schedule: Schedule,
     profile: Option<Profile>,
+    keepalive: ClientCommand,
     active: Option<AutomaticLiveHevcRecording>,
     end: SourceEnd,
     tickets: TimingTickets,
@@ -244,6 +245,7 @@ impl fmt::Debug for SupervisedHevcRecording {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SupervisedHevcRecording")
             .field("status", &self.schedule.status)
+            .field("keepalive", &self.keepalive)
             .field("resources", &self.schedule.resources.state())
             .field("end", &self.end)
             .finish_non_exhaustive()
@@ -260,6 +262,7 @@ impl SupervisedHevcRecording {
         Ok(Self {
             schedule: Schedule::new(binding, policy, now)?,
             profile: None,
+            keepalive: ClientCommand::KeepAlive,
             active: None,
             end: SourceEnd::default(),
             tickets: TimingTickets::default(),
@@ -277,6 +280,27 @@ impl SupervisedHevcRecording {
         owner.schedule.resources =
             ReservationLedger::bounded(budget).map_err(ReconnectRefusal::Resources)?;
         Ok(owner)
+    }
+
+    /// Choose OPTIONS or empty-body GET_PARAMETER before the first admitted attempt.
+    /// The whole-run selection survives reconnects and cannot be changed during backoff.
+    /// Refusal consumes no attempt, reservation, work allowance or native I/O.
+    pub fn select_keepalive(&mut self, command: ClientCommand) -> Result<(), ReconnectRefusal> {
+        if !command.is_keepalive() {
+            return Err(ReconnectRefusal::Configuration);
+        }
+        if self.schedule.attempts != 0
+            || !matches!(self.schedule.status, ReconnectStatus::Waiting { .. })
+        {
+            return Err(ReconnectRefusal::Scope);
+        }
+        self.keepalive = command;
+        Ok(())
+    }
+
+    /// Owner-selected liveness command, fixed across every admitted generation.
+    pub fn keepalive_command(&self) -> ClientCommand {
+        self.keepalive
     }
 
     /// Scheduling only; Active/Playing are not frame, coverage or custody receipts.
@@ -380,7 +404,13 @@ impl SupervisedHevcRecording {
         if let Some(profile) = candidate {
             self.profile = Some(profile);
         }
-        match AutomaticLiveHevcRecording::connect(live, recording, now, authority) {
+        match AutomaticLiveHevcRecording::connect_with_keepalive(
+            live,
+            recording,
+            self.keepalive,
+            now,
+            authority,
+        ) {
             Ok(recording) => {
                 self.active = Some(recording);
                 self.end = SourceEnd::default();

@@ -3,6 +3,8 @@
 //! These tests do not contact cameras, infer capture time, or grant effect authority.
 
 mod hevc_recording_support;
+#[path = "supervised_hevc_recording_contract/keepalive.rs"]
+mod keepalive;
 
 use std::cell::Cell;
 use std::io::{ErrorKind, Read, Write};
@@ -211,6 +213,13 @@ struct Fixture {
 }
 impl Fixture {
     fn new(chunk: usize, budget_attempts: u32) -> Test<Self> {
+        Self::new_with_keepalive(chunk, budget_attempts, ClientCommand::KeepAlive)
+    }
+    fn new_with_keepalive(
+        chunk: usize,
+        budget_attempts: u32,
+        keepalive: ClientCommand,
+    ) -> Test<Self> {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
         listener.set_nonblocking(true)?;
         let (live, recording, authority) = configs(listener.local_addr()?, chunk, 1)?;
@@ -218,6 +227,7 @@ impl Fixture {
             ReconnectBudget::for_attempts(live.transport, live.max_steps, budget_attempts)?;
         let mut driver =
             SupervisedHevcRecording::new_with_budget(live.binding.clone(), policy(), budget, 0)?;
+        driver.select_keepalive(keepalive)?;
         let attempt = driver.connect(live, recording, 0, &authority)?;
         assert_eq!(attempt.ordinal, 1);
         let (peer, _) = listener.accept()?;
