@@ -14,9 +14,8 @@ use fss_core::{
 };
 use fss_object::ObjectManifest;
 use fss_publication::SlotName;
-use fss_reference::deletion::{approval_digest, commit_deletion, plan_deletion};
 use fss_reference::agent_orient::OrientLimits;
-use fss_reference::retained_source::{ImmutableRetainedReadLimits, ImmutableRetainedSource};
+use fss_reference::deletion::{approval_digest, commit_deletion, plan_deletion};
 use fss_reference::ingest::package_detect::{
     PackageDetectLimits, PackageDetectReport, PackageDetectRequest, run_package_detection,
 };
@@ -30,6 +29,7 @@ use fss_reference::ingest::rgb_package::RgbDetectorPackage;
 use fss_reference::ingest::{
     FileIngestAdapter, FileIngestRequest, RetainedFileImport, RetainedReadLimits,
 };
+use fss_reference::retained_source::{ImmutableRetainedReadLimits, ImmutableRetainedSource};
 use fss_reference::{
     ReferenceDeployment, ReferencePolicyAction, ReferencePolicyDecision, ReplayCx, ScalarExecCx,
 };
@@ -107,10 +107,14 @@ struct DetectionFixture {
     detection: PackageDetectReport,
 }
 fn detection_fixture(label: &str) -> Test<DetectionFixture> {
+    detection_fixture_frames(label, 1)
+}
+
+fn detection_fixture_frames(label: &str, segment_count: usize) -> Test<DetectionFixture> {
     let directory = Directory::new(label)?;
     let root = directory.0.join("deployment");
     let source = directory.0.join("source.jpg");
-    fs::write(&source, JPEG)?;
+    fs::write(&source, JPEG.repeat(segment_count))?;
     let cx = context(&root)?;
     let mut deployment = ReferenceDeployment::open(&root, SITE, &cx)?;
     let imported = FileIngestAdapter::ingest(
@@ -138,7 +142,7 @@ fn detection_fixture(label: &str) -> Test<DetectionFixture> {
         &PackageDetectRequest {
             import_identity: imported.import_identity,
             first_segment: 0,
-            segment_count: 1,
+            segment_count,
             interpretation: ComponentInterpretation::YCbCr,
             minimum_score_ppm: None,
         },
@@ -154,6 +158,139 @@ fn detection_fixture(label: &str) -> Test<DetectionFixture> {
         package,
         detection,
     })
+}
+
+fn assert_modified_detection_refused(f: &mut DetectionFixture) -> Test {
+    let anchor = f.deployment.current_anchor().clone();
+    let objects: Vec<_> = f.deployment.publisher().spool().digests().collect();
+    let roots: Vec<_> = f.deployment.publisher().visible_roots().cloned().collect();
+    assert!(matches!(
+        PackageDetectionRecord::from_report(&f.package, &f.detection),
+        Err(PackageEventError::Mismatch)
+    ));
+    assert!(matches!(
+        retain_package_detection(&mut f.deployment, &f.package, &f.detection, &f.cx),
+        Err(PackageEventError::Mismatch)
+    ));
+    // Refusal precedes both object staging and root/ledger publication.
+    assert_eq!(f.deployment.current_anchor(), &anchor);
+    assert_eq!(
+        f.deployment
+            .publisher()
+            .spool()
+            .digests()
+            .collect::<Vec<_>>(),
+        objects
+    );
+    assert_eq!(
+        f.deployment
+            .publisher()
+            .visible_roots()
+            .cloned()
+            .collect::<Vec<_>>(),
+        roots
+    );
+    Ok(())
+}
+
+#[test]
+fn native_producer_binding_rejects_transplanted_results_and_rehashed_json() -> Test {
+    let mut f = detection_fixture_frames("producer-binding", 2)?;
+    let native_record = PackageDetectionRecord::from_report(&f.package, &f.detection)?;
+    let native_json = f.detection.json.clone();
+    let native_digest = f.detection.digest;
+    assert_eq!(f.detection.frames.len(), 2);
+    // Both objects are genuine native computations under the SAME package and contract.
+    // Their source identities differ even though these two source frames show identical pixels.
+    assert_ne!(
+        f.detection.frames[0].inference.identity(),
+        f.detection.frames[1].inference.identity()
+    );
+    assert_ne!(
+        f.detection.frames[0].detections.digest(),
+        f.detection.frames[1].detections.digest()
+    );
+
+    {
+        let (first, second) = f.detection.frames.split_at_mut(1);
+        std::mem::swap(&mut first[0].inference, &mut second[0].inference);
+    }
+    assert_modified_detection_refused(&mut f)?;
+    {
+        let (first, second) = f.detection.frames.split_at_mut(1);
+        std::mem::swap(&mut first[0].inference, &mut second[0].inference);
+        std::mem::swap(&mut first[0].detections, &mut second[0].detections);
+    }
+    assert_modified_detection_refused(&mut f)?;
+    {
+        let (first, second) = f.detection.frames.split_at_mut(1);
+        std::mem::swap(&mut first[0].inference, &mut second[0].inference);
+    }
+    // Even a coherent inference + head-report transplant must not be relabeled as the other
+    // capsule's computation merely because all source capsules and the contract are retained.
+    assert_eq!(
+        f.detection.frames[0].inference.identity(),
+        f.detection.frames[0].detections.inference_identity()
+    );
+    assert_modified_detection_refused(&mut f)?;
+    {
+        let (first, second) = f.detection.frames.split_at_mut(1);
+        std::mem::swap(&mut first[0].inference, &mut second[0].inference);
+        std::mem::swap(&mut first[0].detections, &mut second[0].detections);
+    }
+
+    // This metadata is absent from the retained record projection but is still producer owned.
+    f.detection.frames[0].capsule.gap_before = !f.detection.frames[0].capsule.gap_before;
+    assert_modified_detection_refused(&mut f)?;
+    f.detection.frames[0].capsule.gap_before = !f.detection.frames[0].capsule.gap_before;
+
+    // Preserve the entire identity/privacy prefix and supply a correctly recomputed SHA-256.
+    // A self-consistent caller hash cannot attest either frame contents or semantic flags.
+    let inference_text = format!(
+        "\"inference_identity\":\"{}\"",
+        f.detection.frames[0].inference.identity()
+    );
+    f.detection.json = native_json.replacen(
+        &inference_text,
+        &format!(
+            "\"inference_identity\":\"{}\"",
+            ContentDigest::sha256(b"forged inference")
+        ),
+        1,
+    );
+    assert_ne!(f.detection.json, native_json);
+    f.detection.digest = ContentDigest::sha256(f.detection.json.as_bytes());
+    assert_modified_detection_refused(&mut f)?;
+    f.detection.json = native_json.replace(
+        "\"effects_authorized\":false",
+        "\"effects_authorized\":true",
+    );
+    assert_ne!(f.detection.json, native_json);
+    f.detection.digest = ContentDigest::sha256(f.detection.json.as_bytes());
+    assert_modified_detection_refused(&mut f)?;
+
+    // Restoring the original native result preserves exact bytes, retention, retries and reads.
+    f.detection.json = native_json.clone();
+    f.detection.digest = native_digest;
+    assert_eq!(
+        PackageDetectionRecord::from_report(&f.package, &f.detection)?,
+        native_record
+    );
+    let retained = retain_package_detection(&mut f.deployment, &f.package, &f.detection, &f.cx)?;
+    assert_eq!(retained.record(), &native_record);
+    assert_eq!(
+        f.deployment.publisher().spool().read(native_digest)?,
+        native_json.as_bytes()
+    );
+    let anchor = f.deployment.current_anchor().clone();
+    let retried = retain_package_detection(&mut f.deployment, &f.package, &f.detection, &f.cx)?;
+    assert_eq!(retried.record(), &native_record);
+    assert_eq!(f.deployment.current_anchor(), &anchor);
+    assert_eq!(
+        RetainedPackageDetection::open(&f.deployment, native_digest, &f.cx)?.record(),
+        &native_record
+    );
+    Ok(())
 }
 
 fn fixture(label: &str) -> Test<Fixture> {

@@ -247,8 +247,22 @@ fn read_verified(deployment: &dyn RetainedSource, digest: ContentDigest) -> Resu
 }
 
 impl PackageDetectionRecord {
-    /// Builds the record of a completed report produced with `package`.
+    /// Builds the record of an unchanged native report produced with `package`.
+    /// Recomputed caller hashes, transplanted inference results and modified report fields
+    /// cannot replace the producer binding minted by the detector itself.
     pub fn from_report(package: &RgbDetectorPackage, report: &PackageDetectReport) -> Result<Self> {
+        let record = Self::from_native_report_fields(package, report)?;
+        report.verify_producer_record(&record)?;
+        Ok(record)
+    }
+
+    // Native construction and verification share one canonical projection. This helper does
+    // not attest provenance and is deliberately unavailable to external callers. The detector
+    // uses it once before returning a report; every public conversion verifies the binding.
+    pub(in crate::ingest) fn from_native_report_fields(
+        package: &RgbDetectorPackage,
+        report: &PackageDetectReport,
+    ) -> Result<Self> {
         if report.frames.is_empty() || report.frames.len() > MAX_PACKAGE_DETECT_FRAMES {
             return Err(PackageEventError::Limit);
         }

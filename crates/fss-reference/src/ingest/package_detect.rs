@@ -22,6 +22,7 @@ use fss_codec_mjpeg::color::{DecodedRgb, RgbDecodeLimits, RgbDecodeReceipt, deco
 use fss_codec_mjpeg::{ComponentInterpretation, DecodeBudget};
 use fss_core::{ContentDigest, DigestAlgorithm, SensorCapsule};
 
+use super::package_event::{PackageDetectionRecord, PackageEventError};
 use super::privacy_mask::{MaskBinding, current_mask};
 use super::recorded_decode::h264::{DecoderLimits, RecordedH264Range, RecordedH264Request};
 use super::recorded_decode::h265::{
@@ -161,6 +162,10 @@ pub struct PackageDetectFrame {
 }
 
 /// Complete report over the requested range.
+///
+/// Reports can only be constructed by the native detector. Public fields remain inspectable,
+/// but changing them invalidates the private producer binding: a modified report cannot be
+/// converted into a native detection record or retained as one.
 #[derive(Debug)]
 pub struct PackageDetectReport {
     /// Exact completed import.
@@ -185,6 +190,46 @@ pub struct PackageDetectReport {
     pub digest: ContentDigest,
     /// Privacy mask binding applied to every frame.
     pub privacy: MaskBinding,
+    // Never serialized or supplied by callers. The unbound state exists only while
+    // `finish_report` is constructing a report; no unbound report leaves that function.
+    producer_binding: Option<PackageDetectProducerBinding>,
+}
+
+/// In-process provenance from the native computation, independent of the mutable public view.
+/// The record seals every retained field and the exact rendered JSON digest. Full capsule
+/// metadata and privacy policy are also bound, including fields absent from the record schema.
+#[derive(Debug)]
+struct PackageDetectProducerBinding {
+    record_digest: ContentDigest,
+    capsule_metadata: Vec<ContentDigest>,
+    privacy: MaskBinding,
+}
+
+impl PackageDetectReport {
+    /// Validate a freshly reconstructed record against the native producer's private binding.
+    /// This is a verifier only: no caller-accessible path can mint or replace the binding.
+    pub(in crate::ingest) fn verify_producer_record(
+        &self,
+        record: &PackageDetectionRecord,
+    ) -> Result<(), PackageEventError> {
+        let binding = self
+            .producer_binding
+            .as_ref()
+            .ok_or(PackageEventError::Mismatch)?;
+        if self.digest != ContentDigest::sha256(self.json.as_bytes())
+            || binding.privacy != self.privacy
+            || binding.capsule_metadata.len() != self.frames.len()
+            || binding
+                .capsule_metadata
+                .iter()
+                .zip(&self.frames)
+                .any(|(digest, frame)| *digest != frame.capsule.metadata_digest())
+            || binding.record_digest != ContentDigest::sha256(&record.encode()?)
+        {
+            return Err(PackageEventError::Mismatch);
+        }
+        Ok(())
+    }
 }
 
 fn frame_error<E: Error + 'static>(segment: usize) -> impl FnOnce(E) -> PackageDetectError {
@@ -662,7 +707,7 @@ pub(in crate::ingest) fn finish_report(
 ) -> Result<PackageDetectReport, PackageDetectError> {
     let json = render(package, request, contract, &media_format, &frames, &privacy)
         .map_err(|_| PackageDetectError::InvalidRequest)?;
-    Ok(PackageDetectReport {
+    let mut report = PackageDetectReport {
         import_identity: request.import_identity,
         import_root,
         media_format,
@@ -674,7 +719,27 @@ pub(in crate::ingest) fn finish_report(
         json,
         frames,
         privacy,
-    })
+        producer_binding: None,
+    };
+    // Seal the actual computation before exposing any mutable report fields. Neither a
+    // caller-recomputed JSON hash nor genuine results transplanted from another frame can
+    // manufacture this binding. Reuse the existing canonical record encoding; no durable
+    // format or honest report identity changes.
+    let record = PackageDetectionRecord::from_native_report_fields(package, &report)
+        .map_err(frame_error(request.first_segment))?;
+    let record_bytes = record
+        .encode()
+        .map_err(frame_error(request.first_segment))?;
+    report.producer_binding = Some(PackageDetectProducerBinding {
+        record_digest: ContentDigest::sha256(&record_bytes),
+        capsule_metadata: report
+            .frames
+            .iter()
+            .map(|frame| frame.capsule.metadata_digest())
+            .collect(),
+        privacy: report.privacy.clone(),
+    });
+    Ok(report)
 }
 
 // Enforce exact selected identities before RGB conversion/inference, including when a video
