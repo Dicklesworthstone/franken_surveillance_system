@@ -80,6 +80,23 @@ mod codec {
 
         /// Borrow the unchanged root-last publication plan.
         fn plan(recording: &Self::Recording) -> &PreparedRecording;
+        /// Restore exact retained originals through this family's complete native verifier.
+        ///
+        /// The independently supplied root pins canonical manifest bytes. Objects are ordered
+        /// source, initialization, media, index; their aggregate size including the manifest
+        /// is bounded before parsing. The supplied scope must come from the caller's trusted
+        /// request, never be inferred from the copied index. Its decode-clock identity remains
+        /// an explicit caller assertion because an individual recording does not encode it.
+        ///
+        /// This pure operation preserves all original bytes without publishing a root or
+        /// reconstructing an original catalog. Destination, current privacy/retention, write,
+        /// cancellation and deadline authority remain the caller's responsibility.
+        fn restore_recording(
+            expected_root: ContentDigest,
+            manifest_bytes: &[u8],
+            objects: [Vec<u8>; 4],
+            scope: &CatalogScope,
+        ) -> ArchiveResult<Self::Recording>;
         /// Load an exact slot/root/scope through the existing codec-specific verifier.
         fn load_recording(
             p: &LocalRootPublisher,
@@ -138,6 +155,20 @@ mod codec {
         const PIN_JOURNAL_DOMAIN: &'static str = "fss.archive_pin_journal.v1";
         fn plan(recording: &Self::Recording) -> &PreparedRecording {
             recording
+        }
+        fn restore_recording(
+            expected_root: ContentDigest,
+            manifest_bytes: &[u8],
+            objects: [Vec<u8>; 4],
+            scope: &CatalogScope,
+        ) -> ArchiveResult<Self::Recording> {
+            let manifest = restore_manifest(expected_root, manifest_bytes, &objects, scope)?;
+            let recording = PreparedRecording::verify_owned(manifest, objects, &scope.recording)
+                .map_err(RecordingIoError::Content)?;
+            if recording.summary().time_scale != scope.time_scale {
+                return Err(ArchiveError::Scope);
+            }
+            Ok(recording)
         }
         fn load_recording(
             p: &LocalRootPublisher,
@@ -208,6 +239,21 @@ mod codec {
         fn plan(recording: &Self::Recording) -> &PreparedRecording {
             recording.publication_plan()
         }
+        fn restore_recording(
+            expected_root: ContentDigest,
+            manifest_bytes: &[u8],
+            objects: [Vec<u8>; 4],
+            scope: &CatalogScope,
+        ) -> ArchiveResult<Self::Recording> {
+            let manifest = restore_manifest(expected_root, manifest_bytes, &objects, scope)?;
+            let recording =
+                PreparedHevcRecording::verify_owned(manifest, objects, &scope.recording)
+                    .map_err(RecordingIoError::Content)?;
+            if recording.summary().time_scale != scope.time_scale {
+                return Err(ArchiveError::Scope);
+            }
+            Ok(recording)
+        }
         fn load_recording(
             p: &LocalRootPublisher,
             slot: &SlotName,
@@ -254,6 +300,28 @@ mod codec {
         fn prepare(builder: Self::Builder) -> ArchiveResult<Self::Catalog> {
             Ok(builder.prepare()?)
         }
+    }
+
+    fn restore_manifest(
+        expected_root: ContentDigest,
+        bytes: &[u8],
+        objects: &[Vec<u8>; 4],
+        scope: &CatalogScope,
+    ) -> ArchiveResult<ObjectManifest> {
+        let total = objects
+            .iter()
+            .try_fold(bytes.len(), |sum, object| sum.checked_add(object.len()))
+            .ok_or(ArchiveError::Limit)?;
+        if total > MAX_RECORDING_BYTES {
+            return Err(ArchiveError::Limit);
+        }
+        if scope.recording.generation == 0 || scope.time_scale == 0 {
+            return Err(ArchiveError::Scope);
+        }
+        if ContentDigest::try_sha256(bytes).map_err(|_| ArchiveError::Limit)? != expected_root {
+            return Err(ArchiveError::Metadata);
+        }
+        ObjectManifest::from_canonical_bytes(bytes).map_err(|_| ArchiveError::Metadata)
     }
 }
 #[doc(hidden)]
