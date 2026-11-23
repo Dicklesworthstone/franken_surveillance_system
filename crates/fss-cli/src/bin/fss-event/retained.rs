@@ -24,7 +24,7 @@ pub(super) fn run(mut options: Options, destination: &mut impl Write) -> RunResu
             .bytes(options.read_limits.max_read_bytes as u64)
             .storage_operations(options.read_limits.max_read_objects as u64)
             .build()?,
-        privacy_scope: "privacy:local-authorized-files".into(),
+        privacy_scope: familiarity::PRIVACY_SCOPE.into(),
         retention_scope: "retention:existing-deployment-policy".into(),
         anchor_universe: ContentDigest::sha256(options.site.as_bytes()),
         generation: 1,
@@ -184,12 +184,13 @@ pub(super) fn run(mut options: Options, destination: &mut impl Write) -> RunResu
                     budget.association.used()
                 )?;
                 writeln!(out, "absence_certifiable=false\neffects_authorized=false")?;
+                familiarity::append(&options, &deployment, event, &cx, out)?;
             }
             _ => {
-                return Err(
-                    io::Error::other("immutable event inspection requires read, report or prepare")
-                        .into(),
-                );
+                return Err(io::Error::other(
+                    "immutable event inspection requires read, report or prepare",
+                )
+                .into());
             }
         }
         if buffer.len() > options.limits.maximum_report_bytes {
@@ -366,7 +367,10 @@ fn read_package_event(
         return Err(PackageEventError::Limit.into());
     }
     if let Some(path) = &options.event_out {
-        exports.push((path.clone(), record.event().to_canonical_json().into_bytes()));
+        exports.push((
+            path.clone(),
+            record.event().to_canonical_json().into_bytes(),
+        ));
     }
     if let Some(path) = &options.report_out {
         exports.push((path.clone(), record.report().encoded().to_vec()));
@@ -380,6 +384,6 @@ fn read_package_event(
         record.track(),
         selectors
     )?;
-    print_package_event(record.event(), "read_verified", out)
+    print_package_event(record.event(), "read_verified", out)?;
+    familiarity::append(options, deployment, record.event(), cx, out)
 }
-

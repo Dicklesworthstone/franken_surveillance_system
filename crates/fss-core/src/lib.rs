@@ -38,6 +38,7 @@ pub mod event;
 pub mod event_store;
 mod evidence;
 pub mod experiment;
+pub mod familiarity;
 pub mod graph_witness;
 pub mod hydration;
 pub mod identity;

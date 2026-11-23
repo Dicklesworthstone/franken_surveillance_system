@@ -40,6 +40,8 @@ mod coverage;
 mod delete;
 #[path = "fss-event/detector.rs"]
 mod detector;
+#[path = "fss-event/familiarity.rs"]
+mod familiarity;
 #[path = "fss-event/graph.rs"]
 mod graph;
 #[path = "fss-event/health.rs"]
@@ -86,6 +88,14 @@ const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corrobor
   prepare/publish: --report FILE --report-digest sha256:HEX --track sha256:HEX\n\
   publish additionally requires: --proposal-digest sha256:HEX\n\
   read: --event-id ID (report and original source/model files are not required)\n\
+    Optional recorded-luma/package familiarity context: --familiarity-template yes\n\
+    emits exact pins with unknown guards and no signals; edit that context, then supply\n\
+    --familiarity-context FILE --familiarity-digest sha256:HEX --familiarity-at-ns INTEGER.\n\
+    Template and assessment options are mutually exclusive. Time is explicit logical\n\
+    nanoseconds in the event clock domain; the template hint is historical event time.\n\
+    Advice preserves all operator assertions, expiry, contradictions and unknowns. It\n\
+    never identifies anyone, suppresses alerts, changes events or authorizes effects.\n\
+    See docs/ANONYMOUS_FAMILIARITY.md and schemas/event_familiarity_context.v1.json.\n\
     Reconstructs recorded-luma and event:package: candidates from retained source custody,\n\
     exact analysis and the authoritative event/provenance graphs. Package reads do not run\n\
     the model. Missing, damaged or superseded evidence is refused; exact retries preserve\n\
@@ -491,6 +501,7 @@ struct Options {
     association_units: u64,
     event_out: Option<PathBuf>,
     report_out: Option<PathBuf>,
+    familiarity: Option<familiarity::Request>,
     action: Action,
 }
 fn value<'a>(v: &'a Values, key: &str) -> Result<&'a OsStr, String> {
@@ -543,6 +554,7 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
             association_units: 0,
             event_out: None,
             report_out: None,
+            familiarity: None,
             action: Action::Watch(Box::new(watch)),
         }));
     }
@@ -558,6 +570,7 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
             association_units: 0,
             event_out: None,
             report_out: None,
+            familiarity: None,
             action: Action::Corroborate(Box::new(request)),
         }));
     }
@@ -573,6 +586,7 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
             association_units: 0,
             event_out: None,
             report_out: None,
+            familiarity: None,
             action: Action::Alert(Box::new(request)),
         }));
     }
@@ -588,6 +602,7 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
             association_units: 0,
             event_out: None,
             report_out: None,
+            familiarity: None,
             action: Action::Delete(Box::new(request)),
         }));
     }
@@ -603,6 +618,7 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
             association_units: 0,
             event_out: None,
             report_out: None,
+            familiarity: None,
             action: Action::PrivacyMask(Box::new(request)),
         }));
     }
@@ -618,6 +634,7 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
             association_units: 0,
             event_out: None,
             report_out: None,
+            familiarity: None,
             action: Action::Calibration(Box::new(request)),
         }));
     }
@@ -663,6 +680,14 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
                 && matches!(key, "--report" | "--report-digest" | "--track"))
             || (action == "publish" && key == "--proposal-digest")
             || (action == "read" && key == "--event-id")
+            || (action == "read"
+                && matches!(
+                    key,
+                    "--familiarity-template"
+                        | "--familiarity-context"
+                        | "--familiarity-digest"
+                        | "--familiarity-at-ns"
+                ))
             || (matches!(action, "read" | "report") && key == "--report-out")
             || (matches!(action, "read" | "report" | "prepare")
                 && matches!(key, "--max-read-bytes" | "--max-read-objects"))
@@ -813,6 +838,7 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
         association_units: number(&v, "--association-work-units", 100_000_000)?,
         event_out: v.get("--event-out").map(PathBuf::from),
         report_out: v.get("--report-out").map(PathBuf::from),
+        familiarity: familiarity::parse(&v)?,
         action,
     }))
 }

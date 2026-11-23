@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Dicklesworthstone/franken_surveillance_system/schemas/event_familiarity_context.v1.json",
+  "title": "Anonymous event familiarity context v1",
+  "description": "Operator assertions for advisory evaluation only. Digests bind supplied bytes and pins; they do not certify evidence, source independence, identity, coverage, or alert suppression.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "site_lineage", "authority_root", "privacy_scope", "event_id", "event_revision_digest", "event_policy_generation", "coverage", "threat_actions", "sensor_integrity", "high_consequence", "signals"],
+  "properties": {
+    "schema": {"const": "fss.event_familiarity_context.v1"},
+    "site_lineage": {"$ref": "#/$defs/name"},
+    "authority_root": {"$ref": "#/$defs/digest"},
+    "privacy_scope": {"$ref": "#/$defs/name"},
+    "event_id": {"$ref": "#/$defs/name"},
+    "event_revision_digest": {"$ref": "#/$defs/digest"},
+    "event_policy_generation": {"$ref": "#/$defs/digest"},
+    "coverage": {"enum": ["complete_asserted", "unknown", "degraded"]},
+    "threat_actions": {"$ref": "#/$defs/risk"},
+    "sensor_integrity": {"$ref": "#/$defs/risk"},
+    "high_consequence": {"type": "boolean"},
+    "signals": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {"$ref": "#/$defs/signal"}
+    }
+  },
+  "$defs": {
+    "name": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"},
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "not": {"const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"}
+    },
+    "risk": {"enum": ["clear_asserted", "unknown", "present"]},
+    "time": {
+      "description": "Exact signed 128-bit logical nanoseconds. Strings preserve precision; the native parser also checks range and canonical integer spelling.",
+      "oneOf": [
+        {"type": "integer"},
+        {"type": "string", "maxLength": 40, "pattern": "^(0|[1-9][0-9]*|-[1-9][0-9]*)$"}
+      ]
+    },
+    "signal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evidence_digest", "source_generation", "kind", "supports", "failure_domains", "valid_from_ns", "expires_at_ns", "revoked", "opted_in", "model_receipt"],
+      "properties": {
+        "evidence_digest": {"$ref": "#/$defs/digest"},
+        "source_generation": {"$ref": "#/$defs/digest"},
+        "kind": {"enum": ["authorized_door", "path_continuity", "trusted_device", "appearance", "routine", "operator_confirmation"]},
+        "supports": {"type": "boolean"},
+        "failure_domains": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/name"}
+        },
+        "valid_from_ns": {"$ref": "#/$defs/time"},
+        "expires_at_ns": {"$ref": "#/$defs/time"},
+        "revoked": {"type": "boolean"},
+        "opted_in": {"type": "boolean"},
+        "model_receipt": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/digest"}]}
+      },
+      "allOf": [{
+        "if": {"properties": {"kind": {"const": "appearance"}}},
+        "then": {"properties": {"model_receipt": {"$ref": "#/$defs/digest"}}},
+        "else": {"properties": {"model_receipt": {"type": "null"}}}
+      }]
+    }
+  }
+}

@@ -19,9 +19,9 @@ use fss_reference::ingest::{
     FileIngestAdapter, FileIngestRequest, RetainedFileImport, RetainedReadLimits,
 };
 use fss_reference::{ExecBudget, ReferenceDeployment, ReplayCx, ScalarExecCx};
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fs;
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -75,7 +75,10 @@ fn context(root: &Path) -> TestResult<ReplayCx> {
         generation: 1,
     })?;
     authority.validate()?;
-    Ok(ReplayCx::from_context_authority(&authority, root.to_path_buf())?)
+    Ok(ReplayCx::from_context_authority(
+        &authority,
+        root.to_path_buf(),
+    )?)
 }
 fn fixture(label: &str) -> TestResult<Fixture> {
     let directory = Directory::new(label)?;
@@ -225,6 +228,122 @@ fn serial() -> std::sync::MutexGuard<'static, ()> {
     SERIAL
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+#[test]
+fn familiarity_template_advice_and_refusals_preserve_native_event_and_custody() -> TestResult {
+    use fss_core::familiarity::FamiliarityContext;
+    use fss_core::json_input;
+
+    let _serial = serial();
+    let f = fixture("familiarity")?;
+    let id = published_id(&f)?;
+    let before = deployment_bytes(&f.root)?;
+    let baseline = command(&f, "read").args(["--event-id", &id]).output()?;
+    success(&baseline);
+    let template = command(&f, "read")
+        .args(["--event-id", &id, "--familiarity-template", "yes"])
+        .output()?;
+    success(&template);
+    let raw = field(&template, "familiarity_context_template")?;
+    let context = FamiliarityContext::from_json(&raw)?;
+    assert!(context.signals.is_empty());
+    assert_eq!(context.event_id.as_str(), id);
+    let at = field(&template, "familiarity_evaluation_time_hint_ns")?;
+    let context_path = f.directory.0.join("familiarity.json");
+    fs::write(&context_path, &raw)?;
+    let context_digest = ContentDigest::sha256(raw.as_bytes()).to_text();
+    let assess = |expected: &str| {
+        let mut c = command(&f, "read");
+        c.args(["--event-id", &id])
+            .arg("--familiarity-context")
+            .arg(&context_path)
+            .args(["--familiarity-digest", expected, "--familiarity-at-ns", &at]);
+        c
+    };
+    let advised = assess(&context_digest).output()?;
+    success(&advised);
+    let report = json_input::parse(&field(&advised, "familiarity_advice")?)?;
+    let advice = report.object().ok_or("advice must be an object")?;
+    assert_eq!(
+        advice["schema"].text(),
+        Some("fss.event_familiarity_advice.v1")
+    );
+    assert_eq!(advice["disposition"].text(), Some("insufficient_context"));
+    assert_eq!(advice["identity"].text(), Some("unresolved"));
+    assert_eq!(
+        advice["context_provenance"].text(),
+        Some("operator_asserted")
+    );
+    assert_eq!(advice["event_unchanged"].boolean(), Some(true));
+    for key in [
+        "independence_verified",
+        "alert_suppression_authorized",
+        "absence_certifiable",
+        "effects_authorized",
+    ] {
+        assert_eq!(advice[key].boolean(), Some(false), "{key}");
+    }
+    for key in ["coverage", "threat_actions", "sensor_integrity"] {
+        assert_eq!(advice[key].text(), Some("unknown"), "{key}");
+    }
+    let repeat = assess(&context_digest).output()?;
+    success(&repeat);
+    assert_eq!(advised.stdout, repeat.stdout);
+
+    // Complete failure stays buffered: no successful native report or export escapes.
+    let stale_root = raw.replace(
+        &context.authority_root.to_text(),
+        &ContentDigest::sha256(b"stale-authority").to_text(),
+    );
+    let stale_policy = raw.replace(
+        &context.event_policy_generation.to_text(),
+        &ContentDigest::sha256(b"stale-policy").to_text(),
+    );
+    let wrong_scope = raw.replace("privacy:local-authorized-files", "privacy:other");
+    let bad_schema = raw.replace(
+        "fss.event_familiarity_context.v1",
+        "fss.event_familiarity_context.v999",
+    );
+    for (index, altered) in [stale_root, stale_policy, wrong_scope, bad_schema]
+        .into_iter()
+        .enumerate()
+    {
+        fs::write(&context_path, &altered)?;
+        let digest = ContentDigest::sha256(altered.as_bytes()).to_text();
+        let event_out = f
+            .directory
+            .0
+            .join(format!("familiarity-refused-{index}.json"));
+        let refused = assess(&digest)
+            .arg("--event-out")
+            .arg(&event_out)
+            .output()?;
+        assert_eq!(refused.status.code(), Some(1));
+        assert!(refused.stdout.is_empty());
+        assert!(!event_out.exists());
+    }
+    fs::write(&context_path, b"{}")?;
+    let bad_digest = assess(&context_digest).output()?;
+    assert_eq!(bad_digest.status.code(), Some(1));
+    assert!(bad_digest.stdout.is_empty());
+    let partial = command(&f, "read")
+        .args(["--event-id", &id])
+        .arg("--familiarity-context")
+        .arg(&context_path)
+        .output()?;
+    assert_eq!(partial.status.code(), Some(2));
+    assert!(partial.stdout.is_empty());
+    let mixed = assess(&context_digest)
+        .args(["--familiarity-template", "yes"])
+        .output()?;
+    assert_eq!(mixed.status.code(), Some(2));
+    assert!(mixed.stdout.is_empty());
+    let after = command(&f, "read").args(["--event-id", &id]).output()?;
+    success(&after);
+    assert_eq!(baseline.stdout, after.stdout);
+    assert_eq!(deployment_bytes(&f.root)?, before);
+    Ok(())
 }
 
 #[test]
@@ -503,7 +622,9 @@ fn native_read_and_report_coexist_with_a_live_writer_and_preserve_all_bytes() ->
     assert_eq!(field(&read, "operation")?, "read_verified");
     assert_eq!(fs::read(&read_report)?, f.bytes);
     assert_eq!(
-        EventHypothesis::from_json(&fs::read_to_string(&event_path)?)?.event_id.as_str(),
+        EventHypothesis::from_json(&fs::read_to_string(&event_path)?)?
+            .event_id
+            .as_str(),
         id
     );
     let existing = fs::read(&event_path)?;
@@ -601,9 +722,9 @@ fn immutable_reads_refuse_incomplete_journals_without_repair_or_exports() -> Tes
         let read = command(&f, "read")
             .args(["--event-id", &id])
             .arg("--event-out")
-        .arg(&event_path)
+            .arg(&event_path)
             .arg("--report-out")
-        .arg(&read_report)
+            .arg(&read_report)
             .output()?;
         assert_eq!(read.status.code(), Some(1));
         assert!(read.stdout.is_empty());
@@ -637,13 +758,15 @@ fn aggregate_read_allowances_withhold_outputs_and_exports() -> TestResult {
         let read = command(&f, "read")
             .args(["--event-id", &id, key, "1"])
             .arg("--event-out")
-        .arg(&event_path)
+            .arg(&event_path)
             .output()?;
         assert_eq!(read.status.code(), Some(1));
         assert!(read.stdout.is_empty());
         assert!(!event_path.exists());
         let analysis_path = f.directory.0.join("budget-report.bin");
-        let report = report_command(&f, &analysis_path).args([key, "1"]).output()?;
+        let report = report_command(&f, &analysis_path)
+            .args([key, "1"])
+            .output()?;
         assert_eq!(report.status.code(), Some(1));
         assert!(report.stdout.is_empty());
         assert!(!analysis_path.exists());
@@ -673,7 +796,11 @@ fn corrupt_source_custody_is_refused_without_repair() -> TestResult {
         RetainedReadLimits::default(),
         &cx,
     )?;
-    let source = *imported.manifest().ordered_chunks.first().ok_or("missing source chunk")?;
+    let source = *imported
+        .manifest()
+        .ordered_chunks
+        .first()
+        .ok_or("missing source chunk")?;
     let path = writer.publisher().spool().object_path(source);
     drop(writer);
     cx.drain_and_finalize();
