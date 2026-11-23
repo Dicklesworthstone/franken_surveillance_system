@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Exact embedded constants. Integer and empty tensors are compile-time controls,
+//! Exact embedded constants. Integer, Boolean and empty tensors are compile-time controls,
 //! never runtime Model IR ports or exported F32 model parameters.
 
 use fss_core::Generation;
@@ -30,6 +30,68 @@ fn floats(value: Value<'_>, output: &mut Vec<f32>, a: &mut Admission<'_>) -> Res
         }
         _ => Err(OnnxError::Malformed),
     }
+}
+
+// TensorProto BOOL uses raw one-byte 0/1 values or int32_data (field 5).
+// https://github.com/onnx/onnx/blob/main/onnx/onnx.proto
+// Admit only canonical 0/1 values in every encoding. Decode directly into bools
+// rather than allocating an eight-byte integer temporary for each mask element.
+fn booleans(value: Value<'_>, output: &mut Vec<bool>, a: &mut Admission<'_>) -> Result<()> {
+    let maximum = a.limits.parameter_bytes.min(a.limits.tensor_bytes);
+    let mut append = |value| {
+        a.charge(1)?;
+        let value = match value {
+            0 => false,
+            1 => true,
+            _ => return Err(OnnxError::Malformed),
+        };
+        push(output, value, maximum)
+    };
+    match value {
+        Value::Integer(value) => append(value),
+        Value::Bytes(bytes) => {
+            let mut wire = Wire(bytes);
+            while !wire.0.is_empty() {
+                append(wire.varint()?)?;
+            }
+            Ok(())
+        }
+        _ => Err(OnnxError::Malformed),
+    }
+}
+
+fn finish_booleans(
+    id: String,
+    dims: Vec<i64>,
+    values: Vec<bool>,
+    generation: Generation,
+    a: &mut Admission<'_>,
+) -> Result<(TensorPort, Tensor)> {
+    if dims.len() > 8 || dims.iter().any(|&n| n < 0) {
+        return Err(OnnxError::Unsupported);
+    }
+    let dims = dims
+        .into_iter()
+        .map(|n| usize::try_from(n).map_err(|_| OnnxError::Limit))
+        .collect::<Result<Vec<_>>>()?;
+    if dims.contains(&0) && dims != [0] {
+        return Err(OnnxError::Unsupported);
+    }
+    let shape = Shape::new(dims).map_err(|_| OnnxError::Limit)?;
+    let size = shape
+        .size_bytes(DType::Bool)
+        .map_err(|_| OnnxError::Limit)?;
+    if size > a.limits.parameter_bytes || size > a.limits.tensor_bytes {
+        return Err(OnnxError::Limit);
+    }
+    if values.len() != size {
+        return Err(OnnxError::Malformed);
+    }
+    a.charge(size)?;
+    let tensor =
+        Tensor::from_values(shape.clone(), &values, generation).map_err(|_| OnnxError::Limit)?;
+    let port = TensorPort::new(id, DType::Bool, shape, generation).map_err(|_| OnnxError::Graph)?;
+    Ok((port, tensor))
 }
 
 fn finish(
@@ -98,12 +160,17 @@ pub(super) fn tensor(
     let (mut seen, mut id, mut dtype, mut raw) = (0, None, None, None);
     let (mut dims, mut float_values, mut integer_values) = (Vec::new(), Vec::new(), Vec::new());
     let (mut has_floats, mut has_integers) = (false, false);
+    let (mut bool_values, mut has_bools) = (Vec::new(), false);
     while let Some((tag, value)) = wire.next(a)? {
         match tag {
             1 => integers(value, &mut dims, 8, a)?,
             4 => {
                 has_floats = true;
                 floats(value, &mut float_values, a)?;
+            }
+            5 => {
+                has_bools = true;
+                booleans(value, &mut bool_values, a)?;
             }
             7 => {
                 has_integers = true;
@@ -142,7 +209,7 @@ pub(super) fn tensor(
     };
     match dtype {
         Some(1) => {
-            if has_integers || (raw.is_some() && has_floats) {
+            if has_integers || has_bools || (raw.is_some() && has_floats) {
                 return Err(OnnxError::Malformed);
             }
             if let Some(raw) = raw {
@@ -151,7 +218,7 @@ pub(super) fn tensor(
             finish(id, dims, Some(float_values), None, generation, a)
         }
         Some(7) => {
-            if has_floats || (raw.is_some() && has_integers) {
+            if has_floats || has_bools || (raw.is_some() && has_integers) {
                 return Err(OnnxError::Malformed);
             }
             if let Some(raw) = raw {
@@ -168,6 +235,17 @@ pub(super) fn tensor(
                 }
             }
             finish(id, dims, None, Some(integer_values), generation, a)
+        }
+        Some(9) => {
+            if has_floats || has_integers || (raw.is_some() && has_bools) {
+                return Err(OnnxError::Malformed);
+            }
+            if let Some(raw) = raw {
+                for &byte in raw {
+                    booleans(Value::Integer(u64::from(byte)), &mut bool_values, a)?;
+                }
+            }
+            finish_booleans(id, dims, bool_values, generation, a)
         }
         _ => Err(OnnxError::Unsupported),
     }

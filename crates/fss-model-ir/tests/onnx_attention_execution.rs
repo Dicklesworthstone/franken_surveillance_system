@@ -24,6 +24,8 @@ mod shape_selection;
 mod spatial_layout;
 #[path = "onnx_attention_execution/split_heads.rs"]
 mod split_heads;
+#[path = "onnx_attention_execution/where_select.rs"]
+mod where_select;
 
 use std::cell::Cell;
 use std::collections::BTreeMap;

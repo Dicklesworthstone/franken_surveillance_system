@@ -40,8 +40,10 @@ including hand-computed dense and convolution/pooling results.
   data and packed/unpacked `float_data` are supported, including signed zero.
 - Embedded INT64 initializers, Constant values and bounded static shape programs
   may supply compile-time shape, axis, slice, partition, repetition and selection controls. They never
-  become runtime integer inputs or exported weights. Generated BOOL comparison
-  controls select INT64 shape values; they never become runtime Boolean tensors.
+  become runtime integer inputs or exported weights. Embedded BOOL masks and
+  generated static BOOL comparison controls can select F32 data through Where;
+  they never become runtime Boolean tensors. The existing INT64 shape-selection
+  profile remains separate.
 - Static positive dimensions, at most rank eight. Source-ordered acyclic graphs;
   declared outputs and intermediate value information must match native inference.
 - Add, Sub, Mul, Div, bounded Pow, Sqrt, Erf, Relu, LeakyRelu, Clip, Sigmoid, HardSigmoid, Tanh, MatMul, Gemm, Softmax, Conv, ConvTranspose,
@@ -49,8 +51,8 @@ including hand-computed dense and convolution/pooling results.
   Concat, Constant, Reshape, Squeeze, Unsqueeze, Slice, Split, Resize, Pad, Expand, Tile,
   DepthToSpace, SpaceToDepth,
   Gather, ReduceMean, ReduceSum, ReduceL2, Identity and Flatten.
-  Shape, INT64 ConstantOfShape, Equal and Where also support the bounded shape programs below; F32 data
-  selection uses the separate static Gather profile described below.
+  Shape, INT64 ConstantOfShape, Equal and Where also support the bounded shape programs below;
+  F32 data selection uses static Gather indices or the static BOOL Where profile below.
   Identity/Flatten lower to checked native Reshape
   nodes without changing the frozen operator set or canonical Model IR v1 encoding.
 - MatMul admits vector/vector, vector/matrix and matrix/vector products in addition
@@ -77,6 +79,55 @@ weight files, custom functions, training graphs and model activation are not
 implemented by this profile. Initializers that are also graph inputs refuse rather
 than silently freezing an overridable weight. An unused initializer cannot be made
 executable merely by mentioning it in value-info metadata.
+
+## Static Boolean masks selecting F32 data
+
+The importer admits ONNX [Where-9/16](https://onnx.ai/onnx/operators/onnx__Where.html)
+under its existing opset-13/17 profiles when the condition is known at import
+time and both value branches are F32 tensors. This supports fixed feature masks
+and attention masks while the selected values remain runtime model data.
+
+The condition may be an embedded BOOL initializer, a BOOL TensorProto supplied
+by Constant, or a BOOL comparison result from the existing bounded static shape
+program. Raw BOOL bytes and packed or unpacked `int32_data` must contain exactly
+0 or 1, with the exact declared element count. Conflicting encodings, malformed
+values and overridable graph-input initializers refuse. Masks count toward the
+aggregate embedded-control quota and are removed from exported runtime weights
+when used only as controls.
+
+All three inputs participate in ONNX multidirectional broadcasting. Scalars and
+positive shapes through rank eight are admitted; a scalar condition selects an
+entire broadcast value branch. For example, a `[2,1]` mask containing true/false
+can select the first row from a runtime `[2,3]` tensor and fill the second row
+from a scalar F32 value. Incompatible dimensions, empty tensors, mixed data
+types and data-dependent conditions refuse. Runtime Boolean inputs and runtime
+comparison operators remain outside this profile.
+
+Selection lowers through the existing native Reshape, Slice and Concat kernels.
+The importer broadcasts the branches, groups adjacent output positions selecting
+the same branch, copies those runs and restores the declared output shape. This
+copies the selected sample bits, including negative zero and subnormals. A
+nonfinite value in an unselected runtime branch cannot contaminate a finite
+selected value through arithmetic masking. Embedded F32 constants remain
+finite-only, and existing RGB inference checks on nonfinite outputs remain in
+force.
+
+The complete helper graph, generated names, intermediate tensor sizes and mask
+scan work are bounded before expansion. Alternating masks can require many
+Slice nodes and refuse when the original node/tensor limits cannot contain the
+result. Broadcast-mask scanning is metered and cancellable; the importer borrows
+the admitted constant storage and does not allocate a full broadcast mask.
+Runtime copies and intermediate storage remain accounted by the existing native
+planner. The mask introduces no generated F32 parameters or new runtime opcode.
+Existing static INT64 Where and Expand/Tile encodings retain their behavior;
+the importer implementation fingerprint includes the new lowering.
+
+The `where_select` module in `onnx_attention_execution` exercises the real scalar
+and optimized executors, canonical graph and Safetensors reload, a composed
+causal-mask/Softmax/MatMul graph, every admitted mask encoding, rank-zero through
+rank-eight broadcasting, exact selected bits, malformed and unsupported inputs,
+resource boundaries and cancellation. Its execution result is recorded in the
+current implementation status and session handoff.
 
 ## One-dimensional convolution and pooling
 
@@ -1039,13 +1090,15 @@ simplifier or adding integer execution to the frozen runtime IR.
 | [Slice-13](https://onnx.ai/onnx/operators/onnx__Slice.html#slice-13) | Select an INT64 vector with exact constant start/end/axis/step vectors. Positive and negative nonzero steps, negative indices, empty results and extreme end sentinels are supported; omitted axes select the vector's sole axis. |
 | [ConstantOfShape-9](https://onnx.ai/onnx/operators/onnx__ConstantOfShape.html#constantofshape-9) | Fill an INT64 scalar or vector using an explicit one-element INT64 tensor attribute and a constant shape vector. An empty shape produces a scalar; `[0]` produces an empty control. The absent attribute's F32 default and non-INT64 fills refuse. |
 | [Equal-13](https://onnx.ai/onnx/operators/onnx__Equal.html#equal-13) | Compare exact INT64 controls using scalar/vector multidirectional broadcasting and generate a typed BOOL control. Large integers retain all bits. |
-| [Where-9](https://onnx.ai/onnx/operators/onnx__Where.html#where-9) | Select between INT64 controls using a generated BOOL condition and three-way broadcasting. All operands must be valid compile-time controls, including an unselected branch. |
+| [Where-9](https://onnx.ai/onnx/operators/onnx__Where.html#where-9) | Select between INT64 controls using a generated or embedded BOOL condition and three-way broadcasting. All operands must be valid compile-time controls, including an unselected branch. |
 
 Every control remains rank zero or one and contains at most eight values. A scalar
 and a length-one vector remain distinct. No runtime tensor values are read, no
 floating-point conversion rounds large integers, and no runtime integer/Boolean
 graph or output is emitted. BOOL value-info witnesses must match the computed
-condition exactly; BOOL graph inputs, outputs and initializers remain unsupported.
+condition exactly; runtime BOOL graph inputs and outputs remain unsupported.
+Embedded BOOL masks are admitted under the separate static-mask profile above;
+using one in a shape program still requires this scalar/vector, eight-value bound.
 Dynamic controls, symbolic dimensions, mixed dtypes,
 rank-two integer controls, unsupported attributes and out-of-range indices refuse.
 Reshape, Slice, Split, Resize, Pad, Expand and Tile enforce their own admission
@@ -1362,13 +1415,15 @@ are supported. Source-order checking, declared type/shape witnesses and the exis
 native graph validator all remain in force.
 
 [Constant-13](https://onnx.ai/onnx/operators/onnx__Constant.html#constant-13) admits
-embedded finite F32 and INT64 tensors, including its scalar/list attribute forms.
+embedded finite F32 and INT64 tensors, including their scalar/list attribute forms,
+and embedded BOOL tensors through the `value` TensorProto attribute.
 The output name defines the graph value; a name inside a TensorProto attribute is
 metadata. F32 data constants keep their exact bits, including signed zero and
 subnormals, and can be returned directly as a model output. The existing native
 requirement for at least one computation node still applies, so a graph made only
 of constants refuses. INT64 constants can only serve the admitted static controls;
-using one as arithmetic data or a model output refuses.
+using one as arithmetic data or a model output refuses. BOOL constants serve
+static Where masks or the bounded shape-selection program, not runtime Boolean data.
 
 Reshape supports a zero entry copying the corresponding input dimension, one inferred
 `-1` dimension, and an empty shape vector producing a scalar when the input has one

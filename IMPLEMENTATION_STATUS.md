@@ -39,6 +39,35 @@ independent replicas, future availability and public-cloud TLS remain open. See
 the [operator workflow](docs/NATIVE_S3_OBJECT_UPLOADS.md#restore-from-an-independent-object-identity-after-journal-loss).
 
 
+## Native static Boolean selection in ONNX models — 2026-11-23
+
+The opset-13/17 importer now lowers static BOOL-mask `Where` over runtime F32
+branches, with multidirectional broadcasting from scalars through rank eight.
+Embedded BOOL initializer/Constant masks and existing static shape comparisons
+are admitted; runtime conditions remain unsupported. Canonical 0/1 raw or
+packed/unpacked int32 BOOL values are validated and charged as embedded controls.
+
+Existing Reshape/Slice/Concat kernels copy selected bits, preserving signed zero
+and subnormals and preventing unselected runtime NaN/Inf values from contaminating
+a finite result. F32 initializers remain finite-only and RGB output admission is
+unchanged. The complete broadcast/run expansion is preflighted under original
+node, tensor, byte and work limits; mask scanning is metered and cancellable.
+The existing integer shape-Where and Expand/Tile contracts remain intact. No
+runtime opcode, IR format, generated F32 mask parameters or dependency was added.
+
+All **12 new feature tests passed** on the genuine pinned Cargo test harness,
+including a composed causal-mask/Softmax/MatMul graph, scalar/optimized execution,
+canonical graph and Safetensors reload, all mask encodings, exact selected bits,
+malformed/runtime refusal, resource boundaries and every cancellation checkpoint.
+The complete existing attention harness then passed **130 tests, zero failures**,
+with one pre-existing performance experiment ignored; the twelve new tests are
+included in that total. The broadcast regression target additionally passed
+34 tests (one existing ignored experiment), and the importer unit target passed
+16 tests. These targets share kernel regressions; their totals are not a unique-test
+count. This is native model execution evidence, not trained-model quality or
+full-system qualification. See [static Boolean selection](docs/onnx_import.md#static-boolean-masks-selecting-f32-data).
+This advances FSS-139 (`fss-x4a.14.10`); broader model and release gates remain open.
+
 ## Retained M2TS import and operator command — 2026-11-23
 
 `fss-file import-ts --ts-framing m2ts192` now selects the framed parser through

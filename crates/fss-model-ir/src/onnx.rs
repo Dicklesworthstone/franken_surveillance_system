@@ -48,6 +48,7 @@ mod shape_program;
 mod spatial_layout;
 mod split;
 mod structure;
+mod where_select;
 
 pub use dfl::{OnnxDflHeadDecode, OnnxHeadLayout, decode_onnx_dfl_head};
 pub use dfl_pyramid::{
@@ -395,9 +396,10 @@ fn value_info(
     if dtype == Some(1) && !dims.contains(&0) {
         return port(id, dims, generation, a);
     }
-    // INT64 declarations may witness bounded constant Gather index tensors.
-    // BOOL and empty F32 controls retain their scalar/vector-only profile.
-    if (dtype != Some(7) && (dims.len() > 1 || dims.first().is_some_and(|&n| n > 8)))
+    // INT64 declarations may witness Gather indices; BOOL declarations may
+    // witness static Where masks. Neither becomes a runtime input/output.
+    // Empty F32 controls retain their scalar/vector-only profile.
+    if (dtype == Some(1) && (dims.len() > 1 || dims.first().is_some_and(|&n| n > 8)))
         || (dims.contains(&0) && dims != [0])
     {
         return Err(OnnxError::Unsupported);
@@ -1071,6 +1073,8 @@ pub fn import_onnx<'a>(
             constants::lower(source, &mut lowering)?;
         } else if gather::handles(&source, &lowering) {
             gather::lower(source, &mut lowering)?;
+        } else if where_select::handles(&source, &lowering) {
+            where_select::lower(source, &mut lowering)?;
         } else if shape_program::handles(&source, &lowering) {
             shape_program::lower(source, &mut lowering)?;
         } else if source.op == "Gemm" {

@@ -552,6 +552,12 @@ Concat, Constant, Reshape, Squeeze, Unsqueeze, Slice, Split, Resize, Expand, Til
 Gather, ReduceMean, ReduceSum, ReduceL2, Identity and Flatten.
 Bounded static Shape/Gather/INT64 control programs can supply layout and partition controls;
 their values are evaluated during import and never require runtime integer execution.
+Static BOOL-mask Where also selects runtime F32 branches with multidirectional
+broadcasting, using existing native copy kernels. Embedded BOOL initializer/Constant
+masks and existing static comparison results are admitted; runtime conditions refuse.
+This supports fixed feature/attention masks within the same node, tensor, byte and work
+ceilings. See [static Boolean selection](onnx_import.md#static-boolean-masks-selecting-f32-data)
+for source encodings, bit preservation and resource bounds.
 Runtime/data-dependent shapes, external tensors, custom operators, raw detector-head
 profiles outside the explicit DFL or split-head assembly contracts and unsupported operators
 refuse explicitly. The command does not claim that an arbitrary ONNX detector can be imported.
@@ -559,8 +565,8 @@ refuse explicitly. The command does not claim that an arbitrary ONNX detector ca
 The opset-17 profile admits explicit inference `BatchNormalization.training_mode=0`,
 `Reshape.allowzero=0`, and Shape's static `start`/`end` metadata slices. These
 attributes remain invalid under opset 13. Training mode, literal-zero Reshape
-mode, and other source opsets refuse. The existing F32/INT64 restrictions remain
-in force when a newer schema adds other dtypes.
+mode, and other source opsets refuse. The existing F32 runtime and bounded INT64/BOOL
+control restrictions remain in force when a newer schema adds other dtypes.
 
 Opset-17 LayerNormalization accepts static positive F32 tensors of rank one
 through eight, a trailing normalization axis (default `-1`), positive finite F32

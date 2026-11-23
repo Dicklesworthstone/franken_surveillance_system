@@ -13,12 +13,22 @@ use fss_tensor::DType;
 use super::{Lowering, OnnxError, Result, SourceNode, port};
 use crate::{AttrValue, AttributeMap, GraphNode, OpCode};
 
-struct Plan {
+pub(super) struct Plan {
     aligned: Vec<usize>,
     output: Vec<usize>,
     repeats: Vec<usize>,
     reshape: bool,
-    nodes: usize,
+    pub(super) nodes: usize,
+}
+
+/// Reuse the exact Expand lowering for an already validated static destination.
+/// The caller may inspect the node count to reserve a complete composed lowering.
+pub(super) fn expansion(dims: &[usize], output: &[usize]) -> Result<Plan> {
+    let control = output
+        .iter()
+        .map(|&dim| i64::try_from(dim).map_err(|_| OnnxError::Limit))
+        .collect::<Result<Vec<_>>>()?;
+    plan("Expand", dims, &control)
 }
 
 fn positive(value: i64) -> Result<usize> {
@@ -134,6 +144,14 @@ pub(super) fn lower(source: SourceNode<'_>, lowering: &mut Lowering<'_, '_>) -> 
     let control = lowering.constant_i64_vector(&source.inputs[1])?;
     lowering.admission.charge(1 + dims.len() + control.len())?;
     let plan = plan(&source.op, &dims, &control)?;
+    apply(source, lowering, plan)
+}
+
+pub(super) fn apply(
+    source: SourceNode<'_>,
+    lowering: &mut Lowering<'_, '_>,
+    plan: Plan,
+) -> Result<()> {
     // The final shape bounds every monotone prefix. Reject aggregate node and
     // value expansion costs before generating any intermediate name or node.
     port(
