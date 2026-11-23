@@ -390,7 +390,12 @@ pub fn follow_deployment_wait(
     binding: &FollowWaitBinding,
     control: &mut dyn FollowWaitControl,
 ) -> Result<FollowWaitResult, FollowWaitFailure> {
-    let metadata_budget = crate::agent_orient::MetadataReadBudget::default();
+    // One finite metadata allowance spans every poll. Narrowed source-custody
+    // limits remain separately metered by the source auditor below.
+    let metadata_budget = crate::agent_orient::MetadataReadBudget::new(
+        MAX_FOLLOW_WAIT_SOURCE_ENVELOPE_BYTES as usize,
+        MAX_FOLLOW_WAIT_SOURCE_READS as usize,
+    );
     let mut progress = FollowWaitProgress::default();
     let mut last_follow: Option<DeploymentFollow> = None;
     let mut observed_head: Option<FollowWaitHead> = None;

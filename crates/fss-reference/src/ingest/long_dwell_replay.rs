@@ -20,8 +20,8 @@ use super::{FileIngestError, RetainedFileImport};
 use crate::retained_source::{RetainedSource, verify_event_lineage};
 use crate::{ReferenceError, ReplayCx};
 use fss_core::{
-    ContentDigest, ContractError, DigestAlgorithm, EventHypothesis, EventId, EventKind, EventState,
-    EvidenceClass, EvidenceEdgeRelation, LedgerAnchor, ObjectId,
+    CanonicalDecode, ContentDigest, ContractError, DigestAlgorithm, EventHypothesis, EventId,
+    EventKind, EventState, EvidenceClass, EvidenceEdgeRelation, LedgerAnchor, ObjectId,
 };
 use fss_object::ObjectManifest;
 use fss_publication::{ROOT_REACHABILITY_FAMILY, SlotName};
