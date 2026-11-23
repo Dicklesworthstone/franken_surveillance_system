@@ -7,10 +7,10 @@
 
 #[path = "s3_observation.rs"]
 mod observation;
-#[path = "s3_retrieval.rs"]
-mod retrieval;
 #[path = "s3_resume.rs"]
 mod resumption;
+#[path = "s3_retrieval.rs"]
+mod retrieval;
 #[path = "s3_io.rs"]
 mod s3_io;
 #[path = "s3_verify.rs"]
@@ -48,14 +48,14 @@ use fss_reference::s3_upload::{
 use fss_runtime::authority::AuthorityCx;
 use fss_runtime::grant::GrantSet;
 
-use s3_io::ScopedS3Io;
+use s3_io::{RestoreOutputState, ScopedS3Io};
 
 const MAX_SOURCE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_REPORT_BYTES: usize = 16 * 1024;
 const LOCAL_RUNTIME_NS: i128 = 600_000_000_000;
 const PRINCIPAL: &str = "principal:archive-s3-operator";
 
-pub(super) const HELP: &str = "fss-archive upload-s3-prepare | upload-s3-resume | upload-s3-abort | upload-s3-reconcile | upload-s3-verify\n\
+pub(super) const HELP: &str = "fss-archive upload-s3-prepare | upload-s3-resume | upload-s3-abort | upload-s3-reconcile | upload-s3-verify | upload-s3-restore\n\
   Required: --source ABSOLUTE_FILE --source-sha256 sha256:HEX --source-bytes U64\n\
             --journal ABSOLUTE_DIR --peer IP:PORT --host HOST:PORT --region NAME\n\
             --bucket NAME --key OBJECT_KEY --credentials ABSOLUTE_FILE\n\
@@ -63,10 +63,10 @@ pub(super) const HELP: &str = "fss-archive upload-s3-prepare | upload-s3-resume 
             --deadline-ns I128 --max-memory-bytes U64 --max-wire-bytes U64\n\
             --max-requests U64 --max-local-bytes U64 --max-local-operations U64\n\
   Optional: --part-bytes U64 (default 5 MiB, maximum 64 MiB)\n\
-  Resume/abort/reconcile/verify additionally require: --minimum-sequence U64 --minimum-root sha256:HEX\n\
-  Reconcile/verify additionally require: --observation-operation OPERATION_ID\n\
+  Resume/abort/reconcile/verify/restore additionally require: --minimum-sequence U64 --minimum-root sha256:HEX\n\
+  Reconcile/verify/restore additionally require: --observation-operation OPERATION_ID\n\
                                   --observation-receipt NEW_ABSOLUTE_FILE\n\
-  Verify after indeterminate completion additionally accepts the paired options:\n\
+  Verify/restore after indeterminate completion additionally accepts the paired options:\n\
             --completion-observation ABSOLUTE_FILE\n\
             --completion-observation-sha256 sha256:INDEPENDENT_RECEIPT_DIGEST\n\
   Prepare verifies the complete source and creates a durable pending journal without\n\
@@ -81,11 +81,15 @@ pub(super) const HELP: &str = "fss-archive upload-s3-prepare | upload-s3-resume 
   Verify reads a completed object's bounded ranges under fresh read-media authority, checks\n\
   each original part and the independent source digest, and retains a separate immutable\n\
   retrieval receipt. It needs neither the source file nor the original transfer allowance.\n\
+  Restore additionally requires --output NEW_ABSOLUTE_FILE. It retains the verified bytes\n\
+  under an extra object-sized memory allowance, creates a private output without overwriting,\n\
+  verifies local readback and fsyncs the file and directory before writing its receipt.\n\
+  Local write failures may leave an incomplete private output; inspect it before retrying.\n\
   Credentials file: access key, secret key, optional session token, one per LF-terminated\n\
   line. The file must be private to its owner. Credential values never enter argv/reports.\n\
   Only explicitly approved loopback/private S3-compatible HTTP endpoints are admitted.\n\
   This transfers one object of at most 64 MiB. It does not encrypt source bytes, publish\n\
-  an archive graph, verify replicas, or connect directly using TLS. Only verify proves the\n\
+  an archive graph, verify replicas, or connect directly using TLS. Verify and restore prove the\n\
   exact object's independent retrieval for this observation.\n\n\
 fss-archive verify-s3-object\n\
   Required: --object-sha256 sha256:HEX --object-bytes U64\n\
@@ -107,6 +111,7 @@ enum Command {
     Abort,
     Reconcile,
     Verify,
+    Restore,
 }
 impl Command {
     fn name(self) -> &'static str {
@@ -116,6 +121,7 @@ impl Command {
             Self::Abort => "abort",
             Self::Reconcile => "reconcile",
             Self::Verify => "verify",
+            Self::Restore => "restore",
         }
     }
 }
@@ -128,6 +134,7 @@ pub(super) fn handles(args: &[OsString]) -> bool {
                 "upload-s3-abort",
                 "upload-s3-reconcile",
                 "upload-s3-verify",
+                "upload-s3-restore",
             ]
             .iter()
             .any(|name| value == OsStr::new(name))
@@ -166,6 +173,7 @@ struct Options {
     minimum: Option<UploadJournalPin>,
     observation: Option<ObservationOptions>,
     completion_observation: Option<CompletionInput>,
+    restore_output: Option<PathBuf>,
 }
 
 struct CompletionInput {
@@ -179,7 +187,7 @@ struct ObservationOptions {
 }
 
 fn parse(args: &[OsString]) -> Result<Options> {
-    const ALLOWED: [&str; 25] = [
+    const ALLOWED: [&str; 26] = [
         "--source",
         "--source-sha256",
         "--source-bytes",
@@ -205,6 +213,7 @@ fn parse(args: &[OsString]) -> Result<Options> {
         "--observation-receipt",
         "--completion-observation",
         "--completion-observation-sha256",
+        "--output",
     ];
     if !handles(args)
         || args.len() > 1 + ALLOWED.len() * 2
@@ -220,6 +229,7 @@ fn parse(args: &[OsString]) -> Result<Options> {
         Some("upload-s3-abort") => Command::Abort,
         Some("upload-s3-reconcile") => Command::Reconcile,
         Some("upload-s3-verify") => Command::Verify,
+        Some("upload-s3-restore") => Command::Restore,
         _ => return Err(malformed("unknown S3 upload command")),
     };
     let mut values = BTreeMap::new();
@@ -324,7 +334,7 @@ fn parse(args: &[OsString]) -> Result<Options> {
         }),
         _ => {
             return Err(malformed(
-                "resume, abort, reconcile and verify require an independently retained minimum pin",
+                "resume, abort, reconcile, verify and restore require an independently retained minimum pin",
             ));
         }
     };
@@ -354,7 +364,10 @@ fn parse(args: &[OsString]) -> Result<Options> {
     }
     let operation = OperationId::parse(text("--operation")?)
         .map_err(|_| malformed("invalid stable operation identity"))?;
-    let observation = if matches!(command, Command::Reconcile | Command::Verify) {
+    let observation = if matches!(
+        command,
+        Command::Reconcile | Command::Verify | Command::Restore
+    ) {
         let observation_operation = OperationId::parse(text("--observation-operation")?)
             .map_err(|_| malformed("invalid observation operation identity"))?;
         if observation_operation == operation {
@@ -378,7 +391,7 @@ fn parse(args: &[OsString]) -> Result<Options> {
             || values.contains_key("--observation-receipt")
         {
             return Err(malformed(
-                "observation options require upload-s3-reconcile or upload-s3-verify",
+                "observation options require upload-s3-reconcile, upload-s3-verify or upload-s3-restore",
             ));
         }
         None
@@ -388,7 +401,7 @@ fn parse(args: &[OsString]) -> Result<Options> {
         values.contains_key("--completion-observation-sha256"),
     ) {
         (false, false) => None,
-        (true, true) if command == Command::Verify => {
+        (true, true) if matches!(command, Command::Verify | Command::Restore) => {
             let input = path("--completion-observation")?;
             let output = &observation
                 .as_ref()
@@ -409,9 +422,26 @@ fn parse(args: &[OsString]) -> Result<Options> {
         }
         _ => {
             return Err(malformed(
-                "paired completion observation input and independent digest require upload-s3-verify",
+                "paired completion observation input and independent digest require upload-s3-verify or upload-s3-restore",
             ));
         }
+    };
+    let restore_output = if command == Command::Restore {
+        let output = path("--output")?;
+        if [&source, &credentials, &journal]
+            .into_iter()
+            .chain(observation.iter().map(|value| &value.receipt))
+            .chain(completion_observation.iter().map(|value| &value.path))
+            .any(|other| output.starts_with(other) || other.starts_with(&output))
+        {
+            return Err(malformed("restore output must have a separate new path"));
+        }
+        Some(output)
+    } else {
+        if values.contains_key("--output") {
+            return Err(malformed("--output requires upload-s3-restore"));
+        }
+        None
     };
     let part_size = if values.contains_key("--part-bytes") {
         number("--part-bytes", MIN_PART_SIZE, MAX_SOURCE_BYTES)?
@@ -423,7 +453,10 @@ fn parse(args: &[OsString]) -> Result<Options> {
     transfer.network_bytes = number("--max-wire-bytes", 1, 1024 * 1024 * 1024)?;
     transfer.storage_operations = number(
         "--max-requests",
-        if matches!(command, Command::Reconcile | Command::Verify) {
+        if matches!(
+            command,
+            Command::Reconcile | Command::Verify | Command::Restore
+        ) {
             1
         } else {
             4
@@ -446,6 +479,7 @@ fn parse(args: &[OsString]) -> Result<Options> {
         minimum,
         observation,
         completion_observation,
+        restore_output,
         source_digest: digest("--source-sha256")?,
         source_bytes: number("--source-bytes", 0, MAX_SOURCE_BYTES)?,
         operation,
@@ -540,6 +574,14 @@ fn local_io(options: &Options, origin: TimestampNs, started: Instant) -> Result<
                 .to_owned(),
         );
     }
+    if let Some(output) = &options.restore_output {
+        output_scopes.insert(
+            output
+                .to_str()
+                .ok_or(Error::Runtime("restore output scope is not UTF-8"))?
+                .to_owned(),
+        );
+    }
     scopes = scopes.with_scope(RuntimeGrant::ObjectStage, output_scopes);
     if let Some(input) = &options.completion_observation {
         scopes = scopes.with_scope(
@@ -567,6 +609,10 @@ fn local_io(options: &Options, origin: TimestampNs, started: Instant) -> Result<
                 .completion_observation
                 .as_ref()
                 .map(|value| value.path.clone()),
+            options
+                .restore_output
+                .clone()
+                .map(|path| (path, options.deadline)),
             authority,
             tree,
             started,
@@ -1166,7 +1212,7 @@ fn execute(options: &Options) -> Result<(String, bool)> {
     if options.command == Command::Reconcile {
         return observation::execute(options);
     }
-    if options.command == Command::Verify {
+    if matches!(options.command, Command::Verify | Command::Restore) {
         return retrieval::execute(options);
     }
     let started = Instant::now();
@@ -1187,7 +1233,7 @@ fn execute(options: &Options) -> Result<(String, bool)> {
             Command::Prepare => report.phase == MultipartPhase::Prepared,
             Command::Resume => report.phase == MultipartPhase::Completed && report.settled,
             Command::Abort => report.phase == MultipartPhase::Aborted && report.settled,
-            Command::Reconcile | Command::Verify => false,
+            Command::Reconcile | Command::Verify | Command::Restore => false,
         };
     Ok((report.render(options)?, success))
 }

@@ -5,7 +5,7 @@
 use super::*;
 use fss_object::uploader::{
     CompletionObservationReceipt, RetrievalObservation, RetrievalOutcome, RetrievalReceipt,
-    UploaderError,
+    UploaderError, VerifiedRetrievalBytes,
 };
 
 struct Report {
@@ -13,6 +13,7 @@ struct Report {
     recovery: MultipartRecovery,
     provider_requested: bool,
     receipt_durable: bool,
+    output: Option<RestoreOutputState>,
     failure: Option<&'static str>,
 }
 
@@ -113,6 +114,11 @@ fn execute_in(options: &Options, local: &Arc<ScopedS3Io>) -> Result<Report> {
     local
         .preflight_observation_receipt()
         .map_err(|_| Error::Runtime("new immutable retrieval receipt destination refused"))?;
+    if options.command == Command::Restore {
+        local
+            .preflight_restore_output()
+            .map_err(|_| Error::Runtime("new private restoration output destination refused"))?;
+    }
     let (mut root, mut property, mut tree, child) = authority(options, now)?;
     let mut owner = if let Some((observation, digest)) = &completion_observation {
         RetrievalObservation::begin_from_observation(
@@ -141,7 +147,7 @@ fn execute_in(options: &Options, local: &Arc<ScopedS3Io>) -> Result<Report> {
     }
     .map_err(|_| Error::Runtime("fresh read-media retrieval authority refused"))?;
     let mut provider_requested = false;
-    let attempted = (|| -> Result<RetrievalReceipt> {
+    let attempted = (|| -> Result<(RetrievalReceipt, Option<VerifiedRetrievalBytes>)> {
         let secret = local
             .read_credentials()
             .map_err(|_| Error::Runtime("private retrieval credential file refused"))?;
@@ -156,15 +162,26 @@ fn execute_in(options: &Options, local: &Arc<ScopedS3Io>) -> Result<Report> {
         )
         .map_err(|_| Error::Runtime("retrieval transport binding refused"))?;
         provider_requested = true;
-        owner
-            .verify(&mut tree, &mut transport, || {
-                wall_now()
-                    .map_err(|_| UploaderError::Authority("retrieval clock unavailable".into()))
-            })
-            .map_err(|_| Error::Runtime("independent retrieval was refused or did not verify"))
+        if options.command == Command::Restore {
+            let verified = owner
+                .verify_with_bytes(&mut tree, &mut transport, || {
+                    wall_now()
+                        .map_err(|_| UploaderError::Authority("retrieval clock unavailable".into()))
+                })
+                .map_err(|_| Error::Runtime("independent restoration retrieval did not verify"))?;
+            Ok((verified.receipt().clone(), Some(verified)))
+        } else {
+            owner
+                .verify(&mut tree, &mut transport, || {
+                    wall_now()
+                        .map_err(|_| UploaderError::Authority("retrieval clock unavailable".into()))
+                })
+                .map(|receipt| (receipt, None))
+                .map_err(|_| Error::Runtime("independent retrieval was refused or did not verify"))
+        }
     })();
-    let (receipt, mut failure) = match attempted {
-        Ok(receipt) => (receipt, None),
+    let (receipt, verified_bytes, mut failure) = match attempted {
+        Ok((receipt, verified)) => (receipt, verified, None),
         Err(_) => {
             let receipt = owner
                 .settle(&mut tree, cleanup_time(owner.observed_at()))
@@ -174,7 +191,7 @@ fn execute_in(options: &Options, local: &Arc<ScopedS3Io>) -> Result<Report> {
             } else {
                 "retrieval_attempt_refused"
             };
-            (receipt, Some(failure))
+            (receipt, None, Some(failure))
         }
     };
     if !owner.is_settled() {
@@ -189,6 +206,18 @@ fn execute_in(options: &Options, local: &Arc<ScopedS3Io>) -> Result<Report> {
     let bytes = receipt
         .encode()
         .map_err(|_| Error::Runtime("canonical retrieval receipt refused"))?;
+    let mut output = (options.command == Command::Restore).then(RestoreOutputState::default);
+    if let (Some(verified), Some(state)) = (verified_bytes.as_ref(), output.as_mut())
+        && local.write_restored_object(verified, state).is_err()
+    {
+        failure = Some(if state.created {
+            "restoration_output_durability_unconfirmed"
+        } else {
+            "restoration_output_refused"
+        });
+    }
+    // Erase the retained media before receipt publication or rendering.
+    drop(verified_bytes);
     let receipt_durable = local.write_observation_receipt(&bytes).is_ok();
     if !receipt_durable {
         failure = Some("retrieval_receipt_durability_unconfirmed");
@@ -198,6 +227,7 @@ fn execute_in(options: &Options, local: &Arc<ScopedS3Io>) -> Result<Report> {
         recovery,
         provider_requested,
         receipt_durable,
+        output,
         failure,
     })
 }
@@ -211,16 +241,30 @@ pub(super) fn execute(options: &Options) -> Result<(String, bool)> {
     let result = execute_in(options, &local);
     let work = local
         .consumed()
-        .map_err(|_| Error::Runtime("retrieval local accounting refused"))?;
+        .map_err(|_| Error::Runtime("retrieval local accounting refused"));
     let finalized = local
         .finalize()
         .map_err(|_| Error::Runtime("retrieval local files could not finalize"));
-    let report = result?;
-    finalized?;
-    render(options, &report, work)
+    let mut report = result?;
+    if options.command == Command::Restore {
+        if work.is_err() {
+            report.failure = Some("restoration_local_accounting_unavailable");
+        }
+        if finalized.is_err() {
+            report.failure = Some("restoration_local_settlement_refused");
+        }
+        render(options, &report, work.ok())
+    } else {
+        finalized?;
+        render(options, &report, Some(work?))
+    }
 }
 
-fn render(options: &Options, report: &Report, local_work: BudgetVector) -> Result<(String, bool)> {
+fn render(
+    options: &Options,
+    report: &Report,
+    local_work: Option<BudgetVector>,
+) -> Result<(String, bool)> {
     let receipt = &report.receipt;
     let recovery = &report.recovery;
     let minimum = options
@@ -238,6 +282,15 @@ fn render(options: &Options, report: &Report, local_work: BudgetVector) -> Resul
         .map_err(|_| Error::Runtime("canonical retrieval receipt digest refused"))?;
     let next = if !report.receipt_durable {
         "retain_source_pin_and_inspect_retrieval_receipt_before_new_verification"
+    } else if report
+        .output
+        .is_some_and(|output| output.created && !output.durable)
+    {
+        "inspect_private_partial_output_before_authorizing_a_new_restore"
+    } else if report.output.is_some_and(|output| output.durable) {
+        "retain_restored_object_and_retrieval_receipt_before_separate_graph_or_replica_verification"
+    } else if options.command == Command::Restore {
+        "retain_source_pin_and_authorize_a_new_bounded_restore_if_needed"
     } else if verified {
         "retain_retrieval_receipt_before_separate_graph_or_replica_verification"
     } else {
@@ -247,14 +300,23 @@ fn render(options: &Options, report: &Report, local_work: BudgetVector) -> Resul
     let mut fields = vec![
         (
             "schema",
-            string(if observed {
+            string(if options.command == Command::Restore {
+                "fss.s3_restoration_cli.v1"
+            } else if observed {
                 "fss.s3_retrieval_observation_cli.v2"
             } else {
                 "fss.s3_retrieval_observation_cli.v1"
             }),
         ),
-        ("kind", string("s3_retrieval_observation")),
-        ("command", string("verify")),
+        (
+            "kind",
+            string(if options.command == Command::Restore {
+                "s3_restoration"
+            } else {
+                "s3_retrieval_observation"
+            }),
+        ),
+        ("command", string(options.command.name())),
         ("resource", string(recovery.intent().resource())),
         ("intent_digest", string(&receipt.intent_digest().to_text())),
         (
@@ -326,7 +388,10 @@ fn render(options: &Options, report: &Report, local_work: BudgetVector) -> Resul
             "provider_work_requested_this_invocation",
             report.provider_requested.to_string(),
         ),
-        ("local_work", budget(&local_work)),
+        (
+            "local_work",
+            local_work.map_or_else(|| "null".into(), |work| budget(&work)),
+        ),
         (
             "error_kind",
             report.failure.map_or_else(|| "null".into(), string),
@@ -357,6 +422,20 @@ fn render(options: &Options, report: &Report, local_work: BudgetVector) -> Resul
             ),
         ]);
     }
+    if let Some(output) = report.output {
+        fields.extend([
+            ("output_created", output.created.to_string()),
+            ("output_verified", output.verified.to_string()),
+            ("output_durable", output.durable.to_string()),
+            ("restored_bytes", output.bytes.to_string()),
+            (
+                "restored_digest",
+                output
+                    .digest
+                    .map_or_else(|| "null".into(), |digest| string(&digest.to_text())),
+            ),
+        ]);
+    }
     let mut rendered = object(&fields);
     rendered.push('\n');
     if rendered.len() > MAX_REPORT_BYTES {
@@ -364,6 +443,9 @@ fn render(options: &Options, report: &Report, local_work: BudgetVector) -> Resul
     }
     Ok((
         rendered,
-        verified && report.receipt_durable && report.failure.is_none(),
+        verified
+            && report.receipt_durable
+            && report.failure.is_none()
+            && report.output.is_none_or(|output| output.durable),
     ))
 }

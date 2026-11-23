@@ -371,6 +371,93 @@ grants graph publication, repair or deletion authority. The bounded native profi
 still requires approved local plaintext endpoints; this addition does not qualify
 public-cloud TLS, encryption, archive graph closure or independent replicas.
 
+### Restore verified bytes to a new local file
+
+**`upload-s3-restore`** makes the verified object usable again after the local source
+has disappeared. It accepts the same original upload identity, independently retained
+journal pin, route, credentials, fresh observation operation, deadline and explicit
+budgets as `upload-s3-verify`. Add a new absolute output path:
+
+    fss-archive upload-s3-restore \
+      --source /absolute/path/original-object.bin \
+      --source-sha256 sha256:INDEPENDENT_SOURCE_SHA256_HEX \
+      --source-bytes EXACT_SOURCE_LENGTH \
+      --journal /absolute/path/original-upload-journal \
+      --peer 127.0.0.1:9000 --host 127.0.0.1:9000 \
+      --region us-east-1 --bucket evidence --key objects/EXACT_OBJECT_KEY \
+      --credentials /absolute/path/private-s3-credentials \
+      --plaintext-approval sha256:INDEPENDENT_APPROVAL_SHA256_HEX \
+      --operation operation:original-archive-object-transfer \
+      --deadline-ns FRESH_ABSOLUTE_UTC_NANOSECOND_DEADLINE \
+      --max-memory-bytes 805306368 --max-wire-bytes 268435456 --max-requests 512 \
+      --max-local-bytes 1073741824 --max-local-operations 4000000 \
+      --minimum-sequence RETAINED_COMPLETED_SEQUENCE \
+      --minimum-root sha256:RETAINED_COMPLETED_JOURNAL_ROOT_HEX \
+      --observation-operation operation:independent-object-restoration \
+      --observation-receipt /absolute/path/new-restoration-receipt.bin \
+      --output /absolute/path/new-restored-object.bin
+
+Supply the original `--part-bytes` value when it differs from the default. The original
+source path is still an identity argument and is never read. For an indeterminate
+upload with a separately retained positive completion observation, add the paired
+`--completion-observation` and `--completion-observation-sha256` options described
+above. A successful restore still reports that original upload as indeterminate.
+
+The reader checks the same original part digests, independent whole-object digest,
+exact ranges, strong representation pin, authority, deadline and unchanged journal
+as verification. It retains at most 64 MiB in a private buffer and releases
+`VerifiedRetrievalBytes` only after successful verification and owner settlement.
+The buffer has no payload-bearing Debug or Clone implementation and is cleared when
+dropped. Verification-only callers continue to stream without retaining the object.
+The restore API adds **B bytes** to the cumulative transfer bytes allowance before
+allocation or any GET; insufficient allowance releases no media.
+
+Both destinations must be new, disjoint normalized absolute paths with existing
+parents. Existing files, hardlinks, symlinks, symlink ancestors, source/credential
+aliases, the journal, the completion input and the receipt path are refused before
+provider work. After remote verification, exact local output authority rechecks the
+destination and its deadline, pins the parent directory by descriptor, and creates
+the file exclusively with private permissions (mode 0600, subject to the process
+umask). It writes bounded chunks, fsyncs the file, reads back and compares every byte
+plus EOF, verifies inode/size/time/link/permission stability, and fsyncs the pinned
+parent. The output owner never overwrites, truncates, deletes or reuses an existing
+destination. The publication path is supported on the existing Linux x86_64/aarch64
+profile and requires the process's own `/proc/self/fd` view.
+
+The local budget reserves **2B + 1 bytes** before creation for the write, independent
+readback and EOF check, in addition to credential/journal/receipt work. Its operation
+budget also covers metadata, bounded write/read calls and syncs. Local readback
+scratch is capped at 64 KiB. Output checks retain the requested restore deadline;
+the separate receipt-cleanup lifetime never renews permission to export media.
+
+The closed [restoration report schema](../schemas/s3_restoration_cli.v1.json) is
+`fss.s3_restoration_cli.v1`. It preserves retrieval provenance and original upload
+state and adds these independent fields:
+
+| Field | Claim |
+|---|---|
+| `independent_retrievability_verified` | Every remote part and the independent whole-object digest matched in this fresh read. |
+| `output_created` | Exclusive creation succeeded. A later failure may leave a private partial file. |
+| `output_verified` | Exact local readback and artifact checks succeeded; a detected final change clears this claim. |
+| `output_durable` | File and pinned-directory synchronization and final checks succeeded. |
+| `restored_bytes` / `restored_digest` | Verified output size and independent digest, or zero/null without confirmed local verification. |
+| `observation_receipt_durable` | The separate canonical retrieval receipt was durably written and verified. |
+
+Exit status is successful only when remote verification, durable output, durable
+receipt and owner finalization all succeed. A remote failure creates no output and
+still retains a failed retrieval receipt where possible. If local publication fails
+after creation, the command reports failure and retains the creation state; inspect
+that private file and choose a new destination for a separately authorized attempt.
+A receipt failure can leave a verified durable output, which the report preserves.
+Late local accounting/finalization failures also preserve output state in the
+report; unavailable local accounting is explicitly null.
+
+The canonical receipt proves the remote retrieval and its historical upload
+binding. It does not certify local output custody, encryption, archive graph closure,
+an independent replica, future availability or repair authority. The local output
+facts are separate claims in the invocation report. Original upload evidence and
+its budget/uncertainty remain unchanged throughout.
+
 ### Bounded work model
 
 This implements a single-object verification component of `COST-RETRIEVE-001`;
@@ -378,7 +465,8 @@ the broader sampling/scheduling/repair operation remains unqualified. For part
 lengths `p_i`, range width `R = 262144`, and total bytes `B`, one complete attempt
 admits `N = sum(ceil(p_i / R))` read operations and hashes `2B` bytes: one pass for
 part checksums and one for the independent whole checksum. Hash state is constant
-size; the owner retains only the current range. It does not allocate the whole object.
+size; verification-only callers retain just the current range. Restoration additionally
+retains the whole bounded object and charges B extra bytes before allocation.
 
 With default native transport limits, each range additionally reserves 2,260,992
 bytes of bounded response/signing/framing work and 540,672 wire bytes before socket

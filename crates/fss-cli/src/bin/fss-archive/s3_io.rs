@@ -8,6 +8,10 @@
 //! This synchronous adapter supports Linux x86_64/aarch64, whose no-follow/nonblocking opens
 //! are also used by the native journal inspector. Other platforms fail closed.
 
+#[path = "s3_restore_io.rs"]
+mod restore;
+pub(super) use restore::RestoreOutputState;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{DirEntry, File, FileType, Metadata, OpenOptions, ReadDir, TryLockError};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -33,6 +37,7 @@ pub(super) struct ScopedS3Io {
     credentials: PathBuf,
     observation_receipt: Option<PathBuf>,
     completion_observation: Option<PathBuf>,
+    restore_output: Option<(PathBuf, TimestampNs)>,
     started: Instant,
     origin: TimestampNs,
     state: Mutex<State>,
@@ -95,6 +100,7 @@ impl ScopedS3Io {
         credentials: PathBuf,
         observation_receipt: Option<PathBuf>,
         completion_observation: Option<PathBuf>,
+        restore_output: Option<(PathBuf, TimestampNs)>,
         mut authority: AuthorityCx,
         tree: RegionTree,
         started: Instant,
@@ -131,6 +137,19 @@ impl ScopedS3Io {
                 return Err(denied());
             }
         }
+        if let Some((path, deadline)) = &restore_output {
+            validate_path(path)?;
+            if *deadline <= origin
+                || observation_receipt.is_none()
+                || [&journal_root, &source, &credentials]
+                    .into_iter()
+                    .chain(observation_receipt.iter())
+                    .chain(completion_observation.iter())
+                    .any(|other| path.starts_with(other) || other.starts_with(path))
+            {
+                return Err(denied());
+            }
+        }
         if source == credentials
             || source.starts_with(&journal_root)
             || credentials.starts_with(&journal_root)
@@ -152,6 +171,12 @@ impl ScopedS3Io {
             .require_grant_for(RuntimeGrant::ObjectStage, resource(&journal_root)?)
             .map_err(|_| denied())?;
         if let Some(path) = &observation_receipt {
+            authority
+                .require_grant_for(RuntimeGrant::ObjectStage, resource(path)?)
+                .map_err(|_| denied())?;
+            journal_scopes.insert(resource(path)?.to_owned());
+        }
+        if let Some((path, _)) = &restore_output {
             authority
                 .require_grant_for(RuntimeGrant::ObjectStage, resource(path)?)
                 .map_err(|_| denied())?;
@@ -185,6 +210,7 @@ impl ScopedS3Io {
             credentials,
             observation_receipt,
             completion_observation,
+            restore_output,
             started,
             origin,
             state: Mutex::new(State {
@@ -255,6 +281,7 @@ impl ScopedS3Io {
             credentials,
             observation_receipt: Some(receipt),
             completion_observation: None,
+            restore_output: None,
             started,
             origin,
             state: Mutex::new(State {
@@ -1242,6 +1269,7 @@ mod tests {
             directory.0.join("credentials"),
             receipt,
             completion,
+            None,
             authority,
             tree,
             Instant::now(),

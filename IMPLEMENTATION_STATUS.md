@@ -5,6 +5,47 @@
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
 
+## Verified archive media restoration — 2026-11-23
+
+The bounded S3 retrieval owner now retains verified bytes for actual restoration.
+`RetrievalObservation::verify_with_bytes`, committed in `b8282ec5`, returns an
+opaque `VerifiedRetrievalBytes` only after every original part and the independent
+whole-object SHA-256 match, final live authority/source checks succeed, and the
+fresh reader settles. Its immutable borrowed bytes remain tied to the exact
+settled receipt; debug output reveals only length, and dropping the value clears
+its retained buffer. Failures return no partial media. The existing streaming
+`verify` path keeps its previous cost and memory behavior.
+
+The new `fss-archive upload-s3-restore` command composes this owner with separately
+scoped local output authority. It restores one object without reopening the
+original source file, supporting both a completed upload and an independently
+pinned positive completion observation of a locally indeterminate upload.
+Original upload history, phase, custody origin and consumed authority remain
+unchanged. The existing 64 MiB object and 256 KiB range limits apply; retaining
+the object spends an additional full-object byte allowance before allocation or
+any provider request. Local destination and receipt work is separately admitted.
+
+Six new core regressions and two signed native loopback regressions cover exact
+multi-part bytes, extra cost admission, partial budget exhaustion, final post-hash
+deadline refusal, cancellation, corrupt/short/failed ranges and representation
+changes. Five operator process regressions cover restored output, source removal,
+unsafe output paths and independently observed indeterminate completion. Pinned
+formatting of touched files and independent source review passed. The restoration
+schema accepted 112 coherent states and rejected 13 contradictory states.
+
+The first pinned, locked, offline core test build was killed by SIGKILL while
+compiling unchanged Asupersync 0.5.0, before project compilation. A retry with
+one build job, incremental compilation disabled and debug info disabled is still
+pending. No changed-code compilation, executed regression or broad qualification
+pass is asserted. Whole-workspace formatting also encounters pre-existing drift
+outside the touched files.
+
+FSS-068 / `fss-x4a.13.8` remains `in_progress`. Incident graph reconstruction,
+public-cloud TLS, encryption, archive graph closure, independent replicas and
+future retrievability qualification remain open. See the
+[operator guide](docs/NATIVE_S3_OBJECT_UPLOADS.md) and
+[archive restore handoff](docs/SESSION_HANDOFF_2026-11-23_ARCHIVE_RESTORE.json).
+
 ## Native one-dimensional model layers — 2026-11-23
 
 The ONNX importer now accepts static F32 `[N,C,L]` Conv, MaxPool and AveragePool
