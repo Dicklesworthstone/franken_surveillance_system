@@ -5,6 +5,11 @@
 //! Only matched observations at or after confirmed zone entry can contribute. It publishes
 //! separately approved, source-closed, unclassified hypotheses; it never publishes the entry
 //! candidates, certifies continuous presence/absence, or acquires alert authority.
+//!
+//! Optional visual screening uses the same native watch owner: complete suspect runs and
+//! touched tracks are withdrawn before dwell selection, and recovery starts fresh tracking.
+//! Every screened hypothesis retains the exact measurements and admission policy, including
+//! negative findings outside its surviving episode. A clear screen never certifies health.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -17,15 +22,16 @@ use fss_core::{
 use fss_object::ObjectManifest;
 use fss_publication::SlotName;
 
+use super::RetainedFileImport;
 use super::detector_cascade::{ClassEvidence, DetectorCascade, class_evidence_json};
-use super::privacy_mask::{MaskBinding, current_mask};
+use super::privacy_mask::MaskBinding;
 use super::recorded_decode::{RecordedDecodeError, source_capsule};
+use super::recorded_health::{RecordedHealthPolicy, RecordedHealthSummary};
 use super::recorded_watch::{
     MAX_WATCH_CANDIDATES, WatchError, WatchFrame, WatchLimits, WatchObservation, WatchOptions,
-    WatchPlan, WatchReport, WatchStatus, WatchZone, decode_refusals_json, masked_plan_digest,
+    WatchPlan, WatchReport, WatchStatus, WatchZone, decode_refusals_json,
 };
 use super::zone_dwell::{DwellError, DwellPolicy, DwellSample, DwellSpan, dwell_spans};
-use super::{RetainedFileImport, RetainedReadLimits};
 use crate::{
     ReferenceDeployment, ReferencePolicyAction, ReferencePolicyDecision, ReplayCx, RetainedSource,
 };
@@ -35,6 +41,7 @@ pub const MAX_DWELL_REPORT_BYTES: usize = 2 * 1024 * 1024;
 const POLICY: &str = "sampled-dwell-v1:confirmed-matches:rounded-center-half-pixel-margin:consecutive-decoded-segments:worst-case-sampling-gap:latest-first-to-earliest-last:one-per-episode:operator-time-hints:no-omissions:no-masked-zones:unclassified:hold";
 const RULE_DOMAIN: &str = "fss.recorded_dwell_rule.v1";
 const ANALYSIS_DOMAIN: &str = "fss.recorded_dwell_analysis.v1";
+const SCREENED_ANALYSIS_DOMAIN: &str = "fss.recorded_dwell_analysis.v2";
 const OBSERVATION_DOMAIN: &str = "fss.recorded_dwell_observation.v1";
 const CANDIDATE_DOMAIN: &str = "fss.recorded_dwell_candidate.v1";
 const APPROVAL_DOMAIN: &str = "fss.recorded_dwell_approval.v1";
@@ -168,10 +175,8 @@ pub struct DwellReport {
     rule: DwellPolicy,
     watch: WatchReport,
     import_root: ContentDigest,
-    sensor: SensorId,
     root: PathBuf,
     site: String,
-    limits: RetainedReadLimits,
     analysis: Vec<u8>,
     candidates: Vec<DwellCandidate>,
     unreliable_time_frames: usize,
@@ -192,6 +197,28 @@ impl DwellReport {
         options: WatchOptions,
         cx: &ReplayCx,
     ) -> Result<Self> {
+        Self::analyze_with_health(deployment, plan, rule, limits, detector, options, None, cx)
+    }
+
+    /// Run the native retained watch with an explicitly selected visual-screening policy,
+    /// then derive sampled dwell only from its surviving, confirmed matched tracks.
+    ///
+    /// The watch owner removes complete qualifying degradation runs and any touched tracks,
+    /// resets foreground/tracking on recovery, and preserves all measurements and exclusions.
+    /// Dwell never bridges those resets or turns rejected support into absence. Surviving
+    /// episodes may be prepared independently; their provenance retains the complete health
+    /// summary and exact thresholds. `None` preserves the original analysis and event bytes.
+    #[allow(clippy::too_many_arguments)]
+    pub fn analyze_with_health(
+        deployment: &dyn RetainedSource,
+        plan: &WatchPlan,
+        rule: DwellPolicy,
+        limits: &WatchLimits,
+        detector: Option<&mut DetectorCascade<'_>>,
+        options: WatchOptions,
+        health: Option<RecordedHealthPolicy>,
+        cx: &ReplayCx,
+    ) -> Result<Self> {
         checkpoint(cx, "recorded_dwell:analyze")?;
         rule.validate().map_err(gate_error)?;
         plan.validate()?;
@@ -204,8 +231,9 @@ impl DwellReport {
         }
         let import_root = retained.import_root();
         let (capsule, _) = source_capsule(deployment, &retained, plan.first_segment)?;
-        let watch =
-            WatchReport::analyze_with_options(deployment, plan, limits, detector, options, cx)?;
+        let watch = WatchReport::analyze_with_health(
+            deployment, plan, limits, detector, options, health, cx,
+        )?;
         let frames = watch.frames();
         let omissions = retained
             .manifest()
@@ -235,11 +263,19 @@ impl DwellReport {
             .map(|zone| zone.zone_id.clone())
             .collect();
         let mut e = CanonicalEncoder::new();
-        e.text(ANALYSIS_DOMAIN);
+        e.text(if health.is_some() {
+            SCREENED_ANALYSIS_DOMAIN
+        } else {
+            ANALYSIS_DOMAIN
+        });
         e.bytes(&rule_bytes(rule));
         e.text(deployment.site_lineage());
         e.digest(watch.plan_digest());
         e.digest(import_root);
+        if let Some(summary) = watch.sensor_health() {
+            e.digest(summary.digest());
+            e.digest(summary.policy_digest());
+        }
         e.u64(frames.len() as u64);
         for (frame, reliable) in frames.iter().zip(&reliable) {
             e.u64(frame.segment as u64);
@@ -396,6 +432,7 @@ impl DwellReport {
                 import_root,
                 &capsule.sensor_id,
                 watch.privacy_mask(),
+                watch.sensor_health(),
                 rule,
                 cx,
             )?);
@@ -404,10 +441,8 @@ impl DwellReport {
             plan: plan.clone(),
             rule,
             import_root,
-            sensor: capsule.sensor_id,
             root: deployment.root().to_path_buf(),
             site: deployment.site_lineage().to_owned(),
-            limits: limits.read_limits,
             analysis,
             candidates,
             unreliable_time_frames: reliable.iter().filter(|&&known| !known).count(),
@@ -426,6 +461,11 @@ impl DwellReport {
     /// Entry coverage is not evidence of dwell absence or continuous occupancy.
     pub fn coverage(&self) -> &super::recorded_coverage::CoverageRecord {
         self.watch.coverage()
+    }
+    /// Exact visual-screening receipt, including degraded samples and withdrawn support.
+    /// Screening is optional; an absent or clear receipt never certifies sensor health.
+    pub fn sensor_health(&self) -> Option<&RecordedHealthSummary> {
+        self.watch.sensor_health()
     }
     /// Revalidate retained source custody, current privacy and the native analysis basis.
     /// This read-only check neither retains coverage nor publishes a dwell or entry event.
@@ -466,21 +506,9 @@ impl DwellReport {
         {
             return Err(WatchError::Conflict);
         }
-        deployment
-            .ledger()
-            .verify_durable_head()
-            .map_err(crate::ReferenceError::from)?;
-        let retained =
-            RetainedFileImport::open(deployment, self.plan.import_identity, self.limits, cx)?;
-        if retained.import_root() != self.import_root {
-            return Err(WatchError::Conflict);
-        }
-        let privacy = current_mask(deployment, &self.sensor).map_err(RecordedDecodeError::from)?;
-        if masked_plan_digest(self.plan.digest(), &privacy) != self.watch.plan_digest() {
-            return Err(WatchError::InvalidPlan(
-                "privacy generation changed; recompute dwell proposals",
-            ));
-        }
+        // Reuse the native scan's sealed guard, including its exact principal, privacy
+        // generation, import manifest and every source capsule. This also applies to retries.
+        self.watch.revalidate_derived_source(deployment, cx)?;
         for approval in approvals {
             if !self
                 .candidates
@@ -595,7 +623,7 @@ impl DwellReport {
                 "\"authority_sequence\":{},\"privacy_mask\":{},\"event_kind\":\"unclassified\",",
                 "\"event_state\":\"indeterminate\",\"time_basis\":\"operator_assumption\",",
                 "\"continuous_occupancy_certified\":false,\"absence_certifiable\":false,",
-                "\"corroborated\":false,\"alert_authorized\":false,\"detection_quality_claim\":false{}}}"
+                "\"corroborated\":false,\"alert_authorized\":false,\"detection_quality_claim\":false{}{}}}"
             ),
             json(&self.plan.import_identity.to_text()),
             json(&self.import_root.to_text()),
@@ -613,6 +641,11 @@ impl DwellReport {
             authority_sequence,
             self.watch.privacy_mask().to_json(),
             decode_refusals_json(self.watch.decode_refusals()),
+            self.watch
+                .sensor_health()
+                .map_or_else(String::new, |summary| {
+                    format!(",\"sensor_health\":{}", summary.to_json())
+                }),
         );
         if result.len() > MAX_DWELL_REPORT_BYTES {
             return Err(WatchError::Limit);
@@ -642,6 +675,7 @@ fn prepare(
     import_root: ContentDigest,
     sensor: &SensorId,
     privacy: &MaskBinding,
+    health: Option<&RecordedHealthSummary>,
     rule: DwellPolicy,
     cx: &ReplayCx,
 ) -> Result<DwellCandidate> {
@@ -674,6 +708,28 @@ fn prepare(
     let failure_domain = format!("recorded-sensor:{}", hex(sensor_digest));
     let mut children = BTreeSet::from([import_root]);
     let mut evidence = Vec::new();
+    if let Some(summary) = health {
+        // Optical receipts also contain conservative observations, which bind this base
+        // policy. Retain both owners' exact policy bytes and the complete negative record.
+        insert(&mut objects, super::sensor_health::policy_bytes().to_vec());
+        insert(&mut objects, summary.policy_bytes());
+        let digest = insert(&mut objects, summary.to_bytes());
+        children.extend(
+            summary
+                .observations()
+                .iter()
+                .map(|observation| observation.capsule_digest),
+        );
+        evidence.push(EventEvidence {
+            digest,
+            class: EvidenceClass::Derived,
+            failure_domain: failure_domain.clone(),
+            supports: false,
+            relation: EvidenceEdgeRelation::RequiredBy,
+            capsule_digest: None,
+            identity_digest: Some(sensor_digest),
+        });
+    }
     for observation in &pending.observations {
         let digest = insert(&mut objects, observation.bytes.clone());
         children.insert(observation.frame.capsule_digest);
