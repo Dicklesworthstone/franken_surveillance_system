@@ -692,6 +692,14 @@ mode combined with explicit `pads` refuses. The existing pooling restrictions,
 output-shape checks and import limits remain in force; see
 [automatic spatial padding](onnx_import.md#static-automatic-spatial-padding).
 
+Static F32 `[N,C,L]` Conv, MaxPool and AveragePool layers are also admitted through
+exact unit-axis reshapes around the existing spatial kernels. Grouped/depthwise
+convolution, stride/dilation and supported padding modes retain their native
+semantics and cumulative bounds. This broadens internal sequence blocks; the RGB
+package still requires its declared `[1,3,H,W]` image input and detection head.
+See [one-dimensional convolution and pooling](onnx_import.md#one-dimensional-convolution-and-pooling)
+for exact shapes, refusals, compatibility and execution tests.
+
 Default source and parameter limits are 16 MiB each. Export additionally limits the canonical
 graph to 16 MiB, complete Safetensors to 16 MiB, its JSON header to 256 KiB and the parameter
 count to 256. Original source plus exported graph and weights are bounded together. Each

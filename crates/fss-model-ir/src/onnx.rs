@@ -32,6 +32,7 @@ mod instance_normalization;
 mod layer_normalization;
 mod leaky_relu;
 mod matmul;
+mod one_dimensional;
 mod opset;
 mod pad;
 mod padding;
@@ -1076,6 +1077,8 @@ pub fn import_onnx<'a>(
             gemm::lower(source, &mut lowering)?;
         } else if matmul::handles(&source, &lowering) {
             matmul::lower(source, &mut lowering)?;
+        } else if one_dimensional::handles(&source, &lowering) {
+            one_dimensional::lower(source, &mut lowering)?;
         } else if source.op == "ConvTranspose" {
             conv_transpose::lower(source, &mut lowering)?;
         } else if source.op == "BatchNormalization" {

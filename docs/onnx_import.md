@@ -54,17 +54,17 @@ including hand-computed dense and convolution/pooling results.
   Identity/Flatten lower to checked native Reshape
   nodes without changing the frozen operator set or canonical Model IR v1 encoding.
 - MatMul admits vector/vector, vector/matrix and matrix/vector products in addition
-  to batched matrix products; scalar operands remain unsupported. Conv is 2-D; declared `kernel_shape`
+  to batched matrix products; scalar operands remain unsupported. Conv admits 1-D and 2-D inputs; declared `kernel_shape`
   must agree with the actual weight tensor. Explicit strides, dilation, pads and
   groups use native validation. Static `auto_pad` modes `VALID`, `SAME_UPPER`, and
   `SAME_LOWER` lower to exact explicit native padding as described below.
-- MaxPool is 2-D, single-output, with explicit nonnegative padding smaller than
+- MaxPool admits 1-D and 2-D inputs, is single-output, with explicit nonnegative padding smaller than
   each corresponding kernel dimension, no dilation other than one, floor or ceil
   sizing, and default storage order. Ceil sizing accepts explicit/absent pads and
   `auto_pad=NOTSET`; other automatic modes retain floor sizing only.
   Concat requires an explicit axis.
   Softmax uses opset 13's last-axis default, without the older flattening behavior.
-- AveragePool is 2-D with explicit padding, positive strides, floor output sizing,
+- AveragePool admits 1-D and 2-D inputs with explicit padding, positive strides, floor output sizing,
   and either include-padding or exclude-padding means. GlobalAveragePool reduces
   all spatial dimensions of a rank-three-through-eight input to singleton dimensions.
   Both use the bounded native lowering described below.
@@ -77,6 +77,49 @@ weight files, custom functions, training graphs and model activation are not
 implemented by this profile. Initializers that are also graph inputs refuse rather
 than silently freezing an overridable weight. An unused initializer cannot be made
 executable merely by mentioning it in value-info metadata.
+
+## One-dimensional convolution and pooling
+
+Static F32 sequence tensors `[N,C,L]` now admit `Conv`, `MaxPool` and
+`AveragePool` under opsets 13 and 17. The importer appends a unit spatial axis,
+runs the existing native spatial lowering on `[N,C,L,1]`, then restores the
+rank-three result. This permits temporal and sequence blocks inside an admitted
+model without adding an operator, foreign runtime or model wire format.
+
+| Operation | Admitted one-dimensional profile |
+|---|---|
+| Conv | F32 weights `[M,C/group,K]`, constant or runtime; optional `[M]` bias; groups, depthwise filters, stride and dilation. |
+| MaxPool | One value output, unit dilation, floor or ceil sizing; index outputs remain unsupported. |
+| AveragePool | Floor sizing and explicit `count_include_pad=0` or `1`, with the existing default of zero. |
+
+Spatial `kernel_shape`, `strides` and Conv `dilations` contain one integer;
+explicit `pads` contains `[before,after]`. `VALID`, `SAME_UPPER` and
+`SAME_LOWER` retain their existing static padding semantics. Automatic padding
+cannot be combined with explicit pads, and MaxPool ceil sizing accepts only
+explicit/absent pads or `auto_pad=NOTSET`. Pooling pads must remain smaller than
+the corresponding kernel. AveragePool ceil sizing and later-schema dilations
+remain refusals. Invalid attributes, empty/dynamic dimensions and unsupported
+dtypes retain the ordinary typed import failures.
+
+Conv lowers to four native nodes (input and filter reshapes, Conv2d, output reshape);
+MaxPool uses three; AveragePool uses four and its two existing bounded parameters.
+All helpers, parameters, tensor sizes and work count against the original import
+allowances. The unit axis preserves the native kernels' arithmetic order. Average
+pooling still accumulates with separate F32 operations and divides once; it does
+not replace division with reciprocal filter weights or promise another backend's
+rounding behavior.
+
+Original ONNX bytes and original parameter names, shapes and bits remain intact.
+Existing two-dimensional graphs retain their canonical graph bytes; new conversions
+bind the updated source-derived importer identity. GlobalAveragePool already
+supports ranks three through eight and keeps its existing path. RGB detector
+packages still require the explicit `[1,3,H,W]` image input contract: support for
+internal one-dimensional layers does not add an audio input or audio detector.
+
+The `onnx_attention_execution one_dimensional` tests exercise actual scalar and
+optimized executors, canonical graph/Safetensors reload, an independent grouped
+convolution oracle, pooling boundaries, compatibility, limits and cancellation.
+Current execution evidence is recorded in `IMPLEMENTATION_STATUS.md`.
 
 ## Opset 17 and LayerNormalization
 

@@ -5,6 +5,33 @@
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
 
+## Native one-dimensional model layers — 2026-11-23
+
+The ONNX importer now accepts static F32 `[N,C,L]` Conv, MaxPool and AveragePool
+under opsets 13 and 17. Exact unit-axis reshapes route sequence tensors through
+the existing spatial kernels and restore rank three. Grouped/depthwise filters,
+constant or runtime weights, optional bias, stride/dilation and admitted automatic
+padding retain their native semantics. Pooling preserves supported ceil/floor
+windows and include/exclude-padding divisors. Unsupported profiles still refuse.
+
+The conversion adds no operator, dependency or durable format. Original source
+and parameter values remain intact; existing rank-four lowering is unchanged.
+All generated values, parameters and work share the original finite import
+allowances. The separate importer fingerprint includes the new module. Existing
+GlobalAveragePool rank support and RGB package image-input requirements remain
+unchanged; this does not create an audio input or activate a model.
+
+The genuine core, tensor and model-IR libraries compiled with the pinned
+`nightly-2026-08-31` toolchain, and scoped rustfmt passed for all five feature
+source/test files. Eight new contracts cover independent convolution/pooling
+oracles, actual scalar/optimized execution, artifact reload, legacy graph bytes,
+malformed inputs, exact bounds and cancellation. The ordinary focused test build
+was killed by signal 9 while generating the test executable, with no Rust source
+diagnostic; no new test had executed at this checkpoint. A target-only compiler
+retry preserves the same source, dependencies and tests. See
+[one-dimensional import](docs/onnx_import.md#one-dimensional-convolution-and-pooling).
+This advances FSS-139 (`fss-x4a.14.10`); broader model and release gates remain open.
+
 ## Explicit M2TS extraction and retained-byte receipts — 2026-11-23
 
 The bounded AVC/HEVC transport parser now admits explicit `TsFraming::M2ts192`

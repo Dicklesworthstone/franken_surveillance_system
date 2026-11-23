@@ -14,6 +14,8 @@ mod head_softmax;
 mod matmul_vectors;
 #[path = "onnx_attention_execution/maxpool_ceil.rs"]
 mod maxpool_ceil;
+#[path = "onnx_attention_execution/one_dimensional.rs"]
+mod one_dimensional;
 #[path = "onnx_attention_execution/reductions.rs"]
 mod reductions;
 #[path = "onnx_attention_execution/shape_selection.rs"]
