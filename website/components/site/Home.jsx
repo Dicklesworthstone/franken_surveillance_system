@@ -125,7 +125,7 @@ export default function Home() {
               <dt className="micro">A camera</dt>
               <dd>
                 <b>$35</b>
-                <span>What a Wi-Fi camera costs now. The intelligence is in the software, on a machine you own.</span>
+                <span>What a Wi-Fi camera costs now. The analysis runs in software, on a machine you own.</span>
               </dd>
             </div>
             <div>
@@ -150,7 +150,7 @@ export default function Home() {
               <dt className="micro">For an agent</dt>
               <dd>
                 <b>14 operations</b>
-                <span>One grammar by command line and local MCP. A model may propose. It never authorizes.</span>
+                <span>One grammar by command line and local MCP. A model may propose an action but never authorize one.</span>
               </dd>
             </div>
           </dl>
@@ -164,7 +164,7 @@ export default function Home() {
             </p>
             <div className="thesis__side reveal" style={{ "--delay": "0.1s" }}>
               <p className="prose">
-                Franken Surveillance is the layer in between. It takes a bunch of cheap cameras from mixed makers, gives
+                Franken Surveillance is the layer in between: it takes a bunch of cheap cameras from mixed makers, gives
                 them one clock and one map, and keeps the evidence straight enough that an agent can act on it.
               </p>
             </div>

@@ -65,7 +65,7 @@ const PLANES = [
     code: "MEMBRANE",
     name: "Agent Operating Layer (fss/1)",
     role: "SituationCapsule, WorldEnvelope, investigations and handoffs",
-    owns: "Composes lower planes into anchor-pinned SituationCapsules across 8 token-budgeted views, preserves high-loss possible worlds across compression with SemanticCompressionReceipts, tracks durable InvestigationCases, work claims and shared findings, and writes root-last HandoffCapsules so zero critical state lives only in chat.",
+    owns: "Composes lower planes into anchor-pinned SituationCapsules across 8 token-budgeted views, preserves high-loss possible worlds across compression with SemanticCompressionReceipts, tracks durable InvestigationCases, work claims and shared findings, and writes root-last HandoffCapsules so no critical state lives only in chat.",
     forbids: "Not a fourth truth plane. Cannot strengthen a knowledge state, erase a failure domain, drop a protected warning to fit a token budget, or bypass effect authority.",
     crates: ["fss-core", "fss-reference", "fss-cli"],
     binaries: ["fss", "fss-mcp", "fss-hydration-rehearsal"],
@@ -276,7 +276,7 @@ export default function ArchitectureDeck() {
           note={
             <p>
               Incumbent NVRs and home-lab stacks are mature, proven tools with broad camera ecosystems today. Franken
-              Surveillance is an unqualified reference implementation built around a stricter architectural thesis.
+              Surveillance is an unqualified reference implementation with a stricter design.
             </p>
           }
         >

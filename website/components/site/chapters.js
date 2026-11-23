@@ -54,7 +54,7 @@ export const CHAPTERS = [
     plate: "door",
     title: "An agent on the [night shift].",
     thesis:
-      "Nobody should have to watch five video streams all night, and that includes an AI agent. It asks for the situation, gets a briefing sized to its budget, and may act only inside what you granted.",
+      "Nobody, human or AI, should have to watch five video streams all night. The agent asks for the situation, gets a briefing sized to its budget, and may act only inside what you granted.",
     sections: [
       ["agent", "A briefing with a budget"],
       ["effects", "Acting inside its grants"],
@@ -70,7 +70,7 @@ export const CHAPTERS = [
     plateWidths: [960, 1600, 1920],
     title: "Written down [once], and kept.",
     thesis:
-      "Everything above lands in one append-only record, held by one safe-Rust workspace. The chapter closes with the plainest list on the page: what runs today, what is built but unproven, and what is planned.",
+      "Everything above lands in one append-only record, held by one safe-Rust workspace. The chapter ends with a list of what runs today, what is built but unproven, and what is planned.",
     sections: [
       ["record", "Every byte has a fingerprint"],
       ["architecture", "Planes and the membrane"],

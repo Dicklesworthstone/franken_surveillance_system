@@ -448,7 +448,7 @@ export function ByteCheck({ text }) {
     <Figure
       className={"bytes" + (same ? "" : " is-changed")}
       eyebrow="A stored object"
-      title="Change any character. The root notices."
+      title="Change any character and the digest no longer matches the root."
       titleId="bytes-title"
       badge={<Badge kind="browser" />}
     >

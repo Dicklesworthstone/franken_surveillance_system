@@ -1,6 +1,8 @@
 // The page's shared parts: headings with one lit phrase, the reticle, chapters,
 // sections, and the framed figure with its provenance badge.
 import { sectionIndex } from "./chapters";
+import { sharePath } from "./share";
+import ShareLink from "./ShareLink";
 
 /** A heading whose [bracketed] words are the lit phrase. */
 export function Lit({ text, glow = false }) {
@@ -143,6 +145,9 @@ export function Chapter({ chapter, children }) {
               <Lit text={chapter.title} />
             </h2>
             <p className="lede">{chapter.thesis}</p>
+            <p className="opener__share">
+              <ShareLink path={sharePath(chapter.id)} title={`${chapter.title.replace(/[[\]]/g, "")} Franken Surveillance`} />
+            </p>
           </div>
           <div className="opener__side reveal" style={{ "--delay": "0.08s" }}>
             <span className="opener__numeral" aria-hidden="true">

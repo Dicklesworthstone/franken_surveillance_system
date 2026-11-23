@@ -19,7 +19,7 @@ const mono = localFont({
 
 const title = "Franken Surveillance: a pure-Rust security room built from $35 cameras";
 const description =
-  "Open-source, local-first pure-Rust software that joins cheap Wi-Fi cameras from any mix of makers into one calibrated model of your property, records what it saw, says what it could not see, keeps a crash-safe record and gives an AI agent a bounded place to watch and act.";
+  "Open-source, local-first software in pure Rust. It joins cheap Wi-Fi cameras from any mix of makers into one calibrated model of your property, records what it saw, says what it could not see, and gives an AI agent a bounded place to watch and act.";
 
 export const metadata = {
   metadataBase: new URL("https://franken-surveillance.com"),

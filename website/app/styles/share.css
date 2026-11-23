@@ -1,0 +1,100 @@
+/* Sharing a chapter: the small link under each opener, and the chapter's own page. */
+.opener__share {
+  margin-top: 22px;
+}
+.share-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 40px;
+  padding: 0 16px 0 13px;
+  border: 1px solid color-mix(in srgb, var(--chapter) 34%, transparent);
+  border-radius: 999px;
+  background: rgb(5 7 11 / 0.62);
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  letter-spacing: 0.02em;
+  color: var(--text);
+  text-decoration: none;
+  transition:
+    border-color 0.2s var(--ease),
+    background-color 0.2s var(--ease),
+    color 0.2s var(--ease);
+}
+.share-link svg {
+  width: 15px;
+  height: 15px;
+  color: var(--chapter);
+}
+.share-link:hover {
+  border-color: color-mix(in srgb, var(--chapter) 70%, transparent);
+  background: color-mix(in srgb, var(--chapter) 12%, rgb(5 7 11 / 0.8));
+}
+.share-link:focus-visible {
+  outline: 2px solid var(--lamp);
+  outline-offset: 3px;
+}
+.share-link.is-copied {
+  border-color: color-mix(in srgb, var(--seen) 60%, transparent);
+}
+.share-link.is-copied svg {
+  color: var(--seen);
+}
+
+/* A chapter's own page, seen only without scripts or for the moment before the redirect. */
+.share {
+  position: relative;
+  display: grid;
+  align-items: end;
+  min-height: 100svh;
+  overflow: hidden;
+  isolation: isolate;
+}
+.share__plate {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.share::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background:
+    linear-gradient(90deg, rgb(5 7 11 / 0.92), rgb(5 7 11 / 0.5) 70%),
+    linear-gradient(0deg, var(--ink), transparent 60%);
+}
+.share__body {
+  width: min(100% - 2 * var(--gutter), var(--page));
+  margin-inline: auto;
+  padding-block: 120px clamp(48px, 8vw, 96px);
+}
+.share__brand {
+  position: absolute;
+  top: 28px;
+  left: var(--gutter);
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  text-decoration: none;
+}
+.share__brand svg {
+  width: 28px;
+  height: 28px;
+}
+.share .lede {
+  max-width: 40rem;
+  margin-top: 22px;
+}
+.share__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 32px;
+}

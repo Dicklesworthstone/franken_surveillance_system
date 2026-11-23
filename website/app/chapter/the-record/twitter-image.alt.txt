@@ -1,0 +1,1 @@
+Chapter 05, Written down once, and kept. Six ledger rows with their times, kinds and SHA-256 digests, from the first observation to the handoff.
