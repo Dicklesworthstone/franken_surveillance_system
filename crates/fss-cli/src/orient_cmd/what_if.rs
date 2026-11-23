@@ -476,7 +476,11 @@ pub(super) fn execute(
     args: &ExplainArgs,
     event_id: &EventId,
     scenario: &str,
+    control: &crate::RequestControl<'_>,
 ) -> (String, ExitIdentity) {
+    if control.is_cancelled() {
+        return crate::request_control::cancelled_read("explain", &args.root);
+    }
     if args.at.is_some()
         || args.custody
         || args.score_calibration.is_some()
@@ -548,12 +552,19 @@ pub(super) fn execute(
         Err(_) => return internal_failure("explain", &args.root),
     };
     let started = Instant::now();
-    let cancelled = || authority.cancellation_reason.is_some() || started.elapsed() >= DEADLINE;
+    let cancelled = || {
+        control.is_cancelled()
+            || authority.cancellation_reason.is_some()
+            || started.elapsed() >= DEADLINE
+    };
     let owner =
         match ImmutableRetainedSource::open_cancellable(&args.root, limits.read, &cx, &cancelled) {
             Ok(owner) => owner,
             Err(_) => {
                 cx.drain_and_finalize();
+                if control.is_cancelled() {
+                    return crate::request_control::cancelled_read("explain", &args.root);
+                }
                 return (
                     execution_diagnostic(
                         "explain",
@@ -565,6 +576,13 @@ pub(super) fn execute(
                 );
             }
         };
+    let token = snapshot_anchor_token(owner.snapshot());
+    let request_digest = request_identity("fss.cli.event_counterfactual.request.v1", |encoder| {
+        encoder.digest(input);
+        encoder.text(&token);
+        encoder.u64(limits.read.max_read_bytes as u64);
+        encoder.u64(limits.read.max_read_objects as u64);
+    });
     let mut observation = Observation {
         anchor: owner.snapshot().anchor.clone(),
         observed_at: owner.snapshot().latest_evidence_time,
@@ -647,14 +665,6 @@ pub(super) fn execute(
             error.stable_id(),
             "The complete hypothetical request does not match the retained event or exceeds its numerical bounds.",
         ))?;
-        let token = snapshot_anchor_token(&snapshot);
-        let request_digest =
-            request_identity("fss.cli.event_counterfactual.request.v1", |encoder| {
-                encoder.digest(input);
-                encoder.text(&token);
-                encoder.u64(limits.read.max_read_bytes as u64);
-                encoder.u64(limits.read.max_read_objects as u64);
-            });
         let mut read = CounterfactualRead {
             snapshot,
             orientation,
@@ -695,9 +705,15 @@ pub(super) fn execute(
         Ok((read, plan))
     })();
     observation.read_usage = owner.usage();
+    let interrupted = control
+        .is_cancelled()
+        .then(|| super::cancelled_explanation(args, owner.snapshot(), request_digest));
     drop(owner);
     cx.drain_and_finalize();
-    match prepared {
+    if let Some(response) = interrupted {
+        return response;
+    }
+    let response = match prepared {
         Ok((read, plan)) => match plan.render(args, &read) {
             Ok(output) if output.len().saturating_add(1) <= evidence::MAX_RESPONSE_BYTES => {
                 (output, ExitIdentity::SUCCESS)
@@ -711,6 +727,16 @@ pub(super) fn execute(
             ),
         },
         Err((code, reason)) => refused(args, input, &observation, code, reason),
+    };
+    if control.is_cancelled() {
+        super::cancelled_explanation_at(
+            args,
+            &observation.anchor,
+            observation.observed_at.0,
+            request_digest,
+        )
+    } else {
+        response
     }
 }
 

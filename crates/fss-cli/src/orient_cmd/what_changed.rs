@@ -487,8 +487,21 @@ fn failed(
     args: &ExplainArgs,
     request_digest: ContentDigest,
     error: EventChangesError,
+    control: &crate::RequestControl<'_>,
 ) -> (String, ExitIdentity) {
-    if let Some(observation) = &error.observation {
+    let interrupted = || match &error.observation {
+        Some(observation) => super::cancelled_explanation_at(
+            args,
+            &observation.anchor,
+            observation.observed_at.0,
+            request_digest,
+        ),
+        None => crate::request_control::cancelled_read("explain", &args.root),
+    };
+    if control.is_cancelled() {
+        return interrupted();
+    }
+    let response = if let Some(observation) = &error.observation {
         refused(
             args,
             request_digest,
@@ -506,6 +519,11 @@ fn failed(
             ),
             ExitIdentity::AGENT_REFUSED,
         )
+    };
+    if control.is_cancelled() {
+        interrupted()
+    } else {
+        response
     }
 }
 
@@ -514,7 +532,11 @@ pub(super) fn execute(
     event_id: &EventId,
     from_revision_digest: ContentDigest,
     to_revision_digest: ContentDigest,
+    control: &crate::RequestControl<'_>,
 ) -> (String, ExitIdentity) {
+    if control.is_cancelled() {
+        return crate::request_control::cancelled_read("explain", &args.root);
+    }
     if args.at.is_some()
         || args.custody
         || args.score_calibration.is_some()
@@ -551,12 +573,12 @@ pub(super) fn execute(
         }
     });
     if let Err(error) = request.validate() {
-        return failed(args, input, error);
+        return failed(args, input, error, control);
     }
     let limits = EventChangesLimits::default();
     let allowance = match limits.allowance() {
         Ok(allowance) => allowance,
-        Err(error) => return failed(args, input, error),
+        Err(error) => return failed(args, input, error, control),
     };
     let authority = match OperationId::parse("operation:explain-event-changes")
         .map_err(|_| ())
@@ -584,13 +606,17 @@ pub(super) fn execute(
         Err(_) => return internal_failure("explain", &args.root),
     };
     let started = Instant::now();
-    let cancelled = || authority.cancellation_reason.is_some() || started.elapsed() >= DEADLINE;
+    let cancelled = || {
+        control.is_cancelled()
+            || authority.cancellation_reason.is_some()
+            || started.elapsed() >= DEADLINE
+    };
     let prepared =
         match prepare_event_changes_in_deployment(&args.root, &request, limits, &cx, &cancelled) {
             Ok(prepared) => prepared,
             Err(error) => {
                 cx.drain_and_finalize();
-                return failed(args, input, error);
+                return failed(args, input, error, control);
             }
         };
     let observation = EventChangesObservation {
@@ -599,45 +625,90 @@ pub(super) fn execute(
         observed_at: prepared.answer().snapshot.latest_evidence_time,
         read_usage: prepared.answer().read_usage,
     };
-    let plan = match Plan::compile(args, prepared.answer(), limits) {
+    let plan = Plan::compile(args, prepared.answer(), limits);
+    if control.is_cancelled() {
+        let response = super::cancelled_explanation(
+            args,
+            &prepared.answer().snapshot,
+            prepared.answer().request_digest,
+        );
+        drop(prepared);
+        cx.drain_and_finalize();
+        return response;
+    }
+    let plan = match plan {
         Ok(plan) => plan,
         Err(_) => {
             drop(prepared);
             cx.drain_and_finalize();
-            return refused(
+            let response = refused(
                 args,
                 input,
                 &observation,
                 ERR_AGENT_CONTEXT_INCOMPLETE,
                 "The complete comparison and protected current context do not fit the selected response allowance.",
             );
+            return if control.is_cancelled() {
+                super::cancelled_explanation_at(
+                    args,
+                    &observation.anchor,
+                    observation.observed_at.0,
+                    input,
+                )
+            } else {
+                response
+            };
         }
     };
-    match plan.render(args, prepared.answer()) {
+    let preview = plan.render(args, prepared.answer());
+    if control.is_cancelled() {
+        let response = super::cancelled_explanation(
+            args,
+            &prepared.answer().snapshot,
+            prepared.answer().request_digest,
+        );
+        drop(prepared);
+        cx.drain_and_finalize();
+        return response;
+    }
+    match preview {
         Ok(output)
             if output.len().saturating_add(1) <= evidence::MAX_RESPONSE_BYTES && !cancelled() => {}
         _ => {
             drop(prepared);
             cx.drain_and_finalize();
-            return refused(
+            let response = refused(
                 args,
                 input,
                 &observation,
                 ERR_AGENT_CONTEXT_INCOMPLETE,
                 "Complete comparison output exceeded the selected byte/context allowance or cooperative deadline.",
             );
+            return if control.is_cancelled() {
+                super::cancelled_explanation_at(
+                    args,
+                    &observation.anchor,
+                    observation.observed_at.0,
+                    input,
+                )
+            } else {
+                response
+            };
         }
     }
     let answer = match prepared.finish() {
         Ok(answer) => answer,
         Err(error) => {
             cx.drain_and_finalize();
-            return failed(args, input, error);
+            return failed(args, input, error, control);
         }
     };
     cx.drain_and_finalize();
-    // No callback or I/O follows successful final admission; only exact counters and pure JSON.
-    match plan.render(args, &answer) {
+    // No storage is reopened after final admission, including for a cancelled response.
+    if control.is_cancelled() {
+        return super::cancelled_explanation(args, &answer.snapshot, answer.request_digest);
+    }
+    let response = match plan.render(args, &answer) {
         Ok(output) if output.len().saturating_add(1) <= evidence::MAX_RESPONSE_BYTES => {
             (output, ExitIdentity::SUCCESS)
         }
@@ -653,5 +724,10 @@ pub(super) fn execute(
             ERR_AGENT_CONTEXT_INCOMPLETE,
             "The complete final response exceeds its registered output bounds; no partial comparison was delivered.",
         ),
+    };
+    if control.is_cancelled() {
+        super::cancelled_explanation(args, &answer.snapshot, answer.request_digest)
+    } else {
+        response
     }
 }

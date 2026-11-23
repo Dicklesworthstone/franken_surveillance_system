@@ -2632,6 +2632,16 @@ pub(crate) fn execute_explain_with_time(
     args: &ExplainArgs,
     clock: crate::session_time::Clock<'_>,
 ) -> (String, ExitIdentity) {
+    execute_explain_with_control(args, clock, &crate::RequestControl::uncancelled())
+}
+
+/// Keep event metadata, optional custody and final delivery under the same request owner.
+/// Session-owned learning reads retain their existing admission clock and durable outcomes.
+pub(crate) fn execute_explain_with_control(
+    args: &ExplainArgs,
+    clock: crate::session_time::Clock<'_>,
+    control: &crate::RequestControl<'_>,
+) -> (String, ExitIdentity) {
     let (event_id, question) = match &args.target {
         ExplainTarget::Learning {
             session,
@@ -2642,7 +2652,7 @@ pub(crate) fn execute_explain_with_time(
         ExplainTarget::Event(event_id) => (event_id, fss_core::ExplainQuestion::Why),
         ExplainTarget::EventWhyNot(event_id) => (event_id, fss_core::ExplainQuestion::WhyNot),
         ExplainTarget::EventCounterfactual { event_id, scenario } => {
-            return what_if::execute(args, event_id, scenario);
+            return what_if::execute(args, event_id, scenario, control);
         }
         ExplainTarget::EventComparison {
             event_id,
@@ -2654,18 +2664,24 @@ pub(crate) fn execute_explain_with_time(
                 event_id,
                 *from_revision_digest,
                 *to_revision_digest,
+                control,
             );
         }
     };
+    if control.is_cancelled() {
+        return crate::request_control::cancelled_read("explain", &args.root);
+    }
     let Some(token_limit) = explain_options::limit(args.view, args.budget_tokens) else {
         return internal_failure("explain", &args.root);
     };
     // No ambient clock is consulted on the existing, unchecked path.
     let started = args.custody.then(std::time::Instant::now);
-    let cancelled = || started.is_some_and(|at| at.elapsed() >= custody::TIMEOUT);
+    let cancelled =
+        || control.is_cancelled() || started.is_some_and(|at| at.elapsed() >= custody::TIMEOUT);
     let limits = OrientLimits::default();
     let (snapshot, historical) =
-        match history::read("explain", &args.root, &limits, args.at.as_ref()) {
+        match history::read_with_control("explain", &args.root, &limits, args.at.as_ref(), control)
+        {
             Ok(read) => read,
             Err(refusal) => return refusal,
         };
@@ -2700,123 +2716,206 @@ pub(crate) fn execute_explain_with_time(
             encoder.text(policy);
         }
     });
-    let request = OrientRequest {
-        view: AgentView::Brief,
-        principal: args.principal.clone(),
-        // An explicit total allowance also caps the prerequisite orientation. The rest is
-        // charged cumulatively by the support and optional custody projections.
-        budget_tokens: args
-            .budget_tokens
-            .map(|tokens| tokens.min(u64::from(AgentView::Brief.maximum_tokens()))),
-    };
-    let orientation = match orient_deployment(&snapshot, &request, &limits) {
-        Ok(orientation) => orientation,
-        Err(
-            error @ (OrientError::ContextBudgetExceeded { .. } | OrientError::TooManyEvents { .. }),
-        ) => {
-            return rendered(
-                explain_options::orientation_refusal(
+    let interrupted = || cancelled_explanation(args, &snapshot, request_digest);
+    if control.is_cancelled() {
+        return interrupted();
+    }
+    // Every early success/refusal below is pure output from this same verified snapshot.
+    // A single final gate also covers cancellation while a refusal is being rendered.
+    let response = (|| {
+        let request = OrientRequest {
+            view: AgentView::Brief,
+            principal: args.principal.clone(),
+            // An explicit total allowance also caps the prerequisite orientation. The rest is
+            // charged cumulatively by the support and optional custody projections.
+            budget_tokens: args
+                .budget_tokens
+                .map(|tokens| tokens.min(u64::from(AgentView::Brief.maximum_tokens()))),
+        };
+        let orientation_result = orient_deployment(&snapshot, &request, &limits);
+        if control.is_cancelled() {
+            return interrupted();
+        }
+        let orientation = match orientation_result {
+            Ok(orientation) => orientation,
+            Err(
+                error @ (OrientError::ContextBudgetExceeded { .. }
+                | OrientError::TooManyEvents { .. }),
+            ) => {
+                return rendered(
+                    explain_options::orientation_refusal(
+                        &snapshot,
+                        request_digest,
+                        args.view,
+                        &args.principal,
+                        token_limit,
+                        error.to_string(),
+                    ),
+                    ExitIdentity::AGENT_REFUSED,
+                    "explain",
+                    &args.root,
+                );
+            }
+            Err(OrientError::UnsupportedView(_) | OrientError::Contract(_)) => {
+                return internal_failure("explain", &args.root);
+            }
+        };
+        let explanation_result = fss_reference::agent_orient::explain_event_with_question(
+            &snapshot,
+            &orientation,
+            event_id,
+            question,
+        );
+        if control.is_cancelled() {
+            return interrupted();
+        }
+        match explanation_result {
+            Ok(Some(explanation)) => {
+                let support_result = evidence::compile(
                     &snapshot,
-                    request_digest,
+                    &orientation,
+                    &explanation,
                     args.view,
-                    &args.principal,
                     token_limit,
-                    error.to_string(),
-                ),
-                ExitIdentity::AGENT_REFUSED,
-                "explain",
-                &args.root,
-            );
-        }
-        Err(OrientError::UnsupportedView(_) | OrientError::Contract(_)) => {
-            return internal_failure("explain", &args.root);
-        }
-    };
-    match fss_reference::agent_orient::explain_event_with_question(
-        &snapshot,
-        &orientation,
-        event_id,
-        question,
-    ) {
-        Ok(Some(explanation)) => {
-            let mut support = match evidence::compile(
-                &snapshot,
-                &orientation,
-                &explanation,
-                args.view,
-                token_limit,
-            ) {
-                Ok(support) => support,
-                Err(error) => {
-                    return rendered(
-                        evidence::refusal(
-                            &orientation,
-                            &explanation,
-                            request_digest,
-                            evidence::refusal_id(&error),
-                            args.view,
-                            token_limit,
+                );
+                if control.is_cancelled() {
+                    return interrupted();
+                }
+                let mut support = match support_result {
+                    Ok(support) => support,
+                    Err(error) => {
+                        return rendered(
+                            evidence::refusal(
+                                &orientation,
+                                &explanation,
+                                request_digest,
+                                evidence::refusal_id(&error),
+                                args.view,
+                                token_limit,
+                            ),
+                            ExitIdentity::AGENT_REFUSED,
+                            "explain",
+                            &args.root,
+                        );
+                    }
+                };
+                if args.custody {
+                    let audit_limits =
+                        fss_publication::custody_audit::CustodyAuditLimits::default();
+                    let checked = match &historical {
+                        Some(scope) => crate::custody_review::check_event_at(
+                            &args.root,
+                            &snapshot,
+                            event_id,
+                            audit_limits,
+                            scope,
+                            &cancelled,
                         ),
-                        ExitIdentity::AGENT_REFUSED,
-                        "explain",
-                        &args.root,
-                    );
+                        None => crate::custody_review::check_event(
+                            &args.root,
+                            &snapshot,
+                            event_id,
+                            audit_limits,
+                            &cancelled,
+                        ),
+                    }
+                    .and_then(|review| custody::augment(&mut support, &review));
+                    if control.is_cancelled() {
+                        return interrupted();
+                    }
+                    if let Err(error) = checked {
+                        return rendered(
+                            custody::refusal(
+                                &orientation,
+                                &explanation,
+                                request_digest,
+                                &support,
+                                &error,
+                            ),
+                            ExitIdentity::AGENT_REFUSED,
+                            "explain",
+                            &args.root,
+                        );
+                    }
                 }
-            };
-            if args.custody {
-                let audit_limits = fss_publication::custody_audit::CustodyAuditLimits::default();
-                let checked = match &historical {
-                    Some(scope) => crate::custody_review::check_event_at(
-                        &args.root,
-                        &snapshot,
-                        event_id,
-                        audit_limits,
-                        scope,
-                        &cancelled,
-                    ),
-                    None => crate::custody_review::check_event(
-                        &args.root,
-                        &snapshot,
-                        event_id,
-                        audit_limits,
-                        &cancelled,
-                    ),
+                if args.score_calibration.is_some() {
+                    if control.is_cancelled() {
+                        return interrupted();
+                    }
+                    let augmented = fusion::augment(&mut support, &explanation, args);
+                    if control.is_cancelled() {
+                        return interrupted();
+                    }
+                    if let Err(error) = augmented {
+                        return rendered(
+                            fusion::refusal(
+                                &orientation,
+                                &explanation,
+                                request_digest,
+                                &support,
+                                &error,
+                            ),
+                            ExitIdentity::AGENT_REFUSED,
+                            "explain",
+                            &args.root,
+                        );
+                    }
                 }
-                .and_then(|review| custody::augment(&mut support, &review));
-                if let Err(error) = checked {
+                if let Some(scope) = &historical {
+                    if scope.augment(&mut support).is_err() {
+                        return rendered(
+                            evidence::refusal(
+                                &orientation,
+                                &explanation,
+                                request_digest,
+                                ERR_AGENT_CONTEXT_INCOMPLETE,
+                                args.view,
+                                token_limit,
+                            ),
+                            ExitIdentity::AGENT_REFUSED,
+                            "explain",
+                            &args.root,
+                        );
+                    }
+                }
+                let response = explanation_response(
+                    &orientation,
+                    &explanation,
+                    request_digest,
+                    &support,
+                    args.custody,
+                );
+                if cancelled() {
                     return rendered(
                         custody::refusal(
                             &orientation,
                             &explanation,
                             request_digest,
                             &support,
-                            &error,
+                            &crate::custody_review::CustodyReviewError::Cancelled,
                         ),
                         ExitIdentity::AGENT_REFUSED,
                         "explain",
                         &args.root,
                     );
                 }
-            }
-            if args.score_calibration.is_some() {
-                if let Err(error) = fusion::augment(&mut support, &explanation, args) {
-                    return rendered(
-                        fusion::refusal(
+                match response {
+                    Ok(json) if json.len().saturating_add(1) <= evidence::MAX_RESPONSE_BYTES => {
+                        (json, ExitIdentity::SUCCESS)
+                    }
+                    Ok(_) if args.custody => rendered(
+                        custody::refusal(
                             &orientation,
                             &explanation,
                             request_digest,
                             &support,
-                            &error,
+                            &crate::custody_review::CustodyReviewError::ContextBound,
                         ),
                         ExitIdentity::AGENT_REFUSED,
                         "explain",
                         &args.root,
-                    );
-                }
-            }
-            if let Some(scope) = &historical {
-                if scope.augment(&mut support).is_err() {
-                    return rendered(
+                    ),
+                    Ok(_) => rendered(
                         evidence::refusal(
                             &orientation,
                             &explanation,
@@ -2828,76 +2927,69 @@ pub(crate) fn execute_explain_with_time(
                         ExitIdentity::AGENT_REFUSED,
                         "explain",
                         &args.root,
-                    );
+                    ),
+                    Err(_) => internal_failure("explain", &args.root),
                 }
             }
-            let response = explanation_response(
-                &orientation,
-                &explanation,
-                request_digest,
-                &support,
-                args.custody,
-            );
-            if cancelled() {
-                return rendered(
-                    custody::refusal(
-                        &orientation,
-                        &explanation,
-                        request_digest,
-                        &support,
-                        &crate::custody_review::CustodyReviewError::Cancelled,
-                    ),
-                    ExitIdentity::AGENT_REFUSED,
-                    "explain",
-                    &args.root,
-                );
-            }
-            match response {
-                Ok(json) if json.len().saturating_add(1) <= evidence::MAX_RESPONSE_BYTES => {
-                    (json, ExitIdentity::SUCCESS)
-                }
-                Ok(_) if args.custody => rendered(
-                    custody::refusal(
-                        &orientation,
-                        &explanation,
-                        request_digest,
-                        &support,
-                        &crate::custody_review::CustodyReviewError::ContextBound,
-                    ),
-                    ExitIdentity::AGENT_REFUSED,
-                    "explain",
-                    &args.root,
+            Ok(None) => rendered(
+                unknown_event_response(
+                    &snapshot,
+                    &orientation,
+                    event_id,
+                    request_digest,
+                    args.view,
+                    token_limit,
+                    historical.as_ref(),
                 ),
-                Ok(_) => rendered(
-                    evidence::refusal(
-                        &orientation,
-                        &explanation,
-                        request_digest,
-                        ERR_AGENT_CONTEXT_INCOMPLETE,
-                        args.view,
-                        token_limit,
-                    ),
-                    ExitIdentity::AGENT_REFUSED,
-                    "explain",
-                    &args.root,
-                ),
-                Err(_) => internal_failure("explain", &args.root),
-            }
-        }
-        Ok(None) => rendered(
-            unknown_event_response(
-                &snapshot,
-                &orientation,
-                event_id,
-                request_digest,
-                args.view,
-                token_limit,
-                historical.as_ref(),
+                ExitIdentity::AGENT_REFUSED,
+                "explain",
+                &args.root,
             ),
-            ExitIdentity::AGENT_REFUSED,
-            "explain",
-            &args.root,
-        ),
-        Err(_) => internal_failure("explain", &args.root),
+            Err(_) => internal_failure("explain", &args.root),
+        }
+    })();
+    if control.is_cancelled() {
+        interrupted()
+    } else {
+        response
     }
 }
+
+fn cancelled_explanation(
+    args: &ExplainArgs,
+    snapshot: &DeploymentSnapshot,
+    request_digest: ContentDigest,
+) -> (String, ExitIdentity) {
+    cancelled_explanation_at(
+        args,
+        &snapshot.anchor,
+        snapshot.latest_evidence_time.0,
+        request_digest,
+    )
+}
+
+fn cancelled_explanation_at(
+    args: &ExplainArgs,
+    anchor: &LedgerAnchor,
+    observed_at_ns: i128,
+    request_digest: ContentDigest,
+) -> (String, ExitIdentity) {
+    crate::request_control::cancelled_anchored_read(
+        crate::request_control::CancelledRead {
+            command: "explain",
+            operation: "explain",
+            root: &args.root,
+            request_digest,
+            principal: &args.principal,
+            view: args.view,
+            capability: CAPABILITY_EXPLAIN,
+            payload_schema: AgentCognitiveEnvelope::SCHEMA,
+        },
+        anchor,
+        observed_at_ns,
+    )
+}
+
+#[cfg(test)]
+#[path = "orient_cmd/cancellation_tests.rs"]
+mod cancellation_tests;

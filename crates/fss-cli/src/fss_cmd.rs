@@ -602,7 +602,9 @@ fn execute_fss_with_clock_and_control(
         FssCommand::Orient(ref args) => {
             crate::orient_cmd::execute_orient_with_control(args, clock, control)
         }
-        FssCommand::Explain(ref args) => crate::orient_cmd::execute_explain_with_time(args, clock),
+        FssCommand::Explain(ref args) => {
+            crate::orient_cmd::execute_explain_with_control(args, clock, control)
+        }
         FssCommand::Follow(ref args) => {
             crate::follow_cmd::execute_follow_with_request_control(args, clock, control)
         }

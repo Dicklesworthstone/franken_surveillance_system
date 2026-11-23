@@ -116,16 +116,21 @@ impl HistoricalScope {
 
     /// Freshly verify the same selected prefix and the full current deletion/authority basis.
     /// Any head advance during a custody walk makes that walk unfit to answer this request.
-    pub(crate) fn recheck(&self, root: &Path) -> Result<DeploymentSnapshot, DeploymentReadError> {
+    pub(crate) fn recheck(
+        &self,
+        root: &Path,
+        cancelled: &(impl Fn() -> bool + Sync),
+    ) -> Result<DeploymentSnapshot, DeploymentReadError> {
         let unavailable = || DeploymentReadError::Unreadable {
             reason: "historical custody authority changed during the check".to_owned(),
         };
-        let history = DeploymentHistory::read(root, &OrientLimits::default())?;
+        let history =
+            DeploymentHistory::read_cancellable(root, &OrientLimits::default(), cancelled)?;
         if history_anchor_token(&history, history.head()).as_ref() != Some(&self.head) {
             return Err(unavailable());
         }
         let position = resolve_anchor(&history, &self.selected).map_err(|_| unavailable())?;
-        history.snapshot_at(position)
+        history.snapshot_at_cancellable(position, cancelled)
     }
 }
 
@@ -148,6 +153,7 @@ pub(crate) fn parse(
         .transpose()
 }
 
+#[cfg(test)]
 pub(crate) fn read(
     command: &str,
     root: &Path,

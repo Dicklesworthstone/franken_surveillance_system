@@ -74,6 +74,16 @@ pub(crate) fn cancelled_snapshot_read(
     read: CancelledRead<'_>,
     snapshot: &fss_reference::agent_orient::DeploymentSnapshot,
 ) -> (String, crate::error::ExitIdentity) {
+    cancelled_anchored_read(read, &snapshot.anchor, snapshot.latest_evidence_time.0)
+}
+
+/// Render from a completed immutable owner's verified authority observation alone.
+/// The caller must never construct this anchor by reopening storage after cancellation.
+pub(crate) fn cancelled_anchored_read(
+    read: CancelledRead<'_>,
+    anchor: &fss_core::LedgerAnchor,
+    observed_at_ns: i128,
+) -> (String, crate::error::ExitIdentity) {
     use fss_core::{
         BudgetVector, Completeness, KnowledgeState, ResponseOutcome, ResponseSafeRetry,
     };
@@ -87,7 +97,7 @@ pub(crate) fn cancelled_snapshot_read(
             principal: read.principal.clone(),
             session_id: None,
             mission_id: None,
-            anchor: snapshot.anchor.clone(),
+            anchor: anchor.clone(),
             view: read.view,
             capability: read.capability,
             outcome: ResponseOutcome::Cancelled,
@@ -111,7 +121,7 @@ pub(crate) fn cancelled_snapshot_read(
                 &BudgetVector::ZERO,
                 &BudgetVector::ZERO,
             ),
-            proof_pointers: vec![snapshot.anchor.state_root.to_text()],
+            proof_pointers: vec![anchor.state_root.to_text()],
             affordances: Vec::new(),
             affordance_objects: Vec::new(),
             decision_fingerprint: read.request_digest,
@@ -122,7 +132,7 @@ pub(crate) fn cancelled_snapshot_read(
             boundary: read_only_boundary(
                 "Observed caller cancellation after complete snapshot verification.".to_owned(),
             ),
-            created_at_ns: snapshot.latest_evidence_time.0,
+            created_at_ns: observed_at_ns,
             workspace_revision: None,
             idempotency_key: None,
         }),
