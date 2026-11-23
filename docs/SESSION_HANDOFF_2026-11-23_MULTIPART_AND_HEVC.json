@@ -1,0 +1,111 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-23",
+  "date_timezone": "America/New_York",
+  "mission": "Implement high-impact remaining functionality from the comprehensive plan and Beads, with meaningful commits directly to main through the explicitly authorized GitHub connector and no PRs.",
+  "basis": {
+    "started_at": "7286814285fa8c35912d6899f0605f035fcbfdba",
+    "plan": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+    "backlog": ".beads/issues.jsonl",
+    "requirements": [
+      {
+        "bead": "fss-x4a.13.4",
+        "external_ref": "FSS-064",
+        "status": "in_progress; native recovery integrated into CLI, broader archive qualification remains open"
+      },
+      {
+        "bead": "fss-x4a.11.7",
+        "external_ref": "FSS-049",
+        "status": "in_progress; HEVC liveness/reconnect parity advanced, broader transport fallback remains open"
+      }
+    ],
+    "findings": "Many open beads already have source implementations; selection followed concrete execution gaps rather than backlog status alone.",
+    "concurrent_main_preserved": [
+      "6978ad9a70866c6bd0bf1ed4c74eced97f903f0f",
+      "595573fdeafb1d2f83e36ee46d6e07447294591f"
+    ],
+    "hevc_commit": "7c0c0d495a750e48e95497d02ce27dd4f5117d54",
+    "current_s3_change": "The commit containing this handoff adds CLI continuation and process tests on top of the concurrent native inventory implementation."
+  },
+  "authority": {
+    "repository": "User explicitly authorized meaningful commits directly to main. Ref updates use a verified expected head and force=false; concurrent website/native/compiler changes are preserved.",
+    "runtime": "S3 continuation uses the original pending upload intent, scoped authority, deadline, cancellation and persisted remaining budget. HEVC selection is an inert pre-start choice and cannot extend the original work lease.",
+    "network": "No real camera, NAS, public provider account or remote archive was probed. Tests use bounded loopback fixtures.",
+    "exclusions": "No PRs, deployment, force push, credential discovery, policy weakening or new dependency admission."
+  },
+  "cases": [
+    {
+      "id": "lost_part_positive",
+      "finding": "An exact signed untruncated inventory can confirm a previously dispatched part. The CLI then drops the uncertain adapter and journal lock and cold-recovers the durably confirmed state before remaining parts or completion.",
+      "bound": "Strict increase in confirmed parts and journal sequence; no more than planned part count plus one passes; same local budget and one verified source buffer."
+    },
+    {
+      "id": "lost_part_inconclusive",
+      "finding": "Missing, corrupt or truncated inventory leaves the mutation uncertain and locally indeterminate. Subsequent invocations return that state without source, credentials or network; no write is replayed."
+    },
+    {
+      "id": "final_part_source_absent",
+      "finding": "A recovered active journal with every planned part confirmed can conditionally complete without rereading the local source. Core forward-lifetime and authority checks still apply."
+    },
+    {
+      "id": "hevc_liveness",
+      "finding": "Automatic and supervised HEVC recording owners support OPTIONS/default or empty GET_PARAMETER. The choice freezes before the first request or admitted attempt and survives Digest and reconnect generations, with no fallback."
+    }
+  ],
+  "evidence": {
+    "source_review": "Root and independent agents reviewed exact implementation blobs, type/borrow surfaces, durable custody and test oracles.",
+    "authored_tests": {
+      "cli": "archive_s3_upload_process/parts.rs and multipart_parts.rs cover lost sole/first part, no replay, remaining-part continuation, negative inventories and cold settled reporting.",
+      "hevc": "Six loopback regressions cover both methods, plain/Digest auth, 1/7/4096-byte chunks, recording-root parity, queued-before-send freezing, challenged deadline,405 refusal, and EOF/reconnect generation continuity."
+    },
+    "execution_status": "not executed locally",
+    "execution_blocker": "The execution service disconnected and remained unavailable before project compilation or regression execution could be established. Detached GitHub blobs preserved edits.",
+    "supplemental_workflows": [
+      {
+        "run_id": 45125561784,
+        "commit": "7c0c0d495a750e48e95497d02ce27dd4f5117d54",
+        "name": "native-supervision",
+        "last_observed": "queued; no test steps"
+      },
+      {
+        "run_id": 45125561785,
+        "commit": "7c0c0d495a750e48e95497d02ce27dd4f5117d54",
+        "name": "reference-rust",
+        "last_observed": "pending; no jobs"
+      }
+    ],
+    "limitations": "No local rustfmt, project typecheck, test pass, complete manifest audit, live-device test, provider compatibility or release qualification is asserted."
+  },
+  "invalidations": [
+    "Earlier detached native/XML/recovery experiments were superseded by concurrent main595573f and were not installed.",
+    "Positive ListParts evidence is part acceptance, not independent object retrievability, archive graph closure or replica qualification.",
+    "An already indeterminate owner cannot be resurrected by the new resume path.",
+    "A queued hosted workflow is not passing evidence."
+  ],
+  "obligations": [
+    {
+      "state": "pending",
+      "action": "Run focused Rust targets on the pinned nightly once an executor or hosted runner is available, then fix actual diagnostics."
+    },
+    {
+      "state": "pending",
+      "action": "Run repository-owned qualification and retain DSR evidence before upgrading support or release claims."
+    }
+  ],
+  "continuations": [
+    "cargo test --locked -p fss-reference --test live_hevc_recording_contract --test supervised_hevc_recording_contract",
+    "cargo test --locked -p fss-reference --test s3_upload_native_contract",
+    "cargo test --locked -p fss-cli --test archive_s3_upload_process",
+    "cargo test --locked -p fss-object --test durable_upload_contract",
+    "Inspect the current main workflow runs before repeating validation; broader suites may stop on unrelated pre-existing failures."
+  ],
+  "unknowns": [
+    "Runtime behavior remains unverified until the authored regressions execute.",
+    "A pre-existing catalog-import test expected4 reads but observed10 in an earlier hosted run; its cause was not established or changed here.",
+    "Public-cloud TLS, encryption, archive graph/replica qualification, real-camera compatibility and full transport fallback remain outside these increments."
+  ],
+  "valid_next_affordances": [
+    "Review the commit containing this handoff and the linked operator documentation.",
+    "Resume validation from current main, preserving concurrent contributions and original qualification gates."
+  ]
+}

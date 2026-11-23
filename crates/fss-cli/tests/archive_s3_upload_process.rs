@@ -5,6 +5,11 @@
 ))]
 //! Actual-process native S3 upload and cold journal reuse against a bounded loopback oracle.
 
+#[path = "archive_s3_upload_process/parts.rs"]
+mod parts;
+#[path = "archive_s3_upload_process/multipart_parts.rs"]
+mod multipart_parts;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Read, Write};

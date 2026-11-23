@@ -1,8 +1,39 @@
 # Implementation status
 
-**As of:** 2026-11-22 America/New_York (dated feature sections retain their original verification scope)
+**As of:** 2026-11-23 America/New_York (dated feature sections retain their original verification scope)
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
+
+
+## Native S3 continuation and HEVC recording liveness — 2026-11-23
+
+`upload-s3-resume` now carries a positive lost-part reconciliation through to
+remaining parts or conditional completion. Exact ListParts evidence first passes
+the durable multipart owner; the CLI then discards the uncertain native adapter
+and reopens the journal at the newly confirmed pin. Every continuation must
+increase confirmed parts and the journal sequence, remains bounded by the original
+part count, and recovers only the persisted remaining transfer allowance. One
+verified source buffer is shared during an invocation. A recovered fully confirmed
+inventory can finish without reopening the source. Inconclusive inventories still
+settle locally as indeterminate, and later invocations do no source, credential or
+provider work for that settled owner. The concurrent native inventory implementation
+from `595573f` is preserved. See [native S3 uploads](docs/NATIVE_S3_OBJECT_UPLOADS.md).
+
+Automatic and supervised HEVC recording owners now expose the same explicit
+OPTIONS/default or empty GET_PARAMETER selection as their AVC counterparts.
+The choice freezes before the first prepared request or admitted supervised
+attempt and persists through Digest challenges and reconnect generations.
+Invalid/late changes preserve owned work; rejected methods do not trigger fallback.
+See [RTSP keepalive](docs/rtsp_keepalive.md).
+
+Source and independent review cover the new CLI process regressions and six HEVC
+loopback regressions. Local Rust execution and rustfmt became unavailable during
+the session; no passing local test result is asserted. Hosted validation was queued
+and remains supplemental, not release authority. FSS-064 / `fss-x4a.13.4` and
+FSS-049 / `fss-x4a.11.7` remain in progress. Public TLS, archive graph/replica
+qualification, real-camera support and full transport fallback are not closed by
+these changes. The exact boundaries and next checks are retained in
+[the session handoff](docs/SESSION_HANDOFF_2026-11-23_MULTIPART_AND_HEVC.json).
 
 ## Recovered archive verification, native detector integrity and AVC liveness — 2026-11-22
 

@@ -105,17 +105,18 @@ complete bounded report. When possible, nonterminal or indeterminate results sti
 complete report on stdout with a failing exit status.
 
 A lost create/part/complete/abort acknowledgement never implies that the operation did not
-happen. The command retains its original uncertain operation and records explicit local
-indeterminate settlement, using the pre-settlement journal head as a follow-up reference.
-It does not blindly recreate, complete again, or delete a possibly committed object. Cold
-reopening of locally settled uncertainty reports that state without credentials or provider I/O.
+happen. For an uncertain part on a known upload, **upload-s3-resume** can first obtain the exact
+positive inventory described below. Without conclusive evidence, the command retains its
+original uncertain operation and records explicit local indeterminate settlement, using the
+pre-settlement journal head as a follow-up reference. It does not blindly recreate, repeat a
+write, or delete a possibly committed object. Cold reopening of locally settled uncertainty
+reports that state without credentials or provider I/O.
 
-An uncertain completion can now be observed through the bounded read-only path below. Missing
-objects, partial listings and timeouts remain insufficient evidence. Lost initiation, part and
-abort acknowledgements still require other conclusive provider evidence before a separate
-repair/replacement workflow can be authorized.
-An upload interrupted between acknowledged operations can resume using its original upload ID
-and confirmed part receipts.
+An uncertain completion can be observed through the bounded read-only path below. Missing
+objects, partial listings and timeouts remain insufficient evidence. Lost initiation and abort
+acknowledgements still require other conclusive provider evidence before a separate
+repair/replacement workflow can be authorized. An upload interrupted between acknowledged
+operations can resume using its original upload ID and confirmed part receipts.
 
 An ambiguous journal write blocks further effects and sets journal_requires_cold_reopen.
 Preserve the original directory and independently retained pin. Wrong intent, changed route,
@@ -124,6 +125,50 @@ changed original budget ceiling, missing pin, revoked capability or exhausted al
 The fss.s3_upload_cli.v1 report carries intent/source/plan identities, pins, acknowledged part
 counts, cumulative/remaining transfer work, local work, receipt, uncertainty, local settlement
 and next action. Credentials, provider tokens, paths, object keys and source bytes are excluded.
+
+## Recover a lost part acknowledgement
+
+When the original owner is still pending and exactly one dispatched part lacks an
+acknowledgement, **upload-s3-resume** may issue one signed ListParts request for the known
+upload ID. The response must be a complete, untruncated page of at most 1000 parts, starting
+at marker zero. Bucket, key, upload ID, SHA-256/COMPOSITE profile, part numbers, byte lengths,
+SHA-256 values and all previously acknowledged opaque ETags must agree with the original
+journal. An absent upload or part, denial, redirect, malformed response, truncated page or
+conflicting field cannot authorize another write.
+
+The command also attempts this observation when a part reply is lost during the current
+resume invocation. A positive observation must confirm additional parts and advance the
+durable journal before continuation. The native adapter deliberately remains uncertain until
+that proof is accepted: the CLI discards the old owner, adapter, credentials and journal lock,
+then reopens at the new confirmed pin and rebuilds the active owner from persisted state.
+It never dispatches completion or another part using the uncertain adapter.
+
+Continuation is finite: at most one successful recovery cycle per planned part, plus a final
+completion pass. Every cycle retains the original intent, deadline, cancellation state and
+spent transfer allowance; filesystem work shares the same local budget. The source is verified
+once and retained during an invocation. After a restart, it is needed only when unconfirmed
+parts still require uploading. If the recovered journal confirms every part, conditional
+completion can proceed without reopening the source file.
+
+This path belongs to the original pending mutation owner. It does not resurrect an owner that
+was already settled as indeterminate, and it does not change **upload-s3-reconcile**, which is
+the separately authorized observation of an uncertain completed object. An abort invocation
+that positively reconciles a part may report active staging; repeating the explicit abort
+command cold-reopens that proven state before cancellation. Unknown inventories never permit
+an abort or replay.
+
+The process regressions cover a lost sole-part reply, continued upload after a lost first part,
+and missing, corrupt or truncated inventories followed by source-free, credential-free cold
+reporting of the settled uncertainty. Focused commands are:
+
+```sh
+cargo test --locked -p fss-reference --test s3_upload_native_contract
+cargo test --locked -p fss-cli --test archive_s3_upload_process
+```
+
+These CLI continuation tests were authored and source-reviewed on 2026-11-23. Local compilation,
+execution and rustfmt were blocked by the unavailable editing executor. Hosted checks remain
+supplemental evidence; authored tests alone do not establish provider or release qualification.
 
 ## Observe an indeterminate completion after restart
 
@@ -348,7 +393,8 @@ source failures, private filesystem scope, process-level success/abort and HTTP 
 Protocol references:
 [SigV4](https://docs.aws.amazon.com/AmazonS3/latest/developerguide/sig-v4-header-based-auth.html),
 [CreateMultipartUpload](https://docs.aws.amazon.com/AmazonS3/latest/API/API_CreateMultipartUpload.html),
-[UploadPart](https://docs.aws.amazon.com/AmazonS3/latest/API/API_UploadPart.html), and
+[UploadPart](https://docs.aws.amazon.com/AmazonS3/latest/API/API_UploadPart.html),
+[ListParts](https://docs.aws.amazon.com/AmazonS3/latest/API/API_ListParts.html), and
 [CompleteMultipartUpload](https://docs.aws.amazon.com/AmazonS3/latest/API/API_CompleteMultipartUpload.html),
 and [HeadObject](https://docs.aws.amazon.com/AmazonS3/latest/API/API_HeadObject.html).
 Independent range verification follows

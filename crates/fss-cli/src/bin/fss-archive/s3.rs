@@ -9,6 +9,8 @@
 mod observation;
 #[path = "s3_retrieval.rs"]
 mod retrieval;
+#[path = "s3_resume.rs"]
+mod resumption;
 #[path = "s3_io.rs"]
 mod s3_io;
 #[path = "s3_verify.rs"]
@@ -70,6 +72,8 @@ pub(super) const HELP: &str = "fss-archive upload-s3-prepare | upload-s3-resume 
   Prepare verifies the complete source and creates a durable pending journal without\n\
   provider contact. Independently retain its journal pin before resume or abort.\n\
   Resume skips acknowledged parts and completes the exact object without overwriting.\n\
+  A lost part reply permits one bounded inventory check, then a durable cold reopen.\n\
+  Only positive exact evidence permits forward work within the original allowance.\n\
   Abort addresses only known owned staging; an uncertain dispatch is never blindly retried.\n\
   Reconcile observes a locally closed indeterminate completion using a new read-only owner.\n\
   Its deadline and transfer bounds authorize only the new observation; the original upload\n\
@@ -660,6 +664,8 @@ struct Report {
     dispatch_requested: bool,
     failure: Option<&'static str>,
     durability_failed: bool,
+    // Internal continuation only; never a provider success or public receipt.
+    resume_after_reconciliation: bool,
 }
 impl Report {
     fn render(&self, options: &Options) -> Result<String> {
@@ -892,6 +898,7 @@ fn report_recovery(
         source_verified: false,
         dispatch_requested: false,
         durability_failed: false,
+        resume_after_reconciliation: false,
         failure: Some("indeterminate_ownership_requires_independent_reconciliation"),
     })
 }
@@ -927,6 +934,10 @@ fn drive<T: fss_object::multipart::MultipartTransport>(
     let allowance = recovery
         .as_ref()
         .map_or(options.transfer, |value| value.remaining_budget());
+    let total_parts = plan_chunks(options.source_bytes, options.policy)
+        .map_err(|_| Error::Runtime("object plan refused"))?
+        .chunks
+        .len();
     let (mut root, mut property, mut tree, child_spec) = upload_authority(options, allowance, now)?;
     let mut upload = if let Some(recovery) = recovery {
         StagedUpload::recover(
@@ -967,7 +978,11 @@ fn drive<T: fss_object::multipart::MultipartTransport>(
     let mut receipt = None;
     let mut settled = false;
     let mut dispatch_requested = false;
+    let mut resume_after_reconciliation = false;
     if options.command != Command::Prepare {
+        let was_part_uncertain =
+            upload.phase() == MultipartPhase::Uncertain(TransportOperation::UploadPart);
+        let confirmed_before = upload.confirmed_parts();
         let result: std::result::Result<(), ()> = match upload.phase() {
             MultipartPhase::Completed => upload
                 .finish(&mut tree, wall_now()?)
@@ -1000,6 +1015,20 @@ fn drive<T: fss_object::multipart::MultipartTransport>(
                             settled = true;
                         })
                         .map_err(|_| ()),
+                    Ok(MultipartPhase::Uploading)
+                        if options.command == Command::Resume && was_part_uncertain =>
+                    {
+                        if upload.durability_failed()
+                            || upload.confirmed_parts() <= confirmed_before
+                        {
+                            Err(())
+                        } else {
+                            // The native adapter stays uncertain until this durable
+                            // proof is independently recovered by a fresh owner.
+                            resume_after_reconciliation = true;
+                            Ok(())
+                        }
+                    }
                     Ok(_) => Ok(()),
                     Err(_) => Err(()),
                 }
@@ -1020,40 +1049,31 @@ fn drive<T: fss_object::multipart::MultipartTransport>(
                 }
             }
             MultipartPhase::Prepared | MultipartPhase::Uploading => {
-                let bytes = source.ok_or(Error::Runtime("verified source is absent"))?;
                 dispatch_requested = true;
-                let uploaded = upload.try_upload_chunks(
-                    &tree,
-                    MAX_SOURCE_BYTES,
-                    || wall_now().unwrap_or(TimestampNs(0)),
-                    |chunk| {
-                        let start = usize::try_from(chunk.offset)
-                            .map_err(|_| io::Error::other("source range"))?;
-                        let len = usize::try_from(chunk.len)
-                            .map_err(|_| io::Error::other("source range"))?;
-                        let end = start
-                            .checked_add(len)
-                            .ok_or_else(|| io::Error::other("source range"))?;
-                        let range = bytes
-                            .get(start..end)
-                            .ok_or_else(|| io::Error::other("source range"))?;
-                        let mut part = Vec::new();
-                        part.try_reserve_exact(len)
-                            .map_err(|_| io::Error::other("source buffer"))?;
-                        part.extend_from_slice(range);
-                        Ok::<_, io::Error>(part)
-                    },
-                );
-                if uploaded.is_err() {
-                    Err(())
-                } else {
+                let progress = if upload.phase() == MultipartPhase::Uploading
+                    && upload.confirmed_parts() == total_parts
+                {
+                    // Every original source range already has durable provider proof.
+                    // Finishing does not need to reopen or reread the local source.
                     upload
                         .finish(&mut tree, wall_now()?)
-                        .map(|value| {
-                            receipt = Some(value.digest());
-                            settled = true;
-                        })
+                        .map(resumption::Progress::Completed)
                         .map_err(|_| ())
+                } else {
+                    let bytes = source.ok_or(Error::Runtime("verified source is absent"))?;
+                    resumption::upload_pass(&mut upload, &mut tree, bytes)
+                };
+                match progress {
+                    Ok(resumption::Progress::Completed(value)) => {
+                        receipt = Some(value.digest());
+                        settled = true;
+                        Ok(())
+                    }
+                    Ok(resumption::Progress::Reopen) => {
+                        resume_after_reconciliation = true;
+                        Ok(())
+                    }
+                    Err(()) => Err(()),
                 }
             }
         };
@@ -1093,10 +1113,7 @@ fn drive<T: fss_object::multipart::MultipartTransport>(
         intent: upload.intent().clone(),
         phase: upload.phase(),
         confirmed: upload.confirmed_parts(),
-        total: plan_chunks(options.source_bytes, options.policy)
-            .map_err(|_| Error::Runtime("object plan refused"))?
-            .chunks
-            .len(),
+        total: total_parts,
         minimum,
         head,
         consumed: upload
@@ -1110,6 +1127,7 @@ fn drive<T: fss_object::multipart::MultipartTransport>(
         dispatch_requested,
         failure,
         durability_failed: upload.durability_failed(),
+        resume_after_reconciliation,
     };
     drop(upload);
     if settled {
@@ -1141,69 +1159,7 @@ fn execute_in(options: &Options, local: &Arc<ScopedS3Io>) -> Result<Report> {
             Some(&source),
         );
     }
-    let minimum = options
-        .minimum
-        .ok_or(Error::Runtime("minimum pin absent"))?;
-    let mut journal =
-        FileUploadJournal::open(&options.journal, journal_limits(), local.clone(), minimum)
-            .map_err(|_| {
-                Error::Runtime("exclusive journal reopen or minimum pin verification refused")
-            })?;
-    let recovery = MultipartRecovery::read(&journal, minimum)
-        .map_err(|_| Error::Runtime("canonical upload recovery refused"))?;
-    if recovery.intent() != &expected || recovery.original_budget() != options.transfer {
-        return Err(Error::Runtime(
-            "caller intent, source, route, plan or original allowance changed",
-        ));
-    }
-    if recovery
-        .owner_state()
-        .map_err(|_| Error::Runtime("upload ownership record refused"))?
-        == Some(ObligationState::Indeterminate)
-    {
-        return report_recovery(options, &recovery, expected);
-    }
-    let phase = recovery.phase();
-    if matches!(phase, MultipartPhase::Completed | MultipartPhase::Aborted)
-        || (phase == MultipartPhase::Prepared && options.command == Command::Abort)
-    {
-        return drive(
-            options,
-            &mut journal,
-            &mut NoNetwork,
-            Some(recovery),
-            expected,
-            None,
-        );
-    }
-    let source = if options.command == Command::Resume
-        && matches!(phase, MultipartPhase::Prepared | MultipartPhase::Uploading)
-    {
-        Some(verify_source(options, local)?)
-    } else {
-        None
-    };
-    let secret = local
-        .read_credentials()
-        .map_err(|_| Error::Runtime("private bounded credential file refused"))?;
-    let credentials = S3Credentials::from_lines(secret)
-        .map_err(|_| Error::Runtime("credential file format refused"))?;
-    let mut transport = NativeS3Transport::from_recovery(
-        options.endpoint.clone(),
-        credentials,
-        S3Limits::default(),
-        HostClock,
-        &recovery,
-    )
-    .map_err(|_| Error::Runtime("native transport recovery binding refused"))?;
-    drive(
-        options,
-        &mut journal,
-        &mut transport,
-        Some(recovery),
-        expected,
-        source.as_deref(),
-    )
+    resumption::execute(options, local, expected)
 }
 
 fn execute(options: &Options) -> Result<(String, bool)> {
