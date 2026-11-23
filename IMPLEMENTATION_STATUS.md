@@ -16,10 +16,10 @@ settled receipt; debug output reveals only length, and dropping the value clears
 its retained buffer. Failures return no partial media. The existing streaming
 `verify` path keeps its previous cost and memory behavior.
 
-The new `fss-archive upload-s3-restore` command composes this owner with separately
-scoped local output authority. It restores one object without reopening the
-original source file, supporting both a completed upload and an independently
-pinned positive completion observation of a locally indeterminate upload.
+`fss-archive upload-s3-restore`, committed in `70ea5053`, composes this owner
+with separately scoped local output authority. It restores one object without
+reopening the original source file, supporting both a completed upload and an
+independently pinned positive completion observation of a locally indeterminate upload.
 Original upload history, phase, custody origin and consumed authority remain
 unchanged. The existing 64 MiB object and 256 KiB range limits apply; retaining
 the object spends an additional full-object byte allowance before allocation or
@@ -33,12 +33,22 @@ unsafe output paths and independently observed indeterminate completion. Pinned
 formatting of touched files and independent source review passed. The restoration
 schema accepted 112 coherent states and rejected 13 contradictory states.
 
-The first pinned, locked, offline core test build was killed by SIGKILL while
-compiling unchanged Asupersync 0.5.0, before project compilation. A retry with
-one build job, incremental compilation disabled and debug info disabled is still
-pending. No changed-code compilation, executed regression or broad qualification
-pass is asserted. Whole-workspace formatting also encounters pre-existing drift
-outside the touched files.
+Three pinned, locked, offline executable-test builds stopped in unchanged
+Asupersync 0.5.0 after SIGKILL, before project diagnostics. An initial metadata-only
+check stopped at the same dependency. The last executable attempt ran after
+session-owned compiler/cache/target artifacts moved off RAM-backed tmpfs, freeing
+approximately 1.8 GiB, but still did not reach the changed code. A final metadata
+attempt then stopped before rustc with ENOSPC when the overlay disk filled.
+**The 13 new regressions remain unexecuted, and changed-code compilation was not
+achieved.** No compiler attempt remains running.
+
+Scoped pinned formatting, whitespace, schema checks and committed integrity checks
+passed separately. Each feature commit's exact changed blobs passed its committed
+manifest delta gate; only intended rows changed and the base manifest was preserved.
+The Beads update touched only FSS-068 while retaining all other records. Generated
+robot docs passed freshness checks on the clean committed CLI tree. Whole-workspace
+formatting encountered pre-existing drift outside the touched files and was not
+completed as a qualification gate.
 
 FSS-068 / `fss-x4a.13.8` remains `in_progress`. Incident graph reconstruction,
 public-cloud TLS, encryption, archive graph closure, independent replicas and

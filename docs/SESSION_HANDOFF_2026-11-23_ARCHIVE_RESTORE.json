@@ -7,7 +7,7 @@
     "plan": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
     "backlog": ".beads/issues.jsonl",
     "prior_handoff": "docs/SESSION_HANDOFF_2026-11-22_RECOVERED_ARCHIVE_AND_PRODUCER_INTEGRITY.json",
-    "source_revision": "d01fd524fa2cff84110084a06584ab948663cdcd",
+    "source_revision": "70ea5053304eb16476ede344328d12a690f89031",
     "requirement": "FSS-068",
     "bead": "fss-x4a.13.8",
     "backlog_status": "in_progress",
@@ -15,6 +15,7 @@
     "finding": "The existing signed, independently authorized GET path checked every original part and the whole-object SHA-256, then discarded the returned bytes. Source removal therefore left an integrity report but no recovered media.",
     "concurrent_main_preserved": [
       "ae8e15f64390ddc0df22dc23d41f8bbb54e71009",
+      "b990858f02c814f11a319480749e0dd18ca09ff6",
       "136a67f3860c5f8f6b4a421ce1fe0e22b7f01601",
       "d01fd524fa2cff84110084a06584ab948663cdcd"
     ]
@@ -34,12 +35,13 @@
     },
     {
       "feature": "Source-independent archive media restoration",
-      "commit": "this_commit",
+      "commit": "70ea5053304eb16476ede344328d12a690f89031",
       "scope": "upload-s3-restore composes the verified-byte owner with explicit separate local output authority, a private exclusive destination and the independently retained verification receipt.",
       "compatibility": "Supports both original Completed/Verified uploads and the already supported positive independently pinned completion observation for a locally indeterminate upload. Original upload history and consumed authority remain unchanged.",
       "operator_schema": "schemas/s3_restoration_cli.v1.json",
       "output": "Exclusive new private single-link regular file under a pinned parent directory descriptor. Write/readback capacity is admitted before creation. Exact stable readback and file/parent fsync distinguish output_created, output_verified and output_durable. Partial output is neither removed nor reused after failure.",
-      "receipt": "The existing bounded canonical v1/v2 retrieval receipt remains separate from the restored media. The CLI requires both durable media and durable receipt for a successful result; the returned report keeps these states distinct."
+      "receipt": "The existing bounded canonical v1/v2 retrieval receipt remains separate from the restored media. The CLI requires both durable media and durable receipt for a successful result; the returned report keeps these states distinct.",
+      "publication_state": "committed_to_main"
     }
   ],
   "authority": {
@@ -66,41 +68,119 @@
       ],
       "total": 13
     },
-    "rust_execution": "No changed-code compilation or test pass established. The first pinned locked/offline core test attempt failed while compiling unchanged Asupersync 0.5.0 with SIGKILL; a reduced-debug retry is still running.",
+    "rust_execution": "All 13 new regression functions remain unexecuted. Three pinned executable-test builds and an initial metadata-only check stopped in unchanged Asupersync 0.5.0 with SIGKILL, before changed-code diagnostics. The third executable attempt followed relocation of session-owned artifacts off tmpfs. A final metadata-only attempt stopped before rustc with ENOSPC. Neither changed-code compilation nor Rust test execution was achieved; no compiler attempt remains running.",
     "static_checks": [
       "Independent core ownership/budget/provenance review.",
       "Pinned rustfmt applied to the core implementation and regressions.",
       "Independent final CLI output-owner review: pinned parent, exclusive private file, bounded byte/readback/EINTR work, stable identity, explicit partial-file states and separate output/receipt deadlines.",
       "Draft 2020-12 restoration report schema checked against 112 coherent states and 13 contradictory states rejected.",
-      "Restoration CLI schema registered as SCHEMA-S3-RESTORATION-CLI-001. scripts/generate_robot_docs.py generated both catalogs and --check passed against the updated registry."
+      "Restoration CLI schema registered as SCHEMA-S3-RESTORATION-CLI-001. scripts/generate_robot_docs.py generated both catalogs and --check passed against the updated registry.",
+      "Pinned rustfmt --check passed on all nine touched Rust files; git diff --check passed for scoped changes."
     ],
-    "qualification": "No native, provider, archive-lane or release qualification pass is claimed; first dependency failure and pending retry remain explicit.",
+    "qualification": "No native, provider, archive-lane or release qualification pass is claimed. Scoped static and repository-integrity passes are separate from blocked compiler/test execution.",
     "compile_attempts": [
       {
-        "command": "cargo +nightly-2026-08-31 test --locked --offline -p fss-object --test retrieval_observation_contract",
+        "command": "rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-object --test retrieval_observation_contract",
         "environment": {
           "CARGO_BUILD_JOBS": "1"
         },
-        "result": "rustc compiling unchanged Asupersync 0.5.0 was killed by SIGKILL before project compilation; no regression executed"
+        "result": "rustc compiling unchanged Asupersync 0.5.0 was killed by SIGKILL before project compilation; no regression executed",
+        "source": "ae8e15f64390ddc0df22dc23d41f8bbb54e71009 plus reviewed restore blobs; not a clean-head qualification",
+        "exit_code": 101
       },
       {
-        "command": "cargo +nightly-2026-08-31 test --locked --offline -p fss-object --test retrieval_observation_contract",
+        "command": "rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-object --test retrieval_observation_contract",
         "environment": {
           "CARGO_BUILD_JOBS": "1",
           "CARGO_PROFILE_DEV_DEBUG": "0",
           "CARGO_PROFILE_TEST_DEBUG": "0",
           "CARGO_INCREMENTAL": "0"
         },
-        "result": "pending at this checkpoint; compiler, dependencies, repository configuration and tests unchanged"
+        "result": "rustc compiling unchanged Asupersync 0.5.0 was again killed by SIGKILL; cargo exited 101 before project diagnostics or tests",
+        "source": "ae8e15f64390ddc0df22dc23d41f8bbb54e71009 plus reviewed restore blobs; not a clean-head qualification",
+        "exit_code": 101
+      },
+      {
+        "command": "rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-object --test retrieval_observation_contract",
+        "source_revision": "70ea5053304eb16476ede344328d12a690f89031",
+        "environment": {
+          "CARGO_BUILD_JOBS": "1",
+          "CARGO_PROFILE_DEV_DEBUG": "0",
+          "CARGO_PROFILE_TEST_DEBUG": "0",
+          "CARGO_INCREMENTAL": "0",
+          "cache_and_target_location": "session-owned workspace overlay disk",
+          "RUSTUP_AUTO_INSTALL": "0"
+        },
+        "result": "cargo exited 101 after unchanged Asupersync 0.5.0 rustc was killed by SIGKILL; no project diagnostics or tests",
+        "exit_code": 101
       }
     ],
-    "whole_workspace_format": "Whole-workspace cargo fmt --check encounters pre-existing formatting drift outside this change. All touched Rust files passed pinned formatting."
+    "whole_workspace_format": "Whole-workspace cargo fmt --check encounters pre-existing formatting drift outside this change. All touched Rust files passed pinned formatting.",
+    "metadata_check": {
+      "command": "rustup run nightly-2026-08-31 cargo check --locked --offline -p fss-cli --bin fss-archive --test archive_s3_restore_process --test archive_s3_verification_process",
+      "source_revision": "70ea5053304eb16476ede344328d12a690f89031",
+      "result": "SIGKILL while compiling unchanged Asupersync 0.5.0 before changed APIs were checked; no metadata/typecheck pass established",
+      "environment": {
+        "CARGO_BUILD_JOBS": "1",
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0",
+        "RUSTUP_AUTO_INSTALL": "0"
+      },
+      "exit_code": 101
+    },
+    "committed_integrity": {
+      "commits": [
+        {
+          "commit": "b8282ec5ad58a48fae88ade2f4d3ce51a364b74e",
+          "parent": "b990858f02c814f11a319480749e0dd18ca09ff6",
+          "changed_paths": 5,
+          "manifested_paths": 4,
+          "result": "committed manifest_delta_gate.check passed on exact changed-blob SHA-256 values; only intended delta rows changed; immutable base preserved"
+        },
+        {
+          "commit": "70ea5053304eb16476ede344328d12a690f89031",
+          "parent": "d01fd524fa2cff84110084a06584ab948663cdcd",
+          "changed_paths": 14,
+          "manifested_paths": 12,
+          "result": "committed manifest_delta_gate.check passed on exact changed-blob SHA-256 values; only intended delta rows changed; immutable base preserved"
+        }
+      ],
+      "beads": "Only line 577 changed, appending one FSS-068 comment and updated_at; in_progress and all other target fields preserved, all 1833 other records byte-preserved.",
+      "robot_docs": "python3 -B scripts/generate_robot_docs.py --check passed on clean exact 70ea5053304eb16476ede344328d12a690f89031."
+    },
+    "host_resource_finding": {
+      "finding": "The temporary directory is backed by tmpfs, so the isolated compiler, registry cache and target artifacts consumed approximately 1.8 GiB of RAM.",
+      "remediation": "Relocated only this session's isolated compiler/cache/target artifacts to the workspace overlay disk, freeing approximately 1.8 GiB of RAM-backed tmpfs. Source worktrees, dependency pins and test assertions were unchanged.",
+      "state": "relocation completed; the subsequent executable build still received SIGKILL in unchanged Asupersync. The last metadata check then stopped before rustc because the overlay disk was full.",
+      "cleanup": "All session-owned compiler attempts stopped. Only disposable build-target/intermediate artifacts were removed after the final failure; source checkouts, pinned compiler and dependency cache were retained."
+    },
+    "final_metadata_check": {
+      "command": "rustup run nightly-2026-08-31 cargo check --locked --offline -p fss-cli --bin fss-archive --test archive_s3_restore_process --test archive_s3_upload_process",
+      "source_revision": "70ea5053304eb16476ede344328d12a690f89031",
+      "artifact_location": "workspace overlay disk",
+      "result": "ENOSPC (os error 28) creating the fss-cli build-output directory and log after artifact generation filled the overlay disk; rustc was not invoked for this final attempt. No typecheck pass.",
+      "environment": {
+        "CARGO_BUILD_JOBS": "1",
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0",
+        "RUSTUP_AUTO_INSTALL": "0"
+      },
+      "exit_code": 1
+    },
+    "compiler": "rustc 1.100.0-nightly (908501772 2026-08-30), pinned nightly-2026-08-31",
+    "dependency_fetch": {
+      "command": "rustup run nightly-2026-08-31 cargo fetch --locked",
+      "exit_code": 0,
+      "scope": "Session-isolated dependency cache; lockfile and dependency pins unchanged."
+    }
   },
   "obligations": [
     {
       "state": "pending",
       "owner": "FSS-068",
-      "work": "Execute affected core/native/CLI suites with the pinned toolchain and retain actual results before upgrading validation claims."
+      "work": "On a host with sufficient compiler memory and artifact disk, compile the exact pinned changed crates and execute all 13 new regressions plus affected existing suites. Retain actual results before upgrading native validation claims."
     },
     {
       "state": "pending",
