@@ -1,0 +1,284 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/archive_restore_completion.v1.json",
+  "title": "Completion body for a newly restored native AVC or HEVC selected archive",
+  "description": "Bounded RESTORE_COMPLETE.json body prepared only after every independently pinned copied window has passed native source replay, exact-byte restoration, derived catalog publication and cold reopen verification. Each original window retains its original root and is bounded to 32 MiB; the restored selection has at most 4096 windows. This file has a separate digest from the source export's COMPLETE.json. A visible file does not establish that its directory sync was acknowledged: only the invocation's restoration report distinguishes visible and durable completion. It restores the selected original windows under compact new ordinals and a newly derived catalog, without recreating original catalog history, a clock index, a deployment, current authority, coverage, absence evidence, or future retrievability. JSON alone proves neither native byte equality nor filesystem custody.",
+  "$comment": "Native validation additionally enforces exact restored_windows == indexed_windows, catalog page counts and roots, retained object/byte accounting, ordered nonoverlapping decode intervals, the namespace scope and the independent source completion pin. Standard JSON Schema does not compare arbitrary sibling numeric values or prove cryptographic/source/custody claims. The document is capped at 4 MiB by the producer.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "codec",
+    "sensor",
+    "stream",
+    "generation",
+    "anchor",
+    "receive_clock",
+    "decode_clock",
+    "time_scale",
+    "namespace",
+    "completion_sha256",
+    "request_sha256_observed",
+    "request_binding",
+    "original_snapshot_claim",
+    "original_query",
+    "new_snapshot",
+    "restored_windows",
+    "restored_pages",
+    "indexed_windows",
+    "retained_objects",
+    "retained_bytes",
+    "native_source_provenance_verified",
+    "playback_bytes_verified",
+    "decoded_pictures_verified",
+    "original_catalog_reconstructed",
+    "original_clock_index_restored",
+    "coverage_claim",
+    "filesystem_snapshot_atomic",
+    "complete"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.local_archive_restore_completion.v1"
+    },
+    "codec": {
+      "enum": [
+        "avc",
+        "hevc"
+      ]
+    },
+    "sensor": {
+      "$ref": "#/$defs/identifier"
+    },
+    "stream": {
+      "$ref": "#/$defs/identifier"
+    },
+    "generation": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 18446744073709551615
+    },
+    "anchor": {
+      "$ref": "#/$defs/digest"
+    },
+    "receive_clock": {
+      "$ref": "#/$defs/digest"
+    },
+    "decode_clock": {
+      "$ref": "#/$defs/digest"
+    },
+    "time_scale": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4294967295
+    },
+    "namespace": {
+      "$ref": "#/$defs/digest"
+    },
+    "completion_sha256": {
+      "$ref": "#/$defs/digest",
+      "description": "Independent caller pin for the copied export's COMPLETE.json. This is not the new restoration receipt digest."
+    },
+    "request_sha256_observed": {
+      "$ref": "#/$defs/digest"
+    },
+    "request_binding": {
+      "const": "semantic_consistency_only_unpinned_by_completion_v1"
+    },
+    "original_snapshot_claim": {
+      "$ref": "#/$defs/digest",
+      "description": "Historical inventory identity asserted by the pinned copied export, not independently reconstructed original catalog history."
+    },
+    "original_query": {
+      "$ref": "#/$defs/decode_interval"
+    },
+    "new_snapshot": {
+      "$ref": "#/$defs/digest"
+    },
+    "restored_windows": {
+      "$ref": "#/$defs/window_count"
+    },
+    "restored_pages": {
+      "$ref": "#/$defs/page_count"
+    },
+    "indexed_windows": {
+      "$ref": "#/$defs/window_count"
+    },
+    "retained_objects": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 131072
+    },
+    "retained_bytes": {
+      "$ref": "#/$defs/byte_count"
+    },
+    "native_source_provenance_verified": {
+      "const": true
+    },
+    "playback_bytes_verified": {
+      "const": true
+    },
+    "decoded_pictures_verified": {
+      "const": false
+    },
+    "original_catalog_reconstructed": {
+      "const": false
+    },
+    "original_clock_index_restored": {
+      "const": false
+    },
+    "coverage_claim": {
+      "const": "not_claimed"
+    },
+    "filesystem_snapshot_atomic": {
+      "const": false
+    },
+    "complete": {
+      "const": true
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "restored_windows": {
+            "const": 0
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "restored_pages": {
+            "const": 0
+          },
+          "indexed_windows": {
+            "const": 0
+          },
+          "retained_objects": {
+            "const": 0
+          },
+          "retained_bytes": {
+            "const": 0
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "restored_pages": {
+            "minimum": 1
+          },
+          "indexed_windows": {
+            "minimum": 1
+          },
+          "retained_objects": {
+            "minimum": 1
+          },
+          "retained_bytes": {
+            "minimum": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "indexed_windows": {
+            "const": 0
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "restored_windows": {
+            "const": 0
+          },
+          "restored_pages": {
+            "const": 0
+          },
+          "retained_objects": {
+            "const": 0
+          },
+          "retained_bytes": {
+            "const": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "restored_pages": {
+            "const": 0
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "restored_windows": {
+            "const": 0
+          },
+          "indexed_windows": {
+            "const": 0
+          },
+          "retained_objects": {
+            "const": 0
+          },
+          "retained_bytes": {
+            "const": 0
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "uint64": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615
+    },
+    "window_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4096
+    },
+    "page_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4096
+    },
+    "byte_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1099511627776
+    },
+    "decode_interval": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "prefixItems": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551614
+        },
+        {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        }
+      ],
+      "items": false,
+      "description": "Owner-declared half-open decode ticks. Native admission requires start < end; the schema cannot compare the two integers. This is not camera capture time or coverage."
+    }
+  }
+}

@@ -1,0 +1,73 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-23",
+  "date_timezone": "America/New_York",
+  "mission": "Turn independently pinned copied recording exports into useful queryable native archives after loss of the original archive; commit meaningful increments directly to main through GitHub without PRs.",
+  "basis": {
+    "plan": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+    "plan_git_blob": "ca19adc675a0948d973cf5a275f6b7a5741c39a0",
+    "backlog": ".beads/issues.jsonl",
+    "requirements": [
+      "FSS-068",
+      "FSS-135"
+    ],
+    "beads": {
+      "fss-x4a.13.8": "in_progress",
+      "fss-x4a.13.19": "open"
+    },
+    "integration_parent": "c18aa29aab123efffdf3030c7ee68e7f382c3828",
+    "prior_handoff": "docs/SESSION_HANDOFF_2026-11-23_ARCHIVE_RESTORE.json",
+    "beads_progress_record": "Broad Beads statuses remain unchanged; scoped progress and failed qualification are recorded in this handoff and IMPLEMENTATION_STATUS.md."
+  },
+  "changes": [
+    {
+      "feature": "sealed native AVC/HEVC original-object reconstruction",
+      "commit": "0a5e743e0560c3c718215620663f04957c10de16",
+      "api": "ArchiveCodec::restore_recording",
+      "scope": "Pinned canonical root plus four exact original buffers; 32 MiB aggregate before parse; native replay,scope and time scale checked. Decode-clock identity remains explicitly caller asserted."
+    },
+    {
+      "feature": "copied export to new queryable native archive",
+      "entrypoint": "fss-archive restore-export",
+      "revision": "commit containing this handoff",
+      "scope": "Whole copied selection verified before create; same source allowance across two passes; exact roots/bytes and sparse timing preserved; new native ordinals/catalog; shared destination read/write/operation budget through writer and cold reopening; final separately durable receipt."
+    }
+  ],
+  "authority": {
+    "repository": "Explicit user authorization for direct main commits via GitHub, no PR. Lease comparison and latest base tree preserve concurrent changes.",
+    "input": "Independently retained COMPLETE.json pin and explicit codec/full recording-clock scope. REQUEST.json remains semantically checked but unpinned by old completion v1.",
+    "output": "New private explicit directory; descriptor-bound path authority and current request deadline/cancellation; bounded read/write/operation allowances; no overwrite/merge/automatic cleanup.",
+    "privacy": "Existing current sensor privacy-policy owner held through every phase. Masked/missing/unavailable authority refuses before output; later exports reacquire authority.",
+    "external_effects": "No camera, production archive, NAS or cloud provider contacted; only source edits, local fixture/compiler/static work and explicitly authorized repository writes."
+  },
+  "result_contract": {
+    "report": "schemas/archive_export_restoration.v1.json",
+    "receipt": "schemas/archive_restore_completion.v1.json",
+    "receipt_name": "RESTORE_COMPLETE.json",
+    "failure": "After directory creation, complete=false bounded report and nonzero exit preserve acknowledged prefix, pending work, charges, and separate visible/durable receipt facts. No rollback claim.",
+    "compatibility": "Original export, recording and catalog formats unchanged; ordinary native cold queries work; two auxiliary foreign receipt names require scan capacity and make recovery is_clean() false.",
+    "empty_selection": "Valid empty native archive; no coverage or absence evidence.",
+    "platform": "Linux GNU with /proc/self/fd and atomic no-replace rename support."
+  },
+  "validation": "docs/validation/ARCHIVE_EXPORT_RESTORE_2026-11-23.json",
+  "claim_limit": "All 29 new Rust regression functions remain unexecuted; unchanged Asupersync SIGKILL prevented affected-code typechecking. Formatting/schema/source review is not a compiler, native execution, archive lane or release qualification pass.",
+  "open_work": [
+    "Run the exact new core and CLI tests on a host able to complete the pinned unchanged dependency graph.",
+    "Qualify interruption/crash and cold recovery against the controlled native release matrix.",
+    "Full incident object-graph reconstruction, original catalog/clock evidence completeness, encrypted remote graph closure, independent replicas/repair and future retrievability remain outside this selected local bundle slice."
+  ],
+  "continuation": [
+    "cargo check --locked -p fss-cli --tests",
+    "cargo test --locked -p fss-reference --test recording_restore_contract",
+    "cargo test --locked -p fss-cli --lib archive_cmd::restore_export",
+    "cargo test --locked -p fss-cli --lib archive_cmd::verify_export",
+    "python3 scripts/check_archive_export_restore_schemas.py",
+    "python3 scripts/generate_robot_docs.py --check"
+  ],
+  "settlement": {
+    "running_compilers": 0,
+    "background_native_work": 0,
+    "credentials_or_live_devices_used": false,
+    "beads_closed": []
+  }
+}

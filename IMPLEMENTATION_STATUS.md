@@ -4,6 +4,56 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Copied recording exports restored into native archives — 2026-11-23
+
+`fss-archive restore-export` now connects independently pinned copied exports to
+new native AVC/HEVC archives. It no longer requires the original archive or original
+export directory. The sealed `ArchiveCodec::restore_recording` boundary (core commit
+`0a5e743e0560c3c718215620663f04957c10de16`) rechecks the canonical root, all four
+original objects, native packet reconstruction, caller scope and time scale under
+the existing aggregate 32 MiB recording bound. Original bytes, roots, source-only
+HEVC lookahead and decode gaps remain unchanged.
+
+A full native preflight checks the entire copied bundle and prospective catalog
+before destination creation. The second pass publishes one window at a time through
+the existing native writer, using the remaining source read/operation allowance.
+A descriptor-bound private destination shares one finite read/write/I/O account
+through publication and cold reopening. Current privacy policy stays exclusively
+owned through final receipt sync. Existing/aliased destinations are refused;
+there is no overwrite, merge, automatic deletion or implicit resume.
+
+Successful completion requires all selected windows indexed, exact roots and catalog
+pages independently recovered, and a read-back verified `RESTORE_COMPLETE.json`
+acknowledged durable. Failures after creation retain bounded observations and a
+nonzero exit status, including acknowledged prefix counts, pending state and distinct
+receipt visibility/durability. Selected original ordinals become new contiguous
+ordinals; no original catalog/clock-index completeness or coverage is claimed.
+The two receipt names are auxiliary foreign entries in native recovery, so they
+require scan capacity and make `is_clean()` false while ordinary archive queries
+remain supported. The implementation requires Linux GNU with procfs.
+
+**The 29 authored Rust regressions remain unexecuted, and changed-code typechecking
+was not achieved.** Eight core, thirteen CLI and eight actual-owner I/O cases cover
+both codecs, cold queries after source loss, sparse/subset/empty selections,
+source corruption/drift, scope/pin/codec errors, privacy policy, path substitution,
+resource limits, cancellation and partial publication. Scoped pinned formatting,
+independent source/API/owner review and whitespace checks passed. Two strict report
+schemas accepted 30 coherent states and rejected 174 contradictions; their field
+sets match the Rust emitters. Schema checks do not execute native restoration.
+
+The initial clean baseline metadata probe ended at its explicit 600-second bound
+in dependency compilation. Its cached continuation on the committed core tree
+reached unchanged Asupersync 0.5.0, where rustc was killed by SIGKILL and Cargo
+returned 101 before the changed reference or CLI code. The recorded supervisor did
+not terminate that continuation; the cause beyond the signal is unestablished.
+No compiler remains running, and no identical failed build was started again.
+No dependency, test or qualification gate was weakened.
+
+FSS-068 / `fss-x4a.13.8` stays `in_progress`; FSS-135 / `fss-x4a.13.19` stays `open`.
+See [operator instructions](docs/ARCHIVE_EXPORT_RESTORATION.md),
+[retained validation observations](docs/validation/ARCHIVE_EXPORT_RESTORE_2026-11-23.json)
+and [the handoff](docs/SESSION_HANDOFF_2026-11-23_COPIED_ARCHIVE_RESTORE.json).
+
 ## Version-correct ONNX 18 native model execution — 2026-11-23
 
 The bounded importer now explicitly admits default-domain opset **18** alongside

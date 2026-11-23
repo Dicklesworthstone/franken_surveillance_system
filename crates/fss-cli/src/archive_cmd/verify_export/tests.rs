@@ -79,7 +79,7 @@ fn copied_export(
     copied_export_query(name, codec, None)
 }
 
-fn copied_export_query(
+pub(in crate::archive_cmd) fn copied_export_query(
     name: &str,
     codec: Codec,
     query: Option<Range<u64>>,

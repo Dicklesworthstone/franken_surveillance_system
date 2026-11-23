@@ -73,8 +73,17 @@ fn main() -> ExitCode {
         Err(error) => {
             let usage = matches!(&error, ArchiveCommandError::Argument { .. });
             let code = error.code();
+            if let Some(report) = error.partial_report() {
+                // Observed partial durability is useful even when the command fails. Never
+                // convert a partial report (or a stdout failure) into a successful exit.
+                let _ = emit(&mut io::stdout().lock(), report.as_bytes());
+            }
             eprintln!("{code}: {error}");
-            if work::handles(&args) {
+            if error.partial_report().is_some() {
+                eprintln!(
+                    "Restoration is incomplete. The new private archive may retain durable windows or catalog pages; preserve it for inspection. Do not treat a visible receipt as durable unless the report acknowledges its sync. No automatic cleanup or retry occurred. Use fss-archive help."
+                );
+            } else if work::handles(&args) {
                 eprintln!(
                     "No complete report was emitted. Only exact checkpointed roots may have committed. Retain the original work pin, inspect storage and reconcile before retrying; no automatic cleanup occurred. Use fss-archive help."
                 );

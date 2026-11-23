@@ -1,0 +1,100 @@
+{
+  "format": "engineering-validation-observations",
+  "date": "2026-11-23",
+  "toolchain": "nightly-2026-08-31",
+  "rustc": "1.100.0-nightly (908501772 2026-08-30)",
+  "changed_code_typecheck_completed": false,
+  "new_rust_tests_executed": 0,
+  "authored_rust_test_functions": {
+    "core": 8,
+    "cli": 13,
+    "io": 8,
+    "total": 29
+  },
+  "compiler_attempts": [
+    {
+      "command": [
+        "/workspace/fss-next-validation/cargo/bin/rustup",
+        "run",
+        "nightly-2026-08-31",
+        "cargo",
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "fss-reference",
+        "--lib"
+      ],
+      "source_revision": "fa1d4f2f93e2ecb690167bb8adc5ceb6c848bd47",
+      "settings": {
+        "CARGO_BUILD_JOBS": "1",
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0",
+        "RUSTFLAGS": "-Zunstable-options --jobs-frontend=1 --jobs-backend=1 --jobs-linker=1 -Zmir-opt-level=0 -Zfewer-names=yes -Ccodegen-units=256",
+        "CARGO_TARGET_DIR": "/workspace/fss-next-validation/target",
+        "TMPDIR": "/workspace/fss-next-validation/tmp"
+      },
+      "exit_code": -15,
+      "elapsed_s": 601.102,
+      "peak_rustc_kib_observed": 281164,
+      "child_maxrss_kib": 284216,
+      "termination": "explicit 600-second diagnostic time bound; no pass claimed",
+      "log_path": "/workspace/fss-next-validation/reference_metadata_probe.log"
+    },
+    {
+      "command": [
+        "/workspace/fss-next-validation/cargo/bin/rustup",
+        "run",
+        "nightly-2026-08-31",
+        "cargo",
+        "check",
+        "--locked",
+        "--offline",
+        "-p",
+        "fss-reference",
+        "--test",
+        "recording_restore_contract"
+      ],
+      "source_revision": "0a5e743e0560c3c718215620663f04957c10de16",
+      "settings": {
+        "CARGO_BUILD_JOBS": "1",
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0",
+        "RUSTFLAGS": "-Zunstable-options --jobs-frontend=1 --jobs-backend=1 --jobs-linker=1 -Zmir-opt-level=0 -Zfewer-names=yes -Ccodegen-units=256",
+        "CARGO_TARGET_DIR": "/workspace/fss-next-validation/target",
+        "TMPDIR": "/workspace/fss-next-validation/tmp"
+      },
+      "exit_code": 101,
+      "elapsed_s": 601.893,
+      "peak_rustc_kib_observed": 1001792,
+      "child_maxrss_kib": 1002256,
+      "termination": null,
+      "log_path": "/workspace/fss-next-validation/restore_contract_metadata.log",
+      "retained_log": "docs/validation/ARCHIVE_EXPORT_RESTORE_2026-11-23.log",
+      "retained_log_sha256": "a16dda9f8fcfc8d0e5b3385d00d972adc640098716bb2a82dc3d12d6802e1c78"
+    }
+  ],
+  "failure_cause_beyond_observed_sigkill": "not_established",
+  "schema_validation": {
+    "schemas": 2,
+    "coherent_states_accepted": 30,
+    "contradictions_rejected": 174,
+    "emitted_field_sets_match": true,
+    "reproduce": "python3 scripts/check_archive_export_restore_schemas.py"
+  },
+  "formatting": {
+    "toolchain": "nightly-2026-08-31",
+    "scoped_rust_files": 9,
+    "result": "passed"
+  },
+  "independent_source_reviews": [
+    "sealed AVC/HEVC reconstruction and original-byte preservation",
+    "privacy owner lifetime and two-pass input accounting",
+    "native archive writer transitions, retirement and cold reopen",
+    "actual spool/publication IO compatibility, no-replace semantics, bounded reservations and completion cut points"
+  ],
+  "qualification_claim": "No changed-code compiler, executable Rust regression, native archive or release qualification pass.",
+  "compiler_remaining_running": false
+}

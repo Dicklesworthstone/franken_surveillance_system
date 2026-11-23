@@ -1,0 +1,755 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/archive_export_restoration.v1.json",
+  "title": "Bounded native copied-export restoration invocation report",
+  "description": "A bounded operator report for restore-export after it acquires a new private destination. A complete native copied-bundle preflight, current privacy authority and separate input/local I/O allowances precede publication. The second pass streams one original window at a time under the remaining shared input allowance. Successful completion requires exact immutable source roots and bytes, a new queryable catalog, a cold native reopen and a visible, durably acknowledged RESTORE_COMPLETE.json. At most 4096 original windows of at most 32 MiB each are accepted. Failures before destination acquisition produce no report. Later failures preserve private partial data and report only acknowledged windows/pages plus pending state; complete=false requires reconciliation even if the completion file became durable before a late cancellation. Original catalog history, capture-clock index, coverage, physical absence and present disclosure authority are not reconstructed or granted. JSON is not a byte-verification, custody or durability proof.",
+  "$comment": "Native code enforces selected_windows == restored_windows == indexed_windows on completion and exact page/byte/root counts, namespace identity, positive ordered query bounds and cumulative budget accounting. Standard JSON Schema cannot compare arbitrary sibling counters; these constraints retain zero/nonzero consistency and the complete/pending/visibility/durability transitions without nonstandard $data. The native producer also caps the encoded report at 4 MiB.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "command",
+    "codec",
+    "sensor",
+    "stream",
+    "generation",
+    "anchor",
+    "receive_clock",
+    "decode_clock",
+    "time_scale",
+    "namespace",
+    "completion_sha256",
+    "request_sha256_observed",
+    "request_binding",
+    "original_snapshot_claim",
+    "original_query",
+    "phase",
+    "output_created",
+    "source_preflight_verified",
+    "selected_windows",
+    "restored_windows",
+    "restored_pages",
+    "indexed_windows",
+    "pending_window",
+    "pending_page",
+    "new_snapshot",
+    "destination_cold_verified",
+    "restore_completion_sha256",
+    "restore_completion_visible",
+    "restore_completion_durable",
+    "input_read_bytes_charged",
+    "input_io_calls_charged",
+    "input_accounting",
+    "local_io_bytes_charged",
+    "local_io_operations_charged",
+    "writer_steps",
+    "native_source_provenance_verified",
+    "playback_bytes_verified",
+    "decoded_pictures_verified",
+    "original_catalog_reconstructed",
+    "original_clock_index_restored",
+    "coverage_claim",
+    "filesystem_snapshot_atomic",
+    "publication_reconciliation_required",
+    "complete"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.local_archive_export_restoration.v1"
+    },
+    "command": {
+      "const": "restore-export"
+    },
+    "codec": {
+      "enum": [
+        "avc",
+        "hevc"
+      ]
+    },
+    "sensor": {
+      "$ref": "#/$defs/identifier"
+    },
+    "stream": {
+      "$ref": "#/$defs/identifier"
+    },
+    "generation": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 18446744073709551615
+    },
+    "anchor": {
+      "$ref": "#/$defs/digest"
+    },
+    "receive_clock": {
+      "$ref": "#/$defs/digest"
+    },
+    "decode_clock": {
+      "$ref": "#/$defs/digest"
+    },
+    "time_scale": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4294967295
+    },
+    "namespace": {
+      "$ref": "#/$defs/digest"
+    },
+    "completion_sha256": {
+      "$ref": "#/$defs/digest",
+      "description": "Independent caller pin for the copied export's COMPLETE.json. This is not the new restoration receipt digest."
+    },
+    "request_sha256_observed": {
+      "$ref": "#/$defs/digest"
+    },
+    "request_binding": {
+      "const": "semantic_consistency_only_unpinned_by_completion_v1"
+    },
+    "original_snapshot_claim": {
+      "$ref": "#/$defs/digest",
+      "description": "Historical inventory identity asserted by the pinned copied export, not independently reconstructed original catalog history."
+    },
+    "original_query": {
+      "$ref": "#/$defs/decode_interval"
+    },
+    "phase": {
+      "enum": [
+        "opening_destination",
+        "restoring_windows",
+        "checking_source_again",
+        "publishing_catalogs",
+        "reopening_archive",
+        "publishing_completion",
+        "complete"
+      ]
+    },
+    "output_created": {
+      "const": true
+    },
+    "source_preflight_verified": {
+      "const": true
+    },
+    "selected_windows": {
+      "$ref": "#/$defs/window_count"
+    },
+    "restored_windows": {
+      "$ref": "#/$defs/window_count"
+    },
+    "restored_pages": {
+      "$ref": "#/$defs/page_count"
+    },
+    "indexed_windows": {
+      "$ref": "#/$defs/window_count"
+    },
+    "pending_window": {
+      "type": "boolean"
+    },
+    "pending_page": {
+      "type": "boolean"
+    },
+    "new_snapshot": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/digest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "destination_cold_verified": {
+      "type": "boolean"
+    },
+    "restore_completion_sha256": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/digest"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Digest of the newly prepared RESTORE_COMPLETE.json body, if prepared. A non-null digest alone does not assert that the file became visible or durable."
+    },
+    "restore_completion_visible": {
+      "type": "boolean"
+    },
+    "restore_completion_durable": {
+      "type": "boolean"
+    },
+    "input_read_bytes_charged": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1099511627776
+    },
+    "input_io_calls_charged": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4000000
+    },
+    "input_accounting": {
+      "enum": [
+        "observed_reads",
+        "remaining_reservation_retained"
+      ]
+    },
+    "local_io_bytes_charged": {
+      "$ref": "#/$defs/byte_count"
+    },
+    "local_io_operations_charged": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 16000000
+    },
+    "writer_steps": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 49168
+    },
+    "native_source_provenance_verified": {
+      "const": true
+    },
+    "playback_bytes_verified": {
+      "const": true
+    },
+    "decoded_pictures_verified": {
+      "const": false
+    },
+    "original_catalog_reconstructed": {
+      "const": false
+    },
+    "original_clock_index_restored": {
+      "const": false
+    },
+    "coverage_claim": {
+      "const": "not_claimed"
+    },
+    "filesystem_snapshot_atomic": {
+      "const": false
+    },
+    "publication_reconciliation_required": {
+      "type": "boolean"
+    },
+    "complete": {
+      "type": "boolean"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "complete": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "pending_window": {
+            "const": false
+          },
+          "pending_page": {
+            "const": false
+          },
+          "new_snapshot": {
+            "$ref": "#/$defs/digest"
+          },
+          "input_accounting": {
+            "const": "observed_reads"
+          },
+          "phase": {
+            "const": "complete"
+          },
+          "destination_cold_verified": {
+            "const": true
+          },
+          "restore_completion_sha256": {
+            "$ref": "#/$defs/digest"
+          },
+          "restore_completion_visible": {
+            "const": true
+          },
+          "restore_completion_durable": {
+            "const": true
+          },
+          "publication_reconciliation_required": {
+            "const": false
+          },
+          "writer_steps": {
+            "minimum": 1
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "phase": {
+            "enum": [
+              "opening_destination",
+              "restoring_windows",
+              "checking_source_again",
+              "publishing_catalogs",
+              "reopening_archive",
+              "publishing_completion"
+            ]
+          },
+          "publication_reconciliation_required": {
+            "const": true
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "restore_completion_durable": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "restore_completion_visible": {
+            "const": true
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "restore_completion_visible": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "pending_window": {
+            "const": false
+          },
+          "pending_page": {
+            "const": false
+          },
+          "new_snapshot": {
+            "$ref": "#/$defs/digest"
+          },
+          "input_accounting": {
+            "const": "observed_reads"
+          },
+          "destination_cold_verified": {
+            "const": true
+          },
+          "restore_completion_sha256": {
+            "$ref": "#/$defs/digest"
+          },
+          "phase": {
+            "enum": [
+              "publishing_completion",
+              "complete"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "restore_completion_sha256": {
+            "type": "string"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "pending_window": {
+            "const": false
+          },
+          "pending_page": {
+            "const": false
+          },
+          "new_snapshot": {
+            "$ref": "#/$defs/digest"
+          },
+          "input_accounting": {
+            "const": "observed_reads"
+          },
+          "destination_cold_verified": {
+            "const": true
+          },
+          "phase": {
+            "enum": [
+              "publishing_completion",
+              "complete"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "destination_cold_verified": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "pending_window": {
+            "const": false
+          },
+          "pending_page": {
+            "const": false
+          },
+          "new_snapshot": {
+            "$ref": "#/$defs/digest"
+          },
+          "input_accounting": {
+            "const": "observed_reads"
+          },
+          "phase": {
+            "enum": [
+              "reopening_archive",
+              "publishing_completion",
+              "complete"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "new_snapshot": {
+            "type": "string"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "pending_window": {
+            "const": false
+          },
+          "pending_page": {
+            "const": false
+          },
+          "input_accounting": {
+            "const": "observed_reads"
+          },
+          "phase": {
+            "enum": [
+              "publishing_catalogs",
+              "reopening_archive",
+              "publishing_completion",
+              "complete"
+            ]
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "destination_cold_verified": {
+            "const": false
+          },
+          "restore_completion_sha256": {
+            "type": "null"
+          },
+          "restore_completion_visible": {
+            "const": false
+          },
+          "restore_completion_durable": {
+            "const": false
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "phase": {
+            "const": "opening_destination"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "restored_windows": {
+            "const": 0
+          },
+          "restored_pages": {
+            "const": 0
+          },
+          "indexed_windows": {
+            "const": 0
+          },
+          "writer_steps": {
+            "const": 0
+          },
+          "pending_window": {
+            "const": false
+          },
+          "pending_page": {
+            "const": false
+          },
+          "new_snapshot": {
+            "type": "null"
+          },
+          "destination_cold_verified": {
+            "const": false
+          },
+          "restore_completion_sha256": {
+            "type": "null"
+          },
+          "restore_completion_visible": {
+            "const": false
+          },
+          "restore_completion_durable": {
+            "const": false
+          },
+          "input_accounting": {
+            "const": "observed_reads"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "input_accounting": {
+            "const": "remaining_reservation_retained"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "phase": {
+            "enum": [
+              "restoring_windows",
+              "checking_source_again"
+            ]
+          },
+          "new_snapshot": {
+            "type": "null"
+          },
+          "destination_cold_verified": {
+            "const": false
+          },
+          "restore_completion_sha256": {
+            "type": "null"
+          },
+          "restore_completion_visible": {
+            "const": false
+          },
+          "restore_completion_durable": {
+            "const": false
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "selected_windows": {
+            "const": 0
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "restored_windows": {
+            "const": 0
+          },
+          "restored_pages": {
+            "const": 0
+          },
+          "indexed_windows": {
+            "const": 0
+          },
+          "pending_window": {
+            "const": false
+          },
+          "pending_page": {
+            "const": false
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "restored_windows": {
+            "const": 0
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "restored_pages": {
+            "const": 0
+          },
+          "indexed_windows": {
+            "const": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "indexed_windows": {
+            "const": 0
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "restored_pages": {
+            "const": 0
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "restored_windows": {
+            "minimum": 1
+          },
+          "restored_pages": {
+            "minimum": 1
+          },
+          "selected_windows": {
+            "minimum": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "restored_pages": {
+            "const": 0
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "indexed_windows": {
+            "const": 0
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "restored_windows": {
+            "minimum": 1
+          },
+          "indexed_windows": {
+            "minimum": 1
+          },
+          "selected_windows": {
+            "minimum": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "complete": {
+            "const": true
+          },
+          "selected_windows": {
+            "minimum": 1
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "restored_windows": {
+            "minimum": 1
+          },
+          "restored_pages": {
+            "minimum": 1
+          },
+          "indexed_windows": {
+            "minimum": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "new_snapshot": {
+            "type": "string"
+          },
+          "selected_windows": {
+            "minimum": 1
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "restored_windows": {
+            "minimum": 1
+          },
+          "restored_pages": {
+            "minimum": 1
+          },
+          "indexed_windows": {
+            "minimum": 1
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "uint64": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615
+    },
+    "window_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4096
+    },
+    "page_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4096
+    },
+    "byte_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1099511627776
+    },
+    "decode_interval": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "prefixItems": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551614
+        },
+        {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        }
+      ],
+      "items": false,
+      "description": "Owner-declared half-open decode ticks. Native admission requires start < end; the schema cannot compare the two integers. This is not camera capture time or coverage."
+    }
+  }
+}

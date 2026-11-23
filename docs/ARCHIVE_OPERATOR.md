@@ -3,8 +3,12 @@
 `fss-archive` exposes the existing AVC and HEVC archive recovery and range-read
 engines to an operator. It is a standalone reference-storage utility, not a new
 fss/1 operation or an alternate agent authorization protocol. It does not open
-camera sockets, guess stream scope, create a missing archive, publish new archive
-roots, repair orphaned state, delete objects, or change retention policy.
+camera sockets or guess stream scope. The inspect/query/verify operations require
+an existing archive. The explicit `restore-export` operation can create a new
+native archive from an independently pinned copied bundle; see
+[copied-export restoration](ARCHIVE_EXPORT_RESTORATION.md) for its publication,
+privacy, budget and partial-failure contract. No command implicitly repairs or
+deletes orphaned originals or changes retention policy.
 
 ## Inspect, pin, select, verify
 
@@ -41,7 +45,9 @@ Source replay establishes byte relationships, not full HEVC decode completeness.
 Output uses `fss.local_archive_operator_report.v1`. It includes the exact codec,
 scope, clocks, snapshot, counts, limits' outcome, and verification level. It is an
 operator report, not a canonical ledger receipt, signature or authority grant.
-No report is returned on command failure. Stdout failures may leave truncated
+These existing read/query commands return no report on failure. `restore-export`
+instead preserves bounded partial observations with a nonzero exit status after
+creating its new destination. Stdout failures may leave truncated
 transport output, which must never be interpreted as a complete JSON report.
 
 ## UTC candidates from retained node clock evidence

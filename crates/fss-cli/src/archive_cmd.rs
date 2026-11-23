@@ -8,6 +8,7 @@ use std::fmt;
 use std::fs;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::{
@@ -29,6 +30,7 @@ use fss_reference::rtsp::recording_archive::{
 use fss_reference::rtsp::recording_catalog::{CatalogEntry, CatalogScope};
 
 mod export;
+mod restore_export;
 mod utc;
 mod verify_export;
 pub use verify_export::bundle::ExportVerificationError;
@@ -37,7 +39,7 @@ const MAX_REPORT_BYTES: usize = fss_core::json_input::MAX_ARCHIVE_EXPORT_REPORT_
 /// Explicitly versioned operator output; this is not an fss/1 agent response.
 pub const ARCHIVE_REPORT_SCHEMA: &str = "fss.local_archive_operator_report.v1";
 /// Help for the standalone archive utility. Paths accept native OS strings.
-pub const HELP: &str = "fss-archive <inspect|query|verify|export|verify-export|query-utc> [options]\n\
+pub const HELP: &str = "fss-archive <inspect|query|verify|export|verify-export|restore-export|query-utc> [options]\n\
   Required: --root DIR --codec avc|hevc --sensor ID --stream ID --generation N\n\
             --anchor sha256:HEX --receive-clock sha256:HEX\n\
             --decode-clock sha256:HEX --time-scale N\n\
@@ -55,6 +57,18 @@ pub const HELP: &str = "fss-archive <inspect|query|verify|export|verify-export|q
   It needs no original archive and performs no writes, network access or publication.\n\
   REQUEST.json is checked for consistency; v1 completion does not pin its exact bytes.\n\
   Success grants no current archive/disclosure authority, catalog completeness or coverage.\n\
+  restore-export: --root COPIED_BUNDLE --expected-completion sha256:HEX\n\
+                  --output-dir NEW_DIR --allow-whole-windows yes\n\
+                  --privacy-root EXISTING_DEPLOYMENT --site SITE\n\
+                  [--max-read-bytes N] [--max-io-calls N]\n\
+                  [--max-local-bytes N] [--max-local-operations N]\n\
+  Restore verifies the complete copied bundle before creating a private new archive.\n\
+  It requires Linux GNU with /proc/self/fd and atomic no-replace filesystem operations.\n\
+  Original recording bytes and roots are preserved; a new catalog indexes the selected\n\
+  windows. It does not reconstruct the original catalog, clock index or coverage history.\n\
+  Input budgets cover both passes; local budgets cover destination reads and writes.\n\
+  A partial destination is retained on failure; no overwrite, merge or automatic resume.\n\
+  Only a successful final RESTORE_COMPLETE.json receipt acknowledges complete restoration.\n\
   export: --output-dir NEW_DIR --allow-whole-windows yes [--max-export-bytes N]\n\
           --privacy-root EXISTING_DEPLOYMENT --site SITE (the deployment retaining the\n\
           sensor's privacy-mask authority). Original packets cannot be masked: export of a\n\
@@ -113,6 +127,16 @@ pub enum ArchiveCommandError {
     ExportBudget,
     /// An export directory may contain partial output; no cleanup/rollback is claimed.
     ExportIncomplete(Box<ArchiveCommandError>),
+    /// A finite destination byte/operation or writer-step account was exhausted.
+    RestoreBudget(&'static str),
+    /// A newly created archive may contain an acknowledged durable prefix. The bounded
+    /// report preserves observations; it never promotes partial work to completion.
+    RestoreIncomplete {
+        /// Structured operator observations, without paths or source payloads.
+        report: String,
+        /// Original typed failure, retained without exposing its private input.
+        cause: Box<ArchiveCommandError>,
+    },
     /// The copied bundle could not be completely verified; no files were modified.
     ExportVerification(ExportVerificationError),
     /// Raw original packets of a sensor with a current retained privacy mask (or of a sensor
@@ -133,6 +157,16 @@ impl ArchiveCommandError {
             _ => crate::ERR_CLI_RUNTIME_FAILURE,
         }
     }
+
+    /// Bounded restore observations to emit with a nonzero exit status. A missing or
+    /// truncated report is never proof that arbitrary filesystem effects rolled back.
+    #[must_use]
+    pub fn partial_report(&self) -> Option<&str> {
+        match self {
+            Self::RestoreIncomplete { report, .. } => Some(report),
+            _ => None,
+        }
+    }
 }
 impl fmt::Debug for ArchiveCommandError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -151,6 +185,20 @@ impl fmt::Debug for ArchiveCommandError {
             Self::OutputExists => f.write_str("OutputExists"),
             Self::ExportBudget => f.write_str("ExportBudget"),
             Self::ExportIncomplete(e) => f.debug_tuple("ExportIncomplete").field(e).finish(),
+            Self::RestoreBudget(dimension) => {
+                f.debug_tuple("RestoreBudget").field(dimension).finish()
+            }
+            Self::RestoreIncomplete { cause, .. } => {
+                // Lower-level publication failures may retain private paths for explicit
+                // reconciliation. Do not dump those paths into automatic CLI diagnostics.
+                if matches!(cause.as_ref(), Self::Archive(_)) {
+                    f.debug_tuple("RestoreIncomplete")
+                        .field(&"NativeArchiveRefusal")
+                        .finish()
+                } else {
+                    f.debug_tuple("RestoreIncomplete").field(cause).finish()
+                }
+            }
             Self::ExportVerification(e) => f.debug_tuple("ExportVerification").field(e).finish(),
             Self::Privacy { code, message } => f.debug_tuple(code).field(message).finish(),
         }
@@ -195,6 +243,7 @@ enum Action {
     Verify,
     Export,
     VerifyExport,
+    RestoreExport,
 }
 impl Action {
     fn name(self) -> &'static str {
@@ -205,6 +254,7 @@ impl Action {
             Self::Verify => "verify",
             Self::Export => "export",
             Self::VerifyExport => "verify-export",
+            Self::RestoreExport => "restore-export",
         }
     }
 }
@@ -228,7 +278,9 @@ pub struct ArchiveOptions {
     export_budget: u64,
     verify_read_budget: u64,
     verify_io_budget: u64,
-    /// Export only: the deployment retaining the sensor's privacy-mask authority and its site.
+    restore_io_bytes: u64,
+    restore_io_operations: u64,
+    /// Raw export/restore: deployment retaining the sensor's privacy-mask authority and site.
     privacy: Option<(PathBuf, String)>,
 }
 impl fmt::Debug for ArchiveOptions {
@@ -271,10 +323,11 @@ pub fn parse_archive_args(args: &[OsString]) -> Result<Option<ArchiveOptions>> {
         "verify" => Action::Verify,
         "export" => Action::Export,
         "verify-export" => Action::VerifyExport,
+        "restore-export" => Action::RestoreExport,
         _ => {
             return Err(argument(
                 ERR_CLI_UNKNOWN_COMMAND,
-                "expected inspect, query, query-utc, verify, export or verify-export",
+                "expected inspect, query, query-utc, verify, export, verify-export or restore-export",
             ));
         }
     };
@@ -318,16 +371,18 @@ pub fn parse_archive_args(args: &[OsString]) -> Result<Option<ArchiveOptions>> {
             && !(matches!(action, Action::Query | Action::Verify | Action::Export)
                 && ranged.contains(&key))
             && !(action == Action::QueryUtc && utc_ranged.contains(&key))
-            && !(action == Action::Export
+            && !(matches!(action, Action::Export | Action::RestoreExport)
                 && [
                     "--output-dir",
                     "--allow-whole-windows",
-                    "--max-export-bytes",
                     "--privacy-root",
                     "--site",
                 ]
                 .contains(&key))
-            && !(action == Action::VerifyExport
+            && !(action == Action::Export && key == "--max-export-bytes")
+            && !(action == Action::RestoreExport
+                && ["--max-local-bytes", "--max-local-operations"].contains(&key))
+            && !(matches!(action, Action::VerifyExport | Action::RestoreExport)
                 && [
                     "--expected-completion",
                     "--max-read-bytes",
@@ -439,7 +494,10 @@ pub fn parse_archive_args(args: &[OsString]) -> Result<Option<ArchiveOptions>> {
         windows_per_page: 64,
     };
     archive_limits.validate()?;
-    let (expected, query, utc_query) = if matches!(action, Action::Inspect | Action::VerifyExport) {
+    let (expected, query, utc_query) = if matches!(
+        action,
+        Action::Inspect | Action::VerifyExport | Action::RestoreExport
+    ) {
         (None, None, None)
     } else if action == Action::QueryUtc {
         let start = number("--start-utc-ns", None, 0, u64::MAX)?;
@@ -467,10 +525,10 @@ pub fn parse_archive_args(args: &[OsString]) -> Result<Option<ArchiveOptions>> {
         }
         (Some(digest("--expected-snapshot")?), Some(start..end), None)
     };
-    let output = if action == Action::Export {
+    let output = if matches!(action, Action::Export | Action::RestoreExport) {
         if text("--allow-whole-windows")? != "yes" {
             return Err(malformed(
-                "export requires explicit whole-window disclosure acknowledgement",
+                "export/restore requires explicit whole-window disclosure acknowledgement",
             ));
         }
         Some(PathBuf::from(required("--output-dir")?))
@@ -502,7 +560,7 @@ pub fn parse_archive_args(args: &[OsString]) -> Result<Option<ArchiveOptions>> {
         action,
         scope,
         expected,
-        expected_completion: if action == Action::VerifyExport {
+        expected_completion: if matches!(action, Action::VerifyExport | Action::RestoreExport) {
             Some(digest("--expected-completion")?)
         } else {
             None
@@ -530,6 +588,13 @@ pub fn parse_archive_args(args: &[OsString]) -> Result<Option<ArchiveOptions>> {
             1,
             verify_export::bundle::MAX_IO_CALLS,
         )?,
+        restore_io_bytes: number(
+            "--max-local-bytes",
+            Some(16 * 1024 * 1024 * 1024),
+            1,
+            1024 * 1024 * 1024 * 1024,
+        )?,
+        restore_io_operations: number("--max-local-operations", Some(4_000_000), 1, 16_000_000)?,
         query_limits: ArchiveQueryLimits {
             max_windows: number("--max-output-windows", Some(64), 1, 4096)? as usize,
             max_output_bytes: number(
@@ -587,9 +652,14 @@ impl OperationClock for Deadline {
 /// Source-archive actions perform the existing owner's recovery I/O under exclusive locks.
 /// `verify-export` instead reads only a copied bundle through descriptor-bound file handles;
 /// it neither opens an archive owner nor creates an agent or disclosure grant.
+/// `restore-export` requires current privacy authority, verifies the copied selection and
+/// publishes a new native archive. Its failures after creation retain partial observations.
 pub fn execute_archive(options: &ArchiveOptions) -> Result<String> {
-    let clock = Deadline::new(options.timeout)?;
-    execute_archive_with_clock(options, &clock)
+    let clock = Arc::new(Deadline::new(options.timeout)?);
+    if options.action == Action::RestoreExport {
+        return restore_export::execute(options, clock);
+    }
+    execute_archive_with_clock(options, clock.as_ref())
 }
 
 // The same entry path, with request-owned time/cancellation, permits deterministic
@@ -600,6 +670,11 @@ fn execute_archive_with_clock(
 ) -> Result<String> {
     if options.action == Action::VerifyExport {
         return verify_export::execute(options, clock);
+    }
+    if options.action == Action::RestoreExport {
+        return Err(malformed(
+            "restoration requires its request-owned I/O clock",
+        ));
     }
     // Keep the authority owner alive until all payload writes, readbacks and the
     // completion publication finish. A preflight-only check lets another owner

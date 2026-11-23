@@ -5,6 +5,11 @@ the copied files. The original archive may be offline, deleted, or on another ho
 The command opens no deployment, archive writer, privacy owner, or network connection,
 and creates, repairs, deletes, and replaces no files.
 
+To turn a successfully verified selection into a new queryable native archive,
+use [the separate `restore-export` operation](ARCHIVE_EXPORT_RESTORATION.md).
+It requires a fresh destination and current privacy authority, preserves the
+original recording bytes, and constructs new catalog pages for the selection.
+
 Supply the SHA-256 of the exact original `COMPLETE.json` bytes through an independently
 retained trusted channel. A digest calculated only from an untrusted copy does not
 authenticate its origin. Also supply the intended codec and complete recording/clock

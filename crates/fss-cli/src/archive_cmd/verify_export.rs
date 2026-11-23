@@ -151,4 +151,4 @@ fn verify_with_namespace(
 }
 
 #[cfg(all(test, target_os = "linux"))]
-mod tests;
+pub(super) mod tests;
