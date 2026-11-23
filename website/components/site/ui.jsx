@@ -101,14 +101,19 @@ const STANDING = { runs: "Runs in tests", built: "Built, not yet proven", planne
 /** What exists behind a section, by how far it has got. */
 export function Standing({ rows }) {
   return (
-    <ul className="standing reveal" aria-label="Where this stands">
-      {rows.map(([kind, text]) => (
-        <li key={kind + text} className={"standing__row standing__row--" + kind}>
-          <strong>{STANDING[kind]}</strong>
-          <span>{text}</span>
-        </li>
-      ))}
-    </ul>
+    <div className="standing reveal">
+      <p className="standing__label micro" aria-hidden="true">
+        Where this stands
+      </p>
+      <ul aria-label="Where this stands">
+        {rows.map(([kind, text]) => (
+          <li key={kind + text} className={"standing__row standing__row--" + kind}>
+            <strong>{STANDING[kind]}</strong>
+            <span>{text}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 export const standingLabel = (kind) => STANDING[kind];
