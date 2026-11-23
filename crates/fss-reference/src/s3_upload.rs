@@ -9,8 +9,11 @@
 //! a read-only HEAD bound to journal origin, intent and checksum can prove an
 //! uncertain completion. Legacy objects without origin metadata stay uncertain.
 //! Absence from an object listing cannot authorize another create or complete.
+//! Independent retrieval uses a fresh media-read owner and sequential signed
+//! ranges pinned to one opaque ETag; the owner hashes the returned bytes itself.
 
 mod http;
+mod retrieval;
 mod signing;
 mod xml;
 
@@ -323,6 +326,7 @@ pub struct NativeS3Transport<C: S3Clock> {
     parts: BTreeMap<u64, PartReceipt>,
     confirmed_bytes: u64,
     phase: MultipartPhase,
+    retrieval: retrieval::ReadState,
 }
 impl<C: S3Clock> fmt::Debug for NativeS3Transport<C> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -353,6 +357,7 @@ impl<C: S3Clock> NativeS3Transport<C> {
             parts: BTreeMap::new(),
             confirmed_bytes: 0,
             phase: MultipartPhase::Prepared,
+            retrieval: retrieval::ReadState::default(),
         })
     }
 
@@ -387,9 +392,11 @@ impl<C: S3Clock> NativeS3Transport<C> {
                 .checked_add(chunk.len)
                 .ok_or(S3Error::Limit)?;
         }
-        if recovery.phase() == MultipartPhase::Uncertain(TransportOperation::Complete)
-            && (result.parts.len() != recovery.plan().chunks.len()
-                || result.confirmed_bytes != recovery.plan().object_bytes)
+        if matches!(
+            recovery.phase(),
+            MultipartPhase::Uncertain(TransportOperation::Complete) | MultipartPhase::Completed
+        ) && (result.parts.len() != recovery.plan().chunks.len()
+            || result.confirmed_bytes != recovery.plan().object_bytes)
         {
             return Err(S3Error::Binding);
         }
@@ -710,6 +717,9 @@ impl<C: S3Clock> NativeS3Transport<C> {
         cx: &mut TransportCx<'_>,
         intent: &UploadIntent,
     ) -> Result<Reconciliation, S3Error> {
+        if cx.is_media_retrieval() {
+            return Err(S3Error::Binding);
+        }
         self.check(cx, TransportOperation::Reconcile)?;
         self.bind(intent, cx.origin_binding())?;
         let mut observation = Reconciliation {

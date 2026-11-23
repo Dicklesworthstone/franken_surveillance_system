@@ -12,7 +12,8 @@
 //! across restart. Recovery validates an independently pinned intent and creates
 //! a fresh explicitly authorized child; persisted bytes never recreate live authority.
 //! Dropping unsettled work leaves a visible child obligation and charged reservation.
-//! No network transport, encryption implementation or retrievability claim is added.
+//! Independent retrieval uses a separate bounded read owner and receipt. Upload
+//! completion alone never implies byte retrievability, encryption or graph closure.
 
 use std::collections::BTreeSet;
 
@@ -34,9 +35,14 @@ use crate::multipart::{
 use crate::planner::{ChunkPlan, ChunkPolicy, PlannedChunk, PlannerError, plan_chunks};
 
 mod observation;
+mod retrieval;
 pub use observation::{
     CompletionObservation, CompletionObservationOutcome, CompletionObservationReceipt,
     MAX_COMPLETION_OBSERVATION_BYTES,
+};
+pub use retrieval::{
+    MAX_RETRIEVAL_BYTES, MAX_RETRIEVAL_RANGE_BYTES, MAX_RETRIEVAL_RECEIPT_BYTES, RetrievalCx,
+    RetrievalObservation, RetrievalOutcome, RetrievalReceipt, RetrievalTransport,
 };
 
 /// Upload refusal. All methods after preparation borrow rather than consume the owner.

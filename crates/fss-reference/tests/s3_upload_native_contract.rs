@@ -1,7 +1,12 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Native loopback server exercises the real socket, codec, signature and owned
-//! multipart path. It does not claim MinIO, B2, R2, TLS or retrievability qualification.
+//! multipart and independent retrieval paths. It does not claim MinIO, B2, R2
+//! or TLS qualification.
+
+#[cfg(unix)]
+#[path = "s3_upload_native_contract/retrieval.rs"]
+mod retrieval;
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};

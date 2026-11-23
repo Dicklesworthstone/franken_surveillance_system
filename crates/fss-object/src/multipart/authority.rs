@@ -31,6 +31,7 @@ pub struct TransportCx<'a> {
     persistence: Option<&'a mut dyn TransportPersistence>,
     durable_upload_owner: bool,
     read_only_observation: bool,
+    media_retrieval: bool,
     observation_origin: Option<ContentDigest>,
 }
 
@@ -92,6 +93,12 @@ impl<'a> TransportCx<'a> {
     pub const fn is_read_only_observation(&self) -> bool {
         self.read_only_observation
     }
+    /// The independently owned read admits media bytes, not just status. Its
+    /// sole semantic read grant is ReadMedia; it carries no mutation authority.
+    #[must_use]
+    pub const fn is_media_retrieval(&self) -> bool {
+        self.media_retrieval
+    }
     /// Stable verified journal origin, distinct from semantic intent identity.
     /// Native creation can bind this into provider metadata before dispatch;
     /// recovery and later read-only observation retain the same exact value.
@@ -113,7 +120,13 @@ impl<'a> TransportCx<'a> {
         // The session retains this time even when the transport returns an error afterward.
         self.now = now;
         let result = if self.read_only_observation {
-            check_observation(self.authority, self.tree, &self.resource, now)
+            check_observation(
+                self.authority,
+                self.tree,
+                &self.resource,
+                now,
+                self.media_retrieval,
+            )
         } else {
             check(
                 self.authority,
@@ -180,6 +193,7 @@ impl<'a> TransportCx<'a> {
             persistence,
             durable_upload_owner,
             read_only_observation: self.read_only_observation,
+            media_retrieval: self.media_retrieval,
             observation_origin: self.observation_origin,
         }
     }
@@ -341,6 +355,7 @@ pub(super) fn admit<'a>(
         persistence: None,
         durable_upload_owner: false,
         read_only_observation: false,
+        media_retrieval: false,
         observation_origin: None,
     })
 }
@@ -350,6 +365,7 @@ fn check_observation(
     tree: &RegionTree,
     resource: &str,
     now: TimestampNs,
+    media_retrieval: bool,
 ) -> Result<(), MultipartError> {
     let cancelled = cx.is_cancel_requested(tree).map_err(authority)?;
     validate_lifetime(cx, tree, now)?;
@@ -373,7 +389,11 @@ fn check_observation(
     for grant in [
         RuntimeGrant::AdapterNet,
         RuntimeGrant::AdapterAuth,
-        RuntimeGrant::ObserveStatus,
+        if media_retrieval {
+            RuntimeGrant::ReadMedia
+        } else {
+            RuntimeGrant::ObserveStatus
+        },
     ] {
         cx.require_grant_for(grant, resource).map_err(authority)?;
     }
@@ -392,9 +412,40 @@ pub(crate) fn admit_observation<'a>(
     resource: &str,
     origin_binding: Option<ContentDigest>,
 ) -> Result<TransportCx<'a>, MultipartError> {
-    check_observation(io.authority, io.tree, resource, io.now)?;
+    admit_read(io, resource, origin_binding, false, 0)
+}
+
+/// Only the retrieval owner can admit media reads. Each range consumes a new
+/// operation and its returned-byte allowance before the adapter is called.
+pub(crate) fn admit_retrieval<'a>(
+    io: UploadIo<'a>,
+    resource: &str,
+    origin_binding: ContentDigest,
+    bytes: u64,
+) -> Result<TransportCx<'a>, MultipartError> {
+    admit_read(io, resource, Some(origin_binding), true, bytes)
+}
+
+pub(crate) fn check_retrieval(
+    authority: &AuthorityCx,
+    tree: &RegionTree,
+    resource: &str,
+    now: TimestampNs,
+) -> Result<(), MultipartError> {
+    check_observation(authority, tree, resource, now, true)
+}
+
+fn admit_read<'a>(
+    io: UploadIo<'a>,
+    resource: &str,
+    origin_binding: Option<ContentDigest>,
+    media_retrieval: bool,
+    bytes: u64,
+) -> Result<TransportCx<'a>, MultipartError> {
+    check_observation(io.authority, io.tree, resource, io.now, media_retrieval)?;
     let mut cost = BudgetVector::ZERO;
     cost.storage_operations = 1;
+    cost.bytes = bytes;
     io.authority
         .budget_mut(io.tree)
         .map_err(authority)?
@@ -409,6 +460,7 @@ pub(crate) fn admit_observation<'a>(
         persistence: None,
         durable_upload_owner: false,
         read_only_observation: true,
+        media_retrieval,
         observation_origin: origin_binding,
     })
 }

@@ -198,6 +198,59 @@ through the observation owner. If delivery or receipt writing fails, retain the 
 and inspect the new receipt path before authorizing a separate bounded observation. Matching
 provider metadata is still distinct from downloading and independently verifying source bytes.
 
+## Independent verification of completed object bytes
+
+`fss-object::uploader::RetrievalObservation` verifies a separately pinned,
+locally completed upload through `RetrievalTransport`. A new operation with exactly
+`ReadMedia`, `AdapterNet` and `AdapterAuth` grants receives its own finite deadline,
+budget, object-store child and drain obligation. It preserves the original principal,
+privacy, retention and resource restrictions. The historical upload journal, owner,
+deadline and spend remain unchanged; status-only observation authority cannot read media.
+
+The owner accepts objects from 1 byte through 64 MiB. It downloads every byte in
+ranges of at most 256 KiB, without crossing original part boundaries, checks every
+part against its original acknowledged SHA-256, and computes the complete object
+SHA-256 against an independently supplied digest. That digest is a separate input
+from the manifest root. It rechecks current authority and deadline after hashing
+before recording `Verified`. Returned media buffers are cleared after use, including
+failure paths. No source-file read is involved in this verification.
+
+The native S3 reader signs every range and requires HTTP 206, exact length and
+Content-Range, exact intent/plan/root/custody-origin metadata, and one strong opaque
+ETag across the response sequence. Subsequent requests sign `If-Match`. A changed
+object, missing origin, duplicate/conflicting headers, redirect, full-body response,
+encoding, short response or wrong bytes cannot produce a verified result. ETags are
+representation pins, never substitutes for checksums. A refused transport cannot
+silently retry within the same attempt.
+
+The immutable `fss.multipart_retrieval_observation.v1` receipt records the source
+journal pin and completion proof, origin, independent digest, expected size/parts,
+fresh authority and actual spend, admitted ranges, hashed bytes and verified parts.
+Its outcome is `NotObserved`, `Unknown`, `Mismatch` or `Verified`. Failed attempts
+still settle the fresh child and preserve their consumed work. Only `Verified`
+establishes complete byte equality at the observation time. This is not a restored
+file, encryption, graph closure, replica independence, future availability or repair
+certificate. Uploads whose original completion remains locally indeterminate are
+not yet eligible, even if a separate HEAD observation later succeeds.
+
+### Bounded work model
+
+This implements a single-object verification component of `COST-RETRIEVE-001`;
+the broader sampling/scheduling/repair operation remains unqualified. For part
+lengths `p_i`, range width `R = 262144`, and total bytes `B`, one complete attempt
+admits `N = sum(ceil(p_i / R))` read operations and hashes `2B` bytes: one pass for
+part checksums and one for the independent whole checksum. Hash state is constant
+size; the owner retains only the current range. It does not allocate the whole object.
+
+With default native transport limits, each range additionally reserves 2,260,992
+bytes of bounded response/signing/framing work and 540,672 wire bytes before socket
+creation. Thus the explicit transfer allowance needs at least `B + N * 2,260,992`
+in its bytes dimension, `N * 540,672` network bytes and `N` storage operations.
+These are cumulative conservative admissions, not measured peak resident memory or
+latency promises. Credential, journal and receipt filesystem work uses its separate
+local budget. Failed requests remain charged, and exhausting any dimension stops
+before the next provider request.
+
 ## Implementation and validation
 
 Production code is in fss-reference::s3_upload, StagedUpload::try_upload_chunks, and the
@@ -211,6 +264,8 @@ Protocol references:
 [UploadPart](https://docs.aws.amazon.com/AmazonS3/latest/API/API_UploadPart.html), and
 [CompleteMultipartUpload](https://docs.aws.amazon.com/AmazonS3/latest/API/API_CompleteMultipartUpload.html),
 and [HeadObject](https://docs.aws.amazon.com/AmazonS3/latest/API/API_HeadObject.html).
+Independent range verification follows
+[GetObject](https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetObject.html).
 
 Source and executable validation are recorded separately in the session handoff. Authored tests
 do not establish live MinIO/NAS/B2/R2/AWS compatibility or complete the broader FSS-064 archive
