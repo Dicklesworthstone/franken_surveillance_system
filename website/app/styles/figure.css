@@ -88,6 +88,135 @@
   min-width: 0;
 }
 
+/* Figures that back a section up, folded under one bar. The bar is the only frame: the figures
+   inside keep their own, so the drawer adds no second border round them. */
+.drawer > summary {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 16px 16px clamp(18px, 2.2vw, 28px);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--ink-1);
+  cursor: pointer;
+  list-style: none;
+  transition: border-color 200ms;
+}
+.drawer > summary::-webkit-details-marker {
+  display: none;
+}
+.drawer > summary:hover,
+.drawer[open] > summary {
+  border-color: var(--line-strong);
+}
+.drawer > summary:focus-visible {
+  outline: 2px solid var(--lamp);
+  outline-offset: 3px;
+}
+.drawer--measured {
+  --tone: var(--seen);
+}
+.drawer--design {
+  --tone: #a9b6ff;
+}
+.drawer__mark {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--tone);
+  box-shadow: 0 0 14px color-mix(in srgb, var(--tone) 55%, transparent);
+}
+.drawer--design .drawer__mark {
+  border-radius: 2px;
+  transform: rotate(45deg);
+  box-shadow: none;
+}
+.drawer__text {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.drawer__text strong {
+  font-size: 0.98rem;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  color: #fff;
+}
+.drawer__text span {
+  font-size: 0.88rem;
+  line-height: 1.45;
+  color: var(--soft);
+}
+.drawer__cue {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 14px 0 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 650;
+  color: #fff;
+  white-space: nowrap;
+  transition:
+    border-color 180ms,
+    background-color 180ms;
+}
+.drawer > summary:hover .drawer__cue {
+  border-color: rgb(255 194 77 / 0.55);
+  background: rgb(255 194 77 / 0.06);
+}
+.drawer__cue svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 240ms var(--ease);
+}
+.drawer[open] .drawer__cue svg {
+  transform: rotate(180deg);
+}
+.drawer__hide,
+.drawer[open] .drawer__show {
+  display: none;
+}
+.drawer[open] .drawer__hide {
+  display: inline;
+}
+.drawer__body {
+  display: grid;
+  gap: 18px;
+  margin-top: 18px;
+}
+.drawer__body > * {
+  min-width: 0;
+}
+@media (max-width: 640px) {
+  /* The words take the line and the button goes under them, level with the words. */
+  .drawer > summary {
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 12px 14px;
+    padding: 18px;
+  }
+  .drawer__mark {
+    margin-top: 6px;
+  }
+  .drawer__text {
+    flex: 1 1 calc(100% - 40px);
+  }
+  .drawer__cue {
+    margin-left: 24px;
+  }
+}
+
 /* Where a figure's numbers come from, by shape as well as colour. */
 .badge {
   display: inline-flex;

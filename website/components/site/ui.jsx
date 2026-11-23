@@ -66,6 +66,34 @@ export function Figure({ as: Tag = "section", id, eyebrow, title, titleId, badge
   );
 }
 
+const DRAWER = { measured: "Measured on these films", design: "From the design registry" };
+
+/**
+ * The figures that back a section up, folded under one line so the section reads in a screen or
+ * two. The line says where the figures come from, by the same mark as the badges, and what they show.
+ */
+export function Drawer({ kind = "measured", detail, count = 1, children }) {
+  return (
+    <details className={"drawer drawer--" + kind}>
+      <summary>
+        <span className="drawer__mark" aria-hidden="true" />
+        <span className="drawer__text">
+          <strong>{DRAWER[kind]}</strong>
+          <span>{detail}</span>
+        </span>
+        <span className="drawer__cue" aria-hidden="true">
+          <span className="drawer__show">{count > 1 ? `Show ${count} figures` : "Show"}</span>
+          <span className="drawer__hide">Hide</span>
+          <svg viewBox="0 0 16 16">
+            <path d="M4 6l4 4 4-4" />
+          </svg>
+        </span>
+      </summary>
+      <div className="drawer__body">{children}</div>
+    </details>
+  );
+}
+
 const STANDING = { runs: "Runs in tests", built: "Built, not yet proven", planned: "Planned", demo: "This demo only" };
 
 /** What exists behind a section, by how far it has got. */

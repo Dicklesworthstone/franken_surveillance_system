@@ -14,12 +14,12 @@
   top: 12px;
 }
 
-/* Glass: the header and the phone dock, which float over the page. The only blurred surfaces on it. */
+/* The header and the phone dock float over the page. They are near-solid and not blurred: at 80%
+   the text underneath read through them, and a blur would be worked out again for every frame of
+   any film that scrolls beneath. */
 .glass {
-  background: rgb(7 10 15 / 0.8);
+  background: rgb(9 12 18 / 0.97);
   border: 1px solid rgb(255 255 255 / 0.1);
-  backdrop-filter: blur(16px) saturate(135%);
-  -webkit-backdrop-filter: blur(16px) saturate(135%);
   box-shadow:
     0 10px 40px -10px rgb(0 0 0 / 0.75),
     inset 0 1px 0 rgb(255 255 255 / 0.06);
@@ -50,10 +50,8 @@
     box-shadow 420ms;
 }
 .topbar.is-scrolled .topbar__pill {
-  background: rgb(7 10 15 / 0.84);
+  background: rgb(9 12 18 / 0.97);
   border-color: rgb(255 255 255 / 0.1);
-  backdrop-filter: blur(16px) saturate(135%);
-  -webkit-backdrop-filter: blur(16px) saturate(135%);
   box-shadow:
     0 10px 40px -12px rgb(0 0 0 / 0.8),
     inset 0 1px 0 rgb(255 255 255 / 0.06);

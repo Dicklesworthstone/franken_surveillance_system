@@ -140,8 +140,8 @@ export default function Home() {
             <div>
               <dt className="micro">Unsafe code</dt>
               <dd>
-                <b>Zero</b>
-                <span>Forbidden in all 22 crates. No FFmpeg, OpenCV, Python or ONNX Runtime in production.</span>
+                <b>Forbidden</b>
+                <span>In all 22 of the project's own crates. No FFmpeg, OpenCV, Python or ONNX Runtime in production.</span>
               </dd>
             </div>
             <div>

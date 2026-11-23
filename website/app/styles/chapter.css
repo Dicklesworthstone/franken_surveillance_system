@@ -578,6 +578,19 @@
   }
 }
 @media (max-width: 640px) {
+  /* At display size this sentence filled nine lines of a phone. It is a statement, not a headline. */
+  .thesis {
+    padding-top: 72px;
+  }
+  .thesis__line {
+    font-size: 1.62rem;
+    line-height: 1.12;
+    letter-spacing: -0.035em;
+  }
+  .thesis__side {
+    padding-left: 18px;
+    font-size: 1rem;
+  }
   .chain__cams {
     grid-template-columns: repeat(6, minmax(0, 1fr));
     gap: 8px;

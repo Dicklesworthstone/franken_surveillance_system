@@ -104,6 +104,18 @@ try {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const { page, errors } = await open(context);
 
+  // Supporting figures are folded into drawers. Open each one the way a reader would, so every
+  // check below reads them, page text included.
+  const drawers = page.locator("details.drawer");
+  const drawerCount = await drawers.count();
+  for (let i = 0; i < drawerCount; i++) {
+    const summary = drawers.nth(i).locator(":scope > summary");
+    await summary.scrollIntoViewIfNeeded();
+    await summary.click();
+  }
+  assert.equal(await page.locator("details.drawer[open]").count(), drawerCount, "every drawer opens");
+  pass(`${drawerCount} drawers of supporting figures open.`);
+
   // Copy rules the owner set: no estate name, no dash punctuation in prose.
   const text = await page.evaluate(() => document.body.innerText);
   assert.ok(!/alder/i.test(text), "estate name absent");

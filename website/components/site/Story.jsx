@@ -7,7 +7,7 @@ import DeliveryDropout from "./DeliveryDropout";
 import FilmFrame from "./FilmFrame";
 import LightsWipe from "./LightsWipe";
 import { AlertRun, Briefing, CoverageRuns, Custody, Detector, FusionRuns, Matches } from "./Measured";
-import { Badge, Chapter, Figure, Section, standingLabel } from "./ui";
+import { Badge, Chapter, Drawer, Figure, Section, standingLabel } from "./ui";
 import ViewZoomBench from "./ViewZoomBench";
 
 // Each state with an example line, and whether it can authorize an action that cannot be undone.
@@ -264,7 +264,11 @@ export default function Story({ summary, story, native, architecture, status }) 
           }
         >
           <FusionBench summary={summary} />
-          {native && <Matches native={native} names={names} staged={story.corroborated.cameras} />}
+          {native && (
+            <Drawer detail="Every match the tools made between two cameras, checked against where the staged people really were.">
+              <Matches native={native} names={names} staged={story.corroborated.cameras} />
+            </Drawer>
+          )}
         </Section>
       </Chapter>
 
@@ -282,8 +286,8 @@ export default function Story({ summary, story, native, architecture, status }) 
             <>
               <p className="prose">
                 A camera that saw nothing and a patch of ground that no camera covers are different facts. Absence is
-                only claimed inside a CoverageWitness, where a working camera decoded its zone without a gap and saw no
-                confirmed track entry.
+                only claimed inside a coverage witness: a stretch of time in which a working camera decoded its zone
+                without a gap and saw no confirmed entry.
               </p>
               <p className="prose">
                 Every statement carries one of nine typed knowledge states, orthogonal to provenance. Only one of them,
@@ -312,7 +316,11 @@ export default function Story({ summary, story, native, architecture, status }) 
               ))}
             </dl>
           </Figure>
-          {native && <CoverageRuns native={native} names={names} />}
+          {native && (
+            <Drawer detail="The seconds of each film that one camera decoded without a gap and can vouch for.">
+              <CoverageRuns native={native} names={names} />
+            </Drawer>
+          )}
         </Section>
 
         <DeliveryDropout
@@ -347,11 +355,16 @@ export default function Story({ summary, story, native, architecture, status }) 
         >
           <BeliefSum />
           {native && (
-            <FusionRuns native={native}>
-              {native.fusionReplay && <CalibratedExcerpt replay={native.fusionReplay} summary={summary} />}
-            </FusionRuns>
+            <Drawer
+              count={2}
+              detail="The fusion engine on the same films under three declarations, and how often the shipped detector found a person who was there."
+            >
+              <FusionRuns native={native}>
+                {native.fusionReplay && <CalibratedExcerpt replay={native.fusionReplay} summary={summary} />}
+              </FusionRuns>
+              <Detector native={native} names={names} />
+            </Drawer>
           )}
-          {native && <Detector native={native} names={names} />}
         </Section>
       </Chapter>
 
@@ -368,43 +381,43 @@ export default function Story({ summary, story, native, architecture, status }) 
           words={
             <>
               <p className="prose">
-                The agent asks for the situation and gets an anchor-pinned SituationCapsule back: what is established,
-                which high-loss alternative worlds remain possible, what is unknown, what it may do next and what each
-                option costs.
+                The agent asks what is going on and gets one briefing back, pinned to a single point in the record:
+                what is established, which costly possibilities are still open, what is unknown, what it may do next
+                and what each option costs.
               </p>
               <p className="prose">
-                Every compact briefing carries a SemanticCompressionReceipt listing what was omitted, with priced
-                handles to fetch deeper evidence. Nothing the next agent needs may live only in a chat transcript. It
-                goes into a root-last handoff.
+                Every short briefing lists what it left out, with a price on fetching each piece of deeper evidence.
+                Nothing the next agent needs may live only in a chat transcript. It goes into a written handoff.
               </p>
             </>
           }
         >
           {native && <Briefing native={native} />}
           <ViewZoomBench native={native} />
-          <Figure
-            className="reveal"
-            eyebrow="The whole grammar"
-            title="Fourteen operations, the same by command line and by MCP."
-            titleId="operations-fig"
-            badge={<Badge kind="design" />}
-          >
-            <div className="operations">
-              {OPERATIONS.map(([group, rows]) => (
-                <div key={group}>
-                  <h5 className="micro micro--chapter">{group}</h5>
-                  <ul>
-                    {rows.map(([name, text]) => (
-                      <li key={name}>
-                        <span className="data">{name}</span>
-                        <span>{text}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              ))}
-            </div>
-          </Figure>
+          <Drawer kind="design" detail="All fourteen operations an agent can call, the same by command line and by local MCP.">
+            <Figure
+              eyebrow="The whole grammar"
+              title="Fourteen operations, the same by command line and by MCP."
+              titleId="operations-fig"
+              badge={<Badge kind="design" />}
+            >
+              <div className="operations">
+                {OPERATIONS.map(([group, rows]) => (
+                  <div key={group}>
+                    <h5 className="micro micro--chapter">{group}</h5>
+                    <ul>
+                      {rows.map(([name, text]) => (
+                        <li key={name}>
+                          <span className="data">{name}</span>
+                          <span>{text}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+            </Figure>
+          </Drawer>
         </Section>
 
         <Section
@@ -415,9 +428,9 @@ export default function Story({ summary, story, native, architecture, status }) 
           words={
             <>
               <p className="prose">
-                A recommendation from a model carries no authority. An action is a witnessed plan that names its
-                preconditions and binds the exact WorldEnvelope digest. It is prepared, committed by digest, dispatched
-                once, and then checked against what the cameras show.
+                A recommendation from a model carries no authority. An action is a written plan that names its
+                preconditions and is tied by digest to the exact picture of the world it was made from. It is prepared,
+                committed, dispatched once, and then checked against what the cameras show.
               </p>
               <p className="prose">
                 In this scene the owner had granted two actions in advance: alerting them, and exterior lights at night
@@ -455,7 +468,11 @@ export default function Story({ summary, story, native, architecture, status }) 
             autonomous drone flight, or posing as the police. Calling emergency services needs a separate policy that
             does not exist yet.
           </p>
-          {native && <AlertRun native={native} />}
+          {native && (
+            <Drawer detail="What an approved local receiver got in four cases: a first alert, the same alert again, a lost acknowledgement, and an alert the policy held.">
+              <AlertRun native={native} />
+            </Drawer>
+          )}
         </Section>
       </Chapter>
 

@@ -27,14 +27,14 @@
   line-height: 1.58;
   color: var(--faint);
 }
+/* A caveat. A rule at its edge, not a filled box: a stack of filled boxes read as a row of alarms. */
 .measured__flag {
-  padding: 15px 18px;
-  border: 1px solid rgb(255 194 77 / 0.26);
-  border-radius: 14px;
-  background: rgb(255 194 77 / 0.06);
+  max-width: 78ch;
+  padding: 2px 0 2px 16px;
+  border-left: 2px solid rgb(255 194 77 / 0.6);
   font-size: 0.89rem;
-  line-height: 1.56;
-  color: #f2e4c4;
+  line-height: 1.6;
+  color: #e8dcc2;
 }
 .measured__hypothesis {
   margin: 22px 0 10px;
