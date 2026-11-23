@@ -21,6 +21,7 @@ pub(super) struct ControlDriver {
     pub(super) next: Option<Action>,
     ready_at_ns: u64,
     draining: bool,
+    keepalive: ClientCommand,
 }
 impl ControlDriver {
     pub(super) fn new(now: u64) -> Self {
@@ -28,7 +29,21 @@ impl ControlDriver {
             next: Some(Action::Request(ClientCommand::Describe)),
             ready_at_ns: now,
             draining: false,
+            keepalive: ClientCommand::KeepAlive,
         }
+    }
+    pub(super) fn select_keepalive(&mut self, command: ClientCommand) -> bool {
+        if !command.is_keepalive()
+            || self.next != Some(Action::Request(ClientCommand::Describe))
+            || self.draining
+        {
+            return false;
+        }
+        self.keepalive = command;
+        true
+    }
+    pub(super) fn keepalive_command(&self) -> ClientCommand {
+        self.keepalive
     }
     pub(super) fn action(&self) -> Option<Action> {
         self.next.filter(|_| !self.draining)
@@ -78,7 +93,7 @@ impl ControlDriver {
                     Some(Action::Request(ClientCommand::Play))
                 }
                 AvcClientPoll::Control(ClientProgress::KeepAliveDue) => {
-                    Some(Action::Request(ClientCommand::KeepAlive))
+                    Some(Action::Request(self.keepalive))
                 }
                 _ => None,
             },

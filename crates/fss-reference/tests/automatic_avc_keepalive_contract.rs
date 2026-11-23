@@ -57,6 +57,13 @@ struct Fixture {
 }
 impl Fixture {
     fn playing(chunk_bytes: usize, session_seconds: u32) -> Test<Self> {
+        Self::playing_with_keepalive(chunk_bytes, session_seconds, ClientCommand::KeepAlive)
+    }
+    fn playing_with_keepalive(
+        chunk_bytes: usize,
+        session_seconds: u32,
+        keepalive: ClientCommand,
+    ) -> Test<Self> {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
         let binding = TcpBinding::new(
             StreamKey {
@@ -92,7 +99,8 @@ impl Fixture {
             deadline_ns: LEASE,
             max_steps: 200_000,
         };
-        let driver = AutomaticAvcConnection::connect(live, 0, &authority)?;
+        let mut driver = AutomaticAvcConnection::connect(live, 0, &authority)?;
+        driver.select_keepalive(keepalive)?;
         let (peer, _) = listener.accept()?;
         peer.set_read_timeout(Some(Duration::from_secs(2)))?;
         peer.set_write_timeout(Some(Duration::from_secs(2)))?;
@@ -143,6 +151,10 @@ impl Fixture {
                     self.peer.read_exact(&mut wire)?;
                     if command == ClientCommand::KeepAlive {
                         assert!(wire.starts_with(b"OPTIONS "));
+                    } else if command == ClientCommand::KeepAliveGetParameter {
+                        assert_eq!(wire, format!(
+                            "GET_PARAMETER rtsp://fixture.local/live/ RTSP/1.0\r\nCSeq: {cseq}\r\nSession: session\r\nContent-Length: 0\r\n\r\n"
+                        ).as_bytes());
                     }
                     return Ok(cseq);
                 }
@@ -225,8 +237,14 @@ impl Fixture {
 
 #[test]
 fn due_keepalive_waits_for_partial_source_then_queues_exactly_once() -> Test {
-    for chunk in [1, 7, 4096] {
-        let mut f = Fixture::playing(chunk, 60)?;
+    for (chunk, keepalive) in [1, 7, 4096].into_iter().flat_map(|chunk| {
+        [
+            ClientCommand::KeepAlive,
+            ClientCommand::KeepAliveGetParameter,
+        ]
+        .map(|method| (chunk, method))
+    }) {
+        let mut f = Fixture::playing_with_keepalive(chunk, 60, keepalive)?;
         let due = f.driver.next_wake_ns().ok_or("keepalive due")?;
         let wire = f.partial(due - 1)?;
         assert!(f.driver.next_wake_ns().is_some_and(|at| at > due));
@@ -274,7 +292,7 @@ fn due_keepalive_waits_for_partial_source_then_queues_exactly_once() -> Test {
         }
         assert!(due_seen);
         assert_eq!(f.originals, wire);
-        let cseq = f.command(due + 1, ClientCommand::KeepAlive)?;
+        let cseq = f.command(due + 1, keepalive)?;
         assert_eq!(cseq, 4);
         f.accept(
             cseq,

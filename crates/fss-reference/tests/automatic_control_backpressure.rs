@@ -128,6 +128,18 @@ enum Driver {
     Recording(AutomaticAvcRecording),
 }
 impl Driver {
+    fn select_keepalive(&mut self, command: ClientCommand) -> Result<(), Failure> {
+        match self {
+            Self::Connection(d) => d.select_keepalive(command).map_err(Failure::Connection),
+            Self::Recording(d) => d.select_keepalive(command).map_err(Failure::Recording),
+        }
+    }
+    fn keepalive_command(&self) -> ClientCommand {
+        match self {
+            Self::Connection(d) => d.keepalive_command(),
+            Self::Recording(d) => d.keepalive_command(),
+        }
+    }
     fn needs_credentials(&self) -> bool {
         match self {
             Self::Connection(d) => d.needs_credentials(),
@@ -188,6 +200,9 @@ struct Fixture {
 }
 impl Fixture {
     fn new(recording: bool, max_steps: u64) -> Test<Self> {
+        Self::with_chunk(recording, max_steps, TcpLimits::default().chunk_bytes)
+    }
+    fn with_chunk(recording: bool, max_steps: u64, chunk_bytes: usize) -> Test<Self> {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
         let binding = TcpBinding::new(
             KEY,
@@ -209,7 +224,10 @@ impl Fixture {
                 default_session_timeout_seconds: 60,
             },
             binding,
-            transport: TcpLimits::default(),
+            transport: TcpLimits {
+                chunk_bytes,
+                ..TcpLimits::default()
+            },
             media: AvcReceiveLimits::default(),
             realm: "fixture-camera".into(),
             digest_policy: DigestPolicy::default(),
@@ -251,6 +269,9 @@ impl Fixture {
         self.driver.poll(ready, now, &self.authority)
     }
     fn command(&mut self, now: u64) -> Test<QueuedAvcRequest> {
+        Ok(self.command_wire(now)?.0)
+    }
+    fn command_wire(&mut self, now: u64) -> Test<(QueuedAvcRequest, Vec<u8>)> {
         let Step::Queued(queued) = self.poll(SocketReadiness::default(), now)? else {
             return Err("automatic command not queued".into());
         };
@@ -264,14 +285,78 @@ impl Fixture {
             )? {
                 Step::Live(LiveAvcStep::Write(TcpWriteStep::Sent { bytes, cseq })) => {
                     assert_eq!((cseq, bytes), (queued.cseq, queued.bytes));
-                    self.peer.read_exact(&mut vec![0; bytes])?;
-                    return Ok(queued);
+                    let mut wire = vec![0; bytes];
+                    self.peer.read_exact(&mut wire)?;
+                    return Ok((queued, wire));
                 }
                 Step::Live(LiveAvcStep::Write(_) | LiveAvcStep::Pending(_)) => {}
                 _ => return Err("unexpected request dispatch output".into()),
             }
         }
         Err("request dispatch bound".into())
+    }
+    fn playing(&mut self) -> Test {
+        let describe = self.command(0)?;
+        self.receive(
+            &response(describe.cseq, "Content-Type: application/sdp\r\n", SDP),
+            ClientState::Described,
+            1,
+        )?;
+        let setup = self.command(2)?;
+        self.receive(&response(setup.cseq, "Session: session;timeout=60\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1;ssrc=7\r\n", ""), ClientState::Ready, 3)?;
+        let play = self.command(4)?;
+        self.receive(
+            &response(play.cseq, "Session: session\r\n", ""),
+            ClientState::Playing,
+            5,
+        )?;
+        Ok(())
+    }
+    fn keepalive_due(&mut self, now: u64) -> Test {
+        for _ in 0..1024 {
+            let step = self.poll(SocketReadiness::default(), now)?;
+            if matches!(step.live(), Some(LiveAvcStep::Protocol {
+                event: DigestAvcPoll::Client { event, .. }, transport: None,
+            }) if matches!(event.as_ref(), AvcClientPoll::Control(ClientProgress::KeepAliveDue)))
+            {
+                assert!(self.driver.needs_credentials());
+                return Ok(());
+            }
+            if step.terminal() || matches!(step, Step::Queued(_)) {
+                return Err("unexpected keepalive scheduling output".into());
+            }
+        }
+        Err("keepalive scheduling bound".into())
+    }
+    fn challenge(&mut self, cseq: u32, now: u64) -> Test {
+        let wire = format!("RTSP/1.0 401 Unauthorized\r\nCSeq: {cseq}\r\nWWW-Authenticate: Digest realm=\"fixture-camera\", nonce=\"fixture-nonce\", algorithm=SHA-256, qop=\"auth\"\r\nContent-Length: 0\r\n\r\n").into_bytes();
+        self.peer.write_all(&wire)?;
+        let mut original = Vec::new();
+        for _ in 0..1024 {
+            let step = self.poll(
+                SocketReadiness {
+                    readable: true,
+                    writable: false,
+                },
+                now,
+            )?;
+            if let Some(LiveAvcStep::Wire(chunk)) = step.live() {
+                original.extend_from_slice(chunk.expose());
+            }
+            if matches!(step.live(), Some(LiveAvcStep::Protocol {
+                event: DigestAvcPoll::AuthenticationRequired { cseq: challenged, .. }, transport: None,
+            }) if *challenged == cseq)
+            {
+                assert_eq!(original, wire);
+                assert!(self.driver.needs_credentials());
+                return Ok(());
+            }
+            if step.terminal() || matches!(step, Step::Queued(_)) {
+                return Err("unexpected authentication output".into());
+            }
+            std::thread::yield_now();
+        }
+        Err("authentication intake bound".into())
     }
     fn receive(&mut self, bytes: &[u8], state: ClientState, now: u64) -> Test {
         self.peer.write_all(bytes)?;
@@ -360,6 +445,191 @@ fn response(cseq: u32, fields: &str, body: &str) -> Vec<u8> {
         body.len()
     )
     .into_bytes()
+}
+
+#[test]
+fn both_automatic_owners_pin_keepalive_before_the_first_prepared_request() -> Test {
+    for recording in [false, true] {
+        let mut f = Fixture::new(recording, 10_000)?;
+        let totals = f.driver.totals();
+        let wake = f.driver.next_wake_ns();
+        assert_eq!(f.driver.keepalive_command(), ClientCommand::KeepAlive);
+        let refused = f
+            .driver
+            .select_keepalive(ClientCommand::Options)
+            .err()
+            .ok_or("non-keepalive selected")?;
+        assert_eq!(refused.reason(), Some(&LiveAvcError::Configuration));
+        assert!(!refused.retired());
+        assert_eq!(f.driver.keepalive_command(), ClientCommand::KeepAlive);
+        f.driver
+            .select_keepalive(ClientCommand::KeepAliveGetParameter)?;
+        assert_eq!(
+            f.driver.keepalive_command(),
+            ClientCommand::KeepAliveGetParameter
+        );
+        assert_eq!(f.driver.totals(), totals);
+        assert_eq!(f.driver.next_wake_ns(), wake);
+        assert!(matches!(
+            f.poll(SocketReadiness::default(), 0)?,
+            Step::Queued(_)
+        ));
+        // The request has not reached the socket, but its preparation freezes intent.
+        assert_eq!(f.driver.totals(), totals);
+        for command in [
+            ClientCommand::KeepAlive,
+            ClientCommand::KeepAliveGetParameter,
+        ] {
+            let refused = f
+                .driver
+                .select_keepalive(command)
+                .err()
+                .ok_or("prepared owner changed method")?;
+            assert_eq!(refused.reason(), Some(&LiveAvcError::Configuration));
+            assert!(!refused.retired());
+            assert_eq!(
+                f.driver.keepalive_command(),
+                ClientCommand::KeepAliveGetParameter
+            );
+            assert_eq!(f.driver.totals(), totals);
+        }
+        assert!(f.driver.cancel());
+        assert!(f.driver.select_keepalive(ClientCommand::KeepAlive).is_err());
+        assert!(!f.driver.cancel());
+    }
+    Ok(())
+}
+
+#[test]
+fn initial_digest_challenge_cannot_reopen_keepalive_selection() -> Test {
+    for recording in [false, true] {
+        let mut f = Fixture::with_chunk(recording, 10_000, 7)?;
+        f.driver
+            .select_keepalive(ClientCommand::KeepAliveGetParameter)?;
+        let first = f.command(0)?;
+        f.challenge(first.cseq, 1)?;
+        let totals = f.driver.totals();
+        let refused = f
+            .driver
+            .select_keepalive(ClientCommand::KeepAlive)
+            .err()
+            .ok_or("challenge reopened configuration")?;
+        assert!(!refused.retired());
+        assert_eq!(f.driver.totals(), totals);
+        assert_eq!(
+            f.driver.keepalive_command(),
+            ClientCommand::KeepAliveGetParameter
+        );
+        let (answer, wire) = f.command_wire(2)?;
+        assert_eq!(answer.command, ClientCommand::Describe);
+        assert_eq!(answer.cseq, first.cseq + 1);
+        assert!(wire.starts_with(b"DESCRIBE "));
+        assert!(std::str::from_utf8(&wire)?.contains("Authorization: Digest "));
+        assert!(f.driver.cancel());
+    }
+    Ok(())
+}
+
+#[test]
+fn selected_get_parameter_signs_the_actual_method_and_preserves_the_original_deadline() -> Test {
+    for recording in [false, true] {
+        let mut f = Fixture::with_chunk(recording, 10_000, 7)?;
+        f.driver
+            .select_keepalive(ClientCommand::KeepAliveGetParameter)?;
+        f.playing()?;
+        let due = f.driver.next_wake_ns().ok_or("keepalive wake")?;
+        f.keepalive_due(due)?;
+        let (unsigned, wire) = f.command_wire(due)?;
+        assert_eq!(unsigned.command, ClientCommand::KeepAliveGetParameter);
+        assert_eq!(wire, format!("GET_PARAMETER rtsp://camera.local/live/ RTSP/1.0\r\nCSeq: {}\r\nSession: session\r\nContent-Length: 0\r\n\r\n", unsigned.cseq).as_bytes());
+        let expiry = f.driver.next_wake_ns().ok_or("request expiry")?;
+        f.challenge(unsigned.cseq, due + 1)?;
+        assert!(f.driver.select_keepalive(ClientCommand::KeepAlive).is_err());
+        let (signed, wire) = f.command_wire(due + 2)?;
+        assert_eq!(signed.command, ClientCommand::KeepAliveGetParameter);
+        assert_eq!(signed.cseq, unsigned.cseq + 1);
+        let text = std::str::from_utf8(&wire)?;
+        assert!(text.starts_with("GET_PARAMETER rtsp://camera.local/live/ RTSP/1.0\r\n"));
+        assert!(text.contains("Session: session\r\n"));
+        assert!(text.contains("Content-Length: 0\r\n"));
+        // Independent SHA-256 hashlib golden for GET_PARAMETER, not OPTIONS.
+        assert!(text.contains(
+            "response=\"6fa081b8096ead845cf0c173436577dfbe97f5830a240cc76668cb4847a87426\""
+        ));
+        assert!(text.ends_with("\r\n\r\n"));
+        assert_eq!(f.driver.next_wake_ns(), Some(expiry));
+        f.receive(
+            &response(signed.cseq, "Session: session\r\n", ""),
+            ClientState::Playing,
+            due + 3,
+        )?;
+        let next = f.driver.next_wake_ns().ok_or("renewed keepalive wake")?;
+        assert!(next > due + 3);
+        f.keepalive_due(next)?;
+        let (renewed, wire) = f.command_wire(next)?;
+        assert_eq!(renewed.command, ClientCommand::KeepAliveGetParameter);
+        let text = std::str::from_utf8(&wire)?;
+        assert!(text.starts_with("GET_PARAMETER "));
+        assert!(text.contains("nc=00000002"));
+        assert!(f.driver.cancel());
+    }
+    Ok(())
+}
+
+#[test]
+fn rejected_selected_keepalive_transfers_the_original_reply_without_fallback() -> Test {
+    for (recording, status) in [false, true]
+        .into_iter()
+        .flat_map(|recording| [405, 501].map(|status| (recording, status)))
+    {
+        let mut f = Fixture::with_chunk(recording, 10_000, 7)?;
+        f.driver
+            .select_keepalive(ClientCommand::KeepAliveGetParameter)?;
+        f.playing()?;
+        let due = f.driver.next_wake_ns().ok_or("keepalive wake")?;
+        f.keepalive_due(due)?;
+        let queued = f.command(due)?;
+        assert_eq!(queued.command, ClientCommand::KeepAliveGetParameter);
+        let wire = format!(
+            "RTSP/1.0 {status} Unsupported\r\nCSeq: {}\r\nContent-Length: 0\r\n\r\n",
+            queued.cseq
+        )
+        .into_bytes();
+        f.peer.write_all(&wire)?;
+        let mut original = Vec::new();
+        let mut retired = false;
+        for _ in 0..1024 {
+            let step = f.poll(
+                SocketReadiness {
+                    readable: true,
+                    writable: true,
+                },
+                due + 1,
+            )?;
+            assert!(
+                !matches!(step, Step::Queued(_)),
+                "server refusal must not prepare OPTIONS"
+            );
+            if let Some(LiveAvcStep::Wire(chunk)) = step.live() {
+                original.extend_from_slice(chunk.expose());
+            }
+            if step.terminal() {
+                assert_eq!(original, wire);
+                retired = true;
+                break;
+            }
+            std::thread::yield_now();
+        }
+        assert!(retired);
+        assert!(!f.driver.needs_credentials());
+        assert_eq!(f.driver.next_wake_ns(), None);
+        assert_eq!(
+            f.driver.keepalive_command(),
+            ClientCommand::KeepAliveGetParameter
+        );
+        assert!(!f.driver.cancel());
+    }
+    Ok(())
 }
 
 #[test]

@@ -77,6 +77,31 @@ staging is source-first; root publication happens last. Retain the plan until th
 exact root is durably published or reconciled. A prepared window, queued request
 or parsed picture alone is never reported as published evidence.
 
+## Automatic negotiation, keepalive policy and reconnects
+
+The optional `automatic::AutomaticAvcConnection` and `AutomaticAvcRecording`
+owners drive the same DESCRIBE, SETUP, PLAY and Digest state machine while returning
+every original wire, media and recording result to the caller. Before the first
+request is prepared, `select_keepalive(ClientCommand::KeepAliveGetParameter)`
+selects empty GET_PARAMETER for cameras requiring that liveness method. The default
+is `ClientCommand::KeepAlive`, which sends OPTIONS. `keepalive_command()` reports
+the local selection; it is not evidence that the camera accepted the method.
+
+Only those two commands are accepted. Once a request has been prepared, the policy
+is frozen, including while authentication is pending or no socket bytes have yet
+been sent. Rejected selection leaves the owner, media and accounting intact.
+Digest signs the actual selected method. Authentication challenges keep the original
+request deadline, and a server refusal never silently switches methods. Partial
+interleaved media is drained before a queued keepalive can be prepared.
+
+The separately authorized `automatic::reconnect::SupervisedAvcConnection` and
+`SupervisedAvcRecording` owners accept the same selection before their first
+connection admission. Each fresh stream generation inherits it after an eligible
+failure and acknowledged terminal ownership. Selection cannot be changed during
+backoff or after any admitted attempt; retries retain the original whole-run budget
+and do not replay an uncertain request from an earlier socket. Reconnect still
+requires explicit authority, finite attempts, fresh generations and source custody.
+
 ## Faults and terminal ownership
 
 A recording discontinuity, receiver restart, fatal protocol event, or expired
@@ -114,7 +139,20 @@ identical source/media/index identities, and compares roots across TCP chunk siz
 cargo test -p fss-reference --lib rtsp::live_avc
 ```
 
-These tests were authored but **not executed** in this editing environment:
-`cargo` and `rustc` are unavailable. API review, lexical checks and exact blob and
-manifest hash verification do not establish compilation, passing Rust tests,
-hardware interoperability, production safety, or release qualification.
+The selected-keepalive regressions additionally cover both automatic owners,
+OPTIONS/GET_PARAMETER across TCP chunk sizes 1, 7 and 4096, the exact Digest method,
+authentication deadlines, safe invalid/late selection, refusal without fallback,
+and preserved policy after reconnect and recording EOF. Reproduce the focused lane:
+
+```sh
+cargo +nightly-2026-08-31 test --locked --offline -p fss-reference \
+  --test automatic_avc_keepalive_contract --test automatic_control_backpressure
+cargo +nightly-2026-08-31 test --locked --offline -p fss-reference \
+  --lib rtsp::live_avc::automatic
+```
+
+The 2026-11-22 implementation received pinned formatting and independent source/
+authentication review. Native Rust execution remains unverified: the initial
+single-job, locked, offline build was killed in unchanged Asupersync 0.5.0 before
+FSS diagnostics. See the session handoff for final verification results. These
+reference checks do not establish hardware interoperability or release qualification.

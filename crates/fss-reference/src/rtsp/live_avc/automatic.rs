@@ -53,10 +53,44 @@ impl AutomaticAvcConnection {
         now: u64,
         authority: &dyn TcpAuthority,
     ) -> Result<Self, LiveAvcConnectFailure> {
+        Self::connect_with_keepalive(config, ClientCommand::KeepAlive, now, authority)
+    }
+    fn connect_with_keepalive(
+        config: LiveAvcConfig,
+        keepalive: ClientCommand,
+        now: u64,
+        authority: &dyn TcpAuthority,
+    ) -> Result<Self, LiveAvcConnectFailure> {
+        let mut control = ControlDriver::new(now);
+        if !control.select_keepalive(keepalive) {
+            return Err(LiveAvcConnectFailure {
+                reason: LiveAvcError::Configuration,
+                connection_attempted: false,
+            });
+        }
         Ok(Self {
             connection: LiveAvcConnection::connect(config, now, authority)?,
-            control: ControlDriver::new(now),
+            control,
         })
+    }
+    /// Select OPTIONS or empty GET_PARAMETER before the first request is prepared.
+    /// This pure configuration call performs no I/O or credential borrowing. The
+    /// choice stays fixed through authentication and never enables method fallback.
+    /// An invalid or late selection preserves the original owner and its budgets.
+    pub fn select_keepalive(&mut self, command: ClientCommand) -> Result<(), LiveAvcFailure> {
+        if self.state() != ClientState::Idle
+            || !self.totals().is_some_and(|totals| {
+                totals.read_calls == 0 && totals.write_calls == 0 && totals.sent_bytes == 0
+            })
+            || !self.control.select_keepalive(command)
+        {
+            return Err(safe(LiveAvcError::Configuration));
+        }
+        Ok(())
+    }
+    /// Locally selected liveness method, not evidence of remote acceptance or health.
+    pub fn keepalive_command(&self) -> ClientCommand {
+        self.control.keepalive_command()
     }
     /// Negotiation state only, never a frame, continuity or publication receipt.
     pub fn state(&self) -> ClientState {
@@ -169,10 +203,47 @@ impl AutomaticAvcRecording {
         now: u64,
         authority: &dyn TcpAuthority,
     ) -> Result<Self, LiveRecordingConnectFailure> {
+        Self::connect_with_keepalive(config, recording, ClientCommand::KeepAlive, now, authority)
+    }
+    fn connect_with_keepalive(
+        config: LiveAvcConfig,
+        recording: LiveRecordingConfig,
+        keepalive: ClientCommand,
+        now: u64,
+        authority: &dyn TcpAuthority,
+    ) -> Result<Self, LiveRecordingConnectFailure> {
+        let mut control = ControlDriver::new(now);
+        if !control.select_keepalive(keepalive) {
+            return Err(LiveRecordingConnectFailure {
+                reason: LiveRecordingError::Network(LiveAvcError::Configuration),
+                connection_attempted: false,
+            });
+        }
         Ok(Self {
             recording: LiveAvcRecording::connect(config, recording, now, authority)?,
-            control: ControlDriver::new(now),
+            control,
         })
+    }
+    /// Pin OPTIONS or empty GET_PARAMETER before the first request is prepared.
+    /// Authentication uses the same selected method; no server refusal selects a
+    /// fallback. This pure call neither reads media nor changes source ownership.
+    pub fn select_keepalive(&mut self, command: ClientCommand) -> Result<(), LiveRecordingFailure> {
+        if self.state() != ClientState::Idle
+            || !self.totals().is_some_and(|totals| {
+                totals.read_calls == 0 && totals.write_calls == 0 && totals.sent_bytes == 0
+            })
+            || !self.control.select_keepalive(command)
+        {
+            return Err(LiveRecordingFailure {
+                reason: LiveRecordingError::Network(LiveAvcError::Configuration),
+                retirement: None,
+            });
+        }
+        Ok(())
+    }
+    /// Locally pinned liveness intent, independent of recording/publication receipts.
+    pub fn keepalive_command(&self) -> ClientCommand {
+        self.control.keepalive_command()
     }
     /// Negotiation state only; not evidence of stored media.
     pub fn state(&self) -> ClientState {

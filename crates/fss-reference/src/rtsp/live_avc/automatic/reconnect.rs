@@ -22,6 +22,7 @@ use std::io::ErrorKind;
 
 use super::{AutomaticAvcConnection, AutomaticAvcStep};
 use crate::rtsp::avc_client::AvcClientError;
+use crate::rtsp::client::ClientCommand;
 use crate::rtsp::live_avc::{
     DigestAvcPoll, DigestCredentials, LiveAvcConfig, LiveAvcConnectFailure, LiveAvcError,
     LiveAvcRetirement, LiveAvcStep, SocketReadiness,
@@ -412,6 +413,7 @@ pub struct SupervisedAvcConnection {
     schedule: Schedule,
     profile: Option<Profile>,
     active: Option<AutomaticAvcConnection>,
+    keepalive: ClientCommand,
 }
 impl fmt::Debug for SupervisedAvcConnection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -436,6 +438,7 @@ impl SupervisedAvcConnection {
             schedule: Schedule::new(binding, policy, now)?,
             profile: None,
             active: None,
+            keepalive: ClientCommand::KeepAlive,
         })
     }
 
@@ -458,6 +461,27 @@ impl SupervisedAvcConnection {
     /// These are reservations, not actual traffic or source-custody observations.
     pub fn resource_budget(&self) -> ReconnectBudgetState {
         self.schedule.resources.state()
+    }
+
+    /// Select OPTIONS or empty GET_PARAMETER before the first connection admission.
+    /// Every fresh generation inherits this fixed choice. Selection performs no I/O,
+    /// consumes no grant, and never permits fallback after a server refusal.
+    pub fn select_keepalive(&mut self, command: ClientCommand) -> Result<(), ReconnectRefusal> {
+        if !command.is_keepalive() {
+            return Err(ReconnectRefusal::Configuration);
+        }
+        if self.schedule.attempts != 0
+            || !matches!(self.schedule.status, ReconnectStatus::Waiting { .. })
+        {
+            return Err(ReconnectRefusal::Scope);
+        }
+        self.keepalive = command;
+        Ok(())
+    }
+
+    /// Fixed liveness method shared by all admitted generations.
+    pub fn keepalive_command(&self) -> ClientCommand {
+        self.keepalive
     }
 
     /// Scheduling only, not camera/recording health.
@@ -516,7 +540,8 @@ impl SupervisedAvcConnection {
         if self.profile.is_none() {
             self.profile = Some(Profile::new(&config));
         }
-        match AutomaticAvcConnection::connect(config, now, authority) {
+        match AutomaticAvcConnection::connect_with_keepalive(config, self.keepalive, now, authority)
+        {
             Ok(connection) => {
                 self.active = Some(connection);
                 Ok(attempt)
@@ -930,7 +955,26 @@ mod tests {
         p.deadline_ns = config.deadline_ns;
         p.max_steps = 100_000;
         let mut owner = SupervisedAvcConnection::new(config.binding.clone(), p, 0)?;
+        let unused_budget = owner.resource_budget();
+        assert_eq!(owner.keepalive_command(), ClientCommand::KeepAlive);
+        assert_eq!(
+            owner.select_keepalive(ClientCommand::Options),
+            Err(ReconnectRefusal::Configuration)
+        );
+        owner.select_keepalive(ClientCommand::KeepAliveGetParameter)?;
+        assert_eq!(owner.resource_budget(), unused_budget);
         let first = owner.connect(config, 0, &first_authority)?;
+        assert_eq!(
+            owner.select_keepalive(ClientCommand::KeepAlive),
+            Err(ReconnectRefusal::Scope)
+        );
+        assert_eq!(
+            owner
+                .active
+                .as_ref()
+                .map(AutomaticAvcConnection::keepalive_command),
+            Some(ClientCommand::KeepAliveGetParameter)
+        );
         assert_eq!(owner.resource_budget().reserved(), one);
         let (mut peer, _) = listener.accept()?;
         peer.set_read_timeout(Some(Duration::from_secs(2)))?;
@@ -1024,6 +1068,14 @@ mod tests {
         ));
         owner.acknowledge_retirement(100, &first_authority)?;
         assert_eq!(owner.resource_budget().reserved(), one);
+        assert_eq!(
+            owner.select_keepalive(ClientCommand::KeepAlive),
+            Err(ReconnectRefusal::Scope)
+        );
+        assert_eq!(
+            owner.keepalive_command(),
+            ClientCommand::KeepAliveGetParameter
+        );
         let next = owner.expected_binding().clone();
         assert_eq!(next.key().generation, first.key.generation + 1);
         assert_eq!(owner.next_wake_ns(), Some(110));
@@ -1071,6 +1123,13 @@ mod tests {
         config.binding = next;
         let second = owner.connect(config, 110, &next_authority)?;
         let (_second_peer, _) = listener.accept()?;
+        assert_eq!(
+            owner
+                .active
+                .as_ref()
+                .map(AutomaticAvcConnection::keepalive_command),
+            Some(ClientCommand::KeepAliveGetParameter)
+        );
         assert_eq!(second.ordinal, 2);
         assert_eq!(second.previous, Some((first.key, 100)));
         assert_eq!(owner.resource_budget().reserved(), two);

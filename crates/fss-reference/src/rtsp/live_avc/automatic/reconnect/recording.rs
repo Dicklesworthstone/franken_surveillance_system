@@ -12,6 +12,7 @@ use super::{
     terminal_retryable,
 };
 use crate::rtsp::authentication::DigestCredentials;
+use crate::rtsp::client::ClientCommand;
 use crate::rtsp::live_avc::automatic::{AutomaticAvcRecording, AutomaticRecordingStep};
 use crate::rtsp::live_avc::recording::{
     LiveRecordingConfig, LiveRecordingConnectFailure, LiveRecordingError, LiveRecordingFailure,
@@ -89,6 +90,7 @@ pub struct SupervisedAvcRecording {
     template: LiveRecordingConfig,
     active: Option<AutomaticAvcRecording>,
     draining_eof: bool,
+    keepalive: ClientCommand,
 }
 impl fmt::Debug for SupervisedAvcRecording {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -119,6 +121,7 @@ impl SupervisedAvcRecording {
             template,
             active: None,
             draining_eof: false,
+            keepalive: ClientCommand::KeepAlive,
         })
     }
 
@@ -143,6 +146,27 @@ impl SupervisedAvcRecording {
     /// This is not measured traffic, stored media size or a publication receipt.
     pub fn resource_budget(&self) -> ReconnectBudgetState {
         self.schedule.resources.state()
+    }
+
+    /// Pin OPTIONS or empty GET_PARAMETER before the first connection admission.
+    /// Fresh recording generations inherit the same method without resetting any
+    /// budget or negotiating fallback. This call has no network or capture effects.
+    pub fn select_keepalive(&mut self, command: ClientCommand) -> Result<(), ReconnectRefusal> {
+        if !command.is_keepalive() {
+            return Err(ReconnectRefusal::Configuration);
+        }
+        if self.schedule.attempts != 0
+            || !matches!(self.schedule.status, ReconnectStatus::Waiting { .. })
+        {
+            return Err(ReconnectRefusal::Scope);
+        }
+        self.keepalive = command;
+        Ok(())
+    }
+
+    /// Exact liveness method retained across all recording generations.
+    pub fn keepalive_command(&self) -> ClientCommand {
+        self.keepalive
     }
 
     /// Scheduling state, not evidence of recorded footage or camera health.
@@ -212,7 +236,13 @@ impl SupervisedAvcRecording {
         }
         let mut recording = self.template.clone();
         recording.scope = scope;
-        match AutomaticAvcRecording::connect(config, recording, now, authority) {
+        match AutomaticAvcRecording::connect_with_keepalive(
+            config,
+            recording,
+            self.keepalive,
+            now,
+            authority,
+        ) {
             Ok(recording) => {
                 self.active = Some(recording);
                 self.draining_eof = false;
@@ -456,6 +486,121 @@ mod tests {
             deadline_ns,
             max_steps: 10_000,
         }
+    }
+
+    #[test]
+    fn selected_keepalive_is_fixed_across_recording_eof_and_fresh_generations() -> TestResult {
+        use crate::rtsp::tcp::{TcpDenial, TcpOperation};
+        use std::net::Shutdown;
+
+        struct GenerationAuthority(TcpBinding);
+        impl TcpAuthority for GenerationAuthority {
+            fn checkpoint(
+                &self,
+                binding: &TcpBinding,
+                _: TcpOperation,
+                now: u64,
+                deadline: u64,
+            ) -> Result<(), TcpDenial> {
+                if binding != &self.0 {
+                    return Err(TcpDenial::Unauthorized);
+                }
+                if now >= deadline {
+                    return Err(TcpDenial::Deadline);
+                }
+                Ok(())
+            }
+        }
+
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+        let address = listener.local_addr()?;
+        let (config, authority) = scope(address)?;
+        let template = template()?;
+        let mut recording_scope = template.scope.clone();
+        let mut owner = SupervisedAvcRecording::new(
+            config.binding.clone(),
+            template,
+            policy(config.deadline_ns),
+            0,
+        )?;
+        let unused_budget = owner.resource_budget();
+        assert_eq!(owner.keepalive_command(), ClientCommand::KeepAlive);
+        assert_eq!(
+            owner.select_keepalive(ClientCommand::Describe),
+            Err(ReconnectRefusal::Configuration)
+        );
+        owner.select_keepalive(ClientCommand::KeepAliveGetParameter)?;
+        assert_eq!(owner.resource_budget(), unused_budget);
+        let first = owner.connect(config, recording_scope.clone(), 0, &authority)?;
+        let (peer, _) = listener.accept()?;
+        assert_eq!(
+            owner
+                .active
+                .as_ref()
+                .map(AutomaticAvcRecording::keepalive_command),
+            Some(ClientCommand::KeepAliveGetParameter)
+        );
+        assert_eq!(
+            owner.select_keepalive(ClientCommand::KeepAlive),
+            Err(ReconnectRefusal::Scope)
+        );
+        peer.shutdown(Shutdown::Write)?;
+        let mut original_outputs = Vec::new();
+        for _ in 0..1024 {
+            original_outputs.push(owner.poll(
+                SocketReadiness {
+                    readable: true,
+                    writable: true,
+                },
+                &credentials()?,
+                [1; 16],
+                1,
+                &authority,
+            )?);
+            if owner.status() == ReconnectStatus::Retired(first.key) {
+                break;
+            }
+            std::thread::yield_now();
+        }
+        assert_eq!(owner.status(), ReconnectStatus::Retired(first.key));
+        let reserved = owner.resource_budget();
+        owner.acknowledge_retirement(2, &authority)?;
+        assert_eq!(
+            owner.select_keepalive(ClientCommand::KeepAlive),
+            Err(ReconnectRefusal::Scope)
+        );
+        assert_eq!(owner.resource_budget(), reserved);
+        assert_eq!(
+            owner.keepalive_command(),
+            ClientCommand::KeepAliveGetParameter
+        );
+        let next_binding = owner.expected_binding().clone();
+        recording_scope.generation = next_binding.key().generation;
+        let next_authority = GenerationAuthority(next_binding.clone());
+        let (mut config, _) = scope(address)?;
+        config.binding = next_binding;
+        let second = owner.connect(config, recording_scope, 12, &next_authority)?;
+        let (_second_peer, _) = listener.accept()?;
+        assert_eq!(second.ordinal, 2);
+        assert_eq!(second.previous, Some((first.key, 2)));
+        assert_eq!(
+            owner
+                .active
+                .as_ref()
+                .map(AutomaticAvcRecording::keepalive_command),
+            Some(ClientCommand::KeepAliveGetParameter)
+        );
+        assert!(matches!(owner.poll(
+            SocketReadiness::default(), &credentials()?, [2; 16], 12, &next_authority,
+        )?, SupervisedRecordingStep::Recording { output: AutomaticRecordingStep::Queued(queued), .. }
+            if queued.command == ClientCommand::Describe && queued.cseq == 1));
+        assert!(owner.cancel().is_some());
+        assert_eq!(
+            owner.select_keepalive(ClientCommand::KeepAlive),
+            Err(ReconnectRefusal::Scope)
+        );
+        drop(original_outputs);
+        Ok(())
     }
 
     #[test]
