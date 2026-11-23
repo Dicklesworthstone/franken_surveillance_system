@@ -1,12 +1,25 @@
+/* The first screen is a security room: the words on the left, and on the right one main monitor
+   with the house's five cameras under it, each lit while the man is in its view. */
 .hero {
-  --words: 31rem;
   position: relative;
   isolation: isolate;
   overflow: clip;
-  min-height: min(100svh, 1040px);
+  background:
+    radial-gradient(60rem 40rem at 78% 34%, rgb(255 194 77 / 0.09), transparent 62%),
+    radial-gradient(40rem 30rem at 6% 6%, rgb(255 194 77 / 0.07), transparent 64%),
+    var(--ink);
+}
+.hero__grid {
+  position: relative;
+  z-index: 1;
   display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
   align-items: center;
-  background: var(--ink);
+  gap: clamp(36px, 4.4vw, 80px);
+  width: min(100% - 2 * var(--gutter), 1440px);
+  min-height: min(100svh, 1000px);
+  margin-inline: auto;
+  padding: 112px 0 64px;
 }
 /* The surveyor's grid, faded at its edges. */
 .hero::before {
@@ -23,17 +36,22 @@
   -webkit-mask-image: radial-gradient(ellipse at 22% 30%, black 10%, transparent 66%);
 }
 .hero__media {
-  position: absolute;
-  inset: 0;
-  z-index: -1;
+  position: relative;
+  min-width: 0;
 }
+/* The main monitor. The film fills it edge to edge (--from: 0 leaves no share of it to words). */
 .hero__plate {
-  /* The share of the width on the left that the film leaves to the words. */
-  --from: 28;
-  position: absolute;
-  inset: 0;
+  --from: 0;
+  position: relative;
+  aspect-ratio: 16 / 9;
   overflow: hidden;
   container-type: size;
+  border: 1px solid rgb(255 255 255 / 0.14);
+  border-radius: 20px;
+  background: #000;
+  box-shadow:
+    0 50px 120px -40px rgb(0 0 0 / 0.95),
+    0 0 90px -34px rgb(255 194 77 / 0.45);
 }
 /* The film's own 16:9 frame, sized to cover the right of the hero, so the outline drawn in it lands on the man. */
 .hero__frame {
@@ -79,47 +97,103 @@
   line-height: 1.5;
   letter-spacing: 0;
 }
-/* The film dissolves into the ground on its left and at its foot. This is paint over the film and
-   not a mask on it: a mask would have to be applied again to every frame. The hero's own glow is
-   painted here too, so the ground has no seam where the film starts. */
+/* A monitor's vignette. Paint over the film, not a mask on it: a mask is applied again to every frame. */
 .hero__plate::after {
   content: "";
   position: absolute;
   inset: 0;
   pointer-events: none;
   background:
-    radial-gradient(52rem 36rem at 4% 8%, rgb(255 194 77 / 0.1), transparent 64%),
-    radial-gradient(44rem 34rem at 10% 108%, rgb(164 188 255 / 0.07), transparent 62%),
-    linear-gradient(
-      to right,
-      var(--ink) calc(var(--from) * 1%),
-      rgb(5 7 11 / 0.86) calc(var(--from) * 1% + 9%),
-      rgb(5 7 11 / 0.36) calc(var(--from) * 1% + 23%),
-      transparent calc(var(--from) * 1% + 37%)
-    ),
-    linear-gradient(to bottom, rgb(5 7 11 / 0.6) 0%, transparent 17%),
-    linear-gradient(to top, var(--ink) 0%, rgb(5 7 11 / 0.5) 12%, transparent 27%);
+    radial-gradient(ellipse at 50% 45%, transparent 58%, rgb(0 0 0 / 0.38) 100%),
+    linear-gradient(to bottom, rgb(5 7 11 / 0.45) 0%, transparent 16%);
 }
 .hero .hero__reticle {
-  --reticle: rgb(255 255 255 / 0.5);
-  inset: 96px var(--gutter) 30px auto;
-  width: 62.5%;
+  --reticle: rgb(255 255 255 / 0.55);
+  inset: 12px;
 }
 .hero .hero__reticle i {
   width: 18px;
   height: 18px;
 }
-.hero__hud {
+/* The other screens of the room: one per camera, lit in the track's colour while the script has the
+   man in that camera's view. No transition, for the same reason as the lamps below. */
+.hero__wall {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+.hero__wall li {
+  position: relative;
+  overflow: hidden;
+  aspect-ratio: 16 / 10;
+  border: 1px solid rgb(255 255 255 / 0.12);
+  border-radius: 12px;
+  background: #000;
+}
+.hero__wall img {
   position: absolute;
-  right: calc(var(--gutter) + 20px);
-  bottom: 50px;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  filter: brightness(0.62) saturate(0.6);
+}
+.hero__wall li::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to top, rgb(5 7 11 / 0.9), transparent 58%);
+}
+.hero__wall span {
+  position: absolute;
+  left: 9px;
+  right: 6px;
+  bottom: 6px;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  font-size: 0.7rem;
+  font-weight: 650;
+  line-height: 1.2;
+  white-space: nowrap;
+  color: #aeb8c7;
+}
+.hero__wall span::before {
+  content: "";
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #4a5361;
+}
+.hero__wall li[data-on] {
+  border-color: rgb(255 122 77 / 0.9);
+  box-shadow:
+    inset 0 0 0 1px rgb(255 122 77 / 0.55),
+    0 0 26px -6px rgb(255 122 77 / 0.75);
+}
+.hero__wall li[data-on] img {
+  filter: none;
+}
+.hero__wall li[data-on] span {
+  color: #fff;
+}
+.hero__wall li[data-on] span::before {
+  background: var(--track-a);
+  box-shadow: 0 0 8px var(--track-a);
+}
+.hero__hud {
+  position: relative;
   z-index: 3;
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 18px;
-  /* Never over the words: what they take of the width, and a gap. Its rows wrap instead. */
-  max-width: calc(100% - 2 * var(--gutter) - 20px - var(--words) - 28px);
-  padding: 14px 14px 14px 22px;
+  margin-top: 10px;
+  padding: 12px 12px 12px 20px;
   border: 1px solid rgb(255 255 255 / 0.1);
   border-radius: 20px;
   /* Not glass: a blur over the film would be worked out again for every frame of it. */
@@ -201,9 +275,9 @@
 }
 .hero__credit {
   position: absolute;
-  top: 112px;
-  right: calc(var(--gutter) + 18px);
-  z-index: 2;
+  top: 18px;
+  left: 38px;
+  z-index: 5;
 }
 .hero__credit .badge {
   background: rgb(5 7 11 / 0.74);
@@ -211,14 +285,7 @@
 }
 .hero__words {
   position: relative;
-  z-index: 1;
-  width: min(100% - 2 * var(--gutter), 1400px);
-  margin-inline: auto;
-  padding: 104px 0 56px;
-  pointer-events: none;
-}
-.hero__words > * {
-  pointer-events: auto;
+  min-width: 0;
 }
 .hero__eyebrow {
   display: flex;
@@ -229,12 +296,11 @@
   color: var(--lamp-hot);
 }
 .hero h1 {
-  max-width: 8.4em;
   margin-top: 22px;
-  font-size: clamp(2.7rem, 1.1rem + 3.75vw, 5.6rem);
+  font-size: clamp(2.6rem, 0.5rem + 3.7vw, 4.9rem);
 }
 .hero__lede {
-  max-width: var(--words);
+  max-width: 34rem;
   margin-top: 24px;
   font-size: clamp(1.04rem, 0.98rem + 0.22vw, 1.18rem);
 }
@@ -245,7 +311,7 @@
   margin-top: 30px;
 }
 .hero__foot {
-  max-width: var(--words);
+  max-width: 34rem;
   margin-top: 22px;
   font-size: 0.87rem;
   line-height: 1.55;
@@ -301,54 +367,87 @@
   color: var(--soft);
 }
 
+/* Beside the wall of screens the camera names would be said twice, so the readout keeps them for
+   screen readers only. Phones have no wall and show them. */
+.hero__seen {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 @media (max-width: 1180px) {
-  /* Less width to share: the words give some up and the man stands further right, so the two never meet. */
-  .hero {
-    --words: 27rem;
+  .hero__grid {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 36px;
   }
-  .hero__plate {
-    --from: 22;
+  .hero__wall {
+    gap: 7px;
   }
-  .hero__frame {
-    left: calc(var(--from) * 1cqw + (var(--room) - var(--w)) * 0.52);
+  .hero__wall span {
+    left: 7px;
+    font-size: 0.62rem;
   }
-  .hero__seen {
+  .hero__wall span::before {
     display: none;
   }
 }
 @media (max-width: 899px) {
-  .hero {
-    display: block;
+  /* The headline, then the monitor across the full width with its readout, then the rest of the
+     words. The words' box steps aside (display: contents) so its parts and the monitor share one
+     column; the reading order in the page stays words first. */
+  .hero__grid {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
     min-height: 0;
+    padding: 100px 0 8px;
+  }
+  /* The readout overlaps the foot of the picture, so the frame's lower corners sit above it. */
+  .hero .hero__reticle {
+    inset: 12px 12px 58px;
+  }
+  .hero__words {
+    display: contents;
+  }
+  .hero__eyebrow {
+    order: 1;
+  }
+  .hero h1 {
+    order: 2;
   }
   .hero__media {
-    position: relative;
-    inset: auto;
-    padding-bottom: 12px;
+    order: 3;
+    margin: 26px calc(-1 * var(--gutter)) 0;
+  }
+  .hero__lede {
+    order: 4;
+  }
+  .hero__actions {
+    order: 5;
+  }
+  .hero__foot {
+    order: 6;
+    margin-bottom: 48px;
   }
   .hero__plate {
-    --from: 0;
-    position: relative;
-    inset: auto;
-    height: clamp(300px, 46svh, 470px);
+    aspect-ratio: auto;
+    height: clamp(260px, 62vw, 470px);
+    border-width: 1px 0;
+    border-radius: 0;
+    box-shadow: none;
   }
   .hero__frame {
     left: calc((100cqw - var(--w)) * 0.62);
   }
-  .hero__plate::after {
-    background:
-      linear-gradient(to bottom, rgb(5 7 11 / 0.72) 0%, transparent 30%),
-      linear-gradient(to top, var(--ink) 0%, transparent 36%);
-  }
-  .hero .hero__reticle {
-    inset: 70px 14px auto;
-    width: auto;
-    height: calc(clamp(300px, 46svh, 470px) - 130px);
+  .hero__wall {
+    display: none;
   }
   .hero__credit {
-    top: 80px;
-    right: 24px;
-    left: 24px;
+    top: 14px;
+    right: var(--gutter);
+    left: var(--gutter);
   }
   .hero__credit .badge {
     flex-shrink: 1;
@@ -391,7 +490,13 @@
     min-width: 0;
   }
   .hero__seen {
+    position: static;
     display: block;
+    width: auto;
+    height: auto;
+    overflow: visible;
+    clip-path: none;
+    white-space: normal;
     grid-column: 1 / -1;
     margin-right: -54px;
   }
@@ -403,15 +508,12 @@
     padding: 2px 8px;
     font-size: 0.7rem;
   }
-  .hero__words {
-    padding: 26px 0 54px;
-  }
   .hero h1 {
     max-width: 13ch;
     margin-top: 16px;
   }
   .hero__lede {
-    margin-top: 18px;
+    margin-top: 28px;
   }
   .hero__actions {
     margin-top: 26px;

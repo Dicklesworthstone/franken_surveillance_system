@@ -81,14 +81,7 @@ export default function Home() {
       <RevealController />
       <main id="top" data-take-digest={renderDigest}>
         <section className="hero" data-outside aria-labelledby="hero-title">
-          <HeroMedia
-            video={hero.video}
-            still={hero.still}
-            stillFrame={STILL_FRAME}
-            truth={heroTruth}
-            take={heroTake}
-            alt="A large white clapboard house at night with its floodlights on. A man in dark clothes runs down the porch steps, away from the front door."
-          />
+          <div className="hero__grid">
           <div className="hero__words">
             <p className="hero__eyebrow rise">
               <span className="sphere" aria-hidden="true" />
@@ -114,6 +107,15 @@ export default function Home() {
               Open source and unfinished. The scene on this page is staged: a rendered house, motion-captured actors and a
               scripted agent. Each figure says whether the software measured it. <a href="#status">What runs today</a>
             </p>
+          </div>
+          <HeroMedia
+            video={hero.video}
+            still={hero.still}
+            stillFrame={STILL_FRAME}
+            truth={heroTruth}
+            take={heroTake}
+            alt="A large white clapboard house at night with its floodlights on. A man in dark clothes runs down the porch steps, away from the front door."
+          />
           </div>
         </section>
 

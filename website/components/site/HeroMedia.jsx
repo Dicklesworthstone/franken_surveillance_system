@@ -44,7 +44,7 @@ export default function HeroMedia({ video, still, stillFrame, alt, truth, take }
       shown.current = index;
       const row = truth.frames[index];
       const t = truth.start + index / truth.fps;
-      const { box, clock, lights, action, count, lamps } = el.current;
+      const { box, clock, lights, action, count, lamps, wall } = el.current;
       if (box) {
         box.style.opacity = row.box ? "1" : "0";
         if (row.box) {
@@ -64,6 +64,7 @@ export default function HeroMedia({ video, still, stillFrame, alt, truth, take }
       text(action, row.action ?? "Out of the scene");
       text(count, String(row.seen.length));
       [...(lamps?.children ?? [])].forEach((lamp, i) => lamp.toggleAttribute("data-on", row.seen.includes(i)));
+      [...(wall?.children ?? [])].forEach((tile, i) => tile.toggleAttribute("data-on", row.seen.includes(i)));
     },
     [truth, take],
   );
@@ -154,8 +155,19 @@ export default function HeroMedia({ video, still, stillFrame, alt, truth, take }
             </span>
           )}
         </div>
+        <Reticle className="hero__reticle" />
       </div>
-      <Reticle className="hero__reticle" />
+      {/* The security room's other screens: each camera, lit while the script has the man in its view. */}
+      {first && (
+        <ol className="hero__wall" ref={set("wall")} aria-hidden="true">
+          {take.cameras.map((cam, i) => (
+            <li key={cam.id} data-on={first.seen.includes(i) ? "" : undefined}>
+              <img src={`/watch/plates/cam-${cam.id}.webp`} width="640" height="360" alt="" loading="lazy" decoding="async" />
+              <span>{cam.name}</span>
+            </li>
+          ))}
+        </ol>
+      )}
       {(first || moving) && (
         <div className="hero__hud">
           {first && (
