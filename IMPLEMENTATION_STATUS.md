@@ -4,6 +4,38 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Resumable analysis through damaged native video — 2026-11-23
+
+`fss-event watch --stream-dwell --dwell-step-frames N --tolerate-decode-refusals`
+now has a native AVC/HEVC continuation owner. The previous explicit refusal of
+tolerant incremental video is replaced by the existing conservative IDR/IRAP
+recovery source. Original damaged bytes remain in custody; each discontinuity
+resets foreground, tracking, sampled dwell and health continuity. Hot steps retain
+the decoder and spend the original allowances. Cold resume reconstructs the exact
+picture-or-discontinuity prefix, including gap-only checkpoints and terminal drain.
+
+Opt-in **checkpoint v5 (FMT-025)** and **progress v3** bind the recovery policy,
+source layout, exact refusal runs and separately bounded encoded-byte and coded-luma
+work across probes and restarts. Source positions, displayed pictures, refused inputs
+and leading HEVC RASL omissions remain distinct. Accounting equality cannot replace
+native EOF. No decoded picture means no successful complete scan. Original privacy,
+custody, cancellation, terminal classifier and event publication fences still apply.
+The implementation retains the v1–v4 byte paths for MJPEG and strict native video.
+
+Nine native integration contracts and one real-process CLI regression covering both
+codecs are authored. They exercise corruption and keyframe restart, hot/retained/cold
+equivalence, more than 128 continuation items, gap-only and terminal retries, health
+screening, CRA/RASL accounting, cumulative work exhaustion, cancellation, privacy
+changes and immutable custody. Native compilation and execution remain pending.
+A genuine executable build stopped in unchanged Asupersync with SIGKILL; a
+separately scoped metadata check was interrupted by an executor reset while still
+in that dependency, without a normal exit receipt or FSS source diagnostic.
+The owned processes and Cargo locks were checked before releasing the compiler
+lane. Independent source review, pinned formatting and the passing targeted v3
+schema audit are not runtime proofs. This advances concrete slices of FSS-054 / `fss-x4a.12.3` and temporal state
+under WP-090 / `fss-x4a.15`; broad malformed-media qualification remains open.
+See [bounded native dwell continuation](docs/incremental_dwell.md#recover-through-damaged-native-video).
+
 ## Journal-independent archive restoration — 2026-11-23
 
 `fss-archive restore-s3-object` restores an independently identified remote object

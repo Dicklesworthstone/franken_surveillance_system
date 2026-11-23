@@ -601,6 +601,44 @@ impl Scan<'_, '_> {
         )
     }
 
+    /// Preserve one native recovery boundary in the exact existing temporal trace. Health,
+    /// background, tracker and dwell owners all observe the same discontinuity.
+    fn inter_break(&mut self, position: usize, refusal: Option<DecodeRefusal>) -> Result<usize> {
+        if let Some(screen) = &mut self.health {
+            screen.discontinuity();
+        }
+        let mut record = CanonicalEncoder::new();
+        record.text(self.rule.frame_domain());
+        record.text("break");
+        record.u64(position as u64);
+        let skipped = match &refusal {
+            Some(run) => {
+                record.bool(true);
+                record.u64(run.first_segment as u64);
+                record.u64(run.last_segment as u64);
+                record.text(&run.error_id);
+                if run.error_id.ends_with("-RANGE-GAP-001") {
+                    self.time_reliable = false;
+                }
+                self.refused(run.first_segment, run.last_segment, &run.error_id)?;
+                run.last_segment - run.first_segment + 1
+            }
+            None => {
+                record.bool(false);
+                self.time_reliable = false;
+                1
+            }
+        };
+        append_trace(
+            &mut self.trace,
+            &record.finish_checked()?,
+            self.limits.maximum_trace_bytes,
+        )?;
+        let next = position.checked_add(skipped).ok_or(WatchError::Limit)?;
+        self.restart()?;
+        Ok(next)
+    }
+
     /// Decodes an inter-coded (H.264/H.265, Annex-B or MP4) range in display order and
     /// analyses every frame; returns the custody chunk bytes read. Dwell positions are display
     /// positions `first_segment + k`, advanced past refused runs and breaks; each trace record
@@ -644,38 +682,7 @@ impl Scan<'_, '_> {
                         position = position.checked_add(1).ok_or(WatchError::Limit)?;
                     }
                     TolerantItem::Break(refusal) => {
-                        if let Some(screen) = &mut self.health {
-                            screen.discontinuity();
-                        }
-                        let mut record = CanonicalEncoder::new();
-                        record.text(self.rule.frame_domain());
-                        record.text("break");
-                        record.u64(position as u64);
-                        let skipped = match &refusal {
-                            Some(run) => {
-                                record.bool(true);
-                                record.u64(run.first_segment as u64);
-                                record.u64(run.last_segment as u64);
-                                record.text(&run.error_id);
-                                if run.error_id.ends_with("-RANGE-GAP-001") {
-                                    self.time_reliable = false;
-                                }
-                                self.refused(run.first_segment, run.last_segment, &run.error_id)?;
-                                run.last_segment - run.first_segment + 1
-                            }
-                            None => {
-                                record.bool(false);
-                                self.time_reliable = false;
-                                1
-                            }
-                        };
-                        append_trace(
-                            &mut self.trace,
-                            &record.finish_checked()?,
-                            self.limits.maximum_trace_bytes,
-                        )?;
-                        position = position.checked_add(skipped).ok_or(WatchError::Limit)?;
-                        self.restart()?;
+                        position = self.inter_break(position, refusal)?;
                     }
                 }
             }

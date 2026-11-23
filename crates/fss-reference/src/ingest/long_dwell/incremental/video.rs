@@ -3,6 +3,10 @@
 
 use super::*;
 
+mod recovery;
+pub use recovery::DwellVideoRecoveryProgress;
+use recovery::RecoveryVideo;
+
 /// Exact native stream progress. A consumed access unit need not have yielded its picture yet.
 /// Skipped RASL access units are explicit omissions, never fabricated observations.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -17,6 +21,8 @@ pub struct DwellVideoProgress {
     pub skipped_rasl_segments: Vec<usize>,
     /// Native EOF, delayed output and complete access-unit accounting have all been checked.
     pub decoder_drained: bool,
+    /// Explicit v5 recovery accounting. None preserves every earlier strict projection byte.
+    pub recovery: Option<DwellVideoRecoveryProgress>,
 }
 
 impl DwellVideoProgress {
@@ -26,6 +32,9 @@ impl DwellVideoProgress {
         for segment in &self.skipped_rasl_segments {
             e.u64(*segment as u64);
         }
+        if let Some(recovery) = &self.recovery {
+            recovery.encode(e);
+        }
     }
 
     pub(super) fn decode(
@@ -33,6 +42,8 @@ impl DwellVideoProgress {
         format: &str,
         plan: &WatchPlan,
         work: DwellWork,
+        recovering: bool,
+        limits: &LongDwellLimits,
     ) -> Result<Self> {
         let decoder_drained = d.bool()?;
         let count = count(d, plan.segment_count)?;
@@ -57,16 +68,27 @@ impl DwellVideoProgress {
             skipped_rasl_segments.push(segment);
         }
         let codec = codec(format)?;
+        let recovery = recovering
+            .then(|| DwellVideoRecoveryProgress::decode(d, codec, plan, work, limits))
+            .transpose()?;
         let accounted = work
             .frames_decoded
             .checked_add(count)
+            .and_then(|value| {
+                value.checked_add(recovery.as_ref().map_or(0, |r| r.refused_segments))
+            })
             .ok_or(WatchError::Limit)?;
-        if work.frames_decoded == 0
+        if (work.frames_decoded == 0 && (!recovering || decoder_drained))
             || accounted > work.source_positions
             || (codec == "h264" && count != 0)
+            || recovery.as_ref().is_some_and(|r| {
+                skipped_rasl_segments
+                    .iter()
+                    .any(|segment| r.contains_refusal(*segment))
+            })
             || (decoder_drained
                 && (work.source_positions != plan.segment_count || accounted != plan.segment_count))
-            || (!decoder_drained && accounted == plan.segment_count)
+            || (!recovering && !decoder_drained && accounted == plan.segment_count)
         {
             return Err(WatchError::Conflict);
         }
@@ -76,11 +98,27 @@ impl DwellVideoProgress {
             display_frames_processed: work.frames_decoded,
             skipped_rasl_segments,
             decoder_drained,
+            recovery,
         })
     }
 
     /// Complete bounded accounting, without claiming that consumed inputs were all observed.
     pub fn to_json(&self) -> String {
+        if let Some(recovery) = &self.recovery {
+            return format!(
+                "{{\"codec\":\"{}\",\"source_segments_consumed\":{},\"display_frames_processed\":{},\"skipped_rasl_segments\":[{}],\"decoder_drained\":{},\"step_unit\":\"continuation_items\",\"coding_read_ahead_is_observation\":false,\"recovery\":{}}}",
+                self.codec,
+                self.source_segments_consumed,
+                self.display_frames_processed,
+                self.skipped_rasl_segments
+                    .iter()
+                    .map(usize::to_string)
+                    .collect::<Vec<_>>()
+                    .join(","),
+                self.decoder_drained,
+                recovery.to_json(),
+            );
+        }
         format!(
             "{{\"codec\":\"{}\",\"source_segments_consumed\":{},\"display_frames_processed\":{},\"skipped_rasl_segments\":[{}],\"decoder_drained\":{},\"step_unit\":\"display_frames\",\"coding_read_ahead_is_observation\":false}}",
             self.codec,
@@ -117,6 +155,7 @@ pub(super) fn identity(format: &str) -> Result<ContentDigest> {
 enum Decoder {
     Avc(Box<RecordedH264Range>),
     Hevc(Box<RecordedH265Range>),
+    Recovery(Box<RecoveryVideo>),
 }
 
 pub(super) struct NativeVideo {
@@ -136,34 +175,47 @@ impl NativeVideo {
         let plan = &prepared.plan;
         let limits = prepared.limits.decode;
         let source_budget = SourceReadBudget::new(prepared.limits.maximum_source_chunk_bytes);
-        let decoder = match codec(&prepared.source.retained.manifest().format)? {
-            "h264" => Decoder::Avc(Box::new(RecordedH264Range::open_stream_with_source_budget(
+        let decoder = if prepared.recovering() {
+            Decoder::Recovery(Box::new(RecoveryVideo::open(
+                prepared,
                 deployment,
-                RecordedH264Request {
-                    import_identity: plan.import_identity,
-                    first_segment: plan.first_segment,
-                    segment_count: plan.segment_count,
-                    interpretation: plan.interpretation,
-                    read_limits: limits.read_limits,
-                    decoder_limits: limits.h264_limits,
-                },
                 &source_budget,
                 cx,
-            )?)),
-            "h265" => Decoder::Hevc(Box::new(RecordedH265Range::open_stream_with_source_budget(
-                deployment,
-                RecordedH265Request {
-                    import_identity: plan.import_identity,
-                    first_segment: plan.first_segment,
-                    segment_count: plan.segment_count,
-                    interpretation: plan.interpretation,
-                    read_limits: limits.read_limits,
-                    decoder_limits: limits.h265_limits,
-                },
-                &source_budget,
-                cx,
-            )?)),
-            _ => return Err(WatchError::Conflict),
+            )?))
+        } else {
+            match codec(&prepared.source.retained.manifest().format)? {
+                "h264" => {
+                    Decoder::Avc(Box::new(RecordedH264Range::open_stream_with_source_budget(
+                        deployment,
+                        RecordedH264Request {
+                            import_identity: plan.import_identity,
+                            first_segment: plan.first_segment,
+                            segment_count: plan.segment_count,
+                            interpretation: plan.interpretation,
+                            read_limits: limits.read_limits,
+                            decoder_limits: limits.h264_limits,
+                        },
+                        &source_budget,
+                        cx,
+                    )?))
+                }
+                "h265" => {
+                    Decoder::Hevc(Box::new(RecordedH265Range::open_stream_with_source_budget(
+                        deployment,
+                        RecordedH265Request {
+                            import_identity: plan.import_identity,
+                            first_segment: plan.first_segment,
+                            segment_count: plan.segment_count,
+                            interpretation: plan.interpretation,
+                            read_limits: limits.read_limits,
+                            decoder_limits: limits.h265_limits,
+                        },
+                        &source_budget,
+                        cx,
+                    )?))
+                }
+                _ => return Err(WatchError::Conflict),
+            }
         };
         Ok(Self {
             decoder,
@@ -178,18 +230,28 @@ impl NativeVideo {
         self.source_budget.used()
     }
     pub(super) fn drained(&self) -> bool {
-        self.drained
+        match &self.decoder {
+            Decoder::Recovery(recovery) => recovery.drained(),
+            _ => self.drained,
+        }
     }
     pub(super) fn consumed(&self) -> usize {
-        (match &self.decoder {
-            Decoder::Avc(range) => range.next_source_segment(),
-            Decoder::Hevc(range) => range.next_source_segment(),
-        }) - self.first
+        match &self.decoder {
+            Decoder::Avc(range) => range.next_source_segment() - self.first,
+            Decoder::Hevc(range) => range.next_source_segment() - self.first,
+            Decoder::Recovery(recovery) => recovery.consumed(),
+        }
     }
     fn accounted(&self) -> usize {
         match &self.decoder {
             Decoder::Avc(range) => range.decoded() as usize,
             Decoder::Hevc(range) => range.decoded() as usize + range.skipped_rasl_segments().len(),
+            Decoder::Recovery(recovery) => {
+                let progress = recovery.progress();
+                progress.display_frames_processed
+                    + progress.skipped_rasl_segments.len()
+                    + progress.recovery.as_ref().map_or(0, |r| r.refused_segments)
+            }
         }
     }
 
@@ -207,6 +269,7 @@ impl NativeVideo {
                 range.decoded(),
                 range.skipped_rasl_segments().to_vec(),
             ),
+            Decoder::Recovery(recovery) => return recovery.progress(),
         };
         DwellVideoProgress {
             codec,
@@ -214,6 +277,7 @@ impl NativeVideo {
             display_frames_processed: decoded as usize,
             skipped_rasl_segments: skipped,
             decoder_drained: self.drained,
+            recovery: None,
         }
     }
 
@@ -221,8 +285,9 @@ impl NativeVideo {
         &mut self,
         deployment: &ReferenceDeployment,
         cx: &ReplayCx,
-    ) -> Result<Option<TolerantFrame>> {
+    ) -> Result<Option<TolerantItem>> {
         let frame = match &mut self.decoder {
+            Decoder::Recovery(recovery) => return recovery.next(deployment, cx),
             Decoder::Avc(range) => range.next_frame(deployment, cx)?.map(|f| TolerantFrame {
                 segment: f.segment_index() as usize,
                 capsule: f.capsule().clone(),
@@ -244,7 +309,7 @@ impl NativeVideo {
             }
             self.drained = true;
         }
-        Ok(frame)
+        Ok(frame.map(|frame| TolerantItem::Frame(Box::new(frame))))
     }
 
     /// When every source unit already has an observed output or explicit skip, demand native
@@ -254,6 +319,11 @@ impl NativeVideo {
         deployment: &ReferenceDeployment,
         cx: &ReplayCx,
     ) -> Result<()> {
+        if matches!(self.decoder, Decoder::Recovery(_)) {
+            // Only a real subsequent native EOF can complete a recovery owner. Equal coding
+            // and display/refusal counts alone cannot hide queued discontinuity records.
+            return Ok(());
+        }
         if !self.drained && self.consumed() == self.count && self.accounted() == self.count {
             self.require_drain(deployment, cx)?;
         }
@@ -267,7 +337,7 @@ impl NativeVideo {
         deployment: &ReferenceDeployment,
         cx: &ReplayCx,
     ) -> Result<()> {
-        if !self.drained && self.next(deployment, cx)?.is_some() {
+        if !self.drained() && self.next(deployment, cx)?.is_some() {
             return Err(WatchError::Conflict);
         }
         Ok(())

@@ -165,6 +165,11 @@ pub(crate) struct TolerantSource {
     source_budget: Option<SourceReadBudget>,
     /// Optional pre-codec admission for callers requiring a cumulative decode work bound.
     video_budget: Option<RecordedVideoDecodeBudget>,
+    /// Highest source position inspected by a native range or recovery probe. This is
+    /// accounting only: read-ahead and IDR/IRAP probes are never observations.
+    inspected_end: usize,
+    /// Native RASL omissions survive retirement of a recovery sub-range.
+    retired_skipped_rasl: Option<BTreeSet<usize>>,
     /// Selected native colour output is opt-in and transferred before another source poll.
     selected_rgb: BTreeSet<usize>,
     pending_rgb: Option<SelectedRgb>,
@@ -290,6 +295,8 @@ impl TolerantSource {
             pending: VecDeque::new(),
             first_error: None,
             returned_any: false,
+            inspected_end: request.first_segment,
+            retired_skipped_rasl: None,
             mask,
             chunks: super::VerifiedChunkCache::with_source_budget(source_budget),
             closed_chunk_bytes: 0,
@@ -327,6 +334,7 @@ impl TolerantSource {
         end: usize,
         cx: &ReplayCx,
     ) -> Result<InterRange, RecordedDecodeError> {
+        self.inspected_end = self.inspected_end.max(start.saturating_add(1));
         Ok(match codec {
             Codec::H264 => {
                 let request = RecordedH264Request {
@@ -468,9 +476,58 @@ impl TolerantSource {
             .saturating_add(current)
     }
 
+    /// Opt in before the first step when a durable continuation needs retired RASL inventory.
+    /// Existing one-shot callers do not allocate or maintain this additional history.
+    pub(crate) fn track_checkpoint_progress(&mut self) {
+        self.retired_skipped_rasl = Some(BTreeSet::new());
+    }
+
+    /// Coding positions inspected so far, including native read-ahead and recovery probes.
+    /// This never counts an inspected or buffered position as an observed display picture.
+    pub(crate) fn source_positions(&self) -> usize {
+        let next = match &self.inner {
+            Inner::Jpeg { next } => *next,
+            Inner::Inter {
+                range: Some(InterRange::H264(range)),
+                ..
+            } => range.next_source_segment(),
+            Inner::Inter {
+                range: Some(InterRange::H265(range)),
+                ..
+            } => range.next_source_segment(),
+            _ => self.inspected_end,
+        };
+        next.max(self.inspected_end) - self.request.first_segment
+    }
+
+    /// Exact native skipped coordinates, before the caller removes any coordinates already
+    /// represented by its admitted refusal runs. These omissions do not establish coverage.
+    pub(crate) fn skipped_rasl_segments(&self) -> Vec<usize> {
+        let mut skipped = self.retired_skipped_rasl.clone().unwrap_or_default();
+        if let Inner::Inter {
+            range: Some(InterRange::H265(range)),
+            ..
+        } = &self.inner
+        {
+            skipped.extend(range.skipped_rasl_segments().iter().copied());
+        }
+        skipped.into_iter().collect()
+    }
+
     /// Adds the current inter-coded sub-range's chunk reads to the closed total before the
     /// range is replaced.
     fn retire_range(&mut self) {
+        self.inspected_end = self.request.first_segment + self.source_positions();
+        if let (
+            Some(skipped),
+            Inner::Inter {
+                range: Some(InterRange::H265(range)),
+                ..
+            },
+        ) = (&mut self.retired_skipped_rasl, &self.inner)
+        {
+            skipped.extend(range.skipped_rasl_segments().iter().copied());
+        }
         let bytes = match &self.inner {
             Inner::Inter {
                 range: Some(InterRange::H264(range)),

@@ -1,0 +1,90 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-23",
+  "date_timezone": "America/New_York",
+  "mission": "Implement consequential remaining functionality identified from the comprehensive plan, Beads and current source; publish meaningful commits directly to main through GitHub without PRs.",
+  "basis": {
+    "initial_commit": "fa1d4f2f93e2ecb690167bb8adc5ceb6c848bd47",
+    "plan": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+    "backlog": ".beads/issues.jsonl",
+    "previous_handoff": "docs/SESSION_HANDOFF_2026-11-23_M2TS_AND_SEQUENCE_MODELS.json",
+    "selection": "Actual unsupported production paths were selected after checking broad open Beads against existing implementations: static Boolean model selection, tolerant native video continuation and source-version-correct ONNX18 import.",
+    "requirements": [
+      {"bead": "fss-x4a.14.10", "requirement": "FSS-139", "state": "open; bounded native model import advanced"},
+      {"bead": "fss-x4a.12.3", "requirement": "FSS-054", "state": "open; recoverable retained native decode continuation implemented, runtime validation pending"},
+      {"bead": "fss-x4a.15", "requirement": "WP-090", "state": "open; temporal state resets remain explicit across recovery gaps"}
+    ]
+  },
+  "authority": {
+    "repository": "The user explicitly authorized direct-main GitHub commits. Every publication verifies exact changed blobs and uses an expected-head, non-forced ref update.",
+    "runtime": "No live camera or external storage account was contacted. Existing source custody, privacy, cancellation, publication and inference owners remain authoritative.",
+    "concurrent_work": "Concurrent archive restoration commits through 02a7f14ed2e6626d42128c3300e5ba35effdce74 and RTSP campaign-history fix3d6a8952f61478ae59376d755754deba5dc29877 were preserved and are not claimed as this session's work."
+  },
+  "delivered": [
+    {
+      "feature": "Static Boolean Where selection through existing native kernels",
+      "commit": "a0c5c1aacf4a015d1c266ce4738556cb8d5ab3b6",
+      "scope": "Compile-time BOOL masks select runtime F32 branches with scalar-to-rank-eight multidirectional broadcasting. Reshape/Slice/Concat copy selected bits without arithmetic blending. Runtime Boolean controls remain unsupported; expansion is bounded, preflighted and cancellable.",
+      "compatibility": "Existing integer shape-Where and Expand/Tile contracts are retained; no runtime opcode, IR format or dependency was added.",
+      "validation": "Twelve new tests passed within the complete 130-pass attention harness; separate broadcast and importer regression targets also passed."
+    },
+    {
+      "feature": "Resumable tolerant H.264/H.265 dwell analysis",
+      "commit": "the recovery feature commit containing this handoff",
+      "scope": "Explicit tolerance permits hot and cold continuation through actual typed source/decode gaps, resetting temporal state and resuming only at native IDR/IRAP boundaries. V5 checkpoints and progress v3 bind the complete recovery record and cumulative source/encoded-byte/coded-luma allowances; v1-v4 strict/MJPEG paths are retained.",
+      "validation": "Nine genuine native integration tests and one CLI process test covering both codecs authored and independently source-reviewed; native compilation and execution pending. The progress schema passes targeted offline validation."
+    }
+  ],
+  "validation": {
+    "toolchain": "nightly-2026-08-31; rustc 1.100.0-nightly (90850177249efe0321573c569aec5d12b257f8d6)",
+    "dependency_closure": "Unmodified locked registry/workspace graph, offline Cargo, one job; no foreign runtime, feature pruning or substitute dependency host.",
+    "where": {
+      "focused_new_cases": {"passed": 12, "failed": 0, "filtered_out": 119},
+      "attention_full": {"passed": 130, "failed": 0, "ignored": 1},
+      "broadcast": {"passed": 34, "failed": 0, "ignored": 1},
+      "importer_unit": {"passed": 16, "failed": 0, "filtered_out": 6},
+      "counting": "The twelve focused cases are included in the attention total. Attention and broadcast targets embed twenty-four common kernel tests; totals must not be added as unique cases. The ignored case is the pre-existing release-mode performance experiment.",
+      "scope": "Actual pinned Cargo harnesses exercise production scalar/optimized kernels and canonical graph/Safetensors reload; seven changed Rust paths stayed byte-identical throughout validation."
+    },
+    "native_recovery": {
+      "native_test_target": "cargo test --locked --offline -p fss-reference --test incremental_video_recovery_contract",
+      "cli_test_target": "cargo test --locked --offline -p fss-cli --test watch_stream_dwell_cli damaged_native_video_resumes_across_explicit_gaps_without_rewriting_evidence",
+      "execution": "not executed; native typecheck also unverified",
+      "baseline_attempt": "The genuine M2TS native integration executable build stopped in unchanged Asupersync0.5.0 with SIGKILL9 after310.252seconds, before reference/CLI source or tests. No Rust diagnostic established a source defect; the cause of termination was not established.",
+      "metadata_attempt": "One separately scoped metadata-only check of the recovery integration target, fss-event, fss-file and watch_stream_dwell_cli was interrupted by an executor reset. The last log remained in unchanged Asupersync0.5.0; no normal completion receipt, source diagnostic or completed FSS typecheck exists. The progress file was empty mid-write. A subsequent probe found no owned Cargo/rustc process and confirmed the target and package-cache locks were free before releasing source freeze. This is an interrupted/indeterminate attempt, not a diagnosed source failure or confirmed OOM.",
+      "metadata_command": "cargo check --locked --offline -p fss-reference --test incremental_video_recovery_contract -p fss-cli --bin fss-event --bin fss-file --test watch_stream_dwell_cli",
+      "schema": {"passed": true, "schemas": 1, "resolved_references": 8, "command": "python3 -B scripts/schema_validate.py --schema schemas/incremental_dwell_progress.v3.json"},
+      "scope": "Source review, formatting and schema checks are not native execution or legacy byte-compatibility proof."
+    },
+    "release": "No complete workspace, Clippy, DSR, real-device, model-quality or production qualification is claimed."
+  },
+  "active_work": [
+    {
+      "feature": "Explicit ONNX18 import profile",
+      "state": "reviewed implementation and nine focused tests applied; actual model harness validation in progress",
+      "semantics": "Mean/L2 use static input axes; Mean empty-axis no-op copies bits while L2 still squares then takes sqrt. Split18 requires explicit parts or matching num_outputs and preserves a smaller positive final chunk. Pad/Resize admit only equivalent supported defaults. Existing13/17 encodings remain fixed."
+    }
+  ],
+  "obligations": [
+    "Execute the native recovery integration and real CLI fixture with the pinned genuine dependency closure on a host able to complete compilation; retain exact results before upgrading its runtime claim.",
+    "Execute prior-turn M2TS retained-import and CLI targets under the same genuine native closure; parser/model results do not establish those paths.",
+    "Keep broad FSS-054, WP-090, FSS-139 and malformed-media qualification requirements open until their complete acceptance criteria are proven."
+  ],
+  "next_important_gaps": [
+    {
+      "feature": "Unattended supervised recording",
+      "evidence": ["fss-vit-je36t.5 / VIT-005", "fss-vit021-ssrc-vfr-adr-kmjub / VIT-021", "fss-vit-d7-always-on-recorder-8f9yk"],
+      "boundary": "Finite approved captures exist; an always-on supervisor still requires a complete standing-authority, source-envelope and power-loss-recovery contract. Do not infer authorization for real-device work."
+    },
+    {
+      "feature": "Optical-quality health screening across long recordings",
+      "evidence": ["WP-090 / fss-x4a.15", "DOC-059 / fss-x4a.5.59", "TEST-TAMPER-001 / fss-x4a.28.18"],
+      "boundary": "Integer blur/glare kernels and short-range receipts exist; stream/dwell still refuses conservative-optical-v1. A complete slice must bind policy/thresholds through full-range traces, checkpoints, publication and replay."
+    },
+    {
+      "feature": "Authorized multi-camera live operator viewing",
+      "evidence": ["DOC-017 / fss-x4a.5.17"],
+      "boundary": "Single-capture native AVC/HEVC live preview already exists. The dashboard serves hash-checked stills; discovery/composition and revocation/expiry-aware live integration remain separate work."
+    }
+  ]
+}

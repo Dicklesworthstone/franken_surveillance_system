@@ -362,24 +362,21 @@ fn cancellation_drains_native_reconstruction_and_checkpoint_retry_is_exact() -> 
 }
 
 #[test]
-fn unsupported_tolerant_video_empty_checkpoint_and_incomplete_finish_are_explicit() -> Test {
+fn tolerant_video_admission_empty_checkpoint_and_incomplete_finish_are_explicit() -> Test {
     let f = inter_fixture("incremental-avc-refused", SQUARE_MP4)?;
     let before = f.snapshot();
-    assert!(matches!(
-        PreparedIncrementalDwell::new(
-            &f.deployment,
-            f.plan.clone(),
-            rule(),
-            WatchOptions {
-                tolerate_decode_refusals: true,
-            },
-            LongDwellLimits::default(),
-            &f.cx
-        ),
-        Err(WatchError::InvalidPlan(
-            "incremental native video requires strict decode; tolerant continuation is unsupported"
-        ))
-    ));
+    let prepared = PreparedIncrementalDwell::new(
+        &f.deployment,
+        f.plan.clone(),
+        rule(),
+        WatchOptions {
+            tolerate_decode_refusals: true,
+        },
+        LongDwellLimits::default(),
+        &f.cx,
+    )?;
+    assert!(prepared.is_inter_coded());
+    assert!(prepared.options().tolerate_decode_refusals);
     assert_eq!(f.snapshot(), before);
     let mut f = Fixture::new("incremental-empty", &scene(true, None, None, false)?, true)?;
     let prepared = prepare(&f, LongDwellLimits::default(), WatchOptions::default())?;

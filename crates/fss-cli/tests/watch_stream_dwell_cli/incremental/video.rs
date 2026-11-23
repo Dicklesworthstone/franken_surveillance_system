@@ -23,3 +23,24 @@ fn native_video_continuations_preserve_delayed_output_and_exact_event_identity()
     );
     Ok(())
 }
+
+#[test]
+fn damaged_native_video_resumes_across_explicit_gaps_without_rewriting_evidence() -> Test {
+    let directory = Directory::new("incremental-native-recovery")?;
+    let crate_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let output = Command::new("python3")
+        .arg("-B")
+        .arg(crate_root.join("tests/fixtures/incremental_video_recovery_cli.py"))
+        .arg(env!("CARGO_BIN_EXE_fss-file"))
+        .arg(env!("CARGO_BIN_EXE_fss-event"))
+        .arg(&directory.0)
+        .arg(crate_root.join("../.."))
+        .output()?;
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}

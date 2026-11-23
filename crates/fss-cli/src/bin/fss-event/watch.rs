@@ -50,6 +50,10 @@
 //! sample allowance across steps using an explicitly versioned checkpoint. Exact completed
 //! unscreened checkpoints can instead supply read-only calibrated
 //! advice without another checkpoint append. Existing final proposal approvals remain required.
+//! With `--tolerate-decode-refusals`, native video steps count decoded pictures or explicit
+//! discontinuities. Recovery resumes only at IDR/IRAP inputs and never bridges a dwell episode
+//! across lost footage. Version-five checkpoints preserve the complete refusal and decode-work
+//! history; version-three progress separates those gaps from actual display observations.
 //! Screened whole-recording reports separately offer `--retain-health` for source-bound
 //! historical diagnostics, including runs with no candidate or a blocking health finding.
 

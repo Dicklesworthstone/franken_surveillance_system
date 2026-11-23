@@ -398,11 +398,15 @@ fn render_progress(
             "\"cold_restoration_replays_prefix\":true,\"continuation_command\":{},",
             "\"checkpoint_is_event\":false,\"absence_certifiable\":false,\"alert_authorized\":false"
         ),
-        json(if video.is_some() {
-            "fss.incremental_dwell_progress.v2"
-        } else {
-            "fss.incremental_dwell_progress.v1"
-        }),
+        json(
+            if video.is_some() && action.options.tolerate_decode_refusals {
+                "fss.incremental_dwell_progress.v3"
+            } else if video.is_some() {
+                "fss.incremental_dwell_progress.v2"
+            } else {
+                "fss.incremental_dwell_progress.v1"
+            }
+        ),
         json(if complete { "complete" } else { "checkpointed" }),
         json(&pin.record_digest.to_text()),
         json(&pin.provenance_root.to_text()),

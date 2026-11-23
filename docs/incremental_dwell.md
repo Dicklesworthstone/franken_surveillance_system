@@ -6,7 +6,9 @@ checkpoint. The next invocation can reproduce that checkpoint and continue the s
 foreground model, tracker, capture-clock checks and sampled-dwell accumulator. An episode
 spanning multiple steps has the same final analysis, proposal and event identity as the
 existing whole-recording native analysis. MJPEG positions include explicitly tolerated decode
-refusals; strict inter-coded video separately reports native coding read-ahead and display work.
+refusals; inter-coded video separately reports native coding read-ahead and display work.
+Opt-in tolerant AVC/HEVC continuation also retains every decode discontinuity and its recovery
+work, so a process can stop immediately after a gap and resume without joining tracks across it.
 
 This closes the previous restart-at-frame-zero analysis boundary for scheduled work: a live
 library owner processes only new positions on each successful advance, and an interrupted
@@ -75,7 +77,7 @@ or `RecordedH265Range` owner across hot slices: decoded-picture buffers, delayed
 limits, source-read allowance, foreground, tracker and screening state are not reset at
 scheduling boundaries. No decoder state is imported from an untrusted checkpoint.
 
-Inter-coded commands return `fss.incremental_dwell_progress.v2`: flat sources retain checkpoint
+Strict inter-coded commands return `fss.incremental_dwell_progress.v2`: flat sources retain checkpoint
 version 3 and partitioned sources use version 4. MJPEG continues to return progress v1, with
 unchanged v1/v2 checkpoints for flat sources and v4 for partitioned sources. Existing
 whole-recording analysis, proposal, event and publication identities are unchanged.
@@ -113,9 +115,55 @@ Checkpoint publication computes the capture hull of every consumed coding input,
 endpoints alone do not bound B-picture presentation times. This bounded custody-metadata pass
 belongs to retention and does not replay pixels or turn the hull into observed coverage.
 
-Inter-coded continuation requires strict decoding. `--tolerate-decode-refusals` with an AVC/HEVC
-incremental request is refused before native decoding for both flat and partitioned sources.
-Whole-recording tolerant decoding retains its existing behavior.
+## Recover through damaged native video
+
+Add `--tolerate-decode-refusals` to an AVC/HEVC bounded-step command to continue through the
+same typed decode refusals and source gaps admitted by whole-recording tolerant analysis.
+The damaged original stays in custody. The decoder resumes only at a native H.264 IDR or
+H.265 IRAP; it does not conceal missing pictures. Foreground, tracker and sampled-dwell state
+reset at each discontinuity, so an episode cannot continue across unseen footage.
+
+This mode uses **checkpoint v5 (FMT-025)** and **progress v3** for both flat and partitioned
+sources. The step allowance counts decoded pictures **or explicit discontinuity records**.
+For example, `--dwell-step-frames 1` can retain a gap-only step with `new_display_frames: 0`.
+Its `inter_coded_progress.step_unit` is `continuation_items`; strict video keeps the original
+`display_frames` unit. The same continuation command preserves the tolerance flag, exact
+checkpoint pins and separately admitted cold reconstruction.
+
+The additional `inter_coded_progress.recovery` object reports:
+
+| Field | Meaning |
+|---|---|
+| `continuation_items_processed` | Actual decoded pictures plus processed discontinuities |
+| `discontinuities` | Tracker/background/dwell reset boundaries already processed |
+| `refused_segments` | Number of original source segments explicitly refused |
+| `decode_refusals` | Complete ordered refusal runs, each with first/last source segment and stable error ID |
+| `decode_encoded_bytes` | Encoded bytes admitted to native decoding, including unsuccessful recovery work |
+| `decode_coded_luma_capacity` | Conservative coded-picture capacity admitted before decode, including buffered or refused inputs |
+
+These counters are cumulative. One source-read allowance and two independent native decode
+allowances span every recovery probe, keyframe restart and hot step. Encoded-byte and coded-luma
+ceilings are frozen in the v5 recipe from the original source-byte and pixel allowances.
+The coded-luma charge uses the admitted per-picture decoder capacity, rather than just the
+pixels that successfully reach perception. Set `--max-pixels` to an appropriate source ceiling
+and admit sufficient `--dwell-pixel-budget` for the complete recording; unused encoded-byte
+allowance cannot enlarge the luma allowance. Cold replay pays separately and restores the
+original logical spend without refilling it.
+
+Cold resume reproduces the exact number of continuation items, including a saved gap-only
+boundary, and any saved terminal drain. It then compares the complete checkpoint, native
+trace, source cursor, refusal runs, omissions and all work counters before continuing.
+Completion requires every selected input to be accounted for as an actual displayed picture,
+an explicit refusal or a separate HEVC RASL omission, with the native decoder fully drained.
+A range in which no picture can be decoded still refuses. Cancellation, exhausted budgets,
+missing or corrupted custody and privacy changes remain fatal to the attempt.
+
+The v5 recipe has the existing 16 KiB limit, the trace remains bounded to 8 MiB, and source
+positions remain bounded to 65,536. Refusal history has at most 128 runs. The v5 checkpoint
+allows an additional 32 KiB for recovery accounting; the older checkpoint ceilings and bytes
+are unchanged. Completed reports retain the existing whole-recording analysis and proposal
+identities. A completed damaged scan still grants no continuous occupancy, absence certificate
+or alert authority; explicit final event approval and the existing health gates remain required.
 
 ## Continue a partitioned recording
 
@@ -130,6 +178,7 @@ the original import aggregate. No additional CLI option is required.
 | Flat AVC/HEVC, with optional screening | v3 (FMT-018) | v2 |
 | Partitioned MJPEG, with optional screening | v4 (FMT-021) | v1 |
 | Partitioned AVC/HEVC, with optional screening | v4 (FMT-021) | v2 |
+| Flat or partitioned AVC/HEVC, tolerant decoding, with optional screening | v5 (FMT-025) | v3 |
 
 The inventory binds the original import identity, aggregate root, metadata digest and every
 part root in its original ordinal order. It is one native checkpoint child; part roots remain
@@ -153,7 +202,8 @@ or reconstruct missing published inventory from cached state.
 Partition boundaries create no observations, continuity claims or budget refills. The same
 native source cursor, codec, foreground, tracker and health owners preserve their original
 allowances. Source holes, missing matches, excessive sampling gaps and tolerated MJPEG decode
-refusals retain the existing reset semantics. AVC/HEVC still requires strict decoding and
+refusals retain the existing reset semantics. Strict AVC/HEVC keeps the v3/v4 checkpoint
+contract; explicit tolerant AVC/HEVC uses v5 and the recovery accounting above. Both require
 validated native drain; the source inventory grants no broader codec support.
 
 ## Finish with trained classification
@@ -246,8 +296,9 @@ if the temporal scan found a qualifying dwell episode and the caller supplies it
 approval. An empty candidate inventory still returns the complete diagnostic. A no-findings
 screen certifies neither current camera health nor physical absence.
 
-Screening selects checkpoint v2 for flat MJPEG, v3 for flat AVC/HEVC and v4 for partitioned
-sources, each retaining the exact health policy. Historical flat v1–v3 checkpoint bytes remain
+Screening selects checkpoint v2 for flat MJPEG, v3 for strict flat AVC/HEVC and v4 for
+partitioned sources using those existing profiles. Tolerant AVC/HEVC uses v5 with either
+source layout. Each retains the exact health policy. Historical checkpoint bytes remain
 unchanged and readable.
 Adding or removing screening while resuming changes the request identity and is refused before
 native reconstruction. A missing or damaged retained health policy cannot be repaired by a
@@ -555,3 +606,31 @@ registered schema and exercises emitted publication retries.
 These are synthetic fixtures and exact implementation comparisons, not detector accuracy,
 continuous physical occupancy, camera qualification or measured throughput results. Authored
 regressions require execution under the pinned toolchain; source review alone is not a pass.
+
+### Recoverable native video regression targets
+
+Nine public integration contracts in `incremental_video_recovery_contract.rs` exercise real
+retained AVC/HEVC imports after loose inputs disappear. They compare hot and cold continuation
+against whole-recording tolerant analysis, including a gap-only prefix, a continuation longer
+than 128 items, terminal drain and exact retry, health screening, HEVC CRA/RASL omissions,
+independent cumulative decode limits, cancellation and changed privacy. An all-unusable range
+cannot complete successfully. Reports compared as whole JSON use the same authority head.
+
+The CLI process regression constructs deterministic corruption in both codec fixtures,
+imports the original damaged bytes, removes the loose files, and executes the emitted
+continuation commands in fresh processes. It checks progress v3, exact checkpoint retry,
+gap-only steps, unchanged whole-analysis identity and refusal inventories, and unchanged
+custody after a changed tolerance policy or insufficient cold reconstruction allowance.
+
+```sh
+cargo test --locked --offline -p fss-reference --test incremental_video_recovery_contract
+cargo test --locked --offline -p fss-cli --test watch_stream_dwell_cli damaged_native_video_resumes_across_explicit_gaps_without_rewriting_evidence
+```
+
+Execution status (2026-11-23): these native and CLI regressions are authored and independently
+source-reviewed, but have not yet executed successfully. The new progress schema passes the
+repository's targeted offline schema validator. The genuine metadata check was interrupted
+by an executor reset while compiling unchanged Asupersync, with no normal result or completed
+FSS typecheck. The earlier native executable attempt also stopped in that dependency.
+Formatting and schema checks do not establish native execution, legacy byte compatibility
+or release qualification.

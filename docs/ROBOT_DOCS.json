@@ -4876,6 +4876,13 @@
       "schema": "fss.incremental_dwell_progress.v2"
     },
     {
+      "authority": "derived progress",
+      "compatibilityRule": "Owner: fss-cli::fss-event::watch::incremental. Explicit tolerant AVC/HEVC projection over FMT-025 for flat or partitioned sources. The original coding/display/omission/drain fields remain distinct; step_unit is continuation_items, counting decoded pictures or processed discontinuities. Required recovery contains cumulative continuation_items_processed, discontinuities, refused_segments, complete ordered decode_refusals and independent decode_encoded_bytes/decode_coded_luma_capacity. Cold restoration exposes the exact saved recovery object and original logical work. Gap-only prefixes may have zero decoded frames; all-unusable terminal input refuses. Completion requires native drain and complete displayed/refused/RASL accounting. The original whole-recording event, health, detector and fusion owners remain authoritative; a completed damaged scan grants no occupancy, absence or effect authority. Existing v1/v2 progress bytes and original output ceilings are unchanged.",
+      "file": "schemas/incremental_dwell_progress.v3.json",
+      "id": "SCHEMA-INCREMENTAL-DWELL-PROGRESS-003",
+      "schema": "fss.incremental_dwell_progress.v3"
+    },
+    {
       "authority": "investigation cognition",
       "compatibilityRule": "case revisions preserve question, decision, hypotheses, probes, stop rules, and residual uncertainty",
       "file": "schemas/investigation_state.v1.json",
