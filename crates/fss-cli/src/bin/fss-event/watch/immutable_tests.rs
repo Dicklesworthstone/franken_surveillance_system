@@ -537,7 +537,8 @@ fn optical_watch_preserves_exact_policy_and_native_report_beside_capture() -> Te
         before,
         "optical preview mutated active capture state"
     );
-    fixture.deployment.drain()?;
+    scalar.drain_and_finalize();
+    fixture.cx.drain_and_finalize();
     Ok(())
 }
 
@@ -559,4 +560,5 @@ fn optical_watch_cannot_silently_downgrade_in_stream_or_dwell_modes() -> Test {
             "{error}"
         );
     }
+    Ok(())
 }

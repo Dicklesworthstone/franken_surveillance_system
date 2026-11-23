@@ -9,6 +9,7 @@ use fss_reference::ingest::long_dwell::incremental::{
     DwellCheckpointPin, DwellHealthWork, DwellRestoreLimits, DwellWork, PreparedIncrementalDwell,
     RetainedDwellCheckpoint,
 };
+use fss_reference::ingest::sensor_health::POLICY_NAME as HEALTH_POLICY_NAME;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct StepOptions {

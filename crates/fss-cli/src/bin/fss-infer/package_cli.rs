@@ -27,6 +27,7 @@ use fss_reference::{
 use super::long_sentinel_cli;
 use super::{RunResult, Values, digest, export, number, retained_read, text, value};
 
+#[path = "package_cli/immutable.rs"]
 mod immutable;
 
 const HELP: &str = "fss-infer package-detect [options]\n\

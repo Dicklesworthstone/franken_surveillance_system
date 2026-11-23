@@ -372,7 +372,7 @@ fn execute_in(options: &VerifyOptions, local: &ScopedS3Io) -> Result<Report> {
         .and_then(|()| reader.finalize(&mut tree, closed_at).map(|_| ()))
         .map_err(|_| Error::Runtime("object read owner could not finalize"))?;
     property
-        .release_scope_reservation(&tree, &reader)
+        .release_scope_reservation(&tree, &mut reader)
         .map_err(|_| Error::Runtime("object read reservation remained owned"))?;
     close_parents(&mut root, &mut property, &mut tree, closed_at)?;
     let receipt = match result {

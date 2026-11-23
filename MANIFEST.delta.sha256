@@ -33,7 +33,7 @@ ca9858b27b4205dda1a052f0d9ba2631f3df7785277d86903397be2faaca8e92  crates/fss-cli
 a683d24a662d08f2c678245aad2f90356fa396af1b202a3756921d5c9dc4100e  crates/fss-cli/src/bin/fss-archive/s3_io.rs
 929b7e5ef79674a4bd9e455cafd4d0e0be9d3f99daf9fbc1123259e7c29f2ac6  crates/fss-cli/src/bin/fss-archive/s3_observation.rs
 fa7c9326b21721307d6d2fb733a1bd0be81975eca2aa9cac2abbd86266dc9aaa  crates/fss-cli/src/bin/fss-archive/s3_retrieval.rs
-0e402d70b6ff08899c019008bffcdfc332f8a282a0524d5cfe0d50de7c15e8dc  crates/fss-cli/src/bin/fss-archive/s3_verify.rs
+3590f136f8e06916491c0eb9d05d6b3ff03f4ebfb4e81ff1996dade016e1d58f  crates/fss-cli/src/bin/fss-archive/s3_verify.rs
 a787b48f2798cac66e8045142bbdf166dfd370aef151159a8f4eb5103ded1be3  crates/fss-cli/src/bin/fss-backup/agent_report.rs
 369b632908b91c779646b14d388e22b8310757b373217a9a3d620c1048db8ef0  crates/fss-cli/src/bin/fss-capture-rtsp.rs
 c3ec72314925ad1eb20bff1fe0d7fa51dc3802c98c81b9ec44d3a5b4ad84f95d  crates/fss-cli/src/bin/fss-capture-rtsp/driver.rs
@@ -69,7 +69,8 @@ a7c1550eb97e1d6b07f0bb0280147e64c5afda8739dff47bbdf80a5b3cd3e558  crates/fss-cli
 70124b08f8f08136cb456a8956788a183065263ff438d044c6d5fb214f8773bb  crates/fss-cli/src/bin/fss-event/watch.rs
 227dd072bfc81c36827cf4f88e280c4f58aaa8f48fd1a248ed8918ac966620f9  crates/fss-cli/src/bin/fss-event/watch/immutable.rs
 2fb179f6daac0dbef45aee2f0a4171ccaa8f49f2afd6ec1375cde2bdfa01303a  crates/fss-cli/src/bin/fss-event/watch/immutable_temporal_tests.rs
-261e579d856484e75f2cf93a1dbf4b087964e3240b369e01ef3b6b768fcee59b  crates/fss-cli/src/bin/fss-event/watch/immutable_tests.rs
+696b066e5ddae4cf67675a8d518c6495baa61cba080a1ea1719159c0a16ba2a4  crates/fss-cli/src/bin/fss-event/watch/immutable_tests.rs
+c61a4638c8938a7c558d7ea347af8c710afcf3201552027e78e0db85b2f911e7  crates/fss-cli/src/bin/fss-event/watch/incremental.rs
 0993d02538a4c5eeaf1985cbb74f833937cce9a6e092f5a7e9cc5dfc016fcb63  crates/fss-cli/src/bin/fss-event/watch/whole.rs
 ae921a87a3a1bba71bdedc44a1e3f73e69635fe3870ad46f7c475047500485f1  crates/fss-cli/src/bin/fss-export-package.rs
 6486ad3d8c2dac021d3603d6d38d8b9deac14e8560e1ba404e44d5a68c97d2e1  crates/fss-cli/src/bin/fss-export.rs
@@ -122,7 +123,7 @@ e1a02e21b1ef908bfac537662ba2319e4c8e896ee0e44cc6ba0991371ea861a2  crates/fss-cli
 f8e9a50f35283c6c6cb99f401c104491ce526a1ce6d3bd62d0810679774b5c78  crates/fss-cli/src/bin/fss-infer/onnx_cli_tests/dfl_pyramid.rs
 ad0f01b70b036aa301a89ac7699885de3c1d10b2a152538901942958f7ed34a4  crates/fss-cli/src/bin/fss-infer/onnx_cli_tests/head_softmax.rs
 d9b129636d332e6c3e4dd0ae95598f5362bd660a26c32847fc36a6008068f4f5  crates/fss-cli/src/bin/fss-infer/onnx_cli_tests/split_head.rs
-6354df0d0c4d2dd443d8f579a19b053161d8c67ec89d101f4d05328626eb59e1  crates/fss-cli/src/bin/fss-infer/package_cli.rs
+2e2c0275bb2a377ab98d4dc132cf3b0472e4520cc95ad35380506b455243432f  crates/fss-cli/src/bin/fss-infer/package_cli.rs
 5e9e22e6e252a349f44aa949feab3525f8b8b337647a0c0de95a8b8d646d3ba2  crates/fss-cli/src/bin/fss-infer/package_cli/immutable.rs
 47fad30e772256f7600913388496cac832eb09c71571e3cd7941f20d2cc76208  crates/fss-cli/src/bin/fss-infer/package_cli/immutable_tests.rs
 83bd979585a520ae0a9a9999526295d5020b93d7d7cf5532bff2a3dcf736ed87  crates/fss-cli/src/bin/fss-mcp.rs
