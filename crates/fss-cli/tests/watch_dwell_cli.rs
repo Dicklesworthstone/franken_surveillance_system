@@ -318,3 +318,6 @@ fn preview_report_export_is_the_complete_stdout_report() -> Test {
     assert_eq!(f.journals()?, before);
     Ok(())
 }
+
+#[path = "watch_dwell_cli/health.rs"]
+mod health;

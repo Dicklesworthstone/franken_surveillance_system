@@ -327,12 +327,14 @@ fn invalid_health_policy_and_orphan_modes_fail_before_deployment_io() -> Test {
                 "100000000",
                 "--sensor-health",
                 "conservative-v1",
+                "--retain-health",
+                "sha256:0000000000000000000000000000000000000000000000000000000000000000",
             ],
-            "short dwell screening is unsupported",
+            "--retain-health requires --sensor-health conservative-v1 and --stream-watch or --stream-dwell",
         ),
         (
             vec!["--stream-dwell", "--sensor-health", "latest"],
-            "requires policy conservative-v1",
+            "--sensor-health requires conservative-v1 or conservative-optical-v1",
         ),
         (vec!["--stream-dwell", "--sensor-health"], "missing value"),
         (

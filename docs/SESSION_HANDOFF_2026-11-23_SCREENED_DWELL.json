@@ -1,0 +1,111 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-23",
+  "date_timezone": "America/New_York",
+  "mission": "Add health-screened short sampled dwell and expose it through the existing operator workflow; commit meaningful increments directly to main through GitHub without PRs.",
+  "basis": {
+    "plan": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+    "plan_git_blob": "ca19adc675a0948d973cf5a275f6b7a5741c39a0",
+    "backlog": ".beads/issues.jsonl",
+    "integration_parent": "42253da281f89287e4fe9b96b86f6663360a6f21",
+    "requirements": [
+      "FSS-078",
+      "FSS-083"
+    ],
+    "progress_bead": "fss-x4a.15.3",
+    "progress_bead_status": "open",
+    "bead_scope": "One progress note appended to FSS-078; no broad requirement or qualification closed."
+  },
+  "changes": [
+    {
+      "feature": "native short-dwell health admission and source-closed provenance",
+      "commit": "d0f29f60dc9a322a0b09a543c560a3348e4c95b7",
+      "api": "DwellReport::analyze_with_health",
+      "path": "crates/fss-reference/src/ingest/recorded_dwell.rs",
+      "scope": "Use WatchReport::analyze_with_health for conservative-v1 and conservative-optical-v1; withdraw suspect runs and dependent tracks; restart on recovery; retain independent surviving episodes. Analysis v2 binds exact summary and policy. Every candidate retains full summary, selected/base policy bytes and all screened source capsules. Original principal, source and privacy are revalidated before staging and on retries."
+    },
+    {
+      "feature": "operator and immutable short-dwell integration",
+      "revision": "commit containing this handoff",
+      "entrypoint": "fss-event watch --dwell-for-ns NS --dwell-max-gap-ns NS --sensor-health POLICY",
+      "scope": "Pass the selected health policy through mutable and immutable short-dwell paths, preserve exact thresholds in approval/rerun commands and expose full diagnostic receipts. Immutable previews work beside an active writer using the existing read owner. Optical streaming and long-dwell modes remain unsupported."
+    }
+  ],
+  "compatibility": {
+    "legacy": "DwellReport::analyze delegates with None; original unscreened analysis, candidate and report byte paths are preserved.",
+    "screened_analysis_domain": "fss.recorded_dwell_analysis.v2",
+    "report": "fss.recorded_dwell_report.v1 gains sensor_health only when enabled.",
+    "long_modes": "Existing conservative health behavior is unchanged; no optical streaming or long-dwell support added.",
+    "evidence": "Hypotheses remain unclassified, indeterminate, single-sensor and Hold. Clear screening is not sensor-health, occupancy, absence, quality, corroboration or alert proof."
+  },
+  "authored_regressions": [
+    {
+      "path": "crates/fss-reference/tests/recorded_dwell_health_contract.rs",
+      "new_tests": 8,
+      "execution": "unexecuted",
+      "cases": [
+        "legacy None bytes and clear admission under both policies",
+        "exact optical thresholds bind identity and reject stale approvals",
+        "blur and glare interrupt duration accounting; fresh recovered tracking",
+        "late frozen run withdraws its earlier track prefix",
+        "complete summary, exact policies and all screened capsule custody; immutable/idempotent retry",
+        "foreign root/principal and changed privacy refusal before writes",
+        "damaged original capsule refusal without repair",
+        "native optical cancellation and exact approved publication resume"
+      ]
+    },
+    {
+      "path": "crates/fss-cli/tests/watch_dwell_cli/health.rs",
+      "new_tests": 3,
+      "execution": "unexecuted",
+      "cases": [
+        "screened approval identity and cold retry",
+        "optical findings remove dwell and export complete diagnostics",
+        "health screening cannot supply missing capture-time hints"
+      ]
+    },
+    {
+      "path": "crates/fss-cli/src/bin/fss-event/watch/immutable_temporal_tests.rs",
+      "new_tests": 1,
+      "execution": "unexecuted",
+      "test": "active_writer_screened_dwell_matches_native_and_keeps_complete_health_diagnostics"
+    }
+  ],
+  "validation": {
+    "native_tests_executed": 0,
+    "changed_code_typecheck": "not established",
+    "attempted_native_checks": "Reference-library Cargo checks lost the executor; no completion or native test results are available. No specific underlying failure cause is established by this handoff.",
+    "passed": [
+      "Pinned nightly-2026-08-31 formatting checks on the scoped changed Rust paths.",
+      "Independent review against genuine public APIs and source-owner contracts; no dependency or test-owner substitution.",
+      "Whitespace checks.",
+      "Core schema-constitution/digest-domain audit: 220 declarations, 957 domains, zero errors.",
+      "Direct four-path core manifest check."
+    ],
+    "limitations": "Formatting and static checks do not establish compilation, deterministic fixture results, runtime behavior or release qualification. A staged-files gate did not run successfully because staging encountered ENOSPC; direct core path checks are recorded separately."
+  },
+  "authority": {
+    "repository": "User explicitly authorized frequent meaningful direct-main commits through GitHub, with no PRs.",
+    "publication": "Existing source custody, original principal, privacy generation, exact approval, cancellation and root-last event owners retained.",
+    "live_devices_or_providers": "No live camera or cloud-provider operation was performed.",
+    "unsafe_code_or_dependencies": "No unsafe code, new production dependency, substituted dependency, or weakened qualification gate."
+  },
+  "documentation": [
+    "docs/observed_zone_dwell.md",
+    "docs/RECORDED_EVENT_WORKFLOW.md",
+    "IMPLEMENTATION_STATUS.md"
+  ],
+  "continuation": [
+    "cargo +nightly-2026-08-31 test --locked -p fss-reference --test recorded_dwell_health_contract",
+    "cargo +nightly-2026-08-31 test --locked -p fss-cli --test watch_dwell_cli",
+    "cargo +nightly-2026-08-31 test --locked -p fss-cli --bin fss-event active_writer_screened_dwell_matches_native_and_keeps_complete_health_diagnostics",
+    "cargo +nightly-2026-08-31 test --locked -p fss-cli --test watch_stream_health_cli",
+    "cargo +nightly-2026-08-31 test --locked -p fss-cli --test event_fusion_cli"
+  ],
+  "open_work": [
+    "Run genuine pinned native checks on a host that can complete the unchanged dependency closure.",
+    "Retain actual test outcomes before treating authored regressions as proof.",
+    "Broader FSS-078 quality, intrusion/benign evaluation and GATE-080 qualification remain open."
+  ],
+  "beads_closed": []
+}

@@ -82,7 +82,32 @@ no budget refill per episode, and no assumption that a missing class annotation 
 classification. Cascade identity and outcome digest are bound into the complete analysis.
 Class scores do not decide dwell duration, corroboration or alert authority.
 
-## Optional native sensor-health screening
+## Optional sensor-health screening
+
+Add `--sensor-health conservative-v1` to a short dwell command to screen persistent dark/bright
+fields, exact repetition and contrast loss. Select `--sensor-health conservative-optical-v1`
+to also screen severe blur and localized highlight glare. For example:
+
+```sh
+fss-event watch \
+  --root /path/to/deployment --site site:home \
+  --import-id "${IMPORT_ID:?supply the retained import identity}" \
+  --interpretation ycbcr --zone porch:100,80,400,300 \
+  --dwell-for-ns 2000000000 --dwell-max-gap-ns 200000000 \
+  --dwell-min-observations 5 \
+  --sensor-health conservative-optical-v1
+```
+
+The optical policy accepts `--min-laplacian-variance-x1000 N`, `--glare-luma-min N` (0..255),
+and `--max-glare-ppm N` (0..1000000). Defaults are the existing uncalibrated optical thresholds;
+the report retains the exact selected values. Every approval command preserves the selected
+policy and any explicit thresholds. Changing a value or dropping screening cannot reuse an
+earlier approval. Both ordinary analysis and immutable preview beside an active capture writer
+use the same native screen. A zero-candidate report still exports the complete diagnostics.
+
+Short dwell does not accept `--retain-health`: standalone historical-health retention remains
+owned by whole-recording modes. Optical screening remains refused with `--stream-watch`,
+`--stream-dwell` and incremental checkpoints.
 
 The short-range library API `DwellReport::analyze_with_health` accepts an explicit
 `Option<RecordedHealthPolicy>` after `WatchOptions`. `ConservativeV1` selects the existing
@@ -187,9 +212,12 @@ Eleven temporal-kernel tests cover conservative duration, worst-case sampling ga
 counts, re-entry, missed/unknown samples, explicit discontinuities, signed extremes, timestamp
 regression and bounded output. Nine library tests exercise real synthetic MJPEG imports through
 the real decoder/tracker/publisher, including default-entry equivalence, privacy invalidation,
-source gaps, wrong approvals, cold retry and cancellation after provenance. Six process tests
+source gaps, wrong approvals, cold retry and cancellation after provenance. Nine process tests
 exercise the actual watch command, preview/publication/retry, changed approvals, unknown timing,
 pre-I/O argument refusal and complete report export after the original input file is removed.
+The new process cases bind health-policy approvals across cold retries, export complete blur/glare
+diagnostics and preserve capture-time refusal. An additional active-writer command-dispatch test
+compares native and immutable screened dwell byte-for-byte without deployment writes.
 
 The eight native health-contract tests use real retained synthetic MJPEG and the native
 decoder/tracker/publisher. They cover unscreened compatibility, exact threshold binding,

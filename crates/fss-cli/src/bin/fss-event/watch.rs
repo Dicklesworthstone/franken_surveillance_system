@@ -31,12 +31,13 @@
 //! foreground/tracker state and aggregate source-byte, pixel, assignment and trace ceilings.
 //! Explicit detector-package flags classify bounded actual samples from qualifying dwell
 //! episodes, sharing the whole-recording source/pixel/JPEG and model-work allowances.
-//! `--sensor-health conservative-v1` additionally screens the same masked pixels in entry
-//! mode. Suspect runs cannot contribute candidates or coverage witnesses. Whole-recording
-//! `--stream-dwell` uses its existing whole-scan publication gate instead; short dwell is refused.
-//! `--sensor-health conservative-optical-v1` also gates short entry watch on blur and glare.
-//! Exact optional optical thresholds are part of policy custody and approval reruns. Stream
-//! and dwell modes refuse this policy until they can preserve its full semantics.
+//! `--sensor-health conservative-v1` additionally screens the same masked pixels in entry or
+//! short sampled-dwell mode. Suspect observations interrupt dwell spans and cannot contribute
+//! candidates or coverage witnesses. Whole-recording `--stream-dwell` uses its existing
+//! whole-scan publication gate instead. `--sensor-health conservative-optical-v1` also gates
+//! short entry and dwell on blur and glare. Exact optional optical thresholds are part of
+//! policy custody and approval reruns. Stream modes refuse this policy until they can preserve
+//! its full semantics.
 //! `--stream-watch` instead scans one whole bounded recording for actual confirmed zone entries,
 //! preserving tracker state across the old 128-frame boundary. It uses its own approval identity,
 //! aggregate `--stream-*` budgets, and the same optional whole-scan health gate. It has no dwell
@@ -370,11 +371,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
     let selected_health = super::optical_health::parse(&values)?;
     super::optical_health::short_only(
         selected_health,
-        stream_watch
-            || stream_dwell
-            || values
-                .iter()
-                .any(|(key, _)| matches!(key.as_str(), "--dwell-for-ns" | "--dwell-step-frames")),
+        stream_watch || stream_dwell || values.iter().any(|(key, _)| key == "--dwell-step-frames"),
     )?;
     let health_screen = selected_health.is_some();
     let health_policy = selected_health.unwrap_or(RecordedHealthPolicy::ConservativeV1);
@@ -484,12 +481,6 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
         }
     }
     let dwell = dwell_policy(&values)?;
-    if health_screen && dwell.is_some() && !stream_dwell {
-        return Err(
-            "--sensor-health with dwell requires --stream-dwell; short dwell screening is unsupported"
-                .to_owned(),
-        );
-    }
     if stream_dwell && dwell.is_none() {
         return Err("--stream-dwell requires the explicit dwell duration and gap rule".to_owned());
     }
@@ -580,7 +571,9 @@ pub(super) fn run(
 ) -> RunResult<()> {
     super::optical_health::short_only(
         action.health_screen.then_some(action.health_policy),
-        action.stream_watch.is_some() || action.stream_dwell.is_some() || action.dwell.is_some(),
+        action.stream_watch.is_some()
+            || action.stream_dwell.is_some()
+            || action.incremental.is_some(),
     )?;
     super::detector::check_watch_fusion_mode(
         action.cascade.as_ref(),
@@ -612,11 +605,6 @@ pub(super) fn run(
         let result = run_streaming(action, deployment, root, limits, cx, &scalar, out);
         scalar.drain_and_finalize();
         return result;
-    }
-    if action.health_screen && action.dwell.is_some() {
-        return Err(
-            WatchError::InvalidPlan("short dwell sensor-health screening is unsupported").into(),
-        );
     }
     let scalar = ScalarExecCx::new();
     let result = run_with(action, deployment, root, cx, &scalar, out);
@@ -819,13 +807,14 @@ fn run_with(
     let mut cascade = short_cascade(action, package.as_ref(), scalar)?;
     let plan = short_plan(action, deployment, cx)?;
     if let Some(rule) = action.dwell {
-        let mut report = DwellReport::analyze(
+        let mut report = DwellReport::analyze_with_health(
             deployment,
             &plan,
             rule,
             &action.limits,
             cascade.as_mut(),
             action.options,
+            action.health_screen.then_some(action.health_policy),
             cx,
         )?;
         let fusion = match (&fusion_profile, cascade.as_ref()) {

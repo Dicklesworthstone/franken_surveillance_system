@@ -152,7 +152,7 @@ const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corrobor
     (default 1 GiB and 1,000,000 reads; maximum 4 GiB/4,000,000), with a cooperative 60 s deadline.\n\
     Source, privacy and authority must still match before a complete report/export is delivered.\n\
     Quiet scans and degraded-health diagnostics take the same final custody checks.\n\
-    Health findings remain readable but still block event publication and calibrated class advice.\n\
+    Health findings remain readable; degraded support cannot justify event candidates.\n\
     Concurrent authority commits refuse the complete preview; retry at a stable committed head.\n\
     These limits supplement whole-scan budgets and require no approval, retention or checkpoint.\n\
     Approval hints omit them. Event/retention approval and incremental checkpoints keep writer ownership.\n\
@@ -174,14 +174,14 @@ const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corrobor
     and contrast loss. Suspect runs lose candidate support and coverage witnesses; per-frame\n\
     measurements and sensor_health_degraded intervals preserve the reason. A clear screen\n\
     does not prove health, tamper absence, or physical absence. Exact approval reruns retain\n\
-    the option. With --stream-dwell the existing whole-scan publication gate applies instead;\n\
-    short non-stream dwell with sensor-health screening is unsupported and refused.\n\
-    --sensor-health conservative-optical-v1 additionally screens short watch/corroboration\n\
+    the option. Short dwell uses surviving matched samples and never bridges a suspect run.\n\
+    With --stream-dwell the existing whole-scan publication gate applies instead.\n\
+    --sensor-health conservative-optical-v1 additionally screens short watch/dwell/corroboration\n\
     for severe blur and localized highlight glare. Optional exact policy thresholds:\n\
     --min-laplacian-variance-x1000 N --glare-luma-min N (0..255) --max-glare-ppm N (0..1000000).\n\
     Findings remove candidate support and coverage; recovery restarts background/tracker warm-up.\n\
     Thresholds and measured optical work are bound into provenance and exact approval reruns.\n\
-    This policy is opt-in; stream/dwell use is refused, and a clear result never certifies health.\n\
+    This policy is opt-in; streaming/incremental use is refused, and a clear screen never certifies health.\n\
     Historical diagnostics: whole-recording screened watch/dwell previews also contain an\n\
     independent historical_health approval. --retain-health sha256:APPROVAL retains its\n\
     source-bound receipt and exact native scan recipe even when no event exists or health\n\

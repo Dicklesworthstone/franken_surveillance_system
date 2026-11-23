@@ -4,6 +4,35 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Health-screened short sampled dwell — 2026-11-23
+
+Short `fss-event watch --dwell-for-ns ... --dwell-max-gap-ns ...` now accepts
+`--sensor-health conservative-v1` and `conservative-optical-v1`, including exact
+optical thresholds, through both mutable analysis/publication and immutable previews
+beside an active writer. Rerun and approval commands retain the selected policy.
+
+The native `DwellReport::analyze_with_health` path uses the existing watch screen.
+Degraded frames and dependent tracks cannot contribute to dwell; recovery requires
+fresh background and tracking. Valid independent episodes outside degraded runs can
+survive. Screened analysis identities and approvals bind the complete health summary
+and exact policy. Published provenance retains those bytes and all screened source
+capsules, including excluded observations. Publication rechecks original principal,
+source custody and current privacy before staging, including on retries.
+Unscreened `None` analysis/report bytes are preserved.
+
+A clear screen does not certify sensor health, continuous occupancy, absence,
+independent corroboration or alert authority. Optical screening remains unsupported
+for streaming and long-dwell modes; existing conservative long-mode behavior is
+unchanged.
+
+**The eight native regressions, three process regressions and one active-writer
+parity regression are authored but unexecuted; changed-code typechecking is not
+established.** Reference-library Cargo checks lost the executor without a completed
+native result. Pinned formatting, independent source/API review and whitespace
+checks passed; they are not runtime or release qualification. FSS-078 /
+`fss-x4a.15.3` remains open. See [the workflow](docs/observed_zone_dwell.md) and
+[the session handoff](docs/SESSION_HANDOFF_2026-11-23_SCREENED_DWELL.json).
+
 ## Copied recording exports restored into native archives — 2026-11-23
 
 `fss-archive restore-export` now connects independently pinned copied exports to

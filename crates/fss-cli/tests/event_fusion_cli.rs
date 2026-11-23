@@ -251,16 +251,16 @@ fn short_dwell_fusion_preserves_authority_and_temporal_refusals_before_io() {
     incomplete.add(&["--dwell-for-ns", "200000000"]);
     incomplete.refused("dwell requires both");
 
-    let mut unsupported_health = Invocation::new("watch");
-    unsupported_health.detector();
-    unsupported_health.fusion();
-    unsupported_health.add(&[
+    let mut invalid_health = Invocation::new("watch");
+    invalid_health.detector();
+    invalid_health.fusion();
+    invalid_health.add(&[
         "--dwell-for-ns",
         "200000000",
         "--dwell-max-gap-ns",
         "100000000",
         "--sensor-health",
-        "conservative-v1",
+        "latest",
     ]);
-    unsupported_health.refused("short dwell screening is unsupported");
+    invalid_health.refused("--sensor-health requires conservative-v1 or conservative-optical-v1");
 }

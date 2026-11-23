@@ -543,20 +543,16 @@ fn optical_watch_preserves_exact_policy_and_native_report_beside_capture() -> Te
 }
 
 #[test]
-fn optical_watch_cannot_silently_downgrade_in_stream_or_dwell_modes() -> Test {
+fn optical_watch_cannot_silently_downgrade_in_stream_modes() -> Test {
     let root = Path::new("/optical-policy-parse-only");
     let import = ContentDigest::sha256(b"parse-only-optical-import");
-    for extra in [
-        vec!["--stream-watch"],
-        vec!["--stream-dwell"],
-        vec!["--dwell-for-ns", "1000000", "--dwell-max-gap-ns", "1000000"],
-    ] {
+    for extra in [vec!["--stream-watch"], vec!["--stream-dwell"]] {
         let mut args = request_args(root, import, "gray", "door:64,0,32,32");
         args.extend(["--sensor-health".into(), "conservative-optical-v1".into()]);
         args.extend(extra.into_iter().map(OsString::from));
         let error = super::super::parse(&args).expect_err("unsupported optical mode");
         assert!(
-            error.contains("requires short entry watch or short corroboration"),
+            error.contains("requires short entry watch, short dwell or short corroboration"),
             "{error}"
         );
     }

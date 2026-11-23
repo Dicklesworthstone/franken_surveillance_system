@@ -62,7 +62,9 @@ fn run_with(
     }
     super::super::optical_health::short_only(
         action.health_screen.then_some(action.health_policy),
-        action.stream_watch.is_some() || action.stream_dwell.is_some() || action.dwell.is_some(),
+        action.stream_watch.is_some()
+            || action.stream_dwell.is_some()
+            || action.incremental.is_some(),
     )?;
     super::super::detector::check_watch_fusion_mode(action.cascade.as_ref(), true, false)?;
     // Load pinned external models and profiles before opening any retained recording.
@@ -80,12 +82,6 @@ fn run_with(
             scalar,
         )?),
         (None, None) => {
-            if action.health_screen && action.dwell.is_some() {
-                return Err(WatchError::InvalidPlan(
-                    "short dwell sensor-health screening is unsupported",
-                )
-                .into());
-            }
             let (profile, package) = load_short_inputs(action, cx, scalar)?;
             PreviewInputs::Short { profile, package }
         }
@@ -131,13 +127,14 @@ fn run_with(
             let mut cascade = short_cascade(action, package.as_ref(), scalar)?;
             let plan = short_plan(action, &source, cx)?;
             if let Some(rule) = action.dwell {
-                let report = DwellReport::analyze(
+                let report = DwellReport::analyze_with_health(
                     &source,
                     &plan,
                     rule,
                     &action.limits,
                     cascade.as_mut(),
                     action.options,
+                    action.health_screen.then_some(action.health_policy),
                     cx,
                 )?;
                 let fusion = match (&profile, cascade.as_ref()) {

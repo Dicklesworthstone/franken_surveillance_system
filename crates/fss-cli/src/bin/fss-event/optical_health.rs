@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! One exact opt-in optical policy parser shared by short watch and corroboration.
+//! One exact opt-in optical policy parser shared by short entry, dwell and corroboration.
 
 use fss_reference::ingest::recorded_health::RecordedHealthPolicy;
 use fss_reference::ingest::sensor_health::{OpticalThresholds, POLICY_NAME};
@@ -84,7 +84,7 @@ pub(super) fn short_only(
 ) -> Result<(), String> {
     if incompatible_mode && matches!(policy, Some(RecordedHealthPolicy::ConservativeOpticalV1(_))) {
         return Err(
-            "conservative-optical-v1 requires short entry watch or short corroboration; stream and dwell modes are unsupported".to_owned(),
+            "conservative-optical-v1 requires short entry watch, short dwell or short corroboration; streaming modes are unsupported".to_owned(),
         );
     }
     Ok(())
