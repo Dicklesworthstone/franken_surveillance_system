@@ -5,6 +5,31 @@
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
 
+## Explicit M2TS extraction and retained-byte receipts — 2026-11-23
+
+The bounded AVC/HEVC transport parser now admits explicit `TsFraming::M2ts192`
+through `parse_framed` and `parse_framed_with_checkpoint`. Every four-byte prefix
+remains in original custody and source hashing; payload mappings use absolute
+original-file offsets. Transport continuity compares the inner 188-byte packet,
+and opaque arrival prefixes never establish capture time or health. Existing
+entry points still select standard 188-byte TS without guessing.
+
+M2TS selects extraction receipt v2 with one canonical framing tag. Standard TS
+retains its exact v1 encoding. Original/current parser limits, complete-source
+verification, cancellation and corruption refusal remain enforced. New contracts
+cover both codecs, source mappings, duplicate packets with different prefixes,
+truncation/sync errors, exact limits and resealed version/framing substitutions.
+
+The genuine `fss-container` library compiled on `nightly-2026-08-31`. Independent
+comparison with the receipt encoder at `7286814285fa8c35912d6899f0605f035fcbfdba`
+confirmed byte-for-byte identical 299-byte AVC and HEVC v1 receipts; both vectors
+are retained as regression fixtures. The focused library suite is still pending
+execution on the heavily loaded shared host; compilation and compatibility
+comparison are not a passing test-suite claim. Native retained import and the
+operator command are separate integration work. See
+[MPEG-TS receipts](docs/MPEG_TS_RECEIPTS.md). This is scoped progress under
+FSS-054 (`fss-x4a.12.3`); broad media and release gates remain open.
+
 ## Native part recovery and preserved cleanup allowance — 2026-11-23
 
 The native positive-only ListParts implementation in `595573f` binds the exact

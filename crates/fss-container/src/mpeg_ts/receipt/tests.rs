@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 
 use super::*;
+use crate::mpeg_ts::TS_PACKET_BYTES;
+use crate::mpeg_ts::framing_tests::m2ts;
 
 const AVC: &[u8] = include_bytes!("../../../tests/fixtures/avc_i64.ts");
 const HEVC: &[u8] = include_bytes!("../../../tests/fixtures/hevc_i64.ts");
@@ -13,6 +15,24 @@ fn reseal(bytes: &mut [u8]) {
     let end = bytes.len() - 32;
     let checksum = ContentDigest::sha256(&bytes[..end]);
     bytes[end..].copy_from_slice(&checksum.bytes());
+}
+
+#[test]
+fn legacy_ts_receipts_remain_byte_identical_to_the_original_v1_encoder() {
+    // Captured by compiling the unmodified receipt encoder from7286814285fa8c35912d6899f0605f035fcbfdba,
+    // then checking it byte-for-byte against this implementation for both retained fixtures.
+    for (source, golden) in [
+        (AVC, include_str!("../../../tests/fixtures/avc_i64.receipt-v1.hex")),
+        (HEVC, include_str!("../../../tests/fixtures/hevc_i64.receipt-v1.hex")),
+    ] {
+        let receipt = TsExtractionReceipt::from_extraction(&video(source)).unwrap();
+        assert_eq!(receipt.framing(), TsFraming::Ts188);
+        let encoded = receipt.to_bytes().unwrap();
+        assert_eq!(encoded.len(), 299);
+        let actual: String = encoded.iter().map(|byte| format!("{byte:02x}")).collect();
+        assert_eq!(actual, golden.trim());
+        assert_eq!(TsExtractionReceipt::from_bytes(&encoded).unwrap().to_bytes().unwrap(), encoded);
+    }
 }
 
 #[test]
@@ -142,7 +162,7 @@ fn malformed_unknown_truncated_and_noncanonical_encodings_refuse() {
     corrupt[20] ^= 1;
     assert_eq!(TsExtractionReceipt::from_bytes(&corrupt).unwrap_err(), TsError::Receipt);
     let mut unknown = encoded.clone();
-    unknown[8 + RECEIPT_SCHEMA.len() - 1] = b'2';
+    unknown[8 + RECEIPT_SCHEMA.len() - 1] = b'9';
     reseal(&mut unknown);
     assert_eq!(TsExtractionReceipt::from_bytes(&unknown).unwrap_err(), TsError::Receipt);
     let mut bad_bool = encoded.clone();
@@ -225,4 +245,70 @@ fn cancellation_withholds_hashing_and_reconstruction_results() {
         });
         assert_eq!(result.unwrap_err(), TsError::Cancelled);
     }
+}
+
+#[test]
+fn explicit_m2ts_receipts_reconstruct_original_coordinates_and_bind_opaque_prefixes() {
+    for source in [AVC, HEVC] {
+        let standard = TsExtractionReceipt::from_extraction(&video(source)).unwrap();
+        let framed = m2ts(source);
+        let parsed = MpegTsVideo::parse_framed(&framed, TsFraming::M2ts192,
+            TsSelection::default(), TsLimits::default()).unwrap();
+        let receipt = TsExtractionReceipt::from_extraction(&parsed).unwrap();
+        assert_eq!(receipt.framing(), TsFraming::M2ts192);
+        assert_eq!(receipt.source_digest(), ContentDigest::sha256(&framed));
+        assert_eq!(receipt.elementary_digest(), standard.elementary_digest());
+        assert_ne!(receipt.mapping_digest(), standard.mapping_digest());
+        let bytes = receipt.to_bytes().unwrap();
+        let mut decoder = CanonicalDecoder::new(&bytes[..bytes.len() - 32]);
+        assert_eq!(decoder.text().unwrap(), FRAMED_RECEIPT_SCHEMA);
+        assert_eq!(decoder.u8().unwrap(), 2);
+        let loaded = TsExtractionReceipt::from_bytes(&bytes).unwrap();
+        assert_eq!(loaded, receipt);
+        assert_eq!(loaded.to_bytes().unwrap(), bytes);
+        let reconstructed = loaded.verify_with_checkpoint(&framed, &mut || Ok(())).unwrap();
+        assert_eq!(reconstructed.payload_spans(), parsed.payload_spans());
+        assert_eq!(reconstructed.pes(), parsed.pes());
+        let mut changed = framed.clone();
+        changed[0] ^= 1;
+        let changed_video = MpegTsVideo::parse_framed(&changed, TsFraming::M2ts192,
+            TsSelection::default(), TsLimits::default()).unwrap();
+        assert_eq!(changed_video.elementary_stream(), parsed.elementary_stream());
+        assert_eq!(changed_video.payload_spans(), parsed.payload_spans());
+        assert_eq!(loaded.verify_with_checkpoint(&changed, &mut || Ok(())).unwrap_err(), TsError::Receipt);
+        let narrower = TsLimits { max_input_bytes: framed.len() - 1, ..TsLimits::default() };
+        assert_eq!(loaded.verify_bounded_with_checkpoint(&framed, narrower, &mut || Ok(())).unwrap_err(), TsError::Limit);
+        assert_eq!(loaded.verify_with_checkpoint(&framed, &mut || Err(TsError::Cancelled)).unwrap_err(), TsError::Cancelled);
+    }
+}
+
+#[test]
+fn m2ts_receipts_refuse_resealed_framing_tags_and_version_mismatches() {
+    let framed = m2ts(AVC);
+    let parsed = MpegTsVideo::parse_framed(&framed, TsFraming::M2ts192,
+        TsSelection::default(), TsLimits::default()).unwrap();
+    let receipt = TsExtractionReceipt::from_extraction(&parsed).unwrap();
+    let bytes = receipt.to_bytes().unwrap();
+    let framing_offset = 8 + FRAMED_RECEIPT_SCHEMA.len();
+    for tag in [0, 1, 3, u8::MAX] {
+        let mut forged = bytes.clone();
+        forged[framing_offset] = tag;
+        reseal(&mut forged);
+        assert_eq!(TsExtractionReceipt::from_bytes(&forged).unwrap_err(), TsError::Receipt);
+    }
+    let mut forged_version = bytes.clone();
+    forged_version[framing_offset - 1] = b'1';
+    reseal(&mut forged_version);
+    assert_eq!(TsExtractionReceipt::from_bytes(&forged_version).unwrap_err(), TsError::Receipt);
+    // Even removing the framing tag and recomputing the checksum cannot make
+    // physical 192-byte packet accounting a legacy 188-byte receipt.
+    forged_version.remove(framing_offset);
+    reseal(&mut forged_version);
+    assert_eq!(TsExtractionReceipt::from_bytes(&forged_version).unwrap_err(), TsError::Receipt);
+    let legacy = TsExtractionReceipt::from_extraction(&video(AVC)).unwrap();
+    let mut forged_legacy = legacy.to_bytes().unwrap();
+    forged_legacy[framing_offset - 1] = b'2';
+    forged_legacy.insert(framing_offset, 2);
+    reseal(&mut forged_legacy);
+    assert_eq!(TsExtractionReceipt::from_bytes(&forged_legacy).unwrap_err(), TsError::Receipt);
 }

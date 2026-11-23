@@ -1,7 +1,8 @@
 #![forbid(unsafe_code)]
 //! Bounded, source-preserving AVC/HEVC MPEG-2 transport stream extraction.
 //!
-//! This finite-file profile admits 188-byte packets, one selected program and
+//! This finite-file profile admits explicitly selected 188-byte TS or 192-byte
+//! M2TS framing, one selected program and
 //! video PID, single-section current PAT/PMT tables, and MPEG-2 video PES headers
 //! with optional PTS/DTS. Tables must precede the selected video. Their CRCs,
 //! repeats, packet continuity, adaptation bounds and complete PES lengths are
@@ -16,6 +17,8 @@
 //! they are neither unwrapped nor promoted to capture time. Original byte spans
 //! exclude all generated data: elementary output is an exact concatenation of
 //! selected transport payload bytes after removing PES headers.
+//! M2TS's four-byte prefixes remain opaque original custody: they neither
+//! participate in transport continuity nor establish capture or media time.
 //!
 //! Grammar: ITU-T H.222.0 §§2.4.3.2–2.4.3.7 and 2.4.4 (PAT/PMT), with the
 //! MPEG-2 CRC polynomial in Annex A. RFC 2250 §2 also specifies 188-byte transport
@@ -28,13 +31,41 @@ use std::ops::Range;
 /// Canonical, reconstructible extraction commitments and original-byte verification.
 pub mod receipt;
 
-/// MPEG-2 transport packet size; M2TS and error-corrected packet sizes are not admitted.
+/// MPEG-2 transport packet size, excluding any explicitly selected outer framing.
 pub const TS_PACKET_BYTES: usize = 188;
+/// M2TS packet size: four opaque prefix bytes followed by one MPEG-2 TS packet.
+pub const M2TS_PACKET_BYTES: usize = 192;
 const MAX_INPUT: usize = 512 * 1024 * 1024;
 const MAX_OUTPUT: usize = 256 * 1024 * 1024;
 const MAX_PACKETS: usize = MAX_INPUT / TS_PACKET_BYTES;
 const MAX_SECTION: usize = 1024;
 const PID_COUNT: usize = 8192;
+
+/// Explicit physical framing for a finite file; no probing, resynchronization or clock trust.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TsFraming {
+    /// Standard 188-byte transport packets, with sync at each packet's first byte.
+    #[default]
+    Ts188,
+    /// 192-byte M2TS packets, each with an opaque four-byte arrival-time prefix.
+    /// The prefix is retained as source data and excluded from elementary payloads.
+    M2ts192,
+}
+
+impl TsFraming {
+    /// Exact physical packet stride in the original source, including any prefix.
+    pub const fn packet_bytes(self) -> usize {
+        match self {
+            Self::Ts188 => TS_PACKET_BYTES,
+            Self::M2ts192 => M2TS_PACKET_BYTES,
+        }
+    }
+
+    /// Bytes before each TS sync byte; these remain opaque original custody.
+    pub const fn prefix_bytes(self) -> usize {
+        self.packet_bytes() - TS_PACKET_BYTES
+    }
+}
 
 /// Explicit selection; omitted values require exactly one eligible choice.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -173,6 +204,7 @@ pub struct TsPes {
 #[derive(Debug)]
 pub struct MpegTsVideo<'a> {
     source: &'a [u8],
+    framing: TsFraming,
     selection: TsSelection,
     limits: TsLimits,
     codec: VideoCodec,
@@ -188,7 +220,7 @@ pub struct MpegTsVideo<'a> {
 }
 
 impl<'a> MpegTsVideo<'a> {
-    /// Extract a finite, complete transport file under explicit resource bounds.
+    /// Extract a finite, complete 188-byte transport file under explicit resource bounds.
     pub fn parse(
         source: &'a [u8],
         selection: TsSelection,
@@ -204,17 +236,39 @@ impl<'a> MpegTsVideo<'a> {
         limits: TsLimits,
         checkpoint: &mut dyn FnMut() -> Result<(), TsError>,
     ) -> Result<Self, TsError> {
+        Self::parse_framed_with_checkpoint(source, TsFraming::Ts188, selection, limits, checkpoint)
+    }
+
+    /// Extract a complete file using the caller's explicit physical packet framing.
+    /// All returned source offsets refer to the original file, including M2TS prefixes.
+    pub fn parse_framed(
+        source: &'a [u8],
+        framing: TsFraming,
+        selection: TsSelection,
+        limits: TsLimits,
+    ) -> Result<Self, TsError> {
+        Self::parse_framed_with_checkpoint(source, framing, selection, limits, &mut || Ok(()))
+    }
+
+    /// Explicit framing with owner cancellation before each packet and each PES copy.
+    pub fn parse_framed_with_checkpoint(
+        source: &'a [u8],
+        framing: TsFraming,
+        selection: TsSelection,
+        limits: TsLimits,
+        checkpoint: &mut dyn FnMut() -> Result<(), TsError>,
+    ) -> Result<Self, TsError> {
         limits.validate()?;
         if selection.program == Some(0) || selection.video_pid.is_some_and(|pid| !media_pid(pid)) {
             return Err(TsError::Configuration);
         }
         checkpoint()?;
         if source.len() > limits.max_input_bytes
-            || source.len() / TS_PACKET_BYTES > limits.max_packets
+            || source.len() / framing.packet_bytes() > limits.max_packets
         {
             return Err(TsError::Limit);
         }
-        if source.is_empty() || !source.len().is_multiple_of(TS_PACKET_BYTES) {
+        if source.is_empty() || !source.len().is_multiple_of(framing.packet_bytes()) {
             return Err(TsError::Truncated);
         }
 
@@ -233,8 +287,12 @@ impl<'a> MpegTsVideo<'a> {
         let mut pes = PesAssembler::default();
         let mut output = Extraction::default();
 
-        for offset in (0..source.len()).step_by(TS_PACKET_BYTES) {
+        for packet_start in (0..source.len()).step_by(framing.packet_bytes()) {
             checkpoint()?;
+            // Keep offsets in original-file coordinates. Only the 188-byte TS packet
+            // participates in continuity, so changing an opaque prefix cannot turn an
+            // exact retransmission into a conflicting transport duplicate.
+            let offset = packet_start + framing.prefix_bytes();
             let packet = Packet::parse(source, offset)?;
             if packet.payload.is_some() {
                 first_payload[usize::from(packet.pid)] =
@@ -304,13 +362,14 @@ impl<'a> MpegTsVideo<'a> {
         }
         Ok(Self {
             source,
+            framing,
             selection,
             limits,
             codec: pmt.codec,
             program: pat.program,
             video_pid: pmt.video_pid,
             pcr_pid: pmt.pcr_pid,
-            packets_inspected: source.len() / TS_PACKET_BYTES,
+            packets_inspected: source.len() / framing.packet_bytes(),
             psi_sections_inspected: psi_sections,
             duplicate_packets: duplicates,
             pes: output.pes,
@@ -322,6 +381,10 @@ impl<'a> MpegTsVideo<'a> {
     /// Original immutable transport bytes, including all nonvideo structure.
     pub fn source(&self) -> &'a [u8] {
         self.source
+    }
+    /// Explicit physical framing admitted by the parser.
+    pub fn framing(&self) -> TsFraming {
+        self.framing
     }
     /// Exact selection policy admitted by the parser.
     pub fn selection(&self) -> TsSelection {
@@ -970,6 +1033,10 @@ fn timestamp(bytes: &[u8], prefix: u8) -> Result<u64, TsError> {
         | (u64::from(bytes[3]) << 7)
         | u64::from(bytes[4] >> 1))
 }
+
+#[cfg(test)]
+#[path = "mpeg_ts/framing_tests.rs"]
+mod framing_tests;
 
 #[cfg(test)]
 mod tests {

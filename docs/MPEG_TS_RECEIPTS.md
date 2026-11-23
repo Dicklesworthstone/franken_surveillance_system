@@ -56,6 +56,28 @@ used to establish camera continuity, absence evidence or decoded-picture support
 The existing parser's finite-file subset and explicit refusals remain unchanged.
 Changes to the extraction/encoding semantics require a new receipt version.
 
+## Explicit M2TS framing
+
+`MpegTsVideo::parse_framed` and `parse_framed_with_checkpoint` accept an explicit
+`TsFraming::Ts188` or `TsFraming::M2ts192`. The existing `parse` and
+`parse_with_checkpoint` entry points keep their 188-byte behavior. M2TS consists
+of a four-byte opaque prefix followed by each 188-byte transport packet; the
+parser does not guess framing, strip a loose header or resynchronize damaged
+files. Source-size and packet-count limits apply to the selected physical framing.
+
+The complete original digest includes every prefix and all unselected packets.
+Payload spans refer to absolute offsets after each prefix in that original file.
+Exact retransmission checks compare only the inner transport packet, so differing
+prefixes on duplicate packets do not create a false continuity conflict. Prefix
+bits are never promoted to capture time, synchronized clock evidence or health.
+
+Standard TS receipts retain the exact `fss.mpeg_ts.extraction_receipt.v1`
+encoding. M2TS uses `fss.mpeg_ts.extraction_receipt.v2` with explicit framing tag
+`2`. V2 refuses any other tag, including an alternate encoding of standard TS.
+Recorded source lengths and packet counts must agree with the selected stride.
+Current-limit intersection and full original replay remain mandatory during
+bounded verification; changing only an opaque prefix invalidates the source pin.
+
 ## Native retained-import integration
 
 `fss_reference::ingest::mpeg_ts_import::import_mpeg_ts_file` uses this receipt to
@@ -81,12 +103,19 @@ on the qualification host before claiming retained decode success.
 
 ## Validation status
 
-Seven focused Rust contracts cover both retained AVC/HEVC transport fixtures,
-exact reconstruction, nonvideo-byte corruption, selection/policy identity, current
-limit narrowing, canonical corruption, forged claims and late cancellation.
-They were authored during an execution-environment outage and have **not yet been
-compiled or run**. The earlier 117 container and 50 packet passing tests are
-unchanged-baseline evidence only.
+The container library compiled on the pinned compiler on 2026-11-23. An
+independent harness compared the v1 receipt encoder from commit
+`7286814285fa8c35912d6899f0605f035fcbfdba` with the current encoder and established
+byte-for-byte equality for both AVC and HEVC fixtures (299 bytes each). The
+fixed vectors are retained in `tests/fixtures/avc_i64.receipt-v1.hex` and
+`tests/fixtures/hevc_i64.receipt-v1.hex` under `crates/fss-container`.
+
+The focused library suite remains pending execution on the shared build host.
+It includes the earlier source/selection/policy/corruption/cancellation contracts
+plus explicit M2TS source mappings, prefix custody, continuity, malformed framing,
+exact bounds, receipt version/tag refusals and legacy byte fixtures. Neither the
+compiled library nor the independent encoder comparison substitutes for that
+suite or the native retained-import tests.
 
 Required focused command:
 

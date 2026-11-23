@@ -13,11 +13,13 @@
 
 use fss_core::{CanonicalDecoder, CanonicalEncoder, ContentDigest, DigestAlgorithm, Sha256Hasher};
 
-use super::{MpegTsVideo, TS_PACKET_BYTES, TsError, TsLimits, TsSelection, media_pid};
+use super::{MpegTsVideo, TsError, TsFraming, TsLimits, TsSelection, media_pid};
 use crate::video_codec::VideoCodec;
 
-/// Versioned finite-file extraction and receipt contract.
+/// Original 188-byte extraction contract; its canonical bytes remain unchanged.
 pub const RECEIPT_SCHEMA: &str = "fss.mpeg_ts.extraction_receipt.v1";
+/// Explicit M2TS physical framing contract. Standard TS continues to encode as v1.
+pub const FRAMED_RECEIPT_SCHEMA: &str = "fss.mpeg_ts.extraction_receipt.v2";
 const MAPPING_DOMAIN: &str = "fss.mpeg_ts.extraction_mapping.v1";
 /// Hard ceiling for the fixed-size receipt, independent of source/map length.
 pub const MAX_RECEIPT_BYTES: usize = 512;
@@ -26,6 +28,7 @@ const HASH_CHUNK_BYTES: usize = 64 * 1024;
 /// Canonical extraction commitment; source custody is established separately.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TsExtractionReceipt {
+    framing: TsFraming,
     source_digest: ContentDigest,
     source_bytes: u64,
     elementary_digest: ContentDigest,
@@ -57,6 +60,7 @@ impl TsExtractionReceipt {
     ) -> Result<Self, TsError> {
         checkpoint()?;
         let receipt = Self {
+            framing: video.framing(),
             source_digest: hash_bytes(video.source(), checkpoint)?,
             source_bytes: video.source().len() as u64,
             elementary_digest: hash_bytes(video.elementary_stream(), checkpoint)?,
@@ -79,7 +83,11 @@ impl TsExtractionReceipt {
         Ok(receipt)
     }
 
-    /// Exact original-byte identity, including unselected PIDs and duplicates.
+    /// Explicit physical framing of the committed source bytes.
+    pub fn framing(&self) -> TsFraming {
+        self.framing
+    }
+    /// Exact original-byte identity, including prefixes, unselected PIDs and duplicates.
     pub fn source_digest(&self) -> ContentDigest {
         self.source_digest
     }
@@ -140,7 +148,13 @@ impl TsExtractionReceipt {
     pub fn to_bytes(&self) -> Result<Vec<u8>, TsError> {
         self.validate()?;
         let mut e = CanonicalEncoder::new();
-        e.text(RECEIPT_SCHEMA);
+        match self.framing {
+            TsFraming::Ts188 => e.text(RECEIPT_SCHEMA),
+            TsFraming::M2ts192 => {
+                e.text(FRAMED_RECEIPT_SCHEMA);
+                e.u8(2);
+            }
+        }
         encode_selection(&mut e, self.selection);
         encode_limits(&mut e, self.limits);
         e.digest(self.source_digest);
@@ -187,9 +201,15 @@ impl TsExtractionReceipt {
             return Err(TsError::Receipt);
         }
         let mut d = CanonicalDecoder::new(payload);
-        if d.text().map_err(|_| TsError::Receipt)? != RECEIPT_SCHEMA {
-            return Err(TsError::Receipt);
-        }
+        let framing = match d.text().map_err(|_| TsError::Receipt)? {
+            RECEIPT_SCHEMA => TsFraming::Ts188,
+            FRAMED_RECEIPT_SCHEMA => match d.u8().map_err(|_| TsError::Receipt)? {
+                2 => TsFraming::M2ts192,
+                // No alternate v2 encoding of v1 TS: each policy has one identity.
+                _ => return Err(TsError::Receipt),
+            },
+            _ => return Err(TsError::Receipt),
+        };
         let selection = TsSelection {
             program: decode_optional_u16(&mut d)?,
             video_pid: decode_optional_u16(&mut d)?,
@@ -214,6 +234,7 @@ impl TsExtractionReceipt {
             _ => return Err(TsError::Receipt),
         };
         let receipt = Self {
+            framing,
             source_digest,
             source_bytes,
             elementary_digest,
@@ -270,8 +291,9 @@ impl TsExtractionReceipt {
             return Err(TsError::Receipt);
         }
         let limits = intersect(self.limits, current_limits);
-        let video =
-            MpegTsVideo::parse_with_checkpoint(source, self.selection, limits, checkpoint)?;
+        let video = MpegTsVideo::parse_framed_with_checkpoint(
+            source, self.framing, self.selection, limits, checkpoint,
+        )?;
         let mut observed = Self::from_extraction_with_checkpoint(&video, checkpoint)?;
         // The historical policy remains part of receipt identity. Successful
         // parsing above independently proves admission under the current ceiling.
@@ -290,8 +312,8 @@ impl TsExtractionReceipt {
             || self.mapping_digest.algorithm() != DigestAlgorithm::Sha256
             || self.source_bytes == 0
             || self.source_bytes > self.limits.max_input_bytes as u64
-            || !self.source_bytes.is_multiple_of(TS_PACKET_BYTES as u64)
-            || self.packets != self.source_bytes / TS_PACKET_BYTES as u64
+            || !self.source_bytes.is_multiple_of(self.framing.packet_bytes() as u64)
+            || self.packets != self.source_bytes / self.framing.packet_bytes() as u64
             || self.packets > self.limits.max_packets as u64
             || self.psi_sections < 2
             || self.psi_sections > self.limits.max_psi_sections as u64
