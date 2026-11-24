@@ -1,0 +1,37 @@
+[package]
+name = "fss-daemon"
+description = "Always-on Asupersync-owned multi-camera supervisor daemon for Franken Surveillance System"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "fss-daemon"
+path = "src/main.rs"
+
+[dependencies]
+fss-core = { path = "../fss-core" }
+fss-runtime = { path = "../fss-runtime" }
+fss-ipc = { path = "../fss-ipc" }
+fss-ledger = { path = "../fss-ledger" }
+fss-object = { path = "../fss-object" }
+fss-pack = { path = "../fss-pack" }
+fss-packet = { path = "../fss-packet" }
+fss-codec-h264 = { path = "../fss-codec-h264" }
+fss-codec-mjpeg = { path = "../fss-codec-mjpeg" }
+fss-publication = { path = "../fss-publication" }
+fss-projection-store = { path = "../fss-projection-store" }
+fss-vault = { path = "../fss-vault" }
+fss-fusion = { path = "../fss-fusion" }
+fss-reference = { path = "../fss-reference" }
+asupersync = { version = "=0.5.0", default-features = false }
+
+[dev-dependencies]
+fss-core = { path = "../fss-core", features = ["test-support"] }
+fss-codec-jpeg-encode = { path = "../fss-codec-jpeg-encode" }

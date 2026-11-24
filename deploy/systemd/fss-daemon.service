@@ -1,0 +1,32 @@
+[Unit]
+Description=Franken Surveillance System Site Supervisor Daemon (fss-daemon)
+Documentation=https://github.com/Dicklesworthstone/franken_surveillance_system
+After=network-online.target local-fs.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=fss
+Group=fss
+UMask=0077
+WorkingDirectory=/var/lib/fss/deployment
+ExecStart=/usr/local/bin/fss-daemon run --manifest /etc/fss/site.json --root /var/lib/fss/deployment --json
+ExecStop=/usr/local/bin/fss-daemon stop --root /var/lib/fss/deployment --json
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5s
+
+# Explicit owner-only filesystem & privilege hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/fss/deployment
+LimitNOFILE=4096
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fss-daemon
+
+[Install]
+WantedBy=multi-user.target

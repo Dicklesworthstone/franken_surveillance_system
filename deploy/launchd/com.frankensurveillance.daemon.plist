@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.frankensurveillance.daemon</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/fss-daemon</string>
+        <string>run</string>
+        <string>--manifest</string>
+        <string>/usr/local/etc/fss/site.json</string>
+        <string>--root</string>
+        <string>/usr/local/var/fss/deployment</string>
+        <string>--json</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+
+    <key>ExitTimeOut</key>
+    <integer>30</integer>
+
+    <key>WorkingDirectory</key>
+    <string>/usr/local/var/fss/deployment</string>
+
+    <key>Umask</key>
+    <integer>63</integer>
+
+    <key>StandardOutPath</key>
+    <string>/usr/local/var/log/fss/daemon.stdout.jsonl</string>
+
+    <key>StandardErrorPath</key>
+    <string>/usr/local/var/log/fss/daemon.stderr.jsonl</string>
+
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>4096</integer>
+    </dict>
+</dict>
+</plist>
