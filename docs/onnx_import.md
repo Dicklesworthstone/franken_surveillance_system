@@ -72,7 +72,7 @@ including hand-computed dense and convolution/pooling results.
   Both use the bounded native lowering described below.
 
 Unknown features refuse rather than being skipped or approximated. In particular,
-runtime or data-dependent shape inputs/computation, negative F32-data Slice strides,
+runtime or data-dependent shape inputs/computation,
 cubic or dynamic Resize and unsupported linear coordinate modes,
 other opsets/domains/dtypes, symbolic or zero-sized shapes, sparse data, external
 weight files, custom functions, training graphs and model activation are not
@@ -1508,11 +1508,33 @@ axes refuse. Opset 13 has no Reshape `allowzero` attribute; opset 17 admits only
 the explicitly requested integer value zero. Literal-zero mode still refuses.
 
 Slice accepts optional axes and steps, including empty optional input-name slots.
-It normalizes negative axes and endpoints, clamps endpoints to the static dimension,
-and supports positive strides up to `i64::MAX`. Negative strides and empty runtime
-results explicitly refuse. There is no reverse-slice approximation or dynamic
-shape execution. An empty INT64 vector is valid control data for scalar Reshape;
-zero-sized runtime tensors remain unsupported.
+It normalizes negative axes and endpoints and supports both positive and negative
+nonzero strides, including `i64::MIN` and `i64::MAX`. Positive starts/ends clamp
+to `[0, dimension]`; reverse starts clamp to `[0, dimension-1]` and reverse ends
+to `[-1, dimension-1]`, after adding the dimension to negative source endpoints.
+For a complete reverse, use an end of `i64::MIN`: a literal `-1` instead denotes
+the final element's index and can produce an empty selection. Empty runtime
+results still refuse.
+
+Negative strides lower to one positive Slice selecting the same samples in
+ascending order, followed by unit Slices and Concat for each axis that needs
+reversal. Mixed positive/negative strides and unsorted axes retain ONNX order.
+Singleton selections need no reversal, including an `i64::MIN` step. The exact
+expansion is `1 + sum(selected_axis_length + 1)` over reversed axes with more
+than one selected sample. Node, tensor and reserved-name bounds are checked
+before creating those helpers; large reversals may refuse with `Limit`.
+Preselection keeps intermediates at most as large as the selected tensor.
+These native copies preserve runtime sample bits without generated weights.
+Previously admitted positive-only Slice graph bytes and import-work charges
+remain unchanged. This is static shape conversion; runtime shape execution
+remains unsupported.
+
+Six reverse-slicing regressions in `onnx_structure_execution` cover literal
+mixed-axis results, all ranks one through eight, canonical export/reload,
+signed zero/subnormals/infinities/NaN payloads, an independent 1,620-case index
+walk across extreme bounds, exact resource limits, helper-name collisions and
+every import cancellation checkpoint. An empty INT64 vector remains valid
+control data for scalar Reshape; zero-sized runtime tensors remain unsupported.
 
 All embedded controls consume the same aggregate parameter-byte allowance as actual
 F32 weights, even when compilation removes them. Control names also consume tensor

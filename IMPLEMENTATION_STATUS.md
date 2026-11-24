@@ -1,10 +1,39 @@
 # Implementation status
 
-**As of:** 2026-11-23 America/New_York (dated feature sections retain their original verification scope)
+**As of:** 2026-11-24 America/New_York (dated feature sections retain their original verification scope)
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
-## Native ONNX edge and reflection padding — 2026-11-23
+## Native ONNX reverse slicing — 2026-11-24
+
+The static F32 importer now executes negative-step `Slice`, including mixed
+positive/negative strides, multiple or negative axes, clamped extreme endpoints
+and an `i64::MIN` step. Forward preselection plus bounded native Slice/Concat
+reversal preserves exact source sample bits without generated weights or new
+operators. The complete expansion is admitted before helper allocation; empty
+runtime results, zero steps and over-budget expansions retain explicit refusals.
+Previously admitted positive-only Slice graph bytes and work charges are unchanged.
+
+**Native validation passed:** all 23 scoped `onnx_structure_execution` tests
+on pinned `nightly-2026-08-31`, with `--locked --offline`. Six new feature tests
+cover literal mixed-axis selections, exact runtime bits and canonical reload
+through ranks one to eight, an independent 1,620-case endpoint/stride oracle,
+exact node/tensor/parameter/work limits, all import cancellation checkpoints and
+helper collisions. Existing structure and detector-head fixture tests also pass.
+Reproduce with `cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir
+--test onnx_structure_execution -- --test-threads=1 --skip scalar_executor::`.
+The two included scalar-module tests are filtered; the 23 feature tests invoke
+the production scalar executor. Scoped pinned formatting and independent review
+passed.
+
+A broader `fss-model-ir --lib` test attempt was interrupted by rustc SIGKILL while
+building its test binary; it produced no completed test result. Full asynchronous
+reference and release qualification were not established. The earlier clean
+`fss-core --lib` baseline passed 220 tests; that baseline is not changed-code
+qualification. FSS-139 / `fss-x4a.14.10` remains open. See
+[static controls](docs/onnx_import.md#static-tensor-controls-and-detector-heads).
+
+## Native ONNX edge and reflection padding — 2026-11-24
 
 Static F32 models can now import `Pad` modes `edge` and `reflect` under the
 existing opset 13/17/18 profiles. Negative pads crop first. Edge repeats retained

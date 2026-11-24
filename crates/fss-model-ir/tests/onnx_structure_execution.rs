@@ -458,6 +458,17 @@ fn slice(
     steps: Option<&[i64]>,
     output: &[i64],
 ) -> Vec<u8> {
+    slice_for_shape(&[3, 4], starts, ends, axes, steps, output)
+}
+
+fn slice_for_shape(
+    input: &[i64],
+    starts: &[i64],
+    ends: &[i64],
+    axes: Option<&[i64]>,
+    steps: Option<&[i64]>,
+    output: &[i64],
+) -> Vec<u8> {
     let mut body = [int_constant("starts", starts), int_constant("ends", ends)].concat();
     let mut inputs = vec!["x", "starts", "ends"];
     if let Some(values) = axes {
@@ -471,7 +482,7 @@ fn slice(
         inputs.push("steps");
     }
     body.extend(node("Slice", &inputs, "y", &[]));
-    graph(&[3, 4], output, &body)
+    graph(input, output, &body)
 }
 
 #[test]
@@ -504,6 +515,335 @@ fn slice_normalizes_negative_bounds_axes_and_clamps_extreme_endpoints() -> Test 
 }
 
 #[test]
+fn reverse_slice_executes_mixed_strides_and_unsorted_negative_axes() -> Test {
+    let input: Vec<_> = (0..12).map(|n| n as f32).collect();
+    for (source, expected) in [
+        (
+            slice(&[2], &[-4], None, Some(&[-1]), &[3, 4]),
+            vec![8., 9., 10., 11., 4., 5., 6., 7., 0., 1., 2., 3.],
+        ),
+        (
+            slice(&[-1], &[i64::MIN], Some(&[-1]), Some(&[-2]), &[3, 2]),
+            vec![3., 1., 7., 5., 11., 9.],
+        ),
+        (
+            slice(
+                &[i64::MAX, i64::MAX],
+                &[i64::MIN, i64::MIN],
+                Some(&[-1, -2]),
+                Some(&[-1, -1]),
+                &[3, 4],
+            ),
+            (0..12).rev().map(|n| n as f32).collect(),
+        ),
+        (
+            slice(&[2, 0], &[i64::MIN, 4], None, Some(&[-2, 2]), &[2, 2]),
+            vec![8., 10., 0., 2.],
+        ),
+        (
+            slice(&[0, 3], &[3, i64::MIN], None, Some(&[2, -2]), &[2, 2]),
+            vec![3., 1., 11., 9.],
+        ),
+        (
+            slice(&[2], &[i64::MIN], None, Some(&[i64::MIN]), &[1, 4]),
+            vec![8., 9., 10., 11.],
+        ),
+    ] {
+        assert_eq!(
+            execute(&import(&source)?, "x", &[3, 4], &input, "y")?,
+            expected
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn reverse_slice_preserves_runtime_bits_and_reloaded_graphs_through_rank_eight() -> Test {
+    let samples = [
+        0_u32,
+        0x8000_0000,
+        1,
+        0x8000_0001,
+        0x7f7f_ffff,
+        0xff7f_ffff,
+        0x7f80_0000,
+        0xff80_0000,
+        0x7fc0_1234,
+        0xffc0_4321,
+    ];
+    for rank in 1..=8 {
+        let dims = vec![2; rank];
+        let axes: Vec<_> = (1..=rank).map(|n| -(n as i64)).collect();
+        let source = slice_for_shape(
+            &dims,
+            &vec![i64::MAX; rank],
+            &vec![i64::MIN; rank],
+            Some(&axes),
+            Some(&vec![-1; rank]),
+            &dims,
+        );
+        let input: Vec<_> = (0..(1 << rank))
+            .map(|n| f32::from_bits(samples[n % samples.len()]))
+            .collect();
+        let expected: Vec<_> = input.iter().rev().map(|n| n.to_bits()).collect();
+        let imported = import(&source)?;
+        assert!(imported.parameters().is_empty());
+        assert_eq!(imported.runtime_inputs(), ["x"]);
+        assert_eq!(
+            execute(&imported, "x", &vec![2; rank], &input, "y")?
+                .iter()
+                .map(|n| n.to_bits())
+                .collect::<Vec<_>>(),
+            expected,
+        );
+        let artifacts = export_onnx_artifacts(&imported, OnnxExportLimits::default(), &|| false)?;
+        assert_eq!(artifacts.source(), source);
+        let graph = decode_canonical_model_ir(artifacts.graph_bytes(), artifacts.graph_digest())?;
+        assert_eq!(encode_canonical_model_ir(&graph)?, artifacts.graph_bytes());
+        let result = ScalarExecutor::run(
+            &graph,
+            &[(
+                "x".to_owned(),
+                Tensor::from_values(Shape::new(vec![2; rank])?, &input, GENERATION)?,
+            )],
+            ExecBudget::unlimited(),
+            &ScalarExecCx::new(),
+        )?;
+        assert_eq!(
+            result
+                .get_output("y")
+                .ok_or("missing output")?
+                .to_vec::<f32>()?
+                .iter()
+                .map(|n| n.to_bits())
+                .collect::<Vec<_>>(),
+            expected,
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn reverse_slice_matches_independent_index_walk_at_extreme_bounds() -> Test {
+    for length in [1_i64, 2, 3, 6, 9] {
+        let endpoints = [
+            i64::MIN,
+            -length - 1,
+            -length,
+            -1,
+            0,
+            1,
+            length - 1,
+            length,
+            i64::MAX,
+        ];
+        let input: Vec<_> = (0..length).map(|n| (n + 1) as f32).collect();
+        for start in endpoints {
+            for end in endpoints {
+                for step in [i64::MIN, -10, -2, -1] {
+                    // Walk the source coordinates directly, without computing
+                    // an output count or constructing a forward Slice.
+                    let adjusted = |value: i64| {
+                        i128::from(value) + if value < 0 { i128::from(length) } else { 0 }
+                    };
+                    let mut position = adjusted(start).clamp(0, i128::from(length - 1));
+                    let stop = adjusted(end).clamp(-1, i128::from(length - 1));
+                    let mut expected = Vec::new();
+                    while position > stop {
+                        expected.push(input[position as usize]);
+                        position += i128::from(step);
+                    }
+                    let source = slice_for_shape(
+                        &[length],
+                        &[start],
+                        &[end],
+                        None,
+                        Some(&[step]),
+                        &[expected.len().max(1) as i64],
+                    );
+                    if expected.is_empty() {
+                        refuses(&source, OnnxError::Unsupported);
+                    } else {
+                        assert_eq!(
+                            execute(&import(&source)?, "x", &[length as usize], &input, "y")?,
+                            expected,
+                            "length={length} start={start} end={end} step={step}",
+                        );
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn reverse_slice_preflights_expansion_and_honors_exact_resource_boundaries() -> Test {
+    let source = slice_for_shape(&[4], &[3], &[i64::MIN], None, Some(&[-1]), &[4]);
+    // Three control values plus x; five helpers plus the original output.
+    // One preselection, four unit slices and one concatenation.
+    let exact = OnnxLimits {
+        nodes: 6,
+        tensors: 10,
+        parameter_bytes: 24,
+        tensor_bytes: 16,
+        ..OnnxLimits::default()
+    };
+    let run = |limits| {
+        import_onnx(
+            &source,
+            ContentDigest::sha256(&source),
+            GENERATION,
+            limits,
+            &|| false,
+        )
+    };
+    let imported = run(exact)?;
+    assert_eq!(imported.graph().node_count(), 6);
+    assert!(imported.parameters().is_empty());
+    for limits in [
+        OnnxLimits { nodes: 5, ..exact },
+        OnnxLimits {
+            tensors: 9,
+            ..exact
+        },
+        OnnxLimits {
+            parameter_bytes: 23,
+            ..exact
+        },
+        OnnxLimits {
+            tensor_bytes: 15,
+            ..exact
+        },
+    ] {
+        assert_eq!(run(limits).err(), Some(OnnxError::Limit));
+    }
+    run(OnnxLimits {
+        work_units: imported.work_units(),
+        ..exact
+    })?;
+    assert_eq!(
+        run(OnnxLimits {
+            work_units: imported.work_units() - 1,
+            ..exact
+        })
+        .err(),
+        Some(OnnxError::WorkBudget),
+    );
+    let huge = slice_for_shape(
+        &[1_000_000],
+        &[i64::MAX],
+        &[i64::MIN],
+        None,
+        Some(&[-1]),
+        &[1_000_000],
+    );
+    refuses(&huge, OnnxError::Limit);
+    // The source axis length is irrelevant when the selected output is small.
+    let sparse = slice_for_shape(
+        &[1_000_000],
+        &[999_999],
+        &[i64::MIN],
+        None,
+        Some(&[-999_999]),
+        &[2],
+    );
+    assert_eq!(import(&sparse)?.graph().node_count(), 4);
+    for source in [
+        slice(&[2, 0], &[i64::MIN, 3], None, Some(&[-1, 0]), &[3, 4]),
+        slice(
+            &[2, 2],
+            &[i64::MIN, i64::MIN],
+            Some(&[0, -2]),
+            Some(&[-1, -1]),
+            &[3, 4],
+        ),
+        slice(&[2], &[i64::MIN], None, Some(&[-1]), &[2, 4]),
+    ] {
+        refuses(&source, OnnxError::Graph);
+    }
+    Ok(())
+}
+
+#[test]
+fn reverse_slice_checks_cancellation_at_every_checkpoint() -> Test {
+    let source = slice(
+        &[2, 3],
+        &[i64::MIN, i64::MIN],
+        None,
+        Some(&[-1, -1]),
+        &[3, 4],
+    );
+    let total = Cell::new(0);
+    import_onnx(
+        &source,
+        ContentDigest::sha256(&source),
+        GENERATION,
+        OnnxLimits::default(),
+        &|| {
+            total.set(total.get() + 1);
+            false
+        },
+    )?;
+    for after in 0..total.get() {
+        let calls = Cell::new(0);
+        assert_eq!(
+            import_onnx(
+                &source,
+                ContentDigest::sha256(&source),
+                GENERATION,
+                OnnxLimits::default(),
+                &|| {
+                    let n = calls.get();
+                    calls.set(n + 1);
+                    n >= after
+                }
+            )
+            .err(),
+            Some(OnnxError::Cancelled),
+            "checkpoint {after}",
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn reverse_slice_helpers_cannot_alias_a_source_output_or_satisfy_missing_values() -> Test {
+    let name = "onnx-node-0003-slice-6";
+    let controls = [
+        int_constant("starts", &[3]),
+        int_constant("ends", &[i64::MIN]),
+        int_constant("steps", &[-1]),
+    ]
+    .concat();
+    let source = model(
+        &[
+            bytes(11, &info("x", &[4], 1)),
+            bytes(12, &info(name, &[4], 1)),
+            controls.clone(),
+            node("Slice", &["x", "starts", "ends", "", "steps"], name, &[]),
+        ]
+        .concat(),
+    );
+    assert_eq!(
+        execute(&import(&source)?, "x", &[4], &[1., 2., 3., 4.], name)?,
+        [4., 3., 2., 1.]
+    );
+    let missing = model(
+        &[
+            bytes(11, &info("x", &[4], 1)),
+            bytes(12, &info("y", &[4], 1)),
+            bytes(12, &info(name, &[4], 1)),
+            controls,
+            node("Slice", &["x", "starts", "ends", "", "steps"], "y", &[]),
+        ]
+        .concat(),
+    );
+    refuses(&missing, OnnxError::Graph);
+    Ok(())
+}
+
+#[test]
 fn illegal_axes_shapes_and_slice_steps_refuse() {
     for source in [
         layout("Reshape", &[2, 3], &[6], &[-1, -1]),
@@ -520,7 +860,7 @@ fn illegal_axes_shapes_and_slice_steps_refuse() {
         refuses(&source, OnnxError::Graph);
     }
     refuses(
-        &slice(&[2], &[-4], None, Some(&[-1]), &[3, 4]),
+        &slice(&[2], &[-1], None, Some(&[-1]), &[3, 4]),
         OnnxError::Unsupported,
     );
     refuses(
