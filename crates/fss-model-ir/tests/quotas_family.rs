@@ -4,9 +4,7 @@
 
 use fss_core::{ContentDigest, Generation, ResourcePressure};
 use fss_model_ir::graph::ModelIrGraph;
-use fss_model_ir::invocation::{
-    InputBinding, InvocationError, InvocationOutcome, ModelInvocationSpec,
-};
+use fss_model_ir::invocation::{InputBinding, InvocationOutcome, ModelInvocationSpec};
 use fss_model_ir::node::GraphNode;
 use fss_model_ir::op::OpCode;
 use fss_model_ir::port::TensorPort;

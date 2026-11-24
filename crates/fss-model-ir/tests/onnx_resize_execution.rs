@@ -21,10 +21,10 @@ pub mod scalar_executor;
 pub use scalar_executor::{
     ExecBudget, ExecError, ExecOutcome, ScalarExecCx, ScalarExecutor, deterministic_sigmoid_f32,
 };
-#[path = "../../fss-reference/src/optimized_executor.rs"]
-pub mod optimized_executor;
 #[path = "onnx_resize_execution/linear.rs"]
 mod linear;
+#[path = "../../fss-reference/src/optimized_executor.rs"]
+pub mod optimized_executor;
 
 // These are only the limits, refusal variants and policy expected by the unchanged
 // production parser. All byte parsing, escaping, span checks and F32 decoding are
@@ -541,12 +541,7 @@ fn optional_inputs_sizes_and_declared_output_are_strictly_checked() {
             OnnxError::Graph,
         );
     }
-    for sizes in [
-        [2, 1, 4, 4],
-        [1, 1, 0, 4],
-        [1, 1, -4, 4],
-        [1, 1, 130, 4],
-    ] {
+    for sizes in [[2, 1, 4, 4], [1, 1, 0, 4], [1, 1, -4, 4], [1, 1, 130, 4]] {
         reject(
             &resize_graph(
                 [1, 1, 2, 2],

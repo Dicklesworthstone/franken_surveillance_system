@@ -18,8 +18,12 @@ struct Record {
 fn records(path: &Path) -> Result<Vec<Record>, &'static str> {
     let limits = SpoolLimits::new(128, 2 * 1024 * 1024, 4096, 272);
     let before = fss_object::inspect(path, &limits).map_err(|_| "history inspection refused")?;
-    if before.missing_layout || before.over_capacity || !before.report.is_clean()
-        || before.report.admitted.is_empty() || before.report.admitted.len() > 128 {
+    if before.missing_layout
+        || before.over_capacity
+        || !before.report.is_clean()
+        || before.report.admitted.is_empty()
+        || before.report.admitted.len() > 128
+    {
         return Err("history layout unavailable");
     }
     let mut ordered = BTreeMap::new();
@@ -39,10 +43,26 @@ fn records(path: &Path) -> Result<Vec<Record>, &'static str> {
         let sequence = d.u64().map_err(|_| "history envelope invalid")?;
         let previous = if d.bool().map_err(|_| "history envelope invalid")? {
             Some(d.digest().map_err(|_| "history envelope invalid")?)
-        } else { None };
+        } else {
+            None
+        };
         let payload = d.bytes().map_err(|_| "history envelope invalid")?.to_vec();
-        d.ensure_finished().map_err(|_| "history envelope invalid")?;
-        if sequence == 0 || ordered.insert(sequence, (previous, Record { root: *root, payload })).is_some() {
+        d.ensure_finished()
+            .map_err(|_| "history envelope invalid")?;
+        if sequence == 0
+            || ordered
+                .insert(
+                    sequence,
+                    (
+                        previous,
+                        Record {
+                            root: *root,
+                            payload,
+                        },
+                    ),
+                )
+                .is_some()
+        {
             return Err("history sequence invalid");
         }
     }
@@ -56,7 +76,9 @@ fn records(path: &Path) -> Result<Vec<Record>, &'static str> {
         result.push(record);
     }
     let after = fss_object::inspect(path, &limits).map_err(|_| "history reinspection refused")?;
-    if before != after { return Err("history changed during inspection"); }
+    if before != after {
+        return Err("history changed during inspection");
+    }
     Ok(result)
 }
 
@@ -73,15 +95,20 @@ pub fn source_confirmed(archive: &Path, requested: ContentDigest) -> Result<(), 
     for (index, record) in journal.iter().enumerate() {
         let mut d = CanonicalDecoder::new(&record.payload);
         if d.text().map_err(|_| "intent invalid")? != "fss.unifi-direct.av-unknown-time-intent.v1"
-            || d.digest().map_err(|_| "intent invalid")? != scope {
+            || d.digest().map_err(|_| "intent invalid")? != scope
+        {
             return Err("intent scope invalid");
         }
         let kind = d.u8().map_err(|_| "intent invalid")?;
-        let pin = if kind == 0 { None } else {
+        let pin = if kind == 0 {
+            None
+        } else {
             let root = d.digest().map_err(|_| "intent invalid")?;
             let retained = d.digest().map_err(|_| "intent invalid")?;
-            if retained != retention || d.i128().map_err(|_| "intent invalid")? != i128::MIN
-                || d.i128().map_err(|_| "intent invalid")? != i128::MAX {
+            if retained != retention
+                || d.i128().map_err(|_| "intent invalid")? != i128::MIN
+                || d.i128().map_err(|_| "intent invalid")? != i128::MAX
+            {
                 return Err("intent retention or time mismatch");
             }
             Some(root)
@@ -97,22 +124,32 @@ pub fn source_confirmed(archive: &Path, requested: ContentDigest) -> Result<(), 
             _ => return Err("intent transition invalid"),
         }
     }
-    if !matched || pending.is_some() { return Err("source intent not confirmed"); }
+    if !matched || pending.is_some() {
+        return Err("source intent not confirmed");
+    }
     let mut last = 0usize;
     for record in &keeper {
         let mut d = CanonicalDecoder::new(&record.payload);
         if d.text().map_err(|_| "keeper invalid")? != "fss.unifi-direct.av-publication-anchor.v1"
-            || d.digest().map_err(|_| "keeper invalid")? != scope {
+            || d.digest().map_err(|_| "keeper invalid")? != scope
+        {
             return Err("keeper scope invalid");
         }
-        let sequence = usize::try_from(d.u64().map_err(|_| "keeper invalid")?).map_err(|_| "keeper invalid")?;
+        let sequence = usize::try_from(d.u64().map_err(|_| "keeper invalid")?)
+            .map_err(|_| "keeper invalid")?;
         let root = d.digest().map_err(|_| "keeper invalid")?;
         d.ensure_finished().map_err(|_| "keeper invalid")?;
-        if sequence <= last || journal.get(sequence - 1).is_none_or(|record| record.root != root) {
+        if sequence <= last
+            || journal
+                .get(sequence - 1)
+                .is_none_or(|record| record.root != root)
+        {
             return Err("keeper target mismatch");
         }
         last = sequence;
     }
-    if last != journal.len() { return Err("keeper is behind intent history"); }
+    if last != journal.len() {
+        return Err("keeper is behind intent history");
+    }
     Ok(())
 }

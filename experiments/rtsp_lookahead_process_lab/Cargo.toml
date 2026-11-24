@@ -5,6 +5,9 @@ edition = "2024"
 
 [workspace]
 
+[lints.rust]
+unsafe_code = "forbid"
+
 [dev-dependencies]
 fss-cli = { path = "../../crates/fss-cli" }
 fss-container = { path = "../../crates/fss-container" }

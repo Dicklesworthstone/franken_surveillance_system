@@ -171,7 +171,7 @@ mod tests {
             Self(Vec::new())
         }
         fn pad(&mut self, n: usize) {
-            while self.0.len() % n != 0 {
+            while !self.0.len().is_multiple_of(n) {
                 self.0.push(0);
             }
         }

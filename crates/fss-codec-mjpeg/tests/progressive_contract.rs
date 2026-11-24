@@ -117,19 +117,40 @@ fn real_progressive_spectral_refinement_restart_and_sampling_pairs_match_exactly
             case.name
         );
 
+        let rgb_limits = RgbDecodeLimits::default();
+        let exact_frame = DecodeLimits {
+            maximum_bytes: case.progressive.len(),
+            maximum_dimension: case.dimensions[0].max(case.dimensions[1]),
+            maximum_pixels: (case.dimensions[0] as usize) * (case.dimensions[1] as usize),
+            maximum_markers: 64,
+        };
+        let exact_rgb_limits = RgbDecodeLimits {
+            frame: exact_frame,
+            maximum_output_bytes: exact_frame.maximum_pixels * 3,
+        };
+        let mut rgb_budget = DecodeBudget::new(exact_rgb_limits.rgb_work_bound());
         let rgb = decode_rgb(
             case.progressive,
             digest(case.progressive),
             case.color,
-            RgbDecodeLimits::default(),
-            &mut DecodeBudget::new(100_000_000),
+            exact_rgb_limits,
+            &mut rgb_budget,
         )?;
+        assert!(
+            rgb_budget.used() <= exact_rgb_limits.rgb_work_bound(),
+            "{} progressive RGB used {} > exact bound {}",
+            case.name,
+            rgb_budget.used(),
+            exact_rgb_limits.rgb_work_bound()
+        );
+        assert!(rgb_budget.used() <= rgb_limits.rgb_work_bound());
+        assert!(luma_budget.used() <= exact_frame.luma_work_bound());
         let old_rgb = decode_rgb_v1(
             case.baseline,
             digest(case.baseline),
             case.color,
-            RgbDecodeLimits::default(),
-            &mut DecodeBudget::new(100_000_000),
+            rgb_limits,
+            &mut DecodeBudget::new(rgb_limits.baseline_rgb_work_bound()),
         )?;
         assert_eq!(rgb.pixels(), old_rgb.pixels(), "{} RGB", case.name);
         assert_eq!(rgb.receipt().decoder, progressive_rgb_decoder_identity());

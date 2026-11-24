@@ -195,14 +195,13 @@ pub fn oracle(input_nchw: &[f32]) -> Vec<f32> {
         for y in 0..TARGET[0] / stride {
             for x in 0..TARGET[1] / stride {
                 let mut mean = [0.0_f64; 3];
-                for channel in 0..3 {
+                for (channel, slot) in mean.iter_mut().enumerate() {
                     for dy in 0..stride {
                         for dx in 0..stride {
                             let index = (channel * TARGET[0] + y * stride + dy) * TARGET[1]
                                 + x * stride
                                 + dx;
-                            mean[channel] +=
-                                f64::from(input_nchw[index]) / (stride * stride) as f64;
+                            *slot += f64::from(input_nchw[index]) / (stride * stride) as f64;
                         }
                     }
                 }

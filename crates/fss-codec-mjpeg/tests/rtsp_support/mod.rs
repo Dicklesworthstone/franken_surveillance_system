@@ -3,6 +3,7 @@
 
 #[path = "../../../fss-reference/src/rtsp/authentication.rs"]
 pub mod authentication;
+#[allow(dead_code)]
 #[path = "../../../fss-reference/src/rtsp/client.rs"]
 pub mod client;
 #[path = "../../../fss-reference/src/rtsp/framed.rs"]
@@ -17,6 +18,7 @@ pub mod message;
 pub mod sdp;
 #[path = "../../../fss-reference/src/rtsp/selection.rs"]
 pub mod selection;
+#[allow(dead_code, unused_imports)]
 #[path = "../../../fss-reference/src/rtsp/tcp.rs"]
 pub mod tcp;
 #[path = "../../../fss-reference/src/rtsp/uri.rs"]

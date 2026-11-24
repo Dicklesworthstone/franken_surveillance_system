@@ -183,7 +183,9 @@ impl TsExtractionReceipt {
             return Err(TsError::Limit);
         }
         let checksum = ContentDigest::sha256(&bytes);
-        bytes.try_reserve_exact(32).map_err(|_| TsError::Allocation)?;
+        bytes
+            .try_reserve_exact(32)
+            .map_err(|_| TsError::Allocation)?;
         bytes.extend_from_slice(&checksum.bytes());
         Ok(bytes)
     }
@@ -292,7 +294,11 @@ impl TsExtractionReceipt {
         }
         let limits = intersect(self.limits, current_limits);
         let video = MpegTsVideo::parse_framed_with_checkpoint(
-            source, self.framing, self.selection, limits, checkpoint,
+            source,
+            self.framing,
+            self.selection,
+            limits,
+            checkpoint,
         )?;
         let mut observed = Self::from_extraction_with_checkpoint(&video, checkpoint)?;
         // The historical policy remains part of receipt identity. Successful
@@ -312,7 +318,9 @@ impl TsExtractionReceipt {
             || self.mapping_digest.algorithm() != DigestAlgorithm::Sha256
             || self.source_bytes == 0
             || self.source_bytes > self.limits.max_input_bytes as u64
-            || !self.source_bytes.is_multiple_of(self.framing.packet_bytes() as u64)
+            || !self
+                .source_bytes
+                .is_multiple_of(self.framing.packet_bytes() as u64)
             || self.packets != self.source_bytes / self.framing.packet_bytes() as u64
             || self.packets > self.limits.max_packets as u64
             || self.psi_sections < 2
@@ -329,8 +337,14 @@ impl TsExtractionReceipt {
             || self.program == 0
             || !media_pid(self.video_pid)
             || !(media_pid(self.pcr_pid) || self.pcr_pid == 0x1fff)
-            || self.selection.program.is_some_and(|value| value != self.program)
-            || self.selection.video_pid.is_some_and(|value| value != self.video_pid)
+            || self
+                .selection
+                .program
+                .is_some_and(|value| value != self.program)
+            || self
+                .selection
+                .video_pid
+                .is_some_and(|value| value != self.video_pid)
         {
             return Err(TsError::Receipt);
         }

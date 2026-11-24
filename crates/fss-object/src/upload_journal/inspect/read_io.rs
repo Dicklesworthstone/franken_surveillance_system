@@ -158,6 +158,11 @@ fn options(directory: bool) -> OpenOptions {
         };
         options.custom_flags(nofollow | 0o4_000 | if directory { directory_flag } else { 0 });
     }
+    #[cfg(not(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    )))]
+    let _ = directory;
     options
 }
 

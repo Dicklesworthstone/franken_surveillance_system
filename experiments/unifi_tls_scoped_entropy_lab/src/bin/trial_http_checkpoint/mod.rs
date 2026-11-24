@@ -14,13 +14,17 @@ use asupersync::{
     Cx,
     io::{AsyncRead, AsyncWrite},
 };
-use fss_core::{BudgetVector, CanonicalDecoder, CanonicalEncoder, ContentDigest, RuntimeGrant, json_input::Value};
+use fss_core::{
+    BudgetVector, CanonicalDecoder, CanonicalEncoder, ContentDigest, RuntimeGrant,
+    json_input::Value,
+};
 use fss_object::{
     HostSpoolIo, SpoolLimits, StagingSpool,
     effect_journal::{EffectJournalLimits, FileEffectJournal, FileTrustedRootPinRetainer},
 };
 use fss_packet::extended_flv::stream::Framer;
 use fss_reference::unifi_direct::{
+    av_owned_sink,
     camera_api::{HandoffResponseObservation, SerializerAuthority, VideoSerializers},
     camera_http,
     http_stream::{
@@ -31,7 +35,7 @@ use fss_reference::unifi_direct::{
     listener,
     metered::MeteredClock,
     recording::Recorder,
-    av_owned_sink, recording_storage, video_bootstrap,
+    recording_storage, video_bootstrap,
 };
 use fss_runtime::{
     drained_blocking::{self, WorkOutcome},
@@ -40,17 +44,34 @@ use fss_runtime::{
     execution::TaskCx,
 };
 
-pub(super) fn response_receipt(domain: &str, prepared: ContentDigest, observation: HandoffResponseObservation) -> ContentDigest {
+pub(super) fn response_receipt(
+    domain: &str,
+    prepared: ContentDigest,
+    observation: HandoffResponseObservation,
+) -> ContentDigest {
     let mut encoder = CanonicalEncoder::new();
     encoder.text(domain);
     encoder.digest(prepared);
     match observation {
         HandoffResponseObservation::Empty => encoder.u8(0),
         HandoffResponseObservation::Other => encoder.u8(1),
-        HandoffResponseObservation::Object { success, status_code } => {
+        HandoffResponseObservation::Object {
+            success,
+            status_code,
+        } => {
             encoder.u8(2);
-            match success { None => encoder.u8(0), Some(false) => encoder.u8(1), Some(true) => encoder.u8(2) }
-            match status_code { None => encoder.u8(0), Some(value) => { encoder.u8(1); encoder.i128(i128::from(value)); } }
+            match success {
+                None => encoder.u8(0),
+                Some(false) => encoder.u8(1),
+                Some(true) => encoder.u8(2),
+            }
+            match status_code {
+                None => encoder.u8(0),
+                Some(value) => {
+                    encoder.u8(1);
+                    encoder.i128(i128::from(value));
+                }
+            }
         }
     }
     ContentDigest::sha256(&encoder.finish())
@@ -65,14 +86,22 @@ fn retain_start_response<'scope, 'task>(
     permit: &mut CommittedEffect,
     response: HandoffResponseObservation,
 ) -> Result<(), media::ResponseCustodyError> {
-    cx.checkpoint().map_err(|_| media::ResponseCustodyError::Cancelled)?;
-    let now = clock.now().map_err(|_| media::ResponseCustodyError::Cancelled)?;
+    cx.checkpoint()
+        .map_err(|_| media::ResponseCustodyError::Cancelled)?;
+    let now = clock
+        .now()
+        .map_err(|_| media::ResponseCustodyError::Cancelled)?;
     let mut cost = BudgetVector::ZERO;
     cost.storage_operations = 1;
     task.checkpoint_for(RuntimeGrant::ObjectStage, resource, now, &cost)
         .map_err(|_| media::ResponseCustodyError::Authority)?;
-    let receipt = response_receipt("fss.unifi-direct.http-start-response.v1", permit.prepared().digest(), response);
-    effects.adapter_accepted(permit, Some(receipt), now)
+    let receipt = response_receipt(
+        "fss.unifi-direct.http-start-response.v1",
+        permit.prepared().digest(),
+        response,
+    );
+    effects
+        .adapter_accepted(permit, Some(receipt), now)
         .map_err(|_| media::ResponseCustodyError::Storage)?;
     println!("trial_http_start_response=journaled response=peer_claim effect=unsettled");
     Ok(())
@@ -145,28 +174,96 @@ pub async fn start_av<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
     resource: &str,
     authorize_observation: impl Fn(std::net::Ipv4Addr, u64) -> bool,
 ) -> AvStartOutcome {
-    let AvCapture { framer, recorder, storage, retention, policy, supplied_unverified_audio, wait, chunk_bytes, max_bytes } = capture;
+    let AvCapture {
+        framer,
+        recorder,
+        storage,
+        retention,
+        policy,
+        supplied_unverified_audio,
+        wait,
+        chunk_bytes,
+        max_bytes,
+    } = capture;
     let request = media::Request {
-        plan: &checkpoint.plan, current, baseline: &checkpoint.baseline,
-        checkpoint: &checkpoint.anchored, authority, wait, framer, recorder, chunk_bytes, max_bytes,
+        plan: &checkpoint.plan,
+        current,
+        baseline: &checkpoint.baseline,
+        checkpoint: &checkpoint.anchored,
+        authority,
+        wait,
+        framer,
+        recorder,
+        chunk_bytes,
+        max_bytes,
     };
-    let inputs = Box::new(media_av_startup::Start { request, storage, retention, policy, supplied_unverified_audio });
-    let mut retain_response = |permit: &mut CommittedEffect, response: HandoffResponseObservation| {
+    let inputs = Box::new(media_av_startup::Start {
+        request,
+        storage,
+        retention,
+        policy,
+        supplied_unverified_audio,
+    });
+    let mut retain_response = |permit: &mut CommittedEffect,
+                               response: HandoffResponseObservation| {
         retain_start_response(task, cx, clock, effects, resource, permit, response)
     };
-    let state = match media_av_startup::start_with_response(task, cx, clock, http, listener, inputs, permit, authorize_observation, &mut retain_response).await {
+    let state = match media_av_startup::start_with_response(
+        task,
+        cx,
+        clock,
+        http,
+        listener,
+        inputs,
+        permit,
+        authorize_observation,
+        &mut retain_response,
+    )
+    .await
+    {
         Ok(driver) => AvStartState::Started(driver),
         Err(refusal) => match *refusal {
-            media_av_startup::StartRefusal::Preflight { reason, inputs, permit } => {
-                let media_av_startup::Start { request, storage, retention, policy, supplied_unverified_audio } = *inputs;
+            media_av_startup::StartRefusal::Preflight {
+                reason,
+                inputs,
+                permit,
+            } => {
+                let media_av_startup::Start {
+                    request,
+                    storage,
+                    retention,
+                    policy,
+                    supplied_unverified_audio,
+                } = *inputs;
                 AvStartState::Preflight {
                     reason,
-                    capture: AvCapture { framer: request.framer, recorder: request.recorder, storage, retention, policy, supplied_unverified_audio, wait: request.wait, chunk_bytes: request.chunk_bytes, max_bytes: request.max_bytes },
+                    capture: AvCapture {
+                        framer: request.framer,
+                        recorder: request.recorder,
+                        storage,
+                        retention,
+                        policy,
+                        supplied_unverified_audio,
+                        wait: request.wait,
+                        chunk_bytes: request.chunk_bytes,
+                        max_bytes: request.max_bytes,
+                    },
                     permit,
                 }
             }
-            media_av_startup::StartRefusal::Media { refusal, storage, retention, policy, supplied_unverified_audio } =>
-                AvStartState::Media { refusal, storage, retention, policy, supplied_unverified_audio },
+            media_av_startup::StartRefusal::Media {
+                refusal,
+                storage,
+                retention,
+                policy,
+                supplied_unverified_audio,
+            } => AvStartState::Media {
+                refusal,
+                storage,
+                retention,
+                policy,
+                supplied_unverified_audio,
+            },
             media_av_startup::StartRefusal::Attach(refusal) => AvStartState::Attach(refusal),
         },
     };
@@ -235,7 +332,8 @@ pub async fn start<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
         chunk_bytes,
         max_bytes,
     };
-    let mut retain_response = |permit: &mut CommittedEffect, response: HandoffResponseObservation| {
+    let mut retain_response = |permit: &mut CommittedEffect,
+                               response: HandoffResponseObservation| {
         retain_start_response(task, cx, clock, effects, resource, permit, response)
     };
     let state = match media_archive::start_with_response(
@@ -427,7 +525,10 @@ impl Authority for InspectionPolicy {
     }
 }
 
-fn open_disk(cx: &Cx, root: &Path) -> Result<(Scope, checkpoint::Retained, ContentDigest), &'static str> {
+fn open_disk(
+    cx: &Cx,
+    root: &Path,
+) -> Result<(Scope, checkpoint::Retained, ContentDigest), &'static str> {
     if !root.is_absolute() {
         return Err("checkpoint path must be absolute");
     }
@@ -493,11 +594,17 @@ fn open_disk(cx: &Cx, root: &Path) -> Result<(Scope, checkpoint::Retained, Conte
 /// name inside an authenticated checkpoint. No source-to-journal association,
 /// camera identity, effect settlement, or authorization follows from a match.
 pub async fn compare_source_name<'scope, 'task>(
-    task: &'scope TaskCx<'task>, cx: &'scope Cx, clock: MeteredClock<'scope, 'task>,
-    checkpoint_root: PathBuf, source_spool: PathBuf, source_digest: ContentDigest,
+    task: &'scope TaskCx<'task>,
+    cx: &'scope Cx,
+    clock: MeteredClock<'scope, 'task>,
+    checkpoint_root: PathBuf,
+    source_spool: PathBuf,
+    source_digest: ContentDigest,
 ) -> Result<(), &'static str> {
-    if !checkpoint_root.is_absolute() || !source_spool.is_absolute()
-        || source_digest.algorithm() != fss_core::DigestAlgorithm::Sha256 {
+    if !checkpoint_root.is_absolute()
+        || !source_spool.is_absolute()
+        || source_digest.algorithm() != fss_core::DigestAlgorithm::Sha256
+    {
         return Err("invalid source comparison inputs");
     }
     let mut cost = BudgetVector::ZERO;
@@ -505,46 +612,91 @@ pub async fn compare_source_name<'scope, 'task>(
     cost.bytes = 128 * 1024;
     for path in [&checkpoint_root, &source_spool] {
         let resource = path.to_str().ok_or("comparison path must be UTF-8")?;
-        task.checkpoint_for(RuntimeGrant::ObjectStage, resource, clock.now().map_err(|_| "comparison clock unavailable")?, &cost)
-            .map_err(|_| "comparison authority refused")?;
+        task.checkpoint_for(
+            RuntimeGrant::ObjectStage,
+            resource,
+            clock.now().map_err(|_| "comparison clock unavailable")?,
+            &cost,
+        )
+        .map_err(|_| "comparison authority refused")?;
     }
-    task.checkpoint_for(RuntimeGrant::ReadMedia, source_spool.to_str().ok_or("comparison path must be UTF-8")?,
-        clock.now().map_err(|_| "comparison clock unavailable")?, &BudgetVector::ZERO)
-        .map_err(|_| "source media authority refused")?;
+    task.checkpoint_for(
+        RuntimeGrant::ReadMedia,
+        source_spool
+            .to_str()
+            .ok_or("comparison path must be UTF-8")?,
+        clock.now().map_err(|_| "comparison clock unavailable")?,
+        &BudgetVector::ZERO,
+    )
+    .map_err(|_| "source media authority refused")?;
     let mut worker = drained_blocking::start(cx, move |child: Cx| {
         use fss_packet::extended_flv::{self, Parse, Tag};
         let (_, retained, _) = open_disk(&child, &checkpoint_root)?;
-        let bytes = fss_object::read_verified_payload(&source_spool, source_digest, 64 * 1024, &HostSpoolIo)
-            .map_err(|_| "source object unavailable or corrupt")?;
-        let tag = match Tag::parse(&bytes, extended_flv::Limits::default()).map_err(|_| "source tag invalid")? {
+        let bytes = fss_object::read_verified_payload(
+            &source_spool,
+            source_digest,
+            64 * 1024,
+            &HostSpoolIo,
+        )
+        .map_err(|_| "source object unavailable or corrupt")?;
+        let tag = match Tag::parse(&bytes, extended_flv::Limits::default())
+            .map_err(|_| "source tag invalid")?
+        {
             Parse::Complete(tag) if tag.wire_bytes().len() == bytes.len() => tag,
             _ => return Err("source tag incomplete or has trailing bytes"),
         };
         let claim = extended_flv::metadata::parse(tag).map_err(|_| "source metadata invalid")?;
-        if claim.event() != "onMetaData" { return Err("source metadata event mismatch"); }
+        if claim.event() != "onMetaData" {
+            return Err("source metadata event mismatch");
+        }
         let observed = claim.stream_name().ok_or("source stream name missing")?;
-        let matches = retained.visit(&child, &InspectionPolicy, |_, forward| {
-            let videos = forward.object()?.get("av")?.object()?.get("video")?.object()?;
-            if videos.len() != 1 { return None; }
-            let video = videos.values().next()?.object()?;
-            let expected = video.get("avSerializer")?.object()?.get("parameters")?.object()?.get("streamName")?.text()?;
-            Some(expected == observed)
-        }).map_err(|_| "checkpoint inspection refused")?;
+        let matches = retained
+            .visit(&child, &InspectionPolicy, |_, forward| {
+                let videos = forward
+                    .object()?
+                    .get("av")?
+                    .object()?
+                    .get("video")?
+                    .object()?;
+                if videos.len() != 1 {
+                    return None;
+                }
+                let video = videos.values().next()?.object()?;
+                let expected = video
+                    .get("avSerializer")?
+                    .object()?
+                    .get("parameters")?
+                    .object()?
+                    .get("streamName")?
+                    .text()?;
+                Some(expected == observed)
+            })
+            .map_err(|_| "checkpoint inspection refused")?;
         match matches {
             Some(true) => Ok(()),
             Some(false) => Err("source stream name differs from checkpoint"),
             None => Err("checkpoint stream name missing or ambiguous"),
         }
-    }).map_err(|_| "source comparison worker refused")?;
-    let receipt = match asupersync::time::timeout(cx.now(), Duration::from_secs(15), worker.join()).await {
-        Ok(receipt) => receipt.ok_or("source comparison worker already joined")?,
-        Err(_) => { worker.abort(); let _ = worker.join().await; return Err("source comparison timed out"); }
-    };
-    if receipt.runtime.is_err() { return Err("source comparison runtime failed"); }
+    })
+    .map_err(|_| "source comparison worker refused")?;
+    let receipt =
+        match asupersync::time::timeout(cx.now(), Duration::from_secs(15), worker.join()).await {
+            Ok(receipt) => receipt.ok_or("source comparison worker already joined")?,
+            Err(_) => {
+                worker.abort();
+                let _ = worker.join().await;
+                return Err("source comparison timed out");
+            }
+        };
+    if receipt.runtime.is_err() {
+        return Err("source comparison runtime failed");
+    }
     match receipt.work {
         WorkOutcome::Finished(result) => result,
         WorkOutcome::NotStarted(_) => Err("source comparison did not start"),
-        WorkOutcome::Panicked | WorkOutcome::Indeterminate => Err("source comparison outcome indeterminate"),
+        WorkOutcome::Panicked | WorkOutcome::Indeterminate => {
+            Err("source comparison outcome indeterminate")
+        }
     }
 }
 
@@ -552,53 +704,127 @@ pub async fn compare_source_name<'scope, 'task>(
 /// data, then compare the restore request against the retained journal digest.
 /// Peer selection is a caller claim; no effect, identity, or causality follows.
 pub async fn compare_restore_request<'scope, 'task>(
-    task: &'scope TaskCx<'task>, cx: &'scope Cx, clock: MeteredClock<'scope, 'task>,
-    checkpoint_root: PathBuf, peer: std::net::Ipv4Addr, expected: ContentDigest,
+    task: &'scope TaskCx<'task>,
+    cx: &'scope Cx,
+    clock: MeteredClock<'scope, 'task>,
+    checkpoint_root: PathBuf,
+    peer: std::net::Ipv4Addr,
+    expected: ContentDigest,
 ) -> Result<(), &'static str> {
-    if !checkpoint_root.is_absolute() { return Err("checkpoint path must be absolute"); }
-    let resource = checkpoint_root.to_str().ok_or("checkpoint path must be UTF-8")?;
-    let mut cost = BudgetVector::ZERO; cost.storage_operations = 32;
-    task.checkpoint_for(RuntimeGrant::ObjectStage, resource, clock.now().map_err(|_| "comparison clock unavailable")?, &cost)
-        .map_err(|_| "checkpoint comparison authority refused")?;
+    if !checkpoint_root.is_absolute() {
+        return Err("checkpoint path must be absolute");
+    }
+    let resource = checkpoint_root
+        .to_str()
+        .ok_or("checkpoint path must be UTF-8")?;
+    let mut cost = BudgetVector::ZERO;
+    cost.storage_operations = 32;
+    task.checkpoint_for(
+        RuntimeGrant::ObjectStage,
+        resource,
+        clock.now().map_err(|_| "comparison clock unavailable")?,
+        &cost,
+    )
+    .map_err(|_| "checkpoint comparison authority refused")?;
     let mut worker = drained_blocking::start(cx, move |child: Cx| {
-        use fss_reference::unifi_direct::{AudioCodec, StreamStart, VideoChannel, VideoCodec, handoff::Framing};
+        use fss_reference::unifi_direct::{
+            AudioCodec, StreamStart, VideoChannel, VideoCodec, handoff::Framing,
+        };
         let (scope, retained, _) = open_disk(&child, &checkpoint_root)?;
         let channel = match scope_claim(scope)?.3 {
-            1 => VideoChannel::Video1, 2 => VideoChannel::Video2, 3 => VideoChannel::Video3,
+            1 => VideoChannel::Video1,
+            2 => VideoChannel::Video2,
+            3 => VideoChannel::Video3,
             _ => return Err("checkpoint channel invalid"),
         };
-        let channel_name = match channel { VideoChannel::Video1 => "video1", VideoChannel::Video2 => "video2", VideoChannel::Video3 => "video3" };
-        let (name, destination) = retained.visit(&child, &InspectionPolicy, |_, forward| {
-            let videos = forward.object()?.get("av")?.object()?.get("video")?.object()?;
-            if videos.len() != 1 { return None; }
-            let serializer = videos.get(channel_name)?.object()?.get("avSerializer")?.object()?;
-            let parameters = serializer.get("parameters")?.object()?;
-            if serializer.get("type")?.text()? != "extendedFlv" || parameters.get("withOpus")?.boolean()? { return None; }
-            let name = parameters.get("streamName")?.text()?.to_owned();
-            let destinations = serializer.get("destinations")?.array()?;
-            if destinations.len() != 1 { return None; }
-            let destination = destinations[0].text()?.strip_prefix("tcp://")?
-                .strip_suffix("?retryInterval=1&connectTimeout=5")?.parse::<std::net::SocketAddrV4>().ok()?;
-            Some((name, destination))
-        }).map_err(|_| "checkpoint inspection refused")?.ok_or("forward request cannot be reconstructed")?;
-        let start = StreamStart::new(channel, destination, VideoCodec::H264, AudioCodec::Aac, &name)
-            .map_err(|_| "forward request invalid")?;
-        let matches = retained.matches_restore_request(&child, &InspectionPolicy, checkpoint::RestoreRequestClaim {
-            peer, forward: &start, generation: 1, forward_framing: Framing::ContentLength,
-            restore_framing: Framing::ContentLength, expected,
-        }).map_err(|_| "forward request or restore comparison invalid")?;
-        if !matches { return Err("restore request does not match baseline"); }
+        let channel_name = match channel {
+            VideoChannel::Video1 => "video1",
+            VideoChannel::Video2 => "video2",
+            VideoChannel::Video3 => "video3",
+        };
+        let (name, destination) = retained
+            .visit(&child, &InspectionPolicy, |_, forward| {
+                let videos = forward
+                    .object()?
+                    .get("av")?
+                    .object()?
+                    .get("video")?
+                    .object()?;
+                if videos.len() != 1 {
+                    return None;
+                }
+                let serializer = videos
+                    .get(channel_name)?
+                    .object()?
+                    .get("avSerializer")?
+                    .object()?;
+                let parameters = serializer.get("parameters")?.object()?;
+                if serializer.get("type")?.text()? != "extendedFlv"
+                    || parameters.get("withOpus")?.boolean()?
+                {
+                    return None;
+                }
+                let name = parameters.get("streamName")?.text()?.to_owned();
+                let destinations = serializer.get("destinations")?.array()?;
+                if destinations.len() != 1 {
+                    return None;
+                }
+                let destination = destinations[0]
+                    .text()?
+                    .strip_prefix("tcp://")?
+                    .strip_suffix("?retryInterval=1&connectTimeout=5")?
+                    .parse::<std::net::SocketAddrV4>()
+                    .ok()?;
+                Some((name, destination))
+            })
+            .map_err(|_| "checkpoint inspection refused")?
+            .ok_or("forward request cannot be reconstructed")?;
+        let start = StreamStart::new(
+            channel,
+            destination,
+            VideoCodec::H264,
+            AudioCodec::Aac,
+            &name,
+        )
+        .map_err(|_| "forward request invalid")?;
+        let matches = retained
+            .matches_restore_request(
+                &child,
+                &InspectionPolicy,
+                checkpoint::RestoreRequestClaim {
+                    peer,
+                    forward: &start,
+                    generation: 1,
+                    forward_framing: Framing::ContentLength,
+                    restore_framing: Framing::ContentLength,
+                    expected,
+                },
+            )
+            .map_err(|_| "forward request or restore comparison invalid")?;
+        if !matches {
+            return Err("restore request does not match baseline");
+        }
         Ok(())
-    }).map_err(|_| "restore comparison worker refused")?;
-    let receipt = match asupersync::time::timeout(cx.now(), Duration::from_secs(15), worker.join()).await {
-        Ok(receipt) => receipt.ok_or("restore comparison worker already joined")?,
-        Err(_) => { worker.abort(); let _ = worker.join().await; return Err("restore comparison timed out"); }
-    };
-    if receipt.runtime.is_err() { return Err("restore comparison runtime failed"); }
+    })
+    .map_err(|_| "restore comparison worker refused")?;
+    let receipt =
+        match asupersync::time::timeout(cx.now(), Duration::from_secs(15), worker.join()).await {
+            Ok(receipt) => receipt.ok_or("restore comparison worker already joined")?,
+            Err(_) => {
+                worker.abort();
+                let _ = worker.join().await;
+                return Err("restore comparison timed out");
+            }
+        };
+    if receipt.runtime.is_err() {
+        return Err("restore comparison runtime failed");
+    }
     match receipt.work {
         WorkOutcome::Finished(result) => result,
         WorkOutcome::NotStarted(_) => Err("restore comparison did not start"),
-        WorkOutcome::Panicked | WorkOutcome::Indeterminate => Err("restore comparison outcome indeterminate"),
+        WorkOutcome::Panicked | WorkOutcome::Indeterminate => {
+            Err("restore comparison outcome indeterminate")
+        }
     }
 }
 
@@ -607,11 +833,18 @@ pub async fn compare_restore_request<'scope, 'task>(
 /// that the source-intent journal confirmed the graph. In particular, retained
 /// temporary publication records remain an unresolved publication observation.
 pub async fn compare_ledger_source_name<'scope, 'task>(
-    task: &'scope TaskCx<'task>, cx: &'scope Cx, clock: MeteredClock<'scope, 'task>,
-    checkpoint_root: PathBuf, deployment_root: PathBuf, root: ContentDigest, require_history: bool,
+    task: &'scope TaskCx<'task>,
+    cx: &'scope Cx,
+    clock: MeteredClock<'scope, 'task>,
+    checkpoint_root: PathBuf,
+    deployment_root: PathBuf,
+    root: ContentDigest,
+    require_history: bool,
 ) -> Result<(), &'static str> {
-    if !checkpoint_root.is_absolute() || !deployment_root.is_absolute()
-        || root.algorithm() != fss_core::DigestAlgorithm::Sha256 {
+    if !checkpoint_root.is_absolute()
+        || !deployment_root.is_absolute()
+        || root.algorithm() != fss_core::DigestAlgorithm::Sha256
+    {
         return Err("invalid ledger comparison inputs");
     }
     let mut cost = BudgetVector::ZERO;
@@ -620,8 +853,13 @@ pub async fn compare_ledger_source_name<'scope, 'task>(
     for path in [&checkpoint_root, &deployment_root] {
         let resource = path.to_str().ok_or("comparison path must be UTF-8")?;
         for grant in [RuntimeGrant::ObjectStage, RuntimeGrant::ReadMedia] {
-            task.checkpoint_for(grant, resource, clock.now().map_err(|_| "comparison clock unavailable")?, &cost)
-                .map_err(|_| "comparison authority refused")?;
+            task.checkpoint_for(
+                grant,
+                resource,
+                clock.now().map_err(|_| "comparison clock unavailable")?,
+                &cost,
+            )
+            .map_err(|_| "comparison authority refused")?;
         }
     }
     let checkpoint = checkpoint_root.clone();
@@ -629,43 +867,64 @@ pub async fn compare_ledger_source_name<'scope, 'task>(
     let mut worker = drained_blocking::start(cx, move |child: Cx| {
         let (scope, _, _) = open_disk(&child, &checkpoint)?;
         let camera = scope_claim(scope)?.0;
-        let hex: String = root.bytes().iter().map(|byte| format!("{byte:02x}")).collect();
+        let hex: String = root
+            .bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
         let slot = fss_publication::SlotName::parse(&format!("uflv1-{hex}"))
             .map_err(|_| "source slot invalid")?;
         let object = fss_publication::root_reachability_object_id(&slot)
             .map_err(|_| "source ledger identity invalid")?;
         let ledger = fss_ledger::DurableReferenceLedger::inspect(
-            deployment.join("ledger/journal.fssj"), "site:http-record-trial", 2 * 1024 * 1024,
-        ).map_err(|_| "source ledger inspection refused")?;
+            deployment.join("ledger/journal.fssj"),
+            "site:http-record-trial",
+            2 * 1024 * 1024,
+        )
+        .map_err(|_| "source ledger inspection refused")?;
         if !ledger.is_clean() || ledger.status != fss_ledger::DurableLedgerStatus::Present {
             return Err("source ledger is incomplete");
         }
-        let revision = ledger.snapshot.objects.get(&object).ok_or("source root not ledgered")?;
+        let revision = ledger
+            .snapshot
+            .objects
+            .get(&object)
+            .ok_or("source root not ledgered")?;
         if revision.family != fss_publication::ROOT_REACHABILITY_FAMILY
             || revision.payload_digest != root
             || revision.validity.earliest != fss_core::TimestampNs::MIN
-            || revision.validity.latest != fss_core::TimestampNs::MAX {
+            || revision.validity.latest != fss_core::TimestampNs::MAX
+        {
             return Err("source ledger root mismatch");
         }
         let spool = deployment.join("objects/spool");
-        let read = |digest| fss_object::read_verified_payload(&spool, digest, 64 * 1024, &HostSpoolIo)
-            .map_err(|_| "source graph object unavailable or corrupt");
+        let read = |digest| {
+            fss_object::read_verified_payload(&spool, digest, 64 * 1024, &HostSpoolIo)
+                .map_err(|_| "source graph object unavailable or corrupt")
+        };
         let root_bytes = read(root)?;
         let manifest = fss_object::ObjectManifest::from_canonical_bytes(&root_bytes)
             .map_err(|_| "source manifest invalid")?;
-        if manifest.root() != root || manifest.kind() != "unifi-direct-flv-source-v1"
-            || manifest.children().len() != 2 {
+        if manifest.root() != root
+            || manifest.kind() != "unifi-direct-flv-source-v1"
+            || manifest.children().len() != 2
+        {
             return Err("source manifest mismatch");
         }
-        let metadata_digest = manifest.metadata_digest().ok_or("source metadata missing")?;
+        let metadata_digest = manifest
+            .metadata_digest()
+            .ok_or("source metadata missing")?;
         let metadata = read(metadata_digest)?;
         let mut decoder = CanonicalDecoder::new(&metadata);
-        if decoder.text().map_err(|_| "source metadata invalid")? != "fss.unifi-direct.flv-source-evidence.v1"
-            || decoder.digest().map_err(|_| "source metadata invalid")? != ContentDigest::sha256(b"unifi-http-record-trial-retention")
+        if decoder.text().map_err(|_| "source metadata invalid")?
+            != "fss.unifi-direct.flv-source-evidence.v1"
+            || decoder.digest().map_err(|_| "source metadata invalid")?
+                != ContentDigest::sha256(b"unifi-http-record-trial-retention")
             || decoder.bool().map_err(|_| "source metadata invalid")?
             || decoder.u64().map_err(|_| "source metadata invalid")? != 1
             || decoder.u64().map_err(|_| "source metadata invalid")? != 1
-            || decoder.digest().map_err(|_| "source metadata invalid")? != camera {
+            || decoder.digest().map_err(|_| "source metadata invalid")? != camera
+        {
             return Err("source metadata scope mismatch");
         }
         let disposition = decoder.u8().map_err(|_| "source metadata invalid")?;
@@ -675,31 +934,62 @@ pub async fn compare_ledger_source_name<'scope, 'task>(
         let record_kind = decoder.u8().map_err(|_| "source metadata invalid")?;
         let tag_kind = decoder.u8().map_err(|_| "source metadata invalid")?;
         let _timestamp = decoder.u32().map_err(|_| "source metadata invalid")?;
-        decoder.ensure_finished().map_err(|_| "source metadata invalid")?;
-        if disposition == 0 || disposition > 3 || offset != 13 || length == 0 || length > 64 * 1024
-            || record_kind != 1 || tag_kind != 18 || digest == metadata_digest
-            || !manifest.children().contains(&digest) {
+        decoder
+            .ensure_finished()
+            .map_err(|_| "source metadata invalid")?;
+        if disposition == 0
+            || disposition > 3
+            || offset != 13
+            || length == 0
+            || length > 64 * 1024
+            || record_kind != 1
+            || tag_kind != 18
+            || digest == metadata_digest
+            || !manifest.children().contains(&digest)
+        {
             return Err("source metadata record mismatch");
         }
         let bytes = read(digest)?;
-        if bytes.len() as u64 != length { return Err("source length mismatch"); }
+        if bytes.len() as u64 != length {
+            return Err("source length mismatch");
+        }
         if require_history {
-            let archive = deployment.parent().ok_or("source archive parent unavailable")?;
+            let archive = deployment
+                .parent()
+                .ok_or("source archive parent unavailable")?;
             super::trial_local_history::source_confirmed(archive, root)?;
         }
         Ok(digest)
-    }).map_err(|_| "ledger comparison worker refused")?;
-    let receipt = match asupersync::time::timeout(cx.now(), Duration::from_secs(15), worker.join()).await {
-        Ok(receipt) => receipt.ok_or("ledger comparison worker already joined")?,
-        Err(_) => { worker.abort(); let _ = worker.join().await; return Err("ledger comparison timed out"); }
-    };
-    if receipt.runtime.is_err() { return Err("ledger comparison runtime failed"); }
+    })
+    .map_err(|_| "ledger comparison worker refused")?;
+    let receipt =
+        match asupersync::time::timeout(cx.now(), Duration::from_secs(15), worker.join()).await {
+            Ok(receipt) => receipt.ok_or("ledger comparison worker already joined")?,
+            Err(_) => {
+                worker.abort();
+                let _ = worker.join().await;
+                return Err("ledger comparison timed out");
+            }
+        };
+    if receipt.runtime.is_err() {
+        return Err("ledger comparison runtime failed");
+    }
     let digest = match receipt.work {
         WorkOutcome::Finished(result) => result?,
         WorkOutcome::NotStarted(_) => return Err("ledger comparison did not start"),
-        WorkOutcome::Panicked | WorkOutcome::Indeterminate => return Err("ledger comparison outcome indeterminate"),
+        WorkOutcome::Panicked | WorkOutcome::Indeterminate => {
+            return Err("ledger comparison outcome indeterminate");
+        }
     };
-    compare_source_name(task, cx, clock, checkpoint_root, deployment_root.join("objects/spool"), digest).await
+    compare_source_name(
+        task,
+        cx,
+        clock,
+        checkpoint_root,
+        deployment_root.join("objects/spool"),
+        digest,
+    )
+    .await
 }
 
 // Decode only the public canonical v1 scope fields needed to bind two
@@ -743,10 +1033,16 @@ fn contains_requested(expected: &Value, actual: &Value) -> bool {
     }
 }
 
-fn compare_disk(cx: &Cx, root: &Path, observation: &Path, restored: bool) -> Result<Scope, &'static str> {
+fn compare_disk(
+    cx: &Cx,
+    root: &Path,
+    observation: &Path,
+    restored: bool,
+) -> Result<Scope, &'static str> {
     if restored {
         let before = fs::symlink_metadata(root).map_err(|_| "checkpoint directory unavailable")?;
-        let after = fs::symlink_metadata(observation).map_err(|_| "checkpoint directory unavailable")?;
+        let after =
+            fs::symlink_metadata(observation).map_err(|_| "checkpoint directory unavailable")?;
         if (before.dev(), before.ino()) == (after.dev(), after.ino()) {
             return Err("restored checkpoint must be a separate observation");
         }
@@ -794,7 +1090,11 @@ fn compare_disk(cx: &Cx, root: &Path, observation: &Path, restored: bool) -> Res
         .map_err(|_| "checkpoint comparison refused")?
         .map_err(|_| "checkpoint comparison refused")?;
     if comparison != Some(true) {
-        return Err(if restored { "restored checkpoint differs from baseline" } else { "checkpoint observations do not match the requested change" });
+        return Err(if restored {
+            "restored checkpoint differs from baseline"
+        } else {
+            "checkpoint observations do not match the requested change"
+        });
     }
     Ok(before_scope)
 }
@@ -810,7 +1110,9 @@ pub async fn inspect<'scope, 'task>(
     observation: Option<PathBuf>,
     restored: bool,
 ) -> Result<Scope, &'static str> {
-    if restored && observation.is_none() { return Err("restored comparison requires a second checkpoint"); }
+    if restored && observation.is_none() {
+        return Err("restored comparison requires a second checkpoint");
+    }
     let resource = root.to_str().ok_or("checkpoint path must be UTF-8")?;
     let mut cost = BudgetVector::ZERO;
     cost.storage_operations = if observation.is_some() { 64 } else { 32 };

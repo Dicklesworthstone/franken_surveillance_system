@@ -228,7 +228,7 @@ pub fn decode_onnx_dfl_pyramid<'a>(
         decoded_output.to_owned(),
         vec![1, rows, fields],
         graph.generation(),
-        &mut admission,
+        &admission,
     )?;
     for tensor in graph.inputs().iter().chain(graph.outputs()) {
         admission.charge(tensor.name().len() + tensor.rank())?;

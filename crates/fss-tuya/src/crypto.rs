@@ -16,7 +16,9 @@ impl Aes128 {
     /// Expands a 16-byte key (FIPS-197 §5.2).
     #[must_use]
     pub fn new(key: &[u8; 16]) -> Self {
-        Self { rk: expand_key(key) }
+        Self {
+            rk: expand_key(key),
+        }
     }
 
     /// Encrypts one 16-byte block.

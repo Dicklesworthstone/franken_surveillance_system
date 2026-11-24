@@ -10,15 +10,15 @@ use std::time::{Duration, Instant};
 
 use fss_tutk::session::{SessionConfig, SessionEvent, TutkSession};
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.len() != 8 {
         eprintln!("usage: rtsp_probe <uid> <enr> <mac> <ip> <port> <hl_cmd_hex> <json> <secs>");
         std::process::exit(2);
     }
-    let cmd = u16::from_str_radix(&args[5], 16).expect("hl cmd hex");
-    let peer: std::net::SocketAddr = format!("{}:{}", args[3], args[4]).parse().expect("peer");
-    let secs: u64 = args[7].parse().expect("secs");
+    let cmd = u16::from_str_radix(&args[5], 16)?;
+    let peer: std::net::SocketAddr = format!("{}:{}", args[3], args[4]).parse()?;
+    let secs: u64 = args[7].parse()?;
 
     let cfg = SessionConfig {
         uid: args[0].clone(),
@@ -33,13 +33,12 @@ fn main() {
             ("HL_CAM4".to_string(), "4.52.9.6119".to_string()),
         ],
     };
-    let mut session = TutkSession::new(cfg).expect("session");
+    let mut session = TutkSession::new(cfg).ok_or("invalid TUTK session config")?;
     let bind = std::env::var("TUTK_BIND_PORT")
         .map(|p| format!("0.0.0.0:{p}"))
         .unwrap_or_else(|_| "0.0.0.0:0".to_owned());
-    let sock = UdpSocket::bind(&bind).expect("bind");
-    sock.set_read_timeout(Some(Duration::from_millis(5)))
-        .expect("timeout");
+    let sock = UdpSocket::bind(&bind)?;
+    sock.set_read_timeout(Some(Duration::from_millis(5)))?;
     let mut peer = peer;
 
     let t0 = Instant::now();
@@ -84,29 +83,28 @@ fn main() {
                 other => println!("event {other:?}"),
             }
         }
-        if !sent {
-            if let Some(at) = streamed_at {
-                if at.elapsed() > Duration::from_millis(400) {
-                    let payload = match args[6].strip_prefix("hex:") {
-                        Some(h) => (0..h.len())
-                            .step_by(2)
-                            .map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap())
-                            .collect::<Vec<u8>>(),
-                        None => args[6].as_bytes().to_vec(),
-                    };
-                    if let Some(rest) = args[6].strip_prefix("raw:") {
-                        let bytes = (0..rest.len())
-                            .step_by(2)
-                            .map(|i| u8::from_str_radix(&rest[i..i + 2], 16).unwrap())
-                            .collect::<Vec<u8>>();
-                        session.send_raw_appdata(&bytes);
-                    } else {
-                        session.send_ioctl(cmd, &payload);
-                    }
-                    sent = true;
-                    println!("sent hl {cmd:#06x}");
-                }
+        if !sent
+            && let Some(at) = streamed_at
+            && at.elapsed() > Duration::from_millis(400)
+        {
+            let payload = match args[6].strip_prefix("hex:") {
+                Some(h) => (0..h.len())
+                    .step_by(2)
+                    .map(|i| u8::from_str_radix(&h[i..i + 2], 16))
+                    .collect::<Result<Vec<u8>, _>>()?,
+                None => args[6].as_bytes().to_vec(),
+            };
+            if let Some(rest) = args[6].strip_prefix("raw:") {
+                let bytes = (0..rest.len())
+                    .step_by(2)
+                    .map(|i| u8::from_str_radix(&rest[i..i + 2], 16))
+                    .collect::<Result<Vec<u8>, _>>()?;
+                session.send_raw_appdata(&bytes);
+            } else {
+                session.send_ioctl(cmd, &payload);
             }
+            sent = true;
+            println!("sent hl {cmd:#06x}");
         }
         if sent && extra_i < extra_cmds.len() {
             let now = Instant::now();
@@ -131,4 +129,5 @@ fn main() {
         let _ = sock.send_to(&d, peer);
     }
     println!("done");
+    Ok(())
 }

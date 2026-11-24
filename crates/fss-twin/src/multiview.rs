@@ -88,30 +88,52 @@ pub struct FusedScenePoint {
 }
 impl FusedScenePoint {
     /// Exact association and temporal assumptions, including the motion-evidence handle.
-    pub fn request(&self) -> FusionRequest { self.request }
+    pub fn request(&self) -> FusionRequest {
+        self.request
+    }
     /// Original inputs in canonical camera order. Calibration error remains attached.
-    pub fn inputs(&self) -> &[FusionInput] { &self.inputs }
+    pub fn inputs(&self) -> &[FusionInput] {
+        &self.inputs
+    }
     /// Nominal reference-time position. Covariance covers only the declared pixel
     /// noise model, not clock, motion, correspondence, rectangle or calibration error.
-    pub fn estimate(&self) -> &TriangulatedPoint { &self.estimate }
+    pub fn estimate(&self) -> &TriangulatedPoint {
+        &self.estimate
+    }
     /// Diagnostics for all cameras; conflicting views are never silently erased.
-    pub fn visibility(&self) -> &[FusionVisibility] { &self.visibility }
+    pub fn visibility(&self) -> &[FusionVisibility] {
+        &self.visibility
+    }
     /// Earliest to latest possible capture time, not the intersection of intervals.
-    pub fn capture_hull(&self) -> [u64; 2] { self.capture_hull }
+    pub fn capture_hull(&self) -> [u64; 2] {
+        self.capture_hull
+    }
     /// Exact shared capture-clock generation.
-    pub fn clock(&self) -> u64 { self.clock }
+    pub fn clock(&self) -> u64 {
+        self.clock
+    }
     /// Exact owner-resolved property and mesh revision.
-    pub fn geometry(&self) -> GeometryBasis { self.geometry }
+    pub fn geometry(&self) -> GeometryBasis {
+        self.geometry
+    }
     /// Exact imported package identity, retained for replay/invalidation.
-    pub fn twin_digest(&self) -> [u8; 32] { self.twin_digest }
+    pub fn twin_digest(&self) -> [u8; 32] {
+        self.twin_digest
+    }
     /// Original scale evidence. Coordinates have not been silently converted to metres.
-    pub fn scale(&self) -> ScaleEvidence { self.scale }
+    pub fn scale(&self) -> ScaleEvidence {
+        self.scale
+    }
     /// Map error declaration; unknown remains unknown and is not included in covariance.
-    pub fn map_error(&self) -> Option<f64> { self.map_error }
+    pub fn map_error(&self) -> Option<f64> {
+        self.map_error
+    }
     /// A fitting camera sees the nominal point through an opaque imported surface.
     /// This flags disagreement; it does not discard evidence or prove the map correct.
     pub fn has_nominal_occlusion_conflict(&self) -> bool {
-        self.visibility.iter().any(|v| v.inlier && v.nominal_occluded == Some(true))
+        self.visibility
+            .iter()
+            .any(|v| v.inlier && v.nominal_occluded == Some(true))
     }
 }
 
@@ -138,13 +160,19 @@ pub enum FusionError {
     ContactUnknown,
 }
 impl From<TwinError> for FusionError {
-    fn from(error: TwinError) -> Self { Self::Twin(error) }
+    fn from(error: TwinError) -> Self {
+        Self::Twin(error)
+    }
 }
 impl From<GeometryError> for FusionError {
-    fn from(error: GeometryError) -> Self { Self::Twin(TwinError::Geometry(error)) }
+    fn from(error: GeometryError) -> Self {
+        Self::Twin(TwinError::Geometry(error))
+    }
 }
 impl From<TriangulationError> for FusionError {
-    fn from(error: TriangulationError) -> Self { Self::Triangulation(error) }
+    fn from(error: TriangulationError) -> Self {
+        Self::Triangulation(error)
+    }
 }
 impl std::fmt::Display for FusionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -204,9 +232,7 @@ pub fn fuse_scene_point(
     let velocity = match request.motion {
         CommonPointMotion::Static => [0.0; 3],
         CommonPointMotion::Linear { velocity, evidence } => {
-            if evidence == [0; 32]
-                || velocity.iter().any(|v| !v.is_finite() || v.abs() > 1e9)
-            {
+            if evidence == [0; 32] || velocity.iter().any(|v| !v.is_finite() || v.abs() > 1e9) {
                 return Err(FusionError::Motion);
             }
             velocity
@@ -214,7 +240,9 @@ pub fn fuse_scene_point(
     };
     budget.charge(256 * inputs.len() as u64)?;
     let mut ordered = Vec::new();
-    ordered.try_reserve_exact(inputs.len()).map_err(|_| TwinError::Limit)?;
+    ordered
+        .try_reserve_exact(inputs.len())
+        .map_err(|_| TwinError::Limit)?;
     ordered.extend_from_slice(inputs);
     ordered.sort_by_key(|input| input.camera.camera);
     let clock = ordered[0].camera.clock;
@@ -240,7 +268,9 @@ pub fn fuse_scene_point(
         return Err(FusionError::CaptureWindow);
     }
     let mut views = Vec::new();
-    views.try_reserve_exact(ordered.len()).map_err(|_| TwinError::Limit)?;
+    views
+        .try_reserve_exact(ordered.len())
+        .map_err(|_| TwinError::Limit)?;
     for input in &ordered {
         budget.charge(128)?;
         let camera = input.camera;
@@ -260,7 +290,9 @@ pub fn fuse_scene_point(
     }
     let estimate = triangulate(&views, request.triangulation, budget)?;
     let mut visibility = Vec::new();
-    visibility.try_reserve_exact(ordered.len()).map_err(|_| TwinError::Limit)?;
+    visibility
+        .try_reserve_exact(ordered.len())
+        .map_err(|_| TwinError::Limit)?;
     for (input, residual) in ordered.iter().zip(&estimate.residuals) {
         budget.charge(128)?;
         let dt = capture_offset(input.observation.capture, request.reference_time_ns);
@@ -271,7 +303,11 @@ pub fn fuse_scene_point(
             .hypot(point[2] - center[2]);
         let nominal_occluded = if residual.pixels.is_some() {
             Some(twin.mesh().segment_occluded(
-                twin.basis(), center, point, distance * 1e-8, budget,
+                twin.basis(),
+                center,
+                point,
+                distance * 1e-8,
+                budget,
             )?)
         } else {
             None
@@ -284,9 +320,16 @@ pub fn fuse_scene_point(
     }
     budget.charge(0)?;
     Ok(FusedScenePoint {
-        request, inputs: ordered, estimate, visibility, capture_hull: hull, clock,
-        geometry: twin.basis(), twin_digest: twin.digest(),
-        map_error: twin.geometry_error(), scale: twin.scale(),
+        request,
+        inputs: ordered,
+        estimate,
+        visibility,
+        capture_hull: hull,
+        clock,
+        geometry: twin.basis(),
+        twin_digest: twin.digest(),
+        map_error: twin.geometry_error(),
+        scale: twin.scale(),
     })
 }
 
@@ -308,23 +351,37 @@ fn validate_input(
     if input.privacy_domain != privacy {
         return Err(FusionError::PrivacyDomain);
     }
-    if c.geometry != twin.basis() || c.camera == 0 || c.calibration == 0
-        || c.image_domain == 0 || c.clock == 0 || c.clock != clock
-        || o.camera != c.camera || o.image_domain != c.image_domain || o.clock != c.clock
-        || c.validity[0] > c.validity[1] || o.capture[0] > o.capture[1]
-        || o.capture[0] < c.validity[0] || o.capture[1] > c.validity[1]
+    if c.geometry != twin.basis()
+        || c.camera == 0
+        || c.calibration == 0
+        || c.image_domain == 0
+        || c.clock == 0
+        || c.clock != clock
+        || o.camera != c.camera
+        || o.image_domain != c.image_domain
+        || o.clock != c.clock
+        || c.validity[0] > c.validity[1]
+        || o.capture[0] > o.capture[1]
+        || o.capture[0] < c.validity[0]
+        || o.capture[1] > c.validity[1]
     {
         return Err(FusionError::Basis);
     }
-    if o.evidence == [0; 32] || o.track == 0 || o.exposure == 0
-        || !c.intrinsics.contains(o.pixel_min) || !c.intrinsics.contains(o.pixel_max)
+    if o.evidence == [0; 32]
+        || o.track == 0
+        || o.exposure == 0
+        || !c.intrinsics.contains(o.pixel_min)
+        || !c.intrinsics.contains(o.pixel_max)
         || (0..2).any(|i| o.pixel_min[i] > o.pixel_max[i])
-        || !input.sigma_pixels.is_finite() || !(1e-3..=1e3).contains(&input.sigma_pixels)
+        || !input.sigma_pixels.is_finite()
+        || !(1e-3..=1e3).contains(&input.sigma_pixels)
         || c.error.is_some_and(|error| !error.valid_for(c.intrinsics))
     {
         return Err(FusionError::Observation);
     }
-    if !o.visible_contact { return Err(FusionError::ContactUnknown); }
+    if !o.visible_contact {
+        return Err(FusionError::ContactUnknown);
+    }
     Ok(())
 }
 
@@ -340,53 +397,107 @@ mod tests {
     fn twin(opaque: bool) -> PropertyTwin {
         let basis = GeometryBasis::new(1, 1).unwrap();
         let vertices = vec![[-10.0, -10.0, 4.0], [10.0, -10.0, 4.0], [0.0, 10.0, 4.0]];
-        let triangles = vec![IndexedTriangle { vertices: [0, 1, 2], feature: 1, support: false, opaque }];
-        let mesh = TriangleMesh::from_indexed(basis, &vertices, &triangles,
-            MeshLimits::default(), &mut WorkBudget::new(100)).unwrap();
+        let triangles = vec![IndexedTriangle {
+            vertices: [0, 1, 2],
+            feature: 1,
+            support: false,
+            opaque,
+        }];
+        let mesh = TriangleMesh::from_indexed(
+            basis,
+            &vertices,
+            &triangles,
+            MeshLimits::default(),
+            &mut WorkBudget::new(100),
+        )
+        .unwrap();
         PropertyTwin {
-            mesh, vertices, triangles, triangle_objects: vec![0],
-            objects: vec![TwinObject { id: "wall".into(), feature: 0, support: false, opaque }],
-            features: vec![TwinFeature { id: "wall".into(), surface: SurfaceKind::Structure }],
-            digest: [2; 32], source: [3; 32], scope: "test".into(), epoch: "test".into(),
-            scale: ScaleEvidence::Relative, geometry_error: None,
+            mesh,
+            vertices,
+            triangles,
+            triangle_objects: vec![0],
+            objects: vec![TwinObject {
+                id: "wall".into(),
+                feature: 0,
+                support: false,
+                opaque,
+            }],
+            features: vec![TwinFeature {
+                id: "wall".into(),
+                surface: SurfaceKind::Structure,
+            }],
+            digest: [2; 32],
+            source: [3; 32],
+            scope: "test".into(),
+            epoch: "test".into(),
+            scale: ScaleEvidence::Relative,
+            geometry_error: None,
         }
     }
     fn input(id: u64, point: [f64; 3], capture: [u64; 2]) -> FusionInput {
-        let center = if id == 1 { [-2.0, 0.0, 0.0] } else { [2.0, 0.0, 0.0] };
+        let center = if id == 1 {
+            [-2.0, 0.0, 0.0]
+        } else {
+            [2.0, 0.0, 0.0]
+        };
         let pose = RigidPose::from_center(IDENTITY, center).unwrap();
         let intrinsics = PinholeIntrinsics::new(1280, 720, 800.0, 800.0, 640.0, 360.0).unwrap();
         let pixel = pose.project(intrinsics, point).unwrap();
         FusionInput {
             camera: TrackingCamera {
-                geometry: GeometryBasis::new(1, 1).unwrap(), camera: id, calibration: 2,
-                image_domain: id + 10, clock: 7, validity: [0, u64::MAX], pose, intrinsics, error: None,
+                geometry: GeometryBasis::new(1, 1).unwrap(),
+                camera: id,
+                calibration: 2,
+                image_domain: id + 10,
+                clock: 7,
+                validity: [0, u64::MAX],
+                pose,
+                intrinsics,
+                error: None,
             },
             observation: ContactObservation {
-                evidence: [id as u8; 32], track: id, camera: id, exposure: 1,
-                image_domain: id + 10, clock: 7, capture,
-                pixel_min: pixel, pixel_max: pixel, visible_contact: true,
+                evidence: [id as u8; 32],
+                track: id,
+                camera: id,
+                exposure: 1,
+                image_domain: id + 10,
+                clock: 7,
+                capture,
+                pixel_min: pixel,
+                pixel_max: pixel,
+                visible_contact: true,
             },
-            privacy_domain: 9, sigma_pixels: 1.0,
+            privacy_domain: 9,
+            sigma_pixels: 1.0,
         }
     }
     fn request() -> FusionRequest {
         FusionRequest {
-            association_evidence: [8; 32], privacy_domain: 9,
-            reference_time_ns: 1_000_000_000, max_capture_span_ns: 200_000_000,
-            motion: CommonPointMotion::Static, triangulation: TriangulationOptions::default(),
+            association_evidence: [8; 32],
+            privacy_domain: 9,
+            reference_time_ns: 1_000_000_000,
+            max_capture_span_ns: 200_000_000,
+            motion: CommonPointMotion::Static,
+            triangulation: TriangulationOptions::default(),
         }
     }
     fn inputs() -> Vec<FusionInput> {
-        vec![input(1, [0.0, 0.0, 8.0], [1_000_000_000; 2]),
-             input(2, [0.0, 0.0, 8.0], [1_000_000_000; 2])]
+        vec![
+            input(1, [0.0, 0.0, 8.0], [1_000_000_000; 2]),
+            input(2, [0.0, 0.0, 8.0], [1_000_000_000; 2]),
+        ]
     }
-    fn solve(twin: &PropertyTwin, inputs: &[FusionInput], request: FusionRequest)
-        -> Result<FusedScenePoint, FusionError>
-    {
+    fn solve(
+        twin: &PropertyTwin,
+        inputs: &[FusionInput],
+        request: FusionRequest,
+    ) -> Result<FusedScenePoint, FusionError> {
         fuse_scene_point(twin, inputs, request, &mut WorkBudget::new(1_000_000))
     }
     fn near(actual: [f64; 3], expected: [f64; 3]) {
-        for i in 0..3 { assert!((actual[i] - expected[i]).abs() < 1e-7); }
+        for i in 0..3 {
+            assert!((actual[i] - expected[i]).abs() < 1e-7);
+        }
     }
 
     #[test]
@@ -405,16 +516,26 @@ mod tests {
         let result = solve(&twin(true), &inputs(), request()).unwrap();
         assert!(result.estimate().rms_reprojection_pixels < 1e-8);
         assert!(result.has_nominal_occlusion_conflict());
-        assert!(result.visibility().iter().all(|v| v.nominal_occluded == Some(true)));
+        assert!(
+            result
+                .visibility()
+                .iter()
+                .all(|v| v.nominal_occluded == Some(true))
+        );
         assert_eq!(result.inputs().len(), 2);
     }
 
     #[test]
     fn compensates_asynchronous_motion_in_world_coordinates() {
         let mut req = request();
-        req.motion = CommonPointMotion::Linear { velocity: [2.0, 0.0, 0.0], evidence: [4; 32] };
-        let views = [input(1, [-0.2, 0.0, 8.0], [900_000_000; 2]),
-                     input(2, [0.2, 0.0, 8.0], [1_100_000_000; 2])];
+        req.motion = CommonPointMotion::Linear {
+            velocity: [2.0, 0.0, 0.0],
+            evidence: [4; 32],
+        };
+        let views = [
+            input(1, [-0.2, 0.0, 8.0], [900_000_000; 2]),
+            input(2, [0.2, 0.0, 8.0], [1_100_000_000; 2]),
+        ];
         let result = solve(&twin(false), &views, req).unwrap();
         near(result.estimate().position, [0.0, 0.0, 8.0]);
         assert_eq!(result.capture_hull(), [900_000_000, 1_100_000_000]);
@@ -428,12 +549,18 @@ mod tests {
         let mut views = inputs();
         views[0].observation.capture = [800_000_000, 1_050_000_000];
         views[1].observation.capture = [950_000_000, 1_200_000_000];
-        assert!(matches!(solve(&twin(false), &views, request()), Err(FusionError::CaptureWindow)));
+        assert!(matches!(
+            solve(&twin(false), &views, request()),
+            Err(FusionError::CaptureWindow)
+        ));
     }
 
     #[test]
     fn exact_integer_timestamp_offsets_survive_near_u64_max() {
-        assert_eq!(capture_offset([u64::MAX - 5, u64::MAX - 3], u64::MAX - 4), 0.0);
+        assert_eq!(
+            capture_offset([u64::MAX - 5, u64::MAX - 3], u64::MAX - 4),
+            0.0
+        );
         assert!((capture_offset([u64::MAX; 2], u64::MAX - 4) - 4e-9).abs() < 1e-20);
     }
 
@@ -442,15 +569,24 @@ mod tests {
         let map = twin(false);
         let mut views = inputs();
         views[1].privacy_domain = 10;
-        assert!(matches!(solve(&map, &views, request()), Err(FusionError::PrivacyDomain)));
+        assert!(matches!(
+            solve(&map, &views, request()),
+            Err(FusionError::PrivacyDomain)
+        ));
         views[1].privacy_domain = 9;
         views[1].camera.clock = 8;
         views[1].observation.clock = 8;
-        assert!(matches!(solve(&map, &views, request()), Err(FusionError::Basis)));
+        assert!(matches!(
+            solve(&map, &views, request()),
+            Err(FusionError::Basis)
+        ));
         views[1].camera.clock = 7;
         views[1].observation.clock = 7;
         views[1].camera.validity[1] = 999_999_999;
-        assert!(matches!(solve(&map, &views, request()), Err(FusionError::Basis)));
+        assert!(matches!(
+            solve(&map, &views, request()),
+            Err(FusionError::Basis)
+        ));
     }
 
     #[test]
@@ -458,10 +594,16 @@ mod tests {
         let map = twin(false);
         let mut views = inputs();
         views[1].observation.evidence = views[0].observation.evidence;
-        assert!(matches!(solve(&map, &views, request()), Err(FusionError::DuplicateEvidence)));
+        assert!(matches!(
+            solve(&map, &views, request()),
+            Err(FusionError::DuplicateEvidence)
+        ));
         views[1].observation.evidence = [2; 32];
         views[1].observation.visible_contact = false;
-        assert!(matches!(solve(&map, &views, request()), Err(FusionError::ContactUnknown)));
+        assert!(matches!(
+            solve(&map, &views, request()),
+            Err(FusionError::ContactUnknown)
+        ));
     }
 
     #[test]
@@ -480,10 +622,24 @@ mod tests {
     fn cancellation_and_budget_exhaustion_never_return_partial_receipt() {
         let map = twin(false);
         let cancelled = AtomicBool::new(true);
-        let result = fuse_scene_point(&map, &inputs(), request(),
-            &mut WorkBudget::cancellable(1_000_000, &cancelled));
-        assert!(matches!(result, Err(FusionError::Twin(TwinError::Geometry(GeometryError::Cancelled)))));
+        let result = fuse_scene_point(
+            &map,
+            &inputs(),
+            request(),
+            &mut WorkBudget::cancellable(1_000_000, &cancelled),
+        );
+        assert!(matches!(
+            result,
+            Err(FusionError::Twin(TwinError::Geometry(
+                GeometryError::Cancelled
+            )))
+        ));
         let result = fuse_scene_point(&map, &inputs(), request(), &mut WorkBudget::new(0));
-        assert!(matches!(result, Err(FusionError::Twin(TwinError::Geometry(GeometryError::BudgetExhausted)))));
+        assert!(matches!(
+            result,
+            Err(FusionError::Twin(TwinError::Geometry(
+                GeometryError::BudgetExhausted
+            )))
+        ));
     }
 }

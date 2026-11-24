@@ -342,12 +342,7 @@ fn native_ceil_geometry_refuses_empty_inputs_and_checks_full_width_arithmetic() 
     attrs.insert("padding".into(), AttrValue::IntList(vec![1; 4]));
     attrs.insert("ceil_mode".into(), AttrValue::Bool(true));
     for shape in [[1, 1, 0, 2], [1, 1, 2, 0]] {
-        let input = TensorPort::new(
-            "input",
-            DType::F32,
-            Shape::new(shape.to_vec())?,
-            GENERATION,
-        )?;
+        let input = TensorPort::new("input", DType::F32, Shape::new(shape.to_vec())?, GENERATION)?;
         assert!(matches!(
             fss_model_ir::infer_operator_outputs(
                 "pool",

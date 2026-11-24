@@ -119,6 +119,7 @@ impl OnvifMetadataReceiver {
     /// Validate one owner stream and independent transport/document limits.
     /// The caller must independently select uncompressed `vnd.onvif.metadata/90000`.
     /// Compressed gzip/EXI encodings must not be admitted through this receiver.
+    #[allow(clippy::result_large_err)]
     pub fn new(
         key: StreamKey,
         payload_type: u8,
@@ -169,6 +170,7 @@ impl OnvifMetadataReceiver {
     }
 
     /// Admit a complete datagram whose receipt and processing time coincide.
+    #[allow(clippy::result_large_err)]
     pub fn ingest(
         &mut self,
         key: StreamKey,
@@ -183,6 +185,7 @@ impl OnvifMetadataReceiver {
     /// Capacity, wrong-owner/payload and time refusals are transactional. Malformed
     /// RTP framing or a conflicting queued duplicate closes the receiver and retires
     /// both derivatives explicitly; no later packet can bridge that ambiguity.
+    #[allow(clippy::result_large_err)]
     pub fn ingest_received(
         &mut self,
         key: StreamKey,
@@ -219,6 +222,7 @@ impl OnvifMetadataReceiver {
 
     /// Perform one bounded progress step. Expiry is reported before consuming a
     /// queued packet, so the following poll can retain that exact original source.
+    #[allow(clippy::result_large_err)]
     pub fn poll(
         &mut self,
         now_ns: u64,
@@ -302,6 +306,7 @@ impl OnvifMetadataReceiver {
     }
     /// Construct a fresh receiver only for the same ingress and strictly newer epoch.
     /// The old owner must separately drain/cancel this instance and retain its receipts.
+    #[allow(clippy::result_large_err)]
     pub fn restart(
         &self,
         key: StreamKey,
@@ -322,6 +327,7 @@ impl OnvifMetadataReceiver {
             ended: false,
         })
     }
+    #[allow(clippy::result_large_err)]
     fn check_time(&self, now_ns: u64) -> Result<(), OnvifMetadataReceiveError> {
         if now_ns < self.last_now_ns {
             return Err(OnvifMetadataReceiveError::Transport(

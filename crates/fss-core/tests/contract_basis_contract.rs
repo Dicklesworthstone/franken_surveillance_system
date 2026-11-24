@@ -460,38 +460,110 @@ fn test_planted_bypass_stale_basis_superseded_ontology() -> Result<(), Box<dyn E
 
 #[test]
 fn test_planted_bypass_stale_anchor_refusal() -> Result<(), Box<dyn Error>> {
-    // Case 1: valid_at is not strictly older than current (same epoch and sequence)
-    let mut anchor_a = LedgerAnchor::genesis("site:delta");
-    anchor_a.ledger_epoch = 1;
-    anchor_a.commit_sequence = 100;
-    let mut anchor_b = LedgerAnchor::genesis("site:delta");
-    anchor_b.ledger_epoch = 1;
-    anchor_b.commit_sequence = 100;
-    let res1 = refuse_stale_anchor(&anchor_a, &anchor_b);
-    let err1 = res1.err().ok_or("expected stale anchor error")?;
-    assert_eq!(err1.error_id(), "ERR-AGENT-SESSION-STALE-001");
+    let mut current = LedgerAnchor::genesis("site:delta");
+    current.ledger_epoch = 1;
+    current.commit_sequence = 100;
+    current.state_root = ContentDigest::sha256(b"state:100");
 
-    // Case 2: valid_at is newer than current
-    let mut anchor_future = LedgerAnchor::genesis("site:delta");
-    anchor_future.ledger_epoch = 1;
-    anchor_future.commit_sequence = 105;
-    let res2 = refuse_stale_anchor(&anchor_future, &anchor_b);
-    let err2 = res2.err().ok_or("expected stale anchor error")?;
-    assert_eq!(err2.error_id(), "ERR-AGENT-SESSION-STALE-001");
+    // Case 1: exact current anchor succeeds.
+    assert!(refuse_stale_anchor(&current, &current).is_ok());
 
-    // Case 3: divergent site lineage
-    let mut anchor_other_site = LedgerAnchor::genesis("site:divergent");
-    anchor_other_site.ledger_epoch = 1;
-    anchor_other_site.commit_sequence = 50;
-    let res3 = refuse_stale_anchor(&anchor_other_site, &anchor_b);
-    let err3 = res3.err().ok_or("expected lineage divergence error")?;
-    assert_eq!(err3.error_id(), "ERR-AGENT-SESSION-STALE-001");
+    // Case 2: strictly older (stale) anchor is refused (F2).
+    let mut stale_seq = current.clone();
+    stale_seq.commit_sequence = 99;
+    let err_stale = refuse_stale_anchor(&stale_seq, &current)
+        .err()
+        .ok_or("stale sequence must be refused")?;
+    assert_eq!(err_stale.error_id(), "ERR-AGENT-SESSION-STALE-001");
 
-    // Case 4: strictly older anchor succeeds
-    let mut anchor_older = LedgerAnchor::genesis("site:delta");
-    anchor_older.ledger_epoch = 1;
-    anchor_older.commit_sequence = 99;
-    assert!(refuse_stale_anchor(&anchor_older, &anchor_b).is_ok());
+    let mut stale_epoch = current.clone();
+    stale_epoch.ledger_epoch = 0;
+    stale_epoch.commit_sequence = 999;
+    let err_epoch = refuse_stale_anchor(&stale_epoch, &current)
+        .err()
+        .ok_or("stale epoch must be refused")?;
+    assert_eq!(err_epoch.error_id(), "ERR-AGENT-SESSION-STALE-001");
+
+    // Case 3: candidate ahead of current is refused.
+    let mut future = current.clone();
+    future.commit_sequence = 105;
+    let err_future = refuse_stale_anchor(&future, &current)
+        .err()
+        .ok_or("future anchor must be refused")?;
+    assert_eq!(err_future.error_id(), "ERR-AGENT-SESSION-STALE-001");
+
+    // Case 4: equal (epoch, seq) with divergent state_root or control epochs is refused (F2).
+    let mut forked_state = current.clone();
+    forked_state.state_root = ContentDigest::sha256(b"state:forked");
+    let err_fork_state = refuse_stale_anchor(&forked_state, &current)
+        .err()
+        .ok_or("divergent state_root must be refused")?;
+    assert_eq!(err_fork_state.error_id(), "ERR-AGENT-SESSION-STALE-001");
+
+    let mut drifted_policy = current.clone();
+    drifted_policy.policy_epoch = current.policy_epoch.saturating_add(1);
+    let err_policy = refuse_stale_anchor(&drifted_policy, &current)
+        .err()
+        .ok_or("divergent policy_epoch must be refused")?;
+    assert_eq!(err_policy.error_id(), "ERR-AGENT-SESSION-STALE-001");
+
+    let mut drifted_privacy = current.clone();
+    drifted_privacy.privacy_epoch = current.privacy_epoch.saturating_add(1);
+    let err_privacy = refuse_stale_anchor(&drifted_privacy, &current)
+        .err()
+        .ok_or("divergent privacy_epoch must be refused")?;
+    assert_eq!(err_privacy.error_id(), "ERR-AGENT-SESSION-STALE-001");
+
+    // Case 5: divergent site lineage is refused.
+    let mut other_site = current.clone();
+    other_site.site_lineage = "site:divergent".to_owned();
+    let err_site = refuse_stale_anchor(&other_site, &current)
+        .err()
+        .ok_or("divergent site lineage must be refused")?;
+    assert_eq!(err_site.error_id(), "ERR-AGENT-SESSION-STALE-001");
+
+    Ok(())
+}
+
+#[test]
+fn test_planted_bypass_omitted_nightly_and_malformed_identifiers_refused()
+-> Result<(), Box<dyn Error>> {
+    // F3: server pins an accepted_nightly; client omitting it MUST NOT bypass.
+    let mut server = reference_contract_basis();
+    server.accepted_nightly = Some("nightly-2026-08-31".to_owned());
+    let client_omitted = reference_contract_basis();
+    assert_eq!(client_omitted.accepted_nightly, None);
+    let compat = check_compatibility(&server, &client_omitted);
+    match compat {
+        CompatibilityResult::Incompatible(ContractBasisRefusal::IncompatibleNightly {
+            required,
+            actual,
+        }) => {
+            assert_eq!(required, "nightly-2026-08-31");
+            assert_eq!(actual, None);
+        }
+        other => return Err(format!("expected IncompatibleNightly(None), got {other:?}").into()),
+    }
+    let neg_err = negotiate_basis(&server, &client_omitted)
+        .err()
+        .ok_or("negotiate_basis must refuse omitted nightly")?;
+    assert_eq!(neg_err.error_id(), "ERR-AGENT-PROTOCOL-001");
+
+    // Matching nightly succeeds.
+    let mut client_ok = reference_contract_basis();
+    client_ok.accepted_nightly = Some("nightly-2026-08-31".to_owned());
+    assert_eq!(negotiate_basis(&server, &client_ok)?, server);
+
+    // F5 & F6: whitespace/control characters in identifiers are refused by both validate and negotiate.
+    let mut bad_server = reference_contract_basis();
+    bad_server.ontology_generation_id = "ontology:bad\nid".to_owned();
+    assert!(validate_contract_basis(&bad_server).is_err());
+    assert!(negotiate_basis(&bad_server, &bad_server).is_err());
+
+    let mut bad_client = reference_contract_basis();
+    bad_client.producer_release_id = "fss release with spaces".to_owned();
+    assert!(validate_contract_basis(&bad_client).is_err());
+    assert!(negotiate_basis(&reference_contract_basis(), &bad_client).is_err());
 
     Ok(())
 }

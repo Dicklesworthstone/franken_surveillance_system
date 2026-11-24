@@ -182,7 +182,7 @@ fn staging_preserves_identity_and_validation_refusals_without_publication() -> T
     ] {
         assert_eq!(ledger.stage_append(batch).err(), Some(expected));
         assert_eq!(ledger.current(), &before);
-        assert_eq!(ledger.batches(), [first.clone()]);
+        assert_eq!(ledger.batches(), std::slice::from_ref(&first));
     }
     let valid = next_batch(&ledger, "valid")?;
     ledger.stage_append(valid)?.commit();
@@ -198,7 +198,10 @@ fn current_snapshot_mode_preserves_history_bytes_without_retaining_old_object_ma
         "site:snapshot-retention",
         LedgerSnapshotRetention::CurrentOnly,
     );
-    assert_eq!(full.snapshot_retention(), LedgerSnapshotRetention::FullHistory);
+    assert_eq!(
+        full.snapshot_retention(),
+        LedgerSnapshotRetention::FullHistory
+    );
     assert_eq!(current.retained_snapshot_count(), 1);
     assert_eq!(current.snapshot_at(0), Some(full.current()));
     for index in 0..COMMITS {
@@ -218,7 +221,10 @@ fn current_snapshot_mode_preserves_history_bytes_without_retaining_old_object_ma
     assert_eq!(current.snapshots.len(), 1);
     assert_eq!(current.snapshots[0].objects.len(), COMMITS);
     assert_eq!(
-        full.snapshots.iter().map(|snapshot| snapshot.objects.len()).sum::<usize>(),
+        full.snapshots
+            .iter()
+            .map(|snapshot| snapshot.objects.len())
+            .sum::<usize>(),
         COMMITS * (COMMITS + 1) / 2,
     );
     assert_eq!(current.committed_batches, full.committed_batches);
@@ -231,7 +237,8 @@ fn current_snapshot_mode_preserves_history_bytes_without_retaining_old_object_ma
     assert_eq!(replayed.current(), full.current());
     assert_eq!(replayed.batches(), full.batches());
     assert_eq!(replayed.retained_snapshot_count(), 1);
-    let historical = ReferenceLedger::replay("site:snapshot-retention", full.batches().iter().cloned())?;
+    let historical =
+        ReferenceLedger::replay("site:snapshot-retention", full.batches().iter().cloned())?;
     for sequence in 0..=u64::try_from(COMMITS)? {
         assert_eq!(historical.snapshot_at(sequence), full.snapshot_at(sequence));
         assert!(historical.snapshot_at(sequence).is_some());
@@ -262,13 +269,19 @@ fn current_snapshot_stages_preserve_owner_and_visible_state_through_suspension()
     let mut prepared = owner.stage_append(chosen.clone())?.suspend();
     let competing = owner.stage_append(competitor.clone())?.suspend();
     let mut cloned = owner.clone();
-    assert_eq!(cloned.snapshot_retention(), LedgerSnapshotRetention::CurrentOnly);
+    assert_eq!(
+        cloned.snapshot_retention(),
+        LedgerSnapshotRetention::CurrentOnly
+    );
     assert_eq!(cloned.retained_snapshot_count(), 1);
     assert_eq!(cloned.committed_batches, owner.committed_batches);
     let mut full_owner = ReferenceLedger::replay("site:current-stage", history.iter().cloned())?;
     for foreign in [&mut cloned, &mut full_owner] {
         assert_eq!(foreign.current(), &before);
-        let refusal = foreign.resume_append(prepared).err().ok_or("foreign stage accepted")?;
+        let refusal = foreign
+            .resume_append(prepared)
+            .err()
+            .ok_or("foreign stage accepted")?;
         let (error, returned) = refusal.into_parts();
         assert_eq!(error, ContractError::StaleAnchor);
         assert_eq!(returned.batch(), &chosen);
@@ -292,7 +305,10 @@ fn current_snapshot_stages_preserve_owner_and_visible_state_through_suspension()
     assert_eq!(full_owner.current(), &before);
 
     let committed = owner.current().clone();
-    let refusal = owner.resume_append(competing).err().ok_or("stale stage accepted")?;
+    let refusal = owner
+        .resume_append(competing)
+        .err()
+        .ok_or("stale stage accepted")?;
     let (error, returned) = refusal.into_parts();
     assert_eq!(error, ContractError::StaleAnchor);
     assert_eq!(returned.batch(), &competitor);
@@ -337,7 +353,10 @@ fn snapshot_modes_keep_all_batch_identities_and_identical_validation_precedence(
         (bad_state, ContractError::DigestMismatch),
     ] {
         for ledger in [&mut full, &mut current] {
-            assert_eq!(ledger.stage_append(batch.clone()).err(), Some(expected.clone()));
+            assert_eq!(
+                ledger.stage_append(batch.clone()).err(),
+                Some(expected.clone())
+            );
             assert_eq!(ledger.current(), &before);
             assert_eq!(ledger.batches(), history.as_slice());
         }

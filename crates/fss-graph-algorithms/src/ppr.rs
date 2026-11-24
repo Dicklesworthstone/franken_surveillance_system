@@ -198,9 +198,7 @@ pub fn personalized_pagerank(
     canonical_seeds.sort_unstable_by_key(|&(idx, _)| idx);
     for pair in canonical_seeds.windows(2) {
         if pair[0].0 == pair[1].0 {
-            return Err(GraphError::DuplicateNode(
-                graph.id(pair[0].0).to_owned(),
-            ));
+            return Err(GraphError::DuplicateNode(graph.id(pair[0].0).to_owned()));
         }
     }
 

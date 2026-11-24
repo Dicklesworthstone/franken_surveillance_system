@@ -14,7 +14,9 @@ use fss_graph_algorithms::factorized_join::{
     self, FactorJoinProblem, PatternRelation, factorized_free_join,
 };
 use fss_graph_algorithms::hits::{self, HitsConfig, SCALE_PPB as HITS_SCALE_PPB, hits};
-use fss_graph_algorithms::ppr::{self, PprConfig, SCALE_PPB as PPR_SCALE_PPB, personalized_pagerank};
+use fss_graph_algorithms::ppr::{
+    self, PprConfig, SCALE_PPB as PPR_SCALE_PPB, personalized_pagerank,
+};
 use fss_graph_algorithms::spectral::{self, SpectralConfig, spectral_change_detection};
 use fss_graph_algorithms::steiner::{self, steiner_tree_approximation};
 use fss_graph_algorithms::weighted::{Orientation, WeightedGraph, WeightedGraphBuilder};
@@ -279,10 +281,11 @@ fn exact_steiner_oracle(g: &WeightedGraph, terminals: &[&str]) -> Option<u64> {
                 for &arc_idx in g.out_arcs(u as u32) {
                     let arc = g.arc(arc_idx);
                     let v = arc.other(u as u32) as usize;
-                    if (mask & (1 << v)) != 0 && (visited & (1 << v)) == 0 {
-                        if min_edge.is_none_or(|(_, w)| arc.weight < w) {
-                            min_edge = Some((v, arc.weight));
-                        }
+                    if (mask & (1 << v)) != 0
+                        && (visited & (1 << v)) == 0
+                        && min_edge.is_none_or(|(_, w)| arc.weight < w)
+                    {
+                        min_edge = Some((v, arc.weight));
                     }
                 }
             }
@@ -465,7 +468,10 @@ fn spectral_fiedler_certification_and_dumbbell_cut() -> TestResult {
     let sign_a = coords["a0"].signum();
     let sign_b = coords["b0"].signum();
     assert_ne!(sign_a, 0);
-    assert_eq!(sign_a, -sign_b, "two cliques must have opposite Fiedler signs");
+    assert_eq!(
+        sign_a, -sign_b,
+        "two cliques must have opposite Fiedler signs"
+    );
     emit_log(spectral::IDENTITY.algorithm_id, ATLAS_SEEDS, "certified");
     Ok(())
 }

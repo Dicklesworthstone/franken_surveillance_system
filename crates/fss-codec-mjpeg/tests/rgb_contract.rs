@@ -264,3 +264,92 @@ fn exact_budget_completes_while_earlier_cuts_and_cancellation_return_no_image() 
     ));
     Ok(())
 }
+
+#[test]
+fn work_bounds_cover_every_admitted_sampling_mode_including_4mp_unifi_g4_444() -> Test {
+    // Includes UniFi G4 4MP (2688x1512), extreme aspect ratios (4096x1024, 1x4096, 4096x1),
+    // maximum square (2048x2048), odd sizes (19x17), and 1x1 edge cases.
+    let shapes = [
+        (2688_u16, 1512_u16),
+        (4096, 1024),
+        (1, 4096),
+        (4096, 1),
+        (2048, 2048),
+        (19, 17),
+        (1, 1),
+    ];
+    let layouts: &[([usize; 2], bool, Color)] = &[
+        ([1, 1], false, Color::YCbCr),
+        ([2, 1], false, Color::YCbCr),
+        ([2, 2], false, Color::YCbCr),
+        ([1, 1], true, Color::Grayscale),
+    ];
+    for (width, height) in shapes {
+        for &(sampling, grayscale, color) in layouts {
+            // Keep test runtime crisp while testing every sampling mode at every shape,
+            // plus full 4MP 4:4:4 / 4096x1024 4:4:4 and all modes at smaller/skinny shapes.
+            let pixels = usize::from(width) * usize::from(height);
+            if pixels > 1_000_000 && !(width == 2688 || (width == 4096 && sampling == [1, 1])) {
+                continue;
+            }
+            let bytes = rgb_support::jpeg(
+                width,
+                height,
+                sampling,
+                grayscale,
+                false,
+                false,
+                &[[100, 150, 200]],
+            );
+            let hash = ContentDigest::sha256(&bytes).bytes();
+            let exact_frame = DecodeLimits {
+                maximum_bytes: bytes.len(),
+                maximum_dimension: u32::from(width.max(height)),
+                maximum_pixels: pixels,
+                maximum_markers: 8,
+            };
+            let exact_rgb = RgbDecodeLimits {
+                frame: exact_frame,
+                maximum_output_bytes: pixels * 3,
+            };
+            for (frame_limits, rgb_limits) in [
+                (exact_frame, exact_rgb),
+                (DecodeLimits::default(), RgbDecodeLimits::default()),
+            ] {
+                let baseline_luma = frame_limits.baseline_luma_work_bound();
+                let full_luma = frame_limits.luma_work_bound();
+                assert!(baseline_luma <= full_luma);
+                let mut luma_budget = DecodeBudget::new(baseline_luma);
+                let luma = decode_luma(&bytes, hash, color, frame_limits, &mut luma_budget)?;
+                assert_eq!(luma.dimensions(), [u32::from(width), u32::from(height)]);
+                assert!(
+                    luma_budget.used() <= baseline_luma,
+                    "luma {width}x{height} sampling={sampling:?} gray={grayscale}"
+                );
+                assert!(luma_budget.used() <= full_luma);
+
+                let baseline_rgb = rgb_limits.baseline_rgb_work_bound();
+                let full_rgb = rgb_limits.rgb_work_bound();
+                assert!(baseline_rgb <= full_rgb);
+                let mut rgb_budget = DecodeBudget::new(baseline_rgb);
+                let rgb = decode_rgb(&bytes, hash, color, rgb_limits, &mut rgb_budget)?;
+                assert_eq!(rgb.dimensions(), [u32::from(width), u32::from(height)]);
+                assert!(
+                    rgb_budget.used() <= baseline_rgb,
+                    "rgb {width}x{height} sampling={sampling:?} gray={grayscale}: used {} > bound {}",
+                    rgb_budget.used(),
+                    baseline_rgb
+                );
+                assert!(rgb_budget.used() <= full_rgb);
+                if width == 2688 && height == 1512 && sampling == [1, 1] && !grayscale {
+                    // UniFi G4 4MP 4:4:4 is 63,504 MCUs x 3 blocks = 190,512 blocks (~789M luma, ~1.484B RGB).
+                    assert_eq!(rgb.receipt().mcus, 63_504);
+                    assert_eq!(rgb.receipt().entropy_blocks, 190_512);
+                    assert!(luma_budget.used() > 780_000_000);
+                    assert!(rgb_budget.used() > 1_480_000_000);
+                }
+            }
+        }
+    }
+    Ok(())
+}

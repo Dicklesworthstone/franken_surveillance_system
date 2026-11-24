@@ -5,6 +5,9 @@ edition = "2024"
 
 [workspace]
 
+[lints.rust]
+unsafe_code = "forbid"
+
 [dependencies]
 rustls = { version = "=0.23.43", default-features = false, features = ["std", "tls12"] }
 rustls-rustcrypto = { git = "https://github.com/RustCrypto/rustls-rustcrypto.git", rev = "70f76c039e587192688af18a80d5d6435dedaf22", default-features = false, features = ["std", "tls12", "zeroize"] }

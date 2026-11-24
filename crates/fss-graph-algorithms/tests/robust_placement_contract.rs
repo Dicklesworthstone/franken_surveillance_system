@@ -199,7 +199,7 @@ fn equal_robustness_ties_on_installation_then_count_then_identity() -> TestResul
 #[test]
 fn every_seeded_optimum_matches_exhaustive_existing_interdiction_calls() -> TestResult {
     for seed in 0..180 {
-        let mut rng = Rng(seed ^ 0xcafe_713);
+        let mut rng = Rng(seed ^ 0x0caf_e713);
         let orientation = if seed % 2 == 0 {
             Orientation::Directed
         } else {

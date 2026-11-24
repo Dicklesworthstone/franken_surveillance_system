@@ -596,7 +596,7 @@ fn metadata_duration_inference_and_codec_delay_coexist_with_stricter_movie_selec
         metadata.samples[1].duration_source,
         MatroskaDurationSource::Unknown
     );
-    assert_eq!(metadata.unresolved_ns, [30..50]);
+    assert_eq!(metadata.unresolved_ns, vec![30..50]);
     assert_eq!(select(&video, 0..50), Err(DemuxError::Unsupported));
 
     let bytes = fixture(

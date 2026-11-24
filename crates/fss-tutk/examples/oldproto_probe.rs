@@ -9,23 +9,25 @@
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 use std::time::{Duration, Instant};
 
-use fss_tutk::oldproto::{build_probe, parse_response, ProbeResponse};
+use fss_tutk::oldproto::{ProbeResponse, build_probe, parse_response};
 
 const PROBE_PORT: u16 = 32761;
 const RETRIES: u32 = 3;
 const LISTEN_MS: u64 = 1500;
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bind_ip: Ipv4Addr = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "0.0.0.0".into())
-        .parse()
-        .expect("bind ip");
-    let directed: Vec<Ipv4Addr> = std::env::args().skip(2).map(|a| a.parse().unwrap()).collect();
+        .parse()?;
+    let directed: Vec<Ipv4Addr> = std::env::args()
+        .skip(2)
+        .map(|arg| arg.parse())
+        .collect::<Result<_, _>>()?;
 
-    let sock = UdpSocket::bind((bind_ip, 0u16)).expect("bind");
-    sock.set_broadcast(true).expect("broadcast");
-    sock.set_read_timeout(Some(Duration::from_millis(150))).unwrap();
+    let sock = UdpSocket::bind((bind_ip, 0u16))?;
+    sock.set_broadcast(true)?;
+    sock.set_read_timeout(Some(Duration::from_millis(150)))?;
 
     // Deterministic probe identity for reproducible runs.
     let fingerprint = [0xF5, 0x05, 0x20, 0x26, 0x10, 0x08];
@@ -67,4 +69,5 @@ fn main() {
     println!(
         "probe: complete — {answers} answer(s) (0 = negative evidence: no OLD-protocol TUTK devices answered)"
     );
+    Ok(())
 }

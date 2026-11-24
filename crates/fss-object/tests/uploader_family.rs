@@ -639,14 +639,22 @@ fn assert_indeterminate_owner_cannot_resume_work(
 ) {
     assert!(upload.start(tree, now).is_err());
     assert!(upload.upload_part(tree, now, 0, b"abc").is_err());
+    let reread = std::cell::Cell::new(false);
     assert!(
         upload
             .upload_chunks(
                 tree,
                 || now,
-                |_| panic!("locally settled uncertainty cannot reread source data"),
+                |_| {
+                    reread.set(true);
+                    Vec::new()
+                },
             )
             .is_err()
+    );
+    assert!(
+        !reread.get(),
+        "locally settled uncertainty cannot reread source data"
     );
     assert!(upload.finish(tree, now).is_err());
     assert!(upload.cancel(tree, now).is_err());

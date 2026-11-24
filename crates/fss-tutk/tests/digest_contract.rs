@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 //! Known-answer tests for the first-party digest module (FIPS + RFC 2104 vectors).
 
-use fss_tutk::digest::{hmac_sha1, hmac_sha256, Sha1, Sha256};
+use fss_tutk::digest::{Sha1, Sha256, hmac_sha1, hmac_sha256};
 
 fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
@@ -9,9 +9,14 @@ fn hex(b: &[u8]) -> String {
 
 #[test]
 fn sha1_known_answers() {
-    assert_eq!(hex(&Sha1::digest(b"abc")), "a9993e364706816aba3e25717850c26c9cd0d89d");
     assert_eq!(
-        hex(&Sha1::digest(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")),
+        hex(&Sha1::digest(b"abc")),
+        "a9993e364706816aba3e25717850c26c9cd0d89d"
+    );
+    assert_eq!(
+        hex(&Sha1::digest(
+            b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
+        )),
         "84983e441c3bd26ebaae4aa1f95129e5e54670f1"
     );
     // streaming in odd-size chunks must equal one-shot

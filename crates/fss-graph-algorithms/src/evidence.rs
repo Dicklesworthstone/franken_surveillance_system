@@ -193,7 +193,11 @@ impl EvidenceClaimProjection {
             canonical_bytes = canonical_bytes
                 .checked_add(bytes.len())
                 .ok_or(GraphError::TooLarge)?;
-            admit(canonical_bytes, limits.max_canonical_bytes, "canonical_event_bytes")?;
+            admit(
+                canonical_bytes,
+                limits.max_canonical_bytes,
+                "canonical_event_bytes",
+            )?;
             revisions.insert(event.revision_digest());
         }
 
@@ -350,7 +354,11 @@ impl EvidenceClaimProjection {
                 }
             })
             .collect();
-        Ok(EvidenceClaimAnalysis { run, witness, claims })
+        Ok(EvidenceClaimAnalysis {
+            run,
+            witness,
+            claims,
+        })
     }
 }
 

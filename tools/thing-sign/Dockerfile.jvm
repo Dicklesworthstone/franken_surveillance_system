@@ -1,4 +1,16 @@
-FROM --platform=linux/arm64 eclipse-temurin:21-jdk-alpine@sha256:82801f9dcdcbad5a05082aba8c86d1da5b72ccb498e71318b1f91b5a477887b3
+ARG TARGET_PLATFORM=linux/arm64
+FROM --platform=${TARGET_PLATFORM} eclipse-temurin:21-jdk-alpine@sha256:82801f9dcdcbad5a05082aba8c86d1da5b72ccb498e71318b1f91b5a477887b3
+
+LABEL org.opencontainers.image.title="fss-tuya-thing-sign" \
+      org.opencontainers.image.description="Reproducible offline Tuya libthing_security.so signing harness (AOSU lane)" \
+      org.opencontainers.image.architecture="linux/arm64" \
+      fss.platform_lock="linux/arm64" \
+      fss.native_lib="libthing_security.so" \
+      fss.native_lib_arch="arm64-v8a" \
+      fss.target_package="com.glazero.android" \
+      fss.target_app_version="5.10.12" \
+      fss.base_digest="sha256:82801f9dcdcbad5a05082aba8c86d1da5b72ccb498e71318b1f91b5a477887b3"
+
 RUN apk add -q --no-cache gcc musl-dev
 WORKDIR /w
 COPY libs/ /w/libs/
@@ -7,11 +19,20 @@ COPY src/ /w/src/
 COPY assets/ /w/assets/
 RUN gcc -shared -fPIC -o /w/libs/libandroid.so /w/stub.c -Wl,-soname,libandroid.so \
  && cp /w/libs/libandroid.so /w/libs/liblog.so \
- && javac -d /w/out /w/src/android/content/Context.java /w/src/android/content/res/AssetManager.java /w/src/android/content/pm/PackageManager.java /w/src/android/content/pm/PackageInfo.java /w/src/android/content/pm/Signature.java /w/src/com/thingclips/smart/security/jni/SecureNativeApi.java /w/src/com/thingclips/smart/security/jni/JNICLibrary.java /w/src/Run.java
-COPY in.txt /data/in.txt
-COPY seed.txt /data/seed.txt
-COPY appid.txt /data/appid.txt
-COPY cert.der /data/cert.der
+ && javac -d /w/out \
+      /w/src/android/content/Context.java \
+      /w/src/android/content/res/AssetManager.java \
+      /w/src/android/content/pm/PackageManager.java \
+      /w/src/android/content/pm/PackageInfo.java \
+      /w/src/android/content/pm/Signature.java \
+      /w/src/com/thingclips/smart/security/jni/SecureNativeApi.java \
+      /w/src/com/thingclips/smart/security/jni/JNICLibrary.java \
+      /w/src/Run.java
+
+# Bake immutable repo defaults into /w/cfg so bind-mounting /data/in.txt (or a
+# partial /data override dir) never depends on pre-existing host /tmp state.
+COPY in.txt seed.txt appid.txt cert.der /w/cfg/
+COPY in.txt seed.txt appid.txt cert.der /data/
 ENV LD_LIBRARY_PATH=/w/libs
 ENV LD_PRELOAD=/w/libs/libandroid.so
 CMD ["java","-cp","/w/out","Run"]

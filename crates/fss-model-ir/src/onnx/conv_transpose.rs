@@ -114,10 +114,10 @@ fn plan(
         return Err(OnnxError::Graph);
     }
     let channels = mul(weights[1], groups)?;
-    if let Some(value) = source.attrs.remove("kernel_shape") {
-        if integers::<2>(value, true)? != weights[2..] {
-            return Err(OnnxError::Graph);
-        }
+    if let Some(value) = source.attrs.remove("kernel_shape")
+        && integers::<2>(value, true)? != weights[2..]
+    {
+        return Err(OnnxError::Graph);
     }
     let mode = match source.attrs.remove("auto_pad") {
         None => "NOTSET".to_owned(),

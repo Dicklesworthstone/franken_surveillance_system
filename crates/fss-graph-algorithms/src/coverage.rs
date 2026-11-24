@@ -27,7 +27,7 @@ pub use build::{CoverageBuildLimits, CoverageBuildUsage, CoverageProjectionBuild
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::bridges::{BridgeAnalysis, GraphBudget, analyse_bridges};
-use crate::graph::{MAX_GRAPH_EDGES, MAX_NODE_ID_LEN, GraphError, UndirectedGraph};
+use crate::graph::{GraphError, MAX_GRAPH_EDGES, MAX_NODE_ID_LEN, UndirectedGraph};
 
 /// Registered projection kind.
 pub const PROJECTION_KIND: &str = "SensorCoverageGraph";

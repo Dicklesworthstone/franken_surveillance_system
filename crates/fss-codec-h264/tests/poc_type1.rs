@@ -44,6 +44,8 @@ impl Bits {
     }
 }
 
+type VideoSignalConfig = Option<(bool, Option<(u8, u8, u8)>)>;
+
 #[derive(Clone)]
 struct Sequence {
     cycle: Vec<i64>,
@@ -52,7 +54,7 @@ struct Sequence {
     zero_deltas: bool,
     bottom_delta_present: bool,
     width_mbs: u64,
-    video_signal: Option<(bool, Option<(u8, u8, u8)>)>,
+    video_signal: VideoSignalConfig,
 }
 
 impl Default for Sequence {

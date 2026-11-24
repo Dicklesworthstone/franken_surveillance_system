@@ -23,7 +23,9 @@ fn hex(b: &[u8]) -> String {
 
 #[test]
 fn aes128_fips197_appendix_c1() {
-    let key: [u8; 16] = unhex("000102030405060708090a0b0c0d0e0f").try_into().unwrap_or([0; 16]);
+    let key: [u8; 16] = unhex("000102030405060708090a0b0c0d0e0f")
+        .try_into()
+        .unwrap_or([0; 16]);
     let pt: [u8; 16] = unhex("00112233445566778899aabbccddeeff")
         .try_into()
         .unwrap_or([0; 16]);
@@ -127,7 +129,10 @@ fn gcm_odd_length_and_tamper() {
         hex(&out),
         "f3d7408bb6d306b4974a081e4a4bd2710a7fe418e2f2f00d8f75e180e9dd0d1d4848d0ed"
     );
-    assert_eq!(aes128_gcm_decrypt(&key, &iv, &aad, &out).as_deref(), Some(&pt[..]));
+    assert_eq!(
+        aes128_gcm_decrypt(&key, &iv, &aad, &out).as_deref(),
+        Some(&pt[..])
+    );
     // One-bit tamper anywhere in ct or tag must be rejected.
     for idx in [0, 7, out.len() - 1] {
         let mut bad = out.clone();
@@ -146,7 +151,10 @@ fn ecb_pkcs7_vector_and_roundtrip() {
     let pt = b"hello tuya!";
     let ct = aes128_ecb_encrypt_pkcs7(&key, pt);
     assert_eq!(hex(&ct), "9c6354a09f9d2db63b27273e6f5b4dc9");
-    assert_eq!(aes128_ecb_decrypt_pkcs7(&key, &ct).as_deref(), Some(&pt[..]));
+    assert_eq!(
+        aes128_ecb_decrypt_pkcs7(&key, &ct).as_deref(),
+        Some(&pt[..])
+    );
     // Raw path requires alignment.
     assert_eq!(aes128_ecb_encrypt_raw(&key, b"not aligned"), None);
     assert_eq!(aes128_ecb_decrypt_raw(&key, b"not aligned"), None);
@@ -170,7 +178,10 @@ fn hmac_sha256_rfc4231_case1() {
 fn hmac_sha256_rfc4231_long_key() {
     // Key longer than the 64-byte block size exercises the hash-key path.
     let key = [0xAAu8; 131];
-    let mac = hmac_sha256(&key, b"Test Using Larger Than Block-Size Key - Hash Key First");
+    let mac = hmac_sha256(
+        &key,
+        b"Test Using Larger Than Block-Size Key - Hash Key First",
+    );
     assert_eq!(
         hex(&mac),
         "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"

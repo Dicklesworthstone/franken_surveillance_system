@@ -11,7 +11,10 @@ fn hex(b: &[u8]) -> String {
 fn unhex(s: &str) -> Vec<u8> {
     (0..s.len())
         .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+        .map(|i| {
+            u8::from_str_radix(&s[i..i + 2], 16)
+                .unwrap_or_else(|error| unreachable!("invalid test hex: {error}"))
+        })
         .collect()
 }
 

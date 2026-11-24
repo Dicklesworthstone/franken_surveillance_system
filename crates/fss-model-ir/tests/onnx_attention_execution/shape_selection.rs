@@ -81,7 +81,7 @@ fn attention(condition_dtype: i64) -> Vec<u8> {
 
 fn attention_oracle(input: &[f32]) -> Vec<f64> {
     let mut output = Vec::new();
-    for batch in input.chunks_exact(6) {
+    for batch in input.as_chunks::<6>().0 {
         for query in 0..2 {
             let logits = (0..3)
                 .map(|token| f64::from(batch[2 * token + query]))
@@ -254,6 +254,7 @@ fn integer_shape_slices_refuse_bad_axes_steps_and_control_lengths() {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn selection(
     a_dims: &[usize],
     a: &[i64],

@@ -17,8 +17,7 @@ use crate::temporal_triangulation::{
     TemporalTriangulationOptions, TimedCalibratedView,
 };
 use crate::temporal_validation::{
-    IntervalCalibratedView, MotionValidation, TemporalValidationError,
-    triangulate_motion_validated,
+    IntervalCalibratedView, MotionValidation, TemporalValidationError, triangulate_motion_validated,
 };
 use crate::{GeometryError, WorkBudget};
 
@@ -69,17 +68,26 @@ impl ClockRateHypothesis {
         let denominator = SCALE + i128::from(self.skew_ppb);
         // The delta bound makes this product fit i128; checked math keeps that
         // safety property explicit if this profile's bounds ever change.
-        let numerator = delta.checked_mul(SCALE).ok_or(ClockDriftError::TimestampOverflow)?;
+        let numerator = delta
+            .checked_mul(SCALE)
+            .ok_or(ClockDriftError::TimestampOverflow)?;
         let quotient = numerator.div_euclid(denominator);
         let remainder = numerator.rem_euclid(denominator);
-        let reference_anchor = target_anchor_ns.checked_sub(self.offset_ns)
+        let reference_anchor = target_anchor_ns
+            .checked_sub(self.offset_ns)
             .ok_or(ClockDriftError::TimestampOverflow)?;
-        let lower = reference_anchor.checked_add(quotient)
+        let lower = reference_anchor
+            .checked_add(quotient)
             .ok_or(ClockDriftError::TimestampOverflow)?;
-        let upper = lower.checked_add(i128::from(remainder != 0))
+        let upper = lower
+            .checked_add(i128::from(remainder != 0))
             .ok_or(ClockDriftError::TimestampOverflow)?;
         Ok(MappedClockTime {
-            nominal_ns: if remainder * 2 > denominator { upper } else { lower },
+            nominal_ns: if remainder * 2 > denominator {
+                upper
+            } else {
+                lower
+            },
             enclosure_ns: [lower, upper],
         })
     }
@@ -95,8 +103,10 @@ impl ClockRateHypothesis {
             return Err(ClockDriftError::InvalidInterval);
         }
         Ok([
-            self.map_time(target_anchor_ns, interval_ns[0])?.enclosure_ns[0],
-            self.map_time(target_anchor_ns, interval_ns[1])?.enclosure_ns[1],
+            self.map_time(target_anchor_ns, interval_ns[0])?
+                .enclosure_ns[0],
+            self.map_time(target_anchor_ns, interval_ns[1])?
+                .enclosure_ns[1],
         ])
     }
 }
@@ -127,7 +137,9 @@ pub struct ClockRateTrial {
 impl ClockRateTrial {
     /// Conditional support for this sampled mapping, never total timing accuracy.
     pub fn consistent_for_all_capture_times(&self) -> bool {
-        self.result.as_ref().is_ok_and(MotionValidation::consistent_for_all_capture_times)
+        self.result
+            .as_ref()
+            .is_ok_and(MotionValidation::consistent_for_all_capture_times)
     }
 }
 
@@ -163,10 +175,14 @@ pub enum ClockDriftError {
     Native(TemporalValidationError),
 }
 impl From<GeometryError> for ClockDriftError {
-    fn from(error: GeometryError) -> Self { Self::Geometry(error) }
+    fn from(error: GeometryError) -> Self {
+        Self::Geometry(error)
+    }
 }
 impl From<ClockAlignmentError> for ClockDriftError {
-    fn from(error: ClockAlignmentError) -> Self { Self::Alignment(error) }
+    fn from(error: ClockAlignmentError) -> Self {
+        Self::Alignment(error)
+    }
 }
 impl std::fmt::Display for ClockDriftError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -223,18 +239,24 @@ pub fn scan_clock_drift(
             TemporalTriangulationError::InvalidOptions,
         )));
     }
-    if training.len() > MAX_TEMPORAL_VIEWS || validation.len() > MAX_TEMPORAL_VIEWS
+    if training.len() > MAX_TEMPORAL_VIEWS
+        || validation.len() > MAX_TEMPORAL_VIEWS
         || hypotheses.len() > MAX_CLOCK_OFFSET_HYPOTHESES
     {
         return Err(GeometryError::LimitExceeded.into());
     }
-    if pair.reference_camera == 0 || pair.target_camera == 0
-        || pair.reference_camera == pair.target_camera || pair.reference_clock == 0
-        || pair.target_clock == 0 || pair.reference_clock == pair.target_clock
+    if pair.reference_camera == 0
+        || pair.target_camera == 0
+        || pair.reference_camera == pair.target_camera
+        || pair.reference_clock == 0
+        || pair.target_clock == 0
+        || pair.reference_clock == pair.target_clock
     {
         return Err(ClockAlignmentError::InvalidPair.into());
     }
-    if hypotheses.is_empty() { return Err(ClockDriftError::InvalidHypotheses); }
+    if hypotheses.is_empty() {
+        return Err(ClockDriftError::InvalidHypotheses);
+    }
     budget.charge(256 * (training.len() + validation.len() + hypotheses.len()) as u64)?;
     let mut ordered = copy_bounded(hypotheses)?;
     ordered.sort_unstable();
@@ -246,15 +268,23 @@ pub fn scan_clock_drift(
     for hypothesis in &ordered {
         hypothesis.validate()?;
         budget.charge(16 * (training.len() + 2 * validation.len()) as u64)?;
-        for item in training.iter().filter(|item| item.view.camera == pair.target_camera) {
+        for item in training
+            .iter()
+            .filter(|item| item.view.camera == pair.target_camera)
+        {
             hypothesis.map_time(target_anchor_ns, item.capture_time_ns)?;
         }
-        for item in validation.iter().filter(|item| item.view.camera == pair.target_camera) {
+        for item in validation
+            .iter()
+            .filter(|item| item.view.camera == pair.target_camera)
+        {
             hypothesis.map_interval(target_anchor_ns, item.capture_interval_ns)?;
         }
     }
     let mut trials = Vec::new();
-    trials.try_reserve_exact(ordered.len()).map_err(|_| GeometryError::LimitExceeded)?;
+    trials
+        .try_reserve_exact(ordered.len())
+        .map_err(|_| GeometryError::LimitExceeded)?;
     for hypothesis in ordered {
         let trial_started = budget.used();
         budget.charge(128 * (training.len() + validation.len()) as u64)?;
@@ -262,29 +292,46 @@ pub fn scan_clock_drift(
         mapped_training.sort_by_key(|item| (item.view.camera, item.capture_time_ns));
         let mut mapped_validation = copy_bounded(validation)?;
         let mut training_mappings = Vec::new();
-        training_mappings.try_reserve_exact(training.len()).map_err(|_| GeometryError::LimitExceeded)?;
+        training_mappings
+            .try_reserve_exact(training.len())
+            .map_err(|_| GeometryError::LimitExceeded)?;
         for item in &mut mapped_training {
             let local_time_ns = item.capture_time_ns;
             let mapped = if item.view.camera == pair.target_camera {
                 hypothesis.map_time(target_anchor_ns, local_time_ns)?
             } else {
-                MappedClockTime { nominal_ns: local_time_ns, enclosure_ns: [local_time_ns; 2] }
+                MappedClockTime {
+                    nominal_ns: local_time_ns,
+                    enclosure_ns: [local_time_ns; 2],
+                }
             };
             item.capture_time_ns = mapped.nominal_ns;
-            training_mappings.push(ClockTrainingMapping { camera: item.view.camera, local_time_ns, mapped });
+            training_mappings.push(ClockTrainingMapping {
+                camera: item.view.camera,
+                local_time_ns,
+                mapped,
+            });
         }
         for item in &mut mapped_validation {
             if item.view.camera == pair.target_camera {
-                item.capture_interval_ns = hypothesis.map_interval(target_anchor_ns, item.capture_interval_ns)?;
+                item.capture_interval_ns =
+                    hypothesis.map_interval(target_anchor_ns, item.capture_interval_ns)?;
             }
         }
-        let result = triangulate_motion_validated(&mapped_training, &mapped_validation, options, budget);
+        let result =
+            triangulate_motion_validated(&mapped_training, &mapped_validation, options, budget);
         if let Err(error) = result.as_ref() {
             match *error {
-                TemporalValidationError::Geometry(GeometryError::BudgetExhausted
-                    | GeometryError::Cancelled | GeometryError::LimitExceeded)
+                TemporalValidationError::Geometry(
+                    GeometryError::BudgetExhausted
+                    | GeometryError::Cancelled
+                    | GeometryError::LimitExceeded,
+                )
                 | TemporalValidationError::Fit(TemporalTriangulationError::Geometry(
-                    GeometryError::BudgetExhausted | GeometryError::Cancelled | GeometryError::LimitExceeded))
+                    GeometryError::BudgetExhausted
+                    | GeometryError::Cancelled
+                    | GeometryError::LimitExceeded,
+                ))
                 | TemporalValidationError::Fit(TemporalTriangulationError::InvalidOptions) => {
                     return Err(ClockDriftError::Native(*error));
                 }
@@ -293,9 +340,18 @@ pub fn scan_clock_drift(
                 _ => {}
             }
         }
-        trials.push(ClockRateTrial { hypothesis, training_mappings, result,
-            work_units: budget.used() - trial_started });
+        trials.push(ClockRateTrial {
+            hypothesis,
+            training_mappings,
+            result,
+            work_units: budget.used() - trial_started,
+        });
     }
     budget.charge(0)?;
-    Ok(ClockDriftScan { pair, target_anchor_ns, trials, work_units: budget.used() - started })
+    Ok(ClockDriftScan {
+        pair,
+        target_anchor_ns,
+        trials,
+        work_units: budget.used() - started,
+    })
 }

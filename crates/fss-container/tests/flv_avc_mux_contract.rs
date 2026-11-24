@@ -95,7 +95,12 @@ fn fixture_with_parameter_sets(
         audio.extend_from_slice(audio_body);
         wire.extend(tag(8, index as u32 * audio_step, &audio));
         wire.extend([0x77; 3]);
-        wire.extend(video_with_parameter_sets(picture, index as u32 * 40, inband, changed));
+        wire.extend(video_with_parameter_sets(
+            picture,
+            index as u32 * 40,
+            inband,
+            changed,
+        ));
     }
     let mut framer = Framer::new(Limits::default(), 1024 * 1024)?;
     framer.append(0, &wire)?;
@@ -106,11 +111,19 @@ fn fixture_with_parameter_sets(
     Ok((wire, records))
 }
 
-fn video_with_parameter_sets(picture: &AvcPictureGroup, timestamp: u32, inband: bool, changed: bool) -> Vec<u8> {
+fn video_with_parameter_sets(
+    picture: &AvcPictureGroup,
+    timestamp: u32,
+    inband: bool,
+    changed: bool,
+) -> Vec<u8> {
     let mut payload = vec![0x17, 1, 0, 0, 0];
     if inband {
         let mut sps = picture.sps().nal_bytes().to_vec();
-        if changed { let last = sps.len() - 1; sps[last] ^= 1; }
+        if changed {
+            let last = sps.len() - 1;
+            sps[last] ^= 1;
+        }
         for nal in [sps.as_slice(), picture.pps().nal_bytes()] {
             payload.extend_from_slice(&(nal.len() as u32).to_be_bytes());
             payload.extend_from_slice(nal);
@@ -131,21 +144,53 @@ fn video_with_parameter_sets(picture: &AvcPictureGroup, timestamp: u32, inband: 
 fn inband_parameter_sets_are_preserved_and_changed_sets_refused() -> TestResult {
     let (wire, records) = fixture_with_parameter_sets(40, &[2], None, true, false)?;
     let samples = [
-        TimedSample { record: &records[3], decode_time_ms: 0, duration_ms: 40 },
-        TimedSample { record: &records[5], decode_time_ms: 40, duration_ms: 40 },
-        TimedSample { record: &records[7], decode_time_ms: 80, duration_ms: 40 },
+        TimedSample {
+            record: &records[3],
+            decode_time_ms: 0,
+            duration_ms: 40,
+        },
+        TimedSample {
+            record: &records[5],
+            decode_time_ms: 40,
+            duration_ms: 40,
+        },
+        TimedSample {
+            record: &records[7],
+            decode_time_ms: 80,
+            duration_ms: 40,
+        },
     ];
     let coverage: Vec<_> = records[2..=9].iter().collect();
     let mut legacy = Muxer::new(SOURCE, &records[1], Mp4Limits::default())?;
-    assert_eq!(legacy.fragment(&samples, &records[9], &coverage).err(), Some(Mp4Error::UnsupportedFormat));
+    assert_eq!(
+        legacy.fragment(&samples, &records[9], &coverage).err(),
+        Some(Mp4Error::UnsupportedFormat)
+    );
     assert_eq!(legacy.next_sequence(), Some(1));
     let mut mux = Muxer::new_inband(SOURCE, &records[1], Mp4Limits::default())?;
     let fragment = mux.fragment(&samples, &records[9], &coverage)?;
     for mapping in fragment.nals() {
-        assert_eq!(&wire[mapping.source.start as usize..mapping.source.end as usize], &fragment.bytes()[mapping.target.clone()]);
+        assert_eq!(
+            &wire[mapping.source.start as usize..mapping.source.end as usize],
+            &fragment.bytes()[mapping.target.clone()]
+        );
     }
-    assert_eq!(fragment.nals().iter().filter(|m| wire[m.source.start as usize] & 31 == 7).count(), 3);
-    assert_eq!(fragment.nals().iter().filter(|m| wire[m.source.start as usize] & 31 == 8).count(), 3);
+    assert_eq!(
+        fragment
+            .nals()
+            .iter()
+            .filter(|m| wire[m.source.start as usize] & 31 == 7)
+            .count(),
+        3
+    );
+    assert_eq!(
+        fragment
+            .nals()
+            .iter()
+            .filter(|m| wire[m.source.start as usize] & 31 == 8)
+            .count(),
+        3
+    );
     let mut file = mux.initialization().bytes().to_vec();
     file.extend_from_slice(fragment.bytes());
     let movie = AvcMp4::parse_inband(&file, None, DemuxLimits::default())?;
@@ -157,10 +202,19 @@ fn inband_parameter_sets_are_preserved_and_changed_sets_refused() -> TestResult 
     frames.extend(decoder.finish()?);
     assert_eq!(frames.len(), 3);
     let (_, changed_records) = fixture_with_parameter_sets(40, &[2], None, true, true)?;
-    let changed_samples = [TimedSample { record: &changed_records[3], decode_time_ms: 0, duration_ms: 40 }];
+    let changed_samples = [TimedSample {
+        record: &changed_records[3],
+        decode_time_ms: 0,
+        duration_ms: 40,
+    }];
     let changed_coverage: Vec<_> = changed_records[2..=5].iter().collect();
     let mut changed_mux = Muxer::new_inband(SOURCE, &changed_records[1], Mp4Limits::default())?;
-    assert_eq!(changed_mux.fragment(&changed_samples, &changed_records[5], &changed_coverage).err(), Some(Mp4Error::UnsupportedFormat));
+    assert_eq!(
+        changed_mux
+            .fragment(&changed_samples, &changed_records[5], &changed_coverage)
+            .err(),
+        Some(Mp4Error::UnsupportedFormat)
+    );
     assert_eq!(changed_mux.next_sequence(), Some(1));
     Ok(())
 }
@@ -362,7 +416,13 @@ fn av_fragment_with_configuration(config_bytes: &[u8]) -> TestResult {
     };
     let alternate = aac::Configuration::parse_explicit(alternate_bytes)?;
     assert!(matches!(
-        flv_av::fragment(&init, &video_fragment, &alternate, &audio, Mp4Limits::default()),
+        flv_av::fragment(
+            &init,
+            &video_fragment,
+            &alternate,
+            &audio,
+            Mp4Limits::default()
+        ),
         Err(Mp4Error::ParameterSet)
     ));
     let other_key = SourceKey {
@@ -470,9 +530,15 @@ fn av_session_can_explicitly_emit_video_before_audio_without_resetting_video_ord
     let wrong = aac::Configuration::parse_explicit(&[0x12, 0x10])?;
     let mut video_mux = Muxer::new(SOURCE, &records[1], Mp4Limits::default())?;
     let init = video_mux.av_initialization(&config)?;
-    let samples = |start: usize| (start..start + 4).map(|i| TimedSample {
-        record: &records[3 + 2 * i], decode_time_ms: i as u64 * 40, duration_ms: 40,
-    }).collect::<Vec<_>>();
+    let samples = |start: usize| {
+        (start..start + 4)
+            .map(|i| TimedSample {
+                record: &records[3 + 2 * i],
+                decode_time_ms: i as u64 * 40,
+                duration_ms: 40,
+            })
+            .collect::<Vec<_>>()
+    };
     let first_samples = samples(0);
     let second_samples = samples(4);
     let first_coverage: Vec<_> = records[2..=11].iter().collect();
@@ -480,20 +546,47 @@ fn av_session_can_explicitly_emit_video_before_audio_without_resetting_video_ord
     let first_video = video_mux.fragment(&first_samples, &records[11], &first_coverage)?;
     let second_video = video_mux.fragment(&second_samples, &records[19], &second_coverage)?;
     let mut session = flv_av::Session::new(&init)?;
-    assert!(matches!(session.fragment_without_audio(&init, &first_video, &wrong, Mp4Limits::default()), Err(Mp4Error::ParameterSet)));
-    let first = session.fragment_without_audio(&init, &first_video, &config, Mp4Limits::default())?;
+    assert!(matches!(
+        session.fragment_without_audio(&init, &first_video, &wrong, Mp4Limits::default()),
+        Err(Mp4Error::ParameterSet)
+    ));
+    let first =
+        session.fragment_without_audio(&init, &first_video, &config, Mp4Limits::default())?;
     assert!(first.audio().is_empty());
     assert_eq!(first.video_target_shift(), 0);
     assert_eq!(first.bytes(), first_video.bytes());
-    flv_av::verify_archived_video_only_fragment(first_video.bytes(), first.bytes(), Mp4Limits::default())?;
+    flv_av::verify_archived_video_only_fragment(
+        first_video.bytes(),
+        first.bytes(),
+        Mp4Limits::default(),
+    )?;
     let mut corrupt = first.bytes().to_vec();
     *corrupt.last_mut().ok_or("missing fragment")? ^= 1;
-    assert!(matches!(flv_av::verify_archived_video_only_fragment(first_video.bytes(), &corrupt, Mp4Limits::default()), Err(Mp4Error::Layout)));
-    assert!(matches!(session.fragment_without_audio(&init, &first_video, &config, Mp4Limits::default()), Err(Mp4Error::SourceOrder)));
+    assert!(matches!(
+        flv_av::verify_archived_video_only_fragment(
+            first_video.bytes(),
+            &corrupt,
+            Mp4Limits::default()
+        ),
+        Err(Mp4Error::Layout)
+    ));
+    assert!(matches!(
+        session.fragment_without_audio(&init, &first_video, &config, Mp4Limits::default()),
+        Err(Mp4Error::SourceOrder)
+    ));
 
-    let frame = aac_adts::source_frame(&config, &records[10], Limits::default(), aac::Limits::default())?.ok_or("missing audio")?;
+    let frame = aac_adts::source_frame(
+        &config,
+        &records[10],
+        Limits::default(),
+        aac::Limits::default(),
+    )?
+    .ok_or("missing audio")?;
     let mut clock = aac_clock::Clock::new(&config, 0, 1, 8)?;
-    let timed = [TimedAudio { time: clock.observe(frame.timestamp_ms())?, frame: &frame }];
+    let timed = [TimedAudio {
+        time: clock.observe(frame.timestamp_ms())?,
+        frame: &frame,
+    }];
     let second = session.fragment(&init, &second_video, &config, &timed, Mp4Limits::default())?;
     assert_eq!(second.audio().len(), 1);
     assert_eq!(second.video().sequence(), 2);

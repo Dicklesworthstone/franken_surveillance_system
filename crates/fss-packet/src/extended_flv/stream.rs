@@ -471,7 +471,9 @@ impl Framer {
             || Header::parse(&[], limits).is_err()
             || (matches!(
                 mode,
-                SearchMode::StructuredTrailer16 | SearchMode::StructuredTrailer16AvFlag | SearchMode::StructuredTrailer16OpaqueFlag
+                SearchMode::StructuredTrailer16
+                    | SearchMode::StructuredTrailer16AvFlag
+                    | SearchMode::StructuredTrailer16OpaqueFlag
             ) && limits.max_trailer < 16)
         {
             return Err(Error::Configuration);
@@ -569,8 +571,10 @@ impl Framer {
             let rest = &input[position..];
             let tag = if index == 0 {
                 name_probe_charge(work_remaining, rest.len().min(15))?;
-                if matches!(self.mode, SearchMode::ZeroStreamId | SearchMode::StructuredTrailer16OpaqueFlag)
-                    && rest.len() >= 11
+                if matches!(
+                    self.mode,
+                    SearchMode::ZeroStreamId | SearchMode::StructuredTrailer16OpaqueFlag
+                ) && rest.len() >= 11
                     && rest[8..11] != [0; 3]
                 {
                     return Err(NameProbeError::Framing(Error::StreamIdMismatch));
@@ -599,14 +603,14 @@ impl Framer {
             if tag.kind() == 18 {
                 name_probe_charge(work_remaining, tag.payload().len())?;
                 let claim = super::metadata::parse(tag).map_err(NameProbeError::Metadata)?;
-                if claim.event() == expected_event {
-                    if let Some(name) = claim.stream_name() {
-                        return Ok(if name == expected_name {
-                            NameProbe::Matched { tag_index: index }
-                        } else {
-                            NameProbe::Mismatched { tag_index: index }
-                        });
-                    }
+                if claim.event() == expected_event
+                    && let Some(name) = claim.stream_name()
+                {
+                    return Ok(if name == expected_name {
+                        NameProbe::Matched { tag_index: index }
+                    } else {
+                        NameProbe::Mismatched { tag_index: index }
+                    });
                 }
             }
             position += tag.wire_bytes().len();
@@ -657,8 +661,10 @@ impl Framer {
                 ),
             },
             Phase::FirstTag
-                if matches!(self.mode, SearchMode::ZeroStreamId | SearchMode::StructuredTrailer16OpaqueFlag)
-                    && input.len() >= 11
+                if matches!(
+                    self.mode,
+                    SearchMode::ZeroStreamId | SearchMode::StructuredTrailer16OpaqueFlag
+                ) && input.len() >= 11
                     && input[8..11] != [0; 3] =>
             {
                 return Err(Error::StreamIdMismatch);

@@ -284,7 +284,7 @@ pub fn steiner_tree_approximation(
     }
 
     // Step 2: Kruskal MST on the metric closure of terminals.
-    closure_edges.sort_by(|a, b| (a.0, a.1, a.2, a.3).cmp(&(b.0, b.1, b.2, b.3)));
+    closure_edges.sort_by_key(|a| (a.0, a.1, a.2, a.3));
     let mut dsu_t = DisjointSet::new(k);
     let mut candidate_arcs: BTreeSet<u32> = BTreeSet::new();
     for (w, _, ti, tj, arcs) in &closure_edges {

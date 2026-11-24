@@ -458,7 +458,9 @@ fn cancellation_refuses_at_every_phase_without_partial_rows() -> Test {
 fn invalid_ranges_limits_and_cumulative_edit_overflow_refuse() -> Test {
     let f = timed_fixture(&[0], &[0], u32::MAX, u32::MAX, &[]);
     let p = AvcMp4::parse(&f.bytes, None, DemuxLimits::default())?;
-    for query in [0..0, 100..99] {
+    #[allow(clippy::reversed_empty_ranges)]
+    let invalid_queries = [0..0, 100..99];
+    for query in invalid_queries {
         assert_eq!(
             p.select_movie_interval(query, MovieSelectionLimits::default()),
             Err(DemuxError::Timeline)

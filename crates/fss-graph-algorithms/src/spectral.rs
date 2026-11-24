@@ -47,7 +47,10 @@ pub static IDENTITY: AlgorithmIdentity = AlgorithmIdentity {
 pub fn bound(n: u64, m: u64, max_iterations: u32) -> Vec<BoundRow> {
     let iters = u64::from(max_iterations);
     vec![
-        ("matrix_vector_products", mul(add(iters, 1), add(n, mul(2, m)))),
+        (
+            "matrix_vector_products",
+            mul(add(iters, 1), add(n, mul(2, m))),
+        ),
         ("residual_norm_evaluations", mul(add(iters, 1), mul(2, n))),
         (OUTPUT_ENTRIES, add(n, 1)),
     ]
@@ -182,39 +185,38 @@ pub fn spectral_change_detection(
     }
     let total_deg: i128 = deg.iter().map(|&d| i128::from(d.max(1))).sum();
 
-    let deflate_and_normalize =
-        |vec: &mut [i64], meter: &mut Meter| -> Result<(), GraphError> {
-            let mut weighted_sum = 0_i128;
-            for (i, &val) in vec.iter().enumerate() {
-                meter.tick("residual_norm_evaluations")?;
-                weighted_sum += i128::from(val) * i128::from(deg[i].max(1));
-            }
-            let mean = (weighted_sum / total_deg) as i64;
-            let mut max_abs = 0_i64;
+    let deflate_and_normalize = |vec: &mut [i64], meter: &mut Meter| -> Result<(), GraphError> {
+        let mut weighted_sum = 0_i128;
+        for (i, &val) in vec.iter().enumerate() {
+            meter.tick("residual_norm_evaluations")?;
+            weighted_sum += i128::from(val) * i128::from(deg[i].max(1));
+        }
+        let mean = (weighted_sum / total_deg) as i64;
+        let mut max_abs = 0_i64;
+        for val in vec.iter_mut() {
+            *val = val.saturating_sub(mean);
+            max_abs = max_abs.max(val.saturating_abs());
+        }
+        if max_abs > 0 {
+            // Canonical sign: first node with non-zero coordinate is positive.
+            let first_sign = vec
+                .iter()
+                .copied()
+                .find(|&v| v != 0)
+                .map_or(1_i128, |v| if v > 0 { 1 } else { -1 });
             for val in vec.iter_mut() {
-                *val = val.saturating_sub(mean);
-                max_abs = max_abs.max(val.saturating_abs());
+                meter.tick("residual_norm_evaluations")?;
+                let scaled =
+                    (i128::from(*val) * first_sign * i128::from(SCALE_PPB)) / i128::from(max_abs);
+                *val = scaled as i64;
             }
-            if max_abs > 0 {
-                // Canonical sign: first node with non-zero coordinate is positive.
-                let first_sign = vec
-                    .iter()
-                    .copied()
-                    .find(|&v| v != 0)
-                    .map_or(1_i128, |v| if v > 0 { 1 } else { -1 });
-                for val in vec.iter_mut() {
-                    meter.tick("residual_norm_evaluations")?;
-                    let scaled =
-                        (i128::from(*val) * first_sign * i128::from(SCALE_PPB)) / i128::from(max_abs);
-                    *val = scaled as i64;
-                }
-            } else {
-                for _ in 0..vec.len() {
-                    meter.tick("residual_norm_evaluations")?;
-                }
+        } else {
+            for _ in 0..vec.len() {
+                meter.tick("residual_norm_evaluations")?;
             }
-            Ok(())
-        };
+        }
+        Ok(())
+    };
 
     deflate_and_normalize(&mut x, &mut meter)?;
 

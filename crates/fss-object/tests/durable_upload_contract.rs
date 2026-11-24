@@ -103,7 +103,11 @@ impl CrashTransport {
         }
         if self.control.crash_after.get() == Some(operation) {
             self.control.crash_after.set(None);
-            panic!("simulated process exit after {operation:?} provider effect");
+            // Fault-injection test harness: unwinds into `catch_unwind` to simulate abrupt exit.
+            #[allow(clippy::panic)]
+            {
+                panic!("simulated process exit after {operation:?} provider effect");
+            }
         }
     }
 }

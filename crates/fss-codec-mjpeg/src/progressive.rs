@@ -16,6 +16,10 @@ use fss_core::ContentDigest;
 pub(crate) const MAX_SCANS: usize = 256;
 const MAX_COEFFICIENT_BYTES: usize = 32 * 1024 * 1024;
 
+pub(crate) const fn max_coefficient_blocks() -> u64 {
+    (MAX_COEFFICIENT_BYTES / 128) as u64
+}
+
 pub(crate) fn profile_bytes() -> usize {
     include_bytes!("progressive.rs").len()
         + include_bytes!("entropy.rs").len()

@@ -406,7 +406,7 @@ pub fn zset_incremental_maintenance(
         meter.decide(1, idx as u64, rec.delta_weight.unsigned_abs());
     }
 
-    let working_bytes = ((v_count + e_count + d_count) * 48) as u64;
+    let working_bytes = (v_count + e_count + d_count) * 48;
     meter.finish(
         &IDENTITY,
         InputShape {

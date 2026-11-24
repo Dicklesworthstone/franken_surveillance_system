@@ -783,6 +783,14 @@ pub fn compute_registry_digests(spec: ContractBasisRegistryBytes<'_>) -> Registr
     RegistryDigestSet::from_registry_bytes(spec)
 }
 
+fn valid_basis_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_IDENTIFIER_LEN
+        && value
+            .bytes()
+            .all(|byte| !byte.is_ascii_control() && !byte.is_ascii_whitespace())
+}
+
 /// Validates structural invariants of a `ContractBasis`.
 pub fn validate_contract_basis(basis: &ContractBasis) -> Result<(), ContractBasisError> {
     if basis.semantic_protocol != CANONICAL_SEMANTIC_PROTOCOL {
@@ -791,16 +799,12 @@ pub fn validate_contract_basis(basis: &ContractBasis) -> Result<(), ContractBasi
             actual: basis.semantic_protocol.clone(),
         });
     }
-    if basis.producer_release_id.trim().is_empty()
-        || basis.producer_release_id.len() > MAX_IDENTIFIER_LEN
-    {
+    if !valid_basis_identifier(&basis.producer_release_id) {
         return Err(ContractBasisError::InvalidIdentifier {
             field: "producer_release_id",
         });
     }
-    if basis.ontology_generation_id.trim().is_empty()
-        || basis.ontology_generation_id.len() > MAX_IDENTIFIER_LEN
-    {
+    if !valid_basis_identifier(&basis.ontology_generation_id) {
         return Err(ContractBasisError::InvalidIdentifier {
             field: "ontology_generation_id",
         });
@@ -808,7 +812,7 @@ pub fn validate_contract_basis(basis: &ContractBasis) -> Result<(), ContractBasi
     if basis
         .accepted_nightly
         .as_deref()
-        .is_some_and(|nightly| nightly.trim().is_empty() || nightly.len() > MAX_IDENTIFIER_LEN)
+        .is_some_and(|nightly| !valid_basis_identifier(nightly))
     {
         return Err(ContractBasisError::InvalidIdentifier {
             field: "accepted_nightly",
@@ -1025,14 +1029,15 @@ pub fn check_compatibility(
         });
     }
 
-    // 9. Producer release ID must be valid (non-empty)
-    if candidate.producer_release_id.trim().is_empty() {
+    // 9. Producer release ID must be valid (non-empty, bounded, no whitespace/control chars)
+    if !valid_basis_identifier(&candidate.producer_release_id) {
         return CompatibilityResult::Incompatible(ContractBasisRefusal::InvalidProducerRelease {
-            reason: "producer release ID cannot be empty".to_owned(),
+            reason: "producer release ID is empty, oversized, or contains forbidden whitespace/control characters".to_owned(),
         });
     }
 
-    // 10. Check nightly compatibility if specified on both
+    // 10. Check nightly compatibility: when the server pins an accepted nightly, a client
+    //     omitting `accepted_nightly` MUST NOT bypass the requirement (F3).
     match (&expected.accepted_nightly, &candidate.accepted_nightly) {
         (Some(expected_nightly), Some(candidate_nightly))
             if expected_nightly != candidate_nightly =>
@@ -1040,6 +1045,12 @@ pub fn check_compatibility(
             return CompatibilityResult::Incompatible(ContractBasisRefusal::IncompatibleNightly {
                 required: expected_nightly.clone(),
                 actual: Some(candidate_nightly.clone()),
+            });
+        }
+        (Some(expected_nightly), None) => {
+            return CompatibilityResult::Incompatible(ContractBasisRefusal::IncompatibleNightly {
+                required: expected_nightly.clone(),
+                actual: None,
             });
         }
         _ => {}
@@ -1068,16 +1079,17 @@ pub fn check_compatibility(
 
 /// Negotiates a shared `ContractBasis` between server and client during `session.open`.
 ///
-/// Returns the agreed basis if compatible, or fails closed with `ContractBasisError`
-/// containing the refusal details and discovery/upgrade guidance.
+/// Validates both server and client bases structurally and returns the agreed basis if
+/// compatible, or fails closed with `ContractBasisError` containing refusal details and
+/// discovery/upgrade guidance.
 pub fn negotiate_basis(
     server_basis: &ContractBasis,
     client_basis: &ContractBasis,
 ) -> Result<ContractBasis, ContractBasisError> {
+    validate_contract_basis(server_basis)?;
     match check_compatibility(server_basis, client_basis) {
-        CompatibilityResult::Identical => Ok(server_basis.clone()),
-        CompatibilityResult::CompatibleWithNotes { .. } => {
-            // Under compatible registries, server basis governs interpretation
+        CompatibilityResult::Identical | CompatibilityResult::CompatibleWithNotes { .. } => {
+            validate_contract_basis(client_basis)?;
             Ok(server_basis.clone())
         }
         CompatibilityResult::Incompatible(refusal) => {
@@ -1223,35 +1235,77 @@ pub fn check_basis_freshness(
     Ok(())
 }
 
-/// Refuses a stale basis anchor that is not strictly older than the active anchor,
-/// or that originates from a divergent site lineage.
+/// Refuses any candidate anchor that is stale (older than `current`), ahead of `current`,
+/// belongs to a divergent site lineage, or diverges in `history_root` / `state_root` at the
+/// same `(ledger_epoch, commit_sequence)` (F2).
 ///
-/// Fails closed with `ContractBasisError::StaleBasis` (`ERR-AGENT-SESSION-STALE-001`).
+/// Only an exact match to `current` succeeds. Fails closed with `ContractBasisError::StaleBasis`
+/// (`ERR-AGENT-SESSION-STALE-001`).
 pub fn refuse_stale_anchor(
-    valid_at: &LedgerAnchor,
+    candidate: &LedgerAnchor,
     current: &LedgerAnchor,
 ) -> Result<(), ContractBasisError> {
-    if valid_at.site_lineage != current.site_lineage {
+    if candidate.site_lineage != current.site_lineage {
         return Err(ContractBasisError::StaleBasis {
             reason: StaleBasisReason::StaleAnchor {
                 detail: format!(
-                    "site lineage divergence: valid_at lineage '{}' != current '{}'",
-                    valid_at.site_lineage, current.site_lineage
+                    "site lineage divergence: candidate lineage '{}' != current '{}'",
+                    candidate.site_lineage, current.site_lineage
                 ),
             },
         });
     }
-    if (valid_at.ledger_epoch, valid_at.commit_sequence)
-        >= (current.ledger_epoch, current.commit_sequence)
+    let cand_pos = (candidate.ledger_epoch, candidate.commit_sequence);
+    let curr_pos = (current.ledger_epoch, current.commit_sequence);
+    if cand_pos < curr_pos {
+        return Err(ContractBasisError::StaleBasis {
+            reason: StaleBasisReason::StaleAnchor {
+                detail: format!(
+                    "stale anchor: candidate ({}, {}) is older than current ({}, {})",
+                    candidate.ledger_epoch,
+                    candidate.commit_sequence,
+                    current.ledger_epoch,
+                    current.commit_sequence
+                ),
+            },
+        });
+    }
+    if cand_pos > curr_pos {
+        return Err(ContractBasisError::StaleBasis {
+            reason: StaleBasisReason::StaleAnchor {
+                detail: format!(
+                    "future anchor: candidate ({}, {}) is ahead of current ({}, {})",
+                    candidate.ledger_epoch,
+                    candidate.commit_sequence,
+                    current.ledger_epoch,
+                    current.commit_sequence
+                ),
+            },
+        });
+    }
+    if candidate.adapter_registry_epoch != current.adapter_registry_epoch
+        || candidate.schema_epoch != current.schema_epoch
+        || candidate.policy_epoch != current.policy_epoch
+        || candidate.privacy_epoch != current.privacy_epoch
     {
         return Err(ContractBasisError::StaleBasis {
             reason: StaleBasisReason::StaleAnchor {
                 detail: format!(
-                    "valid_at anchor ({}, {}) is not strictly older than current ({}, {})",
-                    valid_at.ledger_epoch,
-                    valid_at.commit_sequence,
-                    current.ledger_epoch,
-                    current.commit_sequence
+                    "control epoch divergence at ({}, {}): adapter/schema/policy/privacy epochs do not match current anchor",
+                    candidate.ledger_epoch, candidate.commit_sequence
+                ),
+            },
+        });
+    }
+    if candidate.state_root != current.state_root {
+        return Err(ContractBasisError::StaleBasis {
+            reason: StaleBasisReason::StaleAnchor {
+                detail: format!(
+                    "state_root divergence at ({}, {}): candidate {} != current {}",
+                    candidate.ledger_epoch,
+                    candidate.commit_sequence,
+                    candidate.state_root,
+                    current.state_root
                 ),
             },
         });

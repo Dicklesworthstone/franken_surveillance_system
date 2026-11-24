@@ -4,9 +4,9 @@
 //! public doc's own PSK NUL-truncation example.
 
 use fss_tutk::wire::{
-    auth_key, derive_psk, derive_psk_truncated, new_session_id, NewProto, CHANNEL_MAIN,
+    CHANNEL_MAIN, NewProto, auth_key, derive_psk, derive_psk_truncated, new_session_id,
 };
-use fss_tutk::xxtea::{challenge_response, decrypt, encrypt, ChallengeKey};
+use fss_tutk::xxtea::{ChallengeKey, challenge_response, decrypt, encrypt};
 
 const UID: &str = "SIMCAMSIMCAMSIMCAM11";
 const ENR: &str = "sim-enr-16byte!!";
@@ -19,13 +19,19 @@ fn hex(b: &[u8]) -> String {
 fn unhex(s: &str) -> Vec<u8> {
     (0..s.len())
         .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+        .map(|i| {
+            u8::from_str_radix(&s[i..i + 2], 16)
+                .unwrap_or_else(|error| unreachable!("invalid test hex: {error}"))
+        })
         .collect()
 }
 
 #[test]
 fn authkey_matches_python_reference() {
-    assert_eq!(std::str::from_utf8(&auth_key(ENR, MAC)).unwrap(), "vW28cYGv");
+    assert_eq!(
+        std::str::from_utf8(&auth_key(ENR, MAC)).unwrap(),
+        "vW28cYGv"
+    );
 }
 
 #[test]
@@ -112,7 +118,11 @@ fn xxtea_vectors_from_python_reference() {
     let p = decrypt(&c, b"0123456789abcdef").expect("dec");
     assert_eq!(hex(&p), "0011223344556677");
 
-    let c16 = encrypt(&unhex("000102030405060708090a0b0c0d0e0f"), b"0123456789abcdef").expect("enc16");
+    let c16 = encrypt(
+        &unhex("000102030405060708090a0b0c0d0e0f"),
+        b"0123456789abcdef",
+    )
+    .expect("enc16");
     assert_eq!(hex(&c16), "8d9ed214cc86fe675ca1c4ba9a70aca5");
     let p16 = decrypt(&c16, b"0123456789abcdef").expect("dec16");
     assert_eq!(hex(&p16), "000102030405060708090a0b0c0d0e0f");
@@ -141,7 +151,9 @@ fn round_trip_randomized() {
     // deterministic PRNG so failures reproduce
     let mut state = 0x1234_5678_9abc_def0u64;
     let mut next = || {
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         (state >> 33) as u8
     };
     for len in [8usize, 12, 16, 20, 32, 64] {

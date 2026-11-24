@@ -270,13 +270,24 @@ fn selected_symlinks_and_non_utf8_names_refuse_while_unrelated_ones_are_ignored(
                 } else {
                     let mut name = stem.as_bytes().to_vec();
                     name.extend_from_slice(b"\xff.root");
-                    fs::write(
+                    match fs::write(
                         fixture
                             .root
                             .join("roots")
                             .join(std::ffi::OsString::from_vec(name)),
                         b"bad",
-                    )?;
+                    ) {
+                        Ok(()) => {}
+                        // macOS APFS enforces valid UTF-8 filenames in the kernel and
+                        // fails closed with EILSEQ (92) before any non-UTF-8 directory
+                        // entry can exist on disk.
+                        #[cfg(target_os = "macos")]
+                        Err(error) if error.raw_os_error() == Some(92) => {
+                            let _ = reader.finish()?;
+                            continue;
+                        }
+                        Err(error) => return Err(error.into()),
+                    }
                 }
                 let result = if final_pass {
                     reader.finish().map(|_| ())

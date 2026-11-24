@@ -7,9 +7,11 @@
 //! authenticity. Every session fits its own nominal feature trajectory. A passing
 //! result remains conditional on those trajectories, cameras and associations.
 
-use super::{ClockDriftError, ClockDriftScan, ClockRateHypothesis, scan_clock_drift};
 use super::super::{ClockAlignmentPair, MAX_CLOCK_OFFSET_HYPOTHESES, validate_membership};
-use crate::temporal_triangulation::{MAX_TEMPORAL_VIEWS, TemporalTriangulationOptions, TimedCalibratedView};
+use super::{ClockDriftError, ClockDriftScan, ClockRateHypothesis, scan_clock_drift};
+use crate::temporal_triangulation::{
+    MAX_TEMPORAL_VIEWS, TemporalTriangulationOptions, TimedCalibratedView,
+};
 use crate::temporal_validation::IntervalCalibratedView;
 use crate::{GeometryError, WorkBudget};
 
@@ -114,10 +116,14 @@ pub enum ClockValidationError {
     InvalidProjection,
 }
 impl From<GeometryError> for ClockValidationError {
-    fn from(error: GeometryError) -> Self { Self::Geometry(error) }
+    fn from(error: GeometryError) -> Self {
+        Self::Geometry(error)
+    }
 }
 impl From<ClockDriftError> for ClockValidationError {
-    fn from(error: ClockDriftError) -> Self { Self::Drift(error) }
+    fn from(error: ClockDriftError) -> Self {
+        Self::Drift(error)
+    }
 }
 impl std::fmt::Display for ClockValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -134,7 +140,11 @@ impl std::fmt::Display for ClockValidationError {
 }
 impl std::error::Error for ClockValidationError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self { Self::Geometry(e) => Some(e), Self::Drift(e) => Some(e), _ => None }
+        match self {
+            Self::Geometry(e) => Some(e),
+            Self::Drift(e) => Some(e),
+            _ => None,
+        }
     }
 }
 
@@ -163,34 +173,67 @@ pub fn validate_clock_sessions(
 ) -> Result<ClockValidationReport, ClockValidationError> {
     budget.charge(0)?;
     let started = budget.used();
-    if sessions.len() > MAX_CLOCK_VALIDATION_SESSIONS || hypotheses.len() > MAX_CLOCK_OFFSET_HYPOTHESES
+    if sessions.len() > MAX_CLOCK_VALIDATION_SESSIONS
+        || hypotheses.len() > MAX_CLOCK_OFFSET_HYPOTHESES
         || requests.len() > MAX_CLOCK_INTERVAL_PROJECTIONS
-        || search_training.len() > MAX_TEMPORAL_VIEWS || search_validation.len() > MAX_TEMPORAL_VIEWS
-        || sessions.iter().any(|s| s.training.len() > MAX_TEMPORAL_VIEWS || s.validation.len() > MAX_TEMPORAL_VIEWS)
-    { return Err(GeometryError::LimitExceeded.into()); }
-    if pair.reference_camera == 0 || pair.target_camera == 0 || pair.reference_camera == pair.target_camera
-        || pair.reference_clock == 0 || pair.target_clock == 0 || pair.reference_clock == pair.target_clock
-    { return Err(ClockDriftError::Alignment(super::super::ClockAlignmentError::InvalidPair).into()); }
-    if sessions.is_empty() { return Err(ClockValidationError::InvalidSession); }
-    if hypotheses.is_empty() { return Err(ClockDriftError::InvalidHypotheses.into()); }
+        || search_training.len() > MAX_TEMPORAL_VIEWS
+        || search_validation.len() > MAX_TEMPORAL_VIEWS
+        || sessions.iter().any(|s| {
+            s.training.len() > MAX_TEMPORAL_VIEWS || s.validation.len() > MAX_TEMPORAL_VIEWS
+        })
+    {
+        return Err(GeometryError::LimitExceeded.into());
+    }
+    if pair.reference_camera == 0
+        || pair.target_camera == 0
+        || pair.reference_camera == pair.target_camera
+        || pair.reference_clock == 0
+        || pair.target_clock == 0
+        || pair.reference_clock == pair.target_clock
+    {
+        return Err(
+            ClockDriftError::Alignment(super::super::ClockAlignmentError::InvalidPair).into(),
+        );
+    }
+    if sessions.is_empty() {
+        return Err(ClockValidationError::InvalidSession);
+    }
+    if hypotheses.is_empty() {
+        return Err(ClockDriftError::InvalidHypotheses.into());
+    }
     budget.charge(256 * (sessions.len() + requests.len() + hypotheses.len()) as u64)?;
     let mut ordered = copy(sessions)?;
     ordered.sort_by_key(|s| s.id);
     if ordered.iter().any(|s| s.id == 0) || ordered.windows(2).any(|s| s[0].id == s[1].id) {
         return Err(ClockValidationError::InvalidSession);
     }
-    let search_session = ClockValidationSession { id: 0, training: search_training, validation: search_validation };
-    validate_membership(pair, search_training, search_validation, budget).map_err(ClockDriftError::from)?;
+    let search_session = ClockValidationSession {
+        id: 0,
+        training: search_training,
+        validation: search_validation,
+    };
+    validate_membership(pair, search_training, search_validation, budget)
+        .map_err(ClockDriftError::from)?;
     let cameras = [pair.reference_camera, pair.target_camera].map(|id| {
-        search_training.iter().find(|row| row.view.camera == id).map(|row| row.view)
+        search_training
+            .iter()
+            .find(|row| row.view.camera == id)
+            .map(|row| row.view)
     });
     let mut windows = Vec::new();
-    windows.try_reserve_exact(sessions.len() + 1).map_err(|_| GeometryError::LimitExceeded)?;
+    windows
+        .try_reserve_exact(sessions.len() + 1)
+        .map_err(|_| GeometryError::LimitExceeded)?;
     for session in std::iter::once(&search_session).chain(ordered.iter()) {
         validate_membership(pair, session.training, session.validation, budget)
             .map_err(ClockDriftError::from)?;
         windows.push(session_windows(pair, *session));
-        for view in session.training.iter().map(|r| r.view).chain(session.validation.iter().map(|r| r.view)) {
+        for view in session
+            .training
+            .iter()
+            .map(|r| r.view)
+            .chain(session.validation.iter().map(|r| r.view))
+        {
             budget.charge(32)?;
             let expected = cameras[usize::from(view.camera == pair.target_camera)]
                 .ok_or(ClockValidationError::CameraChanged)?;
@@ -204,12 +247,15 @@ pub fn validate_clock_sessions(
             budget.charge(8)?;
             let mut before = [false; 2];
             for camera in 0..2 {
-                if prior[camera][0] <= current[camera][1] && current[camera][0] <= prior[camera][1] {
+                if prior[camera][0] <= current[camera][1] && current[camera][0] <= prior[camera][1]
+                {
                     return Err(ClockValidationError::OverlappingSessions);
                 }
                 before[camera] = prior[camera][1] < current[camera][0];
             }
-            if before[0] != before[1] { return Err(ClockValidationError::ClockOrderChanged); }
+            if before[0] != before[1] {
+                return Err(ClockValidationError::ClockOrderChanged);
+            }
         }
     }
     let mut candidates = copy(hypotheses)?;
@@ -221,15 +267,23 @@ pub fn validate_clock_sessions(
     // frozen inventory later enters every scan; no derived score changes this set.
     let mut requests = copy(requests)?;
     requests.sort_by_key(|r| r.id);
-    if requests.iter().any(|r| r.id == 0 || r.target_interval_ns[0] > r.target_interval_ns[1])
+    if requests
+        .iter()
+        .any(|r| r.id == 0 || r.target_interval_ns[0] > r.target_interval_ns[1])
         || requests.windows(2).any(|p| p[0].id == p[1].id)
-    { return Err(ClockValidationError::InvalidProjection); }
+    {
+        return Err(ClockValidationError::InvalidProjection);
+    }
     let mut projections = Vec::new();
-    projections.try_reserve_exact(requests.len()).map_err(|_| GeometryError::LimitExceeded)?;
+    projections
+        .try_reserve_exact(requests.len())
+        .map_err(|_| GeometryError::LimitExceeded)?;
     for request in requests {
         budget.charge(64 * candidates.len() as u64)?;
         let mut mappings = Vec::new();
-        mappings.try_reserve_exact(candidates.len()).map_err(|_| GeometryError::LimitExceeded)?;
+        mappings
+            .try_reserve_exact(candidates.len())
+            .map_err(|_| GeometryError::LimitExceeded)?;
         let mut envelope = [i128::MAX, i128::MIN];
         for hypothesis in &candidates {
             let interval = hypothesis.map_interval(target_anchor_ns, request.target_interval_ns)?;
@@ -239,51 +293,111 @@ pub fn validate_clock_sessions(
         }
         budget.charge(16 * windows.len() as u64)?;
         let mut containing_session_ids = Vec::new();
-        containing_session_ids.try_reserve_exact(windows.len()).map_err(|_| GeometryError::LimitExceeded)?;
-        for (window, id) in windows.iter().zip(std::iter::once(0).chain(ordered.iter().map(|s| s.id))) {
-            if window[1][0] <= request.target_interval_ns[0] && request.target_interval_ns[1] <= window[1][1] {
+        containing_session_ids
+            .try_reserve_exact(windows.len())
+            .map_err(|_| GeometryError::LimitExceeded)?;
+        for (window, id) in windows
+            .iter()
+            .zip(std::iter::once(0).chain(ordered.iter().map(|s| s.id)))
+        {
+            if window[1][0] <= request.target_interval_ns[0]
+                && request.target_interval_ns[1] <= window[1][1]
+            {
                 containing_session_ids.push(id);
             }
         }
-        projections.push(ClockIntervalProjection { request, mappings, containing_session_ids, reference_envelope_ns: envelope });
+        projections.push(ClockIntervalProjection {
+            request,
+            mappings,
+            containing_session_ids,
+            reference_envelope_ns: envelope,
+        });
     }
-    let search = scan_clock_drift(pair, target_anchor_ns, search_training, search_validation,
-        &candidates, options, budget)?;
+    let search = scan_clock_drift(
+        pair,
+        target_anchor_ns,
+        search_training,
+        search_validation,
+        &candidates,
+        options,
+        budget,
+    )?;
     let mut evaluated = Vec::new();
-    evaluated.try_reserve_exact(ordered.len()).map_err(|_| GeometryError::LimitExceeded)?;
+    evaluated
+        .try_reserve_exact(ordered.len())
+        .map_err(|_| GeometryError::LimitExceeded)?;
     for session in ordered {
-        let scan = scan_clock_drift(pair, target_anchor_ns, session.training, session.validation,
-            &candidates, options, budget)?;
-        evaluated.push(ClockSessionValidation { id: session.id, scan });
+        let scan = scan_clock_drift(
+            pair,
+            target_anchor_ns,
+            session.training,
+            session.validation,
+            &candidates,
+            options,
+            budget,
+        )?;
+        evaluated.push(ClockSessionValidation {
+            id: session.id,
+            scan,
+        });
     }
     let mut support = Vec::new();
-    support.try_reserve_exact(candidates.len()).map_err(|_| GeometryError::LimitExceeded)?;
+    support
+        .try_reserve_exact(candidates.len())
+        .map_err(|_| GeometryError::LimitExceeded)?;
     for (index, trial) in search.trials.iter().enumerate() {
         budget.charge(16 * (evaluated.len() + 1) as u64)?;
         let mut sessions = Vec::new();
-        sessions.try_reserve_exact(evaluated.len()).map_err(|_| GeometryError::LimitExceeded)?;
+        sessions
+            .try_reserve_exact(evaluated.len())
+            .map_err(|_| GeometryError::LimitExceeded)?;
         for session in &evaluated {
-            sessions.push((session.id, session.scan.trials[index].consistent_for_all_capture_times()));
+            sessions.push((
+                session.id,
+                session.scan.trials[index].consistent_for_all_capture_times(),
+            ));
         }
-        support.push(ClockHypothesisSupport { hypothesis: trial.hypothesis,
-            search_supported: trial.consistent_for_all_capture_times(), sessions });
+        support.push(ClockHypothesisSupport {
+            hypothesis: trial.hypothesis,
+            search_supported: trial.consistent_for_all_capture_times(),
+            sessions,
+        });
     }
     budget.charge(0)?;
-    Ok(ClockValidationReport { search, sessions: evaluated, support, projections, work_units: budget.used() - started })
+    Ok(ClockValidationReport {
+        search,
+        sessions: evaluated,
+        support,
+        projections,
+        work_units: budget.used() - started,
+    })
 }
 
 fn copy<T: Copy>(values: &[T]) -> Result<Vec<T>, GeometryError> {
     let mut result = Vec::new();
-    result.try_reserve_exact(values.len()).map_err(|_| GeometryError::LimitExceeded)?;
+    result
+        .try_reserve_exact(values.len())
+        .map_err(|_| GeometryError::LimitExceeded)?;
     result.extend_from_slice(values);
     Ok(result)
 }
 
 // Admission has already checked camera membership, nonempty counts and intervals.
-fn session_windows(pair: ClockAlignmentPair, session: ClockValidationSession<'_>) -> [[i128; 2]; 2] {
+fn session_windows(
+    pair: ClockAlignmentPair,
+    session: ClockValidationSession<'_>,
+) -> [[i128; 2]; 2] {
     let mut windows = [[i128::MAX, i128::MIN]; 2];
-    for (camera, interval) in session.training.iter().map(|r| (r.view.camera, [r.capture_time_ns; 2]))
-        .chain(session.validation.iter().map(|r| (r.view.camera, r.capture_interval_ns)))
+    for (camera, interval) in session
+        .training
+        .iter()
+        .map(|r| (r.view.camera, [r.capture_time_ns; 2]))
+        .chain(
+            session
+                .validation
+                .iter()
+                .map(|r| (r.view.camera, r.capture_interval_ns)),
+        )
     {
         let index = usize::from(camera == pair.target_camera);
         windows[index][0] = windows[index][0].min(interval[0]);

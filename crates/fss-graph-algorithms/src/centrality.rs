@@ -203,19 +203,19 @@ pub fn centrality_family(
             meter.tick("dependency_updates")?;
             let sw = sigma[w as usize];
             let dw = delta_ppb[w as usize];
-            if sw > 0 {
+            if sw != 0 {
                 for &(v, arc_idx) in &preds[w as usize] {
                     meter.tick("dependency_updates")?;
                     let sv = sigma[v as usize];
-                    let contrib = (sv * (u128::from(SCALE_PPB) + dw)) / sw;
-                    delta_ppb[v as usize] = delta_ppb[v as usize].saturating_add(contrib);
-                    edge_betweenness[arc_idx as usize] =
-                        edge_betweenness[arc_idx as usize].saturating_add(contrib);
+                    if let Some(contrib) = (sv * (u128::from(SCALE_PPB) + dw)).checked_div(sw) {
+                        delta_ppb[v as usize] = delta_ppb[v as usize].saturating_add(contrib);
+                        edge_betweenness[arc_idx as usize] =
+                            edge_betweenness[arc_idx as usize].saturating_add(contrib);
+                    }
                 }
             }
             if w != s {
-                vertex_betweenness[w as usize] =
-                    vertex_betweenness[w as usize].saturating_add(dw);
+                vertex_betweenness[w as usize] = vertex_betweenness[w as usize].saturating_add(dw);
             }
         }
     }

@@ -265,8 +265,10 @@ fn repeated_equivalent_or_reversed_vendor_times_split() -> Test {
 
 #[test]
 fn vendor_gap_policy_is_inclusive_and_nanosecond_exact() -> Test {
-    let mut limits = TrackLimits::default();
-    limits.max_vendor_gap_ns = 1;
+    let limits = TrackLimits {
+        max_vendor_gap_ns: 1,
+        ..TrackLimits::default()
+    };
     let doc = document(
         &(frame("9999-12-31T23:59:59.999999997Z", Some("m"), &object("1"))
             + &frame("9999-12-31T23:59:59.999999998Z", Some("m"), &object("1"))

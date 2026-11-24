@@ -676,7 +676,9 @@ fn opaque_flag_trailer_is_chunk_invariant_and_retains_source() -> TestResult {
         rest.extend_from_slice(&tag(9, 40, b"video"));
         for cut in 0..=rest.len() {
             let mut framer = Framer::with_mode(
-                Limits::default(), 1024, SearchMode::StructuredTrailer16OpaqueFlag,
+                Limits::default(),
+                1024,
+                SearchMode::StructuredTrailer16OpaqueFlag,
             )?;
             framer.append(0, &initial)?;
             assert!(matches!(framer.take()?, Next::Record(_)));
@@ -690,11 +692,17 @@ fn opaque_flag_trailer_is_chunk_invariant_and_retains_source() -> TestResult {
                 return Err("missing opaque trailer successor".into());
             };
             assert_eq!(record.bytes(), rest);
-            assert!(matches!(record.kind(), RecordKind::Candidate {
-                trailer_bytes: 16, tag_kind: 9, timestamp_ms: 40,
-                earlier_incomplete: false, provisional: false,
-                policy: SearchMode::StructuredTrailer16OpaqueFlag,
-            }));
+            assert!(matches!(
+                record.kind(),
+                RecordKind::Candidate {
+                    trailer_bytes: 16,
+                    tag_kind: 9,
+                    timestamp_ms: 40,
+                    earlier_incomplete: false,
+                    provisional: false,
+                    policy: SearchMode::StructuredTrailer16OpaqueFlag,
+                }
+            ));
         }
     }
     Ok(())
@@ -711,7 +719,9 @@ fn opaque_flag_trailer_refuses_malformed_input_without_discarding_it() -> TestRe
         let mut source = valid.clone();
         source[corrupt] ^= 1;
         let mut framer = Framer::with_mode(
-            Limits::default(), 1024, SearchMode::StructuredTrailer16OpaqueFlag,
+            Limits::default(),
+            1024,
+            SearchMode::StructuredTrailer16OpaqueFlag,
         )?;
         framer.append(0, &initial)?;
         framer.take()?;
@@ -720,11 +730,21 @@ fn opaque_flag_trailer_refuses_malformed_input_without_discarding_it() -> TestRe
         assert_eq!(framer.take(), Err(Error::TrailerPolicyMismatch));
         assert_eq!(framer.retire().bytes(), source);
     }
-    let tight = Limits { max_trailer: 15, ..Limits::default() };
-    assert!(matches!(Framer::with_mode(tight, 1024, SearchMode::StructuredTrailer16OpaqueFlag), Err(Error::Configuration)));
+    let tight = Limits {
+        max_trailer: 15,
+        ..Limits::default()
+    };
+    assert!(matches!(
+        Framer::with_mode(tight, 1024, SearchMode::StructuredTrailer16OpaqueFlag),
+        Err(Error::Configuration)
+    ));
     let mut wrong_first = initial.clone();
     wrong_first[13 + 8] = 1;
-    let mut framer = Framer::with_mode(Limits::default(), 1024, SearchMode::StructuredTrailer16OpaqueFlag)?;
+    let mut framer = Framer::with_mode(
+        Limits::default(),
+        1024,
+        SearchMode::StructuredTrailer16OpaqueFlag,
+    )?;
     framer.append(0, &wrong_first)?;
     assert!(matches!(framer.take()?, Next::Record(_)));
     assert_eq!(framer.take(), Err(Error::StreamIdMismatch));
@@ -738,11 +758,18 @@ fn private_g4_opaque_trailer_stream() -> TestResult {
     use std::io::Read;
     const MAX_BYTES: usize = 8 * 1024 * 1024;
     let mut input = Vec::new();
-    std::io::stdin().lock().take((MAX_BYTES + 1) as u64).read_to_end(&mut input)?;
+    std::io::stdin()
+        .lock()
+        .take((MAX_BYTES + 1) as u64)
+        .read_to_end(&mut input)?;
     if input.len() > MAX_BYTES || !input.starts_with(b"FLV\x01") {
         return Err("invalid bounded passive input".into());
     }
-    let mut framer = Framer::with_mode(Limits::default(), MAX_BYTES, SearchMode::StructuredTrailer16OpaqueFlag)?;
+    let mut framer = Framer::with_mode(
+        Limits::default(),
+        MAX_BYTES,
+        SearchMode::StructuredTrailer16OpaqueFlag,
+    )?;
     framer.append(0, &input)?;
     let mut records = 0usize;
     let mut metadata = 0usize;
@@ -751,7 +778,12 @@ fn private_g4_opaque_trailer_stream() -> TestResult {
         match framer.take()? {
             Next::NeedMore => break,
             Next::Record(record) => {
-                if let RecordKind::Candidate { tag_kind, trailer_bytes: 16, .. } = record.kind() {
+                if let RecordKind::Candidate {
+                    tag_kind,
+                    trailer_bytes: 16,
+                    ..
+                } = record.kind()
+                {
                     records += 1;
                     metadata += usize::from(tag_kind == 18);
                     nonbinary_flags += usize::from(record.bytes()[11] > 1);
@@ -759,8 +791,12 @@ fn private_g4_opaque_trailer_stream() -> TestResult {
             }
         }
     }
-    if records < 30 { return Err("too few complete passive candidate boundaries".into()); }
-    println!("passive_opaque_framing=accepted candidate_successors={records} metadata_successors={metadata} nonbinary_flags={nonbinary_flags} source=midstream identity=unverified boundary=heuristic media_saved=no");
+    if records < 30 {
+        return Err("too few complete passive candidate boundaries".into());
+    }
+    println!(
+        "passive_opaque_framing=accepted candidate_successors={records} metadata_successors={metadata} nonbinary_flags={nonbinary_flags} source=midstream identity=unverified boundary=heuristic media_saved=no"
+    );
     Ok(())
 }
 

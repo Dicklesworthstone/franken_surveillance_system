@@ -9,9 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use fss_core::ContentDigest;
 use fss_object::{HostSpoolIo, ObjectManifest, SpoolIo, SpoolLimits};
-use fss_publication::{
-    LocalPublicationLimits, LocalRootPublisher, ScopedPublicationIo, SlotName,
-};
+use fss_publication::{LocalPublicationLimits, LocalRootPublisher, ScopedPublicationIo, SlotName};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
@@ -31,7 +29,10 @@ impl Directory {
                 Err(error) => return Err(error),
             }
         }
-        Err(io::Error::new(io::ErrorKind::AlreadyExists, "fixture exhausted"))
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "fixture exhausted",
+        ))
     }
 }
 impl Drop for Directory {
@@ -211,7 +212,12 @@ fn failed_post_recovery_scope_check_releases_both_owner_locks() -> TestResult {
     assert_eq!(scope.checks.load(Ordering::Acquire), 2);
     assert!(scope.calls.load(Ordering::Acquire) > 2);
     assert_eq!(scope.releases.load(Ordering::Acquire), 2);
-    assert_eq!(LocalRootPublisher::open(&directory.0, limits())?.visible_roots().count(), 1);
+    assert_eq!(
+        LocalRootPublisher::open(&directory.0, limits())?
+            .visible_roots()
+            .count(),
+        1
+    );
     Ok(())
 }
 

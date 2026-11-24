@@ -8,7 +8,9 @@ const HEVC: &[u8] = include_bytes!("../../tests/fixtures/hevc_i64.ts");
 
 pub(super) fn m2ts(source: &[u8]) -> Vec<u8> {
     source
-        .chunks_exact(TS_PACKET_BYTES)
+        .as_chunks::<TS_PACKET_BYTES>()
+        .0
+        .iter()
         .enumerate()
         .flat_map(|(index, packet)| {
             // Disordered/wrapping arrival timestamps and copyright bits are deliberately
@@ -101,7 +103,9 @@ fn m2ts_requires_exact_explicit_stride_and_sync_position_without_resynchronizing
 fn opaque_prefix_changes_do_not_authorize_or_conflict_with_ts_continuity() {
     // Duplicate PAT transport packet, with distinct physical arrival prefixes.
     let pat_start = AVC
-        .chunks_exact(TS_PACKET_BYTES)
+        .as_chunks::<TS_PACKET_BYTES>()
+        .0
+        .iter()
         .position(|packet| packet[1] & 0x1f == 0 && packet[2] == 0)
         .unwrap()
         * TS_PACKET_BYTES;

@@ -234,10 +234,7 @@ impl CertifiedOutput for FactorJoinOutput {
 }
 
 /// Intersects sorted slices using leapfrog binary-search seeks, starting from the shortest slice.
-fn leapfrog_intersect(
-    slices: &[&[u32]],
-    meter: &mut Meter,
-) -> Result<Vec<u32>, GraphError> {
+fn leapfrog_intersect(slices: &[&[u32]], meter: &mut Meter) -> Result<Vec<u32>, GraphError> {
     if slices.is_empty() {
         return Ok(Vec::new());
     }

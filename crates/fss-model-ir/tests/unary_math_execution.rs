@@ -114,7 +114,7 @@ fn erf_matches_independent_high_precision_values_and_odd_symmetry() -> Test {
         .flat_map(|row| [f32::from_bits(row.0), -f32::from_bits(row.0)])
         .collect();
     let actual = unary(OpCode::Erf, &input)?;
-    for (row, pair) in GOLDEN.iter().zip(actual.chunks_exact(2)) {
+    for (row, pair) in GOLDEN.iter().zip(actual.as_chunks::<2>().0) {
         assert!(
             pair[0].abs_diff(row.1) <= 2,
             "erf at {:#010x}: {:#010x}, expected {:#010x}",

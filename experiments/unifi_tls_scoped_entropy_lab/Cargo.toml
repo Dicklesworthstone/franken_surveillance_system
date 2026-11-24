@@ -6,6 +6,9 @@ publish = false
 
 [workspace]
 
+[lints.rust]
+unsafe_code = "forbid"
+
 [dependencies]
 asupersync = { version = "=0.5.0", default-features = false }
 fss-core = { path = "../../crates/fss-core" }

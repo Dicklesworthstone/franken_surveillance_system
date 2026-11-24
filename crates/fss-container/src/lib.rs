@@ -16,15 +16,15 @@ pub mod demux;
 pub mod flv_av;
 /// FLV-source-specific AVC fragmented MP4, preserving connection byte ranges.
 pub mod flv_avc;
+mod hevc;
+mod init;
 /// Allocation-free framing for timed, lossless grayscale Matroska derivatives.
 pub mod matroska_gray;
 /// Bounded AVC/HEVC MPEG-TS extraction with checked PSI/PES and original byte spans.
 pub mod mpeg_ts;
+mod mux;
 /// Bounded, allocation-free head probing that names a container family without decoding (FSS-053).
 pub mod probe;
-mod hevc;
-mod init;
-mod mux;
 mod video_codec;
 
 pub use hevc::{

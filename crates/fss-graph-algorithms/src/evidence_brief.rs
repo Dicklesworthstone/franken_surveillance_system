@@ -9,8 +9,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use fss_core::{ContentDigest, EventHypothesis, EventState, ExplainQuestion, ExplainReceipt,
-    GraphAlgorithmWitness, LedgerAnchor};
+use fss_core::{
+    ContentDigest, EventHypothesis, EventState, ExplainQuestion, ExplainReceipt,
+    GraphAlgorithmWitness, LedgerAnchor,
+};
 
 use crate::certified::{Budget, check_witness};
 use crate::dominators::{self, DominanceDirection};
@@ -128,40 +130,72 @@ pub fn explain_current_support(
     if max_entries > MAX_BRIEF_ENTRIES {
         return Err(GraphError::TooLarge.into());
     }
-    let target_digest = *projection.heads().get(event_id)
+    let target_digest = *projection
+        .heads()
+        .get(event_id)
         .ok_or_else(|| GraphError::UnknownNode(event_id.to_owned()))?;
-    let records: BTreeMap<_, _> = projection.records().iter()
-        .map(|record| (record.revision_digest(), record)).collect();
-    let target_record = records.get(&target_digest).copied()
+    let records: BTreeMap<_, _> = projection
+        .records()
+        .iter()
+        .map(|record| (record.revision_digest(), record))
+        .collect();
+    let target_record = records
+        .get(&target_digest)
+        .copied()
         .ok_or_else(|| GraphError::Inconsistent("current head is not expanded".to_owned()))?;
     let target_node = object_node(target_digest);
     let graph = projection.graph();
     let bound = dominators::bound(graph.node_count() as u64, graph.arc_count() as u64);
-    let rooted = dominators::dominators(graph, FRONTIER_ROOT,
-        DominanceDirection::Dominators, budget)?;
+    let rooted =
+        dominators::dominators(graph, FRONTIER_ROOT, DominanceDirection::Dominators, budget)?;
     let remaining = Budget::new(
-        budget.max_operations.checked_sub(rooted.operations).ok_or(GraphError::TooLarge)?,
-        budget.max_output_entries.checked_sub(rooted.output_entries).ok_or(GraphError::TooLarge)?,
+        budget
+            .max_operations
+            .checked_sub(rooted.operations)
+            .ok_or(GraphError::TooLarge)?,
+        budget
+            .max_output_entries
+            .checked_sub(rooted.output_entries)
+            .ok_or(GraphError::TooLarge)?,
     );
-    let ancestry = dominators::dominators(graph, &target_node,
-        DominanceDirection::PostDominators, remaining)?;
-    let rooted_witness = rooted.witness(PROJECTION_ID, anchor.clone())
+    let ancestry = dominators::dominators(
+        graph,
+        &target_node,
+        DominanceDirection::PostDominators,
+        remaining,
+    )?;
+    let rooted_witness = rooted
+        .witness(PROJECTION_ID, anchor.clone())
         .map_err(EvidenceProjectionError::Contract)?;
-    let ancestry_witness = ancestry.witness(PROJECTION_ID, anchor)
+    let ancestry_witness = ancestry
+        .witness(PROJECTION_ID, anchor)
         .map_err(EvidenceProjectionError::Contract)?;
     check_witness(&rooted_witness, &dominators::IDENTITY, &bound)?;
     check_witness(&ancestry_witness, &dominators::IDENTITY, &bound)?;
 
     // Every reachable node except the query root has one immediate post-dominator.
-    let mut ancestors: BTreeSet<&str> = ancestry.output.immediate_dominators.iter()
-        .map(|(node, _)| node.as_str()).collect();
+    let mut ancestors: BTreeSet<&str> = ancestry
+        .output
+        .immediate_dominators
+        .iter()
+        .map(|(node, _)| node.as_str())
+        .collect();
     ancestors.insert(&target_node);
-    let direct_support_edges = target_record.evidence.iter()
-        .filter(|edge| edge.counts_as_support()).count();
-    let direct_contradictions = target_record.evidence.iter()
-        .filter(|edge| edge.counts_as_contradiction()).count();
-    let rooted_target = rooted.output.immediate_dominators.binary_search_by(
-        |(node, _)| node.as_str().cmp(&target_node)).is_ok();
+    let direct_support_edges = target_record
+        .evidence
+        .iter()
+        .filter(|edge| edge.counts_as_support())
+        .count();
+    let direct_contradictions = target_record
+        .evidence
+        .iter()
+        .filter(|edge| edge.counts_as_contradiction())
+        .count();
+    let rooted_target = rooted
+        .output
+        .immediate_dominators
+        .binary_search_by(|(node, _)| node.as_str().cmp(&target_node))
+        .is_ok();
     let reachability = if direct_support_edges == 0 {
         SupportReachability::NoDeclaredSupport
     } else if rooted_target {
@@ -181,19 +215,27 @@ pub fn explain_current_support(
     let mut superseded_support = Vec::new();
     for record in projection.records() {
         let digest = record.revision_digest();
-        if !ancestors.contains(object_node(digest).as_str()) { continue; }
+        if !ancestors.contains(object_node(digest).as_str()) {
+            continue;
+        }
         if !record.evidence.iter().any(|edge| edge.counts_as_support()) {
             reserve(&mut entries, 1, max_entries)?;
             unsupported_revisions.push(SupportRevision::of(record));
         }
-        let head_digest = projection.heads().get(record.event_id.as_str())
-            .ok_or_else(|| GraphError::Inconsistent("support lineage has no current head".to_owned()))?;
+        let head_digest = projection
+            .heads()
+            .get(record.event_id.as_str())
+            .ok_or_else(|| {
+                GraphError::Inconsistent("support lineage has no current head".to_owned())
+            })?;
         if digest != *head_digest {
-            let head = records.get(head_digest).copied()
-                .ok_or_else(|| GraphError::Inconsistent("support lineage head is not expanded".to_owned()))?;
+            let head = records.get(head_digest).copied().ok_or_else(|| {
+                GraphError::Inconsistent("support lineage head is not expanded".to_owned())
+            })?;
             reserve(&mut entries, 2, max_entries)?;
             superseded_support.push(SupersededSupport {
-                referenced: SupportRevision::of(record), current: SupportRevision::of(head),
+                referenced: SupportRevision::of(record),
+                current: SupportRevision::of(head),
             });
         }
     }
@@ -207,38 +249,66 @@ pub fn explain_current_support(
             if steps > rooted.node_count {
                 return Err(GraphError::Inconsistent("dominator chain cycle".to_owned()).into());
             }
-            let at = rooted.output.immediate_dominators.binary_search_by(
-                |(node, _)| node.as_str().cmp(current)).map_err(|_| {
+            let at = rooted
+                .output
+                .immediate_dominators
+                .binary_search_by(|(node, _)| node.as_str().cmp(current))
+                .map_err(|_| {
                     GraphError::Inconsistent("rooted chain lacks its parent".to_owned())
                 })?;
             current = &rooted.output.immediate_dominators[at].1;
             if let Some(text) = current.strip_prefix("object:") {
-                let digest = ContentDigest::parse(text).map_err(EvidenceProjectionError::Contract)?;
+                let digest =
+                    ContentDigest::parse(text).map_err(EvidenceProjectionError::Contract)?;
                 reserve(&mut entries, 1, max_entries)?;
                 bottleneck_objects.push(digest);
             }
         }
         bottleneck_objects.reverse();
     }
-    let receipt = ExplainReceipt::compile(ExplainQuestion::Why, target_digest,
-        vec![target_digest, rooted_witness.digest(), ancestry_witness.digest()], Vec::new(), 0)
-        .map_err(EvidenceProjectionError::Contract)?;
+    let receipt = ExplainReceipt::compile(
+        ExplainQuestion::Why,
+        target_digest,
+        vec![
+            target_digest,
+            rooted_witness.digest(),
+            ancestry_witness.digest(),
+        ],
+        Vec::new(),
+        0,
+    )
+    .map_err(EvidenceProjectionError::Contract)?;
     Ok(EvidenceSupportBrief {
-        target: SupportRevision::of(target_record), reachability, direct_support_edges,
+        target: SupportRevision::of(target_record),
+        reachability,
+        direct_support_edges,
         direct_contradictions,
-        direct_other_relations: target_record.evidence.len() - direct_support_edges - direct_contradictions,
-        unexpanded_support, bottleneck_objects, unsupported_revisions, superseded_support,
-        rooted_witness, ancestry_witness, receipt,
-        graph_operations: rooted.operations.checked_add(ancestry.operations).ok_or(GraphError::TooLarge)?,
-        graph_output_entries: rooted.output_entries.checked_add(ancestry.output_entries).ok_or(GraphError::TooLarge)?,
+        direct_other_relations: target_record.evidence.len()
+            - direct_support_edges
+            - direct_contradictions,
+        unexpanded_support,
+        bottleneck_objects,
+        unsupported_revisions,
+        superseded_support,
+        rooted_witness,
+        ancestry_witness,
+        receipt,
+        graph_operations: rooted
+            .operations
+            .checked_add(ancestry.operations)
+            .ok_or(GraphError::TooLarge)?,
+        graph_output_entries: rooted
+            .output_entries
+            .checked_add(ancestry.output_entries)
+            .ok_or(GraphError::TooLarge)?,
         brief_entries: entries,
     })
 }
 
-
-/// Availability-conditioned support over the same exact history projection.
 pub mod availability {
     #![forbid(unsafe_code)]
+    //! Availability-conditioned support over the same exact history projection.
+    //!
     //! Availability-conditioned paths through exact retained event support.
     //!
     //! A verified-reference path is not a proof of the event, an AND/OR evidence
@@ -385,11 +455,17 @@ pub mod availability {
             return Err(GraphError::BudgetExhausted {
                 dimension: "availability_observations",
                 limit: MAX_AVAILABILITY_OBSERVATIONS as u64,
-            }.into());
+            }
+            .into());
         }
-        let target = *projection.heads().get(event_id)
+        let target = *projection
+            .heads()
+            .get(event_id)
             .ok_or_else(|| GraphError::UnknownNode(event_id.to_owned()))?;
-        let record = projection.records().iter().find(|record| record.revision_digest() == target)
+        let record = projection
+            .records()
+            .iter()
+            .find(|record| record.revision_digest() == target)
             .ok_or_else(|| GraphError::Inconsistent("current head is not expanded".to_owned()))?;
         let graph = projection.graph();
         let mut seen = BTreeSet::new();
@@ -407,41 +483,76 @@ pub mod availability {
             if let Some(index) = graph.index_of(&object_node(observation.digest)) {
                 mapped += 1;
                 let index = index as usize;
-                possible_blocked[index] = observation.availability == ObjectAvailability::Unavailable;
+                possible_blocked[index] =
+                    observation.availability == ObjectAvailability::Unavailable;
                 verified_blocked[index] = observation.availability != ObjectAvailability::Verified;
             }
         }
-        let unchecked_frontier_references = projection.unexpanded_support().iter()
-            .filter(|digest| graph.index_of(&object_node(**digest)).is_some_and(|index| {
-                verified_blocked[index as usize] && !possible_blocked[index as usize]
-            })).count();
+        let unchecked_frontier_references = projection
+            .unexpanded_support()
+            .iter()
+            .filter(|digest| {
+                graph.index_of(&object_node(**digest)).is_some_and(|index| {
+                    verified_blocked[index as usize] && !possible_blocked[index as usize]
+                })
+            })
+            .count();
         let possible_graph = filtered(graph, &possible_blocked, "possible-reference-support:v1")?;
         let possible = dominators::dominators(
-            &possible_graph, FRONTIER_ROOT, DominanceDirection::Dominators, budget,
+            &possible_graph,
+            FRONTIER_ROOT,
+            DominanceDirection::Dominators,
+            budget,
         )?;
         let remaining = Budget::new(
-            budget.max_operations.checked_sub(possible.operations).ok_or(GraphError::TooLarge)?,
-            budget.max_output_entries.checked_sub(possible.output_entries).ok_or(GraphError::TooLarge)?,
+            budget
+                .max_operations
+                .checked_sub(possible.operations)
+                .ok_or(GraphError::TooLarge)?,
+            budget
+                .max_output_entries
+                .checked_sub(possible.output_entries)
+                .ok_or(GraphError::TooLarge)?,
         );
         let verified_graph = filtered(graph, &verified_blocked, "verified-reference-support:v1")?;
         let verified = dominators::dominators(
-            &verified_graph, FRONTIER_ROOT, DominanceDirection::Dominators, remaining,
+            &verified_graph,
+            FRONTIER_ROOT,
+            DominanceDirection::Dominators,
+            remaining,
         )?;
-        let possible_witness = possible.witness(POSSIBLE_PROJECTION_ID, anchor.clone())
+        let possible_witness = possible
+            .witness(POSSIBLE_PROJECTION_ID, anchor.clone())
             .map_err(EvidenceProjectionError::Contract)?;
-        let verified_witness = verified.witness(VERIFIED_PROJECTION_ID, anchor)
+        let verified_witness = verified
+            .witness(VERIFIED_PROJECTION_ID, anchor)
             .map_err(EvidenceProjectionError::Contract)?;
-        check_witness(&possible_witness, &dominators::IDENTITY,
-            &dominators::bound(possible.node_count, possible.edge_count))?;
-        check_witness(&verified_witness, &dominators::IDENTITY,
-            &dominators::bound(verified.node_count, verified.edge_count))?;
+        check_witness(
+            &possible_witness,
+            &dominators::IDENTITY,
+            &dominators::bound(possible.node_count, possible.edge_count),
+        )?;
+        check_witness(
+            &verified_witness,
+            &dominators::IDENTITY,
+            &dominators::bound(verified.node_count, verified.edge_count),
+        )?;
         let target_node = object_node(target);
-        let possible_path = possible.output.immediate_dominators.binary_search_by(
-            |(node, _)| node.as_str().cmp(&target_node)).is_ok();
-        let verified_path = verified.output.immediate_dominators.binary_search_by(
-            |(node, _)| node.as_str().cmp(&target_node)).is_ok();
+        let possible_path = possible
+            .output
+            .immediate_dominators
+            .binary_search_by(|(node, _)| node.as_str().cmp(&target_node))
+            .is_ok();
+        let verified_path = verified
+            .output
+            .immediate_dominators
+            .binary_search_by(|(node, _)| node.as_str().cmp(&target_node))
+            .is_ok();
         if verified_path && !possible_path {
-            return Err(GraphError::Inconsistent("verified graph is not a possible-graph subset".to_owned()).into());
+            return Err(GraphError::Inconsistent(
+                "verified graph is not a possible-graph subset".to_owned(),
+            )
+            .into());
         }
         let support = if !record.evidence.iter().any(|edge| edge.counts_as_support()) {
             AvailableSupport::NoDeclaredSupport
@@ -453,12 +564,21 @@ pub mod availability {
             AvailableSupport::NoUnblockedReferencePath
         };
         Ok(EvidenceAvailabilityAnalysis {
-            target, support, possible_witness, verified_witness,
+            target,
+            support,
+            possible_witness,
+            verified_witness,
             mapped_observations: mapped,
             outside_graph_observations: observations.len() - mapped,
             unchecked_frontier_references,
-            graph_operations: possible.operations.checked_add(verified.operations).ok_or(GraphError::TooLarge)?,
-            graph_output_entries: possible.output_entries.checked_add(verified.output_entries).ok_or(GraphError::TooLarge)?,
+            graph_operations: possible
+                .operations
+                .checked_add(verified.operations)
+                .ok_or(GraphError::TooLarge)?,
+            graph_output_entries: possible
+                .output_entries
+                .checked_add(verified.output_entries)
+                .ok_or(GraphError::TooLarge)?,
         })
     }
 }

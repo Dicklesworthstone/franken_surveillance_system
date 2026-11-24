@@ -217,7 +217,9 @@ impl<'a> Configuration<'a> {
         // 0x2b7 (11 bits), AOT_SBR=5 (5 bits), sbrPresentFlag=0,
         // followed by seven zero padding bits. Active SBR and any unknown
         // extension or nonzero trailing bits must not be treated as AAC-LC.
-        if body.len() != 2 && !(body.len() == MAX_SUPPORTED_CONFIGURATION_BYTES && body[2..] == [0x56, 0xe5, 0x00]) {
+        if body.len() != 2
+            && !(body.len() == MAX_SUPPORTED_CONFIGURATION_BYTES && body[2..] == [0x56, 0xe5, 0x00])
+        {
             return Err(Error::UnsupportedConfiguration);
         }
         if body[0] >> 3 != 2 {

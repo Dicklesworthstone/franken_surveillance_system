@@ -5,7 +5,6 @@
 #![forbid(unsafe_code)]
 
 use std::error::Error;
-use std::mem::size_of;
 
 use fss_core::{ContentDigest, Generation};
 use fss_model_ir::{
@@ -151,7 +150,7 @@ fn loader_refuses_reversed_maximum_depth_node_records() -> TestResult {
 
     // Each fixture node has five text fields and eight u32 length/count fields:
     // ID, operator ID, name, one input, one output, and zero attributes.
-    let record_len = 8 * size_of::<u32>()
+    let record_len = u32::BITS as usize
         + first.id().len()
         + first.op().stable_id().len()
         + first.name().len()

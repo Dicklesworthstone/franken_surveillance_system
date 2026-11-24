@@ -50,8 +50,14 @@ fn frame_55aa_hmac_golden() {
         "0000aa55"
     ));
     let key = *b"0123456789abcdef";
-    let ours = pack_55aa(9, cmd::STATUS, Some(0), b"{\"dps\":{\"20\":false}}", Some(&key))
-        .expect("pack");
+    let ours = pack_55aa(
+        9,
+        cmd::STATUS,
+        Some(0),
+        b"{\"dps\":{\"20\":false}}",
+        Some(&key),
+    )
+    .expect("pack");
     assert_eq!(hex(&ours), hex(&golden), "byte-exact vs oracle");
     let msg = unpack_55aa(&golden, Some(&key), false).expect("unpack golden");
     assert_eq!(msg.payload, b"{\"dps\":{\"20\":false}}");
@@ -72,8 +78,15 @@ fn frame_6699_golden() {
     let iv: [u8; 12] = unhex("000102030405060708090a0b")
         .try_into()
         .unwrap_or([0; 12]);
-    let ours = pack_6699(7, cmd::DP_QUERY, Some(0), b"{\"dps\":{\"1\":true}}", &key, iv)
-        .expect("pack");
+    let ours = pack_6699(
+        7,
+        cmd::DP_QUERY,
+        Some(0),
+        b"{\"dps\":{\"1\":true}}",
+        &key,
+        iv,
+    )
+    .expect("pack");
     assert_eq!(hex(&ours), hex(&golden), "byte-exact vs oracle");
     let msg = unpack_6699(&golden, &key).expect("unpack golden");
     assert_eq!(msg.payload, b"{\"dps\":{\"1\":true}}");
@@ -120,10 +133,7 @@ fn frame_6699_no_retcode_roundtrip() {
 fn frame_bad_inputs_are_typed_errors() {
     assert_eq!(parse_header(b"\x00\x01"), Err(WireError::ShortHeader));
     let bad_prefix = unhex("00001234000000000000000000000000");
-    assert_eq!(
-        parse_header(&bad_prefix),
-        Err(WireError::BadPrefix(0x1234))
-    );
+    assert_eq!(parse_header(&bad_prefix), Err(WireError::BadPrefix(0x1234)));
     let mut frame = pack_55aa(1, cmd::HEART_BEAT, Some(0), b"", None).expect("pack");
     frame.truncate(frame.len() - 2);
     let e = parse_header(&frame);
@@ -161,7 +171,14 @@ fn oversize_payloads_fail_explicitly_and_boundary_roundtrips() {
     );
     let over6699 = vec![0xAB; wire::MAX_PAYLOAD_LENGTH];
     assert!(matches!(
-        pack_6699(1, cmd::STATUS, Some(0), &over6699, b"0123456789abcdef", [0u8; 12]),
+        pack_6699(
+            1,
+            cmd::STATUS,
+            Some(0),
+            &over6699,
+            b"0123456789abcdef",
+            [0u8; 12]
+        ),
         Err(WireError::LengthOverBound(_))
     ));
     // At the boundary (frame exactly at the declared maximum): packs and
@@ -197,5 +214,8 @@ fn session_key_derivation_vectors() {
     let k35 = derive_session_key_35(&key, &cn, &dn);
     assert_eq!(hex(&k35), "34165bab783422860c0c23b2d48cf7a5");
     let k34 = derive_session_key_34(&key, &cn, &dn);
-    assert_eq!(k34.map(|k| hex(&k)).as_deref(), Some("6575cf6b37479d9215337ff9767fe786"));
+    assert_eq!(
+        k34.map(|k| hex(&k)).as_deref(),
+        Some("6575cf6b37479d9215337ff9767fe786")
+    );
 }

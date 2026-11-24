@@ -55,7 +55,11 @@ fn build_inner(
     let ftyp = w.start(b"ftyp")?;
     w.put(b"iso6")?;
     w.u32(1)?;
-    w.put(if inband { b"iso6avc3mp41" } else { b"iso6avc1mp41" })?;
+    w.put(if inband {
+        b"iso6avc3mp41"
+    } else {
+        b"iso6avc1mp41"
+    })?;
     w.end(ftyp)?;
     let moov = w.start(b"moov")?;
     let mvhd = w.full(b"mvhd", 0)?;

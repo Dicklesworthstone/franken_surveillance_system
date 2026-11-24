@@ -157,8 +157,7 @@ impl AvStreamParser {
                 if view.len() < 20 {
                     return Dispatch::NeedMore;
                 }
-                let psize =
-                    u32::from_le_bytes([view[16], view[17], view[18], view[19]]) as usize;
+                let psize = u32::from_le_bytes([view[16], view[17], view[18], view[19]]) as usize;
                 if psize == 0 || psize > 4096 {
                     return Dispatch::Resync;
                 }

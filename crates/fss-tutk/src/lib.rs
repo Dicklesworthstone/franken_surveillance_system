@@ -34,6 +34,6 @@ pub mod x25519;
 pub mod xxtea;
 
 pub use wire::{
-    auth_key, derive_psk, derive_psk_truncated, new_session_id, NewProto, ProtoError,
-    CHANNEL_MAIN, CMD_DISCOVERY, CMD_DTLS, CMD_KEEPALIVE, MAGIC_NEWPROTO,
+    CHANNEL_MAIN, CMD_DISCOVERY, CMD_DTLS, CMD_KEEPALIVE, MAGIC_NEWPROTO, NewProto, ProtoError,
+    auth_key, derive_psk, derive_psk_truncated, new_session_id,
 };

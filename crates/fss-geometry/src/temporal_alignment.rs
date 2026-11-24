@@ -22,8 +22,7 @@ use crate::temporal_triangulation::{
     TemporalTriangulationOptions, TimedCalibratedView,
 };
 use crate::temporal_validation::{
-    IntervalCalibratedView, MotionValidation, TemporalValidationError,
-    triangulate_motion_validated,
+    IntervalCalibratedView, MotionValidation, TemporalValidationError, triangulate_motion_validated,
 };
 use crate::triangulation::CalibratedView;
 use crate::{GeometryError, WorkBudget};
@@ -108,7 +107,9 @@ impl std::fmt::Display for ClockAlignmentError {
             Self::Geometry(_) => "clock alignment geometry or work failure",
             Self::InvalidPair => "invalid clock alignment camera or clock pair",
             Self::InvalidObservation => "invalid or changed clock alignment camera observation",
-            Self::InsufficientEvidence => "clock alignment needs training and validation per camera",
+            Self::InsufficientEvidence => {
+                "clock alignment needs training and validation per camera"
+            }
             Self::ReusedObservation => "clock alignment observation membership overlaps",
             Self::InvalidOffsets => "invalid finite clock offset inventory",
             Self::TimestampOverflow => "clock alignment timestamp overflow",
@@ -163,9 +164,9 @@ pub fn scan_clock_offsets(
         return Err(GeometryError::LimitExceeded.into());
     }
     if offsets_ns.is_empty()
-        || offsets_ns.iter().any(|offset| {
-            !(-MAX_TEMPORAL_SPAN_NS..=MAX_TEMPORAL_SPAN_NS).contains(offset)
-        })
+        || offsets_ns
+            .iter()
+            .any(|offset| !(-MAX_TEMPORAL_SPAN_NS..=MAX_TEMPORAL_SPAN_NS).contains(offset))
     {
         return Err(ClockAlignmentError::InvalidOffsets);
     }
@@ -190,7 +191,9 @@ pub fn scan_clock_offsets(
         }
     }
     let mut trials = Vec::new();
-    trials.try_reserve_exact(offsets.len()).map_err(|_| GeometryError::LimitExceeded)?;
+    trials
+        .try_reserve_exact(offsets.len())
+        .map_err(|_| GeometryError::LimitExceeded)?;
     for offset in offsets {
         let trial_started = budget.used();
         budget.charge(64 * (training.len() + validation.len()) as u64)?;
@@ -204,27 +207,33 @@ pub fn scan_clock_offsets(
                 *time = map_time(pair, item.view.camera, *time, offset)?;
             }
         }
-        let result = triangulate_motion_validated(
-            &mapped_training, &mapped_validation, options, budget,
-        );
+        let result =
+            triangulate_motion_validated(&mapped_training, &mapped_validation, options, budget);
         if let Err(error) = result.as_ref() {
             match *error {
-                TemporalValidationError::Geometry(GeometryError::BudgetExhausted
-                    | GeometryError::Cancelled | GeometryError::LimitExceeded)
+                TemporalValidationError::Geometry(
+                    GeometryError::BudgetExhausted
+                    | GeometryError::Cancelled
+                    | GeometryError::LimitExceeded,
+                )
                 | TemporalValidationError::Fit(TemporalTriangulationError::Geometry(
-                    GeometryError::BudgetExhausted | GeometryError::Cancelled
-                    | GeometryError::LimitExceeded)) => {
+                    GeometryError::BudgetExhausted
+                    | GeometryError::Cancelled
+                    | GeometryError::LimitExceeded,
+                )) => {
                     return Err(ClockAlignmentError::Native(*error));
                 }
                 TemporalValidationError::EmptyHoldout
                 | TemporalValidationError::InvalidHoldout
                 | TemporalValidationError::OverlappingHoldouts
                 | TemporalValidationError::HoldoutLeak
-                | TemporalValidationError::Fit(TemporalTriangulationError::InvalidOptions
+                | TemporalValidationError::Fit(
+                    TemporalTriangulationError::InvalidOptions
                     | TemporalTriangulationError::InvalidObservation
                     | TemporalTriangulationError::DuplicateObservation
                     | TemporalTriangulationError::InsufficientObservations
-                    | TemporalTriangulationError::InsufficientCameras) => {
+                    | TemporalTriangulationError::InsufficientCameras,
+                ) => {
                     return Err(ClockAlignmentError::Native(*error));
                 }
                 // Nonconvergence, weak geometry, no consensus and inadmissible time
@@ -239,21 +248,30 @@ pub fn scan_clock_offsets(
         });
     }
     budget.charge(0)?;
-    Ok(ClockAlignmentScan { pair, trials, work_units: budget.used() - started_work })
+    Ok(ClockAlignmentScan {
+        pair,
+        trials,
+        work_units: budget.used() - started_work,
+    })
 }
 
 fn copy_bounded<T: Copy>(items: &[T]) -> Result<Vec<T>, GeometryError> {
     let mut copy = Vec::new();
-    copy.try_reserve_exact(items.len()).map_err(|_| GeometryError::LimitExceeded)?;
+    copy.try_reserve_exact(items.len())
+        .map_err(|_| GeometryError::LimitExceeded)?;
     copy.extend_from_slice(items);
     Ok(copy)
 }
 
-fn map_time(pair: ClockAlignmentPair, camera: u64, time: i128, offset: i128)
-    -> Result<i128, ClockAlignmentError>
-{
+fn map_time(
+    pair: ClockAlignmentPair,
+    camera: u64,
+    time: i128,
+    offset: i128,
+) -> Result<i128, ClockAlignmentError> {
     if camera == pair.target_camera {
-        time.checked_sub(offset).ok_or(ClockAlignmentError::TimestampOverflow)
+        time.checked_sub(offset)
+            .ok_or(ClockAlignmentError::TimestampOverflow)
     } else {
         Ok(time)
     }
@@ -267,14 +285,21 @@ fn validate_membership(
 ) -> Result<(), ClockAlignmentError> {
     let mut cameras: [Option<CalibratedView>; 2] = [None, None];
     let mut counts = [[0_usize; 2]; 2];
-    for (is_validation, view) in training.iter().map(|row| (false, row.view))
+    for (is_validation, view) in training
+        .iter()
+        .map(|row| (false, row.view))
         .chain(validation.iter().map(|row| (true, row.view)))
     {
         budget.charge(32)?;
-        let camera = if view.camera == pair.reference_camera { 0 }
-            else if view.camera == pair.target_camera { 1 }
-            else { return Err(ClockAlignmentError::InvalidPair); };
-        if !view.intrinsics.contains(view.pixel) || !view.sigma_pixels.is_finite()
+        let camera = if view.camera == pair.reference_camera {
+            0
+        } else if view.camera == pair.target_camera {
+            1
+        } else {
+            return Err(ClockAlignmentError::InvalidPair);
+        };
+        if !view.intrinsics.contains(view.pixel)
+            || !view.sigma_pixels.is_finite()
             || !(1e-3..=1e3).contains(&view.sigma_pixels)
         {
             return Err(ClockAlignmentError::InvalidObservation);
@@ -294,25 +319,32 @@ fn validate_membership(
     for (index, item) in training.iter().enumerate() {
         for prior in &training[..index] {
             budget.charge(1)?;
-            if prior.view.camera == item.view.camera && prior.capture_time_ns == item.capture_time_ns {
+            if prior.view.camera == item.view.camera
+                && prior.capture_time_ns == item.capture_time_ns
+            {
                 return Err(ClockAlignmentError::ReusedObservation);
             }
         }
     }
     for (index, item) in validation.iter().enumerate() {
         let [lo, hi] = item.capture_interval_ns;
-        if !hi.checked_sub(lo).is_some_and(|span| (0..=MAX_TEMPORAL_SPAN_NS).contains(&span)) {
+        if !hi
+            .checked_sub(lo)
+            .is_some_and(|span| (0..=MAX_TEMPORAL_SPAN_NS).contains(&span))
+        {
             return Err(ClockAlignmentError::InvalidObservation);
         }
         for fitted in training {
             budget.charge(1)?;
-            if fitted.view.camera == item.view.camera && (lo..=hi).contains(&fitted.capture_time_ns) {
+            if fitted.view.camera == item.view.camera && (lo..=hi).contains(&fitted.capture_time_ns)
+            {
                 return Err(ClockAlignmentError::ReusedObservation);
             }
         }
         for prior in &validation[..index] {
             budget.charge(1)?;
-            if prior.view.camera == item.view.camera && prior.capture_interval_ns[0] <= hi
+            if prior.view.camera == item.view.camera
+                && prior.capture_interval_ns[0] <= hi
                 && lo <= prior.capture_interval_ns[1]
             {
                 return Err(ClockAlignmentError::ReusedObservation);

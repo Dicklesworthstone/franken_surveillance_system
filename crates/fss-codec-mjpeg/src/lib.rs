@@ -78,6 +78,45 @@ impl Default for DecodeLimits {
     }
 }
 impl DecodeLimits {
+    /// Conservative upper bounds `(m444, m422, m420)` on MCU counts for 4:4:4/grayscale,
+    /// 4:2:2, and 4:2:0 layouts admitted by `maximum_dimension` and `maximum_pixels`.
+    pub(crate) fn mcu_upper_bounds(&self) -> (u64, u64, u64) {
+        let dimension = u64::from(self.maximum_dimension);
+        let pixels = self.maximum_pixels as u64;
+        let cells = pixels
+            .saturating_add(dimension.saturating_mul(14))
+            .saturating_add(49)
+            .div_ceil(64);
+        let axis_cells = dimension.div_ceil(8);
+        let m444 = cells;
+        let m422 = cells.saturating_add(axis_cells).div_ceil(2);
+        let m420 = cells
+            .saturating_add(axis_cells.saturating_mul(2))
+            .saturating_add(1)
+            .div_ceil(4);
+        (m444, m422, m420)
+    }
+
+    /// Upper bound on the work units [`decode_luma_v1`] charges for any baseline JPEG frame
+    /// these limits admit, across grayscale, 4:4:4, 4:2:2, and 4:2:0 sampling layouts.
+    #[must_use]
+    pub fn baseline_luma_work_bound(&self) -> u64 {
+        let bytes = self.maximum_bytes as u64;
+        let pixels = self.maximum_pixels as u64;
+        let markers = self.maximum_markers as u64;
+        let (m444, m422, m420) = self.mcu_upper_bounds();
+        let mcu_work = m444
+            .saturating_mul(1 + 3 * 4096)
+            .max(m422.saturating_mul(1 + 4 * 4096))
+            .max(m420.saturating_mul(1 + 6 * 4096));
+        bytes
+            .saturating_mul(2)
+            .saturating_add(markers.saturating_mul(32))
+            .saturating_add(pixels.saturating_mul(2))
+            .saturating_add(1024)
+            .saturating_add(mcu_work)
+    }
+
     /// Upper bound on the work units [`decode_luma`] charges for any frame these limits admit,
     /// so a caller can size a per-frame [`DecodeBudget`] that never exhausts on an admitted frame.
     ///

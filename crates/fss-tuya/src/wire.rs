@@ -20,7 +20,7 @@ pub const SUFFIX_6699: [u8; 4] = [0x00, 0x00, 0x99, 0x66];
 /// The two reserved bytes are the on-wire form of TuyaOS `lpv35_fixed_head_t`'s
 /// `uint8_t version:4; uint8_t reserved:4; uint8_t reserved2;` — i.e.
 /// `LPV35_FRAME_HEAD_SIZE + LPV35_FRAME_VERSION_SIZE + LPV35_FRAME_RESERVE_SIZE`
-/// + sequence + type + datalen (`tuya_protocol.h`). They are **two** bytes, not a
+/// plus sequence, type, and datalen (`tuya_protocol.h`). They are **two** bytes, not a
 /// `u32`; a 20-byte header shifts every field the device parses.
 pub const HEADER_LEN_6699: usize = 18;
 /// The two reserved bytes, both zero (`version = 0`, no reserved flag).
@@ -74,9 +74,11 @@ pub mod cmd {
 /// responses): the ASCII version plus 12 zero bytes. Exempt per the
 /// laboratory oracle: DP_QUERY, DP_QUERY_NEW, UPDATEDPS, HEART_BEAT,
 /// SESS_KEY_NEG_*, LAN_EXT_STREAM.
-pub const PROTOCOL_VERSION_HEADER_34: [u8; 15] = [0x33, 0x2E, 0x34, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+pub const PROTOCOL_VERSION_HEADER_34: [u8; 15] =
+    [0x33, 0x2E, 0x34, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 /// The 3.5 variant of the protocol version header.
-pub const PROTOCOL_VERSION_HEADER_35: [u8; 15] = [0x33, 0x2E, 0x35, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+pub const PROTOCOL_VERSION_HEADER_35: [u8; 15] =
+    [0x33, 0x2E, 0x35, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 
 /// The three ASCII version bytes at the front of a version header
 /// (`b"3.4"` / `b"3.5"`), for prefix detection on inbound payloads.
@@ -258,7 +260,6 @@ pub struct Message {
 
 /// Packs a 55AA frame. With `hmac_key` (protocol 3.4) the trailer is
 /// HMAC-SHA256 over `header | retcode? | payload`; otherwise CRC32.
-#[must_use]
 pub fn pack_55aa(
     seqno: u32,
     cmd: u32,
@@ -349,7 +350,6 @@ pub fn unpack_55aa(
 /// GCM nonce reuse under one key is catastrophic, so production callers MUST
 /// generate a fresh 12-byte IV per message. The simulator uses deterministic
 /// counter-derived fixture IVs (documented, lab-only).
-#[must_use]
 pub fn pack_6699(
     seqno: u32,
     cmd: u32,

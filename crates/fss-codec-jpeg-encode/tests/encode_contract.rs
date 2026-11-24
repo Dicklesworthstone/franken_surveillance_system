@@ -13,10 +13,21 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 type Test = Result<(), Box<dyn std::error::Error>>;
 type JpegSyntax<'a> = (Vec<(u8, &'a [u8])>, &'a [u8]);
 
-fn encode(width: u32, height: u32, pixels: &[u8], format: PixelFormat, quality: u8) -> Result<EncodedJpeg, EncodeError> {
+fn encode(
+    width: u32,
+    height: u32,
+    pixels: &[u8],
+    format: PixelFormat,
+    quality: u8,
+) -> Result<EncodedJpeg, EncodeError> {
     encode_jpeg(
-        width, height, pixels, ContentDigest::sha256(pixels).bytes(),
-        EncodeConfig { quality, format }, &EncodeLimits::default(), &mut EncodeBudget::new(u64::MAX),
+        width,
+        height,
+        pixels,
+        ContentDigest::sha256(pixels).bytes(),
+        EncodeConfig { quality, format },
+        &EncodeLimits::default(),
+        &mut EncodeBudget::new(u64::MAX),
     )
 }
 
@@ -29,13 +40,25 @@ fn decode(jpeg: &EncodedJpeg) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     };
     let mut budget = DecodeBudget::new(u64::MAX);
     if receipt.format == PixelFormat::Grayscale {
-        let decoded = decode_luma(jpeg.bytes(), receipt.encoded_sha256, interpretation, DecodeLimits::default(), &mut budget)?;
+        let decoded = decode_luma(
+            jpeg.bytes(),
+            receipt.encoded_sha256,
+            interpretation,
+            DecodeLimits::default(),
+            &mut budget,
+        )?;
         assert_eq!(decoded.dimensions(), receipt.dimensions);
         assert_eq!(decoded.receipt().metadata_segments, 0);
         assert_eq!(decoded.receipt().entropy_blocks, receipt.entropy_blocks);
         Ok(decoded.pixels().to_vec())
     } else {
-        let decoded = decode_rgb(jpeg.bytes(), receipt.encoded_sha256, interpretation, RgbDecodeLimits::default(), &mut budget)?;
+        let decoded = decode_rgb(
+            jpeg.bytes(),
+            receipt.encoded_sha256,
+            interpretation,
+            RgbDecodeLimits::default(),
+            &mut budget,
+        )?;
         assert_eq!(decoded.dimensions(), receipt.dimensions);
         assert_eq!(decoded.receipt().metadata_segments, 0);
         assert_eq!(decoded.receipt().entropy_blocks, receipt.entropy_blocks);
@@ -52,9 +75,13 @@ fn syntax(bytes: &[u8]) -> Result<JpegSyntax<'_>, Box<dyn std::error::Error>> {
     let mut headers = Vec::new();
     while headers.len() < 8 {
         let header = bytes.get(at..at + 4).ok_or("header")?;
-        if header[0] != 0xff { return Err("marker prefix".into()); }
+        if header[0] != 0xff {
+            return Err("marker prefix".into());
+        }
         let length = usize::from(u16::from_be_bytes([header[2], header[3]]));
-        if length < 2 { return Err("marker length".into()); }
+        if length < 2 {
+            return Err("marker length".into());
+        }
         let end = at.checked_add(2 + length).ok_or("marker overflow")?;
         let payload = bytes.get(at + 4..end).ok_or("marker body")?;
         headers.push((header[1], payload));
@@ -75,7 +102,11 @@ fn pattern(width: u32, height: u32, format: PixelFormat) -> Vec<u8> {
             if format == PixelFormat::Grayscale {
                 pixels.push(r);
             } else {
-                pixels.extend_from_slice(&[r, ((x * 53 + y * 7 + 39) % 256) as u8, ((x * 11 + y * 61 + 173) % 256) as u8]);
+                pixels.extend_from_slice(&[
+                    r,
+                    ((x * 53 + y * 7 + 39) % 256) as u8,
+                    ((x * 11 + y * 61 + 173) % 256) as u8,
+                ]);
             }
         }
     }
@@ -111,8 +142,15 @@ fn headers_declare_only_bounded_baseline_gray_or_ycbcr444_without_metadata() -> 
         let pixels = pattern(17, 13, format);
         let jpeg = encode(17, 13, &pixels, format, 100)?;
         let (headers, _) = syntax(jpeg.bytes())?;
-        assert_eq!(headers.iter().map(|entry| entry.0).collect::<Vec<_>>(), [0xdb, 0xc0, 0xc4, 0xda]);
-        let count = if format == PixelFormat::Grayscale { 1 } else { 3 };
+        assert_eq!(
+            headers.iter().map(|entry| entry.0).collect::<Vec<_>>(),
+            [0xdb, 0xc0, 0xc4, 0xda]
+        );
+        let count = if format == PixelFormat::Grayscale {
+            1
+        } else {
+            3
+        };
         let quantizers = headers[0].1;
         assert_eq!(quantizers.len(), if count == 1 { 65 } else { 130 });
         for table in quantizers.as_chunks::<65>().0 {
@@ -121,7 +159,10 @@ fn headers_declare_only_bounded_baseline_gray_or_ycbcr444_without_metadata() -> 
         let sof = headers[1].1;
         assert_eq!(&sof[..6], &[8, 0, 13, 0, 17, count]);
         for (component, entry) in sof[6..].as_chunks::<3>().0.iter().enumerate() {
-            assert_eq!(entry, &[component as u8 + 1, 0x11, u8::from(component != 0)]);
+            assert_eq!(
+                entry,
+                &[component as u8 + 1, 0x11, u8::from(component != 0)]
+            );
         }
         let decoded = decode(&jpeg)?;
         assert_eq!(decoded.len(), pixels.len());
@@ -158,10 +199,24 @@ fn odd_edge_color_and_gray_reconstruct_with_bounded_unit_quantization_error() ->
             assert_eq!(first.bytes(), second.bytes());
             assert_eq!(first.receipt(), second.receipt());
             let result = decode(&first)?;
-            let maximum = result.iter().zip(&pixels).map(|(a, b)| a.abs_diff(*b)).max().ok_or("pixels")?;
-            assert!(maximum <= if format == PixelFormat::Rgb { 4 } else { 2 }, "{format:?} {width}x{height}: {maximum}");
-            assert_eq!(first.receipt().pixel_sha256, ContentDigest::sha256(&pixels).bytes());
-            assert_eq!(first.receipt().encoded_sha256, ContentDigest::sha256(first.bytes()).bytes());
+            let maximum = result
+                .iter()
+                .zip(&pixels)
+                .map(|(a, b)| a.abs_diff(*b))
+                .max()
+                .ok_or("pixels")?;
+            assert!(
+                maximum <= if format == PixelFormat::Rgb { 4 } else { 2 },
+                "{format:?} {width}x{height}: {maximum}"
+            );
+            assert_eq!(
+                first.receipt().pixel_sha256,
+                ContentDigest::sha256(&pixels).bytes()
+            );
+            assert_eq!(
+                first.receipt().encoded_sha256,
+                ContentDigest::sha256(first.bytes()).bytes()
+            );
             assert_eq!(first.receipt().encoder, encoder_identity());
         }
     }
@@ -176,58 +231,128 @@ fn quality_scaling_stays_baseline_and_preserves_real_color_components() -> Test 
         let (headers, _) = syntax(jpeg.bytes())?;
         for table in headers[0].1.as_chunks::<65>().0 {
             assert!(table[1..].iter().all(|value| *value != 0));
-            if quality == 1 { assert!(table[1..].iter().all(|value| *value == 255)); }
+            if quality == 1 {
+                assert!(table[1..].iter().all(|value| *value == 255));
+            }
         }
         let result = decode(&jpeg)?;
-        assert!(result.as_chunks::<3>().0.iter().any(|pixel| pixel[0] != pixel[1] && pixel[1] != pixel[2]));
+        assert!(
+            result
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .any(|pixel| pixel[0] != pixel[1] && pixel[1] != pixel[2])
+        );
     }
     let gray = encode(8, 8, &[128; 64], PixelFormat::Grayscale, 50)?;
-    assert_eq!(&syntax(gray.bytes())?.0[0].1[..9], &[0, 16, 11, 12, 14, 12, 10, 16, 14]);
+    assert_eq!(
+        &syntax(gray.bytes())?.0[0].1[..9],
+        &[0, 16, 11, 12, 14, 12, 10, 16, 14]
+    );
     Ok(())
 }
 
 #[test]
 fn exact_work_and_complete_output_caps_pass_and_one_less_refuses() -> Test {
     let pixels = pattern(17, 13, PixelFormat::Rgb);
-    let config = EncodeConfig { quality: 91, format: PixelFormat::Rgb };
+    let config = EncodeConfig {
+        quality: 91,
+        format: PixelFormat::Rgb,
+    };
     let source = ContentDigest::sha256(&pixels).bytes();
     let complete = encode(17, 13, &pixels, config.format, config.quality)?;
     let used = complete.receipt().work_units;
-    let limits = EncodeLimits { maximum_output_bytes: complete.bytes().len(), ..EncodeLimits::default() };
+    let limits = EncodeLimits {
+        maximum_output_bytes: complete.bytes().len(),
+        ..EncodeLimits::default()
+    };
     let mut exact = EncodeBudget::new(used);
     let result = encode_jpeg(17, 13, &pixels, source, config, &limits, &mut exact)?;
     assert_eq!(result.bytes(), complete.bytes());
     assert_eq!(result.receipt(), complete.receipt());
     assert_eq!(exact.remaining(), 0);
     assert_eq!(exact.used(), used);
-    assert_eq!(encode_jpeg(17, 13, &pixels, source, config, &limits, &mut EncodeBudget::new(used - 1)).map(|_| ()), Err(EncodeError::BudgetExhausted));
-    let short = EncodeLimits { maximum_output_bytes: limits.maximum_output_bytes - 1, ..limits };
-    assert_eq!(encode_jpeg(17, 13, &pixels, source, config, &short, &mut EncodeBudget::new(used)).map(|_| ()), Err(EncodeError::Limit));
+    assert_eq!(
+        encode_jpeg(
+            17,
+            13,
+            &pixels,
+            source,
+            config,
+            &limits,
+            &mut EncodeBudget::new(used - 1)
+        )
+        .map(|_| ()),
+        Err(EncodeError::BudgetExhausted)
+    );
+    let short = EncodeLimits {
+        maximum_output_bytes: limits.maximum_output_bytes - 1,
+        ..limits
+    };
+    assert_eq!(
+        encode_jpeg(
+            17,
+            13,
+            &pixels,
+            source,
+            config,
+            &short,
+            &mut EncodeBudget::new(used)
+        )
+        .map(|_| ()),
+        Err(EncodeError::Limit)
+    );
     Ok(())
 }
 
 #[test]
 fn shared_allowance_never_renews_and_receipt_reports_only_current_frame() -> Test {
     let pixels = pattern(17, 13, PixelFormat::Grayscale);
-    let config = EncodeConfig { quality: 80, format: PixelFormat::Grayscale };
+    let config = EncodeConfig {
+        quality: 80,
+        format: PixelFormat::Grayscale,
+    };
     let source = ContentDigest::sha256(&pixels).bytes();
     let single = encode(17, 13, &pixels, config.format, config.quality)?;
     let used = single.receipt().work_units;
     let mut budget = EncodeBudget::new(used * 2);
     for _ in 0..2 {
-        let encoded = encode_jpeg(17, 13, &pixels, source, config, &EncodeLimits::default(), &mut budget)?;
+        let encoded = encode_jpeg(
+            17,
+            13,
+            &pixels,
+            source,
+            config,
+            &EncodeLimits::default(),
+            &mut budget,
+        )?;
         assert_eq!(encoded.receipt(), single.receipt());
     }
     assert_eq!(budget.used(), 2 * used);
     assert_eq!(budget.remaining(), 0);
-    assert_eq!(encode_jpeg(17, 13, &pixels, source, config, &EncodeLimits::default(), &mut budget).map(|_| ()), Err(EncodeError::BudgetExhausted));
+    assert_eq!(
+        encode_jpeg(
+            17,
+            13,
+            &pixels,
+            source,
+            config,
+            &EncodeLimits::default(),
+            &mut budget
+        )
+        .map(|_| ()),
+        Err(EncodeError::BudgetExhausted)
+    );
     assert_eq!(budget.used(), 2 * used);
     Ok(())
 }
 
 #[test]
 fn empty_malformed_or_oversized_inputs_refuse_before_image_work() {
-    let config = EncodeConfig { quality: 90, format: PixelFormat::Grayscale };
+    let config = EncodeConfig {
+        quality: 90,
+        format: PixelFormat::Grayscale,
+    };
     let mut budget = EncodeBudget::new(1_000_000);
     for (width, height, pixels, expected) in [
         (0, 1, [].as_slice(), EncodeError::InvalidPixels),
@@ -235,13 +360,42 @@ fn empty_malformed_or_oversized_inputs_refuse_before_image_work() {
         (1, 1, [].as_slice(), EncodeError::InvalidPixels),
         (1, 1, [1, 2].as_slice(), EncodeError::InvalidPixels),
         (MAX_DIMENSION + 1, 1, [1].as_slice(), EncodeError::Limit),
-        (MAX_DIMENSION, MAX_DIMENSION, [1].as_slice(), EncodeError::Limit),
+        (
+            MAX_DIMENSION,
+            MAX_DIMENSION,
+            [1].as_slice(),
+            EncodeError::Limit,
+        ),
         (u32::MAX, u32::MAX, [1].as_slice(), EncodeError::Limit),
     ] {
-        assert_eq!(encode_jpeg(width, height, pixels, [1; 32], config, &EncodeLimits::default(), &mut budget).map(|_| ()), Err(expected));
+        assert_eq!(
+            encode_jpeg(
+                width,
+                height,
+                pixels,
+                [1; 32],
+                config,
+                &EncodeLimits::default(),
+                &mut budget
+            )
+            .map(|_| ()),
+            Err(expected)
+        );
     }
     for quality in [0, 101, 255] {
-        assert_eq!(encode_jpeg(1, 1, &[1], [1; 32], EncodeConfig { quality, ..config }, &EncodeLimits::default(), &mut budget).map(|_| ()), Err(EncodeError::InvalidConfiguration));
+        assert_eq!(
+            encode_jpeg(
+                1,
+                1,
+                &[1],
+                [1; 32],
+                EncodeConfig { quality, ..config },
+                &EncodeLimits::default(),
+                &mut budget
+            )
+            .map(|_| ()),
+            Err(EncodeError::InvalidConfiguration)
+        );
     }
     assert_eq!(budget.used(), 0);
 }
@@ -249,29 +403,84 @@ fn empty_malformed_or_oversized_inputs_refuse_before_image_work() {
 #[test]
 fn independent_limits_are_never_silently_clamped() {
     let defaults = EncodeLimits::default();
-    let config = EncodeConfig { quality: 90, format: PixelFormat::Grayscale };
+    let config = EncodeConfig {
+        quality: 90,
+        format: PixelFormat::Grayscale,
+    };
     for limits in [
-        EncodeLimits { maximum_dimension: 0, ..defaults },
-        EncodeLimits { maximum_dimension: MAX_DIMENSION + 1, ..defaults },
-        EncodeLimits { maximum_pixels: 0, ..defaults },
-        EncodeLimits { maximum_pixels: MAX_PIXELS + 1, ..defaults },
-        EncodeLimits { maximum_output_bytes: 0, ..defaults },
-        EncodeLimits { maximum_output_bytes: MAX_OUTPUT_BYTES + 1, ..defaults },
+        EncodeLimits {
+            maximum_dimension: 0,
+            ..defaults
+        },
+        EncodeLimits {
+            maximum_dimension: MAX_DIMENSION + 1,
+            ..defaults
+        },
+        EncodeLimits {
+            maximum_pixels: 0,
+            ..defaults
+        },
+        EncodeLimits {
+            maximum_pixels: MAX_PIXELS + 1,
+            ..defaults
+        },
+        EncodeLimits {
+            maximum_output_bytes: 0,
+            ..defaults
+        },
+        EncodeLimits {
+            maximum_output_bytes: MAX_OUTPUT_BYTES + 1,
+            ..defaults
+        },
     ] {
         let mut budget = EncodeBudget::new(u64::MAX);
-        assert_eq!(encode_jpeg(1, 1, &[128], [1; 32], config, &limits, &mut budget).map(|_| ()), Err(EncodeError::InvalidConfiguration));
+        assert_eq!(
+            encode_jpeg(1, 1, &[128], [1; 32], config, &limits, &mut budget).map(|_| ()),
+            Err(EncodeError::InvalidConfiguration)
+        );
         assert_eq!(budget.used(), 0);
     }
-    let limits = EncodeLimits { maximum_dimension: 1, maximum_pixels: 1, maximum_output_bytes: 1 };
-    assert_eq!(encode_jpeg(1, 1, &[128], ContentDigest::sha256(&[128]).bytes(), config, &limits, &mut EncodeBudget::new(u64::MAX)).map(|_| ()), Err(EncodeError::Limit));
+    let limits = EncodeLimits {
+        maximum_dimension: 1,
+        maximum_pixels: 1,
+        maximum_output_bytes: 1,
+    };
+    assert_eq!(
+        encode_jpeg(
+            1,
+            1,
+            &[128],
+            ContentDigest::sha256(&[128]).bytes(),
+            config,
+            &limits,
+            &mut EncodeBudget::new(u64::MAX)
+        )
+        .map(|_| ()),
+        Err(EncodeError::Limit)
+    );
 }
 
 #[test]
 fn source_binding_refuses_wrong_and_absent_pixel_digests() {
     let pixels = [128; 64];
-    let config = EncodeConfig { quality: 90, format: PixelFormat::Grayscale };
+    let config = EncodeConfig {
+        quality: 90,
+        format: PixelFormat::Grayscale,
+    };
     for digest in [[0; 32], ContentDigest::sha256(&[127; 64]).bytes()] {
-        assert_eq!(encode_jpeg(8, 8, &pixels, digest, config, &EncodeLimits::default(), &mut EncodeBudget::new(u64::MAX)).map(|_| ()), Err(EncodeError::SourceMismatch));
+        assert_eq!(
+            encode_jpeg(
+                8,
+                8,
+                &pixels,
+                digest,
+                config,
+                &EncodeLimits::default(),
+                &mut EncodeBudget::new(u64::MAX)
+            )
+            .map(|_| ()),
+            Err(EncodeError::SourceMismatch)
+        );
     }
 }
 
@@ -279,21 +488,60 @@ fn source_binding_refuses_wrong_and_absent_pixel_digests() {
 fn cancellation_is_atomic_at_every_actual_checkpoint_including_finalization() -> Test {
     let pixels = pattern(8, 8, PixelFormat::Rgb);
     let source = ContentDigest::sha256(&pixels).bytes();
-    let config = EncodeConfig { quality: 95, format: PixelFormat::Rgb };
+    let config = EncodeConfig {
+        quality: 95,
+        format: PixelFormat::Rgb,
+    };
     let visits = AtomicUsize::new(0);
-    let observe = || { visits.fetch_add(1, Ordering::SeqCst); false };
-    encode_jpeg(8, 8, &pixels, source, config, &EncodeLimits::default(), &mut EncodeBudget::with_cancellation_probe(u64::MAX, &observe))?;
+    let observe = || {
+        visits.fetch_add(1, Ordering::SeqCst);
+        false
+    };
+    encode_jpeg(
+        8,
+        8,
+        &pixels,
+        source,
+        config,
+        &EncodeLimits::default(),
+        &mut EncodeBudget::with_cancellation_probe(u64::MAX, &observe),
+    )?;
     let total = visits.load(Ordering::SeqCst);
     assert!(total > 10);
     for stop in 1..=total {
         let count = AtomicUsize::new(0);
         let cancelled = || count.fetch_add(1, Ordering::SeqCst) + 1 >= stop;
         let mut budget = EncodeBudget::with_cancellation_probe(u64::MAX, &cancelled);
-        assert_eq!(encode_jpeg(8, 8, &pixels, source, config, &EncodeLimits::default(), &mut budget).map(|_| ()), Err(EncodeError::Cancelled), "checkpoint {stop}/{total}");
+        assert_eq!(
+            encode_jpeg(
+                8,
+                8,
+                &pixels,
+                source,
+                config,
+                &EncodeLimits::default(),
+                &mut budget
+            )
+            .map(|_| ()),
+            Err(EncodeError::Cancelled),
+            "checkpoint {stop}/{total}"
+        );
     }
     let flag = AtomicBool::new(true);
     let mut cancelled = EncodeBudget::with_cancellation(100_000, &flag);
-    assert_eq!(encode_jpeg(8, 8, &pixels, source, config, &EncodeLimits::default(), &mut cancelled).map(|_| ()), Err(EncodeError::Cancelled));
+    assert_eq!(
+        encode_jpeg(
+            8,
+            8,
+            &pixels,
+            source,
+            config,
+            &EncodeLimits::default(),
+            &mut cancelled
+        )
+        .map(|_| ()),
+        Err(EncodeError::Cancelled)
+    );
     assert_eq!(cancelled.used(), 0);
     Ok(())
 }
@@ -305,18 +553,48 @@ fn input_hashing_has_bounded_cancellation_checkpoints() {
     let calls = AtomicUsize::new(0);
     let cancelled = || calls.fetch_add(1, Ordering::SeqCst) >= 4;
     let mut budget = EncodeBudget::with_cancellation_probe(u64::MAX, &cancelled);
-    assert_eq!(encode_jpeg(257, 129, &pixels, digest, EncodeConfig { quality: 90, format: PixelFormat::Grayscale }, &EncodeLimits::default(), &mut budget).map(|_| ()), Err(EncodeError::Cancelled));
+    assert_eq!(
+        encode_jpeg(
+            257,
+            129,
+            &pixels,
+            digest,
+            EncodeConfig {
+                quality: 90,
+                format: PixelFormat::Grayscale
+            },
+            &EncodeLimits::default(),
+            &mut budget
+        )
+        .map(|_| ()),
+        Err(EncodeError::Cancelled)
+    );
     assert!(budget.used() < pixels.len() as u64);
 }
 
 #[test]
 fn work_bound_covers_padded_components_hashing_and_output_without_allocation_guessing() -> Test {
-    let limits = EncodeLimits { maximum_dimension: 32, maximum_pixels: 1000, maximum_output_bytes: 8192 };
+    let limits = EncodeLimits {
+        maximum_dimension: 32,
+        maximum_pixels: 1000,
+        maximum_output_bytes: 8192,
+    };
     for format in [PixelFormat::Grayscale, PixelFormat::Rgb] {
         let pixels = pattern(31, 29, format);
         let bound = limits.work_bound(format);
         let mut budget = EncodeBudget::new(bound);
-        let encoded = encode_jpeg(31, 29, &pixels, ContentDigest::sha256(&pixels).bytes(), EncodeConfig { quality: 100, format }, &limits, &mut budget)?;
+        let encoded = encode_jpeg(
+            31,
+            29,
+            &pixels,
+            ContentDigest::sha256(&pixels).bytes(),
+            EncodeConfig {
+                quality: 100,
+                format,
+            },
+            &limits,
+            &mut budget,
+        )?;
         assert!(encoded.receipt().work_units <= bound);
         assert_eq!(encoded.receipt().work_units, budget.used());
     }
@@ -359,8 +637,19 @@ fn screened_black_input_is_not_claimed_as_exactly_black_lossy_reconstruction() -
     }
     let jpeg = encode(16, 8, &pixels, PixelFormat::Grayscale, 50)?;
     let result = decode(&jpeg)?;
-    assert_ne!(jpeg.receipt().pixel_sha256, ContentDigest::sha256(&result).bytes());
-    assert!((0..8).any(|y| result[y * 16 + 5..y * 16 + 8].iter().any(|value| *value != 0)));
-    assert!((0..8).all(|y| result[y * 16 + 8..y * 16 + 16].iter().all(|value| *value == 0)));
+    assert_ne!(
+        jpeg.receipt().pixel_sha256,
+        ContentDigest::sha256(&result).bytes()
+    );
+    assert!((0..8).any(|y| {
+        result[y * 16 + 5..y * 16 + 8]
+            .iter()
+            .any(|value| *value != 0)
+    }));
+    assert!((0..8).all(|y| {
+        result[y * 16 + 8..y * 16 + 16]
+            .iter()
+            .all(|value| *value == 0)
+    }));
     Ok(())
 }

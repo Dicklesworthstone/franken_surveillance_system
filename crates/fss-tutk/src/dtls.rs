@@ -250,10 +250,10 @@ impl HandshakeReassembler {
                     slot.received_bytes += 1;
                 }
             }
-            if slot.received_bytes == mlen {
-                if let Some(partial) = self.frags.remove(&mseq) {
-                    self.done.insert(mseq, (partial.mtype, partial.buf));
-                }
+            if slot.received_bytes == mlen
+                && let Some(partial) = self.frags.remove(&mseq)
+            {
+                self.done.insert(mseq, (partial.mtype, partial.buf));
             }
         }
         if off != data.len() {

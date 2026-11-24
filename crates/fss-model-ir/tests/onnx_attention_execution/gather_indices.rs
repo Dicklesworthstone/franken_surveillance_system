@@ -6,12 +6,7 @@ use fss_model_ir::{AttrValue, AttributeMap, GraphNode, ModelIrVersion, OpCode, T
 use fss_tensor::DType;
 
 fn gathered_shape(data_dims: &[usize], axis: usize, index_dims: &[usize]) -> Vec<usize> {
-    [
-        &data_dims[..axis],
-        index_dims,
-        &data_dims[axis + 1..],
-    ]
-    .concat()
+    [&data_dims[..axis], index_dims, &data_dims[axis + 1..]].concat()
 }
 
 fn index_tensor(name: &str, dims: &[usize], indices: &[i64], packed: bool) -> Vec<u8> {
@@ -24,7 +19,10 @@ fn index_tensor(name: &str, dims: &[usize], indices: &[i64], packed: bool) -> Ve
                 .collect::<Vec<_>>(),
         )
     } else {
-        indices.iter().flat_map(|&value| integer(7, value)).collect()
+        indices
+            .iter()
+            .flat_map(|&value| integer(7, value))
+            .collect()
     };
     [
         dims.iter()
@@ -86,7 +84,13 @@ fn larger_indices_accept_all_embedded_encodings_and_exact_type_witnesses() -> Te
     let dims = [2, 5, 3];
     let indices = [-1_i64, 0, -1, 2, 1, 4, 3, 2, 1, 0];
     let values = (0..30)
-        .map(|index| if index % 4 == 0 { -0.0 } else { index as f32 - 8.0 })
+        .map(|index| {
+            if index % 4 == 0 {
+                -0.0
+            } else {
+                index as f32 - 8.0
+            }
+        })
         .collect::<Vec<_>>();
     for storage in 0..5 {
         let index_dims = if storage == 4 { vec![10] } else { vec![2, 5] };
@@ -117,7 +121,12 @@ fn larger_indices_accept_all_embedded_encodings_and_exact_type_witnesses() -> Te
                     ),
                 ),
             ),
-            _ => node("Constant", &[], &["indices"], &ints_attr("value_ints", &indices)),
+            _ => node(
+                "Constant",
+                &[],
+                &["indices"],
+                &ints_attr("value_ints", &indices),
+            ),
         };
         for constant_data in [false, true] {
             let mut graph = [
@@ -129,7 +138,10 @@ fn larger_indices_accept_all_embedded_encodings_and_exact_type_witnesses() -> Te
                     &int_attr("axis", 1),
                 ),
                 bytes(13, &info("indices", &index_dims, 7)),
-                bytes(12, &info("output", &gathered_shape(&dims, 1, &index_dims), 1)),
+                bytes(
+                    12,
+                    &info("output", &gathered_shape(&dims, 1, &index_dims), 1),
+                ),
             ]
             .concat();
             let input = if constant_data {
@@ -158,7 +170,13 @@ fn long_contiguous_runs_and_multidimensional_permutations_keep_exact_sample_bits
     let dims = [2, 4096, 2];
     let indices = (0..4096).map(i64::from).collect::<Vec<_>>();
     let values = (0..dims.iter().product::<usize>())
-        .map(|index| if index % 7 == 0 { -0.0 } else { index as f32 / 8.0 })
+        .map(|index| {
+            if index % 7 == 0 {
+                -0.0
+            } else {
+                index as f32 / 8.0
+            }
+        })
         .collect::<Vec<_>>();
     let source = gather_model(&dims, &[4096], &indices, 1, &dims);
     assert_eq!(import(&source)?.graph().node_count(), 1);
@@ -190,7 +208,10 @@ fn generated_concat_exceeds_source_arity_within_the_native_node_budget() -> Test
         (511, vec![511], 512),
         (510, vec![2, 255], 512),
     ] {
-        let indices = (0..count).rev().map(|value| value as i64).collect::<Vec<_>>();
+        let indices = (0..count)
+            .rev()
+            .map(|value| value as i64)
+            .collect::<Vec<_>>();
         let values = (0..count)
             .map(|index| if index % 7 == 0 { -0.0 } else { index as f32 })
             .collect::<Vec<_>>();
@@ -210,9 +231,18 @@ fn generated_concat_exceeds_source_arity_within_the_native_node_budget() -> Test
         );
     }
     for (count, index_dims) in [(512, vec![512]), (511, vec![1, 511])] {
-        let indices = (0..count).rev().map(|value| value as i64).collect::<Vec<_>>();
+        let indices = (0..count)
+            .rev()
+            .map(|value| value as i64)
+            .collect::<Vec<_>>();
         assert_eq!(
-            refusal(&gather_model(&[count], &index_dims, &indices, 0, &index_dims)),
+            refusal(&gather_model(
+                &[count],
+                &index_dims,
+                &indices,
+                0,
+                &index_dims
+            )),
             Some(OnnxError::Limit)
         );
     }
@@ -242,7 +272,9 @@ fn selected_token_blocks_feed_a_batched_vector_projection_after_artifact_reload(
         .concat(),
     );
     let expected = gather_oracle(&values, &[2, 8], 1, &indices)
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|chunk| {
             chunk
                 .iter()
@@ -268,13 +300,7 @@ fn previous_scalar_and_vector_gathers_keep_their_exact_canonical_graphs() -> Tes
             vec![(2, 3), (0, 1), (2, 3)],
             false,
         ),
-        (
-            vec![3],
-            vec![-3, -2, -1],
-            vec![2, 3],
-            vec![(0, 3)],
-            false,
-        ),
+        (vec![3], vec![-3, -2, -1], vec![2, 3], vec![(0, 3)], false),
     ] {
         let source = gather_model(&[2, 3], &index_dims, &indices, 1, &output);
         let imported = import(&source)?;
@@ -287,7 +313,11 @@ fn previous_scalar_and_vector_gathers_keep_their_exact_canonical_graphs() -> Tes
             } else {
                 format!("onnx-node-0000-gather-{}", total - ordinal)
             };
-            let result = if total == 1 { "output".to_owned() } else { id.clone() };
+            let result = if total == 1 {
+                "output".to_owned()
+            } else {
+                id.clone()
+            };
             nodes.push(GraphNode::new(
                 id,
                 OpCode::Slice,
@@ -306,7 +336,11 @@ fn previous_scalar_and_vector_gathers_keep_their_exact_canonical_graphs() -> Tes
         if ranges.len() > 1 || scalar {
             nodes.push(GraphNode::new(
                 "onnx-node-0000",
-                if scalar { OpCode::Reshape } else { OpCode::Concat },
+                if scalar {
+                    OpCode::Reshape
+                } else {
+                    OpCode::Concat
+                },
                 "onnx-node-0000",
                 selected,
                 vec!["output".into()],
@@ -414,7 +448,13 @@ fn enlarged_index_tensors_do_not_expand_other_shape_control_profiles() {
         Some(OnnxError::Malformed)
     );
     assert_eq!(
-        refusal(&gather_model(&[2, 3], &[2, 2], &[0, 1, i64::MAX, 0], 1, &[2, 2, 2])),
+        refusal(&gather_model(
+            &[2, 3],
+            &[2, 2],
+            &[0, 1, i64::MAX, 0],
+            1,
+            &[2, 2, 2]
+        )),
         Some(OnnxError::Graph)
     );
 }
@@ -437,9 +477,18 @@ fn large_index_lowering_has_exact_aggregate_limits_and_cancellable_checkpoints()
     import_onnx(&source, digest, GENERATION, exact, &|| false)?;
     for limits in [
         OnnxLimits { nodes: 13, ..exact },
-        OnnxLimits { tensors: 15, ..exact },
-        OnnxLimits { parameter_bytes: 95, ..exact },
-        OnnxLimits { tensor_bytes: 287, ..exact },
+        OnnxLimits {
+            tensors: 15,
+            ..exact
+        },
+        OnnxLimits {
+            parameter_bytes: 95,
+            ..exact
+        },
+        OnnxLimits {
+            tensor_bytes: 287,
+            ..exact
+        },
     ] {
         assert_eq!(
             import_onnx(&source, digest, GENERATION, limits, &|| false).err(),
@@ -451,7 +500,10 @@ fn large_index_lowering_has_exact_aggregate_limits_and_cancellable_checkpoints()
             &source,
             digest,
             GENERATION,
-            OnnxLimits { work_units: exact.work_units - 1, ..exact },
+            OnnxLimits {
+                work_units: exact.work_units - 1,
+                ..exact
+            },
             &|| false,
         )
         .err(),

@@ -62,7 +62,10 @@ impl Default for HistoryLimits {
 
 fn admit(value: usize, limit: usize, dimension: &'static str) -> Result<(), GraphError> {
     if value > limit {
-        return Err(GraphError::BudgetExhausted { dimension, limit: limit as u64 });
+        return Err(GraphError::BudgetExhausted {
+            dimension,
+            limit: limit as u64,
+        });
     }
     Ok(())
 }
@@ -108,16 +111,28 @@ impl EvidenceHistoryProjection {
         // Cardinality admission precedes hashing, verification or copying event records.
         for lineage in lineages {
             if lineage.is_empty() {
-                return Err(GraphError::PreconditionFailed("empty event lineage".to_owned()).into());
+                return Err(
+                    GraphError::PreconditionFailed("empty event lineage".to_owned()).into(),
+                );
             }
             admit(lineage.len(), MAX_LINEAGE_REVISIONS, "lineage_revisions")?;
-            catalogue_revisions = catalogue_revisions.checked_add(lineage.len())
+            catalogue_revisions = catalogue_revisions
+                .checked_add(lineage.len())
                 .ok_or(GraphError::TooLarge)?;
-            admit(catalogue_revisions, limits.max_revisions, "history_revisions")?;
+            admit(
+                catalogue_revisions,
+                limits.max_revisions,
+                "history_revisions",
+            )?;
             for record in *lineage {
-                catalogue_edges = catalogue_edges.checked_add(record.evidence.len())
+                catalogue_edges = catalogue_edges
+                    .checked_add(record.evidence.len())
                     .ok_or(GraphError::TooLarge)?;
-                admit(catalogue_edges, limits.max_evidence_edges, "history_evidence_edges")?;
+                admit(
+                    catalogue_edges,
+                    limits.max_evidence_edges,
+                    "history_evidence_edges",
+                )?;
             }
         }
         let mut ordered = lineages.to_vec();
@@ -132,10 +147,17 @@ impl EvidenceHistoryProjection {
         let mut heads = BTreeMap::new();
         for lineage in ordered {
             for record in lineage {
-                let bytes = record.to_versioned_bytes().map_err(EvidenceProjectionError::Event)?;
-                catalogue_bytes = catalogue_bytes.checked_add(bytes.len())
+                let bytes = record
+                    .to_versioned_bytes()
+                    .map_err(EvidenceProjectionError::Event)?;
+                catalogue_bytes = catalogue_bytes
+                    .checked_add(bytes.len())
                     .ok_or(GraphError::TooLarge)?;
-                admit(catalogue_bytes, limits.max_canonical_bytes, "history_canonical_bytes")?;
+                admit(
+                    catalogue_bytes,
+                    limits.max_canonical_bytes,
+                    "history_canonical_bytes",
+                )?;
             }
             EventHypothesis::verify_chain(lineage).map_err(EvidenceProjectionError::Event)?;
             for record in lineage {
@@ -165,13 +187,18 @@ impl EvidenceHistoryProjection {
                 }
             }
         }
-        let mut records: Vec<_> = selected.iter().filter_map(|digest| catalogue.get(digest).copied())
+        let mut records: Vec<_> = selected
+            .iter()
+            .filter_map(|digest| catalogue.get(digest).copied())
             .collect();
         if records.len() != selected.len() {
             return Err(GraphError::Inconsistent("incomplete history selection".to_owned()).into());
         }
         records.sort_unstable_by(|a, b| {
-            a.event_id.as_str().cmp(b.event_id.as_str()).then(a.revision.cmp(&b.revision))
+            a.event_id
+                .as_str()
+                .cmp(b.event_id.as_str())
+                .then(a.revision.cmp(&b.revision))
         });
         let mut nodes = BTreeSet::from([FRONTIER_ROOT.to_owned()]);
         let mut arcs = BTreeSet::new();
@@ -201,8 +228,12 @@ impl EvidenceHistoryProjection {
             }
         }
         let mut builder = WeightedGraphBuilder::directed(POLICY_UNIT);
-        for node in nodes { builder.add_node(node); }
-        for (source, target) in arcs { builder.add_arc(source, target, 1); }
+        for node in nodes {
+            builder.add_node(node);
+        }
+        for (source, target) in arcs {
+            builder.add_arc(source, target, 1);
+        }
         Ok(Self {
             graph: builder.build()?,
             heads,
@@ -217,28 +248,44 @@ impl EvidenceHistoryProjection {
 
     /// Exact support graph; no mutable access is exposed.
     #[must_use]
-    pub fn graph(&self) -> &WeightedGraph { &self.graph }
+    pub fn graph(&self) -> &WeightedGraph {
+        &self.graph
+    }
     /// Latest selected revision of every lineage, ordered by event identity.
     #[must_use]
-    pub fn heads(&self) -> &BTreeMap<String, ContentDigest> { &self.heads }
+    pub fn heads(&self) -> &BTreeMap<String, ContentDigest> {
+        &self.heads
+    }
     /// Complete expanded records, ordered by event identity then revision number.
     #[must_use]
-    pub fn records(&self) -> &[EventHypothesis] { &self.records }
+    pub fn records(&self) -> &[EventHypothesis] {
+        &self.records
+    }
     /// Supporting references not found in the verified event catalogue; NOT verified sources.
     #[must_use]
-    pub fn unexpanded_support(&self) -> &[ContentDigest] { &self.unexpanded_support }
+    pub fn unexpanded_support(&self) -> &[ContentDigest] {
+        &self.unexpanded_support
+    }
     /// All non-event evidence references, including counterevidence and neutral relations.
     #[must_use]
-    pub fn unexpanded_evidence(&self) -> &[ContentDigest] { &self.unexpanded_evidence }
+    pub fn unexpanded_evidence(&self) -> &[ContentDigest] {
+        &self.unexpanded_evidence
+    }
     /// Revisions validated, including catalogue-only ancestors not selected for expansion.
     #[must_use]
-    pub const fn catalogue_revisions(&self) -> usize { self.catalogue_revisions }
+    pub const fn catalogue_revisions(&self) -> usize {
+        self.catalogue_revisions
+    }
     /// All inspected evidence edges, including unused ancestors and non-supports.
     #[must_use]
-    pub const fn catalogue_edges(&self) -> usize { self.catalogue_edges }
+    pub const fn catalogue_edges(&self) -> usize {
+        self.catalogue_edges
+    }
     /// All validated canonical versioned bytes; excludes graph allocation and source I/O.
     #[must_use]
-    pub const fn catalogue_bytes(&self) -> usize { self.catalogue_bytes }
+    pub const fn catalogue_bytes(&self) -> usize {
+        self.catalogue_bytes
+    }
 
     /// Exact witnessed dominators over the historical support graph.
     ///
@@ -252,30 +299,59 @@ impl EvidenceHistoryProjection {
         budget: Budget,
     ) -> Result<EvidenceClaimAnalysis, EvidenceProjectionError> {
         let run = dominators::dominators(
-            &self.graph, FRONTIER_ROOT, DominanceDirection::Dominators, budget,
+            &self.graph,
+            FRONTIER_ROOT,
+            DominanceDirection::Dominators,
+            budget,
         )?;
-        let witness = run.witness(PROJECTION_ID, anchor).map_err(EvidenceProjectionError::Contract)?;
-        check_witness(&witness, &dominators::IDENTITY, &dominators::bound(run.node_count, run.edge_count))?;
+        let witness = run
+            .witness(PROJECTION_ID, anchor)
+            .map_err(EvidenceProjectionError::Contract)?;
+        check_witness(
+            &witness,
+            &dominators::IDENTITY,
+            &dominators::bound(run.node_count, run.edge_count),
+        )?;
         let immediate: BTreeMap<_, _> = run.output.immediate_dominators.iter().cloned().collect();
-        let claims = self.records.iter().map(|record| {
-            let revision = record.revision_digest();
-            let supports = record.evidence.iter().filter(|edge| edge.counts_as_support()).count();
-            let contradictions = record.evidence.iter().filter(|edge| edge.counts_as_contradiction()).count();
-            let immediate_dominator = immediate.get(&object_node(revision)).cloned();
-            let reachability = if supports == 0 {
-                SupportReachability::NoDeclaredSupport
-            } else if immediate_dominator.is_some() {
-                SupportReachability::RootedInUnexpandedReference
-            } else {
-                SupportReachability::Unrooted
-            };
-            ClaimSupport {
-                event_id: record.event_id.to_string(), revision, supports, contradictions,
-                neutral: record.evidence.len() - supports - contradictions,
-                reachability, immediate_dominator,
-            }
-        }).collect();
-        Ok(EvidenceClaimAnalysis { run, witness, claims })
+        let claims = self
+            .records
+            .iter()
+            .map(|record| {
+                let revision = record.revision_digest();
+                let supports = record
+                    .evidence
+                    .iter()
+                    .filter(|edge| edge.counts_as_support())
+                    .count();
+                let contradictions = record
+                    .evidence
+                    .iter()
+                    .filter(|edge| edge.counts_as_contradiction())
+                    .count();
+                let immediate_dominator = immediate.get(&object_node(revision)).cloned();
+                let reachability = if supports == 0 {
+                    SupportReachability::NoDeclaredSupport
+                } else if immediate_dominator.is_some() {
+                    SupportReachability::RootedInUnexpandedReference
+                } else {
+                    SupportReachability::Unrooted
+                };
+                ClaimSupport {
+                    event_id: record.event_id.to_string(),
+                    revision,
+                    supports,
+                    contradictions,
+                    neutral: record.evidence.len() - supports - contradictions,
+                    reachability,
+                    immediate_dominator,
+                }
+            })
+            .collect();
+        Ok(EvidenceClaimAnalysis {
+            run,
+            witness,
+            claims,
+        })
     }
 }
 
@@ -309,16 +385,27 @@ impl EvidenceHistoryProjection {
         budget: Budget,
     ) -> Result<SupportImpactAnalysis, EvidenceProjectionError> {
         let root = object_node(artifact);
-        let run = dominators::dominators(
-            &self.graph, &root, DominanceDirection::Dominators, budget,
+        let run =
+            dominators::dominators(&self.graph, &root, DominanceDirection::Dominators, budget)?;
+        let witness = run
+            .witness(PROJECTION_ID, anchor)
+            .map_err(EvidenceProjectionError::Contract)?;
+        check_witness(
+            &witness,
+            &dominators::IDENTITY,
+            &dominators::bound(run.node_count, run.edge_count),
         )?;
-        let witness = run.witness(PROJECTION_ID, anchor).map_err(EvidenceProjectionError::Contract)?;
-        check_witness(&witness, &dominators::IDENTITY, &dominators::bound(run.node_count, run.edge_count))?;
         let unreachable: BTreeSet<_> = run.output.unreachable.iter().map(String::as_str).collect();
-        let affected_heads = self.heads.iter()
+        let affected_heads = self
+            .heads
+            .iter()
             .filter(|(_, digest)| !unreachable.contains(object_node(**digest).as_str()))
             .map(|(id, digest)| (id.clone(), *digest))
             .collect();
-        Ok(SupportImpactAnalysis { run, witness, affected_heads })
+        Ok(SupportImpactAnalysis {
+            run,
+            witness,
+            affected_heads,
+        })
     }
 }

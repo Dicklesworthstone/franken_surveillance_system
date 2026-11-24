@@ -22,7 +22,8 @@ fn item(id: &str, sensor: &str, causes: &[&str], lo: i64, hi: i64) -> EvidenceIt
         failure_domains: domains(causes),
         calibration: Calibration::Calibrated {
             generation: "count-calibration:v1".to_owned(),
-            llr: LlrInterval::new(lo, hi).unwrap(),
+            llr: LlrInterval::new(lo, hi)
+                .unwrap_or_else(|error| unreachable!("fixture LLR: {error}")),
         },
         observability: Observability::Observed,
     }
@@ -32,7 +33,7 @@ fn query(evidence: Vec<EvidenceItem>) -> FusionQuery {
     FusionQuery {
         hypothesis: "event:intrusion".to_owned(),
         kind: "unknown_presence".to_owned(),
-        prior: LlrInterval::point(0).unwrap(),
+        prior: LlrInterval::point(0).unwrap_or_else(|error| unreachable!("fixture prior: {error}")),
         evidence,
         coverage: Coverage::Complete,
         opportunities: Vec::new(),

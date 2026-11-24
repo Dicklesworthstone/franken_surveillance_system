@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::graph::{MAX_GRAPH_EDGES, MAX_GRAPH_NODES, GraphBuilder, GraphError};
+use crate::graph::{GraphBuilder, GraphError, MAX_GRAPH_EDGES, MAX_GRAPH_NODES};
 
 use super::{
     CoverageObservation, PLANE_PREFIX, SENSOR_PREFIX, SensorCoverageProjection, ZONE_PREFIX,

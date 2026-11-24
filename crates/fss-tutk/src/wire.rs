@@ -168,7 +168,6 @@ pub struct DiscoveryPacket {
 
 /// Packet builder/parser bound to one camera's credentials
 /// (HMAC key = UID(20B) + AuthKey(8B)).
-
 pub struct NewProto {
     key: [u8; 28],
 }

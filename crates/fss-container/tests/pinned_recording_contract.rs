@@ -28,6 +28,7 @@ pub use spool::*;
 pub mod custody_audit;
 #[path = "../../fss-publication/src/ledger.rs"]
 mod ledger;
+#[allow(unused_imports)]
 #[path = "../../fss-publication/src/local/mod.rs"]
 mod local;
 #[path = "../../fss-publication/src/error.rs"]
@@ -80,6 +81,7 @@ mod closure_contract;
 mod metadata_regression;
 #[path = "../../fss-publication/tests/pinned_namespace_contract.rs"]
 mod namespace_regression;
+#[allow(clippy::duplicate_mod)]
 #[path = "../../fss-reference/tests/rtsp_replay_time_pinned_contract/io.rs"]
 mod replay_read_io;
 #[path = "../../fss-reference/tests/rtsp_replay_time_pinned_contract.rs"]

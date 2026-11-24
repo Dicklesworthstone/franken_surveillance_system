@@ -15,7 +15,9 @@ type Test<T = ()> = Result<T, Box<dyn Error>>;
 const MAX_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_SAMPLES: usize = 30;
 
-fn decode(source: &[u8]) -> Test<(u32, u32, usize, usize, usize, [u8; 32], ContentDigest)> {
+type DecodedSummary = (u32, u32, usize, usize, usize, [u8; 32], ContentDigest);
+
+fn decode(source: &[u8]) -> Test<DecodedSummary> {
     let movie = AvcMp4::parse(source, None, DemuxLimits::default())?;
     if movie.codec() != VideoCodec::Avc {
         return Err("recording is not AVC".into());

@@ -236,12 +236,13 @@ impl AgentResponseEnvelope {
         if self.outcome == ResponseOutcome::Error && self.error_id.is_none() {
             return Err(ContractError::NotFound);
         }
-        if matches!(self.payload_schema.as_str(),
-            "fss.agent_cognitive_envelope.v2" | crate::contract_basis::HYDRATION_RESPONSE_SCHEMA)
-            && !self
-                .operation
-                .response_payload_schemas_for_basis(&self.contract_basis)
-                .is_some_and(|schemas| schemas.contains(&self.payload_schema.as_str()))
+        if matches!(
+            self.payload_schema.as_str(),
+            "fss.agent_cognitive_envelope.v2" | crate::contract_basis::HYDRATION_RESPONSE_SCHEMA
+        ) && !self
+            .operation
+            .response_payload_schemas_for_basis(&self.contract_basis)
+            .is_some_and(|schemas| schemas.contains(&self.payload_schema.as_str()))
         {
             return Err(ContractError::InvalidIdentifier);
         }

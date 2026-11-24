@@ -57,7 +57,7 @@ fn block_transform(blk: &[u8]) -> [u8; 16] {
     let b = ror32(w[1], 5) ^ k[1];
     let c = ror32(w[2], 9) ^ k[2];
     let d = ror32(w[3], 13) ^ k[3];
-    let byte = |v: u32, i: u32| ((v >> (8 * i)) & 0xFF) as u32;
+    let byte = |v: u32, i: u32| (v >> (8 * i)) & 0xFF;
     let ecx = (byte(d, 2) << 24) | (byte(d, 0) << 16) | (byte(c, 2) << 8) | byte(d, 1);
     let r10 = (byte(a, 0) << 24) | (byte(b, 1) << 16) | (byte(a, 1) << 8) | byte(a, 2);
     let r8 = (byte(d, 3) << 24) | (byte(c, 0) << 16) | (byte(c, 1) << 8) | byte(c, 3);
@@ -87,7 +87,7 @@ fn inv_block_transform(blk: &[u8]) -> [u8; 16] {
     let ecx = rol32(o[1], 7);
     let r10 = rol32(o[2], 11);
     let r9 = rol32(o[3], 15);
-    let byte = |v: u32, i: u32| ((v >> (8 * i)) & 0xFF) as u32;
+    let byte = |v: u32, i: u32| (v >> (8 * i)) & 0xFF;
     let (d2, d0, c2, d1) = (byte(ecx, 3), byte(ecx, 2), byte(ecx, 1), byte(ecx, 0));
     let (a0, b1, a1, a2) = (byte(r10, 3), byte(r10, 2), byte(r10, 1), byte(r10, 0));
     let (d3, c0, c1, c3) = (byte(r8, 3), byte(r8, 2), byte(r8, 1), byte(r8, 0));
@@ -96,7 +96,12 @@ fn inv_block_transform(blk: &[u8]) -> [u8; 16] {
     let b = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
     let c = c0 | (c1 << 8) | (c2 << 16) | (c3 << 24);
     let d = d0 | (d1 << 8) | (d2 << 16) | (d3 << 24);
-    let out = [rol32(a ^ k[0], 1), rol32(b ^ k[1], 5), rol32(c ^ k[2], 9), rol32(d ^ k[3], 13)];
+    let out = [
+        rol32(a ^ k[0], 1),
+        rol32(b ^ k[1], 5),
+        rol32(c ^ k[2], 9),
+        rol32(d ^ k[3], 13),
+    ];
     let mut bytes = [0u8; 16];
     for (i, w) in out.iter().enumerate() {
         bytes[4 * i..4 * i + 4].copy_from_slice(&w.to_le_bytes());
@@ -248,6 +253,9 @@ mod tests {
         d[1] = 0xCC;
         d[4] = 0x02;
         d[5] = 0x12;
-        assert!(matches!(parse_response(&d), ProbeResponse::NewProto { cmd: 0x1202 }));
+        assert!(matches!(
+            parse_response(&d),
+            ProbeResponse::NewProto { cmd: 0x1202 }
+        ));
     }
 }

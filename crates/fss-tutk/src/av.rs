@@ -151,7 +151,13 @@ pub fn parse_av_login_response(data: &[u8]) -> Result<AvLoginResponse, AvError> 
 
 /// Build a 24-byte msgACK frame (layout from go2rtc msgACKCC51).
 #[must_use]
-pub fn build_ack(avseq: u32, rx_seq_start: u16, rx_seq_end: u16, ack_flags: u16, ts_ms: u16) -> Vec<u8> {
+pub fn build_ack(
+    avseq: u32,
+    rx_seq_start: u16,
+    rx_seq_end: u16,
+    ack_flags: u16,
+    ts_ms: u16,
+) -> Vec<u8> {
     let mut pkt = vec![0u8; 24];
     put16(&mut pkt[0..2], MAGIC_ACK);
     put16(&mut pkt[2..4], AV_VERSION);
@@ -272,7 +278,12 @@ pub fn build_k10000_with(encoders: &[u32]) -> Vec<u8> {
 
 /// K10002 challenge response (16B response + 4B session id + video + audio flags).
 #[must_use]
-pub fn build_k10002(response: &[u8; 16], session_id4: [u8; 4], video: bool, audio: bool) -> Vec<u8> {
+pub fn build_k10002(
+    response: &[u8; 16],
+    session_id4: [u8; 4],
+    video: bool,
+    audio: bool,
+) -> Vec<u8> {
     let mut payload = response.to_vec();
     payload.extend_from_slice(&session_id4);
     payload.push(video as u8);
@@ -437,16 +448,17 @@ pub fn parse_av_packet(buf: &[u8]) -> Result<AvPacket, AvError> {
     let is_end = END_TYPES.contains(&ftype) || (ftype == 0x09 && pkt_total == 1);
     let mut frameinfo = None;
     let mut has_frameinfo = false;
-    if is_end && payload.len() >= FRAMEINFO_LEN {
-        if let Ok(fi) = parse_frameinfo(&payload[payload.len() - FRAMEINFO_LEN..]) {
-            let codec_ok = (matches!(channel, CHANNEL_I_VIDEO | CHANNEL_P_VIDEO)
-                && (0x4C..=0x50).contains(&fi.codec_id))
-                || (channel == CHANNEL_AUDIO && (0x86..=0x92).contains(&fi.codec_id));
-            if codec_ok {
-                has_frameinfo = true;
-                payload.truncate(payload.len() - FRAMEINFO_LEN);
-                frameinfo = Some(fi);
-            }
+    if is_end
+        && payload.len() >= FRAMEINFO_LEN
+        && let Ok(fi) = parse_frameinfo(&payload[payload.len() - FRAMEINFO_LEN..])
+    {
+        let codec_ok = (matches!(channel, CHANNEL_I_VIDEO | CHANNEL_P_VIDEO)
+            && (0x4C..=0x50).contains(&fi.codec_id))
+            || (channel == CHANNEL_AUDIO && (0x86..=0x92).contains(&fi.codec_id));
+        if codec_ok {
+            has_frameinfo = true;
+            payload.truncate(payload.len() - FRAMEINFO_LEN);
+            frameinfo = Some(fi);
         }
     }
     let pkt_idx = if has_frameinfo || (is_end && idx_or_marker == FRAMEINFO_MARKER) {
@@ -466,10 +478,17 @@ pub fn parse_av_packet(buf: &[u8]) -> Result<AvPacket, AvError> {
     })
 }
 
+type FrameKey = (u8, u32);
+type FrameAssemblyState = (
+    u16,
+    std::collections::BTreeMap<u16, Vec<u8>>,
+    Option<FrameInfo>,
+);
+
 /// Reassembles multi-packet AV frames keyed by (channel, frame_no).
 #[derive(Default)]
 pub struct FrameReassembler {
-    frames: std::collections::BTreeMap<(u8, u32), (u16, std::collections::BTreeMap<u16, Vec<u8>>, Option<FrameInfo>)>,
+    frames: std::collections::BTreeMap<FrameKey, FrameAssemblyState>,
 }
 
 impl FrameReassembler {
@@ -482,12 +501,19 @@ impl FrameReassembler {
     /// Add one packet; returns (channel, frame_no, assembled, frameinfo) when complete.
     pub fn add(&mut self, info: &AvPacket) -> Option<(u8, u32, Vec<u8>, Option<FrameInfo>)> {
         let key = (info.channel, info.frame_no);
-        let entry = self.frames.entry(key).or_insert_with(|| (info.pkt_total, Default::default(), None));
+        let entry = self
+            .frames
+            .entry(key)
+            .or_insert_with(|| (info.pkt_total, Default::default(), None));
         entry.1.insert(info.pkt_idx, info.payload.clone());
         if info.frameinfo.is_some() {
             entry.2 = info.frameinfo.clone();
         }
-        let total = if entry.0 == 0 { entry.1.len() as u16 } else { entry.0 };
+        let total = if entry.0 == 0 {
+            entry.1.len() as u16
+        } else {
+            entry.0
+        };
         if entry.1.len() as u16 >= total && (0..total).all(|i| entry.1.contains_key(&i)) {
             let mut data = Vec::new();
             for i in 0..total {
@@ -557,7 +583,7 @@ mod hl_version_tests {
     #[test]
     fn vendor_ioctls_use_version_0x25() {
         let hl = build_ioctl_hl(0x284c, &[1, 2, 3]);
-        
+
         assert_eq!(hl[2], 0x25);
         assert_eq!(u16::from_le_bytes([hl[4], hl[5]]), 0x284c);
         assert_eq!(u16::from_le_bytes([hl[6], hl[7]]), 3);

@@ -1,0 +1,21 @@
+[package]
+name = "fss-vault"
+description = "Cx-scoped secret store, OS keychain/keyring adapters, and AEAD-encrypted operator vault for Franken Surveillance System"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+fss-core = { path = "../fss-core" }
+fss-runtime = { path = "../fss-runtime" }
+chacha20poly1305 = { version = "=0.11.0", default-features = false, features = ["alloc", "zeroize"] }
+zeroize = { version = "=1.9.1", default-features = false }
+
+[dev-dependencies]
+fss-core = { path = "../fss-core", features = ["test-support"] }

@@ -590,10 +590,8 @@ impl<'a> GattSnapshot<'a> {
             if device != self.device || !child_of(self.device, item.path) {
                 return Err(E::Ambiguous);
             }
-            if uuid.eq_ignore_ascii_case(service_uuid) {
-                if service.replace(item.path).is_some() {
-                    return Err(E::Ambiguous);
-                }
+            if uuid.eq_ignore_ascii_case(service_uuid) && service.replace(item.path).is_some() {
+                return Err(E::Ambiguous);
             }
         }
         let service = service.ok_or(E::Incomplete)?;
@@ -1063,7 +1061,7 @@ mod tests {
             }
         }
         fn pad(&mut self, n: usize) {
-            while self.data.len() % n != 0 {
+            while !self.data.len().is_multiple_of(n) {
                 self.data.push(0);
             }
         }

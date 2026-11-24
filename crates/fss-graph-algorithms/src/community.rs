@@ -77,7 +77,10 @@ pub struct CommunityOutput {
 
 impl CertifiedOutput for CommunityOutput {
     fn entries(&self) -> u64 {
-        self.communities.iter().map(|c| c.members.len() as u64).sum()
+        self.communities
+            .iter()
+            .map(|c| c.members.len() as u64)
+            .sum()
     }
 
     fn encode(&self, encoder: &mut CanonicalEncoder) {
@@ -160,8 +163,8 @@ pub fn community_detection(
     let mut passes = 0_u32;
 
     if total_2w > 0 {
-        let m2 = i128::try_from(total_2w)
-            .map_err(|_| GraphError::ArithmeticOverflow("community_m2"))?;
+        let m2 =
+            i128::try_from(total_2w).map_err(|_| GraphError::ArithmeticOverflow("community_m2"))?;
         for pass in 1..=max_passes {
             passes = pass;
             let mut moved_any = false;

@@ -16,13 +16,18 @@ use fss_ledger::{
     DurableLedgerError, DurableLedgerLimits, DurableLedgerStatus, DurableReferenceLedger,
     IncompleteTailPolicy, RepairError,
 };
-use fss_object::{HostSpoolIo, ObjectManifest, SPOOL_LOCK_FILE, SpoolError, SpoolLimits};
+#[cfg(target_os = "linux")]
+use fss_object::SPOOL_LOCK_FILE;
+use fss_object::{HostSpoolIo, ObjectManifest, SpoolError, SpoolLimits};
+#[cfg(target_os = "linux")]
 use fss_publication::{
-    LOCAL_LOCK_FILE, LOCAL_ROOTS_DIR, LOCAL_SPOOL_DIR, LedgeredRootPublisher, LocalInspection,
+    LOCAL_LOCK_FILE, LockTableSource, UnknownLockReason, WriterLockBasis, decode_st_dev,
+};
+use fss_publication::{
+    LOCAL_ROOTS_DIR, LOCAL_SPOOL_DIR, LedgeredRootPublisher, LocalInspection,
     LocalPublicationError, LocalPublicationLimits, LocalPublicationState, LocalRootPublisher,
-    LockTableSource, ROOT_RECORD_SUFFIX, ROOT_TEMP_SUFFIX, SlotName, StringLockTableSource,
-    UnknownLockReason, WriterDetectionOptions, WriterLockBasis, WriterState, decode_st_dev,
-    inspect_linkage,
+    ROOT_RECORD_SUFFIX, ROOT_TEMP_SUFFIX, SlotName, StringLockTableSource, WriterDetectionOptions,
+    WriterState, inspect_linkage,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -397,12 +402,14 @@ fn ledger_journal_cap_holds_at_n_and_refuses_n_plus_one() -> TestResult {
 
 /// A lock table that replaces `LOCK` (new inode) while it is read, and names the old inode as an
 /// exclusive holder.
+#[cfg(target_os = "linux")]
 #[derive(Debug)]
 struct ReplacingLockTable {
     lock: PathBuf,
     line: String,
 }
 
+#[cfg(target_os = "linux")]
 impl LockTableSource for ReplacingLockTable {
     fn read_lock_table(&self, _max_bytes: usize) -> io::Result<String> {
         let replacement = self.lock.with_extension("replacement");
@@ -412,6 +419,7 @@ impl LockTableSource for ReplacingLockTable {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn flock_line(path: &Path, mode: &str) -> Result<String, Box<dyn Error>> {
     let meta = fs::symlink_metadata(path)?;
     let (major, minor) = decode_st_dev(meta.dev());
@@ -421,6 +429,7 @@ fn flock_line(path: &Path, mode: &str) -> Result<String, Box<dyn Error>> {
     ))
 }
 
+#[cfg(target_os = "linux")]
 fn published_root(name: &str) -> Result<(PathBuf, PathBuf), Box<dyn Error>> {
     let base = fresh(name)?;
     let root = base.join("publication");
@@ -479,15 +488,18 @@ fn replaced_lock_file_is_unknown_not_held() -> TestResult {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 #[derive(Debug)]
 struct FailingTable(io::ErrorKind);
 
+#[cfg(target_os = "linux")]
 impl LockTableSource for FailingTable {
     fn read_lock_table(&self, _max_bytes: usize) -> io::Result<String> {
         Err(io::Error::from(self.0))
     }
 }
 
+#[cfg(target_os = "linux")]
 fn inspect_writer(
     root: &Path,
     table: &dyn LockTableSource,

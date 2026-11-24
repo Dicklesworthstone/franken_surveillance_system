@@ -114,7 +114,7 @@ fn receipt_digest_is_deterministic_and_canonical_roundtrip() {
 
 #[test]
 fn schema_identity_is_registered() {
-    let receipt = ExperimentReceipt::compare(
+    let _receipt = ExperimentReceipt::compare(
         "exp:1",
         ExperimentKind::Aa,
         run("run-1", None, 1, Some(1)),

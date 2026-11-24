@@ -28,7 +28,8 @@ fn parse(bytes: &[u8]) -> Result<ReplayHeaderExtension, Error> {
 }
 
 fn observed(seconds: u32, fraction: u32) -> ReplayHeaderExtension {
-    parse(&extension(seconds, fraction, 0, 7)).expect("fixed valid fixture")
+    parse(&extension(seconds, fraction, 0, 7))
+        .unwrap_or_else(|error| unreachable!("fixed valid fixture: {error:?}"))
 }
 
 #[test]

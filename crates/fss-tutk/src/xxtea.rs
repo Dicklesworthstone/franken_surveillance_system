@@ -18,7 +18,10 @@ impl core::fmt::Display for XxteaError {
         match self {
             Self::BadKeyLength(n) => write!(f, "XXTEA key must be 16 bytes, got {n}"),
             Self::BadDataLength(n) => {
-                write!(f, "XXTEA data must be >= 8 bytes and multiple of 4, got {n}")
+                write!(
+                    f,
+                    "XXTEA data must be >= 8 bytes and multiple of 4, got {n}"
+                )
             }
         }
     }
@@ -35,8 +38,11 @@ fn mx(sum: u32, y: u32, z: u32, p: usize, e: u32, k: &[u32; 4]) -> u32 {
 }
 
 fn to_words(data: &[u8]) -> Vec<u32> {
-    data.chunks_exact(4)
-        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+    data.as_chunks::<4>()
+        .0
+        .iter()
+        .copied()
+        .map(u32::from_le_bytes)
         .collect()
 }
 
@@ -52,7 +58,7 @@ fn check(data: &[u8], key: &[u8]) -> Result<[u32; 4], XxteaError> {
     if key.len() != 16 {
         return Err(XxteaError::BadKeyLength(key.len()));
     }
-    if data.len() < 8 || data.len() % 4 != 0 {
+    if data.len() < 8 || !data.len().is_multiple_of(4) {
         return Err(XxteaError::BadDataLength(data.len()));
     }
     let kw = to_words(key);

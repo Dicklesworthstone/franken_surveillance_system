@@ -152,7 +152,11 @@ fn fixture_with_completion(
         upload.upload_chunks(
             &tree,
             || TimestampNs(2),
-            |chunk| bytes[chunk.offset as usize..(chunk.offset + chunk.len) as usize].to_vec(),
+            |index| {
+                let offset = (index * MIN_PART_SIZE) as usize;
+                let end = (offset + MIN_PART_SIZE as usize).min(bytes.len());
+                bytes[offset..end].to_vec()
+            },
         )?;
         if lost {
             store.borrow_mut().fault_once = Some(TransportOperation::Complete);

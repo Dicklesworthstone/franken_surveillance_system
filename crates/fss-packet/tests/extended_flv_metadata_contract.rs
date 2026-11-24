@@ -56,9 +56,8 @@ fn wire(kind: u8, payload: &[u8]) -> Vec<u8> {
 
 fn parse_payload(payload: &[u8]) -> Result<(String, Option<String>), metadata::Error> {
     let input = wire(18, payload);
-    let Parse::Complete(tag) = Tag::parse(&input, Limits::default()).expect("valid FLV wrapper")
-    else {
-        panic!("complete FLV wrapper");
+    let Ok(Parse::Complete(tag)) = Tag::parse(&input, Limits::default()) else {
+        unreachable!("complete FLV wrapper");
     };
     let result = metadata::parse(tag)?;
     Ok((
@@ -371,7 +370,10 @@ fn startup_name_probe_refuses_unsupported_metadata_and_wrong_first_stream_id() -
 
     let mut wrong_id = wire(9, b"video");
     wrong_id[8] = 1;
-    for mode in [SearchMode::ZeroStreamId, SearchMode::StructuredTrailer16OpaqueFlag] {
+    for mode in [
+        SearchMode::ZeroStreamId,
+        SearchMode::StructuredTrailer16OpaqueFlag,
+    ] {
         let mut framer = Framer::with_mode(Limits::default(), 4096, mode)?;
         framer.append(0, header)?;
         framer.append(framer.next_offset(), &wrong_id)?;

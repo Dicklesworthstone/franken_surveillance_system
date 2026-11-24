@@ -1044,9 +1044,47 @@ fn lock_paths(root: &Path, journal: Option<&Path>) -> Vec<PathBuf> {
     paths
 }
 
-/// Inspects through [`LockHookSpoolIo`] with the default (lock-table) writer check and checks the
-/// read-only proof: no mutating call, every `LOCK` (and the journal) exclusively lockable during
-/// every read, and an unchanged tree digest.
+fn expected_host_clear() -> WriterState {
+    #[cfg(target_os = "linux")]
+    {
+        WriterState::not_observed()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        WriterState::not_held()
+    }
+}
+
+fn expected_host_no_lock_file() -> WriterState {
+    #[cfg(target_os = "linux")]
+    {
+        WriterState::NoLockFile {
+            basis: "proc_locks",
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        WriterState::no_lock_file()
+    }
+}
+
+fn unexpected_mutating_calls(calls: Vec<SpoolIoCall>) -> Vec<SpoolIoCall> {
+    #[cfg(target_os = "linux")]
+    {
+        calls
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        calls
+            .into_iter()
+            .filter(|call| *call != SpoolIoCall::TryLockShared)
+            .collect()
+    }
+}
+
+/// Inspects through [`LockHookSpoolIo`] with the default host writer check and checks the
+/// read-only proof: no filesystem mutation, every `LOCK` (and the journal) exclusively lockable
+/// during every read, and an unchanged tree digest.
 fn inspect_hooked(
     step: &mut CapStep,
     key: &str,
@@ -1072,7 +1110,7 @@ fn inspect_hooked(
     step.check_debug(
         &format!("{key}_mutating_calls"),
         &Vec::<SpoolIoCall>::new(),
-        &io.inner.mutating_calls(),
+        &unexpected_mutating_calls(io.inner.mutating_calls()),
     );
     step.check_debug(
         &format!("{key}_lock_violations"),
@@ -1171,7 +1209,7 @@ fn check_extras(
     step.check("spool_over_capacity", false, inspection.spool_over_capacity);
     step.check_debug(
         "writer_state",
-        &WriterState::not_observed(),
+        &expected_host_clear(),
         &inspection.writer_state,
     );
 }
@@ -1494,9 +1532,7 @@ fn test_local_differential_missing_layout() -> TestResult {
     step.check("absent_root_created", false, absent.exists());
     step.check_debug(
         "absent_root_writer_state",
-        &WriterState::NoLockFile {
-            basis: "proc_locks",
-        },
+        &expected_host_no_lock_file(),
         &absent_inspection.writer_state,
     );
 
@@ -1671,7 +1707,7 @@ fn test_local_read_only_tree_digest_proof() -> TestResult {
     step.check_debug(
         "mutating_calls",
         &Vec::<SpoolIoCall>::new(),
-        &io.inner.mutating_calls(),
+        &unexpected_mutating_calls(io.inner.mutating_calls()),
     );
     step.check_debug(
         "lock_violations",
@@ -1688,12 +1724,12 @@ fn test_local_read_only_tree_digest_proof() -> TestResult {
     step.check("roots_count", 1_usize, inspection.report.roots.len());
     step.check_debug(
         "writer_state",
-        &WriterState::not_observed(),
+        &expected_host_clear(),
         &inspection.writer_state,
     );
 
-    // Control: while a writer holds the spool LOCK, the hook reports it and the lock table
-    // shows the holder; the lock-free inspection still completes.
+    // Control: while a writer holds the spool LOCK, the hook reports it and the host writer
+    // detector observes the holder; the read-only inspection still completes.
     let spool_lock = root.join(LOCAL_SPOOL_DIR).join(SPOOL_LOCK_FILE);
     let writer = File::open(&spool_lock)?;
     writer
@@ -1710,14 +1746,17 @@ fn test_local_read_only_tree_digest_proof() -> TestResult {
     )
     .map(|found| found.writer_state);
     drop(writer);
-    step.check_debug(
-        "control_writer_state",
-        &Ok(WriterState::Held {
-            basis: WriterLockBasis::ProcLocks,
-            pid_hint: Some(std::process::id()),
-        }),
-        &under_writer,
-    );
+    #[cfg(target_os = "linux")]
+    let expected_held = WriterState::Held {
+        basis: WriterLockBasis::ProcLocks,
+        pid_hint: Some(std::process::id()),
+    };
+    #[cfg(not(target_os = "linux"))]
+    let expected_held = WriterState::Held {
+        basis: WriterLockBasis::SharedTryLock,
+        pid_hint: None,
+    };
+    step.check_debug("control_writer_state", &Ok(expected_held), &under_writer);
     step.check(
         "control_writer_flagged",
         true,
@@ -1753,9 +1792,7 @@ fn test_local_read_only_no_lock_created() -> TestResult {
     );
     step.check_debug(
         "writer_state",
-        &WriterState::NoLockFile {
-            basis: "proc_locks",
-        },
+        &expected_host_no_lock_file(),
         &inspection.writer_state,
     );
     step.check("roots_count", 1_usize, inspection.report.roots.len());
@@ -1778,29 +1815,64 @@ fn test_local_read_only_recording_io_proof() -> TestResult {
     step.check("roots_count", 1_usize, inspection.report.roots.len());
     let calls = recording.calls();
     step.check("calls_recorded", true, !calls.is_empty());
-    step.check_debug(
-        "mutating_calls",
-        &Vec::<SpoolIoCall>::new(),
-        &recording.mutating_calls(),
-    );
-    let read_set = [
-        SpoolIoCall::Metadata,
-        SpoolIoCall::SymlinkMetadata,
-        SpoolIoCall::ReadDir,
-        SpoolIoCall::NextDirEntry,
-        SpoolIoCall::EntryFileType,
-        SpoolIoCall::OpenRead,
-        SpoolIoCall::Read,
-    ];
-    step.check_debug(
-        "calls_outside_read_set",
-        &Vec::<SpoolIoCall>::new(),
-        &calls
-            .iter()
-            .copied()
-            .filter(|call| !read_set.contains(call))
-            .collect::<Vec<_>>(),
-    );
+    #[cfg(target_os = "linux")]
+    {
+        step.check_debug(
+            "mutating_calls",
+            &Vec::<SpoolIoCall>::new(),
+            &recording.mutating_calls(),
+        );
+        let read_set = [
+            SpoolIoCall::Metadata,
+            SpoolIoCall::SymlinkMetadata,
+            SpoolIoCall::ReadDir,
+            SpoolIoCall::NextDirEntry,
+            SpoolIoCall::EntryFileType,
+            SpoolIoCall::OpenRead,
+            SpoolIoCall::Read,
+        ];
+        step.check_debug(
+            "calls_outside_read_set",
+            &Vec::<SpoolIoCall>::new(),
+            &calls
+                .iter()
+                .copied()
+                .filter(|call| !read_set.contains(call))
+                .collect::<Vec<_>>(),
+        );
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let non_probe_mutations: Vec<SpoolIoCall> = recording
+            .mutating_calls()
+            .into_iter()
+            .filter(|call| *call != SpoolIoCall::TryLockShared)
+            .collect();
+        step.check_debug(
+            "non_probe_mutating_calls",
+            &Vec::<SpoolIoCall>::new(),
+            &non_probe_mutations,
+        );
+        let read_or_shared_probe_set = [
+            SpoolIoCall::Metadata,
+            SpoolIoCall::SymlinkMetadata,
+            SpoolIoCall::ReadDir,
+            SpoolIoCall::NextDirEntry,
+            SpoolIoCall::EntryFileType,
+            SpoolIoCall::OpenRead,
+            SpoolIoCall::Read,
+            SpoolIoCall::TryLockShared,
+        ];
+        step.check_debug(
+            "calls_outside_read_set",
+            &Vec::<SpoolIoCall>::new(),
+            &calls
+                .iter()
+                .copied()
+                .filter(|call| !read_or_shared_probe_set.contains(call))
+                .collect::<Vec<_>>(),
+        );
+    }
     step.finish()
 }
 
@@ -1823,18 +1895,49 @@ fn test_local_read_only_copy_unprivileged() -> TestResult {
     // Needs no privilege: every mutating call fails with EROFS whatever the uid.
     let deny = DenyWritesSpoolIo::default();
     let digest_before = tree_digest(&copy)?;
-    let denied_inspection =
-        inspect_with_io(&deny, &copy, l, None, WriterDetectionOptions::default())?;
-    step.check("tree_digest", digest_before, tree_digest(&copy)?);
-    step.check_debug("denied_calls", &Vec::<SpoolIoCall>::new(), &deny.denied());
-    let host_inspection = inspect(&copy, l)?;
-    step.check_equal("inspection_vs_host", &host_inspection, &denied_inspection);
-    step.check("roots_count", 1_usize, denied_inspection.report.roots.len());
-    step.check(
-        "redundant_temps_count",
-        1_usize,
-        denied_inspection.redundant_temps.len(),
-    );
+    #[cfg(target_os = "linux")]
+    {
+        let denied_inspection =
+            inspect_with_io(&deny, &copy, l, None, WriterDetectionOptions::default())?;
+        step.check("tree_digest", digest_before, tree_digest(&copy)?);
+        step.check_debug("denied_calls", &Vec::<SpoolIoCall>::new(), &deny.denied());
+        let host_inspection = inspect(&copy, l)?;
+        step.check_equal("inspection_vs_host", &host_inspection, &denied_inspection);
+        step.check("roots_count", 1_usize, denied_inspection.report.roots.len());
+        step.check(
+            "redundant_temps_count",
+            1_usize,
+            denied_inspection.redundant_temps.len(),
+        );
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        // With an explicit empty lock-table source (no TryLockShared), inspection makes zero
+        // mutating or lock calls; with the default host probe, only TryLockShared is attempted
+        // and the directory tree remains byte-for-byte unchanged.
+        let empty_table = StringLockTableSource(String::new());
+        let denied_inspection = inspect_with_io(
+            &deny,
+            &copy,
+            l,
+            Some(&empty_table),
+            WriterDetectionOptions::default(),
+        )?;
+        step.check("tree_digest", digest_before, tree_digest(&copy)?);
+        step.check_debug("denied_calls", &Vec::<SpoolIoCall>::new(), &deny.denied());
+        let host_inspection = inspect(&copy, l)?;
+        step.check_equal(
+            "report_vs_host",
+            &host_inspection.report,
+            &denied_inspection.report,
+        );
+        step.check("roots_count", 1_usize, denied_inspection.report.roots.len());
+        step.check(
+            "redundant_temps_count",
+            1_usize,
+            denied_inspection.redundant_temps.len(),
+        );
+    }
 
     // Control: the open cannot run on the same capability; its first call is refused.
     let open_deny = Arc::new(DenyWritesSpoolIo::default());
@@ -1898,13 +2001,21 @@ fn test_local_writer_detection_proc_locks_real_publisher() -> TestResult {
     let mut step = CapStep::new("local_writer_detection_proc_locks_real_publisher");
     let root = fresh_root("writer_detection_proc_locks_real_publisher")?;
     let l = limits(8, 32);
+    #[cfg(target_os = "linux")]
     let pid = Some(std::process::id());
+    #[cfg(target_os = "linux")]
     let held_state = WriterState::Held {
         basis: WriterLockBasis::ProcLocks,
         pid_hint: pid,
     };
+    #[cfg(not(target_os = "linux"))]
+    let held_state = WriterState::Held {
+        basis: WriterLockBasis::SharedTryLock,
+        pid_hint: None,
+    };
 
-    // A real publisher holds both LOCKs; the default options read the host lock table.
+    // A real publisher holds both LOCKs; on Linux the default reads /proc/locks, and on
+    // non-Linux platforms (e.g., macOS) it falls back to non-mutating shared try-lock probing.
     let publisher = LocalRootPublisher::open(&root, l)?;
     let held = inspect_with_options(
         Arc::new(HostSpoolIo),
@@ -1932,35 +2043,43 @@ fn test_local_writer_detection_proc_locks_real_publisher() -> TestResult {
         Some(&HostLockTableSource),
         WriterDetectionOptions::default(),
     )?;
+    #[cfg(target_os = "linux")]
+    let expected_released = WriterState::not_observed();
+    #[cfg(not(target_os = "linux"))]
+    let expected_released = WriterState::not_held();
     step.check_debug(
         "released_writer_state",
-        &WriterState::not_observed(),
+        &expected_released,
         &released.writer_state,
     );
     step.check("released_is_clean", true, released.is_clean());
 
-    // A real shared (READ) flock on <root>/LOCK is a shared holder, not a writer.
-    let reader = File::open(root.join(LOCAL_LOCK_FILE))?;
-    reader
-        .try_lock_shared()
-        .map_err(|error| format!("shared lock: {error:?}"))?;
-    let shared = inspect_with_options(
-        Arc::new(HostSpoolIo),
-        &root,
-        l,
-        Some(&HostLockTableSource),
-        WriterDetectionOptions::default(),
-    )?;
-    drop(reader);
-    step.check_debug(
-        "shared_writer_state",
-        &WriterState::SharedHolder {
-            basis: WriterLockBasis::ProcLocks,
-            pid_hint: pid,
-        },
-        &shared.writer_state,
-    );
-    step.check("shared_possibly_stale", true, shared.possibly_stale);
+    // On Linux `/proc/locks` also distinguishes a shared (READ) flock holder from a free lock;
+    // shared try-lock probing on non-Linux only blocks on exclusive (WRITE) holders.
+    #[cfg(target_os = "linux")]
+    {
+        let reader = File::open(root.join(LOCAL_LOCK_FILE))?;
+        reader
+            .try_lock_shared()
+            .map_err(|error| format!("shared lock: {error:?}"))?;
+        let shared = inspect_with_options(
+            Arc::new(HostSpoolIo),
+            &root,
+            l,
+            Some(&HostLockTableSource),
+            WriterDetectionOptions::default(),
+        )?;
+        drop(reader);
+        step.check_debug(
+            "shared_writer_state",
+            &WriterState::SharedHolder {
+                basis: WriterLockBasis::ProcLocks,
+                pid_hint: pid,
+            },
+            &shared.writer_state,
+        );
+        step.check("shared_possibly_stale", true, shared.possibly_stale);
+    }
     step.finish()
 }
 

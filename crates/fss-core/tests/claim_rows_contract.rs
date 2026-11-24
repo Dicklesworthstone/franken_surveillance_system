@@ -59,7 +59,6 @@ fn all_nine_classes_exist_once_with_evidence_requirements() -> Result<(), Box<dy
         let start = CLAIMS_JSON
             .find(&marker)
             .ok_or(format!("claim class {id} missing"))?;
-        let span = &CLAIMS_JSON[start..CLAIMS_JSON.len().min(start + 900)];
         assert!(ids.insert(id), "duplicate claim class {id}");
         // bound the field reads to this row (the 900-byte window could
         // otherwise absorb a following row's field)

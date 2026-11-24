@@ -451,7 +451,6 @@ fn held_reference_changed_after_recovery_is_rechecked_before_publication() -> Te
     Ok(())
 }
 
-
 #[derive(Debug, Default)]
 struct CountingSpoolIo {
     reads: std::sync::Mutex<std::collections::BTreeMap<PathBuf, u64>>,
@@ -461,7 +460,7 @@ impl CountingSpoolIo {
     fn read_count(&self, path: &Path) -> u64 {
         self.reads
             .lock()
-            .expect("counting spool io mutex poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(path)
             .copied()
             .unwrap_or(0)
@@ -506,12 +505,12 @@ impl SpoolIo for CountingSpoolIo {
         HostSpoolIo.sync_file(file)
     }
     fn open_read(&self, path: &Path) -> io::Result<File> {
-        *self
+        let mut reads = self
             .reads
             .lock()
-            .expect("counting spool io mutex poisoned")
-            .entry(path.to_path_buf())
-            .or_insert(0) += 1;
+            .map_err(|_| io::Error::other("counting spool io mutex poisoned"))?;
+        *reads.entry(path.to_path_buf()).or_insert(0) += 1;
+        drop(reads);
         HostSpoolIo.open_read(path)
     }
     fn read_bounded(&self, file: &mut File, limit: u64) -> io::Result<Vec<u8>> {
@@ -586,4 +585,3 @@ fn shared_child_and_multi_pass_roots_verify_each_digest_once_in_classify_roots()
     assert_eq!(io.read_count(&episodes_manifest_path), 2);
     Ok(())
 }
-

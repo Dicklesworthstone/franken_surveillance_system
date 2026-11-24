@@ -240,7 +240,14 @@ fn r66_c_fixture_non_mutation_differential_and_a_promotion() -> TestResult {
         rec.mutating_calls(),
         rec.call_count(SpoolIoCall::TryLockShared)
     );
+    #[cfg(target_os = "linux")]
     assert!(rec.is_read_only());
+    #[cfg(not(target_os = "linux"))]
+    assert!(
+        rec.mutating_calls()
+            .into_iter()
+            .all(|call| call == SpoolIoCall::TryLockShared)
+    );
     assert_same_tree("local::inspect_with_options(default)", &before, &a_root)?;
 
     let li_plain = fss_publication::inspect(&a_root, limits())?;
@@ -398,7 +405,10 @@ fn r66_b_writer_detection_with_lock_held() -> TestResult {
     );
     let (s, calls) = probe(&root, None, false, false)?;
     eprintln!("R66 HELD default-recorded -> {s:?} mutating={calls:?}");
+    #[cfg(target_os = "linux")]
     assert!(calls.is_empty());
+    #[cfg(not(target_os = "linux"))]
+    assert_eq!(calls, vec![SpoolIoCall::TryLockShared]);
     assert!(s.is_held());
 
     let (s, calls) = probe(&root, None, true, false)?;
@@ -474,7 +484,10 @@ fn r66_b_writer_detection_with_lock_held() -> TestResult {
 
     let (s, _) = probe(&root, None, false, false)?;
     eprintln!("R66 FREE default -> {s:?}");
+    #[cfg(target_os = "linux")]
     assert_eq!(s, WriterState::not_observed());
+    #[cfg(not(target_os = "linux"))]
+    assert_eq!(s, WriterState::not_held());
 
     let (s, _) = probe(&root, None, true, false)?;
     eprintln!("R66 FREE probe -> {s:?}");

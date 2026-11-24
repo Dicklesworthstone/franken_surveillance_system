@@ -19,6 +19,7 @@ use fss_runtime::authority::AuthorityCx;
 pub const RESOURCE: &str = "archive:test-store/evidence-object";
 pub type Test = Result<(), Box<dyn std::error::Error>>;
 
+#[allow(dead_code)]
 pub fn budget() -> BudgetVector {
     let mut result = BudgetVector::ZERO;
     result.bytes = 64 * 1024 * 1024;
@@ -53,6 +54,7 @@ pub fn spec(
     })
 }
 
+#[allow(dead_code)]
 pub fn property() -> Result<(AuthorityCx, AuthorityCx, RegionTree), Box<dyn std::error::Error>> {
     let (mut root, mut tree) = AuthorityCx::root(
         spec("operation:root", budget())?,

@@ -127,21 +127,16 @@ impl TuyaClient {
         self.seq
     }
 
-    fn pack(
-        &mut self,
-        cmd_word: u32,
-        key: &[u8; 16],
-        plaintext: &[u8],
-        iv: [u8; 12],
-    ) -> Vec<u8> {
+    fn pack(&mut self, cmd_word: u32, key: &[u8; 16], plaintext: &[u8], iv: [u8; 12]) -> Vec<u8> {
         let seq = self.next_seq();
         match self.proto {
             // Bounded payloads: these frames are small by construction; an
             // over-bound payload yields an empty frame (never a truncated
             // length field) — callers see the empty frame as a local error
             // and never emit a malformed packet.
-            Proto::V35 => wire::pack_6699(seq, cmd_word, None, plaintext, key, iv)
-                .unwrap_or_default(),
+            Proto::V35 => {
+                wire::pack_6699(seq, cmd_word, None, plaintext, key, iv).unwrap_or_default()
+            }
             Proto::V34 => {
                 let sealed = crypto::aes128_ecb_encrypt_pkcs7(key, plaintext);
                 wire::pack_55aa(seq, cmd_word, None, &sealed, Some(key)).unwrap_or_default()
@@ -211,7 +206,9 @@ impl TuyaClient {
             return Err(ClientError::DeviceProofInvalid);
         }
         let session_key = match self.proto {
-            Proto::V35 => wire::derive_session_key_35(&self.local_key, &client_nonce, &device_nonce),
+            Proto::V35 => {
+                wire::derive_session_key_35(&self.local_key, &client_nonce, &device_nonce)
+            }
             Proto::V34 => {
                 match wire::derive_session_key_34(&self.local_key, &client_nonce, &device_nonce) {
                     Some(k) => k,

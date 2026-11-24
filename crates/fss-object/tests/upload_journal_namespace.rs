@@ -1,9 +1,9 @@
+//! Actual disk custody, explicit legacy migration and read-only operator authority.
 #![forbid(unsafe_code)]
 #![cfg(all(
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
-//! Actual disk custody, explicit legacy migration and read-only operator authority.
 
 mod multipart_support;
 

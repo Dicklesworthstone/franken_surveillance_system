@@ -3,8 +3,8 @@
 //! No production EBML helper is reused by the reader or numerical checks.
 
 use fss_container::matroska_gray::{
-    FrameFraming, GrayMatroskaConfig, Initialization, MAX_DIMENSION, MAX_FRAMES,
-    MAX_PIXELS, MAX_RATE_COMPONENT, MatroskaGrayError, PlaybackRate,
+    FrameFraming, GrayMatroskaConfig, Initialization, MAX_DIMENSION, MAX_FRAMES, MAX_PIXELS,
+    MAX_RATE_COMPONENT, MatroskaGrayError, PlaybackRate,
 };
 
 type Test<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -23,8 +23,11 @@ fn element(input: &[u8]) -> Test<Element<'_>> {
     if id_width > 4 {
         return Err("invalid EBML ID width".into());
     }
-    let id = input.get(..id_width).ok_or("truncated ID")?
-        .iter().fold(0_u32, |value, byte| (value << 8) | u32::from(*byte));
+    let id = input
+        .get(..id_width)
+        .ok_or("truncated ID")?
+        .iter()
+        .fold(0_u32, |value, byte| (value << 8) | u32::from(*byte));
     let first = *input.get(id_width).ok_or("missing EBML size")?;
     let size_width = first.leading_zeros() as usize + 1;
     if size_width > 8 {
@@ -40,10 +43,17 @@ fn element(input: &[u8]) -> Test<Element<'_>> {
     let consumed = if unknown_size {
         input.len()
     } else {
-        header.checked_add(usize::try_from(size)?).ok_or("element overflow")?
+        header
+            .checked_add(usize::try_from(size)?)
+            .ok_or("element overflow")?
     };
     let payload = input.get(header..consumed).ok_or("truncated payload")?;
-    Ok(Element { id, payload, consumed, unknown_size })
+    Ok(Element {
+        id,
+        payload,
+        consumed,
+        unknown_size,
+    })
 }
 
 fn elements(mut input: &[u8]) -> Test<Vec<Element<'_>>> {
@@ -75,7 +85,9 @@ fn integer(bytes: &[u8]) -> Test<u64> {
     if bytes.is_empty() || bytes.len() > 8 {
         return Err("invalid unsigned integer".into());
     }
-    Ok(bytes.iter().fold(0_u64, |value, byte| (value << 8) | u64::from(*byte)))
+    Ok(bytes
+        .iter()
+        .fold(0_u64, |value, byte| (value << 8) | u64::from(*byte)))
 }
 
 fn ids(children: &[Element<'_>]) -> Vec<u32> {
@@ -84,13 +96,17 @@ fn ids(children: &[Element<'_>]) -> Vec<u32> {
 
 fn pixels(dimensions: [u32; 2], ordinal: u64) -> Vec<u8> {
     let [width, height] = dimensions;
-    (0..height).flat_map(|y| (0..width).map(move |x| {
-        if x > width / 3 && x < width * 2 / 3 && y > height / 3 {
-            if ordinal.is_multiple_of(2) { 0 } else { 16 }
-        } else {
-            ((u64::from(x) * 37 + u64::from(y) * 71 + ordinal * 101) & 255) as u8
-        }
-    })).collect()
+    (0..height)
+        .flat_map(|y| {
+            (0..width).map(move |x| {
+                if x > width / 3 && x < width * 2 / 3 && y > height / 3 {
+                    if ordinal.is_multiple_of(2) { 0 } else { 16 }
+                } else {
+                    ((u64::from(x) * 37 + u64::from(y) * 71 + ordinal * 101) & 255) as u8
+                }
+            })
+        })
+        .collect()
 }
 
 #[test]
@@ -99,13 +115,23 @@ fn playback_rate_admits_only_bounded_positive_components_and_reduces_exactly() -
     assert_eq!(ntsc.numerator(), 30_000);
     assert_eq!(ntsc.denominator(), 1001);
     assert_eq!(PlaybackRate::new(60_000, 2002)?, ntsc);
-    assert_eq!(PlaybackRate::new(1_000_000, 1_000_000)?, PlaybackRate::new(1, 1)?);
+    assert_eq!(
+        PlaybackRate::new(1_000_000, 1_000_000)?,
+        PlaybackRate::new(1, 1)?
+    );
     for (numerator, denominator) in [
-        (0, 1), (1, 0), (0, 0), (MAX_RATE_COMPONENT + 1, 1),
-        (1, MAX_RATE_COMPONENT + 1), (u32::MAX, u32::MAX),
+        (0, 1),
+        (1, 0),
+        (0, 0),
+        (MAX_RATE_COMPONENT + 1, 1),
+        (1, MAX_RATE_COMPONENT + 1),
+        (u32::MAX, u32::MAX),
         (MAX_RATE_COMPONENT + 1, MAX_RATE_COMPONENT + 1),
     ] {
-        assert_eq!(PlaybackRate::new(numerator, denominator), Err(MatroskaGrayError::InvalidRate));
+        assert_eq!(
+            PlaybackRate::new(numerator, denominator),
+            Err(MatroskaGrayError::InvalidRate)
+        );
     }
     Ok(())
 }
@@ -114,17 +140,36 @@ fn playback_rate_admits_only_bounded_positive_components_and_reduces_exactly() -
 fn dimensions_pixels_and_ordinals_refuse_outside_the_profile_without_image_storage() -> Test {
     let rate = PlaybackRate::new(1, 1)?;
     for dimensions in [
-        [0, 1], [1, 0], [0, 0], [MAX_DIMENSION + 1, 1],
-        [1, MAX_DIMENSION + 1], [4096, 1025], [2048, 2049], [u32::MAX, u32::MAX],
+        [0, 1],
+        [1, 0],
+        [0, 0],
+        [MAX_DIMENSION + 1, 1],
+        [1, MAX_DIMENSION + 1],
+        [4096, 1025],
+        [2048, 2049],
+        [u32::MAX, u32::MAX],
     ] {
-        assert_eq!(GrayMatroskaConfig::new(dimensions, rate), Err(MatroskaGrayError::InvalidDimensions));
+        assert_eq!(
+            GrayMatroskaConfig::new(dimensions, rate),
+            Err(MatroskaGrayError::InvalidDimensions)
+        );
     }
-    for dimensions in [[1, 1], [1, 4096], [4096, 1], [4096, 1024], [1024, 4096], [2048, 2048]] {
+    for dimensions in [
+        [1, 1],
+        [1, 4096],
+        [4096, 1],
+        [4096, 1024],
+        [1024, 4096],
+        [2048, 2048],
+    ] {
         let config = GrayMatroskaConfig::new(dimensions, rate)?;
         assert_eq!(config.dimensions(), dimensions);
         assert_eq!(config.rate(), rate);
         let frame = config.frame(MAX_FRAMES - 1)?;
-        assert_eq!(frame.payload_bytes(), dimensions[0] as usize * dimensions[1] as usize);
+        assert_eq!(
+            frame.payload_bytes(),
+            dimensions[0] as usize * dimensions[1] as usize
+        );
         assert!(frame.payload_bytes() <= MAX_PIXELS);
         assert!(frame.prefix().len() <= 64);
         assert!(config.initialization()?.bytes().len() <= 256);
@@ -139,7 +184,8 @@ fn dimensions_pixels_and_ordinals_refuse_outside_the_profile_without_image_stora
 }
 
 #[test]
-fn initialization_declares_one_uncompressed_progressive_gray_track_without_source_metadata() -> Test {
+fn initialization_declares_one_uncompressed_progressive_gray_track_without_source_metadata() -> Test
+{
     for dimensions in [[1, 1], [7, 5], [4096, 1024]] {
         let config = GrayMatroskaConfig::new(dimensions, PlaybackRate::new(30_000, 1001)?)?;
         let initialization = config.initialization()?;
@@ -149,9 +195,19 @@ fn initialization_declares_one_uncompressed_progressive_gray_track_without_sourc
         assert!(!root[0].unknown_size);
         assert!(root[1].unknown_size);
         let ebml = elements(root[0].payload)?;
-        assert_eq!(ids(&ebml), [0x4286, 0x42f7, 0x42f2, 0x42f3, 0x4282, 0x4287, 0x4285]);
+        assert_eq!(
+            ids(&ebml),
+            [0x4286, 0x42f7, 0x42f2, 0x42f3, 0x4282, 0x4287, 0x4285]
+        );
         assert_eq!(child(&ebml, 0x4282)?, b"matroska");
-        for (id, value) in [(0x4286, 1), (0x42f7, 1), (0x42f2, 4), (0x42f3, 8), (0x4287, 4), (0x4285, 2)] {
+        for (id, value) in [
+            (0x4286, 1),
+            (0x42f7, 1),
+            (0x42f2, 4),
+            (0x42f3, 8),
+            (0x4287, 4),
+            (0x4285, 2),
+        ] {
             assert_eq!(integer(child(&ebml, id)?)?, value);
         }
         let segment = elements(root[1].payload)?;
@@ -199,12 +255,18 @@ fn finite_frame_layout_preserves_every_payload_byte_including_odd_rows_and_mask_
         }
         let root = elements(&stream)?;
         let segment = elements(root[1].payload)?;
-        assert_eq!(ids(&segment), [0x1549a966, 0x1654ae6b, 0x1f43b675, 0x1f43b675, 0x1f43b675]);
+        assert_eq!(
+            ids(&segment),
+            [0x1549a966, 0x1654ae6b, 0x1f43b675, 0x1f43b675, 0x1f43b675]
+        );
         for (ordinal, cluster) in segment[2..].iter().enumerate() {
             assert!(!cluster.unknown_size);
             let members = elements(cluster.payload)?;
             assert_eq!(ids(&members), [0xe7, 0xa0]);
-            assert_eq!(integer(child(&members, 0xe7)?)?, ordinal as u64 * 100_000_000);
+            assert_eq!(
+                integer(child(&members, 0xe7)?)?,
+                ordinal as u64 * 100_000_000
+            );
             let group = elements(child(&members, 0xa0)?)?;
             assert_eq!(ids(&group), [0x9b, 0xa1]);
             assert_eq!(integer(child(&group, 0x9b)?)?, 100_000_000);
@@ -223,8 +285,14 @@ fn finite_frame_layout_preserves_every_payload_byte_including_odd_rows_and_mask_
 #[test]
 fn rational_playback_boundaries_do_not_accumulate_rounded_duration_error() -> Test {
     for (numerator, denominator) in [
-        (1_u32, 1_u32), (30, 1), (24_000, 1001), (30_000, 1001),
-        (60_000, 1001), (1_000_000, 1), (1, 1_000_000), (999_983, 999_979),
+        (1_u32, 1_u32),
+        (30, 1),
+        (24_000, 1001),
+        (30_000, 1001),
+        (60_000, 1001),
+        (1_000_000, 1),
+        (1, 1_000_000),
+        (999_983, 999_979),
     ] {
         let config = GrayMatroskaConfig::new([1, 1], PlaybackRate::new(numerator, denominator)?)?;
         // Independent quotient/remainder decomposition of the period.

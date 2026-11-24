@@ -193,6 +193,16 @@ impl WriterState {
 pub trait LockTableSource: fmt::Debug + Send + Sync {
     /// Reads up to `max_bytes` of lock table data.
     fn read_lock_table(&self, max_bytes: usize) -> io::Result<String>;
+
+    /// Whether this source represents the host's native lock table on a platform without
+    /// `/proc/locks`, allowing [`detect_writers`] to fall back to a non-mutating shared
+    /// non-blocking try-lock probe across existing regular lock files.
+    ///
+    /// Custom and test sources return `false` by default so injected lock tables and
+    /// simulated missing-table failures remain exact.
+    fn supports_shared_probe_fallback(&self) -> bool {
+        false
+    }
 }
 
 /// Host filesystem `/proc/locks` reader.
@@ -224,6 +234,11 @@ impl LockTableSource for HostLockTableSource {
                 "proc locks not supported on this platform",
             ))
         }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn supports_shared_probe_fallback(&self) -> bool {
+        true
     }
 }
 
@@ -328,27 +343,31 @@ pub fn detect_writers(
         return WriterState::NotProbed;
     }
 
-    #[cfg(not(target_os = "linux"))]
+    let default_source = HostLockTableSource;
+    let source = lock_table_source.unwrap_or(&default_source);
+    if source.supports_shared_probe_fallback() {
+        return probe_shared_locks(io, lock_paths);
+    }
+
+    #[cfg(unix)]
     {
-        let _ = io;
-        let _ = lock_paths;
-        let _ = lock_table_source;
+        detect_writers_lock_table(io, lock_paths, source)
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = (io, lock_paths, source);
         WriterState::Unknown {
             reason: UnknownLockReason::NoLockTable,
         }
     }
-
-    #[cfg(target_os = "linux")]
-    {
-        detect_writers_linux(io, lock_paths, lock_table_source)
-    }
 }
 
-#[cfg(target_os = "linux")]
-fn detect_writers_linux(
+#[cfg(unix)]
+fn detect_writers_lock_table(
     io: &dyn SpoolIo,
     lock_paths: &[PathBuf],
-    lock_table_source: Option<&dyn LockTableSource>,
+    source: &dyn LockTableSource,
 ) -> WriterState {
     let mut target_stats = Vec::new();
     for path in lock_paths {
@@ -357,13 +376,10 @@ fn detect_writers_linux(
                 if !meta.file_type().is_file() {
                     return WriterState::invalid_layout("non_regular_lock_file");
                 }
-                #[cfg(unix)]
-                {
-                    let dev = meta.dev();
-                    let ino = meta.ino();
-                    let (maj, min) = decode_st_dev(dev);
-                    target_stats.push((path.clone(), dev, maj, min, ino));
-                }
+                let dev = meta.dev();
+                let ino = meta.ino();
+                let (maj, min) = decode_st_dev(dev);
+                target_stats.push((path.clone(), dev, maj, min, ino));
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(_) => {
@@ -382,11 +398,6 @@ fn detect_writers_linux(
         };
     }
 
-    let default_source = HostLockTableSource;
-    let source = match lock_table_source {
-        Some(source) => source,
-        None => &default_source,
-    };
     let table_content = match source.read_lock_table(MAX_LOCK_TABLE_BYTES) {
         Ok(content) => content,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -442,7 +453,6 @@ fn detect_writers_linux(
     // Re-stat lock files to confirm they were not replaced during table read
     for (path, orig_dev, _, _, orig_ino) in &target_stats {
         match io.symlink_metadata(path) {
-            #[cfg(unix)]
             Ok(re_meta) => {
                 if re_meta.dev() != *orig_dev || re_meta.ino() != *orig_ino {
                     return WriterState::Unknown {
@@ -450,8 +460,6 @@ fn detect_writers_linux(
                     };
                 }
             }
-            #[cfg(not(unix))]
-            Ok(_) => {}
             Err(_) => {
                 return WriterState::Unknown {
                     reason: UnknownLockReason::LockFileReplaced,
@@ -481,6 +489,90 @@ fn detect_writers_linux(
     }
 
     WriterState::not_observed()
+}
+
+/// Probes all candidate lock paths using non-blocking shared `flock` attempts without creating
+/// missing files. Used on platforms without `/proc/locks` (such as macOS/BSD).
+fn probe_shared_locks(io: &dyn SpoolIo, lock_paths: &[PathBuf]) -> WriterState {
+    #[cfg(unix)]
+    let mut targets: Vec<(&Path, u64, u64)> = Vec::new();
+    #[cfg(not(unix))]
+    let mut targets: Vec<&Path> = Vec::new();
+
+    for path in lock_paths {
+        match io.symlink_metadata(path) {
+            Ok(meta) => {
+                if !meta.file_type().is_file() {
+                    return WriterState::invalid_layout("non_regular_lock_file");
+                }
+                #[cfg(unix)]
+                targets.push((path.as_path(), meta.dev(), meta.ino()));
+                #[cfg(not(unix))]
+                targets.push(path.as_path());
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(_) => {
+                return WriterState::Unknown {
+                    reason: UnknownLockReason::Unreadable,
+                };
+            }
+        }
+    }
+
+    if targets.is_empty() {
+        return WriterState::no_lock_file();
+    }
+
+    for target in &targets {
+        #[cfg(unix)]
+        let (path, orig_dev, orig_ino) = *target;
+        #[cfg(not(unix))]
+        let path = *target;
+
+        let file = match io.open_read(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return WriterState::Unknown {
+                    reason: UnknownLockReason::LockFileReplaced,
+                };
+            }
+            Err(_) => {
+                return WriterState::Unknown {
+                    reason: UnknownLockReason::Unreadable,
+                };
+            }
+        };
+
+        let probe_result = io.try_lock_shared(&file);
+        drop(file);
+
+        match probe_result {
+            Ok(()) => {}
+            Err(fs::TryLockError::WouldBlock) => {
+                return WriterState::Held {
+                    basis: WriterLockBasis::SharedTryLock,
+                    pid_hint: None,
+                };
+            }
+            Err(fs::TryLockError::Error(_)) => {
+                return WriterState::Unknown {
+                    reason: UnknownLockReason::Unreadable,
+                };
+            }
+        }
+
+        #[cfg(unix)]
+        match io.symlink_metadata(path) {
+            Ok(re_meta) if re_meta.dev() == orig_dev && re_meta.ino() == orig_ino => {}
+            _ => {
+                return WriterState::Unknown {
+                    reason: UnknownLockReason::LockFileReplaced,
+                };
+            }
+        }
+    }
+
+    WriterState::not_held()
 }
 
 /// Opt-in probe using a shared non-blocking try-lock on `<root>/LOCK`.
@@ -767,6 +859,127 @@ mod tests {
         }
 
         let _ = std::fs::remove_file(&lock_file_path);
+        Ok(())
+    }
+
+    #[test]
+    fn test_probe_shared_locks_multi_path_and_child_process_flock() -> TestResult {
+        use std::io::{BufRead, BufReader, Read, Write};
+        use std::process::{Command, Stdio};
+
+        if let Ok(path) = std::env::var("FSS_WRITER_TEST_HOLD_FLOCK_PATH") {
+            let file = fs::OpenOptions::new().read(true).write(true).open(&path)?;
+            file.try_lock()
+                .map_err(|err| format!("child try_lock failed: {err:?}"))?;
+            println!("LOCKED");
+            let _ = io::stdout().flush();
+            let mut hold = Vec::new();
+            let _ = io::stdin().read_to_end(&mut hold);
+            return Ok(());
+        }
+
+        let io = HostSpoolIo;
+        let base =
+            std::env::temp_dir().join(format!("fss-writer-shared-probe-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base)?;
+
+        let lock_a = base.join("LOCK_A");
+        let lock_b = base.join("LOCK_B");
+
+        // Missing files -> NoLockFile without creating them.
+        assert_eq!(
+            probe_shared_locks(&io, &[lock_a.clone(), lock_b.clone()]),
+            WriterState::no_lock_file()
+        );
+        assert!(!lock_a.exists());
+        assert!(!lock_b.exists());
+
+        // Unlocked existing files -> NotHeld (possibly_stale == false, is_clear == true).
+        drop(File::create(&lock_a)?);
+        drop(File::create(&lock_b)?);
+        let idle = probe_shared_locks(&io, &[lock_a.clone(), lock_b.clone()]);
+        assert_eq!(idle, WriterState::not_held());
+        assert!(!idle.possibly_stale());
+        assert!(idle.is_clear());
+
+        // Non-regular directory on second path -> InvalidLayout.
+        let dir_path = base.join("LOCK_DIR");
+        fs::create_dir(&dir_path)?;
+        assert_eq!(
+            probe_shared_locks(&io, &[lock_a.clone(), dir_path.clone()]),
+            WriterState::invalid_layout("non_regular_lock_file")
+        );
+
+        // Separate child process holding exclusive flock on second lock path -> Held.
+        let exe = std::env::current_exe()?;
+        let mut child = Command::new(exe)
+            .args([
+                "--exact",
+                "local::writer::tests::test_probe_shared_locks_multi_path_and_child_process_flock",
+                "--nocapture",
+            ])
+            .env("FSS_WRITER_TEST_HOLD_FLOCK_PATH", &lock_b)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()?;
+
+        let mut stdout = BufReader::new(child.stdout.take().ok_or("child stdout missing")?);
+        let mut locked_ready = false;
+        let mut line = String::new();
+        while stdout.read_line(&mut line)? > 0 {
+            if line.trim() == "LOCKED" {
+                locked_ready = true;
+                break;
+            }
+            line.clear();
+        }
+        assert!(locked_ready, "child failed to signal LOCKED");
+
+        let held = probe_shared_locks(&io, &[lock_a.clone(), lock_b.clone()]);
+        assert_eq!(
+            held,
+            WriterState::Held {
+                basis: WriterLockBasis::SharedTryLock,
+                pid_hint: None,
+            }
+        );
+        assert!(held.is_held());
+        assert!(held.possibly_stale());
+
+        // Default host detect_writers on macOS/non-Linux must observe the same child lock.
+        #[cfg(not(target_os = "linux"))]
+        {
+            let host_held = detect_writers(
+                &io,
+                &[lock_a.clone(), lock_b.clone()],
+                None,
+                WriterDetectionOptions::default(),
+            );
+            assert_eq!(host_held, held);
+        }
+
+        // Release child lock by closing stdin and waiting for clean exit.
+        drop(child.stdin.take());
+        let status = child.wait()?;
+        assert!(status.success());
+
+        let after_release = probe_shared_locks(&io, &[lock_a.clone(), lock_b.clone()]);
+        assert_eq!(after_release, WriterState::not_held());
+        assert!(!after_release.possibly_stale());
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            let host_idle = detect_writers(
+                &io,
+                &[lock_a, lock_b],
+                None,
+                WriterDetectionOptions::default(),
+            );
+            assert_eq!(host_idle, WriterState::not_held());
+        }
+
+        let _ = fs::remove_dir_all(&base);
         Ok(())
     }
 }

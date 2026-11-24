@@ -189,13 +189,29 @@ mod tests {
         let yg = unpack25519(&yb);
         let mut out = [0u8; 32];
         pack25519(&mut out, &mul(&xg, &yg));
-        assert_eq!(hex(&out), "47d4bd46c676f43eee7e07da44f1ffb6656106cb7ace00722eeeae5c65a4e051", "mul");
+        assert_eq!(
+            hex(&out),
+            "47d4bd46c676f43eee7e07da44f1ffb6656106cb7ace00722eeeae5c65a4e051",
+            "mul"
+        );
         pack25519(&mut out, &sqr(&xg));
-        assert_eq!(hex(&out), "581409f3383b3d900fc0102b4d0d600a07756955d93a920d036aea4272265213", "sqr");
+        assert_eq!(
+            hex(&out),
+            "581409f3383b3d900fc0102b4d0d600a07756955d93a920d036aea4272265213",
+            "sqr"
+        );
         pack25519(&mut out, &inv25519(&xg));
-        assert_eq!(hex(&out), "03279bd555cf9329dc17dc18a89e564f0bfb98f1623cb1e0389a43419bfc4c21", "inv");
+        assert_eq!(
+            hex(&out),
+            "03279bd555cf9329dc17dc18a89e564f0bfb98f1623cb1e0389a43419bfc4c21",
+            "inv"
+        );
         pack25519(&mut out, &xg);
-        assert_eq!(hex(&out), "a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449a44", "pack");
+        assert_eq!(
+            hex(&out),
+            "a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449a44",
+            "pack"
+        );
     }
 
     #[test]

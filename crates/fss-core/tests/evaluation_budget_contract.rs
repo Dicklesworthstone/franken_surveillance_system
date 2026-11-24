@@ -2,6 +2,7 @@
 //! Executes the actual production evaluator without the unrelated async runtime.
 //! Its existing hand-computed regression suite is included by the same source.
 
+#[allow(dead_code)]
 #[path = "../../fss-reference/src/evaluation.rs"]
 mod evaluation;
 

@@ -11,8 +11,6 @@ use fss_tuya::client::{ClientError, Proto, TuyaClient};
 use fss_tuya::sim::{HomebaseSim, ModelFixture, SimConfig, SimEvent};
 use fss_tuya::wire::{self, WireError, cmd};
 
-
-
 const KEY: [u8; 16] = *b"fss_sim_test_key"; // == SimConfig::test_key()
 const WRONG: [u8; 16] = *b"wrongwrongwrong0";
 const NONCE: [u8; 16] = *b"0123456789abcdef";
@@ -28,7 +26,10 @@ fn negotiate(client: &mut TuyaClient, sim: &mut HomebaseSim, key: [u8; 16]) {
     let f3 = client.start_session(NONCE, iv(1));
     let resp = sim.handle(&f3);
     assert_eq!(resp.len(), 1, "sim answers cmd3");
-    let f5 = client.negotiate_finish(&resp[0], iv(2)).expect("negotiate_finish: {e}");
+    let f5 = match client.negotiate_finish(&resp[0], iv(2)) {
+        Ok(frame) => frame,
+        Err(error) => unreachable!("negotiate_finish: {error:?}"),
+    };
     let ack = sim.handle(&f5);
     assert!(ack.is_empty(), "device does not ACK finish");
     assert!(client.is_established());
@@ -59,10 +60,15 @@ fn full_session_client_against_simulator() {
     assert_eq!(resp.len(), 1);
     let inbound = client.handle(&resp[0]).expect("dp_query inbound: {e}");
     assert_eq!(inbound.cmd, cmd::STATUS);
-    assert_eq!(inbound.payload, ModelFixture::AosuHomebase.dps_json().as_bytes());
+    assert_eq!(
+        inbound.payload,
+        ModelFixture::AosuHomebase.dps_json().as_bytes()
+    );
 
     // Control round-trip with echo ACK.
-    let ctl = client.control(b"{\"dps\":{\"101\":\"disarmed\"}}", iv(5)).expect("control: {e}");
+    let ctl = client
+        .control(b"{\"dps\":{\"101\":\"disarmed\"}}", iv(5))
+        .expect("control: {e}");
     let resp = sim.handle(&ctl);
     assert_eq!(resp.len(), 1);
     let inbound = client.handle(&resp[0]).expect("control inbound: {e}");
@@ -104,7 +110,11 @@ fn heartbeat_ack_payload_is_empty_with_retcode_zero() {
     let inbound = client.handle(&resp[0]).expect("inbound");
     assert_eq!(inbound.cmd, cmd::HEART_BEAT);
     assert_eq!(inbound.retcode, Some(0));
-    assert!(inbound.payload.is_empty(), "retcode stripped: {:?}", inbound.payload);
+    assert!(
+        inbound.payload.is_empty(),
+        "retcode stripped: {:?}",
+        inbound.payload
+    );
 }
 
 #[test]
@@ -134,7 +144,10 @@ fn device_proof_tamper_is_detected() {
         *b ^= 0x01;
     }
     let r = client.negotiate_finish(&bad, iv(2));
-    assert!(matches!(r, Err(ClientError::Wire(WireError::GcmAuth))), "{r:?}");
+    assert!(
+        matches!(r, Err(ClientError::Wire(WireError::GcmAuth))),
+        "{r:?}"
+    );
     assert!(!client.is_established());
 }
 
@@ -147,7 +160,6 @@ fn session_commands_require_session() {
     let r = client.negotiate_finish(b"\x00", iv(1));
     assert_eq!(r, Err(ClientError::NoPendingNegotiation));
 }
-
 
 #[test]
 fn proto_34_full_session() {
@@ -162,7 +174,10 @@ fn proto_34_full_session() {
     assert_eq!(resp.len(), 1);
     let inbound = client.handle(&resp[0]).expect("inbound: {e}");
     assert_eq!(inbound.cmd, cmd::STATUS);
-    assert_eq!(inbound.payload, ModelFixture::AosuHomebase.dps_json().as_bytes());
+    assert_eq!(
+        inbound.payload,
+        ModelFixture::AosuHomebase.dps_json().as_bytes()
+    );
 }
 
 #[test]
@@ -197,11 +212,13 @@ fn inbound_payloads_have_the_version_header_stripped() {
     let sess = sim.session_key().expect("session key");
     let mut raw = wire::PROTOCOL_VERSION_HEADER_35.to_vec();
     raw.extend_from_slice(b"{\"dps\":{\"1\":true}}");
-    let frame = wire::pack_6699(9, cmd::STATUS, Some(0), &raw, &sess, iv(9))
-        .expect("pack");
+    let frame = wire::pack_6699(9, cmd::STATUS, Some(0), &raw, &sess, iv(9)).expect("pack");
     let inbound = client.handle(&frame).expect("inbound");
     assert_eq!(inbound.cmd, cmd::STATUS);
-    assert_eq!(inbound.payload, b"{\"dps\":{\"1\":true}}", "header stripped");
+    assert_eq!(
+        inbound.payload, b"{\"dps\":{\"1\":true}}",
+        "header stripped"
+    );
 }
 
 #[test]

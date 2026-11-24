@@ -12,6 +12,9 @@ use fss_core::ContentDigest;
 /// Maximum packed RGB result; pixel count still has the shared 4,194,304-pixel ceiling.
 pub const MAX_RGB_BYTES: usize = 3 * 4_194_304;
 
+/// Exact v1 source-byte charge, frozen with its identity.
+const V1_PROFILE_BYTES: u64 = 41_545;
+
 /// Independent frame and reconstructed byte limits, checked before result allocation.
 #[derive(Clone, Copy, Debug)]
 pub struct RgbDecodeLimits {
@@ -26,6 +29,73 @@ impl Default for RgbDecodeLimits {
             frame: DecodeLimits::default(),
             maximum_output_bytes: MAX_RGB_BYTES,
         }
+    }
+}
+impl RgbDecodeLimits {
+    /// Upper bound on the work units [`decode_rgb_v1`] charges for any baseline JPEG frame
+    /// these limits admit, across grayscale, 4:4:4, 4:2:2, and 4:2:0 sampling layouts.
+    #[must_use]
+    pub fn baseline_rgb_work_bound(&self) -> u64 {
+        let bytes = self.frame.maximum_bytes as u64;
+        let pixels = self.frame.maximum_pixels as u64;
+        let markers = self.frame.maximum_markers as u64;
+        let rgb_bytes = pixels
+            .saturating_mul(3)
+            .min(self.maximum_output_bytes as u64);
+        let (m444, m422, m420) = self.frame.mcu_upper_bounds();
+        // Per-MCU baseline RGB charges:
+        // - 1 (MCU step) + 3 * 256 (tile scratch)
+        // - per block: 4096 (entropy + IDCT) + 64 (tile copy), plus +4096 per chroma block
+        // - h * v * 64 * 24 (color conversion)
+        // Grayscale (6_465/MCU) is strictly bounded by 4:4:4 (22_977/MCU).
+        let mcu_work = m444
+            .saturating_mul(22_977)
+            .max(m422.saturating_mul(28_673))
+            .max(m420.saturating_mul(40_065));
+        bytes
+            .saturating_mul(2)
+            .saturating_add(markers.saturating_mul(32))
+            .saturating_add(rgb_bytes.saturating_mul(2))
+            .saturating_add(V1_PROFILE_BYTES + 2048)
+            .saturating_add(mcu_work)
+    }
+
+    /// Upper bound on the work units [`decode_rgb`] charges for any baseline or progressive JPEG
+    /// frame these limits admit, so a caller can size a per-frame [`DecodeBudget`] that never
+    /// exhausts on an admitted frame (including 4:4:4 4MP frames and up to 256 progressive scans).
+    #[must_use]
+    pub fn rgb_work_bound(&self) -> u64 {
+        let baseline = self.baseline_rgb_work_bound();
+        let bytes = self.frame.maximum_bytes as u64;
+        let pixels = self.frame.maximum_pixels as u64;
+        let markers = self.frame.maximum_markers as u64;
+        let rgb_bytes = pixels
+            .saturating_mul(3)
+            .min(self.maximum_output_bytes as u64);
+        let (m444, m422, m420) = self.frame.mcu_upper_bounds();
+        let max_blocks = m444
+            .saturating_mul(3)
+            .max(m422.saturating_mul(4))
+            .max(m420.saturating_mul(6))
+            .min(crate::progressive::max_coefficient_blocks());
+        // Progressive RGB reconstruction per MCU:
+        // - 1 (MCU step) + 3 * 256 (tile scratch)
+        // - per block: 4096 + 64 (dequant + IDCT) + 64 (tile copy) = 4224
+        // - h * v * 64 * 24 (color conversion)
+        let reconstruct_work = m444
+            .saturating_mul(14_977)
+            .max(m422.saturating_mul(20_737))
+            .max(m420.saturating_mul(32_257));
+        let scan_work = max_blocks
+            .saturating_mul(128 + (crate::progressive::MAX_SCANS as u64).saturating_mul(1 + 4096));
+        let progressive = bytes
+            .saturating_mul(2)
+            .saturating_add(markers.saturating_mul(32))
+            .saturating_add(rgb_bytes.saturating_mul(2))
+            .saturating_add(crate::progressive::profile_bytes() as u64 + 2048)
+            .saturating_add(scan_work)
+            .saturating_add(reconstruct_work);
+        baseline.max(progressive)
     }
 }
 
@@ -177,8 +247,7 @@ pub fn decode_rgb_v1(
         budget,
     )?;
     // Source-profile hashing is explicit work too, rather than an unpriced post-decode pass.
-    let profile_bytes = 41_545; // Exact v1 source-byte charge, frozen with its identity.
-    budget.charge(pixels.len() as u64 + profile_bytes as u64 + 2048)?;
+    budget.charge(pixels.len() as u64 + V1_PROFILE_BYTES + 2048)?;
     let receipt = RgbDecodeReceipt {
         encoded_sha256: expected_sha256,
         rgb_sha256: ContentDigest::sha256(&pixels).bytes(),

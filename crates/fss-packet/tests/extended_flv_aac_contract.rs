@@ -60,7 +60,14 @@ fn aac_lc_with_explicitly_absent_sbr_preserves_the_complete_source() -> TestResu
     let config = audio(&source, aac::Limits::default())?.configuration()?;
     assert_eq!(config.bytes(), &[0x14, 0x08, 0x56, 0xe5, 0x00]);
     assert_eq!(&source[config.source_range()], config.bytes());
-    assert_eq!((config.sample_rate(), config.channels(), config.frame_samples()), (16_000, 1, 1024));
+    assert_eq!(
+        (
+            config.sample_rate(),
+            config.channels(),
+            config.frame_samples()
+        ),
+        (16_000, 1, 1024)
+    );
     Ok(())
 }
 
@@ -89,11 +96,26 @@ fn rejects_unsupported_or_ambiguous_configuration() -> TestResult {
         (&[0x14, 0x0a], aac::Error::UnsupportedGaFlags),
         (&[0x14], aac::Error::UnsupportedConfiguration),
         (&[0x14, 0x08, 0x00], aac::Error::UnsupportedConfiguration),
-        (&[0x14, 0x08, 0x56, 0xe5], aac::Error::UnsupportedConfiguration),
-        (&[0x14, 0x08, 0x56, 0xe5, 0x80], aac::Error::UnsupportedConfiguration),
-        (&[0x14, 0x08, 0x56, 0xe5, 0x01], aac::Error::UnsupportedConfiguration),
-        (&[0x14, 0x08, 0x56, 0xe4, 0x00], aac::Error::UnsupportedConfiguration),
-        (&[0x14, 0x08, 0x56, 0xe5, 0x00, 0x00], aac::Error::UnsupportedConfiguration),
+        (
+            &[0x14, 0x08, 0x56, 0xe5],
+            aac::Error::UnsupportedConfiguration,
+        ),
+        (
+            &[0x14, 0x08, 0x56, 0xe5, 0x80],
+            aac::Error::UnsupportedConfiguration,
+        ),
+        (
+            &[0x14, 0x08, 0x56, 0xe5, 0x01],
+            aac::Error::UnsupportedConfiguration,
+        ),
+        (
+            &[0x14, 0x08, 0x56, 0xe4, 0x00],
+            aac::Error::UnsupportedConfiguration,
+        ),
+        (
+            &[0x14, 0x08, 0x56, 0xe5, 0x00, 0x00],
+            aac::Error::UnsupportedConfiguration,
+        ),
     ];
     for (config, expected) in cases {
         let mut payload = vec![0xaf, 0];

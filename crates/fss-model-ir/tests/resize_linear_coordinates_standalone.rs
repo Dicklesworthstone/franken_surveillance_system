@@ -23,8 +23,7 @@ const MODES: [LinearCoordinates; 4] = [
 ];
 
 fn plan(input: usize, scale: Scale, mode: LinearCoordinates) -> Result<AxisPlan, String> {
-    plan_axis(input, scale, mode, 512, |_| Ok::<_, ()>(()))
-        .map_err(|error| format!("{error:?}"))
+    plan_axis(input, scale, mode, 512, |_| Ok::<_, ()>(())).map_err(|error| format!("{error:?}"))
 }
 
 fn expand_direct(input: usize, plan: &Direct) -> Vec<usize> {
@@ -49,8 +48,15 @@ fn expand_direct(input: usize, plan: &Direct) -> Vec<usize> {
 fn expand(input: usize, plan: &Selection) -> Vec<usize> {
     match plan {
         Selection::Direct(plan) => expand_direct(input, plan),
-        Selection::Interleave { phases, width, tail } => {
-            let phases = phases.iter().map(|p| expand_direct(input, p)).collect::<Vec<_>>();
+        Selection::Interleave {
+            phases,
+            width,
+            tail,
+        } => {
+            let phases = phases
+                .iter()
+                .map(|p| expand_direct(input, p))
+                .collect::<Vec<_>>();
             let mut result = Vec::new();
             for position in 0..*width {
                 for phase in &phases {
@@ -85,7 +91,11 @@ fn coordinate(
     };
     // Remove only binary64 evaluation noise at exact integer boundaries. The
     // nearest distinct admitted F32-scale fixtures are much farther away.
-    let x = if (x - x.round()).abs() < 1e-12 { x.round() } else { x };
+    let x = if (x - x.round()).abs() < 1e-12 {
+        x.round()
+    } else {
+        x
+    };
     x.max(0.0).min((input - 1) as f64)
 }
 
@@ -96,14 +106,19 @@ fn verify(input: usize, scale: Scale, original_scale: f64, mode: LinearCoordinat
     assert_eq!(lower.len(), scale.output);
     assert_eq!(planned.output, scale.output);
     assert!(planned.parameter_bytes() <= 8 * scale.output);
-    assert_eq!(planned.weights.len(), if upper.is_some() { scale.output } else { 0 });
+    assert_eq!(
+        planned.weights.len(),
+        if upper.is_some() { scale.output } else { 0 }
+    );
     for position in 0..scale.output {
         let x = coordinate(input, scale.output, original_scale, position, mode);
         let lo = x.floor() as usize;
         let hi = (lo + 1).min(input - 1);
-        assert_eq!(lower[position], lo,
+        assert_eq!(
+            lower[position], lo,
             "input={input}, output={}, scale={original_scale}, mode={mode:?}, position={position}",
-            scale.output);
+            scale.output
+        );
         let fraction = x - lo as f64;
         if let Some(upper) = &upper {
             assert_eq!(upper[position], hi);
@@ -134,9 +149,21 @@ fn every_small_ratio_selects_exact_neighbors_and_rounds_bounded_coefficients() -
 fn source_f32_scales_adjacent_values_and_output_ratios_remain_distinct() -> Test {
     for input in [1, 2, 5, 7, 19, 32] {
         for value in [
-            0.1_f32, 0.3, 0.5, 0.6, 0.75, 1.0, 1.125, 1.25,
-            f32::from_bits(1.5_f32.to_bits() - 1), 1.5,
-            f32::from_bits(1.5_f32.to_bits() + 1), 2.5, 3.5, 16.5, 63.5,
+            0.1_f32,
+            0.3,
+            0.5,
+            0.6,
+            0.75,
+            1.0,
+            1.125,
+            1.25,
+            f32::from_bits(1.5_f32.to_bits() - 1),
+            1.5,
+            f32::from_bits(1.5_f32.to_bits() + 1),
+            2.5,
+            3.5,
+            16.5,
+            63.5,
         ] {
             if (input as f64 * f64::from(value)).floor() < 1.0 {
                 continue;
@@ -147,11 +174,27 @@ fn source_f32_scales_adjacent_values_and_output_ratios_remain_distinct() -> Test
             }
         }
     }
-    let source = plan(7, Scale::from_f32(0.6, 7).map_err(|e| format!("{e:?}"))?, MODES[0])?;
-    let sizes = plan(7, Scale::from_size(4, 7).map_err(|e| format!("{e:?}"))?, MODES[0])?;
+    let source = plan(
+        7,
+        Scale::from_f32(0.6, 7).map_err(|e| format!("{e:?}"))?,
+        MODES[0],
+    )?;
+    let sizes = plan(
+        7,
+        Scale::from_size(4, 7).map_err(|e| format!("{e:?}"))?,
+        MODES[0],
+    )?;
     assert_ne!(
-        source.weights.iter().map(|w| w.map(f32::to_bits)).collect::<Vec<_>>(),
-        sizes.weights.iter().map(|w| w.map(f32::to_bits)).collect::<Vec<_>>()
+        source
+            .weights
+            .iter()
+            .map(|w| w.map(f32::to_bits))
+            .collect::<Vec<_>>(),
+        sizes
+            .weights
+            .iter()
+            .map(|w| w.map(f32::to_bits))
+            .collect::<Vec<_>>()
     );
     Ok(())
 }
@@ -172,13 +215,21 @@ fn singleton_modes_clamping_identity_and_exact_grid_sampling_are_literal() -> Te
     }
     for mode in MODES {
         for input in [1, 3, 64, 4096] {
-            let p = plan(input, Scale::from_size(input, input).map_err(|e| format!("{e:?}"))?, mode)?;
+            let p = plan(
+                input,
+                Scale::from_size(input, input).map_err(|e| format!("{e:?}"))?,
+                mode,
+            )?;
             assert_eq!(p.node_count(), 0);
             assert_eq!(p.parameter_bytes(), 0);
             assert_eq!(expand(input, &p.lower), (0..input).collect::<Vec<_>>());
         }
     }
-    let p = plan(8, Scale::from_size(4, 8).map_err(|e| format!("{e:?}"))?, MODES[3])?;
+    let p = plan(
+        8,
+        Scale::from_size(4, 8).map_err(|e| format!("{e:?}"))?,
+        MODES[3],
+    )?;
     assert_eq!(expand(8, &p.lower), vec![0, 2, 4, 6]);
     assert_eq!(p.node_count(), 1);
     assert!(p.weights.is_empty() && p.upper.is_none());
@@ -190,14 +241,22 @@ fn realistic_feature_scales_keep_small_graphs_and_linear_coefficient_storage() -
     for (input, output) in [(80, 160), (640, 480), (480, 360), (64, 4096)] {
         let scale = Scale::from_size(output, input).map_err(|e| format!("{e:?}"))?;
         let p = plan(input, scale, MODES[0])?;
-        assert!(p.node_count() <= 64, "{input}->{output}: {}", p.node_count());
+        assert!(
+            p.node_count() <= 64,
+            "{input}->{output}: {}",
+            p.node_count()
+        );
         assert_eq!(p.parameter_bytes(), output * 8);
         verify(input, scale, output as f64 / input as f64, MODES[0])?;
     }
     for input in [320, 640, 1280] {
         let scale = Scale::from_f32(0.6, input).map_err(|e| format!("{e:?}"))?;
         let p = plan(input, scale, MODES[0])?;
-        assert!(p.node_count() <= 64, "decimal F32 scale: {}", p.node_count());
+        assert!(
+            p.node_count() <= 64,
+            "decimal F32 scale: {}",
+            p.node_count()
+        );
         verify(input, scale, f64::from(0.6_f32), MODES[0])?;
     }
     Ok(())
@@ -222,7 +281,10 @@ fn coordinate_and_helper_limits_refuse_before_unbounded_construction() -> Test {
     );
     for maximum in [0, 513] {
         assert_eq!(
-            plan_axis(8192, maximum_scale()?, MODES[0], maximum, |_| Ok::<_, ()>(())).err(),
+            plan_axis(8192, maximum_scale()?, MODES[0], maximum, |_| Ok::<_, ()>(
+                ()
+            ))
+            .err(),
             Some(PlanningError::Coordinates(CoordinateError::Limit))
         );
     }
@@ -245,7 +307,8 @@ fn every_planner_charge_preserves_admission_cancellation_without_a_partial_plan(
     plan_axis(5, scale, MODES[0], 512, |_| {
         calls += 1;
         Ok::<_, usize>(())
-    }).map_err(|e| format!("{e:?}"))?;
+    })
+    .map_err(|e| format!("{e:?}"))?;
     for stop in 1..=calls {
         let mut call = 0;
         let result = plan_axis(5, scale, MODES[0], 512, |_| {

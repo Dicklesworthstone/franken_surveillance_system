@@ -66,9 +66,7 @@ impl ModelFixture {
     #[must_use]
     pub const fn event_json(self) -> &'static str {
         match self {
-            ModelFixture::AosuHomebase => {
-                "{\"dps\":{\"104\":\"motion\",\"115\":1}}"
-            }
+            ModelFixture::AosuHomebase => "{\"dps\":{\"104\":\"motion\",\"115\":1}}",
             ModelFixture::GenericSwitch => "{\"dps\":{\"1\":false}}",
         }
     }
@@ -238,7 +236,9 @@ impl HomebaseSim {
         self.counter += 1;
         let mut seed = b"fss-tuya-sim-nonce".to_vec();
         seed.extend_from_slice(&self.counter.to_be_bytes());
-        fss_core::sha256(&seed)[..16].try_into().unwrap_or([0u8; 16])
+        fss_core::sha256(&seed)[..16]
+            .try_into()
+            .unwrap_or([0u8; 16])
     }
 
     fn announcement_json(&self) -> String {
@@ -344,9 +344,8 @@ impl HomebaseSim {
             &owned
         };
         let frame = match self.config.proto {
-            Proto::V35 => {
-                wire::pack_6699(seq, cmd_word, Some(0), plaintext, key, self.next_iv()).unwrap_or_default()
-            }
+            Proto::V35 => wire::pack_6699(seq, cmd_word, Some(0), plaintext, key, self.next_iv())
+                .unwrap_or_default(),
             Proto::V34 => {
                 let sealed = crypto::aes128_ecb_encrypt_pkcs7(key, plaintext);
                 wire::pack_55aa(seq, cmd_word, Some(0), &sealed, Some(key)).unwrap_or_default()
@@ -386,7 +385,8 @@ impl HomebaseSim {
             }
         };
         let msg = match self.config.proto {
-            Proto::V35 => match wire::unpack_6699_mode(frame, &self.config.local_key, inbound_mode) {
+            Proto::V35 => match wire::unpack_6699_mode(frame, &self.config.local_key, inbound_mode)
+            {
                 Ok(m) => m,
                 Err(_) => {
                     // A GCM failure under the device key outside negotiation
@@ -519,7 +519,9 @@ impl HomebaseSim {
             return Vec::new();
         }
         let key = match self.config.proto {
-            Proto::V35 => wire::derive_session_key_35(&self.config.local_key, &client_nonce, &device_nonce),
+            Proto::V35 => {
+                wire::derive_session_key_35(&self.config.local_key, &client_nonce, &device_nonce)
+            }
             Proto::V34 => match wire::derive_session_key_34(
                 &self.config.local_key,
                 &client_nonce,
@@ -567,4 +569,3 @@ impl HomebaseSim {
         vec![out]
     }
 }
-

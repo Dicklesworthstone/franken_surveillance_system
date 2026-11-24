@@ -21,10 +21,10 @@ pub mod scalar_executor;
 pub use scalar_executor::{
     ExecBudget, ExecError, ExecOutcome, ScalarExecCx, ScalarExecutor, deterministic_sigmoid_f32,
 };
-#[path = "../../fss-reference/src/optimized_executor.rs"]
-pub mod optimized_executor;
 #[path = "onnx_batch_normalization_execution/instance.rs"]
 mod instance;
+#[path = "../../fss-reference/src/optimized_executor.rs"]
+pub mod optimized_executor;
 
 // Data-only host types; all actual decoding remains in the production parser.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

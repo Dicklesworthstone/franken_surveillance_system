@@ -1,4 +1,8 @@
 #![forbid(unsafe_code)]
+#![allow(
+    dead_code,
+    reason = "Shared model fixture included across multiple crate test targets"
+)]
 //! Untrained RGB-dependent split boxes/class-logits fixture shared by native and
 //! package tests. Class one is deliberately omitted AFTER full-axis Softmax.
 //! The first row must remain below 0.5 despite a foreground-only Softmax exceeding

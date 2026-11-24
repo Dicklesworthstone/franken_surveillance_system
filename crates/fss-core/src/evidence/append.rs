@@ -80,7 +80,6 @@ impl<'ledger> LedgerAppendGuard<'ledger> {
     }
 
     /// Retains the successor for reconciliation without publishing it.
-    #[must_use]
     pub fn suspend(self) -> PreparedLedgerAppend {
         self.prepared
     }
@@ -124,7 +123,6 @@ impl ResumeLedgerAppendError {
     }
 
     /// Recovers both the refusal and the unchanged suspended successor.
-    #[must_use]
     pub fn into_parts(self) -> (ContractError, PreparedLedgerAppend) {
         (self.error, *self.prepared)
     }

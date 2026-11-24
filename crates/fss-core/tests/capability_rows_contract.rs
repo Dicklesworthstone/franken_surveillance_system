@@ -44,10 +44,7 @@ struct CapabilityRow {
 fn extract_rows(json: &str) -> Result<Vec<CapabilityRow>, Box<dyn Error>> {
     let mut rows = Vec::new();
     let mut cursor = 0usize;
-    loop {
-        let Some(id_start) = json[cursor..].find("\"id\": \"") else {
-            break;
-        };
+    while let Some(id_start) = json[cursor..].find("\"id\": \"") {
         let abs = cursor + id_start;
         // Bound field extraction to THIS row's closing brace — a missing
         // field must never be read from the next row.

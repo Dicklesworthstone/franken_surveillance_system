@@ -5,13 +5,7 @@ use super::*;
 use fss_model_ir::{AttributeMap, GraphNode, ModelIrVersion, OpCode, TensorPort};
 use fss_tensor::DType;
 
-fn product_model(
-    a: &[usize],
-    b: &[usize],
-    output: &[usize],
-    attrs: &[u8],
-    opset: i64,
-) -> Vec<u8> {
+fn product_model(a: &[usize], b: &[usize], output: &[usize], attrs: &[u8], opset: i64) -> Vec<u8> {
     let graph = [
         node("MatMul", &["a", "b"], &["output"], attrs),
         bytes(11, &info("a", a, 1)),
@@ -70,10 +64,7 @@ fn vector_dot_produces_a_scalar_and_preserves_ordered_f32_arithmetic() -> Test {
             ([-0.0, 0.0, -0.0], [1.0, -1.0, -1.0]),
             ([f32::from_bits(1), 2.0, -2.0], [1.0, 1.0, 1.0]),
         ] {
-            let actual = roundtrip(
-                &source,
-                &[("a", data(&[3], &a)?), ("b", data(&[3], &b)?)],
-            )?;
+            let actual = roundtrip(&source, &[("a", data(&[3], &a)?), ("b", data(&[3], &b)?)])?;
             assert_eq!(bits(&actual["output"]), bits(&[dot(&a, &b)]));
         }
     }
@@ -132,7 +123,10 @@ fn vectors_broadcast_over_every_matrix_rank_and_keep_existing_singletons() -> Te
             bits(&roundtrip(&source, &[("a", a), ("b", b)])?["output"]),
             bits(&[32.0])
         );
-        assert_eq!(import(&source)?.graph().outputs()[0].shape().dims(), &[1, 1]);
+        assert_eq!(
+            import(&source)?.graph().outputs()[0].shape().dims(),
+            &[1, 1]
+        );
     }
     Ok(())
 }
@@ -158,10 +152,7 @@ fn constant_vectors_and_constant_only_dot_keep_exact_parameter_bindings() -> Tes
         let imported = import(&source)?;
         assert_eq!(imported.runtime_inputs().len(), usize::from(!both_constant));
         assert_eq!(imported.parameters().len(), 1 + usize::from(both_constant));
-        assert_eq!(
-            bits(&roundtrip(&source, &input)?["output"]),
-            bits(&[0.0])
-        );
+        assert_eq!(bits(&roundtrip(&source, &input)?["output"]), bits(&[0.0]));
     }
     Ok(())
 }
@@ -223,12 +214,7 @@ fn malformed_vector_products_and_missing_helper_like_inputs_refuse() {
     let source = model(
         &[
             node("MatMul", &["a", "b"], &["dot"], &[]),
-            node(
-                "Relu",
-                &["onnx-node-0000-matmul-4"],
-                &["output"],
-                &[],
-            ),
+            node("Relu", &["onnx-node-0000-matmul-4"], &["output"], &[]),
             bytes(11, &info("a", &[3], 1)),
             bytes(11, &info("b", &[3], 1)),
             bytes(12, &info("output", &[1, 3], 1)),
@@ -253,8 +239,14 @@ fn vector_lowering_admits_exact_aggregate_limits_and_cancels_at_every_checkpoint
     import_onnx(&source, digest, GENERATION, exact, &|| false)?;
     for limits in [
         OnnxLimits { nodes: 3, ..exact },
-        OnnxLimits { tensors: 5, ..exact },
-        OnnxLimits { tensor_bytes: 11, ..exact },
+        OnnxLimits {
+            tensors: 5,
+            ..exact
+        },
+        OnnxLimits {
+            tensor_bytes: 11,
+            ..exact
+        },
     ] {
         assert_eq!(
             import_onnx(&source, digest, GENERATION, limits, &|| false).err(),

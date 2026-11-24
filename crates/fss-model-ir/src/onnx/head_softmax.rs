@@ -154,7 +154,7 @@ pub fn assemble_onnx_softmax_split_head<'a>(
         assembled_output.to_owned(),
         vec![1, rows, 4 + assembly.class_indices.len()],
         graph.generation(),
-        &mut admission,
+        &admission,
     )?;
     for tensor in graph.inputs().iter().chain(graph.outputs()) {
         admission.charge(tensor.name().len() + tensor.rank())?;
