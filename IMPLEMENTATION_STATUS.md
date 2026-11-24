@@ -4,6 +4,36 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Native ONNX edge and reflection padding — 2026-11-23
+
+Static F32 models can now import `Pad` modes `edge` and `reflect` under the
+existing opset 13/17/18 profiles. Negative pads crop first. Edge repeats retained
+boundary samples with logarithmic graph growth; reflection mirrors neighboring
+samples without repeating the endpoint. Each positive reflection pad must be
+smaller than its cropped axis. Existing rank-one-through-four and nonempty
+tensor bounds remain explicit. These paths reuse native Slice/Concat/Reshape,
+generate no border weights, and preserve runtime sample bits. Constant padding
+retains its previous graph bytes; no opcode, dependency or Model IR version changes.
+
+**Native validation passed:** all 18 scoped `onnx_pad_execution` tests on pinned
+`nightly-2026-08-31`, using `--locked --offline`. The tests execute both unchanged
+production scalar and optimized kernels and the actual canonical Model IR /
+Safetensors reload path. Coverage includes opsets 13/17/18, ranks one through four,
+mixed cropping/padding, literal and independent coordinate oracles, signed zero,
+subnormals, infinities and NaN payloads, large non-power-of-two edge repetition,
+Pad-to-Conv composition, exact node/tensor/byte/work bounds, helper collisions and
+every import cancellation checkpoint. Four constant-mode graph digests captured
+from the original implementation still match. Scoped pinned formatting and
+independent source review passed.
+
+Reproduce with `cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir
+--test onnx_pad_execution -- --test-threads=1 --skip scalar_executor::
+--skip optimized_executor::`. The 25 embedded module tests are filtered by this
+command; the 18 feature tests themselves invoke both production executors.
+This establishes the bounded importer feature, not full asynchronous reference
+qualification, trained detector accuracy or release qualification. FSS-139 /
+`fss-x4a.14.10` remains open. See [the importer profile](docs/onnx_import.md#static-padding-and-cropping).
+
 ## Health-screened short sampled dwell — 2026-11-23
 
 Short `fss-event watch --dwell-for-ns ... --dwell-max-gap-ns ...` now accepts

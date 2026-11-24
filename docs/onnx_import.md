@@ -825,54 +825,74 @@ cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir \
   --test-threads=1 --skip scalar_executor:: --skip optimized_executor::
 ```
 
-## Static constant padding and cropping
+## Static padding and cropping
 
 The importer admits [Pad-13](https://onnx.ai/onnx/operators/onnx__Pad.html#pad-13)
 for static F32 tensors of rank one through four, including padding or cropping
-batch and channel axes. `mode` must be absent or `"constant"`. The second input
-must be an embedded INT64 vector containing exactly twice the input rank in the
-order `[begin_axis_0, ..., begin_axis_n, end_axis_0, ..., end_axis_n]`.
+batch and channel axes. `mode` may be `"constant"` (the default), `"edge"` or
+`"reflect"`. The second input must be an embedded INT64 vector containing
+exactly twice the input rank in the order
+`[begin_axis_0, ..., begin_axis_n, end_axis_0, ..., end_axis_n]`.
 Initializers, Constant nodes and the bounded static shape programs below may
 supply this control; its existing eight-element ceiling remains unchanged.
+These modes are available in all admitted opsets (13, 17 and 18).
 
-Positive values add constant borders and negative values remove samples from
-the corresponding side. All cropping happens before padding, and every retained
+Positive values add borders and negative values remove samples from the
+corresponding side. All cropping happens before padding, and every retained
 axis must contain at least one source sample. An entirely cropped axis refuses
 with `Unsupported`, even when padding on the opposite side would make the final
-shape positive. For example, input `[1,2,3,4]`, pads `[-1,2]` and fill `9` produce
-`[2,3,4,9,9]`; pads `[2,-1]` produce `[9,9,1,2,3]`.
+shape positive. For input `[1,2,3,4]` and pads `[-1,2]`, constant fill `9`
+produces `[2,3,4,9,9]`, edge produces `[2,3,4,4,4]`, and reflect produces
+`[2,3,4,3,2]`.
 
-The optional third input is a finite embedded F32 **scalar**, not a length-one
-vector. An omitted input or empty optional input name selects positive zero;
-an empty tensor is not a scalar and refuses. Explicit negative zero and subnormal
-fill values retain their exact F32 bits. A fill also consumed as ordinary model
-data remains an exported parameter, while control-only values are removed from
-the runtime graph without changing the retained original ONNX bytes.
+Edge mode repeats the first or last retained sample and supports singleton axes.
+Reflect mode mirrors neighboring retained samples, excluding the boundary sample.
+Each positive reflection pad must be strictly smaller than the cropped axis
+extent; padding a singleton axis or reflecting farther than this bounded profile
+refuses with `Unsupported`. Cropping without positive reflection padding remains
+valid. This restriction matches the
+[ONNX reference implementation](https://github.com/onnx/onnx/blob/main/onnx/reference/ops/op_pad.py).
 
-Conversion emits at most one positive-stride Slice for cropping, followed by one
-Concat per padded axis with generated constant border tensors. A no-op Pad emits
-a Reshape; crop-only Pad needs no generated parameters. These existing native
-operators move data without floating-point arithmetic, so source sample bits are
-preserved. No frozen operator ID, runtime dependency or package format changes.
-Cropping first also keeps every intermediate tensor within the final output's
-size. Checked output and generated-parameter byte counts, node and tensor counts,
-shared work limits, cancellation and reserved helper names apply before and
-during expansion. Signed pad magnitude and shape overflow produce typed refusals.
+The optional third input must be a finite embedded F32 **scalar**, including in
+edge/reflect mode where its value does not affect the result. An omitted input
+or empty optional input name selects positive zero for constant mode; an empty
+tensor is not a scalar and refuses. Explicit negative-zero and subnormal fills
+retain their exact F32 bits. A fill also consumed as ordinary model data remains
+an exported parameter, while control-only values are removed from the runtime
+graph without changing the retained original ONNX bytes.
 
-Dynamic pads or fill, reflect/edge modes, scalar data, ranks above four, non-F32
-data, later-schema axes inputs and zero-sized retained axes are outside this
-profile. Malformed control rank/type/length, conflicting declared shapes and
-unsupported attributes also refuse conversion.
+Conversion emits at most one positive-stride Slice for cropping. Constant mode
+then uses one Concat per padded axis and generated border tensors, preserving
+the exact previously admitted graph bytes. Edge mode copies one boundary slice
+and doubles it with Concat, so graph growth is logarithmic in the pad count.
+Reflect mode selects neighboring samples with unit Slices and concatenates them
+in reverse order. Edge/reflect generate no weight tensors. A no-op Pad emits a
+Reshape; crop-only Pad needs no generated parameters.
 
-The `onnx_pad_execution` target exercises the production scalar executor before
-and after canonical Model IR and Safetensors export/reload. Literal mixed-sign
-examples and an independent output-to-input coordinate oracle cover all four
-ranks, default and explicit fills, negative zero, subnormals and a Pad-to-Conv
-block. Additional cases cover static shape controls, a scalar's simultaneous
-control/data use, helper-name collisions, crop-first resource bounds, exact
-quota boundaries and cancellation at every import checkpoint. The importer
-identity includes this lowering source. Native results and their scope are
-recorded in `IMPLEMENTATION_STATUS.md`.
+These existing native operators copy data without floating-point arithmetic,
+preserving runtime sample bits, including signed zero, subnormals, infinities
+and NaN payloads. Cropping first keeps intermediates within the final output
+size. Exact node/tensor/helper counts and output/parameter byte bounds are checked
+before expansion; shared work limits and cancellation apply throughout.
+Large reflection expansions can exceed the existing graph limits and refuse.
+Signed pad magnitude and shape overflow produce typed refusals. No frozen
+operator ID, runtime dependency, Model IR version or package format changes.
+
+Dynamic pads or fill, wrap mode, scalar data, ranks above four, non-F32 data,
+later-schema explicit axes inputs and zero-sized retained axes remain outside
+this profile. Malformed control rank/type/length, conflicting declared shapes
+and unsupported attributes also refuse conversion.
+
+The `onnx_pad_execution` target exercises both production scalar and optimized
+executors before and after canonical Model IR and Safetensors export/reload.
+Literal examples and an independent output-to-input coordinate oracle cover
+all four ranks, mixed-sign crops/pads, default/explicit fills, exact runtime bits,
+large edge repetition and Pad-to-Conv composition. Additional cases cover
+static shape controls, simultaneous control/data uses, helper-name collisions,
+crop-first resource bounds, exact quotas and cancellation at every import
+checkpoint. Four graph digests captured from the original constant lowering
+guard compatibility. The importer identity includes this lowering source.
+Native results and their scope are recorded in `IMPLEMENTATION_STATUS.md`.
 
 ## Instance and grouped feature normalization
 

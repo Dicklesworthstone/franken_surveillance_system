@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
-//! Constant-mode ONNX Pad-13 through real artifact parsing and the unchanged
-//! production scalar executor. Expected values come from explicit output-to-input
-//! coordinates and literal examples, independently of the lowering strategy.
+//! Static ONNX Pad through real artifacts and both unchanged production executors.
+//! Expected values come from explicit output-to-input coordinates and literal
+//! examples, independently of the lowering strategy.
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -17,6 +17,11 @@ use fss_tensor::{Shape, Tensor};
 mod safetensors;
 #[path = "../../fss-reference/src/scalar_executor.rs"]
 pub mod scalar_executor;
+pub use scalar_executor::{
+    ExecBudget, ExecError, ExecOutcome, ScalarExecCx, ScalarExecutor, deterministic_sigmoid_f32,
+};
+#[path = "../../fss-reference/src/optimized_executor.rs"]
+pub mod optimized_executor;
 
 // Data-only host types required by the unchanged production Safetensors parser.
 // All weight-byte parsing, escaping, span validation and F32 decoding is real.
@@ -150,7 +155,15 @@ fn node(op: &str, inputs: &[&str], outputs: &[&str], attributes: &[u8]) -> Vec<u
     )
 }
 fn model(graph: &[u8]) -> Vec<u8> {
-    [integer(1, 8), bytes(8, &integer(2, 13)), bytes(7, graph)].concat()
+    model_version(graph, 13)
+}
+fn model_version(graph: &[u8], version: i64) -> Vec<u8> {
+    [
+        integer(1, 8),
+        bytes(8, &integer(2, version)),
+        bytes(7, graph),
+    ]
+    .concat()
 }
 fn import(source: &[u8]) -> Test<ImportedOnnx<'_>> {
     Ok(import_onnx(
@@ -204,29 +217,46 @@ fn execute(
     mut inputs: BTreeMap<String, Tensor>,
     input: &[(&str, Tensor)],
 ) -> Test<Outputs> {
+    let constants = inputs
+        .iter()
+        .map(|(name, tensor)| Ok((name.clone(), tensor.to_vec::<f32>()?)))
+        .collect::<Result<BTreeMap<_, _>, fss_tensor::TensorError>>()?;
+    let optimized =
+        optimized_executor::OptimizedGraph::prepare(graph, &constants, &ScalarExecCx::new())?;
+    let fast = optimized.run(input, ExecBudget::unlimited(), &ScalarExecCx::new())?;
     inputs.extend(
         input
             .iter()
             .map(|(name, tensor)| ((*name).to_owned(), tensor.clone())),
     );
     let values = inputs.into_iter().collect::<Vec<_>>();
-    let result = scalar_executor::ScalarExecutor::run(
+    let scalar = ScalarExecutor::run(
         graph,
         &values,
-        scalar_executor::ExecBudget::unlimited(),
-        &scalar_executor::ScalarExecCx::new(),
+        ExecBudget::unlimited(),
+        &ScalarExecCx::new(),
     )?;
+    assert_eq!(fast.executed_macs(), scalar.executed_macs());
+    assert_eq!(fast.allocated_bytes(), scalar.allocated_bytes());
     graph
         .outputs()
         .iter()
         .map(|port| {
-            Ok((
-                port.name().to_owned(),
-                result
-                    .get_output(port.name())
-                    .ok_or("missing output")?
-                    .to_vec::<f32>()?,
-            ))
+            let expected = scalar
+                .get_output(port.name())
+                .ok_or("missing scalar output")?
+                .to_vec::<f32>()?;
+            let actual = fast
+                .get_output(port.name())
+                .ok_or("missing optimized output")?
+                .to_vec::<f32>()?;
+            assert_eq!(
+                bits(&actual),
+                bits(&expected),
+                "optimized output {}",
+                port.name()
+            );
+            Ok((port.name().to_owned(), expected))
         })
         .collect()
 }
@@ -289,12 +319,22 @@ fn pad_model(
     fill: Option<f32>,
     attrs: &[u8],
 ) -> Vec<u8> {
+    pad_model_version(dims, output, pads, fill, attrs, 13)
+}
+fn pad_model_version(
+    dims: &[usize],
+    output: &[usize],
+    pads: &[i64],
+    fill: Option<f32>,
+    attrs: &[u8],
+    version: i64,
+) -> Vec<u8> {
     let (inputs, value) = if let Some(value) = fill {
         (vec!["input", "pads", "fill"], weight("fill", &[], &[value]))
     } else {
         (vec!["input", "pads"], Vec::new())
     };
-    model(
+    model_version(
         &[
             node("Pad", &inputs, &["output"], attrs),
             int_weight("pads", &[pads.len()], pads),
@@ -303,6 +343,7 @@ fn pad_model(
             bytes(12, &info("output", output, 1)),
         ]
         .concat(),
+        version,
     )
 }
 
@@ -593,8 +634,7 @@ fn padding_helpers_cannot_alias_later_source_values() -> Test {
 #[test]
 fn malformed_and_dynamic_controls_and_unsupported_profiles_refuse() {
     for attrs in [
-        text_attr("mode", "reflect"),
-        text_attr("mode", "edge"),
+        text_attr("mode", "wrap"),
         text_attr("mode", "unknown"),
         int_attr("axes", 0),
         ints_attr("pads", &[1, 1]),
@@ -883,5 +923,513 @@ fn cancellation_at_every_import_checkpoint_returns_no_partial_result() -> Test {
         encode_canonical_model_ir(import(&source)?.graph())?,
         encode_canonical_model_ir(baseline.graph())?
     );
+    Ok(())
+}
+
+// Map each output coordinate directly into the surviving original interval.
+// Reflection is a geometric mirror at either endpoint, independent of native
+// Slice/Concat schedules, bit decomposition, or the order of padded axes.
+fn copied_coordinate_oracle(values: &[f32], dims: &[usize], pads: &[i64], mode: &str) -> Vec<f32> {
+    let shape = shape_after(dims, pads);
+    (0..shape.iter().product())
+        .map(|mut index| {
+            let mut source = 0;
+            let mut stride = 1;
+            for axis in (0..dims.len()).rev() {
+                let coordinate = index % shape[axis];
+                index /= shape[axis];
+                let low = i128::from((-pads[axis]).max(0));
+                let high = dims[axis] as i128 - 1 - i128::from((-pads[axis + dims.len()]).max(0));
+                let original = coordinate as i128 - i128::from(pads[axis]);
+                let selected = if mode == "edge" {
+                    original.clamp(low, high)
+                } else if original < low {
+                    2 * low - original
+                } else if original > high {
+                    2 * high - original
+                } else {
+                    original
+                };
+                assert!((low..=high).contains(&selected));
+                source += selected as usize * stride;
+                stride *= dims[axis];
+            }
+            values[source]
+        })
+        .collect()
+}
+
+#[test]
+fn copied_padding_matches_literal_examples_in_every_admitted_opset() -> Test {
+    for version in [13, 17, 18] {
+        for (mode, pads, expected) in [
+            ("edge", [2, 1], vec![1., 1., 1., 2., 3., 4., 4.]),
+            ("reflect", [2, 1], vec![3., 2., 1., 2., 3., 4., 3.]),
+            ("edge", [-1, 2], vec![2., 3., 4., 4., 4.]),
+            ("reflect", [-1, 2], vec![2., 3., 4., 3., 2.]),
+            ("edge", [2, -1], vec![1., 1., 1., 2., 3.]),
+            ("reflect", [2, -1], vec![3., 2., 1., 2., 3.]),
+        ] {
+            let source = pad_model_version(
+                &[4],
+                &[expected.len()],
+                &pads,
+                Some(99.0), // Present but semantically unused outside constant mode.
+                &text_attr("mode", mode),
+                version,
+            );
+            let imported = import(&source)?;
+            assert!(imported.parameters().is_empty());
+            assert_eq!(imported.graph().inputs().len(), 1);
+            let result = roundtrip(&source, &[("input", data(&[4], &[1., 2., 3., 4.])?)])?;
+            assert_eq!(bits(&result["output"]), bits(&expected));
+        }
+        let source = pad_model_version(
+            &[2, 3],
+            &[4, 6],
+            &[1, 1, 1, 2],
+            None,
+            &text_attr("mode", "reflect"),
+            version,
+        );
+        let result = roundtrip(
+            &source,
+            &[("input", data(&[2, 3], &[1., 2., 3., 4., 5., 6.])?)],
+        )?;
+        assert_eq!(
+            result["output"],
+            [
+                5., 4., 5., 6., 5., 4., 2., 1., 2., 3., 2., 1., 5., 4., 5., 6., 5., 4., 2., 1., 2.,
+                3., 2., 1.,
+            ]
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn copied_borders_preserve_runtime_bits_for_every_supported_rank() -> Test {
+    let special = [
+        -0.0_f32,
+        0.0,
+        f32::from_bits(1),
+        -f32::from_bits(1),
+        f32::MAX,
+        f32::MIN,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        f32::from_bits(0x7fc1_2345),
+        f32::from_bits(0xffc5_4321),
+        f32::from_bits(0x7f80_0123),
+    ];
+    for rank in 1..=4 {
+        let dims: Vec<_> = (0..rank).map(|axis| 3 + axis % 2).collect();
+        let values: Vec<_> = (0..dims.iter().product())
+            .map(|index| special[index % special.len()])
+            .collect();
+        for mode in ["edge", "reflect"] {
+            for pattern in 0..5 {
+                let mut pads = vec![0; 2 * rank];
+                for axis in 0..rank {
+                    (pads[axis], pads[axis + rank]) = match pattern {
+                        0 => (0, 0),
+                        1 => (1, 2),
+                        2 => (-1, -1),
+                        3 if axis % 2 == 0 => (-1, 1),
+                        3 => (1, -1),
+                        _ if axis % 2 == 0 => (2, 0),
+                        _ => (0, 2),
+                    };
+                }
+                let output = shape_after(&dims, &pads);
+                let source = pad_model(&dims, &output, &pads, None, &text_attr("mode", mode));
+                let imported = import(&source)?;
+                assert!(imported.parameters().is_empty());
+                if pattern == 0 || pattern == 2 {
+                    assert_eq!(imported.graph().node_count(), 1);
+                }
+                let actual = roundtrip(&source, &[("input", data(&dims, &values)?)])?;
+                assert_eq!(
+                    bits(&actual["output"]),
+                    bits(&copied_coordinate_oracle(&values, &dims, &pads, mode)),
+                    "rank={rank}, mode={mode}, pattern={pattern}"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn large_non_power_of_two_edge_padding_uses_a_small_copy_graph() -> Test {
+    let source = pad_model(
+        &[1],
+        &[65_557],
+        &[65_539, 17],
+        None,
+        &text_attr("mode", "edge"),
+    );
+    let imported = import_onnx(
+        &source,
+        ContentDigest::sha256(&source),
+        GENERATION,
+        OnnxLimits {
+            nodes: 23,
+            tensors: 25,
+            parameter_bytes: 16,
+            tensor_bytes: 65_557 * 4,
+            ..OnnxLimits::default()
+        },
+        &|| false,
+    )?;
+    assert_eq!(imported.graph().node_count(), 23);
+    assert!(imported.parameters().is_empty());
+    let result = roundtrip(&source, &[("input", data(&[1], &[-0.0])?)])?;
+    assert_eq!(bits(&result["output"]), vec![(-0.0_f32).to_bits(); 65_557]);
+    Ok(())
+}
+
+#[test]
+fn copied_padding_resource_boundaries_and_every_cancellation_checkpoint() -> Test {
+    for (mode, nodes) in [("edge", 8), ("reflect", 9)] {
+        let source = pad_model(
+            &[3, 4],
+            &[3, 9],
+            &[-1, 2, 1, 3],
+            None,
+            &text_attr("mode", mode),
+        );
+        let imported = import(&source)?;
+        assert_eq!(imported.graph().node_count(), nodes);
+        assert!(imported.parameters().is_empty());
+        let limits = OnnxLimits {
+            nodes,
+            tensors: nodes + 2,
+            parameter_bytes: 32,
+            tensor_bytes: 108,
+            work_units: imported.work_units(),
+            ..OnnxLimits::default()
+        };
+        assert!(
+            import_onnx(
+                &source,
+                ContentDigest::sha256(&source),
+                GENERATION,
+                limits,
+                &|| false,
+            )
+            .is_ok()
+        );
+        for (limits, expected) in [
+            (
+                OnnxLimits {
+                    nodes: nodes - 1,
+                    ..limits
+                },
+                OnnxError::Limit,
+            ),
+            (
+                OnnxLimits {
+                    tensors: nodes + 1,
+                    ..limits
+                },
+                OnnxError::Limit,
+            ),
+            (
+                OnnxLimits {
+                    parameter_bytes: 31,
+                    ..limits
+                },
+                OnnxError::Limit,
+            ),
+            (
+                OnnxLimits {
+                    tensor_bytes: 107,
+                    ..limits
+                },
+                OnnxError::Limit,
+            ),
+            (
+                OnnxLimits {
+                    work_units: imported.work_units() - 1,
+                    ..limits
+                },
+                OnnxError::WorkBudget,
+            ),
+        ] {
+            assert_eq!(
+                import_onnx(
+                    &source,
+                    ContentDigest::sha256(&source),
+                    GENERATION,
+                    limits,
+                    &|| false,
+                )
+                .err(),
+                Some(expected),
+                "mode={mode}, limits={limits:?}"
+            );
+        }
+        let calls = Cell::new(0);
+        import_onnx(
+            &source,
+            ContentDigest::sha256(&source),
+            GENERATION,
+            OnnxLimits::default(),
+            &|| {
+                calls.set(calls.get() + 1);
+                false
+            },
+        )?;
+        let total = calls.get();
+        for stop in 1..=total {
+            calls.set(0);
+            assert_eq!(
+                import_onnx(
+                    &source,
+                    ContentDigest::sha256(&source),
+                    GENERATION,
+                    OnnxLimits::default(),
+                    &|| {
+                        calls.set(calls.get() + 1);
+                        calls.get() == stop
+                    },
+                )
+                .err(),
+                Some(OnnxError::Cancelled),
+                "{mode}, checkpoint {stop}/{total}"
+            );
+        }
+    }
+    // A valid geometry still refuses when its exact copy expansion exceeds the
+    // node ceiling; the importer never walks or allocates the requested border.
+    assert_eq!(
+        refusal(&pad_model(
+            &[1024],
+            &[2047],
+            &[1023, 0],
+            None,
+            &text_attr("mode", "reflect"),
+        )),
+        Some(OnnxError::Limit)
+    );
+    Ok(())
+}
+
+#[test]
+fn reflection_validates_cropped_extent_and_common_refusals_remain() {
+    for (dim, pads) in [
+        (1, [1, 0]),
+        (1, [0, 1]),
+        (4, [4, 0]),
+        (4, [0, 4]),
+        (4, [-2, 2]),
+        (4, [2, -2]),
+        (4, [-3, 1]),
+        (4, [1, -3]),
+    ] {
+        let dims = [dim];
+        assert_eq!(
+            refusal(&pad_model(
+                &dims,
+                &shape_after(&dims, &pads),
+                &pads,
+                None,
+                &text_attr("mode", "reflect"),
+            )),
+            Some(OnnxError::Unsupported),
+            "dim={dim}, pads={pads:?}"
+        );
+    }
+    for mode in ["edge", "reflect"] {
+        for pads in [[-4, 1], [-2, -2], [-5, 5], [5, -5]] {
+            assert_eq!(
+                refusal(&pad_model(
+                    &[4],
+                    &[1],
+                    &pads,
+                    None,
+                    &text_attr("mode", mode)
+                )),
+                Some(OnnxError::Unsupported),
+            );
+        }
+        assert_eq!(
+            refusal(&pad_model(
+                &[4],
+                &[1],
+                &[i64::MIN, 0],
+                None,
+                &text_attr("mode", mode)
+            )),
+            Some(OnnxError::Limit),
+        );
+        assert_eq!(
+            refusal(&pad_model(
+                &[2],
+                &[5],
+                &[1, 1],
+                None,
+                &text_attr("mode", mode)
+            )),
+            Some(OnnxError::Graph),
+        );
+        let source = model(
+            &[
+                node(
+                    "Pad",
+                    &["input", "pads", "fill"],
+                    &["output"],
+                    &text_attr("mode", mode),
+                ),
+                int_weight("pads", &[2], &[1, 1]),
+                bytes(11, &info("input", &[2], 1)),
+                bytes(11, &info("fill", &[], 1)),
+                bytes(12, &info("output", &[4], 1)),
+            ]
+            .concat(),
+        );
+        assert_eq!(refusal(&source), Some(OnnxError::Unsupported));
+    }
+}
+
+#[test]
+fn copied_padding_helpers_cannot_alias_future_source_values() -> Test {
+    for mode in ["edge", "reflect"] {
+        let mut collision_names = vec![
+            "onnx-node-0000-pad-crop",
+            "onnx-node-0000-pad-axis-0-after-sample-0",
+            "onnx-node-0000-pad-axis-0-value",
+            "onnx-node-0000-pad-axis-1-before-sample-0",
+        ];
+        if mode == "edge" {
+            collision_names.push("onnx-node-0000-pad-axis-1-before-repeat-0");
+        }
+        let mut graph = node(
+            "Pad",
+            &["input", "pads"],
+            &["padded"],
+            &text_attr("mode", mode),
+        );
+        let mut previous = "padded";
+        for name in &collision_names {
+            graph.extend(node("Identity", &[previous], &[name], &[]));
+            previous = name;
+        }
+        graph.extend(int_weight("pads", &[4], &[-1, 2, 1, 3]));
+        graph.extend(bytes(11, &info("input", &[3, 4], 1)));
+        graph.extend(bytes(12, &info(previous, &[3, 9], 1)));
+        let source = model(&graph);
+        let imported = import(&source)?;
+        let names: Vec<_> = imported
+            .graph()
+            .nodes()
+            .iter()
+            .flat_map(|node| node.outputs().iter().map(String::as_str))
+            .collect();
+        let unique: std::collections::BTreeSet<_> = names.iter().collect();
+        assert_eq!(names.len(), unique.len());
+        for name in &collision_names {
+            assert!(names.contains(&format!("{name}-1").as_str()));
+        }
+        let values: Vec<f32> = (0..12).map(|index| index as f32).collect();
+        let result = roundtrip(&source, &[("input", data(&[3, 4], &values)?)])?;
+        assert_eq!(
+            bits(&result[previous]),
+            bits(&copied_coordinate_oracle(
+                &values,
+                &[3, 4],
+                &[-1, 2, 1, 3],
+                mode
+            )),
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn copied_padding_composes_with_real_convolution_after_artifact_reload() -> Test {
+    let dims = [1, 1, 2, 3];
+    let pads = [0, 0, 1, 2, 0, 0, 1, 0];
+    let values = [1., 2., 3., 4., 5., 6.];
+    for mode in ["edge", "reflect"] {
+        let source = model(
+            &[
+                node(
+                    "Pad",
+                    &["input", "pads"],
+                    &["padded"],
+                    &text_attr("mode", mode),
+                ),
+                node("Conv", &["padded", "kernel"], &["output"], &[]),
+                int_weight("pads", &[8], &pads),
+                weight(
+                    "kernel",
+                    &[1, 1, 3, 3],
+                    &[1., 0., 0., 0., 1., 0., 0., 0., 1.],
+                ),
+                bytes(11, &info("input", &dims, 1)),
+                bytes(13, &info("padded", &[1, 1, 4, 5], 1)),
+                bytes(12, &info("output", &[1, 1, 2, 3], 1)),
+            ]
+            .concat(),
+        );
+        let padded = copied_coordinate_oracle(&values, &dims, &pads, mode);
+        let mut expected = Vec::new();
+        for row in 0..2 {
+            for column in 0..3 {
+                let mut sum = 0.0_f32;
+                for y in 0..3 {
+                    for x in 0..3 {
+                        let weight = if y == x { 1.0 } else { 0.0 };
+                        sum += padded[(row + y) * 5 + column + x] * weight;
+                    }
+                }
+                expected.push(sum);
+            }
+        }
+        let result = roundtrip(&source, &[("input", data(&dims, &values)?)])?;
+        assert_eq!(bits(&result["output"]), bits(&expected));
+    }
+    Ok(())
+}
+
+#[test]
+fn legacy_constant_graph_bytes_are_unchanged() -> Test {
+    // Captured with the original production constant Pad implementation before
+    // adding edge/reflect. Importer source identity changes; native graph bytes do not.
+    for (dims, pads, fill, expected) in [
+        (
+            vec![3, 4],
+            vec![-1, 2, 1, 3],
+            Some(-0.0),
+            "sha256:d35ec32042e8a59a1489c454e5b0d0b4f5b728639921972e7a9cae92895616d0",
+        ),
+        (
+            vec![2],
+            vec![1, 2],
+            Some(9.0),
+            "sha256:4e5406f5fd6f925833228660e0952f2827d8ca2294fb69673c9e7a23b192e463",
+        ),
+        (
+            vec![2],
+            vec![0, 0],
+            None,
+            "sha256:a0e7e35c27ab2c56d983dd1ff3065343de2b18e18c2de53d5ae9e5df57371bf1",
+        ),
+        (
+            vec![4],
+            vec![-1, -1],
+            None,
+            "sha256:de57ccef995edfbabbced705b66f6331f6cd3e1991845d1d268ed8d48f7110ff",
+        ),
+    ] {
+        let source = pad_model(&dims, &shape_after(&dims, &pads), &pads, fill, &[]);
+        let imported = import(&source)?;
+        assert_eq!(
+            ContentDigest::sha256(&encode_canonical_model_ir(imported.graph())?).to_string(),
+            expected,
+        );
+    }
     Ok(())
 }
