@@ -4,6 +4,29 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Native AVC random-access and picture recovery — 2026-11-24
+
+The production decoder now honors an IDR picture's instruction to discard
+waiting prior pictures. IDRs that request normal draining preserve display order;
+pictures already released to the output queue remain available in either case.
+Every rejected NAL now discards an incomplete picture and requires a fresh IDR,
+including size, header, parameter-set and unsupported-partition failures that
+previously bypassed slice recovery. Multi-slice pictures pin the complete admitted
+PPS identity and content, so parameter replacement cannot silently change their
+reconstruction. Identical repeats, unrelated parameter sets and valid PPS changes
+between complete pictures remain admitted.
+
+**Native validation passed:** all 186 tests in `cargo +nightly-2026-08-31 test
+--locked --offline -p fss-codec-h264 --all-targets -- --test-threads=1`, including
+the existing decoded-pixel conformance fixtures and seven new real-NAL contracts.
+Before the fix, those new contracts produced five failures and two valid-stream
+passes. They now cover both IDR output choices, already queued output, nine
+rejected-input branches, partial-picture quarantine, recovery and PPS changes.
+The package doctest invocation also passed (zero doctests). Scoped formatting,
+whitespace and independent source review passed. These results validate the bounded
+native decoder changes; full asynchronous reference and release qualification
+remain unestablished, and FSS-124 remains open.
+
 ## Native selection without full-input copies — 2026-11-24
 
 Scalar Slice and Transpose now read selected F32 samples directly from the
