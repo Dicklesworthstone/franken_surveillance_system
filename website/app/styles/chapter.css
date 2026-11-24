@@ -440,14 +440,17 @@
   border-color: rgb(255 194 77 / 0.55);
 }
 
-/* Where a section stands: a framed status card that closes the section, its label on the left. */
+/* Where a section stands: a framed card that closes the section, read as a track from what runs to
+   what is planned. Each stage is a node on the line, by shape as well as colour: a full node on a
+   solid line runs in tests, a half node on a dashed line is built, an empty node on a dotted line
+   is planned. Across the card on wide screens, down its left edge on phones. */
 .standing {
   display: grid;
   grid-template-columns: 9.5rem minmax(0, 1fr);
   gap: 16px 28px;
   align-items: start;
   margin-top: 34px;
-  padding: 24px 28px 26px;
+  padding: 26px 28px 28px;
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   background:
@@ -455,57 +458,111 @@
     var(--ink-1);
 }
 .standing__label {
-  padding-top: 7px;
+  padding-top: 5px;
   color: var(--faint);
 }
 .standing ul {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
-  gap: 18px 36px;
+  grid-template-columns: repeat(var(--n, 3), minmax(0, 1fr));
 }
 .standing__row {
+  --rail: solid;
+  position: relative;
+  min-width: 0;
+  padding: 36px 32px 0 0;
   font-size: 0.86rem;
-  line-height: 1.58;
+  line-height: 1.6;
   color: var(--soft);
 }
-.standing__row strong {
-  display: flex;
-  width: fit-content;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 10px;
-  padding: 4px 12px 4px 9px;
-  border: 1px solid color-mix(in srgb, var(--tone, var(--unseen)) 42%, transparent);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--tone, var(--unseen)) 10%, transparent);
-  font-size: 0.76rem;
-  font-weight: 650;
-  letter-spacing: 0.005em;
-  color: color-mix(in srgb, var(--tone, var(--unseen)) 62%, #fff);
+.standing__row--built {
+  --rail: dashed;
 }
+.standing__row--planned,
+.standing__row--demo {
+  --rail: dotted;
+}
+/* The rail: this stage's stretch of the line, from its node to just short of the next one. */
+.standing__row::after {
+  content: "";
+  position: absolute;
+  top: 11px;
+  left: 26px;
+  right: 10px;
+  border-top: 2px var(--rail) color-mix(in srgb, var(--tone, var(--unseen)) 70%, transparent);
+}
+.standing__row:last-child::after {
+  right: 32px;
+  mask-image: linear-gradient(90deg, #000 30%, transparent);
+}
+.standing__row strong {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 0.82rem;
+  font-weight: 720;
+  letter-spacing: 0.01em;
+  color: color-mix(in srgb, var(--tone, var(--unseen)) 72%, #fff);
+}
+/* The node starts the rail. */
 .standing .standing__row strong::before {
-  width: 9px;
-  height: 9px;
+  position: absolute;
+  top: 4px;
+  left: 0;
+  width: 16px;
+  height: 16px;
+  border-width: 2px;
+}
+.standing .standing__row--runs strong::before {
+  box-shadow: 0 0 16px color-mix(in srgb, var(--seen) 55%, transparent);
+}
+@media (max-width: 1080px) {
+  /* The label goes over the track, so three stages keep their width on a tablet. */
+  .standing {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 18px;
+  }
+  .standing__label {
+    padding-top: 0;
+  }
 }
 @media (max-width: 760px) {
   .standing {
     grid-template-columns: minmax(0, 1fr);
-    gap: 12px;
+    gap: 18px;
     margin-top: 26px;
-    padding: 18px 18px 20px;
+    padding: 20px 18px 22px;
   }
   .standing__label {
     padding-top: 0;
   }
   .standing ul {
-    gap: 16px;
+    grid-template-columns: minmax(0, 1fr);
   }
   .standing__row {
+    padding: 0 0 24px 32px;
     font-size: 0.84rem;
     line-height: 1.55;
   }
+  .standing__row:last-child {
+    padding-bottom: 0;
+  }
+  .standing__row::after,
+  .standing__row:last-child::after {
+    top: 25px;
+    bottom: 5px;
+    left: 7px;
+    right: auto;
+    border-top: 0;
+    border-left: 2px var(--rail) color-mix(in srgb, var(--tone, var(--unseen)) 70%, transparent);
+  }
+  .standing__row:last-child::after {
+    bottom: 0;
+    mask-image: linear-gradient(180deg, #000 30%, transparent);
+  }
+  .standing .standing__row strong::before {
+    top: 1px;
+  }
   .standing__row strong {
-    margin-bottom: 8px;
+    margin-bottom: 6px;
   }
 }
 /* Shape as well as colour: full, half, empty, dashed. */

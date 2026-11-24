@@ -106,7 +106,7 @@ export function Standing({ rows }) {
       <p className="standing__label micro" aria-hidden="true">
         Where this stands
       </p>
-      <ul aria-label="Where this stands">
+      <ul aria-label="Where this stands" style={{ "--n": rows.length }}>
         {rows.map(([kind, text]) => (
           <li key={kind + text} className={"standing__row standing__row--" + kind}>
             <strong>{STANDING[kind]}</strong>
