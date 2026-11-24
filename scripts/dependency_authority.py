@@ -99,7 +99,7 @@ EXPECTED_CONSTITUTION_DIGESTS: dict[str, str] = {
 
 # The allowlist carries no self-declared digest, so its raw bytes are pinned per schema version.
 BASELINE_ALLOWLIST_SCHEMA = "fss.dependency_allowlist.v3"
-BASELINE_ALLOWLIST_FREEZE_DIGEST = "sha256:dbdd2a2366c76abefc2dcf9f6da92d1500f8d1aa1ce02eeb7c13afaea632c434"
+BASELINE_ALLOWLIST_FREEZE_DIGEST = "sha256:f19433a032c6c74807f38526a801bd0a49ff0357b261361e3e521f1e8aa56ea7"
 EXPECTED_ALLOWLIST_DIGESTS: dict[str, str] = {
     BASELINE_ALLOWLIST_SCHEMA: BASELINE_ALLOWLIST_FREEZE_DIGEST,
 }
@@ -483,7 +483,14 @@ ALLOWLIST_SPEC = Obj({
     "in_house": Obj({"allowed_families": List(Str()), "rule": Str(), "projects": Map(List(Str()))}),
     "fundamental": Obj({"allowed_subject_to_audit": List(Str(), nonempty=False), "rule": Str()}),
     "exception_candidates": Obj({"not_admitted_without_dep_record_adr_and_release_evidence": List(Str(), nonempty=False)}),
-    "asupersync_closure": Obj({"crates": List(Str(), nonempty=False), "rule": Str()}),
+    "asupersync_closure": Obj({
+        "crates": List(Str(), nonempty=False),
+        "rule": Str(),
+        "audited_custom_build": List(Str(), nonempty=False),
+        "audited_proc_macros": List(Str(), nonempty=False),
+        "audited_target_cfg_links": List(Str(), nonempty=False),
+        "audited_offline_build_scripts": Map(Str()),
+    }),
     "resolved_drifts": Map(Str()),
     "laboratory_oracles": Obj({
         "excluded_from_production_release_closure": List(Str(), nonempty=False),
@@ -1313,6 +1320,10 @@ class ClassView:
     lab_row_of: dict[str, str]
     exception: frozenset[str]
     closure: frozenset[str]
+    audited_custom_build: frozenset[str]
+    audited_proc_macros: frozenset[str]
+    audited_target_cfg_links: frozenset[str]
+    audited_offline_build_scripts: dict[str, str]
     forbidden: frozenset[str]
     table_rows: dict[str, tuple[str, ...]]
     row_scope: dict[str, str]
@@ -1356,8 +1367,25 @@ def _view_parts_from_allowlist(data: dict[str, Any]) -> dict[str, Any]:
     if isinstance(exception, dict) and isinstance(exception.get("not_admitted_without_dep_record_adr_and_release_evidence"), list):
         parts["exception"] = frozenset(_norm_set(set(str_list(exception["not_admitted_without_dep_record_adr_and_release_evidence"]))))
     closure = data.get("asupersync_closure")
-    if isinstance(closure, dict) and isinstance(closure.get("crates"), list):
-        parts["closure"] = frozenset(_norm_set(set(str_list(closure["crates"]))))
+    if isinstance(closure, dict):
+        if isinstance(closure.get("crates"), list):
+            parts["closure"] = frozenset(_norm_set(set(str_list(closure["crates"]))))
+        if isinstance(closure.get("audited_custom_build"), list):
+            parts["audited_custom_build"] = frozenset(_norm_set(set(str_list(closure["audited_custom_build"]))))
+        if isinstance(closure.get("audited_proc_macros"), list):
+            parts["audited_proc_macros"] = frozenset(_norm_set(set(str_list(closure["audited_proc_macros"]))))
+        if isinstance(closure.get("audited_target_cfg_links"), list):
+            parts["audited_target_cfg_links"] = frozenset(
+                f"{normalize_crate(entry.partition('=')[0])}={entry.partition('=')[2]}"
+                for entry in str_list(closure["audited_target_cfg_links"])
+                if "=" in entry
+            )
+        if isinstance(closure.get("audited_offline_build_scripts"), dict):
+            parts["audited_offline_build_scripts"] = {
+                str(k): str(v)
+                for k, v in closure["audited_offline_build_scripts"].items()
+                if isinstance(k, str) and isinstance(v, str)
+            }
     forbidden = data.get("forbidden")
     if isinstance(forbidden, dict) and isinstance(forbidden.get("crates"), list):
         parts["forbidden"] = frozenset(_norm_set(set(str_list(forbidden["crates"]))))
@@ -1399,6 +1427,10 @@ _VIEW_DEFAULTS: dict[str, Any] = {
     "lab_row_of": {},
     "exception": frozenset(),
     "closure": frozenset(),
+    "audited_custom_build": frozenset(),
+    "audited_proc_macros": frozenset(),
+    "audited_target_cfg_links": frozenset(),
+    "audited_offline_build_scripts": {},
     "forbidden": frozenset(),
     "table_rows": {},
     "row_scope": {},

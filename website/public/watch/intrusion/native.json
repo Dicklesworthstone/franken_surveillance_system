@@ -19,7 +19,7 @@
   "coverage_witnesses": {
    "gate": 36,
    "driveway": 12,
-   "doorbell": 11,
+   "doorbell": 18,
    "porch": 19,
    "entry": 23
   },
@@ -231,26 +231,32 @@
    "two_camera_corroboration": 1
   },
   "ledger": {
-   "root": "sha256:dd4eb7c9ad2c470dfd2967edf61147b7426372b10e0b31af49bd124e142fca82",
-   "sequence": 191
+   "root": "sha256:e4f8e273c26c64867d11acc696df22306da1ba92a465ba3170196f6866014cee",
+   "sequence": 27
   },
   "alert": {
    "stage": "dispatched",
+   "outcome": "ok",
+   "error": null,
+   "effect_state": "adapter_accepted",
+   "dispatch_requests_received": 1,
+   "retry_requests_received": 0,
    "requests_received": 1,
+   "retry_outcome": "ok",
    "resend_on_retry": false,
-   "reconciled_state": "verified"
+   "reconciled_state": "verified",
+   "attestation_source": "evidence_script_loopback_receipt"
   },
   "agent_calls": {
-   "refused": 6,
-   "ok": 16,
+   "ok": 23,
    "partial": 2,
-   "error": 2
+   "refused": 2
   },
   "seconds": 2051.8
  },
  "fss": {
   "version": "fss 0.0.1",
-  "repository_commit": "eae7b6ecc3cd4c9e988a1ea416fc1f41c6ed8cf1",
+  "repository_commit": "42253da281f89287e4fe9b96b86f6663360a6f21",
   "crates_commit": "df0758ae213404382920de1338eeab46e7d5e088",
   "build": "release",
   "qualification": "unqualified reference implementation",
@@ -1717,12 +1723,6 @@
     "seconds": 3.65
    },
    {
-    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:c721e95c4e0733ae757515355f3ae9dbbab3da12dbd055a4def9f63d6c2cc91f --interpretation ycbcr --zone view:0,65,960,895 --first-segment 384 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
-    "exit": 1,
-    "seconds": 2.02,
-    "refusal": "ERR-WATCH-LIMIT-001"
-   },
-   {
     "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:c721e95c4e0733ae757515355f3ae9dbbab3da12dbd055a4def9f63d6c2cc91f --interpretation ycbcr --zone view:0,65,960,895 --first-segment 480 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
     "exit": 0,
     "seconds": 4.27
@@ -1946,6 +1946,662 @@
     "command": "fss status --json --root deployment",
     "exit": 0,
     "seconds": 3.98
+   },
+   {
+    "command": "fss-file import --root deployment --site site:watch-intrusion --input gate.mp4 --sensor sensor:gate --stream stream:intrusion-gate --media-format auto --receive-time-ns 1794640502000000000 --capture-start-ns 1794640440000000000 --capture-uncertainty-ns 1000000 --assumed-fps 12",
+    "exit": 0,
+    "seconds": 14.72
+   },
+   {
+    "command": "fss-event privacy-mask declare --root deployment --site site:watch-intrusion --sensor sensor:gate --resolution 1280x720 --rect 6,6,272,65 --rect 0,0,1280,246",
+    "exit": 0,
+    "seconds": 0.06
+   },
+   {
+    "command": "fss-event privacy-mask declare --root deployment --site site:watch-intrusion --sensor sensor:gate --resolution 1280x720 --rect 6,6,272,65 --rect 0,0,1280,246 --approve sha256:3ae584aa69d5691b0e59fd50b5c35660a629f254f17b661b0d31fe5863e2063b",
+    "exit": 0,
+    "seconds": 0.08
+   },
+   {
+    "command": "fss-file import --root deployment --site site:watch-intrusion --input driveway.mp4 --sensor sensor:driveway --stream stream:intrusion-driveway --media-format auto --receive-time-ns 1794640502000000000 --capture-start-ns 1794640440000000000 --capture-uncertainty-ns 1000000 --assumed-fps 12",
+    "exit": 0,
+    "seconds": 17.75
+   },
+   {
+    "command": "fss-event privacy-mask declare --root deployment --site site:watch-intrusion --sensor sensor:driveway --resolution 1280x720 --rect 1000,6,274,37 --rect 0,0,1280,315",
+    "exit": 0,
+    "seconds": 0.06
+   },
+   {
+    "command": "fss-event privacy-mask declare --root deployment --site site:watch-intrusion --sensor sensor:driveway --resolution 1280x720 --rect 1000,6,274,37 --rect 0,0,1280,315 --approve sha256:dd45024b7a449f1aeb3bed938f26570a4e9d730ec2924a8de57b276b68ba9396",
+    "exit": 0,
+    "seconds": 0.09
+   },
+   {
+    "command": "fss-file import --root deployment --site site:watch-intrusion --input doorbell.mp4 --sensor sensor:doorbell --stream stream:intrusion-doorbell --media-format auto --receive-time-ns 1794640502000000000 --capture-start-ns 1794640440000000000 --capture-uncertainty-ns 1000000 --assumed-fps 12",
+    "exit": 0,
+    "seconds": 14.34
+   },
+   {
+    "command": "fss-event privacy-mask declare --root deployment --site site:watch-intrusion --sensor sensor:doorbell --resolution 960x960 --rect 6,6,128,59",
+    "exit": 0,
+    "seconds": 0.12
+   },
+   {
+    "command": "fss-event privacy-mask declare --root deployment --site site:watch-intrusion --sensor sensor:doorbell --resolution 960x960 --rect 6,6,128,59 --approve sha256:ae6dcf8f1c4abf2c2a45a188f1c3fafed1926296d024bf69b61200bc1626eb11",
+    "exit": 0,
+    "seconds": 0.14
+   },
+   {
+    "command": "fss-file import --root deployment --site site:watch-intrusion --input porch.mp4 --sensor sensor:porch --stream stream:intrusion-porch --media-format auto --receive-time-ns 1794640502000000000 --capture-start-ns 1794640440000000000 --capture-uncertainty-ns 1000000 --assumed-fps 12",
+    "exit": 0,
+    "seconds": 15.55
+   },
+   {
+    "command": "fss-event privacy-mask declare --root deployment --site site:watch-intrusion --sensor sensor:porch --resolution 1280x720 --rect 6,6,260,61 --rect 0,0,1280,206",
+    "exit": 0,
+    "seconds": 0.38
+   },
+   {
+    "command": "fss-event privacy-mask declare --root deployment --site site:watch-intrusion --sensor sensor:porch --resolution 1280x720 --rect 6,6,260,61 --rect 0,0,1280,206 --approve sha256:bedc30b977a67ec32ef60ddc9860044899f13cf09c8620c2d9a6d6cc8ca14623",
+    "exit": 0,
+    "seconds": 0.18
+   },
+   {
+    "command": "fss-file import --root deployment --site site:watch-intrusion --input entry.mp4 --sensor sensor:entry --stream stream:intrusion-entry --media-format auto --receive-time-ns 1794640502000000000 --capture-start-ns 1794640440000000000 --capture-uncertainty-ns 1000000 --assumed-fps 12",
+    "exit": 0,
+    "seconds": 15.31
+   },
+   {
+    "command": "fss-event privacy-mask declare --root deployment --site site:watch-intrusion --sensor sensor:entry --resolution 1280x720 --rect 975,6,299,35 --rect 0,0,1280,309",
+    "exit": 0,
+    "seconds": 0.5
+   },
+   {
+    "command": "fss-event privacy-mask declare --root deployment --site site:watch-intrusion --sensor sensor:entry --resolution 1280x720 --rect 975,6,299,35 --rect 0,0,1280,309 --approve sha256:627d7e43223e102fcb300fd53f0412cadd76ae8e7e34dd19b619d939eebc8303",
+    "exit": 0,
+    "seconds": 0.26
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --stream-watch --import-id sha256:1bf9851093fbc0d2d1d8c57a20b580f9aac7537dd04ab32911a41acdd2eee538 --interpretation ycbcr --zone view:0,246,1280,474 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --detector-package model.fmpk --detector-digest sha256:5b6568750faa375de3742e5eb310fbd4e22ff26e1ba727f193b79ab984a68c74 --detector-max-inferences 32 --detector-frames-per-track 1 --stream-pixel-budget 2147483648",
+    "exit": 0,
+    "seconds": 12.53
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --stream-watch --import-id sha256:1bf9851093fbc0d2d1d8c57a20b580f9aac7537dd04ab32911a41acdd2eee538 --interpretation ycbcr --zone view:0,246,1280,474 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --detector-package model.fmpk --detector-digest sha256:5b6568750faa375de3742e5eb310fbd4e22ff26e1ba727f193b79ab984a68c74 --detector-max-inferences 32 --detector-frames-per-track 1 --stream-pixel-budget 2147483648 --approve sha256:78401624445b3ae314faef3b75b761da6953b17961806941a85742217bc8e025",
+    "exit": 0,
+    "seconds": 13.93
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --stream-watch --import-id sha256:1bf9851093fbc0d2d1d8c57a20b580f9aac7537dd04ab32911a41acdd2eee538 --interpretation ycbcr --zone view:0,246,1280,474 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --detector-package model.fmpk --detector-digest sha256:5b6568750faa375de3742e5eb310fbd4e22ff26e1ba727f193b79ab984a68c74 --detector-max-inferences 32 --detector-frames-per-track 1 --stream-pixel-budget 2147483648 --approve sha256:78401624445b3ae314faef3b75b761da6953b17961806941a85742217bc8e025",
+    "exit": 0,
+    "seconds": 13.49
+   },
+   {
+    "command": "fss-event corroborate --root deployment --site site:watch-intrusion --stream-corroborate --interpretation ycbcr --time-gate-ns 500000000 --distance-gate 1.5 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --camera entry:sha256:eecc9eeba2e641671f0e6a5875ea1919ba0e8fb7fbe59b3dc17686b066bfac8f --ground entry:0.0013379825489223353,-0.0016268133325180456,-0.2206740201941046,0.00021288559262540202,0.00804368151612856,-3.490595538110106,5.549845449074941e-21,0.0005742074709624001,-0.16867125316634737 --camera porch:sha256:7eb7c0716889241070cdae33babbb67daaa6e2548f5bfcf22589800fc74935be --ground porch:-0.0016742567935479032,0.0010673314285775356,0.593055859308152,-0.0004579148416327796,0.0011814181785103058,1.0731999167564958,-7.537812159564053e-21,0.0005863725846213694,-0.11179581225680774 --zone g00:-6.0,6.0,2.0,2.0 --zone g01:-6.0,8.0,2.0,2.0 --zone g02:-4.0,4.0,2.0,2.0 --zone g03:-4.0,6.0,2.0,2.0 --zone g04:-4.0,8.0,2.0,2.0 --zone g05:-2.0,4.0,2.0,2.0 --zone g06:-2.0,6.0,2.0,2.0 --zone g07:-2.0,8.0,2.0,2.0 --zone g08:0.0,6.0,2.0,2.0 --zone g09:0.0,8.0,2.0,2.0 --zone g10:2.0,6.0,2.0,2.0",
+    "exit": 0,
+    "seconds": 11.87
+   },
+   {
+    "command": "fss-event corroborate --root deployment --site site:watch-intrusion --stream-corroborate --interpretation ycbcr --time-gate-ns 500000000 --distance-gate 1.5 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --camera entry:sha256:eecc9eeba2e641671f0e6a5875ea1919ba0e8fb7fbe59b3dc17686b066bfac8f --ground entry:0.0013379825489223353,-0.0016268133325180456,-0.2206740201941046,0.00021288559262540202,0.00804368151612856,-3.490595538110106,5.549845449074941e-21,0.0005742074709624001,-0.16867125316634737 --camera porch:sha256:7eb7c0716889241070cdae33babbb67daaa6e2548f5bfcf22589800fc74935be --ground porch:-0.0016742567935479032,0.0010673314285775356,0.593055859308152,-0.0004579148416327796,0.0011814181785103058,1.0731999167564958,-7.537812159564053e-21,0.0005863725846213694,-0.11179581225680774 --zone g00:-6.0,6.0,2.0,2.0 --zone g01:-6.0,8.0,2.0,2.0 --zone g02:-4.0,4.0,2.0,2.0 --zone g03:-4.0,6.0,2.0,2.0 --zone g04:-4.0,8.0,2.0,2.0 --zone g05:-2.0,4.0,2.0,2.0 --zone g06:-2.0,6.0,2.0,2.0 --zone g07:-2.0,8.0,2.0,2.0 --zone g08:0.0,6.0,2.0,2.0 --zone g09:0.0,8.0,2.0,2.0 --zone g10:2.0,6.0,2.0,2.0 --approve sha256:21b26f1d8c3b7c0a4524ec21be0b340e1b1de8f11383a45afe33ddfcae4908a9",
+    "exit": 0,
+    "seconds": 12.48
+   },
+   {
+    "command": "fss-custody audit --root deployment --site site:watch-intrusion --event-id event:long-watch:040d315bcb54ce9f9fb973cfcb0d4cb5a46bf343e85fba772e8b61414019f359",
+    "exit": 0,
+    "seconds": 0.59
+   },
+   {
+    "command": "fss-custody audit --root deployment --site site:watch-intrusion --event-id event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730",
+    "exit": 0,
+    "seconds": 0.51
+   },
+   {
+    "command": "fss session open --json --root deployment --mission-text Watch the property overnight and tell the owner when a person is on the grounds. --objective Corroborate across cameras before alerting. Preserve uncertainty. Take no physical action without the owner's approval. --view pulse",
+    "exit": 0,
+    "seconds": 7.33
+   },
+   {
+    "command": "fss session open --json --root deployment --mission-text Watch the property overnight and tell the owner when a person is on the grounds. --objective Corroborate across cameras before alerting. Preserve uncertainty. Take no physical action without the owner's approval. --view brief",
+    "exit": 0,
+    "seconds": 7.88
+   },
+   {
+    "command": "fss session orient --json --root deployment --session session:0c3d83c7fbcf7c2e9634efc5647eb3f2 --view pulse",
+    "exit": 0,
+    "seconds": 5.03
+   },
+   {
+    "command": "fss session orient --json --root deployment --session session:0c3d83c7fbcf7c2e9634efc5647eb3f2 --view brief",
+    "exit": 0,
+    "seconds": 5.04
+   },
+   {
+    "command": "fss session orient --json --root deployment --session session:0c3d83c7fbcf7c2e9634efc5647eb3f2 --view epistemic_map",
+    "exit": 0,
+    "seconds": 4.95
+   },
+   {
+    "command": "fss query --json --root deployment --target events",
+    "exit": 0,
+    "seconds": 2.1
+   },
+   {
+    "command": "fss query --json --root deployment --target footage",
+    "exit": 0,
+    "seconds": 2.83
+   },
+   {
+    "command": "fss explain --json --root deployment --event-id event:long-watch:040d315bcb54ce9f9fb973cfcb0d4cb5a46bf343e85fba772e8b61414019f359 --view decision_diff",
+    "exit": 0,
+    "seconds": 2.09
+   },
+   {
+    "command": "fss explain --json --root deployment --event-id event:long-watch:040d315bcb54ce9f9fb973cfcb0d4cb5a46bf343e85fba772e8b61414019f359 --view forensic",
+    "exit": 0,
+    "seconds": 2.11
+   },
+   {
+    "command": "fss plan --json --root deployment --session session:0c3d83c7fbcf7c2e9634efc5647eb3f2 --intent alert --event-id event:long-watch:040d315bcb54ce9f9fb973cfcb0d4cb5a46bf343e85fba772e8b61414019f359 --relay 127.0.0.1:59013 --path /fss/alert --plaintext-approval sha256:35f3f0b35b593db8077b46687410a4720211a52b4bac19fe72c6e326c041b139 --deadline-ms 5000",
+    "exit": 5,
+    "seconds": 9.57
+   },
+   {
+    "command": "fss explain --json --root deployment --event-id event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730 --view decision_diff",
+    "exit": 0,
+    "seconds": 2.1
+   },
+   {
+    "command": "fss explain --json --root deployment --event-id event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730 --view forensic --custody yes",
+    "exit": 0,
+    "seconds": 4.2
+   },
+   {
+    "command": "fss plan --json --root deployment --session session:0c3d83c7fbcf7c2e9634efc5647eb3f2 --intent alert --event-id event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730 --relay 127.0.0.1:59013 --path /fss/alert --plaintext-approval sha256:35f3f0b35b593db8077b46687410a4720211a52b4bac19fe72c6e326c041b139 --deadline-ms 5000",
+    "exit": 0,
+    "seconds": 9.79
+   },
+   {
+    "command": "fss plan --json --root deployment --session session:0c3d83c7fbcf7c2e9634efc5647eb3f2 --intent alert --event-id event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730 --relay 127.0.0.1:59013 --path /fss/alert --plaintext-approval sha256:35f3f0b35b593db8077b46687410a4720211a52b4bac19fe72c6e326c041b139 --deadline-ms 5000 --approve sha256:148143c4796b6c3d48114a0ae3092a540e3618e8963be2df56720598110c7f4c",
+    "exit": 0,
+    "seconds": 9.09
+   },
+   {
+    "command": "fss commit --json --root deployment --plan plan:976dd46e4bb7f19f2373f3997c4f22c7 --approve sha256:0d3e623b5c7c84c0e816fbdac96b3f385aa62c7bd5165f9ddbe675b2e63f3ede",
+    "exit": 0,
+    "seconds": 12.72
+   },
+   {
+    "command": "fss commit --json --root deployment --plan plan:976dd46e4bb7f19f2373f3997c4f22c7 --approve sha256:0d3e623b5c7c84c0e816fbdac96b3f385aa62c7bd5165f9ddbe675b2e63f3ede",
+    "exit": 0,
+    "seconds": 9.77
+   },
+   {
+    "command": "fss wait --json --root deployment --operation operation:alert:820af43f650bf465cdc902415e6fb092033910fbc3c01dab9e240c6e380be38f --deadline-ms 150",
+    "exit": 0,
+    "seconds": 4.24
+   },
+   {
+    "command": "fss plan --json --root deployment --session session:0c3d83c7fbcf7c2e9634efc5647eb3f2 --close plan:976dd46e4bb7f19f2373f3997c4f22c7",
+    "exit": 5,
+    "seconds": 11.77
+   },
+   {
+    "command": "fss commit --json --root deployment --reconcile delivered --operation operation:alert:820af43f650bf465cdc902415e6fb092033910fbc3c01dab9e240c6e380be38f --evidence sha256:e89d1f7e35862743b3e716aa852b5a6241c44c3f247b2df061453373e40c0a9d --statement The loopback relay run by the evidence script holds this request. No person was notified.",
+    "exit": 0,
+    "seconds": 5.98
+   },
+   {
+    "command": "fss commit --json --root deployment --reconcile delivered --operation operation:alert:820af43f650bf465cdc902415e6fb092033910fbc3c01dab9e240c6e380be38f --evidence sha256:e89d1f7e35862743b3e716aa852b5a6241c44c3f247b2df061453373e40c0a9d --statement The loopback relay run by the evidence script holds this request. No person was notified. --approve sha256:6b627e4c818df60b4b0313076d4e56bb43c80e3e94bbbff0b0fd097d785c40d6",
+    "exit": 0,
+    "seconds": 6.17
+   },
+   {
+    "command": "fss plan --json --root deployment --session session:0c3d83c7fbcf7c2e9634efc5647eb3f2 --close plan:976dd46e4bb7f19f2373f3997c4f22c7",
+    "exit": 0,
+    "seconds": 11.38
+   },
+   {
+    "command": "fss handoff --json --root deployment --session session:0c3d83c7fbcf7c2e9634efc5647eb3f2 --note Night review of the intrusion take. Alert commands target only the script's loopback relay.",
+    "exit": 0,
+    "seconds": 8.23
+   },
+   {
+    "command": "fss session resume --json --root deployment --handoff handoff:5059241fcabdec77c818a9a56c4a4361",
+    "exit": 0,
+    "seconds": 5.95
+   },
+   {
+    "command": "fss session orient --json --root deployment --session session:0c3d83c7fbcf7c2e9634efc5647eb3f2 --view brief",
+    "exit": 0,
+    "seconds": 5.17
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:1bf9851093fbc0d2d1d8c57a20b580f9aac7537dd04ab32911a41acdd2eee538 --interpretation ycbcr --zone view:0,246,1280,474 --first-segment 0 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
+    "exit": 0,
+    "seconds": 0.94
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:1bf9851093fbc0d2d1d8c57a20b580f9aac7537dd04ab32911a41acdd2eee538 --interpretation ycbcr --zone view:0,246,1280,474 --first-segment 0 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --retain-coverage sha256:2519e0ece65f943398fb5b710dd0789ea428c8a4301caff6188f5acb42e35bc2",
+    "exit": 0,
+    "seconds": 1.01
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:1bf9851093fbc0d2d1d8c57a20b580f9aac7537dd04ab32911a41acdd2eee538 --interpretation ycbcr --zone view:0,246,1280,474 --first-segment 96 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
+    "exit": 0,
+    "seconds": 1.1
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:1bf9851093fbc0d2d1d8c57a20b580f9aac7537dd04ab32911a41acdd2eee538 --interpretation ycbcr --zone view:0,246,1280,474 --first-segment 96 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --retain-coverage sha256:bdd81db460021cb5e8be6b79a6936cc49adb28becafa96a8a4d062e5ae50a541",
+    "exit": 0,
+    "seconds": 1.0
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:1bf9851093fbc0d2d1d8c57a20b580f9aac7537dd04ab32911a41acdd2eee538 --interpretation ycbcr --zone view:0,246,1280,474 --first-segment 192 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
+    "exit": 0,
+    "seconds": 1.08
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:1bf9851093fbc0d2d1d8c57a20b580f9aac7537dd04ab32911a41acdd2eee538 --interpretation ycbcr --zone view:0,246,1280,474 --first-segment 192 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --retain-coverage sha256:a3ea43600295dacb9b0ffb429cb4f01953ae0d5708fe03b9baf710936e99e41f",
+    "exit": 0,
+    "seconds": 0.98
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:1bf9851093fbc0d2d1d8c57a20b580f9aac7537dd04ab32911a41acdd2eee538 --interpretation ycbcr --zone view:0,246,1280,474 --first-segment 288 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
+    "exit": 0,
+    "seconds": 1.08
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:1bf9851093fbc0d2d1d8c57a20b580f9aac7537dd04ab32911a41acdd2eee538 --interpretation ycbcr --zone view:0,246,1280,474 --first-segment 288 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --retain-coverage sha256:cc96311890a8dc887eb27b0101c00d63de593c97cb3a03aea3309466075ca551",
+    "exit": 0,
+    "seconds": 0.97
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:1bf9851093fbc0d2d1d8c57a20b580f9aac7537dd04ab32911a41acdd2eee538 --interpretation ycbcr --zone view:0,246,1280,474 --first-segment 384 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
+    "exit": 0,
+    "seconds": 1.06
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:1bf9851093fbc0d2d1d8c57a20b580f9aac7537dd04ab32911a41acdd2eee538 --interpretation ycbcr --zone view:0,246,1280,474 --first-segment 384 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --retain-coverage sha256:9ec65ba43ad59a9e2c08bed0096bca92dae55be6af6f59061c6ec79addc40a07",
+    "exit": 0,
+    "seconds": 0.98
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:1bf9851093fbc0d2d1d8c57a20b580f9aac7537dd04ab32911a41acdd2eee538 --interpretation ycbcr --zone view:0,246,1280,474 --first-segment 480 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
+    "exit": 0,
+    "seconds": 1.06
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:1bf9851093fbc0d2d1d8c57a20b580f9aac7537dd04ab32911a41acdd2eee538 --interpretation ycbcr --zone view:0,246,1280,474 --first-segment 480 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --retain-coverage sha256:f58e4fdb3fe0bd2956e1436fd08a5e1bf979adf963e2a179c2d0c2949403f13e",
+    "exit": 0,
+    "seconds": 0.97
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:1bf9851093fbc0d2d1d8c57a20b580f9aac7537dd04ab32911a41acdd2eee538 --interpretation ycbcr --zone view:0,246,1280,474 --first-segment 576 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
+    "exit": 0,
+    "seconds": 1.15
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:1bf9851093fbc0d2d1d8c57a20b580f9aac7537dd04ab32911a41acdd2eee538 --interpretation ycbcr --zone view:0,246,1280,474 --first-segment 576 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --retain-coverage sha256:700b97173bf31a28380e03477e18ec2a3b7d86fcd4594ed41ed6d9deb364012d",
+    "exit": 0,
+    "seconds": 1.05
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:1bf9851093fbc0d2d1d8c57a20b580f9aac7537dd04ab32911a41acdd2eee538 --interpretation ycbcr --zone view:0,246,1280,474 --first-segment 672 --segment-count 60 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
+    "exit": 0,
+    "seconds": 0.9
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:1bf9851093fbc0d2d1d8c57a20b580f9aac7537dd04ab32911a41acdd2eee538 --interpretation ycbcr --zone view:0,246,1280,474 --first-segment 672 --segment-count 60 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --retain-coverage sha256:6b620b063df3bd555800bc63d001ff4690de997427d4bdd73e8c40c98d0a964a",
+    "exit": 0,
+    "seconds": 0.77
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:737e2663419a180d024d474d1d2e648324c4b2de394f79f9957a98612c6480d6 --interpretation ycbcr --zone view:0,315,1280,405 --first-segment 0 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
+    "exit": 0,
+    "seconds": 1.13
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:737e2663419a180d024d474d1d2e648324c4b2de394f79f9957a98612c6480d6 --interpretation ycbcr --zone view:0,315,1280,405 --first-segment 0 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --retain-coverage sha256:08027040bec57b9596bba50d9b8f646a0c87513c8fe15788f2c8a7e197b17743",
+    "exit": 0,
+    "seconds": 0.99
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:737e2663419a180d024d474d1d2e648324c4b2de394f79f9957a98612c6480d6 --interpretation ycbcr --zone view:0,315,1280,405 --first-segment 96 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
+    "exit": 0,
+    "seconds": 1.15
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:737e2663419a180d024d474d1d2e648324c4b2de394f79f9957a98612c6480d6 --interpretation ycbcr --zone view:0,315,1280,405 --first-segment 96 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --retain-coverage sha256:447b51b5918b8419d6bcd33db28c76b451feb55191720277aaa04cecc0d49d28",
+    "exit": 0,
+    "seconds": 1.05
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:737e2663419a180d024d474d1d2e648324c4b2de394f79f9957a98612c6480d6 --interpretation ycbcr --zone view:0,315,1280,405 --first-segment 192 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
+    "exit": 0,
+    "seconds": 1.15
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:737e2663419a180d024d474d1d2e648324c4b2de394f79f9957a98612c6480d6 --interpretation ycbcr --zone view:0,315,1280,405 --first-segment 192 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --retain-coverage sha256:4bae7ef1f8b51f40840fb09e2ed80f5f4ecde4131dc9c095df698c3d0ff9417d",
+    "exit": 0,
+    "seconds": 1.02
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:737e2663419a180d024d474d1d2e648324c4b2de394f79f9957a98612c6480d6 --interpretation ycbcr --zone view:0,315,1280,405 --first-segment 288 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
+    "exit": 0,
+    "seconds": 1.16
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:737e2663419a180d024d474d1d2e648324c4b2de394f79f9957a98612c6480d6 --interpretation ycbcr --zone view:0,315,1280,405 --first-segment 288 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --retain-coverage sha256:0833986fde17c967683f8b4c39e2d78fab6d853235320cb74d83427eadcb11f0",
+    "exit": 0,
+    "seconds": 1.08
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:737e2663419a180d024d474d1d2e648324c4b2de394f79f9957a98612c6480d6 --interpretation ycbcr --zone view:0,315,1280,405 --first-segment 384 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
+    "exit": 0,
+    "seconds": 1.26
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:737e2663419a180d024d474d1d2e648324c4b2de394f79f9957a98612c6480d6 --interpretation ycbcr --zone view:0,315,1280,405 --first-segment 384 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --retain-coverage sha256:344b3c4f61ecdfcd98a5ea8bbd376a8b6247b3dc19256057cbf33ae32d326e62",
+    "exit": 0,
+    "seconds": 1.09
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:737e2663419a180d024d474d1d2e648324c4b2de394f79f9957a98612c6480d6 --interpretation ycbcr --zone view:0,315,1280,405 --first-segment 480 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
+    "exit": 0,
+    "seconds": 1.24
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:737e2663419a180d024d474d1d2e648324c4b2de394f79f9957a98612c6480d6 --interpretation ycbcr --zone view:0,315,1280,405 --first-segment 480 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --retain-coverage sha256:797f3c64ff6e47bb73c15a1fea232de42b26a21725ede2cc8d438bc3b6f76e3f",
+    "exit": 0,
+    "seconds": 1.07
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:737e2663419a180d024d474d1d2e648324c4b2de394f79f9957a98612c6480d6 --interpretation ycbcr --zone view:0,315,1280,405 --first-segment 576 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
+    "exit": 0,
+    "seconds": 1.24
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:737e2663419a180d024d474d1d2e648324c4b2de394f79f9957a98612c6480d6 --interpretation ycbcr --zone view:0,315,1280,405 --first-segment 576 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --retain-coverage sha256:9baf713f6af2cce84cb99195c87a7e1f99add7e4709d7b0390f5251331f73350",
+    "exit": 0,
+    "seconds": 1.09
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:737e2663419a180d024d474d1d2e648324c4b2de394f79f9957a98612c6480d6 --interpretation ycbcr --zone view:0,315,1280,405 --first-segment 672 --segment-count 60 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
+    "exit": 0,
+    "seconds": 1.0
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:737e2663419a180d024d474d1d2e648324c4b2de394f79f9957a98612c6480d6 --interpretation ycbcr --zone view:0,315,1280,405 --first-segment 672 --segment-count 60 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --retain-coverage sha256:104303cb529b23b905569541e90006f54b8c21c15d42abac33a8a736bd764722",
+    "exit": 0,
+    "seconds": 0.84
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:c721e95c4e0733ae757515355f3ae9dbbab3da12dbd055a4def9f63d6c2cc91f --interpretation ycbcr --zone view:0,65,960,895 --first-segment 0 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
+    "exit": 0,
+    "seconds": 1.31
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:c721e95c4e0733ae757515355f3ae9dbbab3da12dbd055a4def9f63d6c2cc91f --interpretation ycbcr --zone view:0,65,960,895 --first-segment 0 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --retain-coverage sha256:719deac8b389f199d2c1a60be19d29bc3e18172e05d1de1a9a598067e0ae6a43",
+    "exit": 0,
+    "seconds": 1.23
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:c721e95c4e0733ae757515355f3ae9dbbab3da12dbd055a4def9f63d6c2cc91f --interpretation ycbcr --zone view:0,65,960,895 --first-segment 96 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
+    "exit": 0,
+    "seconds": 1.34
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:c721e95c4e0733ae757515355f3ae9dbbab3da12dbd055a4def9f63d6c2cc91f --interpretation ycbcr --zone view:0,65,960,895 --first-segment 96 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --retain-coverage sha256:f5ed249f49e3a68433fc81104260d0452ba7141447fab264d10c19f8905a8577",
+    "exit": 0,
+    "seconds": 1.17
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:c721e95c4e0733ae757515355f3ae9dbbab3da12dbd055a4def9f63d6c2cc91f --interpretation ycbcr --zone view:0,65,960,895 --first-segment 192 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
+    "exit": 0,
+    "seconds": 1.33
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:c721e95c4e0733ae757515355f3ae9dbbab3da12dbd055a4def9f63d6c2cc91f --interpretation ycbcr --zone view:0,65,960,895 --first-segment 192 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --retain-coverage sha256:349d201e6352648b2443c2aa0c4f2d714ee6159bb6c7784f09c095a6aab5120f",
+    "exit": 0,
+    "seconds": 1.18
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:c721e95c4e0733ae757515355f3ae9dbbab3da12dbd055a4def9f63d6c2cc91f --interpretation ycbcr --zone view:0,65,960,895 --first-segment 288 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
+    "exit": 0,
+    "seconds": 1.27
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:c721e95c4e0733ae757515355f3ae9dbbab3da12dbd055a4def9f63d6c2cc91f --interpretation ycbcr --zone view:0,65,960,895 --first-segment 288 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --retain-coverage sha256:7d73bf48dd7ea799f82ef02e103d9136c9ef57ba33a4f439ed052c691464940e",
+    "exit": 0,
+    "seconds": 1.23
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:c721e95c4e0733ae757515355f3ae9dbbab3da12dbd055a4def9f63d6c2cc91f --interpretation ycbcr --zone view:0,65,960,895 --first-segment 384 --segment-count 48 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
+    "exit": 0,
+    "seconds": 1.01
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:c721e95c4e0733ae757515355f3ae9dbbab3da12dbd055a4def9f63d6c2cc91f --interpretation ycbcr --zone view:0,65,960,895 --first-segment 384 --segment-count 48 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --retain-coverage sha256:c2140cb68d68d1f97125f2202d9e14499d2835767a6786e74acf2ec4ac710e2b",
+    "exit": 0,
+    "seconds": 0.95
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:c721e95c4e0733ae757515355f3ae9dbbab3da12dbd055a4def9f63d6c2cc91f --interpretation ycbcr --zone view:0,65,960,895 --first-segment 432 --segment-count 48 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
+    "exit": 1,
+    "seconds": 0.39,
+    "refusal": "ERR-WATCH-LIMIT-001"
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:c721e95c4e0733ae757515355f3ae9dbbab3da12dbd055a4def9f63d6c2cc91f --interpretation ycbcr --zone view:0,65,960,895 --first-segment 480 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
+    "exit": 0,
+    "seconds": 1.32
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:c721e95c4e0733ae757515355f3ae9dbbab3da12dbd055a4def9f63d6c2cc91f --interpretation ycbcr --zone view:0,65,960,895 --first-segment 480 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --retain-coverage sha256:a076f8ca579beb06be318841b0ac6e7fe0df1c0114d48469d6b484e88d3eb0c1",
+    "exit": 0,
+    "seconds": 1.22
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:c721e95c4e0733ae757515355f3ae9dbbab3da12dbd055a4def9f63d6c2cc91f --interpretation ycbcr --zone view:0,65,960,895 --first-segment 576 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
+    "exit": 0,
+    "seconds": 1.36
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:c721e95c4e0733ae757515355f3ae9dbbab3da12dbd055a4def9f63d6c2cc91f --interpretation ycbcr --zone view:0,65,960,895 --first-segment 576 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --retain-coverage sha256:77f4547151ef7ff6ea456c1f9f62624b21bb1811c68d5c06e2028f94d7e64dcc",
+    "exit": 0,
+    "seconds": 1.15
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:c721e95c4e0733ae757515355f3ae9dbbab3da12dbd055a4def9f63d6c2cc91f --interpretation ycbcr --zone view:0,65,960,895 --first-segment 672 --segment-count 60 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
+    "exit": 0,
+    "seconds": 1.03
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:c721e95c4e0733ae757515355f3ae9dbbab3da12dbd055a4def9f63d6c2cc91f --interpretation ycbcr --zone view:0,65,960,895 --first-segment 672 --segment-count 60 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --retain-coverage sha256:c010ab5bc25768c196b9bac8ac0c807e378fe89628aad3512b7a3740a7f3d358",
+    "exit": 0,
+    "seconds": 0.93
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:7eb7c0716889241070cdae33babbb67daaa6e2548f5bfcf22589800fc74935be --interpretation ycbcr --zone view:0,206,1280,514 --first-segment 0 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
+    "exit": 0,
+    "seconds": 1.36
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:7eb7c0716889241070cdae33babbb67daaa6e2548f5bfcf22589800fc74935be --interpretation ycbcr --zone view:0,206,1280,514 --first-segment 0 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --retain-coverage sha256:446c15e95bea9ad954c2321644e7a67f10907b31dd80e47dce6f7bf6a3fb267d",
+    "exit": 0,
+    "seconds": 1.22
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:7eb7c0716889241070cdae33babbb67daaa6e2548f5bfcf22589800fc74935be --interpretation ycbcr --zone view:0,206,1280,514 --first-segment 96 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
+    "exit": 0,
+    "seconds": 1.85
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:7eb7c0716889241070cdae33babbb67daaa6e2548f5bfcf22589800fc74935be --interpretation ycbcr --zone view:0,206,1280,514 --first-segment 96 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --retain-coverage sha256:50dd549886c006c0c9326d3f5d02560b540b3f54d4d623a6bc7855f3514375b1",
+    "exit": 0,
+    "seconds": 1.36
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:7eb7c0716889241070cdae33babbb67daaa6e2548f5bfcf22589800fc74935be --interpretation ycbcr --zone view:0,206,1280,514 --first-segment 192 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
+    "exit": 0,
+    "seconds": 1.41
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:7eb7c0716889241070cdae33babbb67daaa6e2548f5bfcf22589800fc74935be --interpretation ycbcr --zone view:0,206,1280,514 --first-segment 192 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --retain-coverage sha256:072801e68285cbc1988d8149e28dced021b72ce1cfe5b64413a243d12a40d498",
+    "exit": 0,
+    "seconds": 1.34
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:7eb7c0716889241070cdae33babbb67daaa6e2548f5bfcf22589800fc74935be --interpretation ycbcr --zone view:0,206,1280,514 --first-segment 288 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
+    "exit": 0,
+    "seconds": 1.73
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:7eb7c0716889241070cdae33babbb67daaa6e2548f5bfcf22589800fc74935be --interpretation ycbcr --zone view:0,206,1280,514 --first-segment 288 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --retain-coverage sha256:f87a1a757ac7e11c8d0d35cf80d5f40758df2f0f70876e448d83641c544d04a8",
+    "exit": 0,
+    "seconds": 1.25
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:7eb7c0716889241070cdae33babbb67daaa6e2548f5bfcf22589800fc74935be --interpretation ycbcr --zone view:0,206,1280,514 --first-segment 384 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
+    "exit": 0,
+    "seconds": 1.35
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:7eb7c0716889241070cdae33babbb67daaa6e2548f5bfcf22589800fc74935be --interpretation ycbcr --zone view:0,206,1280,514 --first-segment 384 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --retain-coverage sha256:5ac0e6fd52e9d9c3aca1330d23ea076c09e75259d498dbf4b275a2b24dfd6059",
+    "exit": 0,
+    "seconds": 1.21
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:7eb7c0716889241070cdae33babbb67daaa6e2548f5bfcf22589800fc74935be --interpretation ycbcr --zone view:0,206,1280,514 --first-segment 480 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
+    "exit": 0,
+    "seconds": 1.28
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:7eb7c0716889241070cdae33babbb67daaa6e2548f5bfcf22589800fc74935be --interpretation ycbcr --zone view:0,206,1280,514 --first-segment 480 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --retain-coverage sha256:73083d1f6d1bd07824f4c668786bc699242c9f39b591e7d87fe40fc4876d82f3",
+    "exit": 0,
+    "seconds": 1.12
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:7eb7c0716889241070cdae33babbb67daaa6e2548f5bfcf22589800fc74935be --interpretation ycbcr --zone view:0,206,1280,514 --first-segment 576 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
+    "exit": 0,
+    "seconds": 1.28
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:7eb7c0716889241070cdae33babbb67daaa6e2548f5bfcf22589800fc74935be --interpretation ycbcr --zone view:0,206,1280,514 --first-segment 576 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --retain-coverage sha256:ba79d4dce76d9fcfd2e89322f5216f624de25626cfe98cf1bb4a87da208ca674",
+    "exit": 0,
+    "seconds": 1.13
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:7eb7c0716889241070cdae33babbb67daaa6e2548f5bfcf22589800fc74935be --interpretation ycbcr --zone view:0,206,1280,514 --first-segment 672 --segment-count 60 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
+    "exit": 0,
+    "seconds": 1.07
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:7eb7c0716889241070cdae33babbb67daaa6e2548f5bfcf22589800fc74935be --interpretation ycbcr --zone view:0,206,1280,514 --first-segment 672 --segment-count 60 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --retain-coverage sha256:f09b5a753427344b5b32e18da3bcd0b234202a8a935371557d4c80050c8ecc39",
+    "exit": 0,
+    "seconds": 0.89
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:eecc9eeba2e641671f0e6a5875ea1919ba0e8fb7fbe59b3dc17686b066bfac8f --interpretation ycbcr --zone view:0,309,1280,411 --first-segment 0 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
+    "exit": 0,
+    "seconds": 1.29
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:eecc9eeba2e641671f0e6a5875ea1919ba0e8fb7fbe59b3dc17686b066bfac8f --interpretation ycbcr --zone view:0,309,1280,411 --first-segment 0 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --retain-coverage sha256:8ccfff1203651dd43ed43a2d59b833e3df3230eb22315f674f1ae963a0af84d0",
+    "exit": 0,
+    "seconds": 1.15
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:eecc9eeba2e641671f0e6a5875ea1919ba0e8fb7fbe59b3dc17686b066bfac8f --interpretation ycbcr --zone view:0,309,1280,411 --first-segment 96 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
+    "exit": 0,
+    "seconds": 1.43
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:eecc9eeba2e641671f0e6a5875ea1919ba0e8fb7fbe59b3dc17686b066bfac8f --interpretation ycbcr --zone view:0,309,1280,411 --first-segment 96 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --retain-coverage sha256:6e48dbf9e14cb9a7b69337d1d819cb08e9520a4a3574d59d5f6c90e7d47f5fbf",
+    "exit": 0,
+    "seconds": 1.17
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:eecc9eeba2e641671f0e6a5875ea1919ba0e8fb7fbe59b3dc17686b066bfac8f --interpretation ycbcr --zone view:0,309,1280,411 --first-segment 192 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
+    "exit": 0,
+    "seconds": 1.38
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:eecc9eeba2e641671f0e6a5875ea1919ba0e8fb7fbe59b3dc17686b066bfac8f --interpretation ycbcr --zone view:0,309,1280,411 --first-segment 192 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --retain-coverage sha256:d99bc8a46778dc34e71c012dd5699df769ab491f25cc593166797317f1185f73",
+    "exit": 0,
+    "seconds": 1.2
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:eecc9eeba2e641671f0e6a5875ea1919ba0e8fb7fbe59b3dc17686b066bfac8f --interpretation ycbcr --zone view:0,309,1280,411 --first-segment 288 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
+    "exit": 0,
+    "seconds": 1.36
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:eecc9eeba2e641671f0e6a5875ea1919ba0e8fb7fbe59b3dc17686b066bfac8f --interpretation ycbcr --zone view:0,309,1280,411 --first-segment 288 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --retain-coverage sha256:e66f05cc955ce85cba101511fe181b5381631fdb686119d3eb254525abb08b19",
+    "exit": 0,
+    "seconds": 1.19
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:eecc9eeba2e641671f0e6a5875ea1919ba0e8fb7fbe59b3dc17686b066bfac8f --interpretation ycbcr --zone view:0,309,1280,411 --first-segment 384 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
+    "exit": 0,
+    "seconds": 1.41
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:eecc9eeba2e641671f0e6a5875ea1919ba0e8fb7fbe59b3dc17686b066bfac8f --interpretation ycbcr --zone view:0,309,1280,411 --first-segment 384 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --retain-coverage sha256:a6eb5f890bb10ad26e53f30054987e17f01184b57cee4851ea6a1ba05d42e2e8",
+    "exit": 0,
+    "seconds": 1.24
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:eecc9eeba2e641671f0e6a5875ea1919ba0e8fb7fbe59b3dc17686b066bfac8f --interpretation ycbcr --zone view:0,309,1280,411 --first-segment 480 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
+    "exit": 0,
+    "seconds": 1.37
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:eecc9eeba2e641671f0e6a5875ea1919ba0e8fb7fbe59b3dc17686b066bfac8f --interpretation ycbcr --zone view:0,309,1280,411 --first-segment 480 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --retain-coverage sha256:36db9a85d1f7506ce74239f3d9123e0b8bd3bb2a59016462466d60364b89c25a",
+    "exit": 0,
+    "seconds": 1.21
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:eecc9eeba2e641671f0e6a5875ea1919ba0e8fb7fbe59b3dc17686b066bfac8f --interpretation ycbcr --zone view:0,309,1280,411 --first-segment 576 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
+    "exit": 0,
+    "seconds": 1.35
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:eecc9eeba2e641671f0e6a5875ea1919ba0e8fb7fbe59b3dc17686b066bfac8f --interpretation ycbcr --zone view:0,309,1280,411 --first-segment 576 --segment-count 96 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --retain-coverage sha256:81a4591ae2f62f85aec37ac9e837ce6145fedc822fa3dec0275a4aef67ae6b6c",
+    "exit": 0,
+    "seconds": 1.16
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:eecc9eeba2e641671f0e6a5875ea1919ba0e8fb7fbe59b3dc17686b066bfac8f --interpretation ycbcr --zone view:0,309,1280,411 --first-segment 672 --segment-count 60 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220",
+    "exit": 0,
+    "seconds": 1.12
+   },
+   {
+    "command": "fss-event watch --root deployment --site site:watch-intrusion --import-id sha256:eecc9eeba2e641671f0e6a5875ea1919ba0e8fb7fbe59b3dc17686b066bfac8f --interpretation ycbcr --zone view:0,309,1280,411 --first-segment 672 --segment-count 60 --pixel-threshold 18 --threshold-sigma 3 --min-region-pixels 220 --retain-coverage sha256:ccd8dec1fd5d6f7da0db8c6bb596078755a67e9e6d10259459ef97a179ea8fa6",
+    "exit": 0,
+    "seconds": 0.91
+   },
+   {
+    "command": "fss orient --json --root deployment --view pulse",
+    "exit": 0,
+    "seconds": 4.56
+   },
+   {
+    "command": "fss session orient --json --root deployment --session session:0c3d83c7fbcf7c2e9634efc5647eb3f2 --view brief",
+    "exit": 0,
+    "seconds": 12.22
+   },
+   {
+    "command": "fss orient --json --root deployment --view epistemic_map",
+    "exit": 0,
+    "seconds": 5.32
+   },
+   {
+    "command": "fss status --json --root deployment",
+    "exit": 0,
+    "seconds": 9.54
    }
   ]
  },
@@ -19361,14 +20017,14 @@
     "windows_retained": 8,
     "windows_failed": [],
     "reports": [
-     "native/objects/cc5d165ad870dbca5df17481a810de691dbd9865a1dc0b507c8e72d09c2c6647.json",
-     "native/objects/d9b3cd5f0547d89fd611dda31b926ec5963f547ccce427e31ffff879d956fc52.json",
-     "native/objects/49358fbfaedf68ab5964623e85672bdb74b0061db1934b1ce4c0358dc84ecc07.json",
-     "native/objects/5b3a4226580835a1829bb7167aad2553d5fa5c43ec884e752be6a26a5a601c29.json",
-     "native/objects/1bca48c15ab84e548c7d82aae14438390b4e040065bbebb1f64d51665911ffdb.json",
-     "native/objects/1965617fdd65aef88342bd4a957bf726002a8391288cfb92e6fb4f6cda5b89e0.json",
-     "native/objects/201e0e8aba37d1a2caf6b1f3bc8b53cb8fcdc8573bc976c355eeeee35e32d48e.json",
-     "native/objects/8012cdeff772d833d5643fe5bfe31dbf7a1adfdf1fe60491a5d102e9952126cd.json"
+     "native/objects/06c9c44e978a5d60125fece70ec4d58ef1d5992e275f7d6ebd1aaefb790225e0.json",
+     "native/objects/46777b2ff91b757864a4b4b3cd7781e7a4f197464b09d7052813f5fc2a5a8080.json",
+     "native/objects/20221f18597c36006a955aba2f8d1f767e34fb48efdc3c23249a8b6410734ee8.json",
+     "native/objects/b4ce38ce20b93fc23b56eee590d2c4545cdb81016ff25ce74353da99d80ae87a.json",
+     "native/objects/8a588df1021a7807d75ed81fa3a377df3fd8127a0daba5b23186e49f47d179b5.json",
+     "native/objects/b089babad2dd20b77d9e3f20495efdb52b10bed9be3f6150e9925d7b5fd8e7b0.json",
+     "native/objects/ab5ab2aa3ea280ebd73ba42547c754aab9cb8bc1ac91e69e706d41b6a774b862.json",
+     "native/objects/30c3dbec185f5f219e232283b7f4464fed775c8199cccb3e043d0bb9f522ae33.json"
     ],
     "witness_count": 36,
     "witnesses": [
@@ -19554,7 +20210,8 @@
      }
     ],
     "covered_seconds": 49.76,
-    "absence_certified": false,
+    "absence_certified_for_witness_domains": true,
+    "refusal": null,
     "note": "Intervals outside a witness are unobserved for this purpose: background warm-up at the start of each window, confirmation latency, and frames with a tracking gap."
    }
   },
@@ -45942,14 +46599,14 @@
     "windows_retained": 8,
     "windows_failed": [],
     "reports": [
-     "native/objects/f1bec05b40881264bdcccd3f4b39da369dde26b7faf96335b4600e03bd08f9bb.json",
-     "native/objects/831c5d388fc43e2c42299b55c39b8fadc1553f170e34f86e32c460d44c92a218.json",
-     "native/objects/8de2d14d6c0b70b5347dbba056a94b11bf2cf53463a1e12b3b9fb06813c42c6e.json",
-     "native/objects/371765e8bbd090f474e218cd8a7cba5c0a9b3059b381dbedfec03485a95a74b4.json",
-     "native/objects/7ecb4db2341d033fbac814f36b7690105557e875ce9cfb4b54142c09ee025d90.json",
-     "native/objects/334af9d513bf6b30f47e7e3f619bf17aa860fe02a5a9a46d3135bc995084f082.json",
-     "native/objects/3a226447f2275e6c2f1a3b90e597ef1891eff738dca8fcaad134012f55996e98.json",
-     "native/objects/1c4950209cb375855c860008fc134e924ddad77cad3d84c78439d4aebfc49ca9.json"
+     "native/objects/30854be1f06acb2bb4957a7a5d1f5efab70fbd270c8d4d3b537c2cedcf16044d.json",
+     "native/objects/3b0cd71b3e1aba58c596849ae4c884d3ac58f7a56c83190ebdc6362a0f8db6fb.json",
+     "native/objects/ae7f1a9bf9e42fcdb3c7b4def35d825516819e4912addcd799b8d52814bbce49.json",
+     "native/objects/acea64583667a406e0cc226182969ccb72ea1e80d5206f2f5224c780848d7226.json",
+     "native/objects/72aafa82cdcd451dd3a85f55b2c66ceaae389a90134956eeda4f3e3a2c27e415.json",
+     "native/objects/5de84a76de1978f3c791eb9a71e493213150bda33e982978244802c0483e1686.json",
+     "native/objects/af388104b09640366b8ad731bb9228105fb8a7eac8611860d5284302582d8407.json",
+     "native/objects/91e959b9589e8f597fd7256f68f0972c3b6cfeda163a2f7473ff528297092217.json"
     ],
     "witness_count": 12,
     "witnesses": [
@@ -46015,7 +46672,8 @@
      }
     ],
     "covered_seconds": 55.23,
-    "absence_certified": false,
+    "absence_certified_for_witness_domains": true,
+    "refusal": null,
     "note": "Intervals outside a witness are unobserved for this purpose: background warm-up at the start of each window, confirmation latency, and frames with a tracking gap."
    }
   },
@@ -77302,27 +77960,30 @@
      960,
      895
     ],
-    "windows": 8,
-    "windows_retained": 7,
+    "windows": 9,
+    "windows_retained": 8,
     "windows_failed": [
      {
-      "first_segment": 384,
-      "frames": 96,
+      "first_segment": 432,
+      "frames": 48,
       "outcome": "refused",
-      "reason": "ERR-CLI-RUNTIME-FAILURE-001: watch bound exceeded",
-      "refusal": "ERR-WATCH-LIMIT-001"
+      "reason": "ERR-CLI-RUNTIME-FAILURE-001: watch bound exceeded\nrefusal_id=ERR-WATCH-LIMIT-001\nDurable provenance/events are not rolled back by later failures; incomplete exports may remain.",
+      "refusal": "ERR-WATCH-LIMIT-001",
+      "intentional_safety_bound": true,
+      "bound_note": "Splitting 384..480 at real IDR keyframe 432 recovered 384..432 cleanly; the single atomic 48-frame IDR GOP 432..480 honestly hits MAX_WATCH_CANDIDATES=32 and refuses rather than silently dropping track candidates."
      }
     ],
     "reports": [
-     "native/objects/c495b6752eec9ffe5b83dcbeea2f9ced9dfee1904e59eb4f295486f7dbbe5c7b.json",
-     "native/objects/eef540692593de3b19a65551657f85e1e86494a12dad89dbd3557dbe7c2bd5c8.json",
-     "native/objects/757dc926b997e1dfc01abf94801cc39142faf3bf5f47d73a870261bdd848a92a.json",
-     "native/objects/2afe3292520aa8cf0eb5198f3f82fbb8fc3b6f144cc2df4d2148039315dddae0.json",
-     "native/objects/edd54ad9b4ca052108df5222c50c5c0e7ba7bc78d897a905c6ab77bfbc377656.json",
-     "native/objects/d50b4040b24f6b03e3c97ac6ff7af5ed4f78d1adf5f77f6e9cd30cd3c76b8f75.json",
-     "native/objects/834d3d9d2efc84cfc192ba6a9bbc0e9fb94c3deb0c89090ce1c6566585f52756.json"
+     "native/objects/6b68a847895b26146da3fe09709d8b74eeb1b9cdc7969c32e3499927c8a7fa7b.json",
+     "native/objects/57ffe361d96303d84fafaaa20ad2d715d50ce8aef26c40713a546d62ec15101d.json",
+     "native/objects/5a7168ef1dbd4353231527b799dd04cb62b5cc633b62f90e66eefe1e1b93d371.json",
+     "native/objects/a667d2f7b02a290db8e997436ca963de9bdd54345badb0f5a98eacaf83db93e5.json",
+     "native/objects/11b53541a491c114574e641d5641117a43ba91bb6fe708b392a8950f83f62c94.json",
+     "native/objects/5a68643e5b716beb8477a32924db9527d5908c6709c75a6e7d8d53d82a20437a.json",
+     "native/objects/23d914db7a59748cf6a51223a0943d4910df64ebe1fb335ae679fc3d2493a3d4.json",
+     "native/objects/12e2b84da7e9de201f906839587d399fb53f80d876d48e992be740e7b8cc2705.json"
     ],
-    "witness_count": 11,
+    "witness_count": 18,
     "witnesses": [
      {
       "t0": 0.334,
@@ -77360,6 +78021,41 @@
       "frames": 2
      },
      {
+      "t0": 32.668,
+      "t1": 32.832,
+      "frames": 3
+     },
+     {
+      "t0": 33.251,
+      "t1": 33.416,
+      "frames": 3
+     },
+     {
+      "t0": 33.584,
+      "t1": 33.666,
+      "frames": 2
+     },
+     {
+      "t0": 33.834,
+      "t1": 34.249,
+      "frames": 6
+     },
+     {
+      "t0": 34.418,
+      "t1": 34.832,
+      "frames": 6
+     },
+     {
+      "t0": 35.168,
+      "t1": 35.416,
+      "frames": 4
+     },
+     {
+      "t0": 35.668,
+      "t1": 35.749,
+      "frames": 2
+     },
+     {
       "t0": 40.418,
       "t1": 40.499,
       "frames": 2
@@ -77380,8 +78076,9 @@
       "frames": 54
      }
     ],
-    "covered_seconds": 47.98,
-    "absence_certified": false,
+    "covered_seconds": 49.55,
+    "absence_certified_for_witness_domains": true,
+    "refusal": null,
     "note": "Intervals outside a witness are unobserved for this purpose: background warm-up at the start of each window, confirmation latency, and frames with a tracking gap."
    }
   },
@@ -92113,14 +92810,14 @@
     "windows_retained": 8,
     "windows_failed": [],
     "reports": [
-     "native/objects/004ab4056f884f29f6688cc34a9d4434640638092923e7d06c3d9a064929f2df.json",
-     "native/objects/d233d27137738f738b4d2e1358e62554f0d4a38258fcbcba12fe32f6b8676347.json",
-     "native/objects/5547fcd25ee793f791d2d836d904cdc8af0f53bcb1522f21251ebf456a9f7438.json",
-     "native/objects/0a91a15781afd3860edbc954dc5b28719a7bc55c65e21893d3449e9ce0fff109.json",
-     "native/objects/643aeed8b51e0673851413a1bc4b159d2ba5e284c62b6765792830d4897305f7.json",
-     "native/objects/b514b0e31de2b6f15d81614bcb30927643aecca84239a45c4cf9ae3721961f10.json",
-     "native/objects/23d7f44e9a9387456fff3d82190d1f534cbdd2a223a4859d057a4c17d3bec749.json",
-     "native/objects/574e88e9745ed252d83d158ec301e5aaee4cd08f94ac03bddc588bdf4179f199.json"
+     "native/objects/04f24cb46ba611658d80580d65060a9767317f2c975d080fb57d2cf26b15f325.json",
+     "native/objects/0c5cabb427db4f696334864bf160b9ccb0916a8d0b43f78c0d332c4bfc107bef.json",
+     "native/objects/53b5a5416657b8347a60af2918d8513e0242cb639aee98394ac87f6f132da152.json",
+     "native/objects/a6198b6c86b3ae197d30e4bc4cf1af60a1ad49905b0197a82ae56fdf4666bf19.json",
+     "native/objects/f96abdf7bfce5f084e1cee8d9588560b9fc9da6f59b62c2b60c0eba306951835.json",
+     "native/objects/b4254de758c0295ad0892a8a69e2e8a1d81ee1a3c760827b5e5762cf69795ef3.json",
+     "native/objects/356a8fa152dd5690081caf10c772eaa427b8c0945357f94d74da9f28aa1476dc.json",
+     "native/objects/3973d8e6fcac2e33306636b2eadcc57bda939833be3dd263e32b590c810be527.json"
     ],
     "witness_count": 19,
     "witnesses": [
@@ -92221,7 +92918,8 @@
      }
     ],
     "covered_seconds": 53.3,
-    "absence_certified": false,
+    "absence_certified_for_witness_domains": true,
+    "refusal": null,
     "note": "Intervals outside a witness are unobserved for this purpose: background warm-up at the start of each window, confirmation latency, and frames with a tracking gap."
    }
   },
@@ -107555,14 +108253,14 @@
     "windows_retained": 8,
     "windows_failed": [],
     "reports": [
-     "native/objects/ab9107df5d9d1ff9134852fca7e1f7a6db469df1416ece3a16dc96c65e92f326.json",
-     "native/objects/d31140c3ddd76905ccea149a76767737be50520265f85013dae5a55bdb1b0cfd.json",
-     "native/objects/23978a34ddfcfbabf4b393f3441d1d087918d333a7e3f09ca91ed8732c6722d4.json",
-     "native/objects/f9a19779139107262b88414de364795d34f3a54a34f0ccf769cbe60f2aad63f4.json",
-     "native/objects/90607a0674c0167d8e94ce998053cb78048170ee2b684ffd8ce22c4452c1c3c6.json",
-     "native/objects/25c953d1cbbbef666940e6bf6bbee8ed8a9ee70f80277e6eb722b1f7f28ee9c8.json",
-     "native/objects/27c88d7cee36d3fddc00cf9fe889b9fe133a88104394f8bd23c6e8439a588322.json",
-     "native/objects/8f79672141c9bf319b469252ccfc7e55cadaf84a8f73ddb6dbeb2806aab7dd23.json"
+     "native/objects/832e772615cfc98e28704479d4639d9dc3e7319411774ed55ea9b189e59085b3.json",
+     "native/objects/d81869b77cc0ccda9e752b6dc2eff927266e9cadb433c38cdef0b64c44115175.json",
+     "native/objects/c30d7dd0cd6587388b2dcc9918b01295c2308616caf4093b5fc21f13b5c6f771.json",
+     "native/objects/3ad96439f5fbd9f503e04681b77e81a11d80542555f4b4992b9d55fd688c9179.json",
+     "native/objects/cc9d4eb90a93398af95a260a7b2aaf4efe36f70b415372d15c03145bc43dbe9a.json",
+     "native/objects/879db20832ddc06db10ab32d502af39d90f406311bdfa75bcfa40f209a894c3d.json",
+     "native/objects/97dd1b42cde778fdabfd2041222efcd285744e67e246f8bf237b2cc223c6c149.json",
+     "native/objects/c89ca215d24d7fea40f4f494304dade68e0d1ee69148df2faf83d412c95b1cd0.json"
     ],
     "witness_count": 23,
     "witnesses": [
@@ -107683,7 +108381,8 @@
      }
     ],
     "covered_seconds": 52.96,
-    "absence_certified": false,
+    "absence_certified_for_witness_domains": true,
+    "refusal": null,
     "note": "Intervals outside a witness are unobserved for this purpose: background warm-up at the start of each window, confirmation latency, and frames with a tracking gap."
    }
   }
@@ -110647,7 +111346,7 @@
  ],
  "events": [
   {
-   "id": "event:long-watch:4337ca46f03e4601f90b052c3812a4fcd6b6a89832ad0a95c7e5d9456ec37664",
+   "id": "event:long-watch:040d315bcb54ce9f9fb973cfcb0d4cb5a46bf343e85fba772e8b61414019f359",
    "kind": "single_camera_motion",
    "cameras": [
     "gate"
@@ -110658,16 +111357,16 @@
    "policy_action": "hold",
    "corroborated": false,
    "evidence_class": "observed",
-   "publication": "native/objects/d70e26725120ffb1712a6c78692addbdb7bf6edd2dc885b6ee5f49f1396f823f.json",
-   "authority_sequence": 187,
+   "publication": "native/objects/8ff4c59f59f9ff78f66caf9fd7c61315dcf194ea537549055414429e0ea9f9c1.json",
+   "authority_sequence": 23,
    "status": "published",
    "idempotent_retry": {
-    "report": "native/objects/d0acc682d8968da3105fdfadc264579ff783af59d3afe3438ada43747504923b.json",
+    "report": "native/objects/94314f8b3a70b2f215277d6773dd598b3b72a7e3e051a6eb480d680af5321d62.json",
     "status": "already_published"
    },
    "custody": {
     "outcome": "ok",
-    "report": "native/objects/3304c96ee5c5999006a3350878831125f34ca227a998ef891bc364e3cc5edae0.json",
+    "report": "native/objects/02de9f395958aed08783e0392b929de18226f4c7d277075fba6958cfa2a110de.json",
     "all_verified": true,
     "objects": 2,
     "states": [
@@ -110676,7 +111375,7 @@
    }
   },
   {
-   "id": "event:long-corroborated:ebf2a68d57c64d0a4cb074be79176d9a98f92e6114706b890ee237e8504927ee",
+   "id": "event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730",
    "kind": "two_camera_corroboration",
    "cameras": [
     "entry",
@@ -110697,12 +111396,12 @@
    "policy_action": "prepare_alert",
    "evidence_class": "corroborated",
    "declaration": "separate_devices",
-   "publication": "native/objects/baec57b5fba6e0e262adcf528e24ea5fc1c8d1e579b6aad2588875bf1fceb19f.json",
-   "authority_sequence": 191,
+   "publication": "native/objects/860cd1581a02ad46692245841d8d97ad949d02ff8e6a363fe98769fd4180123e.json",
+   "authority_sequence": 27,
    "status": "published",
    "custody": {
     "outcome": "ok",
-    "report": "native/objects/b32930d2ff97588cc7ef36eaa6244075831503f92ce7f74f36fe126507e69039.json",
+    "report": "native/objects/19b702cfb1948bf14c076b13df53dc72a794dfb5c602d1107debdf95d18d0a96.json",
     "all_verified": true,
     "objects": 2,
     "states": [
@@ -110934,23 +111633,27 @@
  "ledger": {
   "entries": [
    {
-    "seq": 187,
+    "seq": 23,
     "kind": "single_camera_motion",
-    "event_id": "event:long-watch:4337ca46f03e4601f90b052c3812a4fcd6b6a89832ad0a95c7e5d9456ec37664",
-    "digest": "sha256:527a5e665ed40af5906da986fc5eaf4fdd02e68ee2740e8d8e046acd4f89dcd5",
+    "event_id": "event:long-watch:040d315bcb54ce9f9fb973cfcb0d4cb5a46bf343e85fba772e8b61414019f359",
+    "digest": "sha256:77a382a30248d94bd37a03f2743d7b614eda076a5953c89534793dcaaff735be",
     "t": 9.5833
    },
    {
-    "seq": 191,
+    "seq": 27,
     "kind": "two_camera_corroboration",
-    "event_id": "event:long-corroborated:ebf2a68d57c64d0a4cb074be79176d9a98f92e6114706b890ee237e8504927ee",
-    "digest": "sha256:d32e7cf1f3d288ab895d605b8815f23285467ba1e2c2a245cc3431c1bbe94697",
+    "event_id": "event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730",
+    "digest": "sha256:57d4dc5d0a223f80a31fe9415ee2806872e5eb2e09ec3679c93f84956438271a",
     "t": 24.75
    }
   ],
-  "root": "sha256:dd4eb7c9ad2c470dfd2967edf61147b7426372b10e0b31af49bd124e142fca82",
-  "sequence": 191,
-  "status": "native/objects/0170d4adb8b8ca7c8ffa10f201c34616dc11996128d5294bfa842d9c6cdba075.json"
+  "root": "sha256:e4f8e273c26c64867d11acc696df22306da1ba92a465ba3170196f6866014cee",
+  "sequence": 27,
+  "status": "native/objects/6e4d080d1a848830e2b5c9b004711184495817c9a316baf70048bed99225e9c1.json",
+  "final": {
+   "sequence": 69,
+   "root": "sha256:64d9ac5d3cf410d03b619779294e8b2d7e89fc568169ea6b0b8d039e298f7932"
+  }
  },
  "agent": {
   "calls": [
@@ -110958,36 +111661,14 @@
     "call": "session.open pulse",
     "operation": "AOP-001",
     "view": "AVIEW-001",
-    "outcome": "refused",
-    "error": "ERR-AGENT-CONTEXT-INCOMPLETE-001",
-    "epistemic_state": "unknown",
-    "completeness": "partial",
-    "tokens": 0,
-    "target_tokens": null,
-    "knowledge_states": {},
-    "affordances": [],
-    "warnings": [],
-    "degradation": [
-     "the critical context of view pulse does not fit 300 tokens",
-     "Critical context is never truncated; open the session with --view brief or --view epistemic_map."
-    ],
-    "envelope": "native/objects/46190a6822016d96693b756e4c854275dba6fd7f891773d62ca168035685a220.json"
-   },
-   {
-    "call": "session.open brief",
-    "operation": "AOP-001",
-    "view": "AVIEW-002",
     "outcome": "ok",
     "error": null,
     "epistemic_state": "indeterminate",
     "completeness": "partial",
-    "tokens": 1515,
-    "target_tokens": 1600,
+    "tokens": 286,
+    "target_tokens": 300,
     "knowledge_states": {},
     "affordances": [
-     "affordance:explain:event:long-corroborated:ebf2a68d57c64d0a4cb074be79176d9a98f92e6114706b890ee237e8504927ee",
-     "affordance:orient:doctor",
-     "affordance:orient:follow",
      "affordance:orient:reorient"
     ],
     "warnings": [
@@ -110995,19 +111676,21 @@
     ],
     "degradation": [
      "The deployment doctor reports attention_required; only the committed prefix was read.",
-     "The critical context exceeds the brief target of 800 tokens; it was admitted at the registered maximum of 1600 tokens.",
+     "The pulse view lists only the re-orient heartbeat affordance; `--view brief` lists the complete affordance frontier.",
+     "The critical context exceeds the pulse target of 120 tokens; it was admitted at the registered maximum of 300 tokens.",
      "Latency and CPU time are not metered by this reference path; consumed reports reads and context tokens only.",
      "4 per-event worlds are aggregated into class worlds and 2 of 2 events are summarized; each event hydrates through its receipted handle.",
      "The session was opened at this anchor: meaningfulDelta is null and no change is claimed.",
-     "Session lease and handoff lifetimes use the admitted session clock: host Unix time for live commands, committed evidence time for explicit replay. This session expires at 1795735746567959442 ns."
+     "Session lease and handoff lifetimes use the admitted session clock: host Unix time for live commands, committed evidence time for explicit replay. This session expires at 1796111238945795000 ns."
     ],
+    "envelope": "native/objects/f4cc195269b3b0037da6154ada4cf37fa4437f536229ae99e7ce83f949b872c4.json",
     "situation": {
      "knowledge_cells": [
       {
        "id": "claim:deployment:ledger-head",
        "state": "known",
        "provenance": "derived",
-       "value": "The authority ledger holds 191 committed batches at commit 191 (ledger epoch 0); committed deltas: acquisition_transition=25, event_revision=2, file_import=10, file_import_manifest=5, local_root_reachability=90, package_detection_record=80,"
+       "value": "The authority ledger holds 27 committed batches at commit 27 (ledger epoch 0); committed deltas: acquisition_transition=25, event_revision=2, file_import=10, file_import_manifest=5, local_root_reachability=10, privacy_mask_policy=5, sensor_"
       },
       {
        "id": "claim:deployment:imports",
@@ -111037,12 +111720,159 @@
        "id": "claim:deployment:events",
        "state": "known",
        "provenance": "derived",
-       "value": "2 published events: 1 corroborated, 1 indeterminate; 1 corroborated; 0 with open sensor tamper; highest consequence: event:long-corroborated:ebf2a68d57c64d0a4cb074be79176d9a98f92e6114706b890ee237e8504927ee."
+       "value": "2 published events: 1 corroborated, 1 indeterminate; 1 corroborated; 0 with open sensor tamper; highest consequence: event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730."
       }
      ],
      "salient": [
       {
-       "id": "event:long-corroborated:ebf2a68d57c64d0a4cb074be79176d9a98f92e6114706b890ee237e8504927ee",
+       "id": "event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730",
+       "state": "known",
+       "summary": "Revision 1 in state corroborated; physical presence known; corroborated."
+      }
+     ],
+     "unknowns": [],
+     "not_observable": [
+      "site activity outside retained evidence"
+     ],
+     "coverage": {
+      "status": "uncertified",
+      "absence_claims_certified": false
+     },
+     "contradictions": 0,
+     "alternative_worlds": [],
+     "adversarial_residuals": [
+      "world:site:protected-worlds"
+     ],
+     "attention": [
+      {
+       "priority": "high",
+       "reason": "Highest-consequence published event: state corroborated, physical presence known, corroborated."
+      },
+      {
+       "priority": "high",
+       "reason": "No CoverageWitness is retained; absence cannot be certified."
+      }
+     ],
+     "epistemic_debt": [
+      {
+       "assumption": "Absence is never inferred: every interval without a CoverageWitness is treated as unobserved.",
+       "cheapest_test": "Retain a continuous CoverageWitness over the zone and re-orient."
+      },
+      {
+       "assumption": "Failure domains are independent only when their names differ.",
+       "cheapest_test": "Register each contributing sensor's failure domains."
+      }
+     ],
+     "obligations": 0,
+     "active_plans": [],
+     "indeterminate_effects": 0,
+     "control": {
+      "robust": [],
+      "conditional": [],
+      "information_gathering": [],
+      "wait": [
+       "affordance:orient:reorient"
+      ],
+      "blocked": [],
+      "invariants": [
+       "invariant:evidence-provenance-retained",
+       "invariant:no-alert-authority-from-model-output-alone",
+       "invariant:orient-is-read-only"
+      ]
+     },
+     "compression": {
+      "target_tokens": 300,
+      "actual_tokens": 286,
+      "omitted_classes": [
+       "event_detail",
+       "evidence_handle",
+       "knowledge",
+       "now",
+       "protected_world_detail",
+       "why"
+      ],
+      "critical": {
+       "knownCriticalItems": 5,
+       "omittedCriticalItems": 0,
+       "omittedInvalidations": 0,
+       "omittedContradictions": 0
+      },
+      "stop_reason": "target_budget"
+     }
+    }
+   },
+   {
+    "call": "session.open brief",
+    "operation": "AOP-001",
+    "view": "AVIEW-002",
+    "outcome": "ok",
+    "error": null,
+    "epistemic_state": "indeterminate",
+    "completeness": "partial",
+    "tokens": 1600,
+    "target_tokens": 1600,
+    "knowledge_states": {},
+    "affordances": [
+     "affordance:explain:event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730",
+     "affordance:orient:doctor",
+     "affordance:orient:follow",
+     "affordance:orient:plan",
+     "affordance:orient:reorient"
+    ],
+    "warnings": [
+     "1 published event is single-sensor and not corroborated; none grants alert or effect authority."
+    ],
+    "degradation": [
+     "The deployment doctor reports attention_required; only the committed prefix was read.",
+     "The critical context exceeds the brief target of 800 tokens; it was admitted at the registered maximum of 1600 tokens.",
+     "Latency and CPU time are not metered by this reference path; consumed reports reads and context tokens only.",
+     "4 per-event worlds are aggregated into class worlds and 2 of 2 events are summarized; each event hydrates through its receipted handle.",
+     "The session was opened at this anchor: meaningfulDelta is null and no change is claimed.",
+     "Session lease and handoff lifetimes use the admitted session clock: host Unix time for live commands, committed evidence time for explicit replay. This session expires at 1796111246200175000 ns."
+    ],
+    "envelope": "native/objects/85758d166fe08f463416ddf9d6f2a39ed44d7ddbc947e77a0023f8731537939c.json",
+    "situation": {
+     "knowledge_cells": [
+      {
+       "id": "claim:deployment:ledger-head",
+       "state": "known",
+       "provenance": "derived",
+       "value": "The authority ledger holds 27 committed batches at commit 27 (ledger epoch 0); committed deltas: acquisition_transition=25, event_revision=2, file_import=10, file_import_manifest=5, local_root_reachability=10, privacy_mask_policy=5, sensor_"
+      },
+      {
+       "id": "claim:deployment:imports",
+       "state": "known",
+       "provenance": "derived",
+       "value": "5 completed file imports are retained at this anchor."
+      },
+      {
+       "id": "claim:deployment:effect-journal",
+       "state": "known",
+       "provenance": "derived",
+       "value": "The durable effect journal holds 0 operations and 0 obligations (0 open)."
+      },
+      {
+       "id": "claim:coverage:site",
+       "state": "not_observable",
+       "provenance": "derived",
+       "value": "No CoverageWitness is retained: site activity is not observable, and a missing event is not absence."
+      },
+      {
+       "id": "claim:session:requested-mission",
+       "state": "known",
+       "provenance": "derived",
+       "value": "The retained mission record binds requested mission text sha256:70ada960dd09b8e495423449dc5ad7337165f03110e9db3cff5ceb55d8141e7b and objective text sha256:5f0bb13448a781be52384c95d2527232156889cbf50dcb752b6c270dd441062f."
+      },
+      {
+       "id": "claim:deployment:events",
+       "state": "known",
+       "provenance": "derived",
+       "value": "2 published events: 1 corroborated, 1 indeterminate; 1 corroborated; 0 with open sensor tamper; highest consequence: event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730."
+      }
+     ],
+     "salient": [
+      {
+       "id": "event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730",
        "state": "known",
        "summary": "Revision 1 in state corroborated; physical presence known; corroborated."
       }
@@ -111093,18 +111923,18 @@
      "indeterminate_effects": 0,
      "control": {
       "robust": [],
-      "conditional": [],
+      "conditional": [
+       "affordance:orient:plan"
+      ],
       "information_gathering": [
-       "affordance:explain:event:long-corroborated:ebf2a68d57c64d0a4cb074be79176d9a98f92e6114706b890ee237e8504927ee",
+       "affordance:explain:event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730",
        "affordance:orient:doctor"
       ],
       "wait": [
        "affordance:orient:follow",
        "affordance:orient:reorient"
       ],
-      "blocked": [
-       "affordance:orient:plan"
-      ],
+      "blocked": [],
       "invariants": [
        "invariant:evidence-provenance-retained",
        "invariant:no-alert-authority-from-model-output-alone",
@@ -111113,7 +111943,7 @@
      },
      "compression": {
       "target_tokens": 1600,
-      "actual_tokens": 1515,
+      "actual_tokens": 1600,
       "omitted_classes": [
        "event_detail",
        "evidence_handle",
@@ -111128,27 +111958,152 @@
       },
       "stop_reason": "target_budget"
      }
-    },
-    "envelope": "native/objects/e82a79a68d059f120688dcc6246a95133ebaa22275a844ee6e460a5930627ad5.json"
+    }
    },
    {
     "call": "session.orient pulse",
     "operation": "AOP-003",
     "view": "AVIEW-001",
-    "outcome": "refused",
-    "error": "ERR-AGENT-CONTEXT-INCOMPLETE-001",
-    "epistemic_state": "unknown",
+    "outcome": "ok",
+    "error": null,
+    "epistemic_state": "indeterminate",
     "completeness": "partial",
-    "tokens": 0,
-    "target_tokens": null,
+    "tokens": 286,
+    "target_tokens": 300,
     "knowledge_states": {},
-    "affordances": [],
-    "warnings": [],
-    "degradation": [
-     "the critical context of view pulse does not fit 300 tokens",
-     "Critical context is never truncated; open the session with --view brief or --view epistemic_map."
+    "affordances": [
+     "affordance:orient:reorient"
     ],
-    "envelope": "native/objects/96fc078501ddf620afe15b568f0ea9a71a08785de28d20f3acd3918c0d4d999d.json"
+    "warnings": [
+     "1 published event is single-sensor and not corroborated; none grants alert or effect authority."
+    ],
+    "degradation": [
+     "The deployment doctor reports attention_required; only the committed prefix was read.",
+     "The pulse view lists only the re-orient heartbeat affordance; `--view brief` lists the complete affordance frontier.",
+     "Latency and CPU time are not metered by this reference path; consumed reports reads and context tokens only.",
+     "4 per-event worlds are aggregated into class worlds and 2 of 2 events are summarized; each event hydrates through its receipted handle.",
+     "Current session projection after durable runtime clock admission; retained workspace, assumptions, grants and budgets are unchanged. No rebase or historical semantic delta is claimed.",
+     "Response budgets meter the deployment snapshot and compiled context. Session-journal replay, root-pin and publication-custody checks, and repeat verification reads are additional bounded work that is not fully metered or claimed to be free.",
+     "Session workspace snapshot: workspace revision 0 and its original anchor remain unchanged. Runtime clock admission is durably pinned; previousAnchor identifies the retained workspace and meaningfulDelta is null because historical session state was not reconstructed.",
+     "The session lease expires at admitted runtime time 1796111246200175000 ns; this read does not extend it or consume its durable token budget."
+    ],
+    "envelope": "native/objects/1c7c24db2b2052c5d16d9eb166feaf8f86cd060ea2c537deed32b2568c92a073.json",
+    "situation": {
+     "knowledge_cells": [
+      {
+       "id": "claim:deployment:ledger-head",
+       "state": "known",
+       "provenance": "derived",
+       "value": "The authority ledger holds 27 committed batches at commit 27 (ledger epoch 0); committed deltas: acquisition_transition=25, event_revision=2, file_import=10, file_import_manifest=5, local_root_reachability=10, privacy_mask_policy=5, sensor_"
+      },
+      {
+       "id": "claim:deployment:imports",
+       "state": "known",
+       "provenance": "derived",
+       "value": "5 completed file imports are retained at this anchor."
+      },
+      {
+       "id": "claim:deployment:effect-journal",
+       "state": "known",
+       "provenance": "derived",
+       "value": "The durable effect journal holds 0 operations and 0 obligations (0 open)."
+      },
+      {
+       "id": "claim:coverage:site",
+       "state": "not_observable",
+       "provenance": "derived",
+       "value": "No CoverageWitness is retained: site activity is not observable, and a missing event is not absence."
+      },
+      {
+       "id": "claim:session:requested-mission",
+       "state": "known",
+       "provenance": "derived",
+       "value": "The retained mission record binds requested mission text sha256:70ada960dd09b8e495423449dc5ad7337165f03110e9db3cff5ceb55d8141e7b and objective text sha256:5f0bb13448a781be52384c95d2527232156889cbf50dcb752b6c270dd441062f."
+      },
+      {
+       "id": "claim:deployment:events",
+       "state": "known",
+       "provenance": "derived",
+       "value": "2 published events: 1 corroborated, 1 indeterminate; 1 corroborated; 0 with open sensor tamper; highest consequence: event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730."
+      }
+     ],
+     "salient": [
+      {
+       "id": "event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730",
+       "state": "known",
+       "summary": "Revision 1 in state corroborated; physical presence known; corroborated."
+      }
+     ],
+     "unknowns": [],
+     "not_observable": [
+      "site activity outside retained evidence"
+     ],
+     "coverage": {
+      "status": "uncertified",
+      "absence_claims_certified": false
+     },
+     "contradictions": 0,
+     "alternative_worlds": [],
+     "adversarial_residuals": [
+      "world:site:protected-worlds"
+     ],
+     "attention": [
+      {
+       "priority": "high",
+       "reason": "Highest-consequence published event: state corroborated, physical presence known, corroborated."
+      },
+      {
+       "priority": "high",
+       "reason": "No CoverageWitness is retained; absence cannot be certified."
+      }
+     ],
+     "epistemic_debt": [
+      {
+       "assumption": "Absence is never inferred: every interval without a CoverageWitness is treated as unobserved.",
+       "cheapest_test": "Retain a continuous CoverageWitness over the zone and re-orient."
+      },
+      {
+       "assumption": "Failure domains are independent only when their names differ.",
+       "cheapest_test": "Register each contributing sensor's failure domains."
+      }
+     ],
+     "obligations": 0,
+     "active_plans": [],
+     "indeterminate_effects": 0,
+     "control": {
+      "robust": [],
+      "conditional": [],
+      "information_gathering": [],
+      "wait": [
+       "affordance:orient:reorient"
+      ],
+      "blocked": [],
+      "invariants": [
+       "invariant:evidence-provenance-retained",
+       "invariant:no-alert-authority-from-model-output-alone",
+       "invariant:orient-is-read-only"
+      ]
+     },
+     "compression": {
+      "target_tokens": 300,
+      "actual_tokens": 286,
+      "omitted_classes": [
+       "event_detail",
+       "evidence_handle",
+       "knowledge",
+       "now",
+       "protected_world_detail",
+       "why"
+      ],
+      "critical": {
+       "knownCriticalItems": 5,
+       "omittedCriticalItems": 0,
+       "omittedInvalidations": 0,
+       "omittedContradictions": 0
+      },
+      "stop_reason": "target_budget"
+     }
+    }
    },
    {
     "call": "session.orient brief",
@@ -111158,13 +112113,14 @@
     "error": null,
     "epistemic_state": "indeterminate",
     "completeness": "partial",
-    "tokens": 1515,
+    "tokens": 1600,
     "target_tokens": 1600,
     "knowledge_states": {},
     "affordances": [
-     "affordance:explain:event:long-corroborated:ebf2a68d57c64d0a4cb074be79176d9a98f92e6114706b890ee237e8504927ee",
+     "affordance:explain:event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730",
      "affordance:orient:doctor",
      "affordance:orient:follow",
+     "affordance:orient:plan",
      "affordance:orient:reorient"
     ],
     "warnings": [
@@ -111177,15 +112133,16 @@
      "Current session projection after durable runtime clock admission; retained workspace, assumptions, grants and budgets are unchanged. No rebase or historical semantic delta is claimed.",
      "Response budgets meter the deployment snapshot and compiled context. Session-journal replay, root-pin and publication-custody checks, and repeat verification reads are additional bounded work that is not fully metered or claimed to be free.",
      "Session workspace snapshot: workspace revision 0 and its original anchor remain unchanged. Runtime clock admission is durably pinned; previousAnchor identifies the retained workspace and meaningfulDelta is null because historical session state was not reconstructed.",
-     "The session lease expires at admitted runtime time 1795735746567959442 ns; this read does not extend it or consume its durable token budget."
+     "The session lease expires at admitted runtime time 1796111246200175000 ns; this read does not extend it or consume its durable token budget."
     ],
+    "envelope": "native/objects/27ee6cd3f9e295713742de438a976ded4aaa4b635469ae35bf40821ccca87fdc.json",
     "situation": {
      "knowledge_cells": [
       {
        "id": "claim:deployment:ledger-head",
        "state": "known",
        "provenance": "derived",
-       "value": "The authority ledger holds 191 committed batches at commit 191 (ledger epoch 0); committed deltas: acquisition_transition=25, event_revision=2, file_import=10, file_import_manifest=5, local_root_reachability=90, package_detection_record=80,"
+       "value": "The authority ledger holds 27 committed batches at commit 27 (ledger epoch 0); committed deltas: acquisition_transition=25, event_revision=2, file_import=10, file_import_manifest=5, local_root_reachability=10, privacy_mask_policy=5, sensor_"
       },
       {
        "id": "claim:deployment:imports",
@@ -111215,12 +112172,12 @@
        "id": "claim:deployment:events",
        "state": "known",
        "provenance": "derived",
-       "value": "2 published events: 1 corroborated, 1 indeterminate; 1 corroborated; 0 with open sensor tamper; highest consequence: event:long-corroborated:ebf2a68d57c64d0a4cb074be79176d9a98f92e6114706b890ee237e8504927ee."
+       "value": "2 published events: 1 corroborated, 1 indeterminate; 1 corroborated; 0 with open sensor tamper; highest consequence: event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730."
       }
      ],
      "salient": [
       {
-       "id": "event:long-corroborated:ebf2a68d57c64d0a4cb074be79176d9a98f92e6114706b890ee237e8504927ee",
+       "id": "event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730",
        "state": "known",
        "summary": "Revision 1 in state corroborated; physical presence known; corroborated."
       }
@@ -111271,18 +112228,18 @@
      "indeterminate_effects": 0,
      "control": {
       "robust": [],
-      "conditional": [],
+      "conditional": [
+       "affordance:orient:plan"
+      ],
       "information_gathering": [
-       "affordance:explain:event:long-corroborated:ebf2a68d57c64d0a4cb074be79176d9a98f92e6114706b890ee237e8504927ee",
+       "affordance:explain:event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730",
        "affordance:orient:doctor"
       ],
       "wait": [
        "affordance:orient:follow",
        "affordance:orient:reorient"
       ],
-      "blocked": [
-       "affordance:orient:plan"
-      ],
+      "blocked": [],
       "invariants": [
        "invariant:evidence-provenance-retained",
        "invariant:no-alert-authority-from-model-output-alone",
@@ -111291,7 +112248,7 @@
      },
      "compression": {
       "target_tokens": 1600,
-      "actual_tokens": 1515,
+      "actual_tokens": 1600,
       "omitted_classes": [
        "event_detail",
        "evidence_handle",
@@ -111306,8 +112263,7 @@
       },
       "stop_reason": "target_budget"
      }
-    },
-    "envelope": "native/objects/0345acb18aa123dd436caa39bc21e723897f0be6e216b1e170f0fac7571f3ac0.json"
+    }
    },
    {
     "call": "session.orient epistemic_map",
@@ -111317,14 +112273,15 @@
     "error": null,
     "epistemic_state": "indeterminate",
     "completeness": "partial",
-    "tokens": 1527,
+    "tokens": 1549,
     "target_tokens": 1600,
     "knowledge_states": {},
     "affordances": [
-     "affordance:explain:event:long-corroborated:ebf2a68d57c64d0a4cb074be79176d9a98f92e6114706b890ee237e8504927ee",
-     "affordance:explain:event:long-watch:4337ca46f03e4601f90b052c3812a4fcd6b6a89832ad0a95c7e5d9456ec37664",
+     "affordance:explain:event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730",
+     "affordance:explain:event:long-watch:040d315bcb54ce9f9fb973cfcb0d4cb5a46bf343e85fba772e8b61414019f359",
      "affordance:orient:doctor",
      "affordance:orient:follow",
+     "affordance:orient:plan",
      "affordance:orient:reorient"
     ],
     "warnings": [
@@ -111337,15 +112294,16 @@
      "Current session projection after durable runtime clock admission; retained workspace, assumptions, grants and budgets are unchanged. No rebase or historical semantic delta is claimed.",
      "Response budgets meter the deployment snapshot and compiled context. Session-journal replay, root-pin and publication-custody checks, and repeat verification reads are additional bounded work that is not fully metered or claimed to be free.",
      "Session workspace snapshot: workspace revision 0 and its original anchor remain unchanged. Runtime clock admission is durably pinned; previousAnchor identifies the retained workspace and meaningfulDelta is null because historical session state was not reconstructed.",
-     "The session lease expires at admitted runtime time 1795735746567959442 ns; this read does not extend it or consume its durable token budget."
+     "The session lease expires at admitted runtime time 1796111246200175000 ns; this read does not extend it or consume its durable token budget."
     ],
+    "envelope": "native/objects/ad2d17997ed90a9e0ee9e741d37c32184a9fb02df15a95598c8bd4b087a0aa41.json",
     "situation": {
      "knowledge_cells": [
       {
        "id": "claim:deployment:ledger-head",
        "state": "known",
        "provenance": "derived",
-       "value": "The authority ledger holds 191 committed batches at commit 191 (ledger epoch 0); committed deltas: acquisition_transition=25, event_revision=2, file_import=10, file_import_manifest=5, local_root_reachability=90, package_detection_record=80,"
+       "value": "The authority ledger holds 27 committed batches at commit 27 (ledger epoch 0); committed deltas: acquisition_transition=25, event_revision=2, file_import=10, file_import_manifest=5, local_root_reachability=10, privacy_mask_policy=5, sensor_"
       },
       {
        "id": "claim:deployment:imports",
@@ -111375,40 +112333,40 @@
        "id": "claim:deployment:events",
        "state": "known",
        "provenance": "derived",
-       "value": "2 published events: 1 corroborated, 1 indeterminate; 1 corroborated; 0 with open sensor tamper; highest consequence: event:long-corroborated:ebf2a68d57c64d0a4cb074be79176d9a98f92e6114706b890ee237e8504927ee."
+       "value": "2 published events: 1 corroborated, 1 indeterminate; 1 corroborated; 0 with open sensor tamper; highest consequence: event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730."
       },
       {
-       "id": "claim:event:event:long-corroborated:ebf2a68d57c64d0a4cb074be79176d9a98f92e6114706b890ee237e8504927ee:lifecycle",
+       "id": "claim:event:event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730:lifecycle",
        "state": "known",
        "provenance": "derived",
-       "value": "Event event:long-corroborated:ebf2a68d57c64d0a4cb074be79176d9a98f92e6114706b890ee237e8504927ee is published at revision 1 as kind unclassified in state corroborated (commit 191, zones [g04])."
+       "value": "Event event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730 is published at revision 1 as kind unclassified in state corroborated (commit 27, zones [g04])."
       },
       {
-       "id": "claim:event:event:long-corroborated:ebf2a68d57c64d0a4cb074be79176d9a98f92e6114706b890ee237e8504927ee:unknown-presence",
+       "id": "claim:event:event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730:unknown-presence",
        "state": "known",
        "provenance": "derived",
        "value": "Independent failure domains support unknown-person presence in the retained interval. (unclassified candidate.)"
       },
       {
-       "id": "claim:event:event:long-corroborated:ebf2a68d57c64d0a4cb074be79176d9a98f92e6114706b890ee237e8504927ee:corroboration",
+       "id": "claim:event:event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730:corroboration",
        "state": "known",
        "provenance": "derived",
        "value": "Independent corroboration across 3 failure domains is committed."
       },
       {
-       "id": "claim:event:event:long-watch:4337ca46f03e4601f90b052c3812a4fcd6b6a89832ad0a95c7e5d9456ec37664:lifecycle",
+       "id": "claim:event:event:long-watch:040d315bcb54ce9f9fb973cfcb0d4cb5a46bf343e85fba772e8b61414019f359:lifecycle",
        "state": "known",
        "provenance": "derived",
-       "value": "Event event:long-watch:4337ca46f03e4601f90b052c3812a4fcd6b6a89832ad0a95c7e5d9456ec37664 is published at revision 1 as kind unclassified in state indeterminate (commit 187, zones [view])."
+       "value": "Event event:long-watch:040d315bcb54ce9f9fb973cfcb0d4cb5a46bf343e85fba772e8b61414019f359 is published at revision 1 as kind unclassified in state indeterminate (commit 23, zones [view])."
       },
       {
-       "id": "claim:event:event:long-watch:4337ca46f03e4601f90b052c3812a4fcd6b6a89832ad0a95c7e5d9456ec37664:unknown-presence",
+       "id": "claim:event:event:long-watch:040d315bcb54ce9f9fb973cfcb0d4cb5a46bf343e85fba772e8b61414019f359:unknown-presence",
        "state": "indeterminate",
        "provenance": "derived",
        "value": "Unknown-person presence remains unresolved under retained supporting, contradictory, or degraded evidence. (unclassified candidate.)"
       },
       {
-       "id": "claim:event:event:long-watch:4337ca46f03e4601f90b052c3812a4fcd6b6a89832ad0a95c7e5d9456ec37664:corroboration",
+       "id": "claim:event:event:long-watch:040d315bcb54ce9f9fb973cfcb0d4cb5a46bf343e85fba772e8b61414019f359:corroboration",
        "state": "known",
        "provenance": "derived",
        "value": "Not corroborated: evidence names 1 failure domain ([recorded-sensor:2dcb314c9950b5a31433eac05a183a92843c84aff83935f2c7a2376cbba950de]); a single sensor cannot corroborate itself."
@@ -111416,12 +112374,12 @@
      ],
      "salient": [
       {
-       "id": "event:long-corroborated:ebf2a68d57c64d0a4cb074be79176d9a98f92e6114706b890ee237e8504927ee",
+       "id": "event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730",
        "state": "known",
        "summary": "Revision 1 in state corroborated; physical presence known; corroborated."
       },
       {
-       "id": "event:long-watch:4337ca46f03e4601f90b052c3812a4fcd6b6a89832ad0a95c7e5d9456ec37664",
+       "id": "event:long-watch:040d315bcb54ce9f9fb973cfcb0d4cb5a46bf343e85fba772e8b61414019f359",
        "state": "indeterminate",
        "summary": "Revision 1 in state indeterminate; physical presence indeterminate; not corroborated."
       }
@@ -111472,19 +112430,19 @@
      "indeterminate_effects": 0,
      "control": {
       "robust": [],
-      "conditional": [],
+      "conditional": [
+       "affordance:orient:plan"
+      ],
       "information_gathering": [
-       "affordance:explain:event:long-corroborated:ebf2a68d57c64d0a4cb074be79176d9a98f92e6114706b890ee237e8504927ee",
-       "affordance:explain:event:long-watch:4337ca46f03e4601f90b052c3812a4fcd6b6a89832ad0a95c7e5d9456ec37664",
+       "affordance:explain:event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730",
+       "affordance:explain:event:long-watch:040d315bcb54ce9f9fb973cfcb0d4cb5a46bf343e85fba772e8b61414019f359",
        "affordance:orient:doctor"
       ],
       "wait": [
        "affordance:orient:follow",
        "affordance:orient:reorient"
       ],
-      "blocked": [
-       "affordance:orient:plan"
-      ],
+      "blocked": [],
       "invariants": [
        "invariant:evidence-provenance-retained",
        "invariant:no-alert-authority-from-model-output-alone",
@@ -111493,7 +112451,7 @@
      },
      "compression": {
       "target_tokens": 1600,
-      "actual_tokens": 1527,
+      "actual_tokens": 1549,
       "omitted_classes": [
        "evidence_handle",
        "knowledge",
@@ -111507,8 +112465,7 @@
       },
       "stop_reason": "target_budget"
      }
-    },
-    "envelope": "native/objects/41e25ccd3d62d8e0cea722fb92a4becb62e01da32146b5653b52a4f49051227b.json"
+    }
    },
    {
     "call": "query events",
@@ -111518,7 +112475,7 @@
     "error": null,
     "epistemic_state": "unknown",
     "completeness": "bounded",
-    "tokens": 1510,
+    "tokens": 1591,
     "target_tokens": null,
     "knowledge_states": {
      "known": 8,
@@ -111526,7 +112483,7 @@
      "not_observable": 1
     },
     "affordances": [
-     "affordance:explain:event:long-corroborated:ebf2a68d57c64d0a4cb074be79176d9a98f92e6114706b890ee237e8504927ee",
+     "affordance:explain:event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730",
      "affordance:orient:doctor",
      "affordance:orient:follow",
      "affordance:orient:reorient"
@@ -111538,7 +112495,7 @@
     "degradation": [
      "Query CPU, output tokens and elapsed latency are not metered. The native latency allowance is not a measurement or enforced deadline."
     ],
-    "envelope": "native/objects/dfe186c5474daf41872251ba16f16e70351a67e517b275cfda0ba4b753f4b94b.json"
+    "envelope": "native/objects/2fb75c577e970dcbc43c60f01ee1f8268a172f5abc990f1ff72c8e70ffeb8154.json"
    },
    {
     "call": "query footage",
@@ -111548,7 +112505,7 @@
     "error": null,
     "epistemic_state": "unknown",
     "completeness": "bounded",
-    "tokens": 1517,
+    "tokens": 1599,
     "target_tokens": null,
     "knowledge_states": {
      "known": 22,
@@ -111568,29 +112525,38 @@
     "degradation": [
      "Query CPU, full output tokens and elapsed latency are not metered. The 60-second read deadline is cooperative at bounded checkpoints, not a preemptive filesystem timeout. Metadata I/O counts exclude filesystem and syscall overhead."
     ],
-    "envelope": "native/objects/dca1ea21762ecc0e1be4a84bbfe7531d344b267442db527dc68c959f57d612b1.json"
+    "envelope": "native/objects/7cf2b8bef6ff8bf00978b549ce1e96e0b9f69b83a40327847025f21214ed05bb.json"
    },
    {
     "call": "explain single-camera event",
     "operation": "AOP-011",
     "view": "AVIEW-007",
-    "outcome": "refused",
-    "error": "ERR-AGENT-CONTEXT-INCOMPLETE-001",
-    "epistemic_state": "unknown",
+    "outcome": "ok",
+    "error": null,
+    "epistemic_state": "indeterminate",
     "completeness": "partial",
-    "tokens": 1510,
+    "tokens": 1139,
     "target_tokens": null,
-    "knowledge_states": {},
-    "affordances": [],
+    "knowledge_states": {
+     "known": 5,
+     "indeterminate": 3,
+     "unknown": 1
+    },
+    "affordances": [
+     "affordance:explain:event:long-watch:040d315bcb54ce9f9fb973cfcb0d4cb5a46bf343e85fba772e8b61414019f359",
+     "affordance:orient:reorient"
+    ],
     "warnings": [
-     "The requested explanation was not returned; no event was changed or adjudicated, and no missing support was interpreted as absence."
+     "event:long-watch:040d315bcb54ce9f9fb973cfcb0d4cb5a46bf343e85fba772e8b61414019f359 is single-sensor and not corroborated; it grants no alert or effect authority.",
+     "Graph witnesses and explanation receipts are non-durable, recomputable read products. Their digests are derivation proof pointers, not newly retained objects or available hydration handles.",
+     "At least one support branch terminates at an unsupported event revision; a rooted alternative does not erase that uncertainty.",
+     "An explanation grants no effect authority; it binds the committed revision only."
     ],
     "degradation": [
-     "The complete support explanation exceeded its bounds or failed its input/witness contract. No dependencies, historical corrections or protected alternatives were truncated.",
-     "The reported consumed vector accounts for the existing snapshot orientation only; failed graph work is not reported as zero or as a completed witness.",
-     "For a larger complete explanation, explicitly request --view forensic --budget-tokens 8000 (maximum 16000). fss-evidence analyze-history also has separate operator-local limits; neither route widens privacy or effect authority."
+     "Latency and CPU time are not metered by this reference path; consumed reports reads, orientation context tokens and the separately priced support brief.",
+     "Support analysis consumed 57 of 2000000 shared graph operations and 15 of 65536 shared algorithm output entries across two ALG-DOM-001 runs. Catalogue: 2 revisions, 8 evidence edges, 2659 canonical bytes; brief: 1 of 256 identities. Compiler/brief work is separately cardinality-bounded, not included in the graph counters. Added semantic tokens use ceil(UTF-8 field bytes/4), not a model tokenizer or full JSON size."
     ],
-    "envelope": "native/objects/8743e2ae9c4f1d92a866c9d037e138f0663678abf6f266f1712bf1a2e5523170.json"
+    "envelope": "native/objects/e0b3eeb6c5eb0bcb48fcc29e88fd19233672cd3105d7658dfc5d3939d00018fa.json"
    },
    {
     "call": "explain single-camera event (forensic)",
@@ -111600,7 +112566,7 @@
     "error": null,
     "epistemic_state": "indeterminate",
     "completeness": "partial",
-    "tokens": 2327,
+    "tokens": 2461,
     "target_tokens": null,
     "knowledge_states": {
      "known": 5,
@@ -111608,19 +112574,20 @@
      "unknown": 1
     },
     "affordances": [
-     "affordance:explain:event:long-watch:4337ca46f03e4601f90b052c3812a4fcd6b6a89832ad0a95c7e5d9456ec37664",
+     "affordance:explain:event:long-watch:040d315bcb54ce9f9fb973cfcb0d4cb5a46bf343e85fba772e8b61414019f359",
      "affordance:orient:reorient"
     ],
     "warnings": [
-     "event:long-watch:4337ca46f03e4601f90b052c3812a4fcd6b6a89832ad0a95c7e5d9456ec37664 is single-sensor and not corroborated; it grants no alert or effect authority.",
+     "event:long-watch:040d315bcb54ce9f9fb973cfcb0d4cb5a46bf343e85fba772e8b61414019f359 is single-sensor and not corroborated; it grants no alert or effect authority.",
      "Graph witnesses and explanation receipts are non-durable, recomputable read products. Their digests are derivation proof pointers, not newly retained objects or available hydration handles.",
+     "At least one support branch terminates at an unsupported event revision; a rooted alternative does not erase that uncertainty.",
      "An explanation grants no effect authority; it binds the committed revision only."
     ],
     "degradation": [
      "Latency and CPU time are not metered by this reference path; consumed reports reads, orientation context tokens and the separately priced support brief.",
-     "Support analysis consumed 96 of 2000000 shared graph operations and 24 of 65536 shared algorithm output entries across two ALG-DOM-001 runs. Catalogue: 2 revisions, 8 evidence edges, 2660 canonical bytes; brief: 2 of 256 identities. Compiler/brief work is separately cardinality-bounded, not included in the graph counters. Added semantic tokens use ceil(UTF-8 field bytes/4), not a model tokenizer or full JSON size."
+     "Support analysis consumed 57 of 2000000 shared graph operations and 15 of 65536 shared algorithm output entries across two ALG-DOM-001 runs. Catalogue: 2 revisions, 8 evidence edges, 2659 canonical bytes; brief: 1 of 256 identities. Compiler/brief work is separately cardinality-bounded, not included in the graph counters. Added semantic tokens use ceil(UTF-8 field bytes/4), not a model tokenizer or full JSON size."
     ],
-    "envelope": "native/objects/13f0f3c0a5738b06b36605eaa95117b1970f3a62f8bfc5e9f575a2c3d8f89f25.json"
+    "envelope": "native/objects/a4ddb5908d630f11fba82daba508603c539e3cb40d813ef57c36f6c18aec81c0.json"
    },
    {
     "call": "plan alert for the single-camera event",
@@ -111636,32 +112603,40 @@
     "affordances": [],
     "warnings": [],
     "degradation": [
-     "alert not eligible: invalid virtual-camera specification: alert_not_eligible",
+     "alert not eligible: event is not eligible for alert preparation: requires corroborated multi-sensor event and PrepareAlert policy action",
      "Policy, corroboration, sensor-integrity, or retained source-health gates refuse an alert for this event. Inspect the retained diagnostic evidence and investigate; refreshing an approval alone cannot restore withdrawn support."
     ],
-    "envelope": "native/objects/c6e3c7767f7d15bfcc2221f20abc9b8f47a307dad04845ab59ddceb9b507b00f.json"
+    "envelope": "native/objects/1581a1dc7b5795afbe75d4a4c578f902d311df8fa9fa4db0cb9b7d5f8642c12a.json",
+    "intentional_safety_refusal": true,
+    "safety_strength": "Intentional safety gate: single-camera observation cannot authorize an owner alert without independent multi-camera corroboration."
    },
    {
     "call": "explain corroborated event",
     "operation": "AOP-011",
     "view": "AVIEW-007",
-    "outcome": "refused",
-    "error": "ERR-AGENT-CONTEXT-INCOMPLETE-001",
-    "epistemic_state": "unknown",
+    "outcome": "ok",
+    "error": null,
+    "epistemic_state": "known",
     "completeness": "partial",
-    "tokens": 1510,
+    "tokens": 1089,
     "target_tokens": null,
-    "knowledge_states": {},
-    "affordances": [],
+    "knowledge_states": {
+     "known": 8,
+     "unknown": 1
+    },
+    "affordances": [
+     "affordance:explain:event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730",
+     "affordance:orient:reorient"
+    ],
     "warnings": [
-     "The requested explanation was not returned; no event was changed or adjudicated, and no missing support was interpreted as absence."
+     "Graph witnesses and explanation receipts are non-durable, recomputable read products. Their digests are derivation proof pointers, not newly retained objects or available hydration handles.",
+     "An explanation grants no effect authority; it binds the committed revision only."
     ],
     "degradation": [
-     "The complete support explanation exceeded its bounds or failed its input/witness contract. No dependencies, historical corrections or protected alternatives were truncated.",
-     "The reported consumed vector accounts for the existing snapshot orientation only; failed graph work is not reported as zero or as a completed witness.",
-     "For a larger complete explanation, explicitly request --view forensic --budget-tokens 8000 (maximum 16000). fss-evidence analyze-history also has separate operator-local limits; neither route widens privacy or effect authority."
+     "Latency and CPU time are not metered by this reference path; consumed reports reads, orientation context tokens and the separately priced support brief.",
+     "Support analysis consumed 94 of 2000000 shared graph operations and 18 of 65536 shared algorithm output entries across two ALG-DOM-001 runs. Catalogue: 2 revisions, 8 evidence edges, 2659 canonical bytes; brief: 2 of 256 identities. Compiler/brief work is separately cardinality-bounded, not included in the graph counters. Added semantic tokens use ceil(UTF-8 field bytes/4), not a model tokenizer or full JSON size."
     ],
-    "envelope": "native/objects/a60d9f4167e5a37542f6db5a3e534a0a768de91e7fd591780a6df94e2fa32aa1.json"
+    "envelope": "native/objects/7784fd64641b84a81a06199439a1d2e7a65808cedd5b6adc8117c11eb4917476.json"
    },
    {
     "call": "explain corroborated event (forensic)",
@@ -111671,14 +112646,14 @@
     "error": null,
     "epistemic_state": "known",
     "completeness": "partial",
-    "tokens": 3056,
+    "tokens": 3137,
     "target_tokens": null,
     "knowledge_states": {
      "known": 10,
      "unknown": 2
     },
     "affordances": [
-     "affordance:explain:event:long-corroborated:ebf2a68d57c64d0a4cb074be79176d9a98f92e6114706b890ee237e8504927ee",
+     "affordance:explain:event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730",
      "affordance:orient:reorient"
     ],
     "warnings": [
@@ -111688,9 +112663,9 @@
     ],
     "degradation": [
      "Custody bytes/calls are metered; separately admitted deployment-read counters exclude doctor preflight. Tokens estimate semantic UTF-8 bytes/4. CPU, latency and allocator peak are unmeasured.",
-     "Support analysis consumed 115 of 2000000 shared graph operations and 24 of 65536 shared algorithm output entries across two ALG-DOM-001 runs. Catalogue: 2 revisions, 8 evidence edges, 2660 canonical bytes; brief: 2 of 256 identities. Compiler/brief work is separately cardinality-bounded, not included in the graph counters. Added semantic tokens use ceil(UTF-8 field bytes/4), not a model tokenizer or full JSON size. Custody: 35665 charged bytes, 16794466 peak reserved bytes, 924 calls; recheck: 3727490 accounted bytes, 7 files. Deadline: 30000 ms at checkpoints. Availability: 76 operations, 21 output entries; shared remaining=1999809/65491. Whole-graph observations: 0 mapped, 2 outside (not irrelevant); 3 unchecked frontiers. Filter construction is separately bounded."
+     "Support analysis consumed 94 of 2000000 shared graph operations and 18 of 65536 shared algorithm output entries across two ALG-DOM-001 runs. Catalogue: 2 revisions, 8 evidence edges, 2659 canonical bytes; brief: 2 of 256 identities. Compiler/brief work is separately cardinality-bounded, not included in the graph counters. Added semantic tokens use ceil(UTF-8 field bytes/4), not a model tokenizer or full JSON size. Custody: 5425 charged bytes, 16779346 peak reserved bytes, 124 calls; recheck: 1493301 accounted bytes, 7 files. Deadline: 30000 ms at checkpoints. Availability: 57 operations, 15 output entries; shared remaining=1999849/65503. Whole-graph observations: 0 mapped, 2 outside (not irrelevant); 2 unchecked frontiers. Filter construction is separately bounded."
     ],
-    "envelope": "native/objects/61ef4c9bd289685c93826d99c78104f08acf1d89c3e87f6dff5841c7388192cc.json"
+    "envelope": "native/objects/bbb977a85e2c22d79a3abaf4a0938dcdd5722fb73abf0f3180da5b58159fb375.json"
    },
    {
     "call": "plan alert (preview)",
@@ -111700,13 +112675,14 @@
     "error": null,
     "epistemic_state": "indeterminate",
     "completeness": "partial",
-    "tokens": 1575,
+    "tokens": 1543,
     "target_tokens": null,
     "knowledge_states": {},
     "affordances": [
-     "affordance:explain:event:long-corroborated:ebf2a68d57c64d0a4cb074be79176d9a98f92e6114706b890ee237e8504927ee",
+     "affordance:explain:event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730",
      "affordance:orient:doctor",
      "affordance:orient:follow",
+     "affordance:orient:plan",
      "affordance:orient:reorient"
     ],
     "warnings": [
@@ -111719,23 +112695,24 @@
      "4 per-event worlds are aggregated into class worlds and 2 of 2 events are summarized; each event hydrates through its receipted handle.",
      "The commit step is conditional: worlds world:events:artifact-live remain live, in which the alert is a false alarm."
     ],
-    "envelope": "native/objects/e43135ee0c5377a0b2153ebb87329133b682e5e8c14c8ce9adaed489b201341d.json"
+    "envelope": "native/objects/dac22fc4724b24d17b4d30e3a7362ffb62eda280927a7f6d46de8e7e6d29708b.json"
    },
    {
-    "call": "plan alert (owner approves the plan)",
+    "call": "plan alert (script approves the plan)",
     "operation": "AOP-007",
     "view": "AVIEW-007",
     "outcome": "ok",
     "error": null,
     "epistemic_state": "indeterminate",
     "completeness": "partial",
-    "tokens": 1575,
+    "tokens": 1543,
     "target_tokens": null,
     "knowledge_states": {},
     "affordances": [
-     "affordance:explain:event:long-corroborated:ebf2a68d57c64d0a4cb074be79176d9a98f92e6114706b890ee237e8504927ee",
+     "affordance:explain:event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730",
      "affordance:orient:doctor",
      "affordance:orient:follow",
+     "affordance:orient:plan",
      "affordance:orient:reorient"
     ],
     "warnings": [
@@ -111748,10 +112725,10 @@
      "4 per-event worlds are aggregated into class worlds and 2 of 2 events are summarized; each event hydrates through its receipted handle.",
      "The commit step is conditional: worlds world:events:artifact-live remain live, in which the alert is a false alarm."
     ],
-    "envelope": "native/objects/38113a1f1f8f5cedf91ddd9e58e1a08f841a90e4f5a6e1549a6490f1733b888c.json"
+    "envelope": "native/objects/02b73bf668daac384a9841d57d40b4605f337b08603214f92d41b2f25715ce3e.json"
    },
    {
-    "call": "commit (owner approves dispatch)",
+    "call": "commit (script approves dispatch)",
     "operation": "AOP-008",
     "view": "AVIEW-005",
     "outcome": "ok",
@@ -111764,13 +112741,13 @@
     "affordances": [],
     "warnings": [],
     "degradation": [
-     "Obligation obligation:alert:c94a51be67f4bb64714c0ea005004b361e286cd1743fd2cda027efe6215ec55a is pending: a webhook 2xx proves relay acceptance only; the obligation is discharged only by independent reconciliation.",
-     "Operation operation:alert:c94a51be67f4bb64714c0ea005004b361e286cd1743fd2cda027efe6215ec55a is adapter_accepted: delivery claim relay_acceptance_only. No affordance is listed by this answer; `fss wait`, `fss cancel` (prepared only), or `fss session orient` give the next moves."
+     "Obligation obligation:alert:820af43f650bf465cdc902415e6fb092033910fbc3c01dab9e240c6e380be38f is pending: a webhook 2xx proves relay acceptance only; the obligation is discharged only by independent reconciliation.",
+     "Operation operation:alert:820af43f650bf465cdc902415e6fb092033910fbc3c01dab9e240c6e380be38f is adapter_accepted: delivery claim relay_acceptance_only. No affordance is listed by this answer; `fss wait`, `fss cancel` (prepared only), or `fss session orient` give the next moves."
     ],
-    "envelope": "native/objects/fc7638a5b910dc5b46fc76aa0325bd272272fd4bc00c2d094fb241a6a5bdbeb8.json"
+    "envelope": "native/objects/7daf0dc4a65577bb54f2185e33c3b2353846f9ec3272e13b7cea3aa13af66c52.json"
    },
    {
-    "call": "commit again (must not resend)",
+    "call": "commit again",
     "operation": "AOP-008",
     "view": "AVIEW-005",
     "outcome": "ok",
@@ -111783,10 +112760,10 @@
     "affordances": [],
     "warnings": [],
     "degradation": [
-     "operation:alert:c94a51be67f4bb64714c0ea005004b361e286cd1743fd2cda027efe6215ec55a was already adapter_accepted before this request: nothing was committed or sent.",
-     "Operation operation:alert:c94a51be67f4bb64714c0ea005004b361e286cd1743fd2cda027efe6215ec55a is adapter_accepted: delivery claim relay_acceptance_only. No affordance is listed by this answer; `fss wait`, `fss cancel` (prepared only), or `fss session orient` give the next moves."
+     "operation:alert:820af43f650bf465cdc902415e6fb092033910fbc3c01dab9e240c6e380be38f was already adapter_accepted before this request: nothing was committed or sent.",
+     "Operation operation:alert:820af43f650bf465cdc902415e6fb092033910fbc3c01dab9e240c6e380be38f is adapter_accepted: delivery claim relay_acceptance_only. No affordance is listed by this answer; `fss wait`, `fss cancel` (prepared only), or `fss session orient` give the next moves."
     ],
-    "envelope": "native/objects/6a83bd6bd39d3dc8361376f61fd394b3a706ebd08b66fc5eb8ef707f883b4561.json"
+    "envelope": "native/objects/a86bc0bc68a791a75df7bf7643a6661719b31ab1e03d4f646ae738389246efe6.json"
    },
    {
     "call": "wait",
@@ -111802,10 +112779,10 @@
     "affordances": [],
     "warnings": [],
     "degradation": [
-     "operation:alert:c94a51be67f4bb64714c0ea005004b361e286cd1743fd2cda027efe6215ec55a stayed adapter_accepted for the whole 150 ms wait: silence is not completion.",
-     "Operation operation:alert:c94a51be67f4bb64714c0ea005004b361e286cd1743fd2cda027efe6215ec55a is adapter_accepted: delivery claim relay_acceptance_only. No affordance is listed by this answer; `fss wait`, `fss cancel` (prepared only), or `fss session orient` give the next moves."
+     "operation:alert:820af43f650bf465cdc902415e6fb092033910fbc3c01dab9e240c6e380be38f stayed adapter_accepted for the whole 150 ms wait: silence is not completion.",
+     "Operation operation:alert:820af43f650bf465cdc902415e6fb092033910fbc3c01dab9e240c6e380be38f is adapter_accepted: delivery claim relay_acceptance_only. No affordance is listed by this answer; `fss wait`, `fss cancel` (prepared only), or `fss session orient` give the next moves."
     ],
-    "envelope": "native/objects/daefcb912fc21611bb484f038ddc91330bfb7874065a105fe7b8359eb0675228.json"
+    "envelope": "native/objects/ba402ebba8ac27a9f840b3598fa9f0582f25d16a35fdd8d8429933cd9e74095d.json"
    },
    {
     "call": "plan close (before reconciliation)",
@@ -111824,7 +112801,9 @@
      "the plan's effect is adapter_accepted, not terminal: it has no outcome to record yet",
      "The dispatched alert's outcome is not established: reconcile it on the owner's attestation (`fss commit --reconcile ...`), then close the plan."
     ],
-    "envelope": "native/objects/d49b7067c4159e1c5fee3f995aa8f880118720f71bad2145ef272da4027afcdb.json"
+    "envelope": "native/objects/ddb4a2154fdcf3e1fed4b8361e580f4abdee09d57278c68ac9b5e3da6c077417.json",
+    "intentional_safety_refusal": true,
+    "safety_strength": "Intentional safety gate: a dispatched alert plan cannot close before its external outcome is reconciled."
    },
    {
     "call": "commit reconcile (preview)",
@@ -111840,14 +112819,14 @@
     "affordances": [],
     "warnings": [],
     "degradation": [
-     "Reconciliation proposed, not performed: approve exactly sha256:6b09add216d9403918b922a39945cab69bc5833207d238a906ba139d9304bd73 with `fss commit --reconcile delivered --operation operation:alert:c94a51be67f4bb64714c0ea005004b361e286cd1743fd2cda027efe6215ec55a --evidence sha256:ad2c5fa49b28c414d41261885dae1e4648591ebe1b3b1b0f1e4901e4f3773f50 --statement <same text> --approve sha256:6b09add216d9403918b922a39945cab69bc5833207d238a906ba139d9304bd73`.",
+     "Reconciliation proposed, not performed: approve exactly sha256:6b627e4c818df60b4b0313076d4e56bb43c80e3e94bbbff0b0fd097d785c40d6 with `fss commit --reconcile delivered --operation operation:alert:820af43f650bf465cdc902415e6fb092033910fbc3c01dab9e240c6e380be38f --evidence sha256:e89d1f7e35862743b3e716aa852b5a6241c44c3f247b2df061453373e40c0a9d --statement <same text> --approve sha256:6b627e4c818df60b4b0313076d4e56bb43c80e3e94bbbff0b0fd097d785c40d6`.",
      "The reconciliation rests on the owner's attestation (operator_asserted provenance), not on a provider receipt.",
-     "Operation operation:alert:c94a51be67f4bb64714c0ea005004b361e286cd1743fd2cda027efe6215ec55a is adapter_accepted: delivery claim relay_acceptance_only. No affordance is listed by this answer; `fss wait`, `fss cancel` (prepared only), or `fss session orient` give the next moves."
+     "Operation operation:alert:820af43f650bf465cdc902415e6fb092033910fbc3c01dab9e240c6e380be38f is adapter_accepted: delivery claim relay_acceptance_only. No affordance is listed by this answer; `fss wait`, `fss cancel` (prepared only), or `fss session orient` give the next moves."
     ],
-    "envelope": "native/objects/82146f7c17a54ec81f932a0aa303d1340f21a858af12746c8255cc5385ee3b57.json"
+    "envelope": "native/objects/6c16508e179150c61e1a138ecd82c35d3c8cd07934aa6e6735913c7cbd8ff164.json"
    },
    {
-    "call": "commit reconcile (owner attests)",
+    "call": "commit reconcile (script attests to loopback receipt)",
     "operation": "AOP-008",
     "view": "AVIEW-005",
     "outcome": "ok",
@@ -111860,11 +112839,11 @@
     "affordances": [],
     "warnings": [],
     "degradation": [
-     "Reconciliation reconciled as delivered: obligation obligation:alert:c94a51be67f4bb64714c0ea005004b361e286cd1743fd2cda027efe6215ec55a is verified.",
+     "Reconciliation reconciled as delivered: obligation obligation:alert:820af43f650bf465cdc902415e6fb092033910fbc3c01dab9e240c6e380be38f is verified.",
      "The reconciliation rests on the owner's attestation (operator_asserted provenance), not on a provider receipt.",
-     "Operation operation:alert:c94a51be67f4bb64714c0ea005004b361e286cd1743fd2cda027efe6215ec55a is verified: delivery claim verified. No affordance is listed by this answer; `fss wait`, `fss cancel` (prepared only), or `fss session orient` give the next moves."
+     "Operation operation:alert:820af43f650bf465cdc902415e6fb092033910fbc3c01dab9e240c6e380be38f is verified: delivery claim verified. No affordance is listed by this answer; `fss wait`, `fss cancel` (prepared only), or `fss session orient` give the next moves."
     ],
-    "envelope": "native/objects/780bfe203229ccab881482f4b89c912019c88a5694290aefdca5e68e94bac2cc.json"
+    "envelope": "native/objects/65ccbc484bc2541a680789ee7214603a47cbf5d51b9bc2194c3f5534b26e9b2a.json"
    },
    {
     "call": "plan close",
@@ -111874,13 +112853,14 @@
     "error": null,
     "epistemic_state": "indeterminate",
     "completeness": "partial",
-    "tokens": 1515,
+    "tokens": 1600,
     "target_tokens": null,
     "knowledge_states": {},
     "affordances": [
-     "affordance:explain:event:long-corroborated:ebf2a68d57c64d0a4cb074be79176d9a98f92e6114706b890ee237e8504927ee",
+     "affordance:explain:event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730",
      "affordance:orient:doctor",
      "affordance:orient:follow",
+     "affordance:orient:plan",
      "affordance:orient:reorient"
     ],
     "warnings": [
@@ -111892,13 +112872,13 @@
      "Latency and CPU time are not metered by this reference path; consumed reports reads and context tokens only.",
      "4 per-event worlds are aggregated into class worlds and 2 of 2 events are summarized; each event hydrates through its receipted handle.",
      "The deployment head has moved past this session's anchor: the situation is as of the session's anchor; the episode's terminal anchor is the head.",
-     "Plan plan:99960cd87381afed50859c110f04a2d4 is closed by execution episode episode:86f778453371c803349c08b564a1c991: outcome succeeded (operation operation:alert:c94a51be67f4bb64714c0ea005004b361e286cd1743fd2cda027efe6215ec55a is verified); succeeded [delivered, event_revision_current], failed [], indeterminate [warranted]. The payload is the closed plan as published; hydrate the fss.agent_execution_episode.v1 rendering sha256:1d287cc35156c72c4f56101da91622ec143e7c5829ec09f4a3173c3ec2e73807 from the agent publication store.",
-     "Residual uncertainty: Whether the alert about event event:long-corroborated:ebf2a68d57c64d0a4cb074be79176d9a98f92e6114706b890ee237e8504927ee was warranted (real activity rather than an artifact world) is not established by its effect outcome.",
-     "Residual uncertainty: The delivery outcome is operator_asserted (owner attestation sha256:7346b40c832e2c0e0159f8ecfff828de39aa4feecbe0f7cd35862b61d440aad5), not a provider receipt.",
+     "Plan plan:976dd46e4bb7f19f2373f3997c4f22c7 is closed by execution episode episode:959072cd300cc64ab1417b1e73200784: outcome succeeded (operation operation:alert:820af43f650bf465cdc902415e6fb092033910fbc3c01dab9e240c6e380be38f is verified); succeeded [delivered, event_revision_current], failed [], indeterminate [warranted]. The payload is the closed plan as published; hydrate the fss.agent_execution_episode.v1 rendering sha256:2e367b8364455370be3df493c9025effb27d6ee5436efd9b9e2e99386ce0acf5 from the agent publication store.",
+     "Residual uncertainty: Whether the alert about event event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730 was warranted (real activity rather than an artifact world) is not established by its effect outcome.",
+     "Residual uncertainty: The delivery outcome is operator_asserted (owner attestation sha256:6f408b835488953407c05285079a60869a0d220fc4dc09ea7b5a627a9952c346), not a provider receipt.",
      "Residual uncertainty: Attribution confidences are a uniform prior over the listed hypotheses; no attribution model is calibrated in this build.",
      "Residual uncertainty: Agent tokens, compute, and operator attention were not metered for this plan."
     ],
-    "envelope": "native/objects/ed37c815cedac3f3fe9f0f91fd6ac8b38c00ad0bd43494180c1b9febfd070043.json"
+    "envelope": "native/objects/22a25427856d85615f302300eddf06d3b3c62b5a3e601658fbc6779b504c34b8.json"
    },
    {
     "call": "handoff",
@@ -111908,13 +112888,14 @@
     "error": null,
     "epistemic_state": "indeterminate",
     "completeness": "partial",
-    "tokens": 1515,
+    "tokens": 1600,
     "target_tokens": null,
     "knowledge_states": {},
     "affordances": [
-     "affordance:explain:event:long-corroborated:ebf2a68d57c64d0a4cb074be79176d9a98f92e6114706b890ee237e8504927ee",
+     "affordance:explain:event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730",
      "affordance:orient:doctor",
      "affordance:orient:follow",
+     "affordance:orient:plan",
      "affordance:orient:reorient"
     ],
     "warnings": [
@@ -111927,7 +112908,7 @@
      "4 per-event worlds are aggregated into class worlds and 2 of 2 events are summarized; each event hydrates through its receipted handle.",
      "The handoff carries no success, failure, or stop criteria: none were supplied at session open."
     ],
-    "envelope": "native/objects/999b4b485e1fabfc112a28d3feda9a697152cc460114e2e4e8c9bd461d1c64cd.json"
+    "envelope": "native/objects/000308eb4e810edc2a9c3a871f1af86d7f3634100ebfad6719e3e6a93437e58f.json"
    },
    {
     "call": "session.resume",
@@ -111937,18 +112918,19 @@
     "error": null,
     "epistemic_state": "indeterminate",
     "completeness": "partial",
-    "tokens": 3029,
+    "tokens": 3199,
     "target_tokens": 1600,
     "knowledge_states": {},
     "affordances": [
-     "affordance:explain:event:long-corroborated:ebf2a68d57c64d0a4cb074be79176d9a98f92e6114706b890ee237e8504927ee",
+     "affordance:explain:event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730",
      "affordance:orient:doctor",
      "affordance:orient:follow",
+     "affordance:orient:plan",
      "affordance:orient:reorient"
     ],
     "warnings": [
      "1 published event is single-sensor and not corroborated; none grants alert or effect authority.",
-     "The committed position moved since the handoff (anchor:0e4abd91c2f69605:191:e0:ede38afbeed8255849639832e4c110222c693d27527de758b664fb0ef65f515a -> anchor:0e4abd91c2f69605:193:e5:24959882cc448c88ea305a3cbf9882bf346b563604aff1c667ed1b4d84202334): 9 assumption(s), action(s), and anchor-bound fact(s) are invalidated; re-derive every next action at the head before acting."
+     "The committed position moved since the handoff (anchor:0e4abd91c2f69605:27:e0:5f87940312d30b7edc2c358ea38be8d0602be61c32ba377dc125c2262fc0fc87 -> anchor:0e4abd91c2f69605:29:e5:a83eb78f2bc7c501520ca040e92d419761fb80c13bb64e47d57486bd1a5c5830): 10 assumption(s), action(s), and anchor-bound fact(s) are invalidated; re-derive every next action at the head before acting."
     ],
     "degradation": [
      "The deployment doctor reports attention_required; only the committed prefix was read.",
@@ -111956,13 +112938,14 @@
      "Latency and CPU time are not metered by this reference path; consumed reports reads and context tokens only.",
      "4 per-event worlds are aggregated into class worlds and 2 of 2 events are summarized; each event hydrates through its receipted handle."
     ],
+    "envelope": "native/objects/a1cdf33f114585d5686a9b094e227edff6cf3b6e184d69a23d07c08a2db9b932.json",
     "situation": {
      "knowledge_cells": [
       {
        "id": "claim:deployment:ledger-head",
        "state": "known",
        "provenance": "derived",
-       "value": "The authority ledger holds 193 committed batches at commit 193 (ledger epoch 0); committed deltas: acquisition_transition=25, event_revision=2, file_import=10, file_import_manifest=5, local_root_reachability=92, package_detection_record=80,"
+       "value": "The authority ledger holds 29 committed batches at commit 29 (ledger epoch 0); committed deltas: acquisition_transition=25, event_revision=2, file_import=10, file_import_manifest=5, local_root_reachability=12, privacy_mask_policy=5, sensor_"
       },
       {
        "id": "claim:deployment:imports",
@@ -111992,10 +112975,10 @@
        "id": "claim:deployment:events",
        "state": "known",
        "provenance": "derived",
-       "value": "2 published events: 1 corroborated, 1 indeterminate; 1 corroborated; 0 with open sensor tamper; highest consequence: event:long-corroborated:ebf2a68d57c64d0a4cb074be79176d9a98f92e6114706b890ee237e8504927ee."
+       "value": "2 published events: 1 corroborated, 1 indeterminate; 1 corroborated; 0 with open sensor tamper; highest consequence: event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730."
       },
       {
-       "id": "claim:effect:operation:alert:c94a51be67f4bb64714c0ea005004b361e286cd1743fd2cda027efe6215ec55a:local-state",
+       "id": "claim:effect:operation:alert:820af43f650bf465cdc902415e6fb092033910fbc3c01dab9e240c6e380be38f:local-state",
        "state": "known",
        "provenance": "observed",
        "value": "The exact local effect journal receipt records state verified."
@@ -112003,7 +112986,7 @@
      ],
      "salient": [
       {
-       "id": "event:long-corroborated:ebf2a68d57c64d0a4cb074be79176d9a98f92e6114706b890ee237e8504927ee",
+       "id": "event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730",
        "state": "known",
        "summary": "Revision 1 in state corroborated; physical presence known; corroborated."
       }
@@ -112049,7 +113032,7 @@
        "cheapest_test": "Register each contributing sensor's failure domains."
       },
       {
-       "assumption": "The deployment head is the committed position anchor:0e4abd91c2f69605:191:e0:ede38afbeed8255849639832e4c110222c693d27527de758b664fb0ef65f515a.",
+       "assumption": "The deployment head is the committed position anchor:0e4abd91c2f69605:27:e0:5f87940312d30b7edc2c358ea38be8d0602be61c32ba377dc125c2262fc0fc87.",
        "cheapest_test": "Orient at the current head and restate or retire the assumption."
       },
       {
@@ -112066,18 +113049,18 @@
      "indeterminate_effects": 0,
      "control": {
       "robust": [],
-      "conditional": [],
+      "conditional": [
+       "affordance:orient:plan"
+      ],
       "information_gathering": [
-       "affordance:explain:event:long-corroborated:ebf2a68d57c64d0a4cb074be79176d9a98f92e6114706b890ee237e8504927ee",
+       "affordance:explain:event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730",
        "affordance:orient:doctor"
       ],
       "wait": [
        "affordance:orient:follow",
        "affordance:orient:reorient"
       ],
-      "blocked": [
-       "affordance:orient:plan"
-      ],
+      "blocked": [],
       "invariants": [
        "invariant:evidence-provenance-retained",
        "invariant:no-alert-authority-from-model-output-alone",
@@ -112086,7 +113069,7 @@
      },
      "compression": {
       "target_tokens": 1600,
-      "actual_tokens": 1514,
+      "actual_tokens": 1599,
       "omitted_classes": [
        "event_detail",
        "evidence_handle",
@@ -112101,8 +113084,7 @@
       },
       "stop_reason": "target_budget"
      }
-    },
-    "envelope": "native/objects/713b9994ed3b02b98ddfcc8c2c0f98accf0fcfd6210e0f39151c3e09e8600a32.json"
+    }
    },
    {
     "call": "session.orient brief (after resume)",
@@ -112112,13 +113094,14 @@
     "error": null,
     "epistemic_state": "indeterminate",
     "completeness": "partial",
-    "tokens": 1514,
+    "tokens": 1599,
     "target_tokens": 1600,
     "knowledge_states": {},
     "affordances": [
-     "affordance:explain:event:long-corroborated:ebf2a68d57c64d0a4cb074be79176d9a98f92e6114706b890ee237e8504927ee",
+     "affordance:explain:event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730",
      "affordance:orient:doctor",
      "affordance:orient:follow",
+     "affordance:orient:plan",
      "affordance:orient:reorient"
     ],
     "warnings": [
@@ -112131,15 +113114,16 @@
      "Current session projection after durable runtime clock admission; retained workspace, assumptions, grants and budgets are unchanged. No rebase or historical semantic delta is claimed.",
      "Response budgets meter the deployment snapshot and compiled context. Session-journal replay, root-pin and publication-custody checks, and repeat verification reads are additional bounded work that is not fully metered or claimed to be free.",
      "Session workspace snapshot: workspace revision 1 and its original anchor remain unchanged. Runtime clock admission is durably pinned; previousAnchor identifies the retained workspace and meaningfulDelta is null because historical session state was not reconstructed.",
-     "The session lease expires at admitted runtime time 1795735746567959442 ns; this read does not extend it or consume its durable token budget."
+     "The session lease expires at admitted runtime time 1796111246200175000 ns; this read does not extend it or consume its durable token budget."
     ],
+    "envelope": "native/objects/5c415e360031b9bf6b604a70464ca8ee7f8ec2a4e6ed5e34f7c90f5580ab800c.json",
     "situation": {
      "knowledge_cells": [
       {
        "id": "claim:deployment:ledger-head",
        "state": "known",
        "provenance": "derived",
-       "value": "The authority ledger holds 193 committed batches at commit 193 (ledger epoch 0); committed deltas: acquisition_transition=25, event_revision=2, file_import=10, file_import_manifest=5, local_root_reachability=92, package_detection_record=80,"
+       "value": "The authority ledger holds 29 committed batches at commit 29 (ledger epoch 0); committed deltas: acquisition_transition=25, event_revision=2, file_import=10, file_import_manifest=5, local_root_reachability=12, privacy_mask_policy=5, sensor_"
       },
       {
        "id": "claim:deployment:imports",
@@ -112169,10 +113153,10 @@
        "id": "claim:deployment:events",
        "state": "known",
        "provenance": "derived",
-       "value": "2 published events: 1 corroborated, 1 indeterminate; 1 corroborated; 0 with open sensor tamper; highest consequence: event:long-corroborated:ebf2a68d57c64d0a4cb074be79176d9a98f92e6114706b890ee237e8504927ee."
+       "value": "2 published events: 1 corroborated, 1 indeterminate; 1 corroborated; 0 with open sensor tamper; highest consequence: event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730."
       },
       {
-       "id": "claim:effect:operation:alert:c94a51be67f4bb64714c0ea005004b361e286cd1743fd2cda027efe6215ec55a:local-state",
+       "id": "claim:effect:operation:alert:820af43f650bf465cdc902415e6fb092033910fbc3c01dab9e240c6e380be38f:local-state",
        "state": "known",
        "provenance": "observed",
        "value": "The exact local effect journal receipt records state verified."
@@ -112180,7 +113164,7 @@
      ],
      "salient": [
       {
-       "id": "event:long-corroborated:ebf2a68d57c64d0a4cb074be79176d9a98f92e6114706b890ee237e8504927ee",
+       "id": "event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730",
        "state": "known",
        "summary": "Revision 1 in state corroborated; physical presence known; corroborated."
       }
@@ -112231,18 +113215,18 @@
      "indeterminate_effects": 0,
      "control": {
       "robust": [],
-      "conditional": [],
+      "conditional": [
+       "affordance:orient:plan"
+      ],
       "information_gathering": [
-       "affordance:explain:event:long-corroborated:ebf2a68d57c64d0a4cb074be79176d9a98f92e6114706b890ee237e8504927ee",
+       "affordance:explain:event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730",
        "affordance:orient:doctor"
       ],
       "wait": [
        "affordance:orient:follow",
        "affordance:orient:reorient"
       ],
-      "blocked": [
-       "affordance:orient:plan"
-      ],
+      "blocked": [],
       "invariants": [
        "invariant:evidence-provenance-retained",
        "invariant:no-alert-authority-from-model-output-alone",
@@ -112251,7 +113235,7 @@
      },
      "compression": {
       "target_tokens": 1600,
-      "actual_tokens": 1514,
+      "actual_tokens": 1599,
       "omitted_classes": [
        "event_detail",
        "evidence_handle",
@@ -112266,56 +113250,605 @@
       },
       "stop_reason": "target_budget"
      }
-    },
-    "envelope": "native/objects/7ea375eaca9d7aed1a39754e4cf088a91fc38199cb9c6e01b01e11d1119afbed.json"
+    }
+   },
+   {
+    "call": "orient pulse (after coverage retained)",
+    "operation": "AOP-003",
+    "view": "AVIEW-001",
+    "outcome": "ok",
+    "error": null,
+    "epistemic_state": "indeterminate",
+    "completeness": "partial",
+    "tokens": 277,
+    "target_tokens": 300,
+    "knowledge_states": {},
+    "affordances": [
+     "affordance:orient:reorient"
+    ],
+    "warnings": [
+     "1 published event is single-sensor and not corroborated; none grants alert or effect authority."
+    ],
+    "degradation": [
+     "No durable agent session is bound: this capsule carries a deterministic read-only session identity and persists nothing (`fss session open` opens a durable one).",
+     "The deployment doctor reports attention_required; only the committed prefix was read.",
+     "The pulse view lists only the re-orient heartbeat affordance; `--view brief` lists the complete affordance frontier.",
+     "The critical context exceeds the pulse target of 120 tokens; it was admitted at the registered maximum of 300 tokens.",
+     "Latency and CPU time are not metered by this reference path; consumed reports reads and context tokens only.",
+     "4 per-event worlds are aggregated into class worlds and 2 of 2 events are summarized; each event hydrates through its receipted handle.",
+     "No previous anchor was supplied: meaningfulDelta is null and no change is claimed."
+    ],
+    "envelope": "native/objects/37eb40cd2c5ef0f216a165f0b2a7aed30cccb630fbb5e205a09de8b4316bd733.json",
+    "situation": {
+     "knowledge_cells": [
+      {
+       "id": "claim:deployment:ledger-head",
+       "state": "known",
+       "provenance": "derived",
+       "value": "The authority ledger holds 69 committed batches at commit 69 (ledger epoch 0); committed deltas: acquisition_transition=25, coverage_witness=40, event_revision=2, file_import=10, file_import_manifest=5, local_root_reachability=12, privacy_m"
+      },
+      {
+       "id": "claim:deployment:imports",
+       "state": "known",
+       "provenance": "derived",
+       "value": "5 completed file imports are retained at this anchor."
+      },
+      {
+       "id": "claim:deployment:effect-journal",
+       "state": "known",
+       "provenance": "derived",
+       "value": "The durable effect journal holds 1 operation and 1 obligation (0 open)."
+      },
+      {
+       "id": "claim:coverage:site",
+       "state": "not_observable",
+       "provenance": "derived",
+       "value": "6 zones: 0 covered, 0 stale, 6 not_observable (not absence)."
+      },
+      {
+       "id": "claim:deployment:events",
+       "state": "known",
+       "provenance": "derived",
+       "value": "2 published events: 1 corroborated, 1 indeterminate; 1 corroborated; 0 with open sensor tamper; highest consequence: event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730."
+      },
+      {
+       "id": "claim:effect:operation:alert:820af43f650bf465cdc902415e6fb092033910fbc3c01dab9e240c6e380be38f:local-state",
+       "state": "known",
+       "provenance": "observed",
+       "value": "The exact local effect journal receipt records state verified."
+      }
+     ],
+     "salient": [
+      {
+       "id": "event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730",
+       "state": "known",
+       "summary": "Revision 1 in state corroborated; physical presence known; corroborated."
+      }
+     ],
+     "unknowns": [],
+     "not_observable": [
+      "site activity outside retained evidence",
+      "sensor:doorbell zone:view (not_observable)",
+      "sensor:driveway zone:view (not_observable)",
+      "sensor:entry zone:view (not_observable)",
+      "sensor:gate zone:view (not_observable)",
+      "sensor:porch zone:view (not_observable)",
+      "event-zone:g04 (not_observable)"
+     ],
+     "coverage": {
+      "status": "not_observable",
+      "absence_claims_certified": false
+     },
+     "contradictions": 0,
+     "alternative_worlds": [],
+     "adversarial_residuals": [
+      "world:site:protected-worlds"
+     ],
+     "attention": [
+      {
+       "priority": "high",
+       "reason": "Highest-consequence published event: state corroborated, physical presence known, corroborated."
+      },
+      {
+       "priority": "high",
+       "reason": "Absence cannot be certified: 6 of 6 zones uncovered (sensor:doorbell zone:view is not_observable; sensor:driveway zone:view is not_observable; +4 more)."
+      }
+     ],
+     "epistemic_debt": [
+      {
+       "assumption": "Absence is never inferred: every interval without a CoverageWitness is treated as unobserved.",
+       "cheapest_test": "Retain a continuous CoverageWitness over the zone and re-orient."
+      },
+      {
+       "assumption": "Failure domains are independent only when their names differ.",
+       "cheapest_test": "Register each contributing sensor's failure domains."
+      }
+     ],
+     "obligations": 0,
+     "active_plans": [],
+     "indeterminate_effects": 0,
+     "control": {
+      "robust": [],
+      "conditional": [],
+      "information_gathering": [],
+      "wait": [
+       "affordance:orient:reorient"
+      ],
+      "blocked": [],
+      "invariants": [
+       "invariant:evidence-provenance-retained",
+       "invariant:no-alert-authority-from-model-output-alone",
+       "invariant:orient-is-read-only"
+      ]
+     },
+     "compression": {
+      "target_tokens": 300,
+      "actual_tokens": 277,
+      "omitted_classes": [
+       "event_detail",
+       "evidence_handle",
+       "knowledge",
+       "now",
+       "protected_world_detail",
+       "why",
+       "zone_coverage_detail"
+      ],
+      "critical": {
+       "knownCriticalItems": 5,
+       "omittedCriticalItems": 0,
+       "omittedInvalidations": 0,
+       "omittedContradictions": 0
+      },
+      "stop_reason": "target_budget"
+     }
+    }
    },
    {
     "call": "session.orient brief (after coverage retained)",
-    "operation": null,
-    "view": null,
-    "outcome": "error",
-    "error": "ERR-CLI-RUNTIME-FAILURE-001",
-    "summary": "The command exited 1 with ERR-CLI-RUNTIME-FAILURE-001 and printed no reason.",
-    "envelope": "native/objects/a69486bb8be472f13422e333cad8bef4762ebaf7a82e93258fe6d31dd82ef227.json"
+    "operation": "AOP-003",
+    "view": "AVIEW-002",
+    "outcome": "ok",
+    "error": null,
+    "epistemic_state": "indeterminate",
+    "completeness": "partial",
+    "tokens": 1581,
+    "target_tokens": 1600,
+    "knowledge_states": {},
+    "affordances": [
+     "affordance:explain:event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730",
+     "affordance:orient:doctor",
+     "affordance:orient:follow",
+     "affordance:orient:plan",
+     "affordance:orient:reorient"
+    ],
+    "warnings": [
+     "1 published event is single-sensor and not corroborated; none grants alert or effect authority.",
+     "The deployment position moved beyond the retained workspace (anchor:0e4abd91c2f69605:29:e5:a83eb78f2bc7c501520ca040e92d419761fb80c13bb64e47d57486bd1a5c5830 -> anchor:0e4abd91c2f69605:69:e5:01ba0885c2e1bf8f43596ed09280758e5d6f1b361fa4e78d347efd68bb5bc18a); 4 assumption(s) are invalidated. This read did not rebase the workspace, renew its lease, or authorize any action."
+    ],
+    "degradation": [
+     "The deployment doctor reports attention_required; only the committed prefix was read.",
+     "Latency and CPU time are not metered by this reference path; consumed reports reads and context tokens only.",
+     "4 per-event worlds are aggregated into class worlds and 2 of 2 events are summarized; each event hydrates through its receipted handle.",
+     "Current session projection after durable runtime clock admission; retained workspace, assumptions, grants and budgets are unchanged. No rebase or historical semantic delta is claimed.",
+     "Response budgets meter the deployment snapshot and compiled context. Session-journal replay, root-pin and publication-custody checks, and repeat verification reads are additional bounded work that is not fully metered or claimed to be free.",
+     "Session workspace snapshot: workspace revision 1 and its original anchor remain unchanged. Runtime clock admission is durably pinned; previousAnchor identifies the retained workspace and meaningfulDelta is null because historical session state was not reconstructed.",
+     "The session lease expires at admitted runtime time 1796111246200175000 ns; this read does not extend it or consume its durable token budget."
+    ],
+    "envelope": "native/objects/861110a683d1619333d081a65e1a399a6bbb6ae8d5e7675a0089721ca964818e.json",
+    "situation": {
+     "knowledge_cells": [
+      {
+       "id": "claim:deployment:ledger-head",
+       "state": "known",
+       "provenance": "derived",
+       "value": "The authority ledger holds 69 committed batches at commit 69 (ledger epoch 0); committed deltas: acquisition_transition=25, coverage_witness=40, event_revision=2, file_import=10, file_import_manifest=5, local_root_reachability=12, privacy_m"
+      },
+      {
+       "id": "claim:deployment:imports",
+       "state": "known",
+       "provenance": "derived",
+       "value": "5 completed file imports are retained at this anchor."
+      },
+      {
+       "id": "claim:deployment:effect-journal",
+       "state": "known",
+       "provenance": "derived",
+       "value": "The durable effect journal holds 1 operation and 1 obligation (0 open)."
+      },
+      {
+       "id": "claim:coverage:site",
+       "state": "not_observable",
+       "provenance": "derived",
+       "value": "0 of 6 objective zone(s) are covered by retained CoverageWitness records; the rest are not observable or stale, and a missing event there is not absence."
+      },
+      {
+       "id": "claim:session:requested-mission",
+       "state": "known",
+       "provenance": "derived",
+       "value": "The retained mission record binds requested mission text sha256:70ada960dd09b8e495423449dc5ad7337165f03110e9db3cff5ceb55d8141e7b and objective text sha256:5f0bb13448a781be52384c95d2527232156889cbf50dcb752b6c270dd441062f."
+      },
+      {
+       "id": "claim:deployment:events",
+       "state": "known",
+       "provenance": "derived",
+       "value": "2 published events: 1 corroborated, 1 indeterminate; 1 corroborated; 0 with open sensor tamper; highest consequence: event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730."
+      },
+      {
+       "id": "claim:effect:operation:alert:820af43f650bf465cdc902415e6fb092033910fbc3c01dab9e240c6e380be38f:local-state",
+       "state": "known",
+       "provenance": "observed",
+       "value": "The exact local effect journal receipt records state verified."
+      }
+     ],
+     "salient": [
+      {
+       "id": "event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730",
+       "state": "known",
+       "summary": "Revision 1 in state corroborated; physical presence known; corroborated."
+      }
+     ],
+     "unknowns": [
+      "Mission success, failure, stop criteria and terminal proof have not been supplied; completion is unassessed.",
+      "Workspace revision 1 remains at anchor:0e4abd91c2f69605:29:e5:a83eb78f2bc7c501520ca040e92d419761fb80c13bb64e47d57486bd1a5c5830; this current read does not rebase it.",
+      "Retained assumption assumption:anchor-current requires revalidation at the current head.",
+      "Retained assumption debt:coverage:uncertified requires revalidation at the current head.",
+      "Retained assumption debt:events:failure-domain-independence requires revalidation at the current head.",
+      "Activity in 6 non-covered zone(s) is uncertified (sensor:doorbell zone:view (not_observable), sensor:driveway zone:view (not_observable), sensor:entry zone:view (not_observable), sensor:gate zone:view (not_observable), sensor:porch zone:view (not_observable), event-zone:g04 (not_observable)); inspect coverage witnesses.",
+      "Whether 1 published event reflects real activity is indeterminate."
+     ],
+     "not_observable": [
+      "site activity outside retained evidence",
+      "sensor:doorbell zone:view (not_observable)",
+      "sensor:driveway zone:view (not_observable)",
+      "sensor:entry zone:view (not_observable)",
+      "sensor:gate zone:view (not_observable)",
+      "sensor:porch zone:view (not_observable)",
+      "event-zone:g04 (not_observable)"
+     ],
+     "coverage": {
+      "status": "not_observable",
+      "absence_claims_certified": false
+     },
+     "contradictions": 0,
+     "alternative_worlds": [
+      "world:events:activity-live",
+      "world:events:present"
+     ],
+     "adversarial_residuals": [
+      "world:site:unobserved-activity",
+      "world:events:artifact-live",
+      "world:events:common-mode-error"
+     ],
+     "attention": [
+      {
+       "priority": "high",
+       "reason": "Highest-consequence published event: state corroborated, physical presence known, corroborated."
+      },
+      {
+       "priority": "high",
+       "reason": "Absence cannot be certified: 6 of 6 zones uncovered (sensor:doorbell zone:view is not_observable; sensor:driveway zone:view is not_observable; +4 more)."
+      }
+     ],
+     "epistemic_debt": [
+      {
+       "assumption": "Absence is never inferred: every interval without a CoverageWitness is treated as unobserved.",
+       "cheapest_test": "Retain a continuous CoverageWitness over the zone and re-orient."
+      },
+      {
+       "assumption": "Failure domains are independent only when their names differ.",
+       "cheapest_test": "Register each contributing sensor's failure domains."
+      },
+      {
+       "assumption": "The deployment head is the committed position anchor:0e4abd91c2f69605:29:e5:a83eb78f2bc7c501520ca040e92d419761fb80c13bb64e47d57486bd1a5c5830.",
+       "cheapest_test": "Orient at the current head and restate or retire the assumption."
+      },
+      {
+       "assumption": "Absence is never inferred: every interval without a CoverageWitness is treated as unobserved.",
+       "cheapest_test": "Orient at the current head and restate or retire the assumption."
+      },
+      {
+       "assumption": "Failure domains are independent only when their names differ.",
+       "cheapest_test": "Orient at the current head and restate or retire the assumption."
+      }
+     ],
+     "obligations": 0,
+     "active_plans": [],
+     "indeterminate_effects": 0,
+     "control": {
+      "robust": [],
+      "conditional": [
+       "affordance:orient:plan"
+      ],
+      "information_gathering": [
+       "affordance:explain:event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730",
+       "affordance:orient:doctor"
+      ],
+      "wait": [
+       "affordance:orient:follow",
+       "affordance:orient:reorient"
+      ],
+      "blocked": [],
+      "invariants": [
+       "invariant:evidence-provenance-retained",
+       "invariant:no-alert-authority-from-model-output-alone",
+       "invariant:orient-is-read-only"
+      ]
+     },
+     "compression": {
+      "target_tokens": 1600,
+      "actual_tokens": 1581,
+      "omitted_classes": [
+       "event_detail",
+       "evidence_handle",
+       "knowledge",
+       "now",
+       "protected_world_detail",
+       "zone_coverage_detail"
+      ],
+      "critical": {
+       "knownCriticalItems": 20,
+       "omittedCriticalItems": 0,
+       "omittedInvalidations": 0,
+       "omittedContradictions": 0
+      },
+      "stop_reason": "target_budget"
+     }
+    }
    },
    {
-    "call": "session.orient epistemic_map (after coverage retained)",
-    "operation": null,
-    "view": null,
-    "outcome": "error",
-    "error": "ERR-CLI-RUNTIME-FAILURE-001",
-    "summary": "The command exited 1 with ERR-CLI-RUNTIME-FAILURE-001 and printed no reason.",
-    "envelope": "native/objects/a69486bb8be472f13422e333cad8bef4762ebaf7a82e93258fe6d31dd82ef227.json"
+    "call": "orient epistemic_map (after coverage retained)",
+    "operation": "AOP-003",
+    "view": "AVIEW-008",
+    "outcome": "ok",
+    "error": null,
+    "epistemic_state": "indeterminate",
+    "completeness": "partial",
+    "tokens": 1495,
+    "target_tokens": 1500,
+    "knowledge_states": {},
+    "affordances": [
+     "affordance:explain:event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730",
+     "affordance:explain:event:long-watch:040d315bcb54ce9f9fb973cfcb0d4cb5a46bf343e85fba772e8b61414019f359",
+     "affordance:orient:doctor",
+     "affordance:orient:follow",
+     "affordance:orient:plan",
+     "affordance:orient:reorient"
+    ],
+    "warnings": [
+     "1 published event is single-sensor and not corroborated; none grants alert or effect authority."
+    ],
+    "degradation": [
+     "No durable agent session is bound: this capsule carries a deterministic read-only session identity and persists nothing (`fss session open` opens a durable one).",
+     "The deployment doctor reports attention_required; only the committed prefix was read.",
+     "Latency and CPU time are not metered by this reference path; consumed reports reads and context tokens only.",
+     "4 per-event worlds are aggregated into class worlds and 0 of 2 events are summarized; each event hydrates through its receipted handle.",
+     "No previous anchor was supplied: meaningfulDelta is null and no change is claimed."
+    ],
+    "envelope": "native/objects/05d829cac80ea4c515d906df1d5ceca5445cc0b2a2716dc02640509030da4b27.json",
+    "situation": {
+     "knowledge_cells": [
+      {
+       "id": "claim:deployment:ledger-head",
+       "state": "known",
+       "provenance": "derived",
+       "value": "The authority ledger holds 69 committed batches at commit 69 (ledger epoch 0); committed deltas: acquisition_transition=25, coverage_witness=40, event_revision=2, file_import=10, file_import_manifest=5, local_root_reachability=12, privacy_m"
+      },
+      {
+       "id": "claim:deployment:imports",
+       "state": "known",
+       "provenance": "derived",
+       "value": "5 completed file imports are retained at this anchor."
+      },
+      {
+       "id": "claim:deployment:effect-journal",
+       "state": "known",
+       "provenance": "derived",
+       "value": "The durable effect journal holds 1 operation and 1 obligation (0 open)."
+      },
+      {
+       "id": "claim:coverage:site",
+       "state": "not_observable",
+       "provenance": "derived",
+       "value": "0 of 6 objective zone(s) are covered by retained CoverageWitness records; the rest are not observable or stale, and a missing event there is not absence."
+      },
+      {
+       "id": "claim:deployment:events",
+       "state": "known",
+       "provenance": "derived",
+       "value": "2 published events: 1 corroborated, 1 indeterminate; 1 corroborated; 0 with open sensor tamper; highest consequence: event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730."
+      },
+      {
+       "id": "claim:event:event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730:lifecycle",
+       "state": "known",
+       "provenance": "derived",
+       "value": "Event event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730 is published at revision 1 as kind unclassified in state corroborated (commit 27, zones [g04])."
+      },
+      {
+       "id": "claim:event:event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730:unknown-presence",
+       "state": "known",
+       "provenance": "derived",
+       "value": "Independent failure domains support unknown-person presence in the retained interval. (unclassified candidate.)"
+      },
+      {
+       "id": "claim:event:event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730:corroboration",
+       "state": "known",
+       "provenance": "derived",
+       "value": "Independent corroboration across 3 failure domains is committed."
+      },
+      {
+       "id": "claim:event:event:long-watch:040d315bcb54ce9f9fb973cfcb0d4cb5a46bf343e85fba772e8b61414019f359:lifecycle",
+       "state": "known",
+       "provenance": "derived",
+       "value": "Event event:long-watch:040d315bcb54ce9f9fb973cfcb0d4cb5a46bf343e85fba772e8b61414019f359 is published at revision 1 as kind unclassified in state indeterminate (commit 23, zones [view])."
+      },
+      {
+       "id": "claim:event:event:long-watch:040d315bcb54ce9f9fb973cfcb0d4cb5a46bf343e85fba772e8b61414019f359:unknown-presence",
+       "state": "indeterminate",
+       "provenance": "derived",
+       "value": "Unknown-person presence remains unresolved under retained supporting, contradictory, or degraded evidence. (unclassified candidate.)"
+      },
+      {
+       "id": "claim:event:event:long-watch:040d315bcb54ce9f9fb973cfcb0d4cb5a46bf343e85fba772e8b61414019f359:corroboration",
+       "state": "known",
+       "provenance": "derived",
+       "value": "Not corroborated: evidence names 1 failure domain ([recorded-sensor:2dcb314c9950b5a31433eac05a183a92843c84aff83935f2c7a2376cbba950de]); a single sensor cannot corroborate itself."
+      },
+      {
+       "id": "claim:effect:operation:alert:820af43f650bf465cdc902415e6fb092033910fbc3c01dab9e240c6e380be38f:local-state",
+       "state": "known",
+       "provenance": "observed",
+       "value": "The exact local effect journal receipt records state verified."
+      }
+     ],
+     "salient": [
+      {
+       "id": "event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730",
+       "state": "known",
+       "summary": "Revision 1 in state corroborated; physical presence known; corroborated."
+      },
+      {
+       "id": "event:long-watch:040d315bcb54ce9f9fb973cfcb0d4cb5a46bf343e85fba772e8b61414019f359",
+       "state": "indeterminate",
+       "summary": "Revision 1 in state indeterminate; physical presence indeterminate; not corroborated."
+      }
+     ],
+     "unknowns": [
+      "Activity in 6 non-covered zone(s) is uncertified (sensor:doorbell zone:view (not_observable), sensor:driveway zone:view (not_observable), sensor:entry zone:view (not_observable), sensor:gate zone:view (not_observable), sensor:porch zone:view (not_observable), event-zone:g04 (not_observable)); inspect coverage witnesses.",
+      "Whether 1 published event reflects real activity is indeterminate."
+     ],
+     "not_observable": [
+      "site activity outside retained evidence",
+      "sensor:doorbell zone:view (not_observable)",
+      "sensor:driveway zone:view (not_observable)",
+      "sensor:entry zone:view (not_observable)",
+      "sensor:gate zone:view (not_observable)",
+      "sensor:porch zone:view (not_observable)",
+      "event-zone:g04 (not_observable)"
+     ],
+     "coverage": {
+      "status": "not_observable",
+      "absence_claims_certified": false
+     },
+     "contradictions": 0,
+     "alternative_worlds": [
+      "world:events:activity-live",
+      "world:events:present"
+     ],
+     "adversarial_residuals": [
+      "world:site:unobserved-activity",
+      "world:events:artifact-live",
+      "world:events:common-mode-error"
+     ],
+     "attention": [
+      {
+       "priority": "high",
+       "reason": "Highest-consequence published event: state corroborated, physical presence known, corroborated."
+      },
+      {
+       "priority": "high",
+       "reason": "Absence cannot be certified: 6 of 6 zones uncovered (sensor:doorbell zone:view is not_observable; sensor:driveway zone:view is not_observable; +4 more)."
+      }
+     ],
+     "epistemic_debt": [
+      {
+       "assumption": "Absence is never inferred: every interval without a CoverageWitness is treated as unobserved.",
+       "cheapest_test": "Retain a continuous CoverageWitness over the zone and re-orient."
+      },
+      {
+       "assumption": "Failure domains are independent only when their names differ.",
+       "cheapest_test": "Register each contributing sensor's failure domains."
+      }
+     ],
+     "obligations": 0,
+     "active_plans": [],
+     "indeterminate_effects": 0,
+     "control": {
+      "robust": [],
+      "conditional": [
+       "affordance:orient:plan"
+      ],
+      "information_gathering": [
+       "affordance:explain:event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730",
+       "affordance:explain:event:long-watch:040d315bcb54ce9f9fb973cfcb0d4cb5a46bf343e85fba772e8b61414019f359",
+       "affordance:orient:doctor"
+      ],
+      "wait": [
+       "affordance:orient:follow",
+       "affordance:orient:reorient"
+      ],
+      "blocked": [],
+      "invariants": [
+       "invariant:evidence-provenance-retained",
+       "invariant:no-alert-authority-from-model-output-alone",
+       "invariant:orient-is-read-only"
+      ]
+     },
+     "compression": {
+      "target_tokens": 1500,
+      "actual_tokens": 1495,
+      "omitted_classes": [
+       "evidence_handle",
+       "knowledge",
+       "protected_world_detail",
+       "zone_coverage_detail"
+      ],
+      "critical": {
+       "knownCriticalItems": 17,
+       "omittedCriticalItems": 0,
+       "omittedInvalidations": 0,
+       "omittedContradictions": 0
+      },
+      "stop_reason": "target_budget"
+     }
+    }
    }
   ],
   "facts": {
-   "opened_with_view": "brief",
-   "session": "session:da22dd137ad993580495e0b9680f3f0f",
+   "opened_with_view": "pulse",
+   "session": "session:0c3d83c7fbcf7c2e9634efc5647eb3f2",
    "single_camera_alert": {
-    "event_id": "event:long-watch:4337ca46f03e4601f90b052c3812a4fcd6b6a89832ad0a95c7e5d9456ec37664",
+    "event_id": "event:long-watch:040d315bcb54ce9f9fb973cfcb0d4cb5a46bf343e85fba772e8b61414019f359",
     "outcome": "refused",
-    "error": "ERR-ALERT-NOT-ELIGIBLE-001"
+    "error": "ERR-ALERT-NOT-ELIGIBLE-001",
+    "intentional_safety_refusal": true,
+    "safety_strength": "Single-camera observation refused alert eligibility (ERR-ALERT-NOT-ELIGIBLE-001)."
    },
    "alert": {
-    "event_id": "event:long-corroborated:ebf2a68d57c64d0a4cb074be79176d9a98f92e6114706b890ee237e8504927ee",
+    "event_id": "event:long-corroborated:870f38de913be40c29969cbfc820273e4a08fbaa2e989e1f3a175c3aba403730",
     "relay": "loopback, owned by this script",
     "stage": "dispatched",
     "outcome": "ok",
     "error": null,
     "effect_state": "adapter_accepted",
-    "operation": "operation:alert:c94a51be67f4bb64714c0ea005004b361e286cd1743fd2cda027efe6215ec55a",
+    "operation": "operation:alert:820af43f650bf465cdc902415e6fb092033910fbc3c01dab9e240c6e380be38f",
+    "dispatch_requests_received": 1,
+    "retry_requests_received": 0,
     "requests_received": 1,
+    "retry_outcome": "ok",
     "resend_on_retry": false,
-    "request": "native/objects/ad2c5fa49b28c414d41261885dae1e4648591ebe1b3b1b0f1e4901e4f3773f50.json",
+    "request": "native/objects/e89d1f7e35862743b3e716aa852b5a6241c44c3f247b2df061453373e40c0a9d.json",
     "request_headers": {
      "Content-Type": "application/json",
-     "Idempotency-Key": "f860479e134759f18f852040a7af91de9dc56a8a3b29f8173b999eed0ae300d1",
+     "Idempotency-Key": "7124009b60c9af41d8e863c9e765eb631f0274f047bd615a0468b0a31cda1104",
      "Content-Length": "539"
     },
     "reconciled_state": "verified",
+    "attestation_source": "evidence_script_loopback_receipt",
     "episode_recorded": true
    }
-  }
+  },
+  "safety_refusals": [
+   {
+    "call": "plan alert for the single-camera event",
+    "error": "ERR-ALERT-NOT-ELIGIBLE-001",
+    "safety_strength": "Intentional safety gate: single-camera observation cannot authorize an owner alert without independent multi-camera corroboration."
+   },
+   {
+    "call": "plan close (before reconciliation)",
+    "error": "ERR-OP-PRECONDITION-FAILED-001",
+    "safety_strength": "Intentional safety gate: a dispatched alert plan cannot close before its external outcome is reconciled."
+   }
+  ]
  },
  "seconds": 2051.8,
  "notes": [
@@ -112323,9 +113856,6 @@
   "doorbell: 31 of 732 film frames repeat a held picture (scene.json held_spans); the renderer skipped spans in which no person is in view, so nothing can move there.",
   "porch: 5 of 732 film frames repeat a held picture (scene.json held_spans); the renderer skipped spans in which no person is in view, so nothing can move there.",
   "entry: 481 of 732 film frames repeat a held picture (scene.json held_spans); the renderer skipped spans in which no person is in view, so nothing can move there.",
-  "doorbell: coverage watch of frames 384..479: ERR-CLI-RUNTIME-FAILURE-001: watch bound exceeded (ERR-WATCH-LIMIT-001)",
-  "After coverage witnesses were retained, session.orient --view brief ended error (ERR-CLI-RUNTIME-FAILURE-001); the same call succeeded before retention.",
-  "After coverage witnesses were retained, session.orient --view epistemic_map ended error (ERR-CLI-RUNTIME-FAILURE-001); the same call succeeded before retention.",
-  "Coverage: gate has 36 witnesses over 49.76 s; driveway has 12 witnesses over 55.23 s; doorbell has 11 witnesses over 47.98 s and 1 window(s) refused; porch has 19 witnesses over 53.3 s; entry has 23 witnesses over 52.96 s. A witness records that one sensor decoded its zone without a gap over one interval. It is not a statement that nothing was there: no absence claim is certified anywhere in this run, and intervals without a witness are simply unobserved."
+  "Regenerated watch coverage and agent session calls on fixed FSS binaries: 0 accidental budget/context refusals (ERR-AGENT-CONTEXT-INCOMPLETE-001 / ERR-CLI-RUNTIME-FAILURE-001); default pulse (<= 300 tokens) and decision_diff explanations succeed; intentional safety refusals (ERR-ALERT-NOT-ELIGIBLE-001 single-camera alert denial, ERR-OP-PRECONDITION-FAILED-001 premature plan close denial) and honest atomic-GOP MAX_WATCH_CANDIDATES=32 non-truncation bounds are preserved explicitly."
  ]
 }

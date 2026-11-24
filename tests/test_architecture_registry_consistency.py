@@ -100,10 +100,10 @@ class TestLiveRepoConsistency(unittest.TestCase):
         self.assertEqual(summary["franken_imports_count"], 47)
         self.assertEqual(summary["agent_operations_count"], 14)
         self.assertEqual(summary["agent_views_count"], 8)
-        self.assertEqual(summary["qualification_lanes_count"], 15)
+        self.assertEqual(summary["qualification_lanes_count"], 16)
         self.assertEqual(summary["costs_count"], 41)
-        # 205 interchange/CLI declarations and 15 native format registrations.
-        self.assertEqual(summary["schemas_count"], 220)
+        # 220 interchange/CLI declarations and 15 native format registrations.
+        self.assertEqual(summary["schemas_count"], 235)
         self.assertGreater(summary["known_active_ids"], 800)
         self.assertGreaterEqual(summary["tombstone_ids"], 14)
 

@@ -763,9 +763,15 @@ def validate_cargo_metadata_for_f0(
                     _metadata_violation(result, f"#{name}/targets/{field_name}", f"package '{name}' target {field_name} must be a list of strings, found {values!r}")
                     continue
                 bucket.update(values)
-        if "custom-build" in kinds:
+        norm_name = authority.normalize_crate(name)
+        audited_closure_pkg = (
+            not is_member
+            and view is not None
+            and (norm_name in view.closure or norm_name in view.fundamental or norm_name == "asupersync")
+        )
+        if "custom-build" in kinds and not (audited_closure_pkg and view is not None and norm_name in view.audited_custom_build):
             _metadata_violation(result, f"#{name}/targets/custom-build", f"Package '{name}' declares custom-build (build.rs) target violating pure-Rust DEP-CLASS-F0", manifest)
-        if "proc-macro" in kinds or "proc-macro" in crate_types:
+        if ("proc-macro" in kinds or "proc-macro" in crate_types) and not (audited_closure_pkg and view is not None and norm_name in view.audited_proc_macros):
             _metadata_violation(result, f"#{name}/targets/proc-macro", f"Package '{name}' declares proc-macro target violating pure-Rust DEP-CLASS-F0", manifest)
         dynamic = sorted((kinds | crate_types) & DYNAMIC_CRATE_TYPES)
         if dynamic:
@@ -788,7 +794,7 @@ def validate_cargo_metadata_for_f0(
             if links is not None:
                 _metadata_violation(result, f"#{name}/links", f"workspace package '{name}' illegally declares native links {links!r} violating pure-Rust DEP-CLASS-F0", manifest)
             continue
-        if links is not None:
+        if links is not None and not (audited_closure_pkg and view is not None and f"{norm_name}={links}" in view.audited_target_cfg_links):
             _metadata_violation(result, f"#{name}/links", f"Non-member package '{name}' in closure declares native links {links!r} violating pure-Rust DEP-CLASS-F0", manifest)
         if view is None:
             continue

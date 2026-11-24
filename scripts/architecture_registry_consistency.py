@@ -1112,7 +1112,13 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
             emit(ERR_CORRUPT_FILE, ac_file, "#/meaningfulDeltaComparison/rules", "rules must be a non-empty array")
         else:
             delta_rs = read_repo_text("crates/fss-reference/src/meaningful_delta.rs") or ""
-            orient_rs = read_repo_text("crates/fss-reference/src/agent_orient.rs") or ""
+            orient_parts = [read_repo_text("crates/fss-reference/src/agent_orient.rs") or ""]
+            orient_dir = ROOT / "crates/fss-reference/src/agent_orient"
+            if orient_dir.is_dir():
+                for child in sorted(orient_dir.rglob("*.rs")):
+                    rel = child.relative_to(ROOT).as_posix()
+                    orient_parts.append(read_repo_text(rel) or "")
+            orient_rs = "\n".join(orient_parts)
             seen_rules: set[str] = set()
             for r_idx, rule in enumerate(rules):
                 loc = f"#/meaningfulDeltaComparison/rules/{r_idx}"

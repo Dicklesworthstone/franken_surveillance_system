@@ -15,6 +15,7 @@ Machine source: `architecture/release_qualification.json`. Full doctrine: [`docs
 | `QL-THREAT-001` | `threat` | `sealed corpus` | Event-level hard-negative/threat AUPRC, fixed-alert-budget recall, calibration, and miss ledger | `local` |
 | `QL-AGENT-001` | `agent_cognitive_control` | `sealed task and handoff corpus` | CognitiveFacet owner/anchor compatibility, cold/warm orientation, epistemic fidelity, WorldEnvelope retention and robust-control classification, context sufficiency, VOI efficiency, contingent planning, effect closure, handoff, and learning-accretion receipts | `local` |
 | `QL-PRIVACY-001` | `privacy` | `deployment profile` | Mask-before-egress, retention, export, deletion closure, and capability noninterference | `local` |
+| `QL-SCALE-001` | `scale_and_crash_recovery` | `100-camera / 1M-commit storage, packfile compaction, and OS SIGKILL crash recovery` | 100-camera / 1M-commit throughput, sub-10ms orient/query latency, 50+ OS SIGKILL crash cuts with zero data loss or orphan roots, and v1->v2 migration speedup proof bundle | `local` |
 | `QL-LINUX-001` | `native_release` | `linux-x86_64` | Clean snapshot native build, tests, package, SBOM, signatures, smoke, and receipt | `local` |
 | `QL-MACOS-001` | `native_release` | `darwin-arm64` | Clean snapshot native build, tests, package, SBOM, signatures, smoke, and receipt | `local` |
 | `QL-WINDOWS-001` | `native_release` | `windows-x86_64` | Clean snapshot native build, tests, package, SBOM, signatures, smoke, and receipt | `local` |

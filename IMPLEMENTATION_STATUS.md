@@ -1,8 +1,30 @@
 # Implementation status
 
-**As of:** 2026-11-23 America/New_York (dated feature sections retain their original verification scope)
-**Project state:** pre-release deterministic reference implementation; not production-qualified  
-**Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
+**As of:** 2026-11-24 America/New_York (dated feature sections retain their original verification scope)
+**Project state:** locally qualified on `darwin-arm64` across policy, scale, crash-recovery, daemon soak, lab, media, archive, privacy, model, geometry, threat, agent, adapter-loopback, and macOS parity lanes; multi-target DSR release matrix (`linux-x86_64`, `windows-x86_64`) and physical hardware-tuple field qualification remain open
+**Release authority:** repository-owned local qualification (`scripts/qualify.sh`) and retained DSR receipts, not hosted CI
+
+## Massive-scale overhaul (`fss-x4a.31`) local qualification — 2026-11-24
+
+All 5 overhaul tracks (Tracks A–E; 33 actionable beads under master epic `fss-x4a.31`) are implemented in pure Rust 2024 (`#![forbid(unsafe_code)]`, zero `serde`, zero Tokio, zero unbounded channels, zero detached threads in production `src/`) and verified locally on `darwin-arm64` (`nightly-2026-08-31`):
+
+- **Track A — Massive-Scale Storage, MVCC, Packfiles, AEAD Cloud Archive & Crash Recovery (`fss-x4a.31.1`, A1–A9):**
+  - Replaced whole-ledger replay and one-file-per-frame spools with chunked content-addressed packfiles (`fss-pack`, 64 MiB immutable packs + O(1) mmap/offset index), MVCC projection store (`fss-projection-store`) with Merkle ledger epoch chaining (`fss-ledger`), streaming retention/compaction + background scrubber with legal-hold preservation, incremental v1→v2 migration, client-side RFC 8439 ChaCha20-Poly1305 AEAD envelope encryption + cryptographic erasure + SigV4 S3/R2/B2 multipart upload/restore, and segmented/checkpointed agent & effect stores.
+  - **`QL-SCALE-001` (`scripts/lanes/scale_benchmark.sh`):** Retained proof at `target/test-logs/scale-benchmark/scale_benchmark_report.json` — **100 cameras / 1,000,000 commits** at **31,023.6 commits/s**, `orient` p99 **< 1 ms**, `query` p99 **4 µs**, **56 real OS `SIGKILL` crash-cuts** recovered with **0 data loss, 0 partial roots, 0 orphans** (10/10 SLO gates PASS).
+- **Track B — Native macOS Apple Silicon Unblock, Cross-Platform Parity & Zero-Warning Hygiene (`fss-x4a.31.2`, B1–B4):**
+  - Eliminated Linux-only `/proc/self/fd` and non-portable lock/path/socket assumptions across `fss-object`, `fss-reference`, `fss-cli`, and test harnesses (`O_NONBLOCK` BSD `accept()` inheritance and `/var -> /private/var` canonicalization).
+  - Full workspace `cargo clippy --locked --offline --workspace --all-targets -- -D warnings` passes with **0 warnings, 0 errors** across all 27 crates (preserving strict production `deny(unwrap_used, expect_used, panic)` with test-only exemptions in `clippy.toml`).
+  - **`QL-MACOS-001` (`scripts/lanes/macos_parity.sh`):** **7/7 checks PASS** on `Darwin/arm64` (retained proof at `target/test-logs/macos-parity/macos_parity_report.json`).
+- **Track C — Always-On Asupersync Daemon, Multi-Vendor Camera Interop & ML Pipeline (`fss-x4a.31.3`, C0–C8):**
+  - Pure-Rust `fss-daemon` + `fss-ipc` UDS/NDJSON runtime supervising multi-camera ingest (Wyze direct RTSP & TUTK zero-orphan unification, native 4MP UniFi G4 H.264/HEVC, ONVIF/Tapo, unified mDNS/SSDP/WS-Discovery), vault-backed camera credential resolution (`fss-daemon` / `fss site run --vault-dir --passphrase-file` with `0600` passphrase-file enforcement, explicit argv secret refusal, and zero canary leaks), bounded YOLOX-Nano inference pool, OSD masking, live cross-camera clock-offset corroboration, and ring compaction.
+  - Retained deterministic 540-tick soak proof at `target/test-logs/daemon-soak/deterministic_soak_receipt.json` (**451 verified batches**, **0 false OSD alerts**, **2 corroborated events**, **2 held closures preserved**, `active_tasks=0`, `leaked_obligations=0`).
+- **Track D — Multimodal H2/H3 Visual Hydration, Operational MCP, Pure-Rust TLS 1.3 Relays & OS Keychain (`fss-x4a.31.4`, D1–D5):**
+  - Privacy-masked H2/H3 visual hydration (owner mask rectangles verified pixel-by-pixel before JPEG encoding), dynamic `affordance:orient:plan` + operational `fss/1` MCP targets, pure-Rust RFC 8446 TLS 1.3 (`TLS_CHACHA20_POLY1305_SHA256`, X25519, Ed25519, strict X.509) HMAC webhooks + `ntfy`/`Pushover`/`SMTPS` relays with `DurableEffectJournal` idempotency, and `fss-vault` OS Keychain / Secret Service vault with zeroized secret handles.
+  - Retained 14-operation `fss-mcp` adversarial E2E proof at `target/test-logs/mcp-14-ops/mcp_14_ops_e2e_report.json` (all 14 `CORE_TOOLS` verified against live `fss-daemon` + TLS 1.3 HMAC relay; 11/11 adversarial checks; 0 canary leaks across 617 surfaces; 4 concurrent agents × 8 cameras + compaction with warm `session_orient` p99 **3.146 ms**).
+- **Track E — Constitutional Policy, Asupersync Migration, Monolith Decomposition, Unified CLI & Live Cockpit (`fss-x4a.31.5`, E1–E6):**
+  - Static guard `scripts/asupersync_concurrency_guard.py` enforces **0 Tokio, 0 unbounded channels, 0 detached threads** across all 2,062 production Rust files; 128-seed `LabRuntime` fault campaign passes **128/128 bit-identical replays** with 0 leaked obligations (`target/test-logs/asupersync-lab/fault_campaign.jsonl`).
+  - Isomorphically decomposed oversized monolith files, shipped unified `fss <domain> <verb>` CLI grammar (14 domains / 57 verbs, including wired `vault`, `notify`, and `archive` packfile/S3/crypto-erase domains), built real read-only Live Operator Cockpit (`fss-dashboard --live` via UDS + loopback HTTP/SSE + headless TUI + MVCC fallback with post-checkpoint WAL replay), unified `fss-daemon` v2 layout with lock-free read-only `fss doctor` / `fss orient`, replaced stubbed network/IPC daemon paths with real persistent RTSP/HTTP-MJPEG decode and real `SnapshotCamera`/`ReloadManifest`/`ProbeDetect` execution, regenerated honest `website/public/watch/intrusion/native.json` and `website/public/capabilities.json` (`scripts/verify_website_showcase.py` PASS), and synchronized `fss capabilities --json` with retained local proof bundles.
+- **Explicitly remaining open / not claimed:** `h265_main10_rext`, `h264_interlaced_or_non_420`, `rtp_over_udp`, `uvc_acquisition`, `real_footage_quality_evaluation`, `agent_protocol_transport`, `mcp_remote_authenticated_transport`, `property_reconstruction`, full multi-target DSR release matrix (`QL-LINUX-001` / `QL-WINDOWS-001` / `QL-RELEASE-001`), and live multi-vendor physical camera field calibration.
 
 ## Copied recording exports restored into native archives — 2026-11-23
 

@@ -1013,10 +1013,13 @@ def parse_all_generic_bounds(
     return bounds
 
 
-def extract_type_aliases(content: str) -> dict[str, str]:
+def extract_type_aliases(content: str, pub_only: bool = False) -> dict[str, str]:
     """Extracts type aliases from Rust source code.
 
     Returns dict mapping alias name to clean target type string.
+    When pub_only=True, only extracts pub/pub(...) type aliases so private aliases
+    and trait associated types (e.g. `type Error = ...;` inside impl blocks) cannot
+    pollute cross-module workspace alias resolution.
     """
     masked = mask_comments_and_strings(content)
     n = len(masked)
@@ -1035,7 +1038,11 @@ def extract_type_aliases(content: str) -> dict[str, str]:
         line_start = masked.rfind("\n", 0, idx)
         line_start = 0 if line_start == -1 else line_start + 1
         prefix = masked[line_start:idx].strip()
-        if prefix and not re.fullmatch(r"(?:pub(?:\([^\)]*\))?\s*)?", prefix):
+        if pub_only:
+            if not re.fullmatch(r"pub(?:\([^\)]*\))?", prefix):
+                i = idx + 4
+                continue
+        elif prefix and not re.fullmatch(r"(?:pub(?:\([^\)]*\))?\s*)?", prefix):
             i = idx + 4
             continue
 
@@ -1328,7 +1335,7 @@ def check_module_imports(
         if m_abs.is_file():
             try:
                 m_content = m_abs.read_text(encoding="utf-8")
-                workspace_alias_map.update(extract_type_aliases(m_content))
+                workspace_alias_map.update(extract_type_aliases(m_content, pub_only=True))
                 workspace_alias_map.update(extract_use_renames(m_content, pub_only=True))
             except Exception:
                 pass

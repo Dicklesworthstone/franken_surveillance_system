@@ -1273,6 +1273,61 @@ impl AliasOutput {
         errors = [f for f in findings if f.severity == "error"]
         self.assertEqual(errors, [], f"Subsystem generation constructor audit failed on repo: {errors}")
 
+    def test_private_associated_type_in_other_module_does_not_pollute_workspace_aliases(self) -> None:
+        """Trait associated types like `type Error = ModelManifestError;` in one module must not pollute unrelated modules."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            core_src = tmp_root / "crates/fss-core/src"
+            core_src.mkdir(parents=True, exist_ok=True)
+            for fname in ("effect.rs", "event.rs", "belief.rs", "region.rs"):
+                (core_src / fname).write_text("", encoding="utf-8")
+            src = tmp_root / "crates/fss-object/src"
+            src.mkdir(parents=True, exist_ok=True)
+            (src / "model_manifest.rs").write_text(
+                """pub struct ModelManifestError;
+impl TryFrom<&str> for () {
+    type Error = ModelManifestError;
+    fn try_from(_: &str) -> Result<Self, Self::Error> { Ok(()) }
+}
+""",
+                encoding="utf-8",
+            )
+            (src / "clean_helper.rs").write_text(
+                """pub struct EffectIntent;
+type HelperResult<T> = Result<T, Box<dyn std::error::Error>>;
+pub fn load_intent() -> HelperResult<EffectIntent> {
+    Ok(EffectIntent)
+}
+""",
+                encoding="utf-8",
+            )
+            reg = tmp_root / "architecture"
+            reg.mkdir(parents=True, exist_ok=True)
+            (reg / "semantic_plane_registry.json").write_text(
+                json.dumps({
+                    "schema": "fss.semantic_plane_registry.v1",
+                    "planes": {"authority": {}, "cognition": {}, "effect": {}, "ambiguous": {}, "support": {}},
+                    "registered_boundary_modules": [],
+                    "module_declarations": {
+                        "crates/fss-core/src/effect.rs": "support",
+                        "crates/fss-core/src/event.rs": "support",
+                        "crates/fss-core/src/belief.rs": "support",
+                        "crates/fss-core/src/region.rs": "support",
+                        "crates/fss-object/src/model_manifest.rs": "support",
+                        "crates/fss-object/src/clean_helper.rs": "support",
+                    },
+                    "types": {
+                        "EffectIntent": {"file": "crates/fss-object/src/clean_helper.rs", "plane": "effect"},
+                    },
+                }),
+                encoding="utf-8",
+            )
+            is_valid, findings, _ = audit_semantic_planes(tmp_root, check_doctests=False)
+            self.assertTrue(
+                is_valid,
+                f"Private associated type polluted unrelated module: {[f.message for f in findings if f.severity == 'error']}",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

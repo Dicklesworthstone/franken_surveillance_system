@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import re
 import sys
 from pathlib import Path
@@ -58,11 +59,27 @@ def included(path: Path) -> bool:
 
 
 def source_paths() -> set[str]:
-    return {
-        path.relative_to(ROOT).as_posix()
-        for path in ROOT.rglob("*")
-        if path.is_file() and included(path)
-    }
+    paths: set[str] = set()
+    for dirpath, dirnames, filenames in os.walk(ROOT):
+        rel_dir = Path(dirpath).relative_to(ROOT)
+        if rel_dir == Path("."):
+            dirnames[:] = [
+                d for d in dirnames
+                if d not in EXCLUDED_TOP_LEVEL
+                and d != "__pycache__"
+                and Path(d) not in EXCLUDED_PREFIXES
+            ]
+        else:
+            dirnames[:] = [
+                d for d in dirnames
+                if d != "__pycache__"
+                and (rel_dir / d) not in EXCLUDED_PREFIXES
+            ]
+        for name in filenames:
+            path = Path(dirpath) / name
+            if included(path):
+                paths.add(path.relative_to(ROOT).as_posix())
+    return paths
 
 
 def parse_manifest_rows(path: Path, findings: list[str]) -> dict[str, str]:

@@ -924,7 +924,24 @@ class TestSchemaConstitution(unittest.TestCase):
         # Add movie-output v2 with the full u64 track identifier; preserve historical v1.
         # Six MPEG-TS extraction/import domains were registered. The ONVIF zone policy
         # and event revision comparison retain their canonical tags in their schema rows.
-        self.assertEqual(result["digestDomainCount"], 933)
+        # Plus 23 prior digest domains (to 956), 10 ATP/remote-simulator/SIMD/dwell/MPEG-TS v2 domains (to 966),
+        # 7 v2 Radix-Merkle/epoch-ledger domains (fss-x4a.31.1.1, to 973),
+        # 5 local IPC wire domains (fss-x4a.31.3.8, to 978),
+        # 1 packfile virtual root catalog domain (fss-x4a.31.1.2, to 979),
+        # 10 Cx-scoped secret vault domains (fss-x4a.31.4.4, to 989),
+        # 3 OSD ignore-region / proposal domains (fss-x4a.31.3.3, to 992),
+        # 4 MVCC projection store / combiner domains (fss-x4a.31.1.3, to 996),
+        # 5 multi-stream ML inference model-pool domains (fss-x4a.31.3.5, to 1001),
+        # 5 retention/compaction/scrubber/epoch-archival domains (fss-x4a.31.1.4, to 1006),
+        # 5 live bounded-clock corroboration domains (fss-x4a.31.3.9, to 1011),
+        # 1 v1-to-v2 migration equivalence receipt domain (fss-x4a.31.1.5, to 1012),
+        # 9 agent/effect/learning epoch-index domains (fss-x4a.31.1.9, to 1021),
+        # 2 H2/H3 multimodal hydration receipt domains (fss-x4a.31.4.1, to 1023),
+        # 8 AEAD packfile encryption & cold-archive domains (fss-x4a.31.1.6, to 1031),
+        # 5 continuous fss-daemon domains (fss-x4a.31.3.6, to 1036),
+        # 12 operational fss/1 + fss-mcp target/probe/intent domains (fss-x4a.31.4.2, to 1048),
+        # and 8 pure-Rust TLS 1.3 webhook/relay/SMTP/escalation domains (fss-x4a.31.4.3, to 1056).
+        self.assertEqual(result["digestDomainCount"], 1056)
 
         # Continuation cursor is verified implemented
         implemented_names = {s["name"] for s in result["schemas"] if s["status"] == "implemented"}
@@ -1533,7 +1550,24 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         # Add movie-output v2 with the full u64 track identifier; preserve historical v1.
         # Six MPEG-TS extraction/import domains were registered. The ONVIF zone policy
         # and event revision comparison retain their canonical tags in their schema rows.
-        self.assertEqual(result["digestDomainCount"], 933)
+        # Plus 23 prior digest domains (to 956), 10 ATP/remote-simulator/SIMD/dwell/MPEG-TS v2 domains (to 966),
+        # 7 v2 Radix-Merkle/epoch-ledger domains (fss-x4a.31.1.1, to 973),
+        # 5 local IPC wire domains (fss-x4a.31.3.8, to 978),
+        # 1 packfile virtual root catalog domain (fss-x4a.31.1.2, to 979),
+        # 10 Cx-scoped secret vault domains (fss-x4a.31.4.4, to 989),
+        # 3 OSD ignore-region / proposal domains (fss-x4a.31.3.3, to 992),
+        # 4 MVCC projection store / combiner domains (fss-x4a.31.1.3, to 996),
+        # 5 multi-stream ML inference model-pool domains (fss-x4a.31.3.5, to 1001),
+        # 5 retention/compaction/scrubber/epoch-archival domains (fss-x4a.31.1.4, to 1006),
+        # 5 live bounded-clock corroboration domains (fss-x4a.31.3.9, to 1011),
+        # 1 v1-to-v2 migration equivalence receipt domain (fss-x4a.31.1.5, to 1012),
+        # 9 agent/effect/learning epoch-index domains (fss-x4a.31.1.9, to 1021),
+        # 2 H2/H3 multimodal hydration receipt domains (fss-x4a.31.4.1, to 1023),
+        # 8 AEAD packfile encryption & cold-archive domains (fss-x4a.31.1.6, to 1031),
+        # 5 continuous fss-daemon domains (fss-x4a.31.3.6, to 1036),
+        # 12 operational fss/1 + fss-mcp target/probe/intent domains (fss-x4a.31.4.2, to 1048),
+        # and 8 pure-Rust TLS 1.3 webhook/relay/SMTP/escalation domains (fss-x4a.31.4.3, to 1056).
+        self.assertEqual(result["digestDomainCount"], 1056)
         # 36 = 28 + fss.sensor_tamper_status.v1 (owner SensorTamperStatus, fss-2uftm)
         # + fss.agent_operations.v1 / fss.agent_views.v1 / fss.agent_request_envelope.v1
         #   (owners AgentOperation / AgentView / AgentRequestEnvelope, fss-x4a.30.83.17-40)
@@ -1561,7 +1595,7 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         # landed 2026-10-10 (fss-x4a.30.51/30.18 realization, camera-ingest lane).
         # 53 = 52 + fss.experiment_receipt.v1 (owner ExperimentReceipt, FSS-196/fss-x4a.26.16).
         # Current named Rust owners after reconciling the complete schema inventory.
-        self.assertEqual(result["implementedCount"], 56)  # Includes the typed hydration projection.
+        self.assertEqual(result["implementedCount"], 58)  # Includes the typed hydration projection and newly implemented schemas.
 
         unreg_findings = [
             f for f in validator.findings

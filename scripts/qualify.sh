@@ -100,7 +100,7 @@ WRITE_RECEIPT=1
 usage() {
   cat >&2 <<'USAGE'
 Usage: scripts/qualify.sh [--lane LANE] [--receipt-dir DIR] [--no-receipt]
-       scripts/qualify.sh [policy|docs|rust|full|lab|adapter|media|archive|model|geometry|threat|agent|privacy|release-preflight|release]
+       scripts/qualify.sh [policy|docs|rust|full|lab|adapter|media|archive|model|geometry|threat|agent|privacy|scale-benchmark|macos-parity|release-preflight|release]
        scripts/qualify.sh --recording-lifecycle
 
 The repository-local qualifier is the semantic qualification entrypoint. Doodlestein
@@ -108,7 +108,7 @@ Self-Releaser executes it from clean, exact source/sibling snapshots on controll
 Workflow YAML is a portable supplementary job graph and contains no unique release authority.
 --recording-lifecycle runs supplemental locked, offline recorder, review, and event contracts.
 
-Implemented now: policy, docs, rust, full, release-preflight, release.
+Implemented now: policy, docs, rust, full, lab, adapter, media, archive, model, geometry, threat, agent, privacy, scale-benchmark, macos-parity, release-preflight, release.
 Claim-specific lanes fail closed until their dedicated Rust harness exists under scripts/lanes/.
 USAGE
 }
@@ -119,7 +119,7 @@ while (($#)); do
     --receipt-dir) RECEIPT_DIR="${2:?missing directory after --receipt-dir}"; shift 2 ;;
     --no-receipt) WRITE_RECEIPT=0; shift ;;
     -h|--help) usage; exit 0 ;;
-    policy|docs|rust|full|lab|adapter|media|archive|model|geometry|threat|agent|privacy|release-preflight|release)
+    policy|docs|rust|full|lab|adapter|media|archive|model|geometry|threat|agent|privacy|scale-benchmark|macos-parity|release-preflight|release)
       LANE="$1"; shift ;;
     *) printf 'unknown argument or lane: %s\n' "$1" >&2; usage; exit 4 ;;
   esac
@@ -346,6 +346,8 @@ policy_lane() {
   run semantic-plane-checker python3 scripts/semantic_plane_checker.py
   run semantic-plane-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_semantic_plane_checker.py
   run semantic-plane-doctests semantic_plane_doctest_map
+  run asupersync-concurrency-guard python3 scripts/asupersync_concurrency_guard.py
+  run asupersync-concurrency-guard-selftest python3 scripts/asupersync_concurrency_guard.py --self-test
   run standards-first-adapter-checker python3 scripts/standards_first_adapter_checker.py
   run standards-first-adapter-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_standards_first_adapter_checker.py
   run release-artifact-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_release_artifacts.py
@@ -361,13 +363,15 @@ policy_lane() {
   run e2e-selftest-via-runner env FSS_E2E_LOG_DIR="$RECEIPT_DIR/e2e-logs" bash scripts/e2e/run.sh scripts/e2e/selftest.sh
   run diff-check git diff --check
   run shell-syntax bash -n scripts/qualify.sh scripts/release_qualify.sh scripts/publish_to_github.sh \
-    scripts/e2e/run.sh scripts/e2e/lib.sh scripts/e2e/selftest.sh
+    scripts/e2e/run.sh scripts/e2e/lib.sh scripts/e2e/selftest.sh \
+    scripts/lanes/adapter.sh scripts/lanes/scale_benchmark.sh scripts/lanes/macos_parity.sh
   run python-syntax env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 -m py_compile \
     scripts/check-policy.py scripts/dependency_audit.py scripts/manifest_audit.py scripts/stable_id_audit.py \
     scripts/schema_validate.py scripts/slo_validate.py scripts/architecture_registry_consistency.py \
     scripts/dependency_dag_checker.py scripts/claim_proof_bundle_checker.py scripts/unsafe_prohibition_checker.py \
     scripts/dependency_closure_scanner.py scripts/semantic_plane_checker.py scripts/qualification_receipt.py \
     scripts/standards_first_adapter_checker.py scripts/generate_robot_docs.py scripts/robot_docs_checker.py \
+    scripts/asupersync_concurrency_guard.py scripts/verify_website_showcase.py scripts/soak_live_daemon.py \
     scripts/generate-manifest.py scripts/release_artifacts.py scripts/json_instance_validate.py \
     scripts/e2e/validate_log.py scripts/e2e/runner_verdict.py tests/test_e2e_lib_fail_closed.py \
     tests/test_manifest_audit.py tests/test_stable_id_audit.py tests/test_release_artifacts.py \
@@ -403,7 +407,8 @@ rust_lane() {
 }
 
 claim_lane() {
-  local script="$ROOT/scripts/lanes/${LANE}.sh"
+  local script_name="${LANE//-/_}"
+  local script="$ROOT/scripts/lanes/${script_name}.sh"
   policy_lane
   if [[ ! -x "$script" ]]; then
     printf 'qualification lane %s is specified but not implemented: %s is absent\n' "$LANE" "$script" >&2
@@ -497,7 +502,7 @@ case "$LANE" in
   docs) docs_lane ;;
   rust) policy_lane; rust_lane ;;
   full) policy_lane; rust_lane; "$ROOT/scripts/lanes/media.sh"; "$ROOT/scripts/lanes/archive.sh" ;;
-  lab|adapter|media|archive|model|geometry|threat|agent|privacy) claim_lane ;;
+  lab|adapter|media|archive|model|geometry|threat|agent|privacy|scale-benchmark|macos-parity) claim_lane ;;
   release-preflight) policy_lane; clean_tree_lane; rust_lane ;;
   release) policy_lane; rust_lane; "$ROOT/scripts/lanes/media.sh"; "$ROOT/scripts/lanes/archive.sh"; clean_tree_lane ;;
   *) printf 'unknown qualification lane: %s\n' "$LANE" >&2; exit 4 ;;

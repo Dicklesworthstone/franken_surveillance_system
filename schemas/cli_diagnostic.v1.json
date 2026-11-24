@@ -66,6 +66,12 @@
     },
     "proof_handle": {
       "type": "string"
+    },
+    "detail": {
+      "type": "string"
+    },
+    "recovery_hint": {
+      "type": "string"
     }
   }
 }

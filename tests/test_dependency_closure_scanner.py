@@ -184,12 +184,20 @@ class TestDependencyClosurePositiveControls(unittest.TestCase):
         self.assertGreaterEqual(summary["package_count"], 6)
 
     def test_real_repo_default_fails_closed_on_unresolved_runtime(self) -> None:
-        """The real repository fails closed by default because asupersync is not yet resolved in Cargo.lock."""
+        """Default invocation passes on the real repository (asupersync resolved) and fails closed when unresolved."""
         is_valid, findings, summary = audit_dependency_closure(ROOT)
-        self.assertFalse(is_valid)
-        self.assertEqual(summary["status"], "fail")
-        codes = [f.code for f in findings]
-        self.assertIn(ERR_DECLARED_RUNTIME_UNRESOLVED, codes)
+        self.assertTrue(
+            is_valid,
+            f"Real repo with resolved asupersync failed default closure audit: {[f.message for f in findings if f.severity == 'error']}",
+        )
+        self.assertEqual(summary["status"], "pass")
+        self.assertTrue(summary["declared_runtime_resolved"])
+        with tempfile.TemporaryDirectory() as td:
+            ws_root, allowlist_path = make_valid_isolated_workspace(Path(td), resolve_runtime=False)
+            ws_valid, ws_findings, ws_summary = audit_dependency_closure(ws_root, allowlist_path=allowlist_path)
+            self.assertFalse(ws_valid)
+            self.assertEqual(ws_summary["status"], "fail")
+            self.assertIn(ERR_DECLARED_RUNTIME_UNRESOLVED, [f.code for f in ws_findings])
 
     def test_cli_real_repo_with_allow_unresolved_runtime_passes(self) -> None:
         """CLI invocation on the real repository with --allow-unresolved-runtime exits with code 0."""
@@ -199,11 +207,24 @@ class TestDependencyClosurePositiveControls(unittest.TestCase):
         self.assertIn("[PASS]", result.stdout)
 
     def test_cli_real_repo_default_fails_closed(self) -> None:
-        """Default CLI invocation on the real repository exits with code 1."""
+        """Default CLI invocation passes on the real repository (asupersync resolved) and fails closed on an unresolved workspace."""
         cmd = [sys.executable, str(ROOT / "scripts/dependency_closure_scanner.py")]
         result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(ROOT))
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("[FAIL]", result.stdout)
+        self.assertEqual(result.returncode, 0, f"CLI failed:\n{result.stderr}\n{result.stdout}")
+        self.assertIn("[PASS]", result.stdout)
+        with tempfile.TemporaryDirectory() as td:
+            ws_root, allowlist_path = make_valid_isolated_workspace(Path(td), resolve_runtime=False)
+            ws_cmd = [
+                sys.executable,
+                str(ROOT / "scripts/dependency_closure_scanner.py"),
+                "--root",
+                str(ws_root),
+                "--allowlist",
+                str(allowlist_path),
+            ]
+            ws_result = subprocess.run(ws_cmd, capture_output=True, text=True, cwd=str(ROOT))
+            self.assertEqual(ws_result.returncode, 1)
+            self.assertIn("[FAIL]", ws_result.stdout)
 
     def test_cli_json_mode(self) -> None:
         """CLI --json with --allow-unresolved-runtime emits valid JSON matching summary and findings structure."""
@@ -894,28 +915,34 @@ class TestDeclaredRuntimeReporting(unittest.TestCase):
 
         and allow_unresolved_runtime=True is used, it is honestly reported in diagnostics/summary as a warning.
         """
-        is_valid, findings, summary = audit_dependency_closure(ROOT, allow_unresolved_runtime=True)
-        self.assertTrue(is_valid)
-        self.assertEqual(summary["declared_runtime"], "asupersync")
-        self.assertFalse(summary["declared_runtime_resolved"])
-        self.assertEqual(summary["declared_runtime_status"], "declared_but_unresolved")
+        with tempfile.TemporaryDirectory() as td:
+            ws_root, allowlist_path = make_valid_isolated_workspace(Path(td), resolve_runtime=False)
+            is_valid, findings, summary = audit_dependency_closure(
+                ws_root, allowlist_path=allowlist_path, allow_unresolved_runtime=True
+            )
+            self.assertTrue(is_valid)
+            self.assertEqual(summary["declared_runtime"], "asupersync")
+            self.assertFalse(summary["declared_runtime_resolved"])
+            self.assertEqual(summary["declared_runtime_status"], "declared_but_unresolved")
 
-        # Must have a diagnostic status finding
-        statuses = [f.code for f in findings if f.code == STATUS_DECLARED_RUNTIME_UNRESOLVED]
-        self.assertTrue(
-            len(statuses) > 0,
-            f"Expected STATUS_DECLARED_RUNTIME_UNRESOLVED in findings: {[f.code for f in findings]}",
-        )
-        status_finding = next(f for f in findings if f.code == STATUS_DECLARED_RUNTIME_UNRESOLVED)
-        self.assertIn("asupersync", status_finding.message)
+            # Must have a diagnostic status finding
+            statuses = [f.code for f in findings if f.code == STATUS_DECLARED_RUNTIME_UNRESOLVED]
+            self.assertTrue(
+                len(statuses) > 0,
+                f"Expected STATUS_DECLARED_RUNTIME_UNRESOLVED in findings: {[f.code for f in findings]}",
+            )
+            status_finding = next(f for f in findings if f.code == STATUS_DECLARED_RUNTIME_UNRESOLVED)
+            self.assertIn("asupersync", status_finding.message)
 
     def test_require_resolved_runtime_default_fails_when_unresolved(self) -> None:
         """By default, require_resolved_runtime=True causes audit to fail closed when runtime is unresolved."""
-        is_valid, findings, summary = audit_dependency_closure(ROOT)
-        self.assertFalse(is_valid)
-        self.assertEqual(summary["status"], "fail")
-        codes = [f.code for f in findings]
-        self.assertIn(ERR_DECLARED_RUNTIME_UNRESOLVED, codes)
+        with tempfile.TemporaryDirectory() as td:
+            ws_root, allowlist_path = make_valid_isolated_workspace(Path(td), resolve_runtime=False)
+            is_valid, findings, summary = audit_dependency_closure(ws_root, allowlist_path=allowlist_path)
+            self.assertFalse(is_valid)
+            self.assertEqual(summary["status"], "fail")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_DECLARED_RUNTIME_UNRESOLVED, codes)
 
 
 class TestReview659AdversarialFindings(unittest.TestCase):

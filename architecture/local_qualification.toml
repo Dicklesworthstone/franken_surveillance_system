@@ -86,6 +86,11 @@ name = "privacy"
 required_for = ["release"]
 
 [[lane]]
+id = "QL-SCALE-001"
+name = "scale-benchmark"
+required_for = ["release"]
+
+[[lane]]
 id = "QL-LINUX-001"
 name = "linux-native"
 required_for = ["release"]

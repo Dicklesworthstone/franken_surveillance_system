@@ -1026,7 +1026,15 @@ class RustLiteral:
 _RUST_IDENT_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_")
 _RUST_RAW_STRING_START = re.compile(r'[bc]?r(#*)"')
 _RUST_PREFIXED_STRING_START = re.compile(r'[bc]"')
+_RUST_MASK_INTERESTING_RE = re.compile(r'//|/\*|[bc]?r#*(?=")|[bc](?=")|b(?=\')|"|\'')
+_RUST_BLOCK_COMMENT_RE = re.compile(r"/\*|\*/")
 _RUST_MAX_CHAR_LITERAL = 12  # len("'\\u{10FFFF}'")
+
+
+def _blank_preserving_newlines(chunk: str) -> str:
+    if "\n" not in chunk:
+        return " " * len(chunk)
+    return "\n".join(" " * len(segment) for segment in chunk.split("\n"))
 
 
 def mask_rust_source(text: str, mask_literals: bool = True) -> tuple[str, list[RustLiteral]]:
@@ -1043,23 +1051,20 @@ def mask_rust_source(text: str, mask_literals: bool = True) -> tuple[str, list[R
     or literal masks to end of file (so it can hide, but never invent, code).
     """
     n = len(text)
-    out = list(text)
+    chunks: list[str] = []
     literals: list[RustLiteral] = []
-    newlines = [index for index, char in enumerate(text) if char == "\n"]
+    newlines: list[int] | None = None
 
     def line_of(offset: int) -> int:
+        nonlocal newlines
+        if newlines is None:
+            nl: list[int] = []
+            p = text.find("\n")
+            while p >= 0:
+                nl.append(p)
+                p = text.find("\n", p + 1)
+            newlines = nl
         return bisect.bisect_left(newlines, offset) + 1
-
-    def blank(start: int, end: int) -> None:
-        for k in range(start, min(end, n)):
-            if out[k] != "\n":
-                out[k] = " "
-
-    def record(start: int, body_start: int, body_end: int, end: int) -> None:
-        literals.append(RustLiteral(start=start, end=end, line=line_of(start), content=text[body_start:body_end]))
-        if mask_literals:
-            blank(start, end)
-            out[start] = '"'
 
     def char_literal_end(quote: int) -> int | None:
         nxt = text[quote + 1] if quote + 1 < n else ""
@@ -1073,78 +1078,112 @@ def mask_rust_source(text: str, mask_literals: bool = True) -> tuple[str, list[R
         return None  # lifetime or loop label
 
     def string_end(quote: int) -> tuple[int, int]:
-        j = quote + 1
-        while j < n:
-            if text[j] == "\\":
-                j += 2
-            elif text[j] == '"':
-                return j, j + 1
-            else:
-                j += 1
-        return n, n
+        search = quote + 1
+        while True:
+            q = text.find('"', search)
+            if q < 0:
+                return n, n
+            bs = 0
+            k = q - 1
+            while k > quote and text[k] == "\\":
+                bs += 1
+                k -= 1
+            if (bs & 1) == 0:
+                return q, q + 1
+            search = q + 1
 
-    i = 0
-    while i < n:
-        char = text[i]
-        nxt = text[i + 1] if i + 1 < n else ""
-        if char == "/" and nxt == "/":
-            end = text.find("\n", i)
+    last_emit = 0
+    cursor = 0
+    while cursor < n:
+        match = _RUST_MASK_INTERESTING_RE.search(text, cursor)
+        if match is None:
+            break
+        pos = match.start()
+        tok = match.group(0)
+        if tok == "//":
+            end = text.find("\n", pos)
             end = n if end < 0 else end
-            blank(i, end)
-            i = end
+            chunks.append(text[last_emit:pos])
+            chunks.append(" " * (end - pos))
+            last_emit = cursor = end
             continue
-        if char == "/" and nxt == "*":
-            depth, j = 1, i + 2
+        if tok == "/*":
+            depth = 1
+            j = pos + 2
             while j < n and depth:
-                if text.startswith("/*", j):
-                    depth, j = depth + 1, j + 2
-                elif text.startswith("*/", j):
-                    depth, j = depth - 1, j + 2
+                bm = _RUST_BLOCK_COMMENT_RE.search(text, j)
+                if bm is None:
+                    j = n
+                    break
+                if bm.group(0) == "/*":
+                    depth += 1
                 else:
-                    j += 1
-            blank(i, j)
-            i = j
+                    depth -= 1
+                j = bm.end()
+            chunks.append(text[last_emit:pos])
+            chunks.append(_blank_preserving_newlines(text[pos:j]))
+            last_emit = cursor = j
             continue
-        if char in _RUST_IDENT_CHARS and (i == 0 or text[i - 1] not in _RUST_IDENT_CHARS):
-            raw = _RUST_RAW_STRING_START.match(text, i)
-            if raw:
-                terminator = '"' + raw.group(1)
-                close = text.find(terminator, raw.end())
-                body_end, end = (n, n) if close < 0 else (close, close + len(terminator))
-                record(i, raw.end(), body_end, end)
-                i = end
-                continue
-            if _RUST_PREFIXED_STRING_START.match(text, i):
-                body_end, end = string_end(i + 1)
-                record(i, i + 2, body_end, end)
-                i = end
-                continue
-            if char == "b" and nxt == "'":
-                end = char_literal_end(i + 1)
-                if end is not None:
-                    if mask_literals:
-                        blank(i, end)
-                    i = end
-                    continue
-            j = i
-            while j < n and text[j] in _RUST_IDENT_CHARS:
-                j += 1
-            i = j
+        if tok == '"':
+            body_end, end = string_end(pos)
+            literals.append(RustLiteral(start=pos, end=end, line=line_of(pos), content=text[pos + 1:body_end]))
+            if mask_literals:
+                chunks.append(text[last_emit:pos])
+                chunks.append('"' + _blank_preserving_newlines(text[pos + 1:end]))
+                last_emit = end
+            cursor = end
             continue
-        if char == '"':
-            body_end, end = string_end(i)
-            record(i, i + 1, body_end, end)
-            i = end
-            continue
-        if char == "'":
-            end = char_literal_end(i)
+        if tok == "'":
+            end = char_literal_end(pos)
             if end is not None:
                 if mask_literals:
-                    blank(i, end)
-                i = end
-                continue
-        i += 1
-    return "".join(out), literals
+                    chunks.append(text[last_emit:pos])
+                    chunks.append(_blank_preserving_newlines(text[pos:end]))
+                    last_emit = end
+                cursor = end
+            else:
+                cursor = pos + 1
+            continue
+        # Prefixed literal candidate: [bc]?r#*(?="), [bc](?="), or b(?=')
+        if pos > 0 and text[pos - 1] in _RUST_IDENT_CHARS:
+            cursor = pos + 1
+            continue
+        after = match.end()
+        if tok == "b" and after < n and text[after] == "'":
+            end = char_literal_end(after)
+            if end is not None:
+                if mask_literals:
+                    chunks.append(text[last_emit:pos])
+                    chunks.append(_blank_preserving_newlines(text[pos:end]))
+                    last_emit = end
+                cursor = end
+            else:
+                cursor = after + 1
+            continue
+        if "r" in tok:
+            hashes = tok[tok.index("r") + 1:]
+            body_start = after + 1
+            terminator = '"' + hashes
+            close = text.find(terminator, body_start)
+            body_end, end = (n, n) if close < 0 else (close, close + len(terminator))
+            literals.append(RustLiteral(start=pos, end=end, line=line_of(pos), content=text[body_start:body_end]))
+            if mask_literals:
+                chunks.append(text[last_emit:pos])
+                chunks.append('"' + _blank_preserving_newlines(text[pos + 1:end]))
+                last_emit = end
+            cursor = end
+            continue
+        # [bc] followed by '"'
+        body_end, end = string_end(after)
+        literals.append(RustLiteral(start=pos, end=end, line=line_of(pos), content=text[after + 1:body_end]))
+        if mask_literals:
+            chunks.append(text[last_emit:pos])
+            chunks.append('"' + _blank_preserving_newlines(text[pos + 1:end]))
+            last_emit = end
+        cursor = end
+
+    chunks.append(text[last_emit:])
+    return "".join(chunks), literals
 
 
 def source_line(text: str, offset: int) -> int:
@@ -1232,17 +1271,25 @@ def _toml_key_line(text: str, key: str) -> int | None:
     return None
 
 
-def _allowlist_admits(name: str, policy: dict[str, Any] | None) -> bool:
-    """True when the allowlist admits the crate itself ([fundamental], not pending, not forbidden).
+def _allowlist_admits(name: str, policy: dict[str, Any] | None, *, transitive: bool = False) -> bool:
+    """True when the allowlist admits the crate itself ([fundamental], not pending, not forbidden;
+    and for transitive Cargo.lock/metadata entries, [asupersync_closure] when not pending/forbidden).
 
     DEP-AUD-023's crate-level check yields to this, so the owner decision recorded in the allowlist
-    alone decides whether a serde-family crate may be declared; with no usable authority nothing is admitted.
+    alone decides whether a serde-family crate may be declared or resolved transitively; FSS Rust
+    source remains unconditionally refused for all Serde derives/uses/attributes.
     """
     view = class_view_for(policy or {})
     if view is None:
         return False
     norm = dependency_authority.normalize_crate(name)
-    return norm in view.fundamental and norm not in view.pending and norm not in view.forbidden
+    if norm in view.pending or norm in view.forbidden:
+        return False
+    if norm in view.fundamental:
+        return True
+    if transitive and norm in view.closure:
+        return True
+    return False
 
 
 def _pending_note(name: str, policy: dict[str, Any] | None) -> str:
@@ -1282,7 +1329,7 @@ def serde_durable_bytes_audit(
         package = str(row.get("name", ""))
         local_name = str(row.get("localName", package))
         offending = package if is_serde_codec_crate(package) else local_name if is_serde_codec_crate(local_name) else None
-        if offending is None or _allowlist_admits(package, policy):
+        if offending is None:
             continue
         manifest_rel = str(row.get("manifest", ""))
         if manifest_rel not in manifest_text:
@@ -1313,7 +1360,7 @@ def serde_durable_bytes_audit(
             lock_packages = lock_data.get("package", [])
             for package in lock_packages if isinstance(lock_packages, list) else []:
                 name = package.get("name") if isinstance(package, dict) else None
-                if isinstance(name, str) and is_serde_codec_crate(name) and not _allowlist_admits(name, policy):
+                if isinstance(name, str) and is_serde_codec_crate(name) and not _allowlist_admits(name, policy, transitive=True):
                     line = None
                     name_line = re.compile(rf"""^\s*name\s*=\s*"{re.escape(name)}"\s*$""")
                     for number, text_line in enumerate(lock_text.splitlines(), 1):
@@ -1324,7 +1371,7 @@ def serde_durable_bytes_audit(
                     add(findings, "error", "DEP-AUD-023", lock_path, f"{location}: serde-family codec package '{name}' is in the locked closure{_pending_note(name, policy)}", root=root, params={"package": name, "path": "Cargo.lock", "line": line})
 
     for name in resolved_names or []:
-        if is_serde_codec_crate(name) and not _allowlist_admits(name, policy):
+        if is_serde_codec_crate(name) and not _allowlist_admits(name, policy, transitive=True):
             add(findings, "error", "DEP-AUD-023", lock_path, f"Cargo.lock: serde-family codec package '{name}' is resolved by cargo metadata{_pending_note(name, policy)}", root=root, params={"package": name, "path": "Cargo.lock", "line": None})
 
     files = fss_rust_source_files(root, manifests or [])
@@ -1415,6 +1462,7 @@ def build_script_network_audit(
     root: Path = ROOT,
     manifests: list[Path] | None = None,
     extra_paths: list[Path] | None = None,
+    audited_offline_digests: set[str] | None = None,
 ) -> int:
     """Refuse network-capable constructs in build scripts (DEP-AUD-026, fss-x4a.26.3 / FSS-183).
 
@@ -1457,21 +1505,30 @@ def build_script_network_audit(
                 add(findings, "error", "DEP-AUD-026", candidate, f"{rel}: declared build script is missing; build-script network absence is unproven", root=root, params={"path": rel, "line": None})
             continue
         scripts.setdefault(candidate.resolve(), candidate)
+    extra_resolved: set[Path] = set()
     for extra in extra_paths or []:
         if not extra.is_file():
             rel = display_path(extra, root)
             add(findings, "error", "DEP-AUD-026", extra, f"{rel}: resolved build script source is not readable; build-script network absence is unproven", root=root, params={"path": rel, "line": None})
             continue
-        scripts.setdefault(extra.resolve(), extra)
+        res_extra = extra.resolve()
+        if res_extra not in scripts:
+            extra_resolved.add(res_extra)
+        scripts.setdefault(res_extra, extra)
 
     for resolved in sorted(scripts, key=str):
         script = scripts[resolved]
         rel = display_path(script, root)
         try:
-            script_text = script.read_text(encoding="utf-8")
+            script_bytes = script.read_bytes()
+            script_text = script_bytes.decode("utf-8")
         except (OSError, UnicodeDecodeError) as exc:
             add(findings, "error", "DEP-AUD-026", script, f"{rel}: unreadable build script; network absence is unproven: {exc}", root=root, params={"path": rel, "line": None})
             continue
+        if resolved in extra_resolved and audited_offline_digests:
+            script_digest = "sha256:" + hashlib.sha256(script_bytes).hexdigest()
+            if script_digest in audited_offline_digests:
+                continue
         for line, label in scan_build_script_network(script_text):
             add(
                 findings,
@@ -1903,11 +1960,27 @@ def rust_source_audit(findings: list[Finding], root: Path = ROOT, manifests: lis
         targets = discover_crate_targets(manifest.parent, data, crate_name, manifest_rel, root, findings)
         all_targets.extend(targets)
 
-    rust_files = sorted(
-        path
-        for path in root.rglob("*.rs")
-        if not any(part in {".git", "target", "dist", "qualification-artifacts", ".claude"} for part in path.parts)
-    )
+    skip_dirs = {
+        ".git",
+        ".ee",
+        ".beads",
+        ".ntm",
+        ".ruff_cache",
+        "target",
+        "dist",
+        "qualification-artifacts",
+        ".claude",
+        "node_modules",
+        ".next",
+        "__pycache__",
+    }
+    rust_files: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in skip_dirs]
+        for name in filenames:
+            if name.endswith(".rs"):
+                rust_files.append(Path(dirpath) / name)
+    rust_files.sort()
 
     patterns = {
         "unsafe token": re.compile(r"\bunsafe\b"),
@@ -1990,6 +2063,7 @@ def metadata_audit(
     packages = metadata.get("packages", [])
     workspace_members = set(metadata.get("workspace_members", []))
     forbidden = set(policy.get("forbidden", {}).get("crates", []))
+    class_view = class_view_for(policy)
     census: list[dict[str, Any]] = []
 
     cargo_target_paths: set[str] = set()
@@ -1999,8 +2073,15 @@ def metadata_audit(
         targets = package.get("targets", [])
         custom_build = any("custom-build" in target.get("kind", []) for target in targets if isinstance(target, dict))
         links = package.get("links")
+        is_ws_member = package.get("id") in workspace_members
+        norm_name = dependency_authority.normalize_crate(name)
+        audited_closure_pkg = (
+            not is_ws_member
+            and class_view is not None
+            and (norm_name in class_view.closure or norm_name in class_view.fundamental or norm_name == "asupersync")
+        )
 
-        if package.get("id") in workspace_members:
+        if is_ws_member:
             for t in targets:
                 if isinstance(t, dict) and "src_path" in t:
                     try:
@@ -2023,12 +2104,13 @@ def metadata_audit(
         if name in forbidden:
             add(findings, "error", "DEP-AUD-030", "Cargo.lock", f"forbidden package is reachable: {name}", root=root, params={"package": name, "version": str(package.get("version", ""))})
         if custom_build:
-            add(findings, "error", "DEP-AUD-031", str(package.get("manifest_path", name)), f"resolved package has a build script: {name}", root=root, params={"package": name, "version": str(package.get("version", ""))})
+            if not (audited_closure_pkg and class_view is not None and norm_name in class_view.audited_custom_build):
+                add(findings, "error", "DEP-AUD-031", str(package.get("manifest_path", name)), f"resolved package has a build script: {name}", root=root, params={"package": name, "version": str(package.get("version", ""))})
             if build_script_paths is not None:
                 for target in targets:
                     if isinstance(target, dict) and "custom-build" in target.get("kind", []) and isinstance(target.get("src_path"), str):
                         build_script_paths.append(Path(target["src_path"]))
-        if links:
+        if links and not (audited_closure_pkg and class_view is not None and f"{norm_name}={links}" in class_view.audited_target_cfg_links):
             add(findings, "error", "DEP-AUD-032", str(package.get("manifest_path", name)), f"resolved package declares native links={links}: {name}", root=root, params={"package": name, "links": links, "version": str(package.get("version", ""))})
         if isinstance(source, str) and source.startswith("git+") and "#" not in source:
             add(findings, "error", "DEP-AUD-033", "Cargo.lock", f"Git package is not commit-resolved: {name}", root=root, params={"package": name, "source": str(source)})
@@ -2475,10 +2557,24 @@ def audit_workspace(
 
     vendored_fixture_dirs = set(policy.get("fixtures", {}).get("directories", []) or policy.get("vendored_fixtures", {}).get("directories", []))
     undeclared_manifests: list[Path] = []
-    for cand_cargo in sorted(root.rglob("Cargo.toml")):
-        parts = cand_cargo.parts
-        if "target" in parts or ".git" in parts or ".claude" in parts or any(v in parts for v in vendored_fixture_dirs):
-            continue
+    cargo_skip_dirs = {
+        "target",
+        ".git",
+        ".ee",
+        ".beads",
+        ".ntm",
+        ".ruff_cache",
+        ".claude",
+        "node_modules",
+        ".next",
+        "__pycache__",
+    } | vendored_fixture_dirs
+    candidate_cargos: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in cargo_skip_dirs]
+        if "Cargo.toml" in filenames:
+            candidate_cargos.append(Path(dirpath) / "Cargo.toml")
+    for cand_cargo in sorted(candidate_cargos):
         if cand_cargo.resolve() not in known_manifests:
             undeclared_manifests.append(cand_cargo)
             add(
@@ -2500,7 +2596,6 @@ def audit_workspace(
 
     direct = enumerate_dependencies(root, manifests, member_names, member_map, policy, findings)
     source_census = rust_source_audit(findings, root=root, manifests=manifests)
-    serde_durable_bytes_audit(findings, root=root, direct_rows=direct, manifests=manifests, policy=policy)
     manifest_source_override_audit(findings, root=root, manifests=manifests)
 
     ref_targets: list[TargetRoot] = []
@@ -2509,8 +2604,23 @@ def audit_workspace(
 
     resolved_build_scripts: list[Path] = []
     metadata_available, metadata_error, resolved = metadata_audit(findings, policy, root=root, reference_targets=ref_targets, build_script_paths=resolved_build_scripts)
-    serde_durable_bytes_audit(findings, root=root, resolved_names=[str(row.get("name", "")) for row in resolved], policy=policy)
-    build_script_network_audit(findings, root=root, manifests=manifests + undeclared_manifests, extra_paths=resolved_build_scripts)
+    serde_durable_bytes_audit(
+        findings,
+        root=root,
+        direct_rows=direct,
+        manifests=manifests,
+        resolved_names=[str(row.get("name", "")) for row in resolved],
+        policy=policy,
+    )
+    class_view = class_view_for(policy)
+    audited_offline_digests = set(class_view.audited_offline_build_scripts.values()) if class_view is not None else set()
+    build_script_network_audit(
+        findings,
+        root=root,
+        manifests=manifests + undeclared_manifests,
+        extra_paths=resolved_build_scripts,
+        audited_offline_digests=audited_offline_digests,
+    )
     if qualify_script is not None:
         qualify_offline_audit(findings, qualify_script, root=root)
         qualify_doctest_audit(findings, qualify_script, root=root)

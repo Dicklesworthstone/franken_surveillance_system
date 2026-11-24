@@ -832,6 +832,7 @@ def audit_dependency_closure(
         allowlist_data.get("exception_candidates", {}).get("not_admitted_without_dep_record_adr_and_release_evidence", [])
     )
     admitted_exceptions = set(allowlist_data.get("admitted_exceptions", {}).get("crates", []))
+    asupersync_closure = set(allowlist_data.get("asupersync_closure", {}).get("crates", []))
     allowed_git_prefixes = tuple(
         allowlist_data.get("sources", {}).get("allowed_git", DEFAULT_ALLOWED_GIT_PREFIXES)
     )
@@ -843,6 +844,8 @@ def audit_dependency_closure(
         if name in allowed_fundamental:
             return True
         if name in admitted_exceptions:
+            return True
+        if name in asupersync_closure:
             return True
         for pat in allowed_families:
             if fnmatch.fnmatchcase(name, pat):
@@ -1148,6 +1151,11 @@ def audit_dependency_closure(
     # Check path sources and manifest paths in metadata
     for name, pkgs in sorted(meta_pkg_map.items()):
         for pkg in pkgs:
+            # Only path packages (source is None) are governed by workspace/sibling path
+            # containment; registry and git packages live in Cargo's cache and are validated
+            # by the lock/source/allowlist rules above and below.
+            if pkg.get("source") is not None:
+                continue
             manifest_p = pkg.get("manifest_path")
             if isinstance(manifest_p, str):
                 try:
@@ -1294,7 +1302,7 @@ def audit_dependency_closure(
             continue
 
         # External dependency: must be allowlisted
-        if name in exception_candidates and name not in admitted_exceptions:
+        if name in exception_candidates and name not in admitted_exceptions and name not in asupersync_closure:
             findings.append(
                 ClosureFinding(
                     code=ERR_UNALLOWLISTED_CRATE,

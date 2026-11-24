@@ -5,6 +5,7 @@ import argparse
 import fnmatch
 import hashlib
 import json
+import os
 import re
 import sys
 import tomllib
@@ -69,9 +70,28 @@ def included(path: Path) -> bool:
 
 
 def source_files(suffix: str | None = None) -> list[Path]:
-    files = [path for path in ROOT.rglob("*") if path.is_file() and included(path)]
-    if suffix is not None:
-        files = [path for path in files if path.suffix == suffix]
+    files: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(ROOT):
+        rel_dir = Path(dirpath).relative_to(ROOT)
+        if rel_dir == Path("."):
+            dirnames[:] = [
+                d for d in dirnames
+                if d not in EXCLUDED_TOP_LEVEL
+                and d not in {"__pycache__", "node_modules", ".next"}
+                and Path(d) not in EXCLUDED_PREFIXES
+            ]
+        else:
+            dirnames[:] = [
+                d for d in dirnames
+                if d not in {"__pycache__", "node_modules", ".next"}
+                and (rel_dir / d) not in EXCLUDED_PREFIXES
+            ]
+        for name in filenames:
+            if suffix is not None and not name.endswith(suffix):
+                continue
+            path = Path(dirpath) / name
+            if included(path):
+                files.append(path)
     return sorted(files)
 
 
@@ -306,7 +326,7 @@ def cargo_policy(dependency_policy: dict[str, Any]) -> None:
     manifests, member_names, member_map = dependency_audit.expand_workspace_members(ROOT, root_cargo, findings)
     rows = dependency_audit.enumerate_dependencies(ROOT, manifests, member_names, member_map, dependency_policy, findings)
     source_census = dependency_audit.rust_source_audit(findings, root=ROOT, manifests=manifests)
-    dependency_audit.serde_durable_bytes_audit(findings, root=ROOT, direct_rows=rows, manifests=manifests)
+    dependency_audit.serde_durable_bytes_audit(findings, root=ROOT, direct_rows=rows, manifests=manifests, policy=dependency_policy)
     dependency_audit.build_script_network_audit(findings, root=ROOT, manifests=manifests)
     dependency_audit.manifest_source_override_audit(findings, root=ROOT, manifests=manifests)
 

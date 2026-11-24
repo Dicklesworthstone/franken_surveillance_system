@@ -229,8 +229,22 @@ def generate(root: Path) -> None:
 
 def validate_record(record: dict[str, Any]) -> None:
     """Use the repository's existing Draft 2020-12 instance validator, fail closed."""
-    import jsonschema
-    schema = json.loads((ROOT / FIXTURES / "proof.schema.json").read_text())
+    schema_path = ROOT / FIXTURES / "proof.schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    try:
+        import jsonschema
+    except ModuleNotFoundError:
+        import json_instance_validate
+
+        validator = json_instance_validate.InstanceValidator(schema_path.parent)
+        try:
+            validator.validate(schema, record, schema_path.name)
+        except (
+            json_instance_validate.JsonInstanceValidationError,
+            json_instance_validate.SchemaSyntaxError,
+        ) as exc:
+            raise ValueError(f"proof record schema: {exc}") from exc
+        return
     jsonschema.Draft202012Validator.check_schema(schema)
     if list(jsonschema.Draft202012Validator(schema).iter_errors(record)):
         raise ValueError("proof record schema")

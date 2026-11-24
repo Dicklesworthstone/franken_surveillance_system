@@ -26,6 +26,7 @@ EXCLUDED_TOP_LEVEL = {
 EXCLUDED_PREFIXES = {
     Path("device-fixtures/private"),
     Path("qualification-artifacts"),
+    *(Path("website") / name for name in ("node_modules", ".next", "out", ".wrangler")),
 }
 
 

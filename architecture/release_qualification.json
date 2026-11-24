@@ -104,6 +104,15 @@
       "status": "specified"
     },
     {
+      "id": "QL-SCALE-001",
+      "kind": "scale_and_crash_recovery",
+      "scope": "100-camera / 1M-commit storage, packfile compaction, and OS SIGKILL crash recovery",
+      "evidence": "100-camera / 1M-commit throughput, sub-10ms orient/query latency, 50+ OS SIGKILL crash cuts with zero data loss or orphan roots, and v1->v2 migration speedup proof bundle",
+      "command": "scripts/qualify.sh --lane scale-benchmark",
+      "authority": "local",
+      "status": "specified"
+    },
+    {
       "id": "QL-LINUX-001",
       "kind": "native_release",
       "scope": "linux-x86_64",
