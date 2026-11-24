@@ -42,7 +42,9 @@ remain explicit and are never evidence of camera coverage or event absence. A
 successful metadata selection is distinguished from a successful range read.
 Source replay establishes byte relationships, not full HEVC decode completeness.
 
-Output uses `fss.local_archive_operator_report.v1`. It includes the exact codec,
+Exports use `fss.local_archive_export_completion.v2`. The completion includes the
+SHA-256 of the exact `REQUEST.json` bytes. Existing v1 exports remain readable.
+Inspect, query and verify use `fss.local_archive_operator_report.v1`. Each report includes the exact codec,
 scope, clocks, snapshot, counts, limits' outcome, and verification level. It is an
 operator report, not a canonical ledger receipt, signature or authority grant.
 These existing read/query commands return no report on failure. `restore-export`

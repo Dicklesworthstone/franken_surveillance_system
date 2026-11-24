@@ -191,6 +191,14 @@ fn success_report(fixture: &CopiedExport, result: &str, windows: usize) -> TestR
         text(&report, "schema")?,
         "fss.local_archive_export_restoration.v1"
     );
+    assert_eq!(
+        text(&completion, "request_binding")?,
+        "sha256_pinned_by_completion_v2"
+    );
+    assert_eq!(
+        text(&report, "request_binding")?,
+        "sha256_pinned_by_completion_v2"
+    );
     assert_eq!(text(&report, "command")?, "restore-export");
     assert_eq!(text(&report, "codec")?, fixture.options.codec.name());
     assert_eq!(number(&report, "restored_windows")?, windows as u64);

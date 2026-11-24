@@ -160,6 +160,7 @@ fn native_avc_and_hevc_copies_verify_after_original_archive_loss() -> TestResult
             .collect::<std::io::Result<_>>()?;
         let report = execute_archive_with_clock(&options, &clock())?;
         assert!(report.contains(&format!("\"codec\":\"{}\"", codec.name())));
+        assert!(report.contains("\"request_binding\":\"sha256_pinned_by_completion_v2\""));
         assert!(report.contains("\"native_source_provenance_verified\":true"));
         assert!(report.contains("\"playback_bytes_verified\":true"));
         assert!(report.contains("\"decoded_pictures_verified\":false"));
@@ -181,12 +182,16 @@ fn native_codec_verifier_refuses_retagged_hash_consistent_avc_bundle() -> TestRe
     let complete = fs::read_to_string(options.root.join("COMPLETE.json"))?
         .replace("\"codec\":\"avc\"", "\"codec\":\"hevc\"")
         .replace(&old_namespace.to_text(), &new_namespace.to_text());
-    let request = fs::read_to_string(options.root.join("REQUEST.json"))?
-        .replace("\"codec\":\"avc\"", "\"codec\":\"hevc\"");
-    // The spelling grows by one byte. Preserve the existing v1 request-byte accounting.
-    let original_request_bytes = fs::metadata(options.root.join("REQUEST.json"))?.len();
-    let request = request.trim_end().to_owned();
-    assert_eq!(request.len() as u64, original_request_bytes);
+    let original = fs::read_to_string(options.root.join("REQUEST.json"))?;
+    let changed = original.replace("\"codec\":\"avc\"", "\"codec\":\"hevc\"");
+    // Keep the byte accounting and v2 request pin consistent so the native codec
+    // check still runs against the relabeled media.
+    let request = changed.trim_end();
+    assert_eq!(request.len(), original.len());
+    let complete = complete.replace(
+        &ContentDigest::sha256(original.as_bytes()).to_text(),
+        &ContentDigest::sha256(request.as_bytes()).to_text(),
+    );
     fs::write(options.root.join("REQUEST.json"), request)?;
     fs::write(options.root.join("COMPLETE.json"), &complete)?;
     fs::write(options.root.join("COMPLETE.json.pending"), &complete)?;

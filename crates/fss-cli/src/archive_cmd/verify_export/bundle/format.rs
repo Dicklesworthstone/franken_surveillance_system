@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Closed parsing of the existing v1 exporter output; metadata never selects a codec.
+//! Closed parsing of the versioned exporter output; metadata never selects a codec.
 
 use super::*;
 
@@ -85,42 +85,50 @@ fn checked_add(total: u64, value: u64) -> Result<u64> {
 }
 
 pub(super) fn document(value: &Value, scope: &Scope, limits: Limits) -> Result<Document> {
-    let object = object(
-        value,
-        &[
-            "schema",
-            "command",
-            "codec",
-            "snapshot",
-            "namespace",
-            "sensor",
-            "stream",
-            "generation",
-            "anchor",
-            "receive_clock",
-            "decode_clock",
-            "time_scale",
-            "durable_windows",
-            "indexed_windows",
-            "pages",
-            "source_replay_on_recovery",
-            "coverage_claim",
-            "time_basis",
-            "query",
-            "whole_window_selection_bytes",
-            "unindexed",
-            "verified",
-            "range_read_completed",
-            "verified_windows",
-            "verified_payload_bytes",
-            "export_payload_bytes_excluding_completion",
-            "whole_windows_authorized",
-            "source_may_include_boundary_lookahead",
-            "completion_file",
-            "complete",
-        ],
-    )?;
-    exact(object, "schema", "fss.local_archive_operator_report.v1")?;
+    let mut fields = vec![
+        "schema",
+        "command",
+        "codec",
+        "snapshot",
+        "namespace",
+        "sensor",
+        "stream",
+        "generation",
+        "anchor",
+        "receive_clock",
+        "decode_clock",
+        "time_scale",
+        "durable_windows",
+        "indexed_windows",
+        "pages",
+        "source_replay_on_recovery",
+        "coverage_claim",
+        "time_basis",
+        "query",
+        "whole_window_selection_bytes",
+        "unindexed",
+        "verified",
+        "range_read_completed",
+        "verified_windows",
+        "verified_payload_bytes",
+        "export_payload_bytes_excluding_completion",
+        "whole_windows_authorized",
+        "source_may_include_boundary_lookahead",
+        "completion_file",
+        "complete",
+    ];
+    let header = value
+        .object()
+        .ok_or(ExportVerificationError::InvalidReport)?;
+    let request_digest = match text(header, "schema")? {
+        EXPORT_COMPLETION_SCHEMA => {
+            fields.push("request_sha256");
+            Some(hash(header, "request_sha256")?)
+        }
+        "fss.local_archive_operator_report.v1" => None,
+        _ => return invalid(),
+    };
+    let object = object(value, &fields)?;
     exact(object, "command", "export")?;
     exact(object, "coverage_claim", "not_claimed")?;
     exact(object, "time_basis", "owner_declared_decode_ticks")?;
@@ -210,6 +218,7 @@ pub(super) fn document(value: &Value, scope: &Scope, limits: Limits) -> Result<D
         return invalid();
     }
     Ok(Document {
+        request_digest,
         snapshot,
         query,
         windows,

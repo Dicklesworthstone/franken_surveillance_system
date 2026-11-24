@@ -38,7 +38,7 @@ metadata-controlled codec fallback. The operation currently requires Linux with
 ## What is verified
 
 The command first rehashes `COMPLETE.json` against the supplied pin. It strictly parses
-the existing v1 completion format, refusing duplicate keys, unknown fields, unsupported
+the versioned completion format, refusing duplicate keys, unknown fields, unsupported
 schemas, malformed numbers, changed scope, and inconsistent accounting. A dedicated
 4 MiB parser profile accepts the exporter's complete advertised report size without
 increasing ordinary control-input limits.
@@ -67,7 +67,12 @@ equal the pinned completion; transported copies need not retain the original har
 relationship. A pending file without `COMPLETE.json` remains incomplete. Extra names,
 directories, symlinks, missing objects, duplicate roots, and substituted paths refuse.
 
-The v1 completion does **not** bind the exact bytes or reservation in `REQUEST.json`.
+New exports use `fss.local_archive_export_completion.v2`. Its required `request_sha256`
+field pins the exact original `REQUEST.json` bytes, including its byte reservation.
+A mismatched digest refuses the copy before the verifier opens any recording payload.
+The verifier also checks the request semantics and reports `sha256_pinned_by_completion_v2`.
+
+The legacy v1 completion does **not** bind the exact bytes or reservation in `REQUEST.json`.
 The verifier checks that request's schema, snapshot, codec, query, whole-window flag,
 completion filename, and bounded reservation are consistent. The result separately
 reports `request_sha256_observed` and labels it

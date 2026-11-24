@@ -115,11 +115,12 @@ or I/O failure therefore can leave a valid private prefix of recordings and
 catalog pages. This does not acknowledge complete restoration of the selection.
 No automatic deletion or rollback is attempted.
 
-The v1 source completion does not pin the exact `REQUEST.json` bytes. Both passes
-check semantic consistency and must observe the same request digest; reports keep
-the existing `semantic_consistency_only_unpinned_by_completion_v1` label. The
-operation detects changes it observes, without claiming a frozen atomic
-filesystem snapshot or future availability.
+For current exports, both passes check the exact `REQUEST.json` SHA-256 against the
+pinned source completion. The restoration report and durable receipt record
+`sha256_pinned_by_completion_v2`. Legacy v1 completions use semantic consistency and
+both passes must still observe the same request digest. Those receipts retain
+`semantic_consistency_only_unpinned_by_completion_v1`. Neither kind of request
+supplies the current privacy authority for restoration. The check covers the bundle as observed during those reads.
 
 ## Budgets and operation cost
 
