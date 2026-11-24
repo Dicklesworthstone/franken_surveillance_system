@@ -174,6 +174,9 @@ pub trait SensorDriver: Send {
     fn total_connections(&self) -> u64;
     /// Returns the camera adapter kind served by this driver.
     fn adapter_kind(&self) -> CameraAdapterKind;
+    /// Propagates hot-reloaded manifest configuration (`primary_zone`, `auth_realm`, RTSP options)
+    /// into the live driver so subsequent frames and reconnects use the updated parameters.
+    fn update_manifest_entry(&mut self, _entry: &CameraManifestEntry) {}
 }
 
 /// Deterministic jittered exponential reconnect backoff bounded inside `[min_ms, max_ms]`.

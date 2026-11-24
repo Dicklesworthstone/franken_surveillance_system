@@ -88,8 +88,17 @@ def run_registry_checker(tree: Path) -> dict[str, Any]:
 
 
 def scenario_pending_crate(tree: Path) -> dict[str, Any]:
-    """serde declared by a member and locked: the census and the manifest enumeration refuse it as pending."""
-    shutil.copy2(tree / "architecture/dependency_allowlist.toml", tree / "policy.toml")
+    """serde declared by a member and locked under a pending decision: refused with DEP-AUD-023 and DEP-AUD-047."""
+    policy_text = (tree / "architecture/dependency_allowlist.toml").read_text(encoding="utf-8")
+    pending_entry = (
+        '\n[pending_owner_decisions.fss-ndxis]\n'
+        'registry_row = "DEP-FUND-001"\n'
+        'crates = ["serde", "serde_json"]\n'
+        'question = "Synthetic pending owner decision for E2E refusal verification."\n'
+    )
+    if "[pending_owner_decisions.fss-ndxis]" not in policy_text:
+        policy_text = policy_text + pending_entry
+    (tree / "policy.toml").write_text(policy_text, encoding="utf-8")
     (tree / "Cargo.toml").write_text('[workspace]\nresolver = "3"\nmembers = ["crates/fss-e2e"]\n\n[workspace.lints.rust]\nunsafe_code = "forbid"\n', encoding="utf-8")
     crate = tree / "crates" / "fss-e2e"
     (crate / "src").mkdir(parents=True)

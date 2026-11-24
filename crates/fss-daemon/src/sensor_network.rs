@@ -27,6 +27,7 @@ use fss_packet::avc::{
     AvcAssemblyOutput, AvcAssemblyStep, AvcPictureGroup, AvcReceiveLimits, AvcReceivePoll,
 };
 use fss_reference::ingest::model_pool::FramePixelInput;
+use fss_reference::ingest::recorded_decode::video_rgb::i420_to_rgb;
 use fss_reference::rtsp::authentication::{DigestCredentials, DigestPolicy};
 use fss_reference::rtsp::avc_client::AvcClientPoll;
 use fss_reference::rtsp::avc_client::authenticated::DigestAvcPoll;
@@ -92,6 +93,12 @@ struct HttpMjpegSessionState {
     read_buf: Vec<u8>,
 }
 
+impl Drop for HttpMjpegSessionState {
+    fn drop(&mut self) {
+        self.pending_request.fill(0);
+    }
+}
+
 enum ActiveSession {
     Disconnected,
     Rtsp(Box<RtspSessionState>),
@@ -109,6 +116,9 @@ pub struct NetworkAdapterDriver {
     primary_zone: String,
     dimensions: [u32; 2],
     secret_id: Option<SecretId>,
+    auth_realm: Option<String>,
+    allow_inband_sps_pps: bool,
+    setup_companion_tracks: bool,
     vault_username: Option<String>,
     vault_password: Option<SecretBytes>,
     generation: u64,
@@ -133,6 +143,9 @@ impl NetworkAdapterDriver {
             primary_zone: entry.primary_zone.clone(),
             dimensions: entry.dimensions,
             secret_id: entry.secret_id.clone(),
+            auth_realm: entry.auth_realm.clone(),
+            allow_inband_sps_pps: entry.allow_inband_sps_pps,
+            setup_companion_tracks: entry.setup_companion_tracks,
             vault_username: None,
             vault_password: None,
             generation: 0,
@@ -214,7 +227,7 @@ impl NetworkAdapterDriver {
             binding,
             transport,
             media: AvcReceiveLimits::default(),
-            realm: "fss".to_owned(),
+            realm: self.auth_realm.clone().unwrap_or_else(|| "fss".to_owned()),
             digest_policy: DigestPolicy {
                 allow_legacy_md5: true,
                 allow_legacy_no_qop: true,
@@ -225,15 +238,28 @@ impl NetworkAdapterDriver {
         let authority = DaemonRtspAuthority {
             expected_peer: addr,
         };
-        let conn =
-            AutomaticAvcConnection::connect(config, 0, &authority).map_err(|err| {
-                match err.reason {
-                    LiveAvcError::Configuration => SensorDisconnectReason::DriverError(
-                        "invalid RTSP live connection configuration".to_owned(),
-                    ),
-                    _ => SensorDisconnectReason::NetworkDrop,
-                }
+        let mut conn = AutomaticAvcConnection::connect(config, 0, &authority).map_err(|err| {
+            match err.reason {
+                LiveAvcError::Configuration => SensorDisconnectReason::DriverError(
+                    "invalid RTSP live connection configuration".to_owned(),
+                ),
+                _ => SensorDisconnectReason::NetworkDrop,
+            }
+        })?;
+        if self.allow_inband_sps_pps {
+            conn.set_allow_inband_parameter_sets(true).map_err(|_| {
+                SensorDisconnectReason::DriverError(
+                    "failed configuring in-band RTSP parameter sets".to_owned(),
+                )
             })?;
+        }
+        if self.setup_companion_tracks {
+            conn.set_setup_companion_tracks(true).map_err(|_| {
+                SensorDisconnectReason::DriverError(
+                    "failed configuring RTSP companion audio track drain".to_owned(),
+                )
+            })?;
+        }
         let decoder = H264Decoder::new(H264DecoderLimits::default()).map_err(|_| {
             SensorDisconnectReason::DriverError(
                 "failed initializing pure-Rust H.264 decoder".to_owned(),
@@ -260,32 +286,44 @@ impl NetworkAdapterDriver {
         let host_header =
             extract_endpoint_authority(&self.endpoint).unwrap_or_else(|| addr.to_string());
         let path_and_query = extract_endpoint_path_and_query(&self.endpoint);
-        let mut req = format!(
-            "GET {path_and_query} HTTP/1.1\r\nHost: {host_header}\r\nAccept: multipart/x-mixed-replace, image/jpeg\r\nConnection: keep-alive\r\n"
+        let mut req_bytes = Vec::with_capacity(256);
+        req_bytes.extend_from_slice(b"GET ");
+        req_bytes.extend_from_slice(path_and_query.as_bytes());
+        req_bytes.extend_from_slice(b" HTTP/1.1\r\nHost: ");
+        req_bytes.extend_from_slice(host_header.as_bytes());
+        req_bytes.extend_from_slice(
+            b"\r\nAccept: multipart/x-mixed-replace, image/jpeg\r\nConnection: keep-alive\r\n",
         );
         if let (Some(user), Some(pass)) = (&self.vault_username, &self.vault_password)
             && let Ok(pass_str) = std::str::from_utf8(pass.as_slice())
         {
-            let encoded = encode_basic_auth(user, pass_str);
-            req.push_str("Authorization: Basic ");
-            req.push_str(&encoded);
-            req.push_str("\r\n");
+            let mut encoded = encode_basic_auth_bytes(user, pass_str);
+            req_bytes.extend_from_slice(b"Authorization: Basic ");
+            req_bytes.extend_from_slice(&encoded);
+            req_bytes.extend_from_slice(b"\r\n");
+            encoded.fill(0);
         }
-        req.push_str("\r\n");
+        req_bytes.extend_from_slice(b"\r\n");
 
-        let mut req_bytes = req.into_bytes();
         let mut write_offset = 0_usize;
         let mut stream = stream;
         while write_offset < req_bytes.len() {
             match stream.write(&req_bytes[write_offset..]) {
-                Ok(0) => return Err(SensorDisconnectReason::NetworkDrop),
+                Ok(0) => {
+                    req_bytes.fill(0);
+                    return Err(SensorDisconnectReason::NetworkDrop);
+                }
                 Ok(n) => write_offset = write_offset.saturating_add(n),
                 Err(err) if err.kind() == io::ErrorKind::WouldBlock => break,
                 Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
-                Err(_) => return Err(SensorDisconnectReason::NetworkDrop),
+                Err(_) => {
+                    req_bytes.fill(0);
+                    return Err(SensorDisconnectReason::NetworkDrop);
+                }
             }
         }
         if write_offset >= req_bytes.len() {
+            req_bytes.fill(0);
             req_bytes.clear();
             write_offset = 0;
         }
@@ -438,8 +476,13 @@ impl NetworkAdapterDriver {
             annex_b.extend_from_slice(nal.bytes());
         }
 
-        let Ok(pictures) = state.decoder.decode_annex_b(&annex_b) else {
-            return;
+        let pictures = match state.decoder.decode_annex_b(&annex_b) {
+            Ok(pics) => pics,
+            Err(_) => {
+                // Force parameter-set retransmission on the next recovery IDR after any rejected NAL.
+                state.sent_param_sets = false;
+                return;
+            }
         };
         let source_digest = ContentDigest::sha256(&annex_b);
         let media_pts_ns = (i128::from(group.timestamp()).saturating_mul(1_000_000_000)) / 90_000;
@@ -449,6 +492,14 @@ impl NetworkAdapterDriver {
             self.sequence = self.sequence.saturating_add(1);
             let dims = [pic.width(), pic.height()];
             self.dimensions = dims;
+            // Convert full 4:2:0 YCbCr planes via declared Q16 BT.601 limited-range RGB so RGB
+            // object detectors (e.g. YOLOX-Nano) receive true color pixels from live RTSP streams.
+            let pixels = match i420_to_rgb(pic.luma(), pic.cb(), pic.cr(), dims) {
+                Ok(rgb) => FramePixelInput::Rgb { pixels: rgb },
+                Err(_) => FramePixelInput::Luma {
+                    pixels: pic.luma().to_vec(),
+                },
+            };
             self.pending_frames.push_back(Arc::new(CameraFrame {
                 sensor_id: self.sensor_id.clone(),
                 stream_generation: self.generation,
@@ -463,9 +514,7 @@ impl NetworkAdapterDriver {
                 discontinuity_before: discontinuity || (self.generation > 1 && self.sequence == 1),
                 dimensions: dims,
                 encoded_payload: annex_b.clone(),
-                pixels: FramePixelInput::Luma {
-                    pixels: pic.luma().to_vec(),
-                },
+                pixels,
                 source_digest,
                 zone_id: self.primary_zone.clone(),
                 synthetic_detections: Vec::new(),
@@ -501,6 +550,13 @@ impl NetworkAdapterDriver {
                         break;
                     }
                 }
+            }
+            if !state.pending_request.is_empty()
+                && state.write_offset >= state.pending_request.len()
+            {
+                state.pending_request.fill(0);
+                state.pending_request.clear();
+                state.write_offset = 0;
             }
 
             // 2. Read available bytes into the bounded buffer.
@@ -736,6 +792,14 @@ impl SensorDriver for NetworkAdapterDriver {
     fn adapter_kind(&self) -> CameraAdapterKind {
         self.adapter
     }
+
+    fn update_manifest_entry(&mut self, entry: &CameraManifestEntry) {
+        self.primary_zone = entry.primary_zone.clone();
+        self.dimensions = entry.dimensions;
+        self.auth_realm = entry.auth_realm.clone();
+        self.allow_inband_sps_pps = entry.allow_inband_sps_pps;
+        self.setup_companion_tracks = entry.setup_companion_tracks;
+    }
 }
 
 enum HttpHeaderOutcome {
@@ -925,30 +989,30 @@ fn derive_cnonce(sensor_id: &str, generation: u64, step: u64, now_ns: i128) -> [
     out
 }
 
-fn encode_basic_auth(username: &str, password: &str) -> String {
+fn encode_basic_auth_bytes(username: &str, password: &str) -> Vec<u8> {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut raw = Vec::with_capacity(username.len() + password.len() + 1);
     raw.extend_from_slice(username.as_bytes());
     raw.push(b':');
     raw.extend_from_slice(password.as_bytes());
-    let mut out = String::with_capacity(raw.len().div_ceil(3) * 4);
+    let mut out = Vec::with_capacity(raw.len().div_ceil(3) * 4);
     let mut idx = 0;
     while idx < raw.len() {
         let b0 = raw[idx];
         let b1 = if idx + 1 < raw.len() { raw[idx + 1] } else { 0 };
         let b2 = if idx + 2 < raw.len() { raw[idx + 2] } else { 0 };
         let n = (u32::from(b0) << 16) | (u32::from(b1) << 8) | u32::from(b2);
-        out.push(TABLE[((n >> 18) & 63) as usize] as char);
-        out.push(TABLE[((n >> 12) & 63) as usize] as char);
+        out.push(TABLE[((n >> 18) & 63) as usize]);
+        out.push(TABLE[((n >> 12) & 63) as usize]);
         if idx + 1 < raw.len() {
-            out.push(TABLE[((n >> 6) & 63) as usize] as char);
+            out.push(TABLE[((n >> 6) & 63) as usize]);
         } else {
-            out.push('=');
+            out.push(b'=');
         }
         if idx + 2 < raw.len() {
-            out.push(TABLE[(n & 63) as usize] as char);
+            out.push(TABLE[(n & 63) as usize]);
         } else {
-            out.push('=');
+            out.push(b'=');
         }
         idx += 3;
     }

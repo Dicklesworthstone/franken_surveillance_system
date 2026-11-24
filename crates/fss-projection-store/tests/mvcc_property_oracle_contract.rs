@@ -734,19 +734,27 @@ fn property_deterministic_batch_commit_order_invariant_across_thread_schedules()
                 }
             }
 
-            // Enqueue all wave-2 proposals in the exact thread arrival permutation `order`.
+            // Enqueue all wave-2 proposals in the exact thread arrival permutation `order`,
+            // waiting for each thread to enter the combiner's pending queue deterministically
+            // rather than guessing with a fixed sleep.
             let mut handles = Vec::with_capacity(wave_size);
-            for &slot in order {
+            for (expected_len, &slot) in order.iter().enumerate() {
                 let c = Arc::clone(&combiner);
                 let prop = wave_proposals[slot].clone();
                 handles.push((
                     slot,
                     thread::spawn(move || c.submit(prop).map_err(|e| e.to_string())),
                 ));
-                thread::sleep(std::time::Duration::from_millis(2));
+                let target_len = expected_len + 1;
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                while combiner.pending_len()? < target_len {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "seed {seed}: wave proposal {slot} failed to enqueue within 2s"
+                    );
+                    thread::yield_now();
+                }
             }
-            // Brief settle so every spawned thread has pushed into pending queue before releasing gate.
-            thread::sleep(std::time::Duration::from_millis(8));
             {
                 let mut r_guard = release.0.lock().map_err(|_| "release lock poisoned")?;
                 *r_guard = true;

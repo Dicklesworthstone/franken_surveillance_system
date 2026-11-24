@@ -981,3 +981,93 @@ fn test_superseded_capabilities_v3_client_is_refused_as_stale() -> Result<(), Bo
     ));
     Ok(())
 }
+
+#[test]
+fn test_pinned_registry_digests_match_live_repository_artifacts() -> Result<(), Box<dyn Error>> {
+    let basis = reference_contract_basis();
+
+    // 1. View registry: exact byte SHA-256 of live `architecture/agent_views.json`.
+    let views_bytes = include_bytes!("../../../architecture/agent_views.json");
+    assert_eq!(
+        ContentDigest::sha256(views_bytes),
+        basis.view_registry_digest,
+        "REFERENCE_VIEW_REGISTRY_DIGEST drifted from live architecture/agent_views.json"
+    );
+
+    // 2. Public operation registry (gen:fss1:public-v1): live `architecture/fss1_public_registry.v1.json`.
+    let ops_json = include_str!("../../../architecture/fss1_public_registry.v1.json");
+    assert!(
+        ops_json.contains(&format!(
+            "\"freezeDigest\": \"{}\"",
+            basis.operation_registry_digest.to_text()
+        )),
+        "REFERENCE_OPERATION_REGISTRY_DIGEST drifted from architecture/fss1_public_registry.v1.json"
+    );
+
+    // 3. Capability registry (gen:fss1:capabilities-v4): live `architecture/capabilities.json` and `registries/CAPABILITIES.md`.
+    let caps_json = include_str!("../../../architecture/capabilities.json");
+    assert!(
+        caps_json.contains(&format!(
+            "\"registryDigest\": \"{}\"",
+            basis.capability_registry_digest.to_text()
+        )),
+        "REFERENCE_CAPABILITY_REGISTRY_DIGEST drifted from architecture/capabilities.json"
+    );
+    let caps_md = include_str!("../../../registries/CAPABILITIES.md");
+    assert!(
+        caps_md.contains(&format!(
+            "| `gen:fss1:capabilities-v4` | `{}` |",
+            basis.capability_registry_digest.to_text()
+        )),
+        "REFERENCE_CAPABILITY_REGISTRY_DIGEST drifted from registries/CAPABILITIES.md"
+    );
+
+    // 4. Operation cost registry (gen:fss1:operation-cost-v2): live `architecture/operation_cost_registry.toml` and `registries/OPERATION_COSTS.md`.
+    let cost_toml = include_str!("../../../architecture/operation_cost_registry.toml");
+    assert!(
+        cost_toml.contains(&format!(
+            "registry_digest = \"{}\"",
+            basis.cost_registry_digest.to_text()
+        )),
+        "REFERENCE_COST_REGISTRY_DIGEST drifted from architecture/operation_cost_registry.toml"
+    );
+    let cost_md = include_str!("../../../registries/OPERATION_COSTS.md");
+    assert!(
+        cost_md.contains(&basis.cost_registry_digest.to_text()),
+        "REFERENCE_COST_REGISTRY_DIGEST drifted from registries/OPERATION_COSTS.md"
+    );
+
+    // 5 & 6. Frozen baseline schema catalog & error registry pins cross-checked against live
+    // `architecture/agent_hydration_profile.v2.json` and `scripts/agent_hydration_profile_checker.py`.
+    let hydration_profile = include_str!("../../../architecture/agent_hydration_profile.v2.json");
+    assert!(
+        hydration_profile.contains(&format!(
+            "\"baseSchemaCatalogDigest\": \"{}\"",
+            basis.schema_catalog_digest.to_text()
+        )),
+        "REFERENCE_SCHEMA_CATALOG_DIGEST drifted from architecture/agent_hydration_profile.v2.json"
+    );
+    assert!(
+        hydration_profile.contains(&format!(
+            "\"baseOperationRegistryDigest\": \"{}\"",
+            basis.operation_registry_digest.to_text()
+        )),
+        "REFERENCE_OPERATION_REGISTRY_DIGEST drifted from architecture/agent_hydration_profile.v2.json"
+    );
+    let checker_py = include_str!("../../../scripts/agent_hydration_profile_checker.py");
+    for (label, digest) in [
+        ("schema", basis.schema_catalog_digest),
+        ("operation", basis.operation_registry_digest),
+        ("view", basis.view_registry_digest),
+        ("capability", basis.capability_registry_digest),
+        ("error", basis.error_registry_digest),
+        ("cost", basis.cost_registry_digest),
+    ] {
+        assert!(
+            checker_py.contains(&format!("\"{label}\": \"{}\"", digest.to_text())),
+            "ContractBasis `{label}` digest drifted from scripts/agent_hydration_profile_checker.py"
+        );
+    }
+
+    Ok(())
+}

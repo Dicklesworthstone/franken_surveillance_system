@@ -940,8 +940,11 @@ class TestSchemaConstitution(unittest.TestCase):
         # 8 AEAD packfile encryption & cold-archive domains (fss-x4a.31.1.6, to 1031),
         # 5 continuous fss-daemon domains (fss-x4a.31.3.6, to 1036),
         # 12 operational fss/1 + fss-mcp target/probe/intent domains (fss-x4a.31.4.2, to 1048),
-        # and 8 pure-Rust TLS 1.3 webhook/relay/SMTP/escalation domains (fss-x4a.31.4.3, to 1056).
-        self.assertEqual(result["digestDomainCount"], 1056)
+        # and 8 pure-Rust TLS 1.3 webhook/relay/SMTP/escalation domains (fss-x4a.31.4.3, to 1056),
+        # plus 1 health-screened dwell v2 domain (d0f29f60, to 1057),
+        # 2 CLI approval domains (notify/pack_archive, to 1059),
+        # and 1 daemon retention-delete request domain (fss.daemon.retention-delete-request.v1, to 1060).
+        self.assertEqual(result["digestDomainCount"], 1060)
 
         # Continuation cursor is verified implemented
         implemented_names = {s["name"] for s in result["schemas"] if s["status"] == "implemented"}
@@ -1566,8 +1569,11 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         # 8 AEAD packfile encryption & cold-archive domains (fss-x4a.31.1.6, to 1031),
         # 5 continuous fss-daemon domains (fss-x4a.31.3.6, to 1036),
         # 12 operational fss/1 + fss-mcp target/probe/intent domains (fss-x4a.31.4.2, to 1048),
-        # and 8 pure-Rust TLS 1.3 webhook/relay/SMTP/escalation domains (fss-x4a.31.4.3, to 1056).
-        self.assertEqual(result["digestDomainCount"], 1056)
+        # and 8 pure-Rust TLS 1.3 webhook/relay/SMTP/escalation domains (fss-x4a.31.4.3, to 1056),
+        # plus 1 health-screened dwell v2 domain (d0f29f60, to 1057),
+        # 2 CLI approval domains (notify/pack_archive, to 1059),
+        # and 1 daemon retention-delete request domain (fss.daemon.retention-delete-request.v1, to 1060).
+        self.assertEqual(result["digestDomainCount"], 1060)
         # 36 = 28 + fss.sensor_tamper_status.v1 (owner SensorTamperStatus, fss-2uftm)
         # + fss.agent_operations.v1 / fss.agent_views.v1 / fss.agent_request_envelope.v1
         #   (owners AgentOperation / AgentView / AgentRequestEnvelope, fss-x4a.30.83.17-40)

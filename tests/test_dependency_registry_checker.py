@@ -189,9 +189,9 @@ class TestDependencyRegistryChecker(AuthorityCase):
         result = validate_dependency_registry(ROOT)
         self.assertTrue(result.passed, f"Live registry validation failed: {[e.message for e in result.errors]}")
         self.assertEqual(len(result.errors), 0)
-        self.assertEqual(result.dependency_count, 5)
+        self.assertEqual(result.dependency_count, 6)
         self.assertEqual(result.freeze_digest, BASELINE_DEPENDENCIES_FREEZE_DIGEST)
-        self.assertEqual(result.report["pendingOwnerDecisions"]["fss-ndxis"]["crates"], ["serde", "serde_json"])
+        self.assertEqual(result.report["pendingOwnerDecisions"], {})
 
     def test_exact_freeze_digest_assertion(self) -> None:
         """Freeze digests match the exact pinned constants byte-for-byte (registry, allowlist, constitution)."""
@@ -529,7 +529,13 @@ class TestDependencyRegistryChecker(AuthorityCase):
         shutil.copy2(ROOT / CJ, self.path(CJ))
 
         orig_allow = self.text(AL)
-        self.write(AL, orig_allow.replace('crates = [\n  "tokio",', 'crates = [\n  "serde", "tokio",'))
+        pending_block = (
+            '\n[pending_owner_decisions.fss-ndxis]\n'
+            'registry_row = "DEP-FUND-001"\n'
+            'crates = ["serde", "serde_json"]\n'
+            'question = "Synthetic pending owner decision test."\n'
+        )
+        self.write(AL, orig_allow.replace('crates = [\n  "tokio",', 'crates = [\n  "serde", "tokio",') + pending_block)
         result = self.assertCodes({A, I})
         self.assertTrue(any("decides the open question" in e.message for e in result.errors))
         self.write(AL, orig_allow.replace("[laboratory_oracles]", "[disabled_laboratory_oracles]").replace("[laboratory_oracles.rows]", "[disabled_laboratory_oracles.rows]"))
@@ -682,6 +688,13 @@ class TestDependencyRegistryChecker(AuthorityCase):
     def test_in_house_globs_and_lab_membership(self) -> None:
         """The '*' glob, oracle names in [in_house], and dropped oracle memberships all fail."""
         original = self.text(AL)
+        fundamental_block = 'allowed_subject_to_audit = ["chacha20poly1305", "nix", "serde", "serde_json", "zeroize", "zmij"]'
+        pending_block = (
+            '\n[pending_owner_decisions.fss-ndxis]\n'
+            'registry_row = "DEP-FUND-001"\n'
+            'crates = ["serde", "serde_json"]\n'
+            'question = "Synthetic pending owner decision test."\n'
+        )
         cases = {
             "star glob": original.replace('"asupersync",\n', '"asupersync", "*",\n', 1),
             "lib* glob": original.replace('"asupersync",\n', '"asupersync", "lib*",\n', 1),
@@ -692,12 +705,12 @@ class TestDependencyRegistryChecker(AuthorityCase):
             "drop pytorch": original.replace('"networkx", "pytorch",', '"networkx",', 1),
             "drop opencv": original.replace('"onnxruntime", "opencv",\n', '"onnxruntime",\n', 1),
             "oracle double row": original.replace('"DEP-ORACLE-001" = ["networkx", "pytorch"]', '"DEP-ORACLE-001" = ["networkx", "pytorch", "ffmpeg"]', 1),
-            "fundamental adds libc": original.replace('allowed_subject_to_audit = ["serde", "serde_json"]', 'allowed_subject_to_audit = ["serde", "serde_json", "tokio"]', 1),
+            "fundamental adds tokio": original.replace(fundamental_block, 'allowed_subject_to_audit = ["chacha20poly1305", "nix", "serde", "serde_json", "zeroize", "zmij", "tokio"]', 1),
             "empty forbidden": original.replace('"pyo3", "opencv", "ffmpeg-next", "gstreamer", "ort", "tch"\n]', ']', 1).replace('crates = [\n  "tokio", "async-std", "smol", "glommio", "monoio", "rayon",\n  "reqwest", "hyper", "rusqlite", "sqlx", "diesel", "rocksdb",\n  ]', "crates = []", 1),
             "exception also fundamental": original.replace('"blake3", "thiserror"', '"blake3", "serde", "thiserror"', 1),
-            "pending crate not fundamental": original.replace('allowed_subject_to_audit = ["serde", "serde_json"]', 'allowed_subject_to_audit = ["serde_json"]', 1),
-            "pending row wrong": original.replace('registry_row = "DEP-FUND-001"', 'registry_row = "DEP-LAB-001"', 1),
-            "pending id not tracker": original.replace("[pending_owner_decisions.fss-ndxis]", "[pending_owner_decisions.someday]", 1),
+            "pending crate not fundamental": original.replace(fundamental_block, 'allowed_subject_to_audit = ["chacha20poly1305", "nix", "serde_json", "zeroize", "zmij"]', 1) + pending_block,
+            "pending row wrong": original + pending_block.replace('registry_row = "DEP-FUND-001"', 'registry_row = "DEP-LAB-001"', 1),
+            "pending id not tracker": original + pending_block.replace("[pending_owner_decisions.fss-ndxis]", "[pending_owner_decisions.someday]", 1),
         }
         for label, tampered in cases.items():
             with self.subTest(label):
@@ -724,11 +737,15 @@ class TestDependencyRegistryChecker(AuthorityCase):
         self.assertEqual([e.message for e in result.errors if e.code == I], ["in-house family 'ffmpeg' also admits 'ffmpeg', which [laboratory_oracles] classifies differently"])
 
     def test_serde_is_neutral_in_the_registry(self) -> None:
-        """fss-ndxis stays open: serde is neither admitted nor forbidden, and the registry reports it as pending."""
+        """Live ADR-0015 resolves fss-ndxis (pendingOwnerDecisions empty), while any pending decision stays neutral."""
         result = self.assertCodes(set())
-        self.assertEqual(result.report["pendingOwnerDecisions"], {
-            "fss-ndxis": {"registry_row": "DEP-FUND-001", "crates": ["serde", "serde_json"], "question": dependency_authority.live_authority().allowlist["pending_owner_decisions"]["fss-ndxis"]["question"]},
-        })
+        self.assertEqual(result.report["pendingOwnerDecisions"], {})
+        pending_question = "Synthetic pending owner decision test."
+        self.write(
+            AL,
+            self.text(AL)
+            + f'\n[pending_owner_decisions.fss-ndxis]\nregistry_row = "DEP-FUND-001"\ncrates = ["serde", "serde_json"]\nquestion = "{pending_question}"\n',
+        )
         view = dependency_authority.build_class_view(dependency_authority.load_authority(self.tmp_root))
         for crate in ("serde", "serde_json", "serde-json"):
             outcome = dependency_authority.classify_package(crate, view, is_production=True, is_member=False, admitted_projects=frozenset())
@@ -946,8 +963,9 @@ class TestDependencyClassification(unittest.TestCase):
             "exception_candidates": {"not_admitted_without_dep_record_adr_and_release_evidence": []},
             "forbidden": {"crates": []},
         }
+        self.lock([{"name": "fss-core", "version": "0.0.1"}, {"name": "totally-unrecognized-crate", "version": "1.0.0", "source": "registry+https://example.invalid/index"}])
         findings: list[dependency_audit.Finding] = []
-        dependency_audit.audit_dependency_classes(findings, ROOT, policy, {"fss-core"}, [{"name": "totally-unrecognized-crate", "version": "1.0.0"}])
+        dependency_audit.audit_dependency_classes(findings, self.root, policy, {"fss-core"}, [{"name": "totally-unrecognized-crate", "version": "1.0.0", "source": "registry+https://example.invalid/index"}])
         self.assertEqual([(f.code, f.severity) for f in findings], [("DEP-AUD-042", "error")])
         self.assertIn("totally-unrecognized-crate", findings[0].message)
 
@@ -977,8 +995,9 @@ class TestDependencyClassification(unittest.TestCase):
         # authority), not to a count, so a new member is never silently admitted.
         live = live_workspace_members(ROOT)
         assert_live_members_match_topology(self, live, ROOT)
+        self.lock([{"name": m, "version": "0.0.1"} for m in sorted(live)])
         findings = []
-        res = dependency_audit.audit_dependency_classes(findings, ROOT, {"in_house": {"allowed_families": ["fss-*"]}}, live, [{"name": m, "version": "0.0.1"} for m in live])
+        res = dependency_audit.audit_dependency_classes(findings, self.root, {"in_house": {"allowed_families": ["fss-*"]}}, live, [{"name": m, "version": "0.0.1"} for m in live])
         self.assertEqual(findings, [])
         owned = res["census"]["DEP-OWNED-001"]
         self.assertEqual((owned["consumerCount"], owned["packages"], owned["memberPackages"]), (0, [], sorted(live)))
@@ -987,41 +1006,50 @@ class TestDependencyClassification(unittest.TestCase):
     # Restored test (e4ec37f): unconsumed rows drift
     def test_unconsumed_rows_drift_reported(self) -> None:
         """Unconsumed rows return explicit drift explanations derived from the registry scope and decisions."""
+        self.lock([{"name": "fss-core", "version": "0.0.1"}])
         findings: list[dependency_audit.Finding] = []
-        res = dependency_audit.audit_dependency_classes(findings, ROOT, {"in_house": {"allowed_families": ["fss-*"]}}, {"fss-core"}, [{"name": "fss-core", "version": "0.0.1"}])
+        res = dependency_audit.audit_dependency_classes(findings, self.root, {"in_house": {"allowed_families": ["fss-*"]}}, {"fss-core"}, [{"name": "fss-core", "version": "0.0.1"}])
         census = res["census"]
-        self.assertEqual(list(census), ["DEP-OWNED-001", "DEP-FUND-001", "DEP-LAB-001", "DEP-ORACLE-001", "DEP-EXCEPTION-001"])
-        for dep_id in ("DEP-FUND-001", "DEP-LAB-001", "DEP-ORACLE-001", "DEP-EXCEPTION-001"):
+        self.assertEqual(list(census), ["DEP-OWNED-001", "DEP-FUND-001", "DEP-LAB-001", "DEP-ORACLE-001", "DEP-EXCEPTION-001", "DEP-CLOSURE-001"])
+        for dep_id in ("DEP-FUND-001", "DEP-LAB-001", "DEP-ORACLE-001", "DEP-EXCEPTION-001", "DEP-CLOSURE-001"):
             self.assertEqual(census[dep_id]["consumerCount"], 0)
             self.assertFalse(census[dep_id]["hasRealConsumer"])
             self.assertIsNotNone(census[dep_id]["drift"])
             self.assertIn("no real consumer", census[dep_id]["drift"])
-        self.assertIn("pending owner decision fss-ndxis", census["DEP-FUND-001"]["drift"])
         self.assertIn("'Not admitted'", census["DEP-EXCEPTION-001"]["drift"])
-        self.assertEqual([u["id"] for u in res["unconsumed"]], ["DEP-FUND-001", "DEP-LAB-001", "DEP-ORACLE-001", "DEP-EXCEPTION-001"])
+        self.assertEqual([u["id"] for u in res["unconsumed"]], ["DEP-FUND-001", "DEP-LAB-001", "DEP-ORACLE-001", "DEP-EXCEPTION-001", "DEP-CLOSURE-001"])
 
     # Restored test (e4ec37f): DEP-AUD-044 (M-044)
     def test_warn_unconsumed_emits_warning(self) -> None:
         """warn_unconsumed=True emits exactly one DEP-AUD-044 warning per unconsumed row, and none otherwise."""
+        self.lock([{"name": "fss-core", "version": "0.0.1"}])
         findings: list[dependency_audit.Finding] = []
-        dependency_audit.audit_dependency_classes(findings, ROOT, {"in_house": {"allowed_families": ["fss-*"]}}, {"fss-core"}, [{"name": "fss-core", "version": "0.0.1"}], warn_unconsumed=True)
+        dependency_audit.audit_dependency_classes(findings, self.root, {"in_house": {"allowed_families": ["fss-*"]}}, {"fss-core"}, [{"name": "fss-core", "version": "0.0.1"}], warn_unconsumed=True)
         self.assertEqual(sorted((f.code, f.severity, f.params["class"]) for f in findings), [
+            ("DEP-AUD-044", "warning", "DEP-CLOSURE-001"),
             ("DEP-AUD-044", "warning", "DEP-EXCEPTION-001"),
             ("DEP-AUD-044", "warning", "DEP-FUND-001"),
             ("DEP-AUD-044", "warning", "DEP-LAB-001"),
             ("DEP-AUD-044", "warning", "DEP-ORACLE-001"),
         ])
         findings = []
-        dependency_audit.audit_dependency_classes(findings, ROOT, {"in_house": {"allowed_families": ["fss-*"]}}, {"fss-core"}, [{"name": "fss-core", "version": "0.0.1"}])
+        dependency_audit.audit_dependency_classes(findings, self.root, {"in_house": {"allowed_families": ["fss-*"]}}, {"fss-core"}, [{"name": "fss-core", "version": "0.0.1"}])
         self.assertEqual(findings, [])
 
     # Mutant M12: serde neutral pending fss-ndxis, driven by the allowlist
     def test_mutant_m12_serde_pending_fss_ndxis(self) -> None:
-        """serde/serde_json are refused as pending fss-ndxis (DEP-AUD-047): never admitted, never silently rejected.
+        """serde/serde_json are refused as pending fss-ndxis (DEP-AUD-047) when listed in pending_owner_decisions.
 
         DEP-AUD-045 keeps its original warning meaning (round-2 review d); the refusal is the new DEP-AUD-047.
         """
-        policy = {"in_house": {"allowed_families": ["fss-*"]}, "fundamental": {"allowed_subject_to_audit": ["serde", "serde_json"]}, "forbidden": {"crates": []}}
+        policy = {
+            "in_house": {"allowed_families": ["fss-*"]},
+            "fundamental": {"allowed_subject_to_audit": ["serde", "serde_json"]},
+            "forbidden": {"crates": []},
+            "pending_owner_decisions": {
+                "fss-ndxis": {"registry_row": "DEP-FUND-001", "crates": ["serde", "serde_json"], "question": "synthetic pending"},
+            },
+        }
         for serde_pkg in ("serde", "serde_json"):
             for production in (True, False):
                 dep_id, code, reason = dependency_audit.classify_dependency_package(serde_pkg, policy, {"fss-core"}, is_production=production)
@@ -1036,11 +1064,20 @@ class TestDependencyClassification(unittest.TestCase):
         self.assertEqual(dependency_audit.classify_dependency_package("bytes", other, {"fss-core"}), ("DEP-FUND-001", None, None))
         removed = dict(policy, fundamental={"allowed_subject_to_audit": []}, pending_owner_decisions={})
         self.assertEqual(dependency_audit.classify_dependency_package("serde", removed, {"fss-core"})[1], "DEP-AUD-042")
+        # Omitting an admission table (asupersync_closure / fundamental / in_house) must never inherit live admissions.
+        self.assertEqual(dependency_audit.classify_dependency_package("anyhow", removed, {"fss-core"})[1], "DEP-AUD-042")
+        self.assertEqual(dependency_audit.classify_dependency_package("chacha20poly1305", {}, {"fss-core"})[1], "DEP-AUD-042")
 
     def test_serde_consistent_across_mechanisms(self) -> None:
-        """enumerate, classify, DEP-AUD-023 and the census all report serde as pending fss-ndxis."""
+        """enumerate, classify, DEP-AUD-023 and the census all report serde as pending when pending_owner_decisions names it."""
         (self.root / "architecture").mkdir()
-        shutil.copy2(ROOT / AL, self.root / AL)
+        allow_text = (ROOT / AL).read_text(encoding="utf-8") + (
+            '\n[pending_owner_decisions.fss-ndxis]\n'
+            'registry_row = "DEP-FUND-001"\n'
+            'crates = ["serde", "serde_json"]\n'
+            'question = "Synthetic pending owner decision test."\n'
+        )
+        (self.root / AL).write_text(allow_text, encoding="utf-8")
         (self.root / "rust-toolchain.toml").write_text('[toolchain]\nchannel = "nightly-2026-08-31"\n', encoding="utf-8")
         (self.root / "Cargo.toml").write_text('[workspace]\nresolver = "3"\nmembers = ["crates/fss-a"]\n\n[workspace.lints.rust]\nunsafe_code = "forbid"\n', encoding="utf-8")
         crate = self.root / "crates" / "fss-a"
@@ -1125,9 +1162,9 @@ class TestDependencyClassification(unittest.TestCase):
         """audit_workspace reports the census in registry order and fails on a planted unclassified crate."""
         report, rc = dependency_audit.audit_workspace(ROOT, policy_path=ROOT / AL)
         self.assertEqual(report["schema"], "fss.dependency_audit.v4")
-        self.assertEqual(list(report["dependencyClassCensus"]), ["DEP-OWNED-001", "DEP-FUND-001", "DEP-LAB-001", "DEP-ORACLE-001", "DEP-EXCEPTION-001"])
+        self.assertEqual(list(report["dependencyClassCensus"]), ["DEP-OWNED-001", "DEP-FUND-001", "DEP-LAB-001", "DEP-ORACLE-001", "DEP-EXCEPTION-001", "DEP-CLOSURE-001"])
         self.assertEqual(report["dependencyClassCensus"]["DEP-OWNED-001"]["memberPackages"], report["workspaceMembers"])
-        self.assertEqual([u["id"] for u in report["unconsumedDependencyClasses"]], ["DEP-FUND-001", "DEP-LAB-001", "DEP-ORACLE-001", "DEP-EXCEPTION-001"])
+        self.assertEqual([u["id"] for u in report["unconsumedDependencyClasses"]], ["DEP-LAB-001", "DEP-ORACLE-001", "DEP-EXCEPTION-001"])
         (self.root / "architecture").mkdir()
         shutil.copy2(ROOT / AL, self.root / AL)
         (self.root / "rust-toolchain.toml").write_text('[toolchain]\nchannel = "nightly-2026-08-31"\n', encoding="utf-8")
@@ -1178,8 +1215,9 @@ class TestDependencyClassification(unittest.TestCase):
     def test_mutant_m_census_consumer_count_without_member_inflation(self) -> None:
         """Sibling member edges never count as consumers; members are identified by path source, not name."""
         policy = {"in_house": {"allowed_families": ["fss-*"]}, "fundamental": {"allowed_subject_to_audit": []}, "forbidden": {"crates": []}}
+        self.lock([{"name": "fss-cli", "version": "0.0.1", "dependencies": ["fss-core"]}, {"name": "fss-core", "version": "0.0.1"}])
         findings: list[dependency_audit.Finding] = []
-        res = dependency_audit.audit_dependency_classes(findings, ROOT, policy, {"fss-cli", "fss-core"}, [{"name": "fss-cli", "version": "0.0.1"}, {"name": "fss-core", "version": "0.0.1"}], direct=[{"manifest": "crates/fss-cli/Cargo.toml", "section": "dependencies", "name": "fss-core"}])
+        res = dependency_audit.audit_dependency_classes(findings, self.root, policy, {"fss-cli", "fss-core"}, [{"name": "fss-cli", "version": "0.0.1"}, {"name": "fss-core", "version": "0.0.1"}], direct=[{"manifest": "crates/fss-cli/Cargo.toml", "section": "dependencies", "name": "fss-core"}])
         self.assertEqual(findings, [])
         self.assertEqual(res["census"]["DEP-OWNED-001"]["consumerCount"], 0)
         # A path edge to a member counts for nothing even when an admitted registry crate shares its name;
@@ -1426,9 +1464,15 @@ class TestRoundTwoAuthorityHardening(AuthorityCase):
         self.assertEqual((registry["DEP-AUD-045"].severity, registry["DEP-AUD-045"].trigger), ("warning", "fundamental crate is pending owner decision fss-ndxis"))
         self.assertEqual(registry["DEP-AUD-047"].severity, "error")
         self.assertTrue(any(line.startswith("| `DEP-AUD-047` | error |") for line in errors_md))
-        self.assertEqual(dependency_audit.classify_dependency_package("serde", {}, set())[1], "DEP-AUD-047")
+        pending_policy = {
+            "fundamental": {"allowed_subject_to_audit": ["serde", "serde_json"]},
+            "pending_owner_decisions": {
+                "fss-ndxis": {"registry_row": "DEP-FUND-001", "crates": ["serde", "serde_json"], "question": "synthetic pending"},
+            },
+        }
+        self.assertEqual(dependency_audit.classify_dependency_package("serde", pending_policy, set())[1], "DEP-AUD-047")
 
-    # e) DEP-AUD-023 yields to the allowlist's admission; the owner decision alone decides
+    # e) DEP-AUD-023 enforces ADR-0015: direct FSS serde/serde_derive declarations stay refused; pending adds 045/047
     def test_serde_023_follows_the_allowlist_decision(self) -> None:
         deps = '\n[dependencies]\nserde = { version = "1", default-features = false }\nserde_derive = { version = "1", default-features = false }\n'
         lock = [
@@ -1437,10 +1481,15 @@ class TestRoundTwoAuthorityHardening(AuthorityCase):
             {"name": "serde_derive", "version": "1.0.0", "source": "registry+https://example.invalid/index"},
         ]
         live_text = (ROOT / AL).read_text(encoding="utf-8")
-        decided = live_text.split("\n[pending_owner_decisions.fss-ndxis]")[0] + "\n[pending_owner_decisions]\n"
-        for label, text, serde_codes in (
-            ("pending (current)", live_text, {"DEP-AUD-023", "DEP-AUD-045", "DEP-AUD-047"}),
-            ("owner admits serde", decided, set()),
+        pending_text = live_text + (
+            '\n[pending_owner_decisions.fss-ndxis]\n'
+            'registry_row = "DEP-FUND-001"\n'
+            'crates = ["serde", "serde_json"]\n'
+            'question = "Synthetic pending owner decision test."\n'
+        )
+        for label, text, serde_codes, expect_pending_msg in (
+            ("pending decision", pending_text, {"DEP-AUD-023", "DEP-AUD-045", "DEP-AUD-047"}, True),
+            ("owner admits transitive serde (ADR-0015)", live_text, {"DEP-AUD-023"}, False),
         ):
             with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
@@ -1450,7 +1499,7 @@ class TestRoundTwoAuthorityHardening(AuthorityCase):
                 self.assertEqual({f["code"] for f in report["findings"] if f.get("params", {}).get("package") == "serde"}, serde_codes)
                 derive_codes = {f["code"] for f in report["findings"] if f.get("params", {}).get("package") == "serde_derive"}
                 self.assertIn("DEP-AUD-023", derive_codes)
-                if serde_codes:
+                if expect_pending_msg:
                     self.assertTrue(all("pending owner decision fss-ndxis" in f["message"] for f in report["findings"] if f.get("params", {}).get("package") == "serde" and f["code"] == "DEP-AUD-023"))
 
     # f) the policy lane itself catches an oversized or odd Cargo.lock

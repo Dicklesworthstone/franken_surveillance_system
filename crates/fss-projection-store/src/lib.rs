@@ -75,5 +75,5 @@ pub use tables::{COMMIT_LOG_CHUNK_SIZE, ProjectionCounters, ProjectionTables};
 pub use wal::{
     MAX_WAL_FRAME_BODY_BYTES, QUARANTINE_DIRNAME, SNAPSHOT_FILENAME, WAL_FILENAME,
     WAL_FORMAT_VERSION, WAL_FRAME_HEADER_LEN, WAL_FRAME_MAGIC, WAL_FRAME_TRAILER_LEN,
-    WalSyncPolicy,
+    WalInspectionSummary, WalSyncPolicy, inspect_wal_readonly,
 };

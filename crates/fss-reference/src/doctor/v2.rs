@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use fss_core::ContentDigest;
 use fss_ledger::inspect_epochs_readonly;
 use fss_pack::{PACK_FOOTER_END_MAGIC, PackId, verify_sealed_pack};
-use fss_projection_store::ProjectionSnapshot;
+use fss_projection_store::{ProjectionSnapshot, inspect_wal_readonly};
 use fss_publication::{WriterDetectionOptions, detect_writers};
 
 use crate::migration::{DeploymentLayoutV2, MIGRATE_INCOMPLETE_FILENAME};
@@ -218,12 +218,23 @@ fn inspect_packs_readonly(packs_dir: &Path) -> DoctorCheck {
     let mut verified_sealed = 0_u64;
     let mut total_bytes = 0_u64;
     let mut corrupt_packs = 0_u64;
+    let mut symlink_packs = 0_u64;
 
     for path in &paths {
         let Ok(meta) = fs::symlink_metadata(path) else {
             continue;
         };
-        if !meta.file_type().is_file() || meta.file_type().is_symlink() {
+        if meta.file_type().is_symlink() {
+            symlink_packs = symlink_packs.saturating_add(1);
+            check.find(
+                "symlink_pack_entry",
+                DoctorSeverity::Attention,
+                Some(usize::try_from(symlink_packs).unwrap_or(usize::MAX)),
+                None,
+            );
+            continue;
+        }
+        if !meta.file_type().is_file() {
             continue;
         }
         total_packs = total_packs.saturating_add(1);
@@ -268,11 +279,26 @@ fn inspect_packs_readonly(packs_dir: &Path) -> DoctorCheck {
         }
     }
 
+    let verification_bounded = sealed_packs > MAX_SEALED_PACKS_VERIFIED_PER_DOCTOR as u64;
+    if verification_bounded {
+        check.find(
+            "pack_verification_bounded",
+            DoctorSeverity::Info,
+            Some(usize::try_from(sealed_packs).unwrap_or(usize::MAX)),
+            None,
+        );
+    }
+
     check.field("pack_count", num64(total_packs));
     check.field("sealed_pack_count", num64(sealed_packs));
     check.field("verified_sealed_packs", num64(verified_sealed));
+    check.field(
+        "verification_bounded",
+        DoctorValue::Bool(verification_bounded),
+    );
     check.field("on_disk_pack_bytes", num64(total_bytes));
     check.field("corrupt_pack_count", num64(corrupt_packs));
+    check.field("symlink_pack_count", num64(symlink_packs));
     check
 }
 
@@ -309,38 +335,84 @@ fn inspect_projection_readonly(proj_dir: &Path) -> DoctorCheck {
         );
         return check;
     }
+
+    let mut snap_seq = 0_u64;
+    let mut has_scrub_receipt = false;
     if has_snap
         && let Ok(meta) = fs::symlink_metadata(&snap_path)
         && meta.len() <= MAX_MVCC_SNAP_READ_BYTES
-        && let Ok(bytes) = fs::read(&snap_path)
+        && let Ok(file) = File::open(&snap_path)
     {
-        match ProjectionSnapshot::decode_snapshot_bytes(&bytes) {
-            Ok(snap) => {
-                check.field(
-                    "snapshot_commit_sequence",
-                    num64(snap.anchor.commit_sequence),
-                );
-                check.evidence("snapshot_history_root", snap.anchor.history_root);
-                check.field(
-                    "has_scrub_receipt",
-                    DoctorValue::Bool(snap.scrub_receipt.is_some()),
-                );
-            }
-            Err(err) => {
-                check.field(
-                    "reason",
-                    DoctorValue::String(format!(
-                        "derived mvcc.snap failed verification (rebuildable): {err}"
-                    )),
-                );
-                check.find(
-                    "projection_snapshot_corrupt",
-                    DoctorSeverity::Info,
-                    None,
-                    None,
-                );
+        let mut bytes = Vec::new();
+        let read_ok = file
+            .take(MAX_MVCC_SNAP_READ_BYTES.saturating_add(1))
+            .read_to_end(&mut bytes)
+            .is_ok()
+            && (bytes.len() as u64) <= MAX_MVCC_SNAP_READ_BYTES;
+        if read_ok {
+            match ProjectionSnapshot::decode_snapshot_bytes(&bytes) {
+                Ok(snap) => {
+                    snap_seq = snap.anchor.commit_sequence;
+                    has_scrub_receipt |= snap.scrub_receipt.is_some();
+                    check.field("snapshot_commit_sequence", num64(snap_seq));
+                    check.evidence("snapshot_history_root", snap.anchor.history_root);
+                }
+                Err(err) => {
+                    check.field(
+                        "reason",
+                        DoctorValue::String(format!(
+                            "derived mvcc.snap failed verification (rebuildable): {err}"
+                        )),
+                    );
+                    check.find(
+                        "projection_snapshot_corrupt",
+                        DoctorSeverity::Info,
+                        None,
+                        None,
+                    );
+                }
             }
         }
     }
+
+    let mut wal_max_seq = 0_u64;
+    if has_wal {
+        match inspect_wal_readonly(&wal_path, MAX_MVCC_SNAP_READ_BYTES) {
+            Ok(wal) => {
+                wal_max_seq = wal.max_commit_sequence;
+                has_scrub_receipt |= wal.latest_scrub_receipt.is_some();
+                check.field("wal_batch_frames", num64(wal.batch_frames));
+                check.field("wal_scrub_receipt_frames", num64(wal.scrub_receipt_frames));
+                check.field("wal_max_commit_sequence", num64(wal_max_seq));
+                check.field(
+                    "wal_incomplete_tail",
+                    DoctorValue::Bool(wal.incomplete_tail),
+                );
+                if wal.incomplete_tail {
+                    check.find(
+                        "projection_wal_incomplete_tail",
+                        DoctorSeverity::Info,
+                        None,
+                        None,
+                    );
+                }
+            }
+            Err(err) => {
+                check.field(
+                    "wal_error",
+                    DoctorValue::String(format!(
+                        "derived mvcc.wal failed verification (rebuildable): {err}"
+                    )),
+                );
+                check.find("projection_wal_corrupt", DoctorSeverity::Info, None, None);
+            }
+        }
+    }
+
+    check.field(
+        "projected_commit_sequence",
+        num64(snap_seq.max(wal_max_seq)),
+    );
+    check.field("has_scrub_receipt", DoctorValue::Bool(has_scrub_receipt));
     check
 }

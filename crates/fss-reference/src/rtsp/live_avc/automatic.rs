@@ -92,6 +92,16 @@ impl AutomaticAvcConnection {
     pub fn keepalive_command(&self) -> ClientCommand {
         self.control.keepalive_command()
     }
+    /// Opt in before DESCRIBE to acquire H.264 SPS/PPS in-band from RTP when SDP omits
+    /// `sprop-parameter-sets`. Default is strict SDP (`false`).
+    pub fn set_allow_inband_parameter_sets(&mut self, enabled: bool) -> Result<(), LiveAvcError> {
+        self.connection.set_allow_inband_parameter_sets(enabled)
+    }
+    /// Opt in before DESCRIBE to SETUP companion `m=audio` tracks and drain their interleaved
+    /// packets cleanly without affecting video frame custody.
+    pub fn set_setup_companion_tracks(&mut self, enabled: bool) -> Result<(), LiveAvcError> {
+        self.connection.set_setup_companion_tracks(enabled)
+    }
     /// Negotiation state only, never a frame, continuity or publication receipt.
     pub fn state(&self) -> ClientState {
         self.connection.state()

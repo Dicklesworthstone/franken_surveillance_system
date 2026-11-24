@@ -337,6 +337,41 @@ impl ModelPoolEngine {
         replay_cx: Option<&ReplayCx>,
         scalar_cx: &ScalarExecCx,
     ) -> Result<(BatchExecutionReceipt, BatchBenchmarkMetrics), ModelPoolError> {
+        self.process_epoch_inner(
+            pool, model_key, epoch_id, frames, replay_cx, scalar_cx, false,
+        )
+    }
+
+    /// Processes an explicit operator/agent-requested probe epoch where every submitted frame
+    /// forces Stage-2 ML sentinel admission through the already-pinned [`ResidentModelPool`]
+    /// (zero weight reloads) while preserving Stage-1 validation, OSD masks, fair-share budgets,
+    /// and cancellation boundaries.
+    #[allow(clippy::too_many_arguments)]
+    pub fn process_forced_probe_epoch(
+        &mut self,
+        pool: &ResidentModelPool,
+        model_key: &ResidentModelKey,
+        epoch_id: u64,
+        frames: &[StreamFrameInput],
+        replay_cx: Option<&ReplayCx>,
+        scalar_cx: &ScalarExecCx,
+    ) -> Result<(BatchExecutionReceipt, BatchBenchmarkMetrics), ModelPoolError> {
+        self.process_epoch_inner(
+            pool, model_key, epoch_id, frames, replay_cx, scalar_cx, true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn process_epoch_inner(
+        &mut self,
+        pool: &ResidentModelPool,
+        model_key: &ResidentModelKey,
+        epoch_id: u64,
+        frames: &[StreamFrameInput],
+        replay_cx: Option<&ReplayCx>,
+        scalar_cx: &ScalarExecCx,
+        force_stage2_sentinel: bool,
+    ) -> Result<(BatchExecutionReceipt, BatchBenchmarkMetrics), ModelPoolError> {
         let epoch_started = Instant::now();
         scalar_cx.checkpoint("model_pool:epoch_begin")?;
         if let Some(rcx) = replay_cx {
@@ -368,7 +403,11 @@ impl ModelPoolEngine {
         let budget_cfg = self.scheduler.config();
         for (canonical_index, (_, _, frame)) in ordered.iter().enumerate() {
             scalar_cx.checkpoint("model_pool:stage1")?;
-            let decision = self.cascade.evaluate_stage1(frame, replay_cx)?;
+            let mut decision = self.cascade.evaluate_stage1(frame, replay_cx)?;
+            if force_stage2_sentinel && !decision.stage_decision.ran_ml_inference() {
+                decision.stage_decision = StageDecision::SentinelSweep;
+                decision.unsampled_reason = None;
+            }
             if decision.stage_decision.ran_ml_inference() {
                 candidates.push(ScheduledCandidate {
                     canonical_index,

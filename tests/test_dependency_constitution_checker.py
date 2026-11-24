@@ -707,17 +707,25 @@ class TestDependencyConstitutionChecker(ConstitutionCase):
                 self.assertCodes({I, A})
 
     def test_allowlist_empty_forbidden_or_fundamental_rejected(self) -> None:
-        """Emptying [forbidden].crates or [fundamental] (still pending fss-ndxis) is refused."""
+        """Emptying [forbidden].crates fails invariant + pin; emptying [fundamental] fails pin and, with pending decisions, invariant."""
         original = self.text(AL)
         forbidden_block = 'crates = [\n  "tokio", "async-std", "smol", "glommio", "monoio", "rayon",\n  "reqwest", "hyper", "rusqlite", "sqlx", "diesel", "rocksdb",\n  "pyo3", "opencv", "ffmpeg-next", "gstreamer", "ort", "tch"\n]'
-        for label, tampered in (
-            ("forbidden", original.replace(forbidden_block, "crates = []", 1)),
-            ("fundamental", original.replace('allowed_subject_to_audit = ["serde", "serde_json"]', "allowed_subject_to_audit = []", 1)),
+        fundamental_block = 'allowed_subject_to_audit = ["chacha20poly1305", "nix", "serde", "serde_json", "zeroize", "zmij"]'
+        pending_block = (
+            '\n[pending_owner_decisions.fss-ndxis]\n'
+            'registry_row = "DEP-FUND-001"\n'
+            'crates = ["serde", "serde_json"]\n'
+            'question = "Synthetic pending decision."\n'
+        )
+        for label, tampered, expected in (
+            ("forbidden", original.replace(forbidden_block, "crates = []", 1), {I, A}),
+            ("fundamental", original.replace(fundamental_block, "allowed_subject_to_audit = []", 1), {A}),
+            ("fundamental-with-pending", original.replace(fundamental_block, "allowed_subject_to_audit = []", 1) + pending_block, {I, A}),
         ):
             with self.subTest(label):
                 self.assertNotEqual(tampered, original)
                 self.write(AL, tampered)
-                self.assertCodes({I, A})
+                self.assertCodes(expected)
 
     # --- Dependency registry crosswalk -------------------------------------------------
 
@@ -984,11 +992,11 @@ class TestDependencyConstitutionChecker(ConstitutionCase):
         self.assertTrue(any("production_language must be 'rust'" in e.message for e in res.errors))
 
     def test_f0_closure_unadmitted_crate_rejected(self) -> None:
-        """libc (unlisted) in the closure fails closed."""
+        """An unlisted external crate in the closure fails closed."""
         res = dependency_constitution_checker.ValidationResult()
-        validate_cargo_metadata_for_f0(res, {"packages": [{"name": "fss-core", "id": "fss-core 0.0.1", "edition": "2024", "manifest_path": f"{ROOT}/crates/fss-core/Cargo.toml", "links": None}, {"name": "libc", "id": "libc 0.2.140", "edition": "2021", "manifest_path": "/p/libc/Cargo.toml", "links": None}], "workspace_members": ["fss-core 0.0.1"], "metadata": {"fss": {"production_language": "rust"}}}, ROOT)
+        validate_cargo_metadata_for_f0(res, {"packages": [{"name": "fss-core", "id": "fss-core 0.0.1", "edition": "2024", "manifest_path": f"{ROOT}/crates/fss-core/Cargo.toml", "links": None}, {"name": "unlisted-ext", "id": "unlisted-ext 0.2.140", "edition": "2021", "manifest_path": "/p/unlisted-ext/Cargo.toml", "links": None}], "workspace_members": ["fss-core 0.0.1"], "metadata": {"fss": {"production_language": "rust"}}}, ROOT)
         self.assertEqual(codes(res), {MV})
-        self.assertTrue(any("Unadmitted external crate 'libc'" in e.message for e in res.errors))
+        self.assertTrue(any("Unadmitted external crate 'unlisted-ext'" in e.message for e in res.errors))
 
     def test_f0_closure_exception_candidate_blake3_rejected(self) -> None:
         """blake3 (exception candidate) is not admitted without a DEP record."""
@@ -1031,12 +1039,11 @@ class TestDependencyConstitutionChecker(ConstitutionCase):
         core = pkg("fss-core", member=True)
         cases = {
             "tokio (forbidden)": ([pkg("tokio")], {"fss-core": [("tokio", None)]}, [(MV, "#tokio")]),
-            "libc (unlisted)": ([pkg("libc")], {"fss-core": [("libc", None)]}, [(MV, "#libc")]),
+            "unlisted-sys (unlisted)": ([pkg("unlisted-sys")], {"fss-core": [("unlisted-sys", None)]}, [(MV, "#unlisted-sys")]),
             "libloading (unlisted)": ([pkg("libloading")], {"fss-core": [("libloading", None)]}, [(MV, "#libloading")]),
             "blake3 (exception)": ([pkg("blake3")], {"fss-core": [("blake3", None)]}, [(MV, "#blake3")]),
-            "serde (pending, build.rs)": ([pkg("serde", kinds=("lib", "custom-build"))], {"fss-core": [("serde", None)]}, [(PD, "#serde"), (MV, "#serde/targets/custom-build")]),
-            "serde_json dev-only (still pending)": ([pkg("serde_json")], {"fss-core": [("serde_json", "dev")]}, [(PD, "#serde_json")]),
-            "serde_derive proc-macro": ([pkg("serde_derive", kinds=("proc-macro",))], {"fss-core": [("serde_derive", None)]}, [(MV, "#serde_derive"), (MV, "#serde_derive/targets/proc-macro")]),
+            "unlisted custom-build": ([pkg("rogue-build", kinds=("lib", "custom-build"))], {"fss-core": [("rogue-build", None)]}, [(MV, "#rogue-build"), (MV, "#rogue-build/targets/custom-build")]),
+            "unlisted proc-macro": ([pkg("rogue-derive", kinds=("proc-macro",))], {"fss-core": [("rogue-derive", None)]}, [(MV, "#rogue-derive"), (MV, "#rogue-derive/targets/proc-macro")]),
             "ffmpeg dev-only oracle": ([pkg("ffmpeg")], {"fss-core": [("ffmpeg", "dev")]}, []),
             "ffmpeg dev-only with native links": ([pkg("ffmpeg", links="avcodec")], {"fss-core": [("ffmpeg", "dev")]}, [(MV, "#ffmpeg/links")]),
             "ffmpeg via build edge": ([pkg("ffmpeg")], {"fss-core": [("ffmpeg", "build")]}, [(MV, "#ffmpeg")]),
@@ -1051,6 +1058,16 @@ class TestDependencyConstitutionChecker(ConstitutionCase):
         for label, (extra, edges, expected) in cases.items():
             with self.subTest(label):
                 self.assertEqual(self.census(metadata([core] + extra, edges)), sorted(expected))
+        with self.subTest("serde (synthetic pending decision)"):
+            res = dependency_constitution_checker.ValidationResult()
+            pending_allow = {
+                "fundamental": {"allowed_subject_to_audit": ["serde"]},
+                "pending_owner_decisions": {
+                    "fss-ndxis": {"registry_row": "DEP-FUND-001", "crates": ["serde"], "question": "synthetic pending"}
+                },
+            }
+            validate_cargo_metadata_for_f0(res, metadata([core, pkg("serde")], {"fss-core": [("serde", None)]}), ROOT, allow_data=pending_allow)
+            self.assertEqual(sorted((e.code, e.target) for e in res.errors), [(PD, "#serde")])
         members = {
             "member proc-macro": (pkg("fss-tensor", member=True, kinds=("proc-macro",)), [(MV, "#fss-tensor/targets/proc-macro")]),
             "member cdylib": (pkg("fss-model-ir", member=True, kinds=("lib",), crate_types=("cdylib",)), [(MV, "#fss-model-ir/targets/crate_types")]),

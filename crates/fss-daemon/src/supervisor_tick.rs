@@ -222,6 +222,10 @@ impl DaemonSupervisor {
                 slot.entry.reconnect_max_ms = new_entry.reconnect_max_ms;
                 slot.entry.stall_timeout_ms = new_entry.stall_timeout_ms;
                 slot.entry.gop_frames = new_entry.gop_frames;
+                slot.entry.auth_realm = new_entry.auth_realm.clone();
+                slot.entry.allow_inband_sps_pps = new_entry.allow_inband_sps_pps;
+                slot.entry.setup_companion_tracks = new_entry.setup_companion_tracks;
+                slot.driver.update_manifest_entry(new_entry);
                 slot.backoff = crate::sensor::BackoffSchedule::new(
                     new_entry.sensor_id.as_str(),
                     new_entry.reconnect_min_ms,

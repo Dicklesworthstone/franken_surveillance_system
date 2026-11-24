@@ -19,6 +19,7 @@ use std::error::Error;
 
 const CONSTITUTION_JSON: &str = include_str!("../../../architecture/dependency_constitution.json");
 const DEPENDENCIES_JSON: &str = include_str!("../../../architecture/dependencies.json");
+const DEPENDENCY_AUTHORITY_PY: &str = include_str!("../../../scripts/dependency_authority.py");
 const DOCTRINE_MD: &str = include_str!("../../../docs/DEPENDENCY_CONSTITUTION.md");
 
 /// The ten DEP-INV invariants of the 30.88 family.
@@ -89,13 +90,20 @@ fn invariants_are_declared_in_the_doctrine() {
 
 #[test]
 fn freeze_digest_matches_checker_expectation() {
-    // The value scripts/dependency_registry_checker.py verifies against
-    // (its run is the family's deterministic cross-registry validation).
+    // Both architecture/dependencies.json and scripts/dependency_authority.py
+    // must pin the exact same gen:fss1:dependencies-v2 freeze digest.
+    const PINNED_DIGEST: &str =
+        "sha256:4ae20998cafa4a3f47262ef278349a3626111b89b1a76b63951df2cc07326e6e";
     assert!(
-        DEPENDENCIES_JSON
-            .contains("sha256:8f198c9ce7b3eca519c678beb4bde773fe42d8bc93b55b9f0af375d38208a9c1")
+        DEPENDENCIES_JSON.contains(PINNED_DIGEST),
+        "architecture/dependencies.json freezeDigest drifted from {PINNED_DIGEST}"
+    );
+    assert!(
+        DEPENDENCY_AUTHORITY_PY.contains(PINNED_DIGEST),
+        "scripts/dependency_authority.py BASELINE_DEPENDENCIES_FREEZE_DIGEST drifted from {PINNED_DIGEST}"
     );
     assert!(DEPENDENCIES_JSON.contains("gen:fss1:dependencies-v2"));
+    assert!(DEPENDENCIES_JSON.contains("\"id\": \"DEP-CLOSURE-001\""));
 }
 
 #[test]

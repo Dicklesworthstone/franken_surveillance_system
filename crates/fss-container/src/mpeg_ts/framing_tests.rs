@@ -209,7 +209,9 @@ fn dvb204_retains_trailers_and_maps_only_transport_bytes() {
         let standard =
             MpegTsVideo::parse(source, TsSelection::default(), TsLimits::default()).unwrap();
         let framed: Vec<_> = source
-            .chunks_exact(TS_PACKET_BYTES)
+            .as_chunks::<TS_PACKET_BYTES>()
+            .0
+            .iter()
             .flat_map(|packet| packet.iter().copied().chain([0x47; 16]))
             .collect();
         let parsed = parse_dvb(&framed).unwrap();

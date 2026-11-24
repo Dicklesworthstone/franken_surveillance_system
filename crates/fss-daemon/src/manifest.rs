@@ -13,7 +13,8 @@
 //! - Cameras reference opaque `secret_id` handles stored in `fss-vault` instead.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
+use std::fs::{self, File};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use fss_core::json_input::{self, Value};
@@ -63,6 +64,10 @@ pub const DEFAULT_STALL_TIMEOUT_MS: u64 = 5_000;
 pub const DEFAULT_GOP_FRAMES: usize = 8;
 /// Default decoded frame dimensions when omitted (`[32, 32]`).
 pub const DEFAULT_CAMERA_DIMENSIONS: [u32; 2] = [32, 32];
+/// Hard file size bound for `site.json` manifests loaded from disk (`4 MiB`).
+pub const MAX_SITE_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
+/// Maximum allowed byte length of a camera Digest authentication realm.
+pub const MAX_AUTH_REALM_BYTES: usize = 256;
 
 const FORBIDDEN_QUERY_KEYS: &[&str] = &[
     "password",
@@ -166,6 +171,12 @@ pub struct CameraManifestEntry {
     pub ring_max_bytes: usize,
     /// Target frames packed into each coarse-grained `FSMC` media chunk.
     pub gop_frames: usize,
+    /// Optional explicit RTSP Digest authentication realm pinned for this camera (defaults to `"fss"`).
+    pub auth_realm: Option<String>,
+    /// Allow acquiring H.264 SPS/PPS in-band from RTP when SDP omits `sprop-parameter-sets`.
+    pub allow_inband_sps_pps: bool,
+    /// Setup companion `m=audio` RTSP tracks and drain their interleaved packets cleanly.
+    pub setup_companion_tracks: bool,
 }
 
 /// Optional homography declaration binding one camera to the site ground plane.
@@ -235,10 +246,38 @@ pub struct SiteManifest {
 }
 
 impl SiteManifest {
-    /// Loads and validates a [`SiteManifest`] from a UTF-8 JSON file on disk.
+    /// Loads and validates a [`SiteManifest`] from a regular non-symlink UTF-8 JSON file on disk
+    /// bounded by [`MAX_SITE_MANIFEST_BYTES`].
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self, DaemonError> {
-        let text = fs::read_to_string(path.as_ref())
+        let path = path.as_ref();
+        let meta =
+            fs::symlink_metadata(path).map_err(|err| DaemonError::io("stat_site_manifest", err))?;
+        if meta.file_type().is_symlink() || !meta.file_type().is_file() {
+            return Err(DaemonError::InvalidManifest {
+                detail: "site manifest must be a regular non-symlink file".to_owned(),
+            });
+        }
+        if meta.len() > MAX_SITE_MANIFEST_BYTES {
+            return Err(DaemonError::InvalidManifest {
+                detail: format!(
+                    "site manifest size {} exceeds bound {MAX_SITE_MANIFEST_BYTES}",
+                    meta.len()
+                ),
+            });
+        }
+        let file = File::open(path).map_err(|err| DaemonError::io("open_site_manifest", err))?;
+        let mut bytes = Vec::new();
+        file.take(MAX_SITE_MANIFEST_BYTES.saturating_add(1))
+            .read_to_end(&mut bytes)
             .map_err(|err| DaemonError::io("read_site_manifest", err))?;
+        if (bytes.len() as u64) > MAX_SITE_MANIFEST_BYTES {
+            return Err(DaemonError::InvalidManifest {
+                detail: format!("site manifest exceeded bound {MAX_SITE_MANIFEST_BYTES}"),
+            });
+        }
+        let text = String::from_utf8(bytes).map_err(|_| DaemonError::InvalidManifest {
+            detail: "site manifest must be valid UTF-8".to_owned(),
+        })?;
         Self::parse_json(&text)
     }
 
@@ -433,6 +472,21 @@ impl SiteManifest {
             }
             let canonical_rects = validate_ignore_regions(&cam.osd_ignore_rects)?;
             validate_ignore_regions_in_bounds(&canonical_rects, cam.dimensions)?;
+            if let Some(realm) = &cam.auth_realm
+                && (realm.is_empty()
+                    || realm.len() > MAX_AUTH_REALM_BYTES
+                    || !realm.is_ascii()
+                    || realm
+                        .bytes()
+                        .any(|b| b < 0x20 || b == 0x7F || b == b'"' || b == b'\\'))
+            {
+                return Err(DaemonError::InvalidManifest {
+                    detail: format!(
+                        "camera `{}` auth_realm must be 1..={MAX_AUTH_REALM_BYTES} printable ASCII bytes without quotes or backslashes",
+                        cam.sensor_id
+                    ),
+                });
+            }
         }
 
         // Validate full C8 site topology compatibility eagerly.
@@ -545,6 +599,18 @@ impl SiteManifest {
             enc.u64(cam.ring_max_frames as u64);
             enc.u64(cam.ring_max_bytes as u64);
             enc.u64(cam.gop_frames as u64);
+            if let Some(realm) = &cam.auth_realm {
+                enc.text("auth_realm");
+                enc.text(realm);
+            }
+            if cam.allow_inband_sps_pps {
+                enc.text("allow_inband_sps_pps");
+                enc.bool(true);
+            }
+            if cam.setup_companion_tracks {
+                enc.text("setup_companion_tracks");
+                enc.bool(true);
+            }
         }
         if let Ok(topo) = self.to_site_topology() {
             enc.digest(topo.digest());

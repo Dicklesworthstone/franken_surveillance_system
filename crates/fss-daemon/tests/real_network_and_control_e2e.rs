@@ -223,6 +223,9 @@ fn real_http_mjpeg_driver_decodes_real_pixels_and_refuses_401() -> TestResult {
         ring_max_frames: 16,
         ring_max_bytes: 128 * 1024,
         gop_frames: 4,
+        auth_realm: None,
+        allow_inband_sps_pps: false,
+        setup_companion_tracks: false,
     };
 
     let mut drv = NetworkAdapterDriver::new(&cam);
@@ -481,10 +484,16 @@ fn ipc_snapshot_reload_manifest_and_probe_detect_execute_real_operations() -> Te
         "missing real manifest_reloaded delta: {notes:?}"
     );
     assert!(
-        notes
-            .iter()
-            .any(|n| n.starts_with("probe_detect_completed target=sensor:cam-a")),
-        "missing real probe_detect_completed delta: {notes:?}"
+        notes.iter().any(
+            |n| n.starts_with("probe_detect_completed target=sensor:cam-a")
+                && n.contains("ran_ml=1")
+        ),
+        "ProbeDetect must force Stage-2 ML inference (ran_ml=1) even on static frames: {notes:?}"
+    );
+    assert_eq!(
+        sup.perception().pool_metrics().loads,
+        1,
+        "ProbeDetect must reuse the pinned ResidentModelPool with zero extra weight loads"
     );
 
     let shutdown = sup.shutdown_graceful()?;
@@ -553,6 +562,13 @@ fn daemon_v2_root_passes_fss_doctor_and_fss_orient_live_and_stopped() -> TestRes
         "doctor JSON must report v2 layout: {}",
         live_doc.to_json()
     );
+    let live_doc_json = live_doc.to_json();
+    assert!(
+        live_doc_json.contains("\"wal_present\":true")
+            && live_doc_json.contains("\"wal_batch_frames\":")
+            && live_doc_json.contains("\"projected_commit_sequence\":"),
+        "live v2 doctor must inspect mvcc.wal and report projected_commit_sequence: {live_doc_json}"
+    );
 
     let live_snap = read_deployment(dir.path(), &OrientLimits::default())?;
     assert!(live_snap.anchor.commit_sequence > 0);
@@ -601,5 +617,101 @@ fn daemon_v2_root_passes_fss_doctor_and_fss_orient_live_and_stopped() -> TestRes
     )?;
     stopped_orient.capsule().validate()?;
 
+    // 3. Symlinked `.fssp` entry inside objects/packs must trigger AttentionRequired + symlink_pack_entry.
+    #[cfg(unix)]
+    {
+        let bogus_target = dir.path().join("outside-pack-target.bin");
+        fs::write(&bogus_target, b"not-a-real-pack")?;
+        let sym_pack = dir
+            .path()
+            .join("objects")
+            .join("packs")
+            .join("pack-00000000-000000000099.fssp");
+        std::os::unix::fs::symlink(&bogus_target, &sym_pack)?;
+        let sym_doc = inspect_deployment(dir.path());
+        assert_eq!(
+            sym_doc.verdict,
+            DoctorVerdict::AttentionRequired,
+            "symlinked pack entry must trigger AttentionRequired: {}",
+            sym_doc.to_json()
+        );
+        assert!(
+            sym_doc.to_json().contains("symlink_pack_entry"),
+            "doctor JSON must report symlink_pack_entry: {}",
+            sym_doc.to_json()
+        );
+        let _ = fs::remove_file(&sym_pack);
+        let _ = fs::remove_file(&bogus_target);
+    }
+
+    Ok(())
+}
+
+#[test]
+fn site_manifest_parses_rtsp_realm_and_rejects_invalid_realm_or_symlink_file() -> TestResult {
+    let dir = TempDirGuard::new("man-rlm")?;
+    let root_str = dir.path().to_string_lossy().replace('\\', "\\\\");
+    let valid_json = format!(
+        r#"{{
+  "schema": "fss.site_manifest.v1",
+  "site_id": "site-rtsp-realm",
+  "deployment_root": "{root_str}",
+  "cameras": [
+    {{
+      "sensor_id": "sensor:wyze-39",
+      "adapter": "rtsp",
+      "endpoint": "rtsp://127.0.0.1:8554/stream1",
+      "auth_realm": "smolrtsp",
+      "allow_inband_sps_pps": true,
+      "setup_companion_tracks": true,
+      "zone_id": "front"
+    }}
+  ]
+}}"#
+    );
+    let m = SiteManifest::parse_json(&valid_json)?;
+    assert_eq!(m.cameras[0].auth_realm.as_deref(), Some("smolrtsp"));
+    assert!(m.cameras[0].allow_inband_sps_pps);
+    assert!(m.cameras[0].setup_companion_tracks);
+
+    let default_json = format!(
+        r#"{{
+  "schema": "fss.site_manifest.v1",
+  "site_id": "site-rtsp-realm",
+  "deployment_root": "{root_str}",
+  "cameras": [
+    {{
+      "sensor_id": "sensor:wyze-39",
+      "adapter": "rtsp",
+      "endpoint": "rtsp://127.0.0.1:8554/stream1",
+      "zone_id": "front"
+    }}
+  ]
+}}"#
+    );
+    let m_default = SiteManifest::parse_json(&default_json)?;
+    assert_ne!(
+        m.digest(),
+        m_default.digest(),
+        "manifest digest must commit to auth_realm / inband / companion track options"
+    );
+
+    let bad_realm = valid_json.replace("\"smolrtsp\"", "\"bad\\\"realm\"");
+    assert!(
+        SiteManifest::parse_json(&bad_realm).is_err(),
+        "auth_realm containing quotes must be rejected"
+    );
+
+    #[cfg(unix)]
+    {
+        let real_file = dir.path().join("real-site.json");
+        let link_file = dir.path().join("link-site.json");
+        fs::write(&real_file, &valid_json)?;
+        std::os::unix::fs::symlink(&real_file, &link_file)?;
+        assert!(
+            SiteManifest::from_file(&link_file).is_err(),
+            "SiteManifest::from_file must reject symlink manifest paths"
+        );
+    }
     Ok(())
 }

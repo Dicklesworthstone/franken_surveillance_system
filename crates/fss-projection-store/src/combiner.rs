@@ -153,6 +153,12 @@ impl<S: CommitSink> CommitCombiner<S> {
         Ok(build_stats(&state))
     }
 
+    /// Returns the instantaneous count of queued proposals waiting for the next combiner wave.
+    pub fn pending_len(&self) -> Result<usize, CombinerError> {
+        let state = self.queue.lock().map_err(|_| CombinerError::LockPoisoned)?;
+        Ok(state.pending.len())
+    }
+
     /// Transitions the combiner to shutdown, waits cleanly for any active combiner round to drain
     /// all already-admitted proposals, and returns final telemetry with zero orphan threads.
     pub fn shutdown(&self) -> Result<CommitCombinerStats, CombinerError> {

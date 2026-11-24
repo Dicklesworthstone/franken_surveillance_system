@@ -14,7 +14,8 @@
 //! - Effects execute through `DurableEffectJournal` (when `--effects-journal` or `--root` is set)
 //!   so `Indeterminate` operations can NEVER be silently resent (`ERR-NOTIFY-INDETERMINATE-001`).
 
-use std::fs;
+use std::fs::{self, File};
+use std::io::Read;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -477,11 +478,35 @@ fn load_trust_policy(opts: &NotifyOpts) -> Result<TlsTrustPolicy, (String, ExitI
                 ExitIdentity::MALFORMED_VALUE,
             ));
         }
-        let pem = fs::read_to_string(pem_path).map_err(|err| {
+        let file = File::open(pem_path).map_err(|err| {
             err_json(
                 "ERR-NOTIFY-TLS-CERT-001",
-                &format!("cannot read --ca-pem: {err}"),
+                &format!("cannot open --ca-pem: {err}"),
                 ExitIdentity::RUNTIME_FAILURE,
+            )
+        })?;
+        let mut pem_bytes = Vec::new();
+        file.take((MAX_PEM_BUNDLE_BYTES as u64).saturating_add(1))
+            .read_to_end(&mut pem_bytes)
+            .map_err(|err| {
+                err_json(
+                    "ERR-NOTIFY-TLS-CERT-001",
+                    &format!("cannot read --ca-pem: {err}"),
+                    ExitIdentity::RUNTIME_FAILURE,
+                )
+            })?;
+        if pem_bytes.len() > MAX_PEM_BUNDLE_BYTES {
+            return Err(err_json(
+                "ERR-NOTIFY-TLS-CERT-001",
+                "--ca-pem exceeds 256 KiB bound",
+                ExitIdentity::MALFORMED_VALUE,
+            ));
+        }
+        let pem = String::from_utf8(pem_bytes).map_err(|_| {
+            err_json(
+                "ERR-NOTIFY-TLS-CERT-001",
+                "--ca-pem must be valid UTF-8 PEM text",
+                ExitIdentity::MALFORMED_VALUE,
             )
         })?;
         TlsTrustPolicy::from_pem_bundle(&pem).map_err(|err| {

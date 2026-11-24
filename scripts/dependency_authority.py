@@ -1451,17 +1451,35 @@ def live_authority() -> Authority:
     return load_authority(ROOT)
 
 
+_ADMISSION_VIEW_KEYS: frozenset[str] = frozenset({
+    "families",
+    "fundamental",
+    "closure",
+    "audited_custom_build",
+    "audited_proc_macros",
+    "audited_target_cfg_links",
+    "audited_offline_build_scripts",
+})
+
+
 def class_view_from_policy(policy: Any, fallback: Authority | None = None) -> ClassView | None:
     """Lenient view for callers holding a raw allowlist dict (dependency_audit, fixtures).
 
-    Lists and tables present in ``policy`` are used as given. Anything absent is taken from the live
-    authority, which only ever adds restrictions (pending decisions, gate mappings, row scopes); an
-    omitted table can never admit a crate. Returns None when no usable authority exists (fail closed).
+    Lists and tables present in ``policy`` are used as given. When ``policy`` is a dict, only
+    restrictions and structural mappings (pending decisions, forbidden/lab/exception lists,
+    gate mappings, row scopes) are inherited from the fallback authority; admission tables
+    (``in_house.allowed_families``, ``fundamental``, ``asupersync_closure``) are never inherited
+    from the fallback when omitted, so an omitted table can never admit a crate. When ``policy``
+    is ``None``, the fallback authority's full allowlist is used. Returns None when no usable
+    authority exists (fail closed).
     """
     auth = fallback if fallback is not None else live_authority()
     base: dict[str, Any] = {}
     if auth.allowlist is not None:
-        base.update(_view_parts_from_allowlist(auth.allowlist))
+        fallback_parts = _view_parts_from_allowlist(auth.allowlist)
+        if isinstance(policy, dict):
+            fallback_parts = {k: v for k, v in fallback_parts.items() if k not in _ADMISSION_VIEW_KEYS}
+        base.update(fallback_parts)
     if auth.registry is not None:
         base.update(_view_parts_from_registry(auth))
     if isinstance(policy, dict):

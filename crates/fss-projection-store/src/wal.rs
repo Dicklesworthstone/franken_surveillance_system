@@ -316,6 +316,181 @@ pub(crate) fn read_and_verify_wal(path: &Path) -> Result<Vec<WalRecord>, Project
     Ok(records)
 }
 
+/// Strictly read-only inspection summary of `mvcc.wal` produced without acquiring locks or
+/// modifying any file on disk.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WalInspectionSummary {
+    /// Number of verified `ApplyBatch` frames observed in `mvcc.wal`.
+    pub batch_frames: u64,
+    /// Number of verified `RecordScrubReceipt` frames observed in `mvcc.wal`.
+    pub scrub_receipt_frames: u64,
+    /// Highest commit sequence observed across verified WAL batch frames (`0` if none).
+    pub max_commit_sequence: u64,
+    /// Latest verified [`DoctorScrubReceipt`] recorded in `mvcc.wal`, if any.
+    pub latest_scrub_receipt: Option<DoctorScrubReceipt>,
+    /// True when the file ended mid-frame (e.g., an active live writer was appending concurrently).
+    pub incomplete_tail: bool,
+}
+
+/// Reads and verifies `mvcc.wal` strictly read-only up to `max_bytes`, returning a bounded summary
+/// without acquiring locks or mutating any files.
+pub fn inspect_wal_readonly(
+    path: &Path,
+    max_bytes: u64,
+) -> Result<WalInspectionSummary, ProjectionError> {
+    let meta = match fs::symlink_metadata(path) {
+        Ok(m) => m,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(WalInspectionSummary {
+                batch_frames: 0,
+                scrub_receipt_frames: 0,
+                max_commit_sequence: 0,
+                latest_scrub_receipt: None,
+                incomplete_tail: false,
+            });
+        }
+        Err(err) => return Err(ProjectionError::io(ProjectionIoOperation::Metadata, err)),
+    };
+    if meta.file_type().is_symlink() || !meta.file_type().is_file() {
+        return Err(ProjectionError::CorruptDerivedStore {
+            artifact: WAL_FILENAME,
+            detail: "mvcc.wal is not a regular non-symlink file".to_owned(),
+        });
+    }
+    if meta.len() > max_bytes {
+        return Err(ProjectionError::CorruptDerivedStore {
+            artifact: WAL_FILENAME,
+            detail: format!(
+                "mvcc.wal size {} exceeds read-only inspection bound {max_bytes}",
+                meta.len()
+            ),
+        });
+    }
+    let file =
+        File::open(path).map_err(|err| ProjectionError::io(ProjectionIoOperation::Open, err))?;
+    let mut raw = Vec::new();
+    file.take(max_bytes.saturating_add(1))
+        .read_to_end(&mut raw)
+        .map_err(|err| ProjectionError::io(ProjectionIoOperation::Read, err))?;
+    if (raw.len() as u64) > max_bytes {
+        return Err(ProjectionError::CorruptDerivedStore {
+            artifact: WAL_FILENAME,
+            detail: format!("mvcc.wal exceeded read-only inspection bound {max_bytes}"),
+        });
+    }
+
+    let mut summary = WalInspectionSummary {
+        batch_frames: 0,
+        scrub_receipt_frames: 0,
+        max_commit_sequence: 0,
+        latest_scrub_receipt: None,
+        incomplete_tail: false,
+    };
+    let mut offset = 0_usize;
+    while offset < raw.len() {
+        let remaining = raw.len() - offset;
+        if remaining < WAL_FRAME_HEADER_LEN + WAL_FRAME_TRAILER_LEN {
+            let magic_prefix = remaining.min(WAL_FRAME_MAGIC.len());
+            if raw[offset..offset + magic_prefix] != WAL_FRAME_MAGIC[..magic_prefix] {
+                return Err(ProjectionError::CorruptDerivedStore {
+                    artifact: WAL_FILENAME,
+                    detail: format!("invalid WAL frame magic at byte offset {offset}"),
+                });
+            }
+            summary.incomplete_tail = true;
+            break;
+        }
+        let hdr = &raw[offset..offset + WAL_FRAME_HEADER_LEN];
+        if hdr[0..4] != WAL_FRAME_MAGIC {
+            return Err(ProjectionError::CorruptDerivedStore {
+                artifact: WAL_FILENAME,
+                detail: format!("invalid WAL frame magic at byte offset {offset}"),
+            });
+        }
+        let version = u16::from_be_bytes([hdr[4], hdr[5]]);
+        if version != WAL_FORMAT_VERSION {
+            return Err(ProjectionError::CorruptDerivedStore {
+                artifact: WAL_FILENAME,
+                detail: format!("unsupported WAL version {version} at byte offset {offset}"),
+            });
+        }
+        let op_tag = u16::from_be_bytes([hdr[6], hdr[7]]);
+        let seq = u64::from_be_bytes([
+            hdr[8], hdr[9], hdr[10], hdr[11], hdr[12], hdr[13], hdr[14], hdr[15],
+        ]);
+        let body_len = u32::from_be_bytes([hdr[16], hdr[17], hdr[18], hdr[19]]) as usize;
+        if body_len > MAX_WAL_FRAME_BODY_BYTES {
+            return Err(ProjectionError::CorruptDerivedStore {
+                artifact: WAL_FILENAME,
+                detail: format!("WAL frame body_len {body_len} exceeds max at offset {offset}"),
+            });
+        }
+        let frame_len = WAL_FRAME_HEADER_LEN
+            .checked_add(body_len)
+            .and_then(|v| v.checked_add(WAL_FRAME_TRAILER_LEN))
+            .ok_or(ProjectionError::ArithmeticOverflow("wal_frame_len"))?;
+        if frame_len > remaining {
+            summary.incomplete_tail = true;
+            break;
+        }
+        let frame = &raw[offset..offset + frame_len];
+        let crc_pos = frame_len - WAL_FRAME_TRAILER_LEN;
+        let stored_crc = u32::from_be_bytes([
+            frame[crc_pos],
+            frame[crc_pos + 1],
+            frame[crc_pos + 2],
+            frame[crc_pos + 3],
+        ]);
+        if crc32c(&frame[..crc_pos]) != stored_crc {
+            return Err(ProjectionError::CorruptDerivedStore {
+                artifact: WAL_FILENAME,
+                detail: format!("WAL CRC32C checksum mismatch at byte offset {offset}"),
+            });
+        }
+        let body = &frame[WAL_FRAME_HEADER_LEN..crc_pos];
+        match op_tag {
+            WAL_OP_APPLY_BATCH => {
+                let batch =
+                    decode_batch(body).map_err(|err| ProjectionError::CorruptDerivedStore {
+                        artifact: WAL_FILENAME,
+                        detail: format!("WAL batch decode failed at offset {offset}: {err}"),
+                    })?;
+                if batch.new_anchor.commit_sequence != seq {
+                    return Err(ProjectionError::CorruptDerivedStore {
+                        artifact: WAL_FILENAME,
+                        detail: format!(
+                            "WAL sequence mismatch at offset {offset}: frame={seq}, batch={}",
+                            batch.new_anchor.commit_sequence
+                        ),
+                    });
+                }
+                summary.batch_frames = summary.batch_frames.saturating_add(1);
+                summary.max_commit_sequence = summary.max_commit_sequence.max(seq);
+            }
+            WAL_OP_SCRUB_RECEIPT => {
+                let receipt = DoctorScrubReceipt::from_canonical_bytes(body).map_err(|err| {
+                    ProjectionError::CorruptDerivedStore {
+                        artifact: WAL_FILENAME,
+                        detail: format!(
+                            "WAL scrub receipt decode failed at offset {offset}: {err}"
+                        ),
+                    }
+                })?;
+                summary.scrub_receipt_frames = summary.scrub_receipt_frames.saturating_add(1);
+                summary.latest_scrub_receipt = Some(receipt);
+            }
+            other => {
+                return Err(ProjectionError::CorruptDerivedStore {
+                    artifact: WAL_FILENAME,
+                    detail: format!("unknown WAL op tag {other} at byte offset {offset}"),
+                });
+            }
+        }
+        offset += frame_len;
+    }
+    Ok(summary)
+}
+
 /// Atomically writes a verified `mvcc.snap` snapshot via temp file + sync + rename + dir sync.
 pub(crate) fn write_snapshot_atomic(
     dir: &Path,
@@ -430,4 +605,85 @@ pub(crate) fn sync_directory(dir: &Path) -> Result<(), ProjectionError> {
         let _ = dir;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "fss-wal-inspect-{label}-{}-{nanos}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    #[test]
+    fn inspect_wal_readonly_handles_missing_incomplete_corrupt_oversize_and_symlink() {
+        let dir = unique_temp_dir("cases");
+        let missing = dir.join("missing.wal");
+        let empty = inspect_wal_readonly(&missing, 4096).expect("missing wal");
+        assert_eq!(
+            empty,
+            WalInspectionSummary {
+                batch_frames: 0,
+                scrub_receipt_frames: 0,
+                max_commit_sequence: 0,
+                latest_scrub_receipt: None,
+                incomplete_tail: false,
+            }
+        );
+
+        // Partial FMVW header prefix -> incomplete_tail = true.
+        let partial = dir.join("partial.wal");
+        fs::write(&partial, b"FMVW\x00\x01").expect("write partial");
+        let partial_summary = inspect_wal_readonly(&partial, 4096).expect("partial wal");
+        assert!(partial_summary.incomplete_tail);
+        assert_eq!(partial_summary.batch_frames, 0);
+
+        // Short garbage that does not even match FMVW magic -> CorruptDerivedStore.
+        let garbage = dir.join("garbage.wal");
+        fs::write(&garbage, b"NOPE").expect("write garbage");
+        assert!(matches!(
+            inspect_wal_readonly(&garbage, 4096),
+            Err(ProjectionError::CorruptDerivedStore { .. })
+        ));
+
+        // Corrupt CRC32C frame -> CorruptDerivedStore.
+        let mut frame = encode_wal_frame(WAL_OP_APPLY_BATCH, 1, b"bad").expect("encode frame");
+        let last = frame.len() - 1;
+        frame[last] ^= 0xFF;
+        let bad_crc = dir.join("bad_crc.wal");
+        fs::write(&bad_crc, &frame).expect("write bad crc");
+        assert!(matches!(
+            inspect_wal_readonly(&bad_crc, 4096),
+            Err(ProjectionError::CorruptDerivedStore { .. })
+        ));
+
+        // Oversize file exceeds max_bytes -> CorruptDerivedStore.
+        assert!(matches!(
+            inspect_wal_readonly(&bad_crc, 4),
+            Err(ProjectionError::CorruptDerivedStore { .. })
+        ));
+
+        // Symlinked WAL -> refused fail-closed.
+        #[cfg(unix)]
+        {
+            let link = dir.join("link.wal");
+            std::os::unix::fs::symlink(&partial, &link).expect("symlink");
+            assert!(matches!(
+                inspect_wal_readonly(&link, 4096),
+                Err(ProjectionError::CorruptDerivedStore { .. })
+            ));
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

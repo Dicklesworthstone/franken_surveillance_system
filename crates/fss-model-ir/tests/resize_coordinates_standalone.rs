@@ -392,3 +392,15 @@ fn every_planning_checkpoint_propagates_cancellation_and_exact_work_limits() -> 
     }
     Ok(())
 }
+
+#[test]
+fn scale_rounded_for_rounds_half_up_and_refuses_zero_extent() -> Test {
+    let half = Scale::from_size(1, 2).map_err(|error| format!("{error:?}"))?;
+    let rounded = half.rounded_for(5).map_err(|error| format!("{error:?}"))?;
+    assert_eq!(rounded.output(), 3);
+    assert_eq!(
+        half.rounded_for(0).err(),
+        Some(CoordinateError::Unsupported)
+    );
+    Ok(())
+}

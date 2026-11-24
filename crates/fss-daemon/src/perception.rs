@@ -12,8 +12,9 @@
 //! evidence), which are committed to the canonical ledger and pushed to `fss-ipc` subscribers.
 
 use std::collections::BTreeMap;
-use std::fs;
-use std::path::PathBuf;
+use std::fs::{self, File};
+use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use fss_core::{
@@ -128,55 +129,8 @@ impl PerceptionEngine {
     pub fn new(manifest: &SiteManifest, config: PerceptionConfig) -> Result<Self, DaemonError> {
         let scalar_cx = ScalarExecCx::new();
         let pool = ResidentModelPool::default_bounded();
-
-        let pkg_path = config
-            .detector_package_path
-            .as_ref()
-            .or(manifest.detector_package_path.as_ref());
-        let pkg_digest = config
-            .detector_package_digest
-            .or(manifest.detector_package_digest);
-        let min_score_ppm = config
-            .detector_min_score_ppm
-            .or(manifest.detector_min_score_ppm);
-
-        let (model_key, rgb_detector_active) = if let Some(path) = pkg_path {
-            let expected_digest = pkg_digest.ok_or_else(|| DaemonError::InvalidManifest {
-                detail: "detector_package_path requires pinned detector_package_digest".to_owned(),
-            })?;
-            let meta = fs::symlink_metadata(path)
-                .map_err(|err| DaemonError::io("stat_detector_package", err))?;
-            if !meta.file_type().is_file() || meta.file_type().is_symlink() {
-                return Err(DaemonError::InvalidConfig {
-                    detail: "detector_package_path must be a non-symlink regular file".to_owned(),
-                });
-            }
-            if meta.len() == 0 || meta.len() > MAX_DETECTOR_PACKAGE_BYTES {
-                return Err(DaemonError::InvalidConfig {
-                    detail: format!(
-                        "detector package size {} exceeds bound 1..={MAX_DETECTOR_PACKAGE_BYTES}",
-                        meta.len()
-                    ),
-                });
-            }
-            let bytes =
-                fs::read(path).map_err(|err| DaemonError::io("read_detector_package", err))?;
-            let replay_cx = build_detector_replay_cx(&manifest.site_id, expected_digest)?;
-            let resident = pool.load_or_get_rgb_detector(
-                &bytes,
-                expected_digest,
-                DEFAULT_DETECTOR_IMPORT_WORK,
-                KernelBackend::OptimizedCpuV1,
-                min_score_ppm,
-                &replay_cx,
-                &scalar_cx,
-            )?;
-            (resident.key().clone(), true)
-        } else {
-            let resident =
-                pool.load_or_get_activity_committed(KernelBackend::ScalarReference, &scalar_cx)?;
-            (resident.key().clone(), false)
-        };
+        let (model_key, rgb_detector_active) =
+            resolve_resident_model(&pool, manifest, &config, &scalar_cx)?;
 
         let model_engine = build_model_engine(manifest, &config)?;
         let corroborator = build_corroborator(manifest, &config)?;
@@ -202,17 +156,23 @@ impl PerceptionEngine {
 
     /// Rebuilds the cascade, fair-share quotas, and site corroboration topology from a newly
     /// validated `SiteManifest` while retaining the already-pinned `ResidentModelPool` with
-    /// zero weight reloads.
+    /// zero weight reloads when the pinned detector package is unchanged (or verifying and
+    /// pinning an updated manifest detector package when explicitly changed).
     pub fn reload_manifest(&mut self, manifest: &SiteManifest) -> Result<(), DaemonError> {
+        let (model_key, rgb_detector_active) =
+            resolve_resident_model(&self.pool, manifest, &self.config, &self.scalar_cx)?;
         let model_engine = build_model_engine(manifest, &self.config)?;
         let corroborator = build_corroborator(manifest, &self.config)?;
+        self.model_key = model_key;
+        self.rgb_detector_active = rgb_detector_active;
         self.model_engine = model_engine;
         self.corroborator = corroborator;
         Ok(())
     }
 
-    /// Runs an explicit operator-triggered Stage-2 ML probe over the provided frames by ensuring
-    /// every frame enters as an admitted keyframe sentinel without mutating source custody bytes.
+    /// Runs an explicit operator-triggered Stage-2 ML probe over the provided frames by forcing
+    /// Stage-2 sentinel admission through the already-pinned `ResidentModelPool` (zero weight
+    /// reloads) without mutating source custody bytes.
     pub fn probe_frames(
         &mut self,
         frames: &[Arc<CameraFrame>],
@@ -233,10 +193,7 @@ impl PerceptionEngine {
                 .saturating_add(idx as u64);
             probed.push(Arc::new(copy));
         }
-        // Reset cascade sentinel policy temporarily to interval 1 for this probe by evaluating
-        // through a dedicated probe cascade sharing the exact pinned `ResidentModelPool` (zero
-        // weight reloads).
-        self.process_frames(&probed)
+        self.process_frames_inner(&probed, true)
     }
 
     /// Runs one multi-camera perception epoch: Stage-1 OSD-masked motion watch -> `FairShareScheduler`
@@ -244,6 +201,14 @@ impl PerceptionEngine {
     pub fn process_frames(
         &mut self,
         frames: &[Arc<CameraFrame>],
+    ) -> Result<Option<PerceptionTickOutcome>, DaemonError> {
+        self.process_frames_inner(frames, false)
+    }
+
+    fn process_frames_inner(
+        &mut self,
+        frames: &[Arc<CameraFrame>],
+        force_stage2_probe: bool,
     ) -> Result<Option<PerceptionTickOutcome>, DaemonError> {
         if frames.is_empty() {
             return Ok(None);
@@ -277,14 +242,25 @@ impl PerceptionEngine {
             frame_lookup.insert((frame.sensor_id.clone(), frame.sequence), frame);
         }
 
-        let (batch_receipt, metrics) = self.model_engine.process_epoch(
-            &self.pool,
-            &self.model_key,
-            self.epoch_id,
-            &inputs,
-            None,
-            &self.scalar_cx,
-        )?;
+        let (batch_receipt, metrics) = if force_stage2_probe {
+            self.model_engine.process_forced_probe_epoch(
+                &self.pool,
+                &self.model_key,
+                self.epoch_id,
+                &inputs,
+                None,
+                &self.scalar_cx,
+            )?
+        } else {
+            self.model_engine.process_epoch(
+                &self.pool,
+                &self.model_key,
+                self.epoch_id,
+                &inputs,
+                None,
+                &self.scalar_cx,
+            )?
+        };
 
         let mut decisions = Vec::new();
         for frame_receipt in &batch_receipt.frames {
@@ -413,6 +389,75 @@ impl PerceptionEngine {
         self.next_track_id = self.next_track_id.saturating_add(1);
         id
     }
+}
+
+fn resolve_resident_model(
+    pool: &ResidentModelPool,
+    manifest: &SiteManifest,
+    config: &PerceptionConfig,
+    scalar_cx: &ScalarExecCx,
+) -> Result<(ResidentModelKey, bool), DaemonError> {
+    let pkg_path = config
+        .detector_package_path
+        .as_ref()
+        .or(manifest.detector_package_path.as_ref());
+    let pkg_digest = config
+        .detector_package_digest
+        .or(manifest.detector_package_digest);
+    let min_score_ppm = config
+        .detector_min_score_ppm
+        .or(manifest.detector_min_score_ppm);
+
+    if let Some(path) = pkg_path {
+        let expected_digest = pkg_digest.ok_or_else(|| DaemonError::InvalidManifest {
+            detail: "detector_package_path requires pinned detector_package_digest".to_owned(),
+        })?;
+        let bytes = read_bounded_detector_package(path)?;
+        let replay_cx = build_detector_replay_cx(&manifest.site_id, expected_digest)?;
+        let resident = pool.load_or_get_rgb_detector(
+            &bytes,
+            expected_digest,
+            DEFAULT_DETECTOR_IMPORT_WORK,
+            KernelBackend::OptimizedCpuV1,
+            min_score_ppm,
+            &replay_cx,
+            scalar_cx,
+        )?;
+        Ok((resident.key().clone(), true))
+    } else {
+        let resident =
+            pool.load_or_get_activity_committed(KernelBackend::ScalarReference, scalar_cx)?;
+        Ok((resident.key().clone(), false))
+    }
+}
+
+fn read_bounded_detector_package(path: &Path) -> Result<Vec<u8>, DaemonError> {
+    let meta =
+        fs::symlink_metadata(path).map_err(|err| DaemonError::io("stat_detector_package", err))?;
+    if !meta.file_type().is_file() || meta.file_type().is_symlink() {
+        return Err(DaemonError::InvalidConfig {
+            detail: "detector_package_path must be a non-symlink regular file".to_owned(),
+        });
+    }
+    if meta.len() == 0 || meta.len() > MAX_DETECTOR_PACKAGE_BYTES {
+        return Err(DaemonError::InvalidConfig {
+            detail: format!(
+                "detector package size {} exceeds bound 1..={MAX_DETECTOR_PACKAGE_BYTES}",
+                meta.len()
+            ),
+        });
+    }
+    let file = File::open(path).map_err(|err| DaemonError::io("open_detector_package", err))?;
+    let mut bytes = Vec::with_capacity(usize::try_from(meta.len()).unwrap_or(0));
+    file.take(MAX_DETECTOR_PACKAGE_BYTES.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|err| DaemonError::io("read_detector_package", err))?;
+    if bytes.is_empty() || (bytes.len() as u64) > MAX_DETECTOR_PACKAGE_BYTES {
+        return Err(DaemonError::InvalidConfig {
+            detail: format!("detector package size exceeds bound 1..={MAX_DETECTOR_PACKAGE_BYTES}"),
+        });
+    }
+    Ok(bytes)
 }
 
 fn build_model_engine(

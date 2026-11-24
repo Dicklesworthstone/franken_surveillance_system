@@ -90,6 +90,9 @@ pub(crate) fn parse_camera_entry(
     let ring_max_frames = opt_usize(obj, "ring_max_frames")?.unwrap_or(DEFAULT_RING_MAX_FRAMES);
     let ring_max_bytes = opt_usize(obj, "ring_max_bytes")?.unwrap_or(DEFAULT_RING_MAX_BYTES);
     let gop_frames = opt_usize(obj, "gop_frames")?.unwrap_or(DEFAULT_GOP_FRAMES);
+    let auth_realm = opt_text(obj, "auth_realm")?.map(ToOwned::to_owned);
+    let allow_inband_sps_pps = opt_bool(obj, "allow_inband_sps_pps")?.unwrap_or(false);
+    let setup_companion_tracks = opt_bool(obj, "setup_companion_tracks")?.unwrap_or(false);
 
     Ok(CameraManifestEntry {
         sensor_id,
@@ -108,6 +111,9 @@ pub(crate) fn parse_camera_entry(
         ring_max_frames,
         ring_max_bytes,
         gop_frames,
+        auth_realm,
+        allow_inband_sps_pps,
+        setup_companion_tracks,
     })
 }
 
@@ -323,6 +329,16 @@ pub(crate) fn opt_text<'a>(
         Some(Value::Text(s)) => Ok(Some(s.as_str())),
         Some(_) => Err(DaemonError::InvalidManifest {
             detail: format!("field `{key}` must be a string"),
+        }),
+    }
+}
+
+fn opt_bool(obj: &BTreeMap<String, Value>, key: &str) -> Result<Option<bool>, DaemonError> {
+    match obj.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(b)) => Ok(Some(*b)),
+        Some(_) => Err(DaemonError::InvalidManifest {
+            detail: format!("field `{key}` must be a boolean"),
         }),
     }
 }

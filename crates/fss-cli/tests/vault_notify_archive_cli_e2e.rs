@@ -248,9 +248,9 @@ fn fss_vault_cli_lifecycle_permissions_argv_refusal_and_zero_canary_leaks() -> T
     Ok(())
 }
 
-fn read_http_req_over_tls(
-    tls: &mut Tls13Stream<TcpStream>,
-) -> Result<(String, Vec<(String, String)>, Vec<u8>), String> {
+type ParsedHttpRequest = (String, Vec<(String, String)>, Vec<u8>);
+
+fn read_http_req_over_tls(tls: &mut Tls13Stream<TcpStream>) -> Result<ParsedHttpRequest, String> {
     let mut raw = Vec::new();
     let mut buf = [0_u8; 4096];
     let header_end = loop {

@@ -786,6 +786,7 @@ fn error_code(error: &FileIngestError) -> &'static str {
         FileIngestError::Mjpeg(_) => "mjpeg_malformed",
         FileIngestError::Mp4Refused { .. } => "mp4_refused",
         FileIngestError::MatroskaRefused { .. } => "mkv_refused",
+        FileIngestError::AviRefused { .. } => "avi_refused",
         FileIngestError::FlvRefused { .. } => "flv_refused",
         FileIngestError::LocalPublication(_) => "local_publication_error",
         FileIngestError::Spool(_) => "spool_error",

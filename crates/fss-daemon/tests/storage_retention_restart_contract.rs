@@ -55,7 +55,7 @@ impl Drop for TempDirGuard {
     }
 }
 
-fn manifest(cap_bytes: u64) -> Result<SiteManifest, DaemonError> {
+fn manifest(cap_bytes: u64) -> Result<SiteManifest, Box<DaemonError>> {
     SiteManifest::parse_json(&format!(
         r#"{{
   "schema": "fss.site_manifest.v1",
@@ -92,6 +92,7 @@ fn manifest(cap_bytes: u64) -> Result<SiteManifest, DaemonError> {
   ]
 }}"#
     ))
+    .map_err(Box::new)
 }
 
 fn frame(
