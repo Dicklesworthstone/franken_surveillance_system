@@ -243,6 +243,41 @@ pub struct AvcMp4<'a> {
     composition_shift: bool,
 }
 
+// An unedited extending movie can declare the end of the indexed presentations
+// from media time zero. This check never supplies a fragment's decode start.
+fn validate_indexed_duration(
+    reader: &mut Reader<'_, '_>,
+    declared: u64,
+    timing: &[(u64, u32)],
+    composition: &[i64],
+    admit_presentation_end: bool,
+) -> Result<(), DemuxError> {
+    let decode_end = timing
+        .last()
+        .and_then(|(time, duration)| time.checked_add(u64::from(*duration)))
+        .ok_or(DemuxError::Timeline)?;
+    if declared == u64::MAX || declared == decode_end {
+        return Ok(());
+    }
+    if !admit_presentation_end || declared < decode_end {
+        return Err(DemuxError::Timeline);
+    }
+    let mut presentation_end = 0;
+    for (&(time, duration), &offset) in timing.iter().zip(composition) {
+        reader.checkpoint()?;
+        let offset = u64::try_from(offset).map_err(|_| DemuxError::Timeline)?;
+        let end = time
+            .checked_add(offset)
+            .and_then(|pts| pts.checked_add(u64::from(duration)))
+            .ok_or(DemuxError::Timeline)?;
+        presentation_end = presentation_end.max(end);
+    }
+    if declared != presentation_end {
+        return Err(DemuxError::Timeline);
+    }
+    Ok(())
+}
+
 impl<'a> AvcMp4<'a> {
     /// Parse an exact source buffer. More than one video track requires an explicit track ID.
     pub fn parse(
@@ -482,14 +517,14 @@ impl<'a> AvcMp4<'a> {
             let offsets = offsets(&mut r, &tables)?;
             let locations = locations(&mut r, &one(&tables, b"stsc")?, &sizes, &offsets, &media)?;
             let timing = timing(&mut r, &one(&tables, b"stts")?, sizes.len())?;
-            let total_duration = timing
-                .last()
-                .and_then(|(d, n)| d.checked_add(u64::from(*n)))
-                .ok_or(DemuxError::Timeline)?;
-            if declared_duration != u64::MAX && declared_duration != total_duration {
-                return Err(DemuxError::Timeline);
-            }
             let composition = composition(&mut r, optional(&tables, b"ctts")?, sizes.len())?;
+            validate_indexed_duration(
+                &mut r,
+                declared_duration,
+                &timing,
+                &composition,
+                mvex.is_some() && edits.is_empty() && !composition_shift,
+            )?;
             let sync = sync_samples(&mut r, optional(&tables, b"stss")?, sizes.len())?;
             locations
                 .into_iter()
