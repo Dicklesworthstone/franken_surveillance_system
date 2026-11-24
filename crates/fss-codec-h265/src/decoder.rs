@@ -127,14 +127,14 @@ struct SkippedPicture {
 /// Annex-B bytes with [`Decoder::decode_annex_b`]. Pictures are returned in
 /// output (display) order: the decoded picture buffer holds pictures until
 /// the stream's reorder depth (`sps_max_num_reorder_pics`) or buffer size
-/// (`sps_max_dec_pic_buffering_minus1 + 1`) releases them, and an IDR or
-/// BLA picture releases every earlier picture. Call [`Decoder::finish`] at
+/// (`sps_max_dec_pic_buffering_minus1 + 1`) releases them, and a new coded
+/// video sequence drains or discards waiting pictures according to the IRAP header. Call [`Decoder::finish`] at
 /// the end of the stream to flush the remaining pictures.
 ///
-/// Error discipline: any error inside a picture discards that picture and
-/// puts the decoder in a "wait for an IRAP picture" state, so later
-/// pictures never predict from a damaged reference. Parameter-set errors
-/// leave previously stored parameter sets untouched.
+/// A rejected NAL discards any partial picture and requires a new IRAP.
+/// A CRA that restores random access starts a new coded video sequence:
+/// its leading RASL pictures cannot depend on references before the gap.
+/// Rejected parameter sets leave previously stored sets untouched.
 pub struct Decoder {
     limits: DecoderLimits,
     admit_tiles: bool,
@@ -151,9 +151,6 @@ pub struct Decoder {
     /// picture starts.
     skipping: Option<SkippedPicture>,
     need_irap: bool,
-    /// The next CRA starts a new coded video sequence (stream start or
-    /// after an end-of-sequence NAL unit).
-    first_after_eos: bool,
     /// NoRaslOutputFlag of the most recent IRAP picture.
     irap_no_rasl_output: bool,
     /// `PicOrderCntVal` of prevTid0Pic.
@@ -209,7 +206,6 @@ impl Decoder {
             pending: None,
             skipping: None,
             need_irap: true,
-            first_after_eos: true,
             irap_no_rasl_output: true,
             prev_tid0_poc: 0,
             pictures: 0,
@@ -245,12 +241,10 @@ impl Decoder {
     /// # Errors
     /// Any [`DecodeError`]; see the type-level error discipline.
     pub fn decode_nal(&mut self, nal: &[u8]) -> Result<Option<Picture>, DecodeError> {
-        let in_picture = self.pending.is_some() || self.skipping.is_some();
         let result = self.decode_nal_inner(nal);
-        if result.is_err() && in_picture {
-            // Size, NAL-header and parameter-set errors occur before the
-            // VCL branch below. They must not leave a partial picture's
-            // inherited header or entropy contexts usable by later NALs.
+        if result.is_err() {
+            // A rejected header can hide a reference picture even between
+            // complete pictures. Do not use pre-gap references to resume.
             self.pending = None;
             self.skipping = None;
             self.need_irap = true;
@@ -272,16 +266,9 @@ impl Decoder {
             unit_type::PPS => self.store_pps(payload)?,
             unit_type::EOS | unit_type::EOB => {
                 self.finish_pending()?;
-                self.first_after_eos = true;
+                self.need_irap = true;
             }
-            0..=9 | 16..=21 => {
-                if let Err(err) = self.decode_slice(header, payload) {
-                    self.pending = None;
-                    self.skipping = None;
-                    self.need_irap = true;
-                    return Err(err);
-                }
-            }
+            0..=9 | 16..=21 => self.decode_slice(header, payload)?,
             _ => {}
         }
         Ok(self.output.pop_front())
@@ -553,13 +540,12 @@ impl Decoder {
             return Err(DecodeError::Limit);
         }
         if nal.is_irap() {
-            self.irap_no_rasl_output = nal.is_idr() || nal.is_bla() || self.first_after_eos;
-            self.first_after_eos = false;
+            self.irap_no_rasl_output = nal.is_idr() || nal.is_bla() || self.need_irap;
             self.need_irap = false;
-        } else if nal.is_rasl() && self.irap_no_rasl_output {
-            return Ok(false);
         } else if self.need_irap {
             return Err(DecodeError::MissingReference);
+        } else if nal.is_rasl() && self.irap_no_rasl_output {
+            return Ok(false);
         }
         let poc = self.picture_order_count(nal, header, &sps);
         // A new coded video sequence releases (or, with

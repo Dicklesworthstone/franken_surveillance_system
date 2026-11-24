@@ -117,3 +117,90 @@ fn inspection_preserves_b_picture_display_order_and_reference_state() -> Test {
         true,
     )
 }
+
+const OPEN_GOP: &[u8] = include_bytes!("fixtures/decode/b_qcif_opengop.h265");
+const OPEN_GOP_ORACLE: &str = include_str!("fixtures/decode/b_qcif_opengop.sha256");
+
+fn kind(nal: &[u8]) -> u8 {
+    (nal[0] >> 1) & 63
+}
+
+fn feed(decoder: &mut Decoder, nals: &[&[u8]]) -> Result<Vec<Picture>, DecodeError> {
+    let mut pictures = Vec::new();
+    for nal in nals {
+        if let Some(picture) = decoder.decode_nal(nal)? {
+            pictures.push(picture);
+        }
+        while let Some(picture) = decoder.next_output() {
+            pictures.push(picture);
+        }
+    }
+    Ok(pictures)
+}
+
+#[test]
+fn errors_between_pictures_and_sequence_terminators_require_random_access() -> Test {
+    let nals: Vec<_> = annex_b_nal_units(OPEN_GOP).collect();
+    let idr = nals.iter().position(|nal| kind(nal) == 20).ok_or("IDR")?;
+    let inter = nals[idr + 1];
+    let rasl = nals.iter().find(|nal| kind(nal) == 8).ok_or("RASL")?;
+    assert_eq!(kind(inter), 1);
+    let limits = DecoderLimits {
+        max_nal_bytes: nals[idr].len(),
+        ..DecoderLimits::default()
+    };
+    let oversized = vec![0; limits.max_nal_bytes + 1];
+    let boundaries: &[(&[u8], bool)] = &[
+        (&[], false),
+        (&oversized, false),
+        (&[0x80, 1, 0x80], false),
+        (&[2, 0, 0x80], false),
+        (&[2, 9, 0x80], false),
+        (&[32 << 1, 1], false),
+        (&[33 << 1, 1], false),
+        (&[34 << 1, 1], false),
+        (&[36 << 1, 1, 0x80], true),
+        (&[37 << 1, 1, 0x80], true),
+    ];
+    for &(boundary, accepted) in boundaries {
+        for successor in [inter, *rasl] {
+            let mut decoder = Decoder::new(limits)?;
+            let _ = feed(&mut decoder, &nals[..=idr])?;
+            assert_eq!(decoder.pictures_decoded(), 1);
+            assert_eq!(decoder.decode_nal(boundary).is_ok(), accepted);
+            assert_eq!(
+                decoder.decode_nal(successor).err(),
+                Some(DecodeError::MissingReference)
+            );
+            assert_eq!(decoder.pictures_decoded(), 1);
+            // Rejected updates have not destroyed the previously admitted sets.
+            let _ = decoder.decode_nal(nals[idr])?;
+            assert_eq!(decoder.pictures_decoded(), 2);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn recovery_cra_skips_leading_rasl_and_preserves_surviving_pixels() -> Test {
+    let nals: Vec<_> = annex_b_nal_units(OPEN_GOP).collect();
+    let cra = nals.iter().position(|nal| kind(nal) == 21).ok_or("CRA")?;
+    assert_eq!(kind(nals[cra + 1]), 8);
+    let mut decoder = Decoder::new(DecoderLimits::default())?;
+    let mut output = feed(&mut decoder, &nals[..cra])?;
+    assert!(decoder.decode_nal(&[2, 1, 0]).is_err());
+    output.extend(feed(&mut decoder, &nals[cra..])?);
+    output.extend(decoder.finish()?);
+    let rows: Vec<_> = OPEN_GOP_ORACLE
+        .lines()
+        .filter(|row| !row.starts_with('#'))
+        .collect();
+    // The leading RASL (POC 5) may reference across the damaged interval.
+    let expected: Vec<i32> = (0..12).filter(|poc| *poc != 5).collect();
+    assert_eq!(
+        output.iter().map(Picture::poc).collect::<Vec<_>>(),
+        expected
+    );
+    let selected: Vec<_> = expected.iter().map(|poc| rows[*poc as usize]).collect();
+    oracle(&output, &selected.join("\n"))
+}
