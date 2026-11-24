@@ -5,11 +5,14 @@
 //! reference semantics for durable append/recovery. Production Asupersync and FrankenSQLite
 //! adapters must prove observational equivalence to this surface before admission.
 
+mod backend;
 mod batch_codec;
 mod durable;
+pub mod epochs;
 mod error;
 mod format;
 mod journal;
+pub mod merkle;
 mod oracle;
 mod recovery;
 mod repair;
@@ -25,6 +28,7 @@ mod open_preflight_tests;
 #[cfg(test)]
 mod tests;
 
+pub use backend::CanonicalLedgerBackend;
 pub use batch_codec::{BatchCodecError, decode_batch, encode_batch};
 pub use durable::{
     CommittedBatchPosition, DurableAppendReconciliation, DurableLedgerError, DurableLedgerLimits,
@@ -32,10 +36,31 @@ pub use durable::{
     HostJournalReadIo, JournalFileMetadata, JournalReadIo, LedgerInspection,
     committed_batch_positions, inspect_durable, inspect_durable_with_io,
 };
+pub use epochs::{
+    ArchivedEpochEntry, CHECKPOINT_DOMAIN, CHECKPOINT_FORMAT_VERSION, CHECKPOINT_MAGIC,
+    CheckpointCorruptionKind, CheckpointData, CheckpointSummary, DEFAULT_CHECKPOINT_STRIDE,
+    DEFAULT_MAX_BATCHES_PER_EPOCH, DEFAULT_MAX_EPOCH_BYTES, EPOCH_ARCHIVAL_RECEIPT_DOMAIN,
+    EPOCH_ARCHIVAL_RECEIPT_MAGIC, EPOCH_ARCHIVAL_RECEIPT_VERSION, EPOCH_FILE_MAGIC,
+    EPOCH_FORMAT_VERSION, EPOCH_HEADER_DOMAIN, EPOCH_HEADER_LEN, EPOCH_HISTORY_DOMAIN,
+    EPOCH_RECORD_HEADER_LEN, EPOCH_RECORD_MAGIC, EPOCH_RECORD_TRAILER_LEN, EPOCH_TRAILER_MAGIC,
+    EpochArchivalError, EpochArchivalPolicy, EpochArchivalReceipt, EpochCorruptionKind,
+    EpochHeader, EpochLedgerConfig, EpochLedgerError, EpochLedgerInspection, EpochRecord,
+    EpochScanReport, EpochVerificationReport, MIN_MAX_EPOCH_BYTES, MerkleEpochLedger,
+    OpenRecoverySummary, archive_sealed_epochs, checkpoint_file_path, crc32_ieee, epoch_file_path,
+    genesis_history_root_v2, inspect_epochs_readonly, read_and_verify_checkpoint,
+    successor_history_root_v2,
+};
 pub use error::{
     AppendPhase, CorruptionKind, ERR_LEDGER_LENGTH_OVERFLOW_001, ExternalMutationKind, JournalError,
 };
 pub use journal::{AppendReconciliation, IncompleteTailPolicy, Journal};
+pub use merkle::{
+    KEY_NIBBLE_LEN, MERKLE_EMPTY_DOMAIN, MERKLE_KEY_DOMAIN, MERKLE_LEAF_DOMAIN, MERKLE_NODE_DOMAIN,
+    MerkleError, MerkleNodeSnapshot, MerkleProof, MerkleProofError, MerkleProofKind,
+    MerkleProofStep, NonInclusionReason, RadixMerkleTrie, empty_root, expand_nibbles,
+    internal_node_digest, key_hash_for_object, leaf_digest, merkle_genesis_anchor, nibble_at,
+    verify_proof,
+};
 pub use oracle::{
     AnchorField, AnchoredView, CommitReceipt, LEDGER_ORACLE_HISTORY_DOMAIN, LedgerOracle,
     MAX_ORACLE_BATCHES, MAX_ORACLE_CHILDREN_PER_BATCH, MAX_ORACLE_DELTAS_PER_BATCH,

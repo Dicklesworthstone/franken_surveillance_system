@@ -1,6 +1,20 @@
 [workspace]
 resolver = "3"
-members = ["crates/fss-core", "crates/fss-cli", "crates/fss-ledger", "crates/fss-object", "crates/fss-publication", "crates/fss-reference", "crates/fss-packet", "crates/fss-provision", "crates/fss-tensor", "crates/fss-model-ir", "crates/fss-geometry", "crates/fss-twin", "crates/fss-codec-mjpeg", "crates/fss-codec-jpeg-encode", "crates/fss-container", "crates/fss-codec-h264", "crates/fss-codec-h265", "crates/fss-graph-algorithms", "crates/fss-fusion", "crates/fss-tutk", "crates/fss-tuya", "crates/fss-runtime"]
+members = ["crates/fss-core", "crates/fss-cli", "crates/fss-ledger", "crates/fss-object", "crates/fss-pack", "crates/fss-publication", "crates/fss-reference", "crates/fss-packet", "crates/fss-provision", "crates/fss-tensor", "crates/fss-model-ir", "crates/fss-geometry", "crates/fss-twin", "crates/fss-codec-mjpeg", "crates/fss-codec-jpeg-encode", "crates/fss-container", "crates/fss-codec-h264", "crates/fss-codec-h265", "crates/fss-graph-algorithms", "crates/fss-fusion", "crates/fss-tutk", "crates/fss-tuya", "crates/fss-runtime", "crates/fss-ipc", "crates/fss-projection-store", "crates/fss-vault", "crates/fss-daemon"]
+exclude = [
+  "experiments/rtsp_lookahead_process_lab",
+  "experiments/unifi_ble_crypto_lab",
+  "experiments/unifi_https_auth_lab",
+  "experiments/unifi_https_snapshot_lab",
+  "experiments/unifi_https_status_lab",
+  "experiments/unifi_tls_05_server_lab",
+  "experiments/unifi_tls_acceptor_lab",
+  "experiments/unifi_tls_async_lab",
+  "experiments/unifi_tls_owned_lab",
+  "experiments/unifi_tls_pure_lab",
+  "experiments/unifi_tls_scoped_entropy_lab",
+  "experiments/unifi_tls_v1_lab",
+]
 
 [workspace.package]
 version = "0.0.1"

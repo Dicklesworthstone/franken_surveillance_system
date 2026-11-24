@@ -235,19 +235,81 @@ crates = [
   "virtue-next",
   "wasm-bindgen-futures",
 ]
+# Audited offline build scripts, proc macros, and wasm32-only link metadata inside the pinned
+# asupersync = "=0.5.0" / DEP-FUND-001 closure (ADR-0015). Workspace members and all un-audited
+# external crates remain unconditionally refused.
+audited_custom_build = [
+  "anyhow",
+  "asupersync",
+  "bincode-next",
+  "crc32fast",
+  "crossbeam-utils",
+  "curve25519-dalek",
+  "generic-array",
+  "getrandom",
+  "libc",
+  "memoffset",
+  "nix",
+  "ntapi",
+  "num-traits",
+  "objc2",
+  "parking_lot_core",
+  "proc-macro2",
+  "quote",
+  "rustix",
+  "rustversion",
+  "serde",
+  "serde_core",
+  "serde_json",
+  "signal-hook",
+  "thiserror",
+  "wasm-bindgen",
+  "wasm-bindgen-shared",
+  "winapi",
+  "winapi-i686-pc-windows-gnu",
+  "winapi-x86_64-pc-windows-gnu",
+  "zerocopy",
+  "zmij",
+]
+audited_proc_macros = [
+  "bincode_derive-next",
+  "curve25519-dalek-derive",
+  "pastey",
+  "pin-project-internal",
+  "prost-derive",
+  "rustversion",
+  "serde_derive",
+  "thiserror-impl",
+  "wasm-bindgen-macro",
+  "windows-implement",
+  "windows-interface",
+  "zerocopy-derive",
+  "zeroize_derive",
+]
+audited_target_cfg_links = [
+  "wasm-bindgen-shared=wasm_bindgen",
+]
+
+[asupersync_closure.audited_offline_build_scripts]
+# Exact SHA-256 pins of external build.rs scripts inside the asupersync 0.5.0 closure audited to
+# perform zero network I/O (local git rev-parse/status or error-message string only; ADR-0015).
+"asupersync@0.5.0" = "sha256:ccf2803574e3d76eb8dc2a99641e6e000e3c8c8bde4429c4461fa7bea29a8697"
+"rustversion@1.0.23" = "sha256:4438b108d5b198ca43ef0a78509da89861020674abd05166addd1c3058afbfa6"
+"wasm-bindgen-shared@0.2.128" = "sha256:2ad2b0d08ef35c6a9013b5488bdf568630f0fc517d10b47f3851ad5c6ef10da4"
 
 [fundamental]
-allowed_subject_to_audit = ["serde", "serde_json", "zmij"]
-rule = "Fundamental means bounded data-shape plumbing only. It grants no runtime, networking, storage, cryptography, parser, model, device, durable-format, or background-work authority."
+allowed_subject_to_audit = ["chacha20poly1305", "nix", "serde", "serde_json", "zeroize", "zmij"]
+rule = "Fundamental means bounded data-shape or mechanism-owned safe-Rust plumbing admitted by DEP record and ADR (ADR-0015). Serde crates are transitive control-plane closure only and may never define canonical durable bytes or appear in FSS Rust source."
 
 [exception_candidates]
 not_admitted_without_dep_record_adr_and_release_evidence = [
-  "blake3", "thiserror", "zeroize", "rustls", "webpki-roots",
-  "chacha20poly1305", "x25519-dalek", "hkdf", "sha2"
+  "blake3", "thiserror", "rustls", "webpki-roots",
+  "x25519-dalek", "hkdf", "sha2"
 ]
 
 [resolved_drifts]
 thiserror = "not_admitted; an older comprehensive-plan sentence grouped it with the default exception set, but no DEP record, ADR admission, Cargo dependency, or release evidence exists. Machine policy remains authoritative per ADR-0012."
+fss-ndxis = "resolved by ADR-0015 (2026-11-23): serde, serde_json, zmij, and the asupersync 0.5.0 transitive serde closure are admitted strictly for control-plane transitive closure; direct FSS manifest declarations and all Serde derives/uses/attributes in FSS Rust source remain forbidden (DEP-AUD-023)."
 
 [laboratory_oracles]
 excluded_from_production_release_closure = [
@@ -295,7 +357,6 @@ patterns = [
 
 # Owner decisions that are still open. A crate listed here is neither admitted nor rejected: every
 # dependency mechanism reports it as pending until the owner records the decision.
-[pending_owner_decisions.fss-ndxis]
-registry_row = "DEP-FUND-001"
-crates = ["serde", "serde_json"]
-question = "serde and serde_json: the FSS-110 blanket ban versus DEP-FUND-001 control-plane admission is undecided. NOTE 2026-10-18: 'zmij' is serde_json 1.0.154's new transitive crate, pulled into the closure by asupersync's mandatory serde_json dependency (FSS-021/fss-runtime); it rides the SAME pending decision as serde_json, not a new violation — the owner decision covers the serde_json closure as one unit"
+# fss-ndxis was resolved by ADR-0015 (see [resolved_drifts]); this table remains active for future
+# undecided admissions.
+[pending_owner_decisions]

@@ -67,6 +67,11 @@
      "status": "implemented"
     },
     {
+     "name": "fss-ipc",
+     "unsafe": "forbid",
+     "status": "implemented"
+    },
+    {
      "name": "fss-capability",
      "unsafe": "forbid",
      "status": "planned"
@@ -114,6 +119,16 @@
     },
     {
      "name": "fss-object",
+     "unsafe": "forbid",
+     "status": "implemented"
+    },
+    {
+     "name": "fss-pack",
+     "unsafe": "forbid",
+     "status": "implemented"
+    },
+    {
+     "name": "fss-vault",
      "unsafe": "forbid",
      "status": "implemented"
     },
@@ -391,6 +406,11 @@
      "status": "implemented"
     },
     {
+     "name": "fss-projection-store",
+     "unsafe": "forbid",
+     "status": "implemented"
+    },
+    {
      "name": "fss-incremental",
      "unsafe": "forbid",
      "status": "planned"
@@ -543,6 +563,11 @@
     },
     {
      "name": "fss-reference",
+     "unsafe": "forbid",
+     "status": "implemented"
+    },
+    {
+     "name": "fss-daemon",
      "unsafe": "forbid",
      "status": "implemented"
     }

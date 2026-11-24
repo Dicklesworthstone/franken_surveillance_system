@@ -84,15 +84,15 @@ fn exercise_cut(phase: AppendPhase) -> TestResult {
     assert_eq!(ledger.pending_append_sequence(), Some(33));
     assert!(matches!(
         ledger.append(batch.clone()),
-        Err(DurableLedgerError::Journal(JournalError::ReconciliationRequired {
-            sequence: 33
-        }))
+        Err(DurableLedgerError::Journal(
+            JournalError::ReconciliationRequired { sequence: 33 }
+        ))
     ));
     assert!(matches!(
         ledger.verify_storage(),
-        Err(DurableLedgerError::Journal(JournalError::ReconciliationRequired {
-            sequence: 33
-        }))
+        Err(DurableLedgerError::Journal(
+            JournalError::ReconciliationRequired { sequence: 33 }
+        ))
     ));
 
     let after_write = fs::read(&path)?;
@@ -102,7 +102,9 @@ fn exercise_cut(phase: AppendPhase) -> TestResult {
         for _ in 0..2 {
             assert!(matches!(
                 ledger.reconcile_pending(IncompleteTailPolicy::Reject),
-                Err(DurableLedgerError::Journal(JournalError::IncompleteTail { .. }))
+                Err(DurableLedgerError::Journal(
+                    JournalError::IncompleteTail { .. }
+                ))
             ));
             assert_eq!(ledger.pending_append_sequence(), Some(33));
             assert_eq!(ledger.current(), &before);

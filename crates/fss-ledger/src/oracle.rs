@@ -778,6 +778,16 @@ impl LedgerOracle {
         self.entries.len()
     }
 
+    #[must_use]
+    pub(crate) fn head_object(&self, object_id: &ObjectId) -> Option<&ObjectRevision> {
+        self.head_objects.get(object_id)
+    }
+
+    #[must_use]
+    pub(crate) fn head_object_count(&self) -> usize {
+        self.head_objects.len()
+    }
+
     /// Committed batches in canonical order.
     pub fn batches(&self) -> impl ExactSizeIterator<Item = &EvidenceDeltaBatch> {
         self.entries.iter().map(|entry| &entry.batch)

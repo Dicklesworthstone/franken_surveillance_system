@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 
 use fss_core::{
     AuthoritativeLedger, BatchId, ContentDigest, ContractError, DigestAlgorithm, EvidenceDelta,
-    EvidenceDeltaBatch, LedgerSnapshot, LedgerSnapshotRetention, PreparedLedgerAppend, ReferenceLedger,
+    EvidenceDeltaBatch, LedgerSnapshot, LedgerSnapshotRetention, PreparedLedgerAppend,
+    ReferenceLedger,
 };
 
 use crate::sealed_lineage::{

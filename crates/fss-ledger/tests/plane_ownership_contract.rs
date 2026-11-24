@@ -57,7 +57,12 @@ fn delta(generation: u64, plane: Plane) -> Test<EvidenceDelta> {
     Ok(EvidenceDelta {
         delta_id: format!("delta:plane-owner:{generation}"),
         // Family changes are valid, including a tombstone, while plane ownership is stable.
-        family: if generation == 1 { "owned_object" } else { "zzz_tombstone" }.into(),
+        family: if generation == 1 {
+            "owned_object"
+        } else {
+            "zzz_tombstone"
+        }
+        .into(),
         object_id: ObjectId::parse(OBJECT)?,
         prior_generation: (generation > 1).then_some(generation - 1),
         new_generation: generation,
@@ -90,11 +95,7 @@ struct History {
 
 fn history(from: Plane, to: Plane) -> Test<History> {
     let mut source = ReferenceLedger::new(SITE);
-    let first = source.prepare_batch(
-        BatchId::parse("batch:first")?,
-        vec![delta(1, from)?],
-        [],
-    )?;
+    let first = source.prepare_batch(BatchId::parse("batch:first")?, vec![delta(1, from)?], [])?;
     source.append(first.clone())?;
     let valid = source.prepare_batch(BatchId::parse("batch:next")?, next_deltas(from)?, [])?;
 
@@ -103,11 +104,8 @@ fn history(from: Plane, to: Plane) -> Test<History> {
     // Rebinding only its basis and batch digest gives a well-ordered, correct-generation batch
     // with a genuine valid state root: rejection cannot be explained by a malformed hash.
     let mut target = ReferenceLedger::new(SITE);
-    let target_first = target.prepare_batch(
-        BatchId::parse("batch:first")?,
-        vec![delta(1, to)?],
-        [],
-    )?;
+    let target_first =
+        target.prepare_batch(BatchId::parse("batch:first")?, vec![delta(1, to)?], [])?;
     target.append(target_first)?;
     let mut counterfeit =
         target.prepare_batch(BatchId::parse("batch:next")?, next_deltas(to)?, [])?;
@@ -115,8 +113,15 @@ fn history(from: Plane, to: Plane) -> Test<History> {
     counterfeit.batch_digest = counterfeit.computed_digest();
     assert!(counterfeit.is_canonically_ordered());
     assert_eq!(counterfeit.new_anchor.commit_sequence, 2);
-    assert_ne!(counterfeit.new_anchor.state_root, valid.new_anchor.state_root);
-    Ok(History { first, counterfeit, valid })
+    assert_ne!(
+        counterfeit.new_anchor.state_root,
+        valid.new_anchor.state_root
+    );
+    Ok(History {
+        first,
+        counterfeit,
+        valid,
+    })
 }
 
 fn conflict(from: Plane, to: Plane) -> Test<ContractError> {
@@ -135,7 +140,10 @@ fn assert_unchanged_refusal(
     let snapshot = ledger.current().clone();
     let batches = ledger.batches().to_vec();
     let retained = ledger.retained_snapshot_count();
-    assert_eq!(ledger.stage_append(batch.clone()).err(), Some(expected.clone()));
+    assert_eq!(
+        ledger.stage_append(batch.clone()).err(),
+        Some(expected.clone())
+    );
     assert_eq!(ledger.append(batch).err(), Some(expected.clone()));
     assert_eq!(ledger.current(), &snapshot);
     assert_eq!(ledger.batches(), batches);
@@ -157,7 +165,11 @@ fn all_plane_changes_are_atomic_refusals_in_both_modes_and_the_independent_oracl
             if from == to {
                 continue;
             }
-            let History { first, counterfeit, valid } = history(from, to)?;
+            let History {
+                first,
+                counterfeit,
+                valid,
+            } = history(from, to)?;
             let expected = conflict(from, to)?;
             assert_eq!(expected.code(), "object_plane_conflict");
             assert_eq!(
@@ -165,11 +177,8 @@ fn all_plane_changes_are_atomic_refusals_in_both_modes_and_the_independent_oracl
                 Some(expected.clone())
             );
             for mode in MODES {
-                let mut reference = ReferenceLedger::replay_with_snapshot_retention(
-                    SITE,
-                    mode,
-                    [first.clone()],
-                )?;
+                let mut reference =
+                    ReferenceLedger::replay_with_snapshot_retention(SITE, mode, [first.clone()])?;
                 assert_eq!(
                     reference.prepare_batch(
                         counterfeit.batch_id.clone(),
@@ -184,19 +193,22 @@ fn all_plane_changes_are_atomic_refusals_in_both_modes_and_the_independent_oracl
                         SITE,
                         mode,
                         [first.clone(), counterfeit.clone()],
-                    ).err(),
+                    )
+                    .err(),
                     Some(expected.clone())
                 );
 
                 let mut oracle = LedgerOracle::new(SITE, OracleLimits::CEILING)?;
                 oracle.append(first.clone())?;
                 for error in [
-                    oracle.prepare_batch(
-                        counterfeit.batch_id.clone(),
-                        counterfeit.deltas.clone(),
-                        [],
-                    ).err().ok_or("oracle prepared a plane mutation")?,
-                    oracle.stage(counterfeit.clone()).err().ok_or("oracle staged a plane mutation")?,
+                    oracle
+                        .prepare_batch(counterfeit.batch_id.clone(), counterfeit.deltas.clone(), [])
+                        .err()
+                        .ok_or("oracle prepared a plane mutation")?,
+                    oracle
+                        .stage(counterfeit.clone())
+                        .err()
+                        .ok_or("oracle staged a plane mutation")?,
                 ] {
                     assert!(matches!(
                         error,
@@ -211,19 +223,16 @@ fn all_plane_changes_are_atomic_refusals_in_both_modes_and_the_independent_oracl
 
                 // A refused candidate reserves neither its batch identity nor the unrelated
                 // object's identity. The valid same-plane batch can immediately use both.
-                let oracle_valid = oracle.prepare_batch(
-                    valid.batch_id.clone(),
-                    valid.deltas.clone(),
-                    [],
-                )?;
-                let reference_valid = reference.prepare_batch(
-                    valid.batch_id.clone(),
-                    valid.deltas.clone(),
-                    [],
-                )?;
+                let oracle_valid =
+                    oracle.prepare_batch(valid.batch_id.clone(), valid.deltas.clone(), [])?;
+                let reference_valid =
+                    reference.prepare_batch(valid.batch_id.clone(), valid.deltas.clone(), [])?;
                 assert_eq!(reference_valid, valid);
                 assert_eq!(oracle_valid, valid);
-                assert_eq!(encode_batch(&reference_valid)?, encode_batch(&oracle_valid)?);
+                assert_eq!(
+                    encode_batch(&reference_valid)?,
+                    encode_batch(&oracle_valid)?
+                );
                 reference.append(reference_valid)?;
                 oracle.append(oracle_valid)?;
                 assert_eq!(reference.current().objects.len(), 2);
@@ -244,13 +253,14 @@ fn all_plane_changes_are_atomic_refusals_in_both_modes_and_the_independent_oracl
 
 #[test]
 fn earlier_batch_and_generation_errors_keep_their_existing_precedence() -> Test {
-    let History { first, counterfeit, valid } = history(Plane::Cognition, Plane::Authority)?;
+    let History {
+        first,
+        counterfeit,
+        valid,
+    } = history(Plane::Cognition, Plane::Authority)?;
     for mode in MODES {
-        let mut ledger = ReferenceLedger::replay_with_snapshot_retention(
-            SITE,
-            mode,
-            [first.clone()],
-        )?;
+        let mut ledger =
+            ReferenceLedger::replay_with_snapshot_retention(SITE, mode, [first.clone()])?;
         let mut reused = counterfeit.clone();
         reused.batch_id = first.batch_id.clone();
         reused.basis_anchor = ReferenceLedger::new(SITE).current().anchor.clone();
@@ -265,7 +275,11 @@ fn earlier_batch_and_generation_errors_keep_their_existing_precedence() -> Test 
         let mut successor = counterfeit.clone();
         successor.new_anchor.commit_sequence = 3;
         successor.batch_digest = successor.computed_digest();
-        assert_unchanged_refusal(&mut ledger, successor, &ContractError::InvalidAnchorSuccessor);
+        assert_unchanged_refusal(
+            &mut ledger,
+            successor,
+            &ContractError::InvalidAnchorSuccessor,
+        );
 
         let mut order = counterfeit.clone();
         order.deltas.reverse();
@@ -277,12 +291,20 @@ fn earlier_batch_and_generation_errors_keep_their_existing_precedence() -> Test 
         assert_unchanged_refusal(&mut ledger, digest, &ContractError::DigestMismatch);
 
         let mut prior = counterfeit.clone();
-        prior.deltas.last_mut().ok_or("owned revision")?.prior_generation = Some(0);
+        prior
+            .deltas
+            .last_mut()
+            .ok_or("owned revision")?
+            .prior_generation = Some(0);
         prior.batch_digest = prior.computed_digest();
         assert_unchanged_refusal(&mut ledger, prior, &ContractError::GenerationConflict);
 
         let mut generation = counterfeit.clone();
-        generation.deltas.last_mut().ok_or("owned revision")?.new_generation = 3;
+        generation
+            .deltas
+            .last_mut()
+            .ok_or("owned revision")?
+            .new_generation = 3;
         generation.batch_digest = generation.computed_digest();
         assert_unchanged_refusal(&mut ledger, generation, &ContractError::GenerationConflict);
 
@@ -296,23 +318,29 @@ fn earlier_batch_and_generation_errors_keep_their_existing_precedence() -> Test 
 fn durable_preparation_and_append_refuse_before_journal_io_and_allow_same_plane_retry() -> Test {
     let directory = Directory::new("live")?;
     let path = directory.journal();
-    let History { first, counterfeit, valid } = history(Plane::Cognition, Plane::Authority)?;
+    let History {
+        first,
+        counterfeit,
+        valid,
+    } = history(Plane::Cognition, Plane::Authority)?;
     let expected = conflict(Plane::Cognition, Plane::Authority)?;
     let mut durable = DurableReferenceLedger::open(&path, SITE, IncompleteTailPolicy::Reject)?;
     durable.append(first.clone())?;
     let before = fs::read(&path)?;
     let snapshot = durable.current().clone();
     let root = durable.journal_root();
-    let prepare_error = durable.prepare_batch(
-        counterfeit.batch_id.clone(),
-        counterfeit.deltas.clone(),
-        [],
-    ).err().ok_or("durable preparation admitted a plane mutation")?;
+    let prepare_error = durable
+        .prepare_batch(counterfeit.batch_id.clone(), counterfeit.deltas.clone(), [])
+        .err()
+        .ok_or("durable preparation admitted a plane mutation")?;
     assert_durable_conflict(prepare_error, &expected)?;
-    let append_error = durable.append(counterfeit).err().ok_or("durable append admitted a plane mutation")?;
+    let append_error = durable
+        .append(counterfeit)
+        .err()
+        .ok_or("durable append admitted a plane mutation")?;
     assert_durable_conflict(append_error, &expected)?;
     assert_eq!(durable.current(), &snapshot);
-    assert_eq!(durable.batches(), [first.clone()]);
+    assert_eq!(durable.batches(), std::slice::from_ref(&first));
     assert_eq!(durable.retained_snapshot_count(), 1);
     assert_eq!(durable.verify_storage()?, root);
     assert_eq!(fs::read(&path)?, before);
@@ -327,7 +355,10 @@ fn durable_preparation_and_append_refuse_before_journal_io_and_allow_same_plane_
     let mut reopened = DurableReferenceLedger::open(&path, SITE, IncompleteTailPolicy::Reject)?;
     assert_eq!(reopened.current(), reference.current());
     assert_eq!(reopened.verify_storage()?, reopened.journal_root());
-    assert_eq!(inspect_durable(&path, SITE, committed.len())?.snapshot, *reference.current());
+    assert_eq!(
+        inspect_durable(&path, SITE, committed.len())?.snapshot,
+        *reference.current()
+    );
     assert_eq!(fs::read(&path)?, committed);
     Ok(())
 }
@@ -336,7 +367,9 @@ fn durable_preparation_and_append_refuse_before_journal_io_and_allow_same_plane_
 fn an_old_plane_mutation_is_rejected_before_any_torn_tail_repair() -> Test {
     let directory = Directory::new("invalid-prefix")?;
     let path = directory.journal();
-    let History { first, counterfeit, .. } = history(Plane::Cognition, Plane::Effect)?;
+    let History {
+        first, counterfeit, ..
+    } = history(Plane::Cognition, Plane::Effect)?;
     let expected = conflict(Plane::Cognition, Plane::Effect)?;
     let mut journal = Journal::open(&path, IncompleteTailPolicy::Reject)?;
     journal.append(1, &encode_batch(&first)?)?;
@@ -367,7 +400,11 @@ fn an_old_plane_mutation_is_rejected_before_any_torn_tail_repair() -> Test {
             .err()
             .ok_or("durable replay admitted an invalid committed prefix")?;
         assert_durable_conflict(error, &expected)?;
-        assert_eq!(fs::read(&path)?, before, "a semantic refusal must preserve the torn tail");
+        assert_eq!(
+            fs::read(&path)?,
+            before,
+            "a semantic refusal must preserve the torn tail"
+        );
     }
     let error = inspect_durable(&path, SITE, before.len())
         .err()

@@ -519,13 +519,17 @@ dependencies = [
  "fss-codec-mjpeg",
  "fss-container",
  "fss-core",
+ "fss-daemon",
  "fss-fusion",
  "fss-geometry",
  "fss-graph-algorithms",
+ "fss-ipc",
  "fss-ledger",
  "fss-model-ir",
  "fss-object",
+ "fss-pack",
  "fss-packet",
+ "fss-projection-store",
  "fss-provision",
  "fss-publication",
  "fss-reference",
@@ -534,6 +538,7 @@ dependencies = [
  "fss-tutk",
  "fss-tuya",
  "fss-twin",
+ "fss-vault",
  "nix",
 ]
 
@@ -586,6 +591,28 @@ name = "fss-core"
 version = "0.0.1"
 
 [[package]]
+name = "fss-daemon"
+version = "0.0.1"
+dependencies = [
+ "asupersync",
+ "fss-codec-h264",
+ "fss-codec-jpeg-encode",
+ "fss-codec-mjpeg",
+ "fss-core",
+ "fss-fusion",
+ "fss-ipc",
+ "fss-ledger",
+ "fss-object",
+ "fss-pack",
+ "fss-packet",
+ "fss-projection-store",
+ "fss-publication",
+ "fss-reference",
+ "fss-runtime",
+ "fss-vault",
+]
+
+[[package]]
 name = "fss-fusion"
 version = "0.0.1"
 dependencies = [
@@ -601,6 +628,15 @@ name = "fss-graph-algorithms"
 version = "0.0.1"
 dependencies = [
  "fss-core",
+]
+
+[[package]]
+name = "fss-ipc"
+version = "0.0.1"
+dependencies = [
+ "asupersync",
+ "fss-core",
+ "fss-runtime",
 ]
 
 [[package]]
@@ -627,10 +663,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "fss-pack"
+version = "0.0.1"
+dependencies = [
+ "chacha20poly1305",
+ "fss-core",
+ "fss-object",
+ "fss-publication",
+ "fss-runtime",
+ "fss-vault",
+ "zeroize",
+]
+
+[[package]]
 name = "fss-packet"
 version = "0.0.1"
 dependencies = [
  "fss-core",
+]
+
+[[package]]
+name = "fss-projection-store"
+version = "0.0.1"
+dependencies = [
+ "fss-core",
+ "fss-graph-algorithms",
+ "fss-ledger",
+ "fss-object",
+ "fss-pack",
+ "fss-publication",
+ "fss-runtime",
 ]
 
 [[package]]
@@ -667,7 +729,9 @@ dependencies = [
  "fss-ledger",
  "fss-model-ir",
  "fss-object",
+ "fss-pack",
  "fss-packet",
+ "fss-projection-store",
  "fss-provision",
  "fss-publication",
  "fss-runtime",
@@ -675,6 +739,7 @@ dependencies = [
  "fss-tutk",
  "fss-tuya",
  "fss-twin",
+ "fss-vault",
  "zeroize",
 ]
 
@@ -711,6 +776,16 @@ dependencies = [
  "fss-codec-mjpeg",
  "fss-core",
  "fss-geometry",
+]
+
+[[package]]
+name = "fss-vault"
+version = "0.0.1"
+dependencies = [
+ "chacha20poly1305",
+ "fss-core",
+ "fss-runtime",
+ "zeroize",
 ]
 
 [[package]]

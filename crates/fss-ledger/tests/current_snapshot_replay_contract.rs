@@ -97,7 +97,10 @@ fn assert_state(
     assert_eq!(durable.current(), reference.current());
     assert_eq!(durable.batches(), reference.batches());
     assert_eq!(oracle.head_anchor(), &reference.current().anchor);
-    assert_eq!(oracle.view_at(oracle.head_sequence())?.snapshot(), *reference.current());
+    assert_eq!(
+        oracle.view_at(oracle.head_sequence())?.snapshot(),
+        *reference.current()
+    );
     assert!(oracle.batches().eq(reference.batches().iter()));
     Ok(())
 }
@@ -132,13 +135,19 @@ fn live_replay_and_inspection_keep_one_map_and_match_two_oracles_at_every_prefix
         let (id, deltas, children) = input(index)?;
         let expected = oracle.prepare_batch(id.clone(), deltas.clone(), children.clone())?;
         let prepared = reference.prepare_batch(id, deltas, children)?;
-        assert_eq!(prepared, expected, "independent preparation at prefix {index}");
+        assert_eq!(
+            prepared, expected,
+            "independent preparation at prefix {index}"
+        );
         assert_eq!(encode_batch(&prepared)?, encode_batch(&expected)?);
         durable.append(prepared.clone())?;
         reference.append(prepared.clone())?;
         oracle.append(prepared)?;
         assert_state(&durable, &reference, &oracle)?;
-        assert_eq!(reference.retained_snapshot_count(), usize::try_from(index + 2)?);
+        assert_eq!(
+            reference.retained_snapshot_count(),
+            usize::try_from(index + 2)?
+        );
 
         if [1, 17, 64, 128, COMMITS].contains(&(index + 1)) {
             let root = durable.journal_root();
@@ -156,7 +165,9 @@ fn live_replay_and_inspection_keep_one_map_and_match_two_oracles_at_every_prefix
     // Historical core API behavior is unchanged, even though the durable owner no longer
     // retains these maps. All three implementations still agree at every canonical prefix.
     for sequence in 0..=COMMITS {
-        let snapshot = reference.snapshot_at(sequence).ok_or("full-history snapshot")?;
+        let snapshot = reference
+            .snapshot_at(sequence)
+            .ok_or("full-history snapshot")?;
         assert_eq!(&oracle.view_at(sequence)?.snapshot(), snapshot);
     }
     let before = fs::read(&path)?;
@@ -166,19 +177,39 @@ fn live_replay_and_inspection_keep_one_map_and_match_two_oracles_at_every_prefix
         let mut reused = batch(&reference, COMMITS)?;
         reused.batch_id = committed.batch_id.clone();
         reused.batch_digest = reused.computed_digest();
-        assert_eq!(reference.append(reused.clone()).err(), Some(ContractError::IdempotencyConflict));
-        assert!(matches!(oracle.stage(reused.clone()), Err(OracleError::BatchIdConflict { .. })));
+        assert_eq!(
+            reference.append(reused.clone()).err(),
+            Some(ContractError::IdempotencyConflict)
+        );
+        assert!(matches!(
+            oracle.stage(reused.clone()),
+            Err(OracleError::BatchIdConflict { .. })
+        ));
         match durable.append(reused.clone()) {
-            Err(DurableLedgerError::BatchIdConflict { committed_sequence, committed_digest, offered_digest, .. }) => {
+            Err(DurableLedgerError::BatchIdConflict {
+                committed_sequence,
+                committed_digest,
+                offered_digest,
+                ..
+            }) => {
                 assert_eq!(committed_sequence, committed.new_anchor.commit_sequence);
                 assert_eq!(committed_digest, committed.batch_digest);
                 assert_eq!(offered_digest, reused.batch_digest);
             }
             other => return Err(format!("old batch identity escaped retention: {other:?}").into()),
         }
-        assert_eq!(reference.append(committed.clone()).err(), Some(ContractError::StaleAnchor));
-        assert!(matches!(oracle.stage(committed.clone()), Err(OracleError::DuplicateBatch { .. })));
-        assert!(matches!(durable.append(committed), Err(DurableLedgerError::Contract(ContractError::StaleAnchor))));
+        assert_eq!(
+            reference.append(committed.clone()).err(),
+            Some(ContractError::StaleAnchor)
+        );
+        assert!(matches!(
+            oracle.stage(committed.clone()),
+            Err(OracleError::DuplicateBatch { .. })
+        ));
+        assert!(matches!(
+            durable.append(committed),
+            Err(DurableLedgerError::Contract(ContractError::StaleAnchor))
+        ));
         assert_state(&durable, &reference, &oracle)?;
         assert_eq!(durable.current(), &snapshot);
         assert_eq!(fs::read(&path)?, before);
@@ -202,14 +233,20 @@ fn current_state_replay_still_checks_old_identities_before_any_tail_repair() -> 
     counterfeit.batch_digest = counterfeit.computed_digest();
     journal.append(1, &encode_batch(&counterfeit)?)?;
     journal.fail_after_phase(AppendPhase::BodyWrite);
-    assert!(matches!(journal.append(1, b"uncommitted tail"), Err(JournalError::AppendIndeterminate { .. })));
+    assert!(matches!(
+        journal.append(1, b"uncommitted tail"),
+        Err(JournalError::AppendIndeterminate { .. })
+    ));
     drop(journal);
     let before = fs::read(&path)?;
     assert!(inspect(&path)?.incomplete_tail().is_some());
 
     let mut history = reference.batches().to_vec();
     history.push(counterfeit);
-    assert!(matches!(ReferenceLedger::replay(SITE, history.clone()), Err(ContractError::IdempotencyConflict)));
+    assert!(matches!(
+        ReferenceLedger::replay(SITE, history.clone()),
+        Err(ContractError::IdempotencyConflict)
+    ));
     assert!(matches!(
         LedgerOracle::rebuild(SITE, OracleLimits::CEILING, history),
         Err(OracleReplayError::Batch { position: 64, error }) if matches!(*error, OracleError::BatchIdConflict { .. })
@@ -217,13 +254,19 @@ fn current_state_replay_still_checks_old_identities_before_any_tail_repair() -> 
     for policy in [IncompleteTailPolicy::Reject, IncompleteTailPolicy::Truncate] {
         assert!(matches!(
             DurableReferenceLedger::open(&path, SITE, policy),
-            Err(DurableLedgerError::BatchIdConflict { committed_sequence: 1, .. })
+            Err(DurableLedgerError::BatchIdConflict {
+                committed_sequence: 1,
+                ..
+            })
         ));
         assert_eq!(fs::read(&path)?, before);
     }
     assert!(matches!(
         inspect_durable(&path, SITE, before.len()),
-        Err(DurableLedgerError::BatchIdConflict { committed_sequence: 1, .. })
+        Err(DurableLedgerError::BatchIdConflict {
+            committed_sequence: 1,
+            ..
+        })
     ));
     assert_eq!(fs::read(&path)?, before);
     Ok(())

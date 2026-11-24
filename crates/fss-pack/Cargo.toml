@@ -1,0 +1,24 @@
+[package]
+name = "fss-pack"
+description = "Append-only sealed packfile object store and unbounded virtual root catalog for Franken Surveillance System"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+fss-core = { path = "../fss-core" }
+fss-runtime = { path = "../fss-runtime" }
+fss-object = { path = "../fss-object" }
+fss-publication = { path = "../fss-publication" }
+fss-vault = { path = "../fss-vault" }
+chacha20poly1305 = { version = "=0.11.0", default-features = false, features = ["alloc", "zeroize"] }
+zeroize = { version = "=1.9.1", default-features = false }
+
+[dev-dependencies]
+fss-core = { path = "../fss-core", features = ["test-support"] }
