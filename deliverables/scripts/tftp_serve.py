@@ -136,6 +136,14 @@ def main() -> int:
     ap.add_argument("--port", type=int, default=69)
     a = ap.parse_args()
 
+    # /tmp is wiped on reboot; ensure the served root exists and allows non-root
+    # fleet liveness probes (fleet_status.py writes a marker into /tmp/tftp/).
+    os.makedirs(a.dir, exist_ok=True)
+    try:
+        os.chmod(a.dir, 0o1777)
+    except OSError:
+        pass
+
     srv = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind((a.bind, a.port))

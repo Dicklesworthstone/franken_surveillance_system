@@ -1,33 +1,154 @@
 {
- "schema": "fss.tuya_sign_vectors.v1",
- "source": "com.glazero.android 5.10.12 on Android emulator API34 arm64; Frida hooks: ThingApiSignManager.generateSignatureSdk (map+sign) and SecureNativeApi.doCommandNative (native canon + result)",
- "golden": [
-  {
-   "name": "captured-canonical-2026-10-27",
-   "canonical": "a=smartlife.m.user.username.token.get||appVersion=5.10.12||chKey=19d68b18||clientId=7hvgpakg784c3pj5qe3e||deviceId=8534c8ec0ed0c0ca08ca9bf210a0e7e9e16da223892b||et=3||lang=en_US||os=Android||postData=054a54fe671c8b1a5681eb5448d15d02||requestId=82a44695-b52c-4362-8ff8-546b494f5123||time=1793079105||ttid=android||v=2.0",
-   "expected_sign": "5c5acd8b688ff45c92eae2b0e8f69806769128a81089ad5f4045c998312f7792",
-   "harness_verified": true
+  "schema": "fss.tuya_sign_vectors.v1",
+  "source": "com.glazero.android 5.10.12 on Android emulator API34 arm64; Frida hooks: ThingApiSignManager.generateSignatureSdk (map+sign) and SecureNativeApi.doCommandNative (native canon + result), plus deterministic native harness replay",
+  "golden": [
+    {
+      "name": "captured-canonical-2026-10-27",
+      "kind": "frida_captured_api_sign",
+      "provenance": "evidence/aosu_sign_ground_truth.json (Frida Android API34 arm64 emulator capture #1)",
+      "request_map": {
+        "appVersion": "5.10.12",
+        "channel": "sdk",
+        "deviceId": "8534c8ec0ed0c0ca08ca9bf210a0e7e9e16da223892b",
+        "platform": "sdk_gphone64_arm64",
+        "requestId": "82a44695-b52c-4362-8ff8-546b494f5123",
+        "chKey": "19d68b18",
+        "lang": "en_US",
+        "a": "smartlife.m.user.username.token.get",
+        "clientId": "7hvgpakg784c3pj5qe3e",
+        "osSystem": "14",
+        "os": "Android",
+        "timeZoneId": "America/New_York",
+        "ttid": "android",
+        "cp": "gzip",
+        "et": "3",
+        "v": "2.0",
+        "nd": "1",
+        "time": "1793079105",
+        "postData": "iQrfAMDm1AA0XTd9KV5et9NJWyms5rQePUTykLspYWVlhTMxBg+yA3WO5N7p7Pxv1gHWcS1VVcl3t1c+cjiNGk7HBGgKMvjR8p8e2+w/r6klYwZmdo0eKEkSd2j92T7975bZ"
+      },
+      "canonical": "a=smartlife.m.user.username.token.get||appVersion=5.10.12||chKey=19d68b18||clientId=7hvgpakg784c3pj5qe3e||deviceId=8534c8ec0ed0c0ca08ca9bf210a0e7e9e16da223892b||et=3||lang=en_US||os=Android||postData=054a54fe671c8b1a5681eb5448d15d02||requestId=82a44695-b52c-4362-8ff8-546b494f5123||time=1793079105||ttid=android||v=2.0",
+      "expected_sign": "5c5acd8b688ff45c92eae2b0e8f69806769128a81089ad5f4045c998312f7792",
+      "harness_verified": true
+    },
+    {
+      "name": "captured-gsdk2-2026-10-27",
+      "kind": "frida_captured_api_sign",
+      "provenance": "evidence/aosu_emu_gsdk2_capture.jsonl (Frida Android API34 arm64 emulator capture #2, 2026-10-27T05:28:18.748Z)",
+      "request_map": {
+        "appVersion": "5.10.12",
+        "channel": "sdk",
+        "deviceId": "8534c8ec0ed0c0ca08ca9bf210a0e7e9e16da223892b",
+        "platform": "sdk_gphone64_arm64",
+        "requestId": "21b130b1-d7a6-43f4-8020-91c00b90a0e1",
+        "chKey": "19d68b18",
+        "lang": "en_US",
+        "a": "smartlife.m.user.username.token.get",
+        "clientId": "7hvgpakg784c3pj5qe3e",
+        "osSystem": "14",
+        "os": "Android",
+        "timeZoneId": "America/New_York",
+        "ttid": "android",
+        "cp": "gzip",
+        "et": "3",
+        "v": "2.0",
+        "nd": "1",
+        "time": "1793078898",
+        "postData": "MiLagIMWWUR/uLXbZZPO++twGtVk9/eUqcLxVbrhR2j1ESKXNZpO8YFpUpAT8U9gXzUXKKT63oM9Fze8xw6D/kqz5j/slAI2rc+w5FMlzQ4/3M6fdIONznp6/yxPU902MPcb"
+      },
+      "canonical": "a=smartlife.m.user.username.token.get||appVersion=5.10.12||chKey=19d68b18||clientId=7hvgpakg784c3pj5qe3e||deviceId=8534c8ec0ed0c0ca08ca9bf210a0e7e9e16da223892b||et=3||lang=en_US||os=Android||postData=42e20882eadd1fbac102b72e521dc96d||requestId=21b130b1-d7a6-43f4-8020-91c00b90a0e1||time=1793078898||ttid=android||v=2.0",
+      "expected_sign": "053eadb49df69ce68db973722792ceaa586afa0881fde8001fb8cb498487dc78",
+      "harness_verified": true
+    },
+    {
+      "name": "captured-chkey-2026-10-27",
+      "kind": "frida_captured_chkey",
+      "provenance": "Observed verbatim across all 4 Frida captures (aosu_sign_ground_truth.json, aosu_emu_gsdk2_capture.jsonl, aosu_emu_full_run.jsonl, aosu_emu_retest_1028.jsonl)",
+      "expected_output": "19d68b18",
+      "harness_verified": true
+    },
+    {
+      "name": "native-compute-digest-abc-key",
+      "kind": "native_compute_digest",
+      "provenance": "tools/thing-sign/README.md (libthing_security_algorithm.so computeDigest crypto-core vector)",
+      "msg": "abc",
+      "key": "key",
+      "expected_output": "aee1dd678aea01125dfc861f41d4072d",
+      "harness_verified": true
+    },
+    {
+      "name": "replay-in-txt-deterministic",
+      "kind": "deterministic_sign_replay",
+      "provenance": "tools/thing-sign/in.txt (alternate action smartlife.m.rtc.log with sid/lat/lon; deterministic libthing_security.so replay under com.glazero.android 5.10.12 KDF)",
+      "canonical": "a=smartlife.m.rtc.log||appVersion=5.5.11||clientId=q95kcu85qnkdwaee9w3j||deviceId=EFE7C757-316F-4CE9-AC30-BFF799BBBCCE||et=0.0.2||lang=en||lat=0||lon=0||os=IOS||postData=THYzmFuZYBXWsuVpwGOb0A==||requestId=05A04511-0FDD-46F8-BA0F-7BA13E005DDA||sid=az174769C09331465BSaBG93c26fa4f30fd5c3fafbd5fe4bba915ec1||time=1791352903||ttid=appstore_r||v=1.0",
+      "expected_sign": "64ca5d85903b1f727f751b1f3fcbca52c5c4e96db5d1ecdb1a3bbf171a8f045e",
+      "harness_verified": true
+    }
+  ],
+  "negative": [
+    {
+      "name": "illegal-client-id",
+      "kind": "gateway_response_classification",
+      "when": "Tuya gateway returns ILLEGAL_CLIENT_ID for the app_id registration",
+      "meaning": "the registration is BURNED (persists across fresh egress IPs) — remediation is a FRESH Tuya IoT platform app_id/secret, NOT a signing fix",
+      "observed": "2026-10-27/28 & 2026-11-05/09 on a1.tuyaus.com & a1-us.iotbing.com for app_id 7hvgpakg784c3pj5qe3e",
+      "sample_response": {
+        "success": false,
+        "errorCode": "ILLEGAL_CLIENT_ID",
+        "status": "error",
+        "errorMsg": "Invalid client;No access"
+      },
+      "expected_classification": "burned_registration_not_sign_error",
+      "remediation_doc": "docs/exploit/tuya-fresh-registration-runbook.md"
+    },
+    {
+      "name": "sign-validate-failed",
+      "kind": "gateway_response_classification",
+      "when": "Tuya gateway returns SING_VALIDATE_FALED (gateway's literal spelling)",
+      "meaning": "signature computation or canonicalization mismatch — distinct from burned registration",
+      "observed": "2026-10-24 (docs/SESSION_HANDOFF_2026-10-24.md)",
+      "sample_response": {
+        "success": false,
+        "errorCode": "SING_VALIDATE_FALED",
+        "status": "error",
+        "errorMsg": "sign validate failed"
+      },
+      "expected_classification": "signing_mismatch",
+      "remediation_doc": "docs/exploit/tuya-fresh-registration-runbook.md"
+    },
+    {
+      "name": "tampered-canonical-diverges",
+      "kind": "harness_mutation_divergence",
+      "meaning": "mutating 1 byte of captured-canonical-2026-10-27 (time +1s) must change the 64-hex signature, proving input canonical consumption",
+      "canonical": "a=smartlife.m.user.username.token.get||appVersion=5.10.12||chKey=19d68b18||clientId=7hvgpakg784c3pj5qe3e||deviceId=8534c8ec0ed0c0ca08ca9bf210a0e7e9e16da223892b||et=3||lang=en_US||os=Android||postData=054a54fe671c8b1a5681eb5448d15d02||requestId=82a44695-b52c-4362-8ff8-546b494f5123||time=1793079106||ttid=android||v=2.0",
+      "must_not_equal_sign": "5c5acd8b688ff45c92eae2b0e8f69806769128a81089ad5f4045c998312f7792",
+      "remediation_doc": "deliverables/scripts/test_tuya_sign.py"
+    },
+    {
+      "name": "wrong-seed-diverges",
+      "kind": "harness_wrong_secret_divergence",
+      "meaning": "overriding seed.txt with a wrong secret must fail to match captured-canonical-2026-10-27, proving cmd0 secret binding is active",
+      "canonical": "a=smartlife.m.user.username.token.get||appVersion=5.10.12||chKey=19d68b18||clientId=7hvgpakg784c3pj5qe3e||deviceId=8534c8ec0ed0c0ca08ca9bf210a0e7e9e16da223892b||et=3||lang=en_US||os=Android||postData=054a54fe671c8b1a5681eb5448d15d02||requestId=82a44695-b52c-4362-8ff8-546b494f5123||time=1793079105||ttid=android||v=2.0",
+      "seed_override": "q95kcu85qnkdwaee9w3j",
+      "must_not_equal_sign": "5c5acd8b688ff45c92eae2b0e8f69806769128a81089ad5f4045c998312f7792",
+      "remediation_doc": "tools/thing-sign/seed.txt"
+    }
+  ],
+  "app_identity": {
+    "appId": "7hvgpakg784c3pj5qe3e",
+    "package": "com.glazero.android",
+    "ttid": "android",
+    "channel": "sdk",
+    "et": "3",
+    "v": "2.0",
+    "appVersion": "5.10.12"
+  },
+  "harness": {
+    "dockerfile": "tools/thing-sign/Dockerfile.jvm",
+    "image": "fss-jvm",
+    "platform_lock": "linux/arm64",
+    "native_lib": "libthing_security.so",
+    "native_lib_arch": "arm64-v8a",
+    "base_digest": "sha256:82801f9dcdcbad5a05082aba8c86d1da5b72ccb498e71318b1f91b5a477887b3"
   }
- ],
- "negative": [
-  {
-   "name": "illegal-client-id",
-   "when": "Tuya gateway returns ILLEGAL_CLIENT_ID for the app_id registration",
-   "meaning": "the registration is BURNED (repeated sign-ins from one IP invalidate it) \u2014 remediation is a FRESH Tuya IoT platform app_id/secret, NOT a signing fix",
-   "observed": "2026-11-05 on a1-us.iotbing.com for app_id 7hvg\u2026",
-   "remediation_doc": "see fss-fkkpw notes + this file"
-  }
- ],
- "app_identity": {
-  "appId": "7hvgpakg784c3pj5qe3e",
-  "ttid": "android",
-  "channel": "sdk",
-  "et": "3",
-  "v": "2.0",
-  "appVersion": "5.10.12"
- },
- "harness": {
-  "dockerfile": "tools/thing-sign/Dockerfile.jvm",
-  "lib": "libthing_security.so"
- }
 }

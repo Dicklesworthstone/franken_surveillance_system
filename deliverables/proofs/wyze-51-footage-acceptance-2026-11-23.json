@@ -1,0 +1,280 @@
+{
+  "schema": "fss.footage_acceptance.v1",
+  "recorded_at_utc": "2026-11-24T01:25:08Z",
+  "camera_id": "wyze-51",
+  "family": "wyze-hl_cam4",
+  "site": "home-lab",
+  "stream_id": "stream1",
+  "native_rust_pipeline": true,
+  "ffmpeg_used": false,
+  "local_scope": {
+    "local_media_accepted": true,
+    "full_post_flash_accepted": false,
+    "require_full": false,
+    "gate_passed": true,
+    "predicate_statuses": {
+      "admin_receipt": "not_verified",
+      "fw_identity": "not_verified",
+      "media_auth": "passed",
+      "source_receipt": "passed",
+      "continuity": "passed",
+      "visible_event": "passed"
+    }
+  },
+  "tailnet_scope": {
+    "status": "not_run_local_first",
+    "reason": "local_acceptance_evaluated_first_no_tailnet_host_supplied",
+    "host": null,
+    "rows": []
+  },
+  "predicates": {
+    "admin_receipt": {
+      "status": "not_verified",
+      "reason": "no_admin_receipt_or_pinned_ssh_supplied",
+      "source": null,
+      "checks": {}
+    },
+    "fw_identity": {
+      "status": "not_verified",
+      "reason": "no_fw_identity_probe_or_json_supplied",
+      "source": null,
+      "identity": null,
+      "compatibility_row": {
+        "family": "wyze-hl_cam4",
+        "model_class": "Wyze Cam v4 (Ingenic T41NQ / OS04D10)",
+        "power_profile": "wired",
+        "stock_rtsp": true,
+        "post_flash_target": "thingino",
+        "requires_battery_compat_row": false,
+        "battery_compat_checks": null,
+        "battery_compat_satisfied": null,
+        "notes": "Wired camera; stock SmolRTSP (1 conn/IP, in-band SPS/PPS) or Thingino prudynt RTSP+ONVIF."
+      }
+    },
+    "media_auth": {
+      "status": "passed",
+      "reason": "authenticated_rtsp_session_verified",
+      "native_binary": "/data/cargo-targets/debug/fss-capture-rtsp",
+      "capture_approval": "sha256:275209caf83e033637afe34d1ddf4d1da478f83b8cb46bcfa7210bb7708f17a6",
+      "session": {
+        "codec": "avc",
+        "time_scale": 90000,
+        "frame_duration_ticks": 9000,
+        "authentication": "digest",
+        "require_auth": true,
+        "authentication_challenges": 1,
+        "digest_requests_queued": 3,
+        "transport_encrypted": false,
+        "server_identity_verified": false,
+        "protocols_observed": [
+          "described",
+          "ready",
+          "playing"
+        ],
+        "source_binding": {
+          "state": "bound",
+          "ingress": "1",
+          "generation": 1,
+          "ssrc": 1428222483,
+          "sender_authenticated": false
+        },
+        "capture_error_id": null
+      },
+      "bridge_telemetry": {
+        "profile_level_id": "640029",
+        "sps_len": 38,
+        "pps_len": 4,
+        "ssrc_hex": "5520F213",
+        "packets_received": 149,
+        "audio_packets_discarded": 105
+      }
+    },
+    "source_receipt": {
+      "status": "passed",
+      "reason": "source_custody_and_origin_proofs_verified",
+      "native_binary": "/data/cargo-targets/debug/fss-import-rtsp",
+      "custody_state": "verified",
+      "durable_windows_count": 2,
+      "durable_source_object_bytes": 50150,
+      "snapshot_digest": "sha256:456605bd9e098b0642f1e36ee259970e0e202711bc290a41f4db33076093742b",
+      "rtp_retention": "selected_window_original_datagrams",
+      "explicit_omissions": {
+        "raw_tcp_retention": "omitted_entire_wire_representation",
+        "control_and_rtcp_retention": "omitted"
+      },
+      "imports": [
+        {
+          "window_slot": "fssa1-a937032684b46dbf1c11dfff060ec95f33d81e62535e24169b46828857e8614f-w-0000000000000000",
+          "window_root": "sha256:1cf1b421b07dcc0abd4e61bba9ec6046ac7efd80c6703ebf51e7faf213734b49",
+          "import_identity": "sha256:b4e85ae225f0b5997351d9dd4a9a680ba35d2845f8c08b2e089562553d467aed",
+          "import_root": "sha256:6b2826ade7935043492d5547cf5ae135a5c3d9a96b378bef891d2b3c9af8d495",
+          "origin_proof": "sha256:fe4a782fd2515255f68505440cf3092b6084daf6b3e18949215963b999413722",
+          "manifest_digest": "sha256:a26ab476fe075f731c25a9a0a4343837769740039922a3088791226e231b34e1",
+          "frames": 20,
+          "codec": "avc",
+          "capture_time_label": "operator_assumption",
+          "source_archive_retained_separately": true,
+          "destination_contains_original_recording": true
+        },
+        {
+          "window_slot": "fssa1-a937032684b46dbf1c11dfff060ec95f33d81e62535e24169b46828857e8614f-w-0000000000000001",
+          "window_root": "sha256:e4c0c9c12146ee263566b9b63004081c331d26d6740f0bc40cff0e12aceaf732",
+          "import_identity": "sha256:b54ff5b68786ad96db2f0129fa307a0d2ace0a1a1a19a0aad86ae4c928eeb1b0",
+          "import_root": "sha256:ab327bdb65bd07ff7083e422a21416b0f9755ff88774f5369738450bf29ece31",
+          "origin_proof": "sha256:692e8bb21866dc7f16617cac693f02423c1e5950c39ddf7b980ef7023a6e9ef0",
+          "manifest_digest": "sha256:7886e9a3a6bb8aeecbd77de813e0d49638fb40210a1ba446921390406518e093",
+          "frames": 20,
+          "codec": "avc",
+          "capture_time_label": "operator_assumption",
+          "source_archive_retained_separately": true,
+          "destination_contains_original_recording": true
+        }
+      ],
+      "import_errors": []
+    },
+    "continuity": {
+      "status": "passed",
+      "reason": "bounded_capture_complete_and_coverage_retained",
+      "capture_rc": 0,
+      "complete": true,
+      "stop_cause": "owner_stopped",
+      "error_id": null,
+      "peer_eof": false,
+      "connections_retried": 0,
+      "requested_pictures": 40,
+      "collected_pictures": 40,
+      "durable_pictures": 40,
+      "runtime_quiescent": true,
+      "indeterminate_obligations": 0,
+      "capture_continuity_certified": false,
+      "timing_uncertainty": {
+        "capture_time_label": "operator_assumption",
+        "capture_start_ns": 1795483442127183362,
+        "capture_uncertainty_ns": 7068328376,
+        "receive_time_ns": 1795483452196511738
+      },
+      "coverage": {
+        "statuses": [
+          "retained",
+          "retained"
+        ],
+        "witness_count_total": 0,
+        "absence_certified": false,
+        "source_gap_segments": [],
+        "decoder_restart_segments": []
+      },
+      "situation_frame": {
+        "frame_id": "frame:885fcce3d80c3b0ab65f9d6881cc30b7",
+        "capsule_sequence": 48,
+        "epistemic_state": "not_observable",
+        "completeness": "partial",
+        "coverage_status": "not_observable",
+        "coverage_gaps": [
+          "wyze-51 zone:yard: 1 retained record(s) of another pipeline generation are stale and not reused (current generation sha256:0ba0020b66d4985a636ceefac665a95a48074bbf096d5aa0d2a460e1a0e0dcb4).",
+          "wyze-51 zone:yard, import b54ff5b68786ad96, segments 0..3 [1795483435057854986, 1795483449494511738] ns: not covered (background_warmup).",
+          "wyze-51 zone:yard, import b54ff5b68786ad96, segments 4..17 [1795483435458854986, 1795483450896511738] ns: not covered (interval_too_short).",
+          "wyze-51 zone:yard, import b54ff5b68786ad96, segments 18..19 [1795483436859854986, 1795483451096511738] ns: not covered (confirmation_latency).",
+          "wyze-51 zone:yard: not observable: the freshest coverage analysis (import b54ff5b68786ad96) retains no witness for this zone."
+        ],
+        "ledger_head": "The authority ledger holds 48 committed batches at commit 48 (ledger epoch 0); committed deltas: coverage_witness=2, file_import=4, file_import_manifest=2, local_root_reachability=2, sensor_capsule=40.",
+        "events_cell": null
+      }
+    },
+    "visible_event": {
+      "status": "passed",
+      "reason": "non_frozen_live_luma_variation_verified_no_motion_candidate_required",
+      "mode": "live-variation",
+      "native_binary": "/data/cargo-targets/debug/fss-event",
+      "zone": "yard:0,0,640,360",
+      "dimensions": [
+        640,
+        360
+      ],
+      "media_format": "mp4avc",
+      "checks": {
+        "frames_decoded": 40,
+        "min_frames_required": 8,
+        "frames_ok": true,
+        "windows_analyzed": 2,
+        "qualifying_live_windows": 2,
+        "qualifying_strict_windows": 0,
+        "sensor_health_statuses": [
+          "clear_screen_not_health_evidence",
+          "clear_screen_not_health_evidence"
+        ],
+        "sensor_health_findings": [],
+        "sensor_health_affected_segments": 0,
+        "sensor_health_clear": true,
+        "all_windows_health_clear": true,
+        "unique_luma_digests": 39,
+        "min_unique_luma_digests": 2,
+        "max_repeated_frames": 2,
+        "max_allowed_repeated_frames": 8,
+        "non_frozen_ok": true,
+        "min_contrast_span_observed": 113,
+        "max_contrast_span_observed": 113,
+        "min_contrast_span_required": 8,
+        "non_flat_ok": true,
+        "confirmed_tracks": 0,
+        "candidate_count": 0,
+        "motion_candidate_ok": false,
+        "orient_reflects_published_event": true,
+        "strict_visible_event_passed": false
+      },
+      "window_evaluations": [
+        {
+          "import_identity": "sha256:b4e85ae225f0b5997351d9dd4a9a680ba35d2845f8c08b2e089562553d467aed",
+          "frames_decoded": 20,
+          "sensor_health_status": "clear_screen_not_health_evidence",
+          "sensor_health_findings": [],
+          "affected_segments": 0,
+          "unique_luma_digests": 20,
+          "max_repeated_frames": 1,
+          "max_contrast_span": 113,
+          "confirmed_tracks": 0,
+          "candidate_count": 0,
+          "qualifies_live_variation": true,
+          "qualifies_strict_visible_event": false
+        },
+        {
+          "import_identity": "sha256:b54ff5b68786ad96db2f0129fa307a0d2ace0a1a1a19a0aad86ae4c928eeb1b0",
+          "frames_decoded": 20,
+          "sensor_health_status": "clear_screen_not_health_evidence",
+          "sensor_health_findings": [],
+          "affected_segments": 0,
+          "unique_luma_digests": 19,
+          "max_repeated_frames": 2,
+          "max_contrast_span": 113,
+          "confirmed_tracks": 0,
+          "candidate_count": 0,
+          "qualifies_live_variation": true,
+          "qualifies_strict_visible_event": false
+        }
+      ],
+      "sampled_frame_observations": [
+        {
+          "segment": 0,
+          "luma_digest": "sha256:3da427c8afd07ce76122d202c8131d0516d2786e38e0b66935819b00f6a0d315",
+          "contrast_span": 113,
+          "repeated_frames": 1,
+          "findings": []
+        },
+        {
+          "segment": 0,
+          "luma_digest": "sha256:816ea4e4ad9f763e2f425ebf264b118b97dfbb0893e97de5e5f04d492cc08f43",
+          "contrast_span": 113,
+          "repeated_frames": 1,
+          "findings": []
+        },
+        {
+          "segment": 19,
+          "luma_digest": "sha256:4b82381675dee782a5a7fd73a143060f72dfeae33aed2529ba651959725f14ab",
+          "contrast_span": 113,
+          "repeated_frames": 1,
+          "findings": []
+        }
+      ],
+      "published_events": []
+    }
+  }
+}

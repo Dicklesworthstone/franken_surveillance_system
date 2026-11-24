@@ -7,8 +7,12 @@
     <string>/Users/jemanuel/projects/franken_surveillance_system/deliverables/scripts/wyze_backup_recv.py</string>
     <string>--base-port</string>
     <string>443</string>
+    <string>--slots</string>
+    <string>16</string>
+    <string>--family</string>
+    <string>wyze-hl_cam4</string>
     <string>--dir</string>
-    <string>/tmp/fwbackup</string>
+    <string>/Users/jemanuel/projects/franken_surveillance_system/flash-images/wyze-hl_cam4/live-capture</string>
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>

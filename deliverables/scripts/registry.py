@@ -25,41 +25,269 @@ try:
 except ImportError:
     yaml = None  # the registry subset is parsed by _mini_yaml below
 
+def _strip_yaml_comment(s: str) -> str:
+    """Strip an unquoted `# ...` comment from a YAML scalar line."""
+    in_quote = None
+    escaped = False
+    for idx, ch in enumerate(s):
+        if escaped:
+            escaped = False
+            continue
+        if in_quote == '"' and ch == "\\":
+            escaped = True
+            continue
+        if in_quote:
+            if ch == in_quote:
+                in_quote = None
+            continue
+        if ch in ('"', "'"):
+            in_quote = ch
+        elif ch == "#" and (idx == 0 or s[idx - 1].isspace()):
+            return s[:idx].rstrip()
+    return s.rstrip()
+
+
+def _parse_yaml_scalar(val: str):
+    val = _strip_yaml_comment(val).strip()
+    if val in ("", "null", "Null", "NULL", "~"):
+        return None
+    if val in ("true", "True", "TRUE"):
+        return True
+    if val in ("false", "False", "FALSE"):
+        return False
+    if val.startswith("[") and val.endswith("]"):
+        inner = val[1:-1].strip()
+        if not inner:
+            return []
+        return [_parse_yaml_scalar(part.strip()) for part in inner.split(",") if part.strip()]
+    if val.startswith("{") and val.endswith("}"):
+        inner = val[1:-1].strip()
+        if not inner:
+            return {}
+        out = {}
+        for part in inner.split(","):
+            if ":" in part:
+                k, v = part.split(":", 1)
+                out[k.strip().strip("\"'")] = _parse_yaml_scalar(v)
+        return out
+    if (val.startswith('"') and val.endswith('"') and len(val) >= 2):
+        # Unescape standard double-quoted YAML escapes
+        try:
+            return json.loads(val)
+        except ValueError:
+            return val[1:-1]
+    if (val.startswith("'") and val.endswith("'") and len(val) >= 2):
+        return val[1:-1].replace("''", "'")
+    if re.match(r"^-?\d+$", val):
+        return int(val)
+    return val
+
+
 def _mini_yaml(path):
-    """Parse the registry's constrained YAML subset (two-level maps, scalars,
-    inline lists, block strings folded to one line). Sufficient for registry.yaml;
-    NOT a general YAML parser. Prevents a hard pyyaml dependency on this host."""
-    import re
+    """Parse the registry's constrained YAML subset (nested maps, block lists of
+    strings or maps, inline lists, folded/literal block scalars, multiline quoted
+    strings). Matches yaml.safe_load on deliverables/fleet/registry.yaml without
+    requiring pyyaml."""
+    with open(path, encoding="utf-8") as fh:
+        raw_lines = [ln.rstrip("\r\n") for ln in fh]
+
+    def _next_significant(start_idx: int):
+        for j in range(start_idx, len(raw_lines)):
+            st = raw_lines[j].strip()
+            if st and not st.startswith("#"):
+                return j, len(raw_lines[j]) - len(raw_lines[j].lstrip()), st
+        return None, -1, ""
+
+    def _collect_multiline_double_quoted(first_val: str, start_idx: int):
+        buf = first_val[1:]
+        i = start_idx + 1
+        while i < len(raw_lines):
+            chunk = raw_lines[i].strip()
+            if chunk.endswith('"') and not chunk.endswith('\\"'):
+                end_part = chunk[:-1]
+                buf = (buf + " " + end_part) if (buf and end_part) else (buf + end_part)
+                try:
+                    return json.loads('"' + buf + '"'), i
+                except ValueError:
+                    return buf, i
+            buf = (buf + " " + chunk) if (buf and chunk) else (buf + chunk)
+            i += 1
+        return buf, i - 1
+
+    def _collect_multiline_single_quoted(first_val: str, start_idx: int):
+        # YAML single-quoted multiline scalar: '' is escaped single quote; empty lines become \n.
+        lines_buf = [first_val[1:]]
+        i = start_idx + 1
+        while i < len(raw_lines):
+            chunk = raw_lines[i].strip()
+            # Count trailing single quotes: odd number means closing quote
+            trailing_q = len(chunk) - len(chunk.rstrip("'"))
+            if trailing_q % 2 == 1:
+                lines_buf.append(chunk[:-1])
+                break
+            lines_buf.append(chunk)
+            i += 1
+        # Fold YAML single-quoted lines: non-empty consecutive lines join with space,
+        # blank lines become '\n'.
+        out_parts = []
+        blank_run = 0
+        for part in lines_buf:
+            if part == "":
+                blank_run += 1
+            else:
+                if out_parts:
+                    if blank_run > 0:
+                        out_parts.append("\n" * blank_run)
+                    else:
+                        out_parts.append(" ")
+                out_parts.append(part)
+                blank_run = 0
+        if blank_run > 0:
+            out_parts.append("\n" * blank_run)
+        return "".join(out_parts).replace("''", "'"), min(i, len(raw_lines) - 1)
+
+    def _collect_multiline_plain(first_val: str, key_indent: int, start_idx: int):
+        parts = [first_val]
+        i = start_idx + 1
+        while i < len(raw_lines):
+            raw = raw_lines[i]
+            st = raw.strip()
+            if not st or st.startswith("#"):
+                break
+            ind = len(raw) - len(raw.lstrip())
+            if ind <= key_indent or st.startswith("- ") or re.match(r'^[^:#][^:]*?:\s', st):
+                break
+            parts.append(_strip_yaml_comment(st).strip())
+            i += 1
+        return " ".join(parts), i - 1
+
+    def _collect_block_scalar(mode: str, parent_indent: int, start_idx: int):
+        lines_out = []
+        i = start_idx + 1
+        block_indent = None
+        while i < len(raw_lines):
+            raw = raw_lines[i]
+            if not raw.strip():
+                lines_out.append("")
+                i += 1
+                continue
+            ind = len(raw) - len(raw.lstrip())
+            if ind <= parent_indent:
+                break
+            if block_indent is None:
+                block_indent = ind
+            lines_out.append(raw[min(ind, block_indent):])
+            i += 1
+        while lines_out and lines_out[-1] == "":
+            lines_out.pop()
+        if mode.startswith(">"):
+            text = " ".join(ln.strip() for ln in lines_out if ln.strip())
+        else:
+            text = "\n".join(lines_out)
+        if not mode.endswith("-"):
+            text += "\n"
+        return text, i - 1
+
+    def _parse_value(raw_val: str, key_indent: int, idx: int):
+        val_nc = _strip_yaml_comment(raw_val).strip()
+        if val_nc in (">", ">-", "|", "|-"):
+            return _collect_block_scalar(val_nc, key_indent, idx)
+        if val_nc.startswith('"') and not (len(val_nc) >= 2 and val_nc.endswith('"') and not val_nc.endswith('\\"')):
+            return _collect_multiline_double_quoted(val_nc, idx)
+        if val_nc.startswith("'"):
+            inner = val_nc[1:]
+            trailing_q = len(inner) - len(inner.rstrip("'"))
+            if trailing_q % 2 == 0:
+                return _collect_multiline_single_quoted(val_nc, idx)
+        scalar = _parse_yaml_scalar(raw_val)
+        if isinstance(scalar, str) and not (val_nc.startswith('"') or val_nc.startswith("'")):
+            return _collect_multiline_plain(scalar, key_indent, idx)
+        return scalar, idx
+
     root = {}
-    stack = [(-1, root)]
-    cur_key = None
-    for raw in open(path):
-        line = raw.rstrip("\n")
-        if not line.strip() or line.strip().startswith("#"):
+    # stack entries: (indent, kind, container) where kind in ("map", "seq")
+    stack = [(-1, "map", root)]
+    i = 0
+    while i < len(raw_lines):
+        line = raw_lines[i]
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            i += 1
             continue
         indent = len(line) - len(line.lstrip())
-        s = line.strip()
-        while stack and indent <= stack[-1][0]:
-            stack.pop()
-        parent = stack[-1][1]
-        m = re.match(r"^([^:]+):\s*(.*)$", s)
-        if not m:
-            continue
-        key, val = m.group(1).strip(), m.group(2).strip()
-        if val == "":
-            d = {}
-            parent[key] = d
-            stack.append((indent, d))
-            cur_key = key
-        elif val.startswith("[") and val.endswith("]"):
-            parent[key] = [v.strip() for v in val[1:-1].split(",") if v.strip()]
-        elif val in ("true", "false"):
-            parent[key] = val == "true"
-        elif re.match(r"^-?\d+$", val):
-            parent[key] = int(val)
+        is_list_item = stripped.startswith("- ") or stripped == "-"
+
+        if is_list_item:
+            while len(stack) > 1 and (
+                indent < stack[-1][0]
+                or (indent == stack[-1][0] and stack[-1][1] != "seq")
+            ):
+                stack.pop()
         else:
-            parent[key] = val.strip('>"')
-        # block scalars folded: '>' becomes the previous scalar; good enough here
+            while len(stack) > 1 and indent <= stack[-1][0]:
+                stack.pop()
+
+        parent = stack[-1][2]
+
+        if is_list_item:
+            if not isinstance(parent, list):
+                i += 1
+                continue
+            rest = stripped[2:].strip() if stripped.startswith("- ") else ""
+            # Only treat as map item when rest starts with `identifier:` (not quoted string containing `:`)
+            kv = None
+            if not rest.startswith(("'", '"')):
+                kv = re.match(r'^([A-Za-z0-9_.-]+):\s*(.*)$', rest)
+            if kv:
+                item = {}
+                parent.append(item)
+                stack.append((indent, "map", item))
+                key, raw_val = kv.group(1), kv.group(2)
+                val_nc = _strip_yaml_comment(raw_val).strip()
+                if val_nc == "":
+                    _, next_ind, next_s = _next_significant(i + 1)
+                    if next_ind >= indent + 2 and (next_s.startswith("- ") or next_s == "-"):
+                        child = []
+                        item[key] = child
+                        stack.append((indent + 2, "seq", child))
+                    elif next_ind > indent + 2:
+                        child = {}
+                        item[key] = child
+                        stack.append((indent + 2, "map", child))
+                    else:
+                        item[key] = None
+                else:
+                    item[key], i = _parse_value(raw_val, indent + 2, i)
+            else:
+                val, i = _parse_value(rest, indent, i)
+                parent.append(val)
+            i += 1
+            continue
+
+        # Mapping entry (`key: val`)
+        m = re.match(r'^([^:#][^:]*?):\s*(.*)$', stripped)
+        if not m or not isinstance(parent, dict):
+            i += 1
+            continue
+        key = m.group(1).strip().strip("\"'")
+        raw_val = m.group(2)
+        val_nc = _strip_yaml_comment(raw_val).strip()
+        if val_nc == "":
+            _, next_ind, next_s = _next_significant(i + 1)
+            if next_ind >= indent and (next_s.startswith("- ") or next_s == "-"):
+                child = []
+                parent[key] = child
+                stack.append((next_ind, "seq", child))
+            elif next_ind > indent:
+                child = {}
+                parent[key] = child
+                stack.append((indent, "map", child))
+            else:
+                parent[key] = None
+        else:
+            parent[key], i = _parse_value(raw_val, indent, i)
+        i += 1
+
     return root
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -158,8 +386,9 @@ def cmd_resolve(a):
     ip = table.get(norm_mac(cam["mac"]))
     how = "arp"
     if ip is None and a.sweep:
-        if ping_probe(cam.get("last_seen_ip") or ""):
-            ip, how = cam.get("last_seen_ip"), "ping(registry-ip)"
+        reg_ip = cam.get("last_seen_ip")
+        if reg_ip and ping_probe(reg_ip):
+            ip, how = reg_ip, "ping(registry-ip)"
     print(f"{cam['id']} mac={cam['mac']} ip={ip or 'NOT-ON-LAN'} vector={cam['vector']} via={how}")
     return 0 if ip else 1
 

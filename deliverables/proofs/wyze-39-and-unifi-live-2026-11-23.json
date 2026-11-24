@@ -1,0 +1,96 @@
+{
+  "schema": "fss.live_hardware_verification_proof.v1",
+  "recorded_at_utc": "2026-11-23T23:12:00Z",
+  "agent": "ScarletFrog",
+  "host": "threadripperje (192.168.6.174/22)",
+  "qualification_claim": "owner_authorized_live_lab_evidence_not_release_qualified",
+  "unifi_native_discovery": {
+    "binary": "/data/cargo-targets/debug/fss-discover",
+    "mode": "--subnet 192.168.4.0/22 --unifi-only --owner-authorized --json",
+    "schema": "fss.unifi_discovery_auto_lab.v1",
+    "windows_ok": true,
+    "datagrams": 1,
+    "camera": {
+      "address": "192.168.4.177",
+      "mac": "58:d6:1f:b2:ba:03",
+      "vendor": "Ubiquiti Inc",
+      "platform": "UVC G4 Instant",
+      "firmware": "UVC.SAV530q.v4.70.37.67.M_9b6a37f.240320.0635",
+      "source_advertised": true,
+      "identity": "unverified",
+      "open_ports": [80, 443]
+    }
+  },
+  "wyze_39_e2e_real_capture": {
+    "camera_ip": "192.168.4.39",
+    "sensor_id": "wyze-39",
+    "stream_id": "stream1",
+    "site": "home-lab",
+    "bridge": {
+      "script": "deliverables/scripts/wyze_rtsp_bridge.py",
+      "upstream_epoch": 1,
+      "profile_level_id": "640029",
+      "sps_len": 38,
+      "pps_len": 4,
+      "ssrc_hex": "2A2E0171",
+      "payload_type": 96,
+      "video_packets_received": 2468,
+      "audio_packets_discarded": 1173,
+      "goal_009_video_only_enforced": true
+    },
+    "capture": {
+      "binary": "fss-capture-rtsp",
+      "approval": "sha256:0ddb9d739f6383a31761b0ebed30274918ad87df72e3dd76ad158e628edad67d",
+      "pictures_captured": 90,
+      "durable_windows": [
+        {
+          "slot": "fssa1-71b9f9bef9b00ac5adc6b3c7739f7117f248cf7cc165c2d2b276fc54cb9c677e-w-0000000000000000",
+          "root": "sha256:113c3610039d01e5097e41ea10e1c1fb961f19f791d95f688487f10874779a64",
+          "pictures": 40,
+          "import_id": "sha256:06b98d8865610e0d16ce2c517319d4f0f7ab2220aa33aae9cff595695a4e9f04",
+          "frames_decoded": 40,
+          "coverage_status": "retained"
+        },
+        {
+          "slot": "fssa1-71b9f9bef9b00ac5adc6b3c7739f7117f248cf7cc165c2d2b276fc54cb9c677e-w-0000000000000001",
+          "root": "sha256:9846687ebfa2324f4673d99e413148ccca03a657f39004d96c9a70e8388127a4",
+          "pictures": 40,
+          "import_id": "sha256:9d056e69bae6d9020e997728dacda52f010ab865fcf7daf1b52e9fa8109fe235",
+          "frames_decoded": 40,
+          "coverage_status": "retained"
+        },
+        {
+          "slot": "fssa1-71b9f9bef9b00ac5adc6b3c7739f7117f248cf7cc165c2d2b276fc54cb9c677e-w-0000000000000002",
+          "root": "sha256:0f45841c6621e525f22865ae781e62eee6df4e052f370356cdb97f9067c33aec",
+          "pictures": 10,
+          "import_id": "sha256:f976fcefb398dc0b3de65cffa610b63f1a0925bdafc9d75a92ff9474fd94c4ca",
+          "frames_decoded": 10,
+          "coverage_status": "retained"
+        }
+      ],
+      "watch_failures": 0
+    },
+    "orient": {
+      "envelope_schema": "fss.agent_response_envelope.v1",
+      "frame_id": "frame:b9366996bbbb6050e1dde5a1addc1fde",
+      "capsule_sequence": 102,
+      "capture_time_honestly_unknown": true,
+      "absence_claims_certified": false
+    },
+    "negative_gap_control": {
+      "collected_pictures_before_drop": 15,
+      "exit_non_zero": true,
+      "error_id": "ERR-CAPTURE-RTSP-SOURCE-001",
+      "complete": false,
+      "peer_eof": true,
+      "capture_continuity": false,
+      "custody_state": "pending"
+    }
+  },
+  "fresh_eyes_hardening_tests": {
+    "test_flash_safety_net": "9/9 PASS (incl. qemu-mipsel full drill, mtd0=all regression, mid-stream RST survival, synchronous port-conflict OSError, unknown-family CLI exit 2)",
+    "test_wyze_rtsp_bridge": "4/4 PASS (incl. audio_packets_discarded audit, video RTP stall detection despite OPTIONS keepalive replies, strict SHA-256 qop=auth, concurrent status-file writes)",
+    "test_wyze_staging_resilience": "5/5 PASS",
+    "mac_studio_fleet_gate": "18/18 PASS (plist-doctor 0/24 findings)"
+  }
+}

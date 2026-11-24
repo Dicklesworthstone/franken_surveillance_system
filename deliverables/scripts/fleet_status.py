@@ -87,23 +87,26 @@ def fleet_planes():
     planes["backup:444-449"] = all(port_open(p) for p in range(444, 450))
     # session-lineage quirk (see registry.py): netstat under this harness's
     # python returns 0 lines; port_open sockets are lineage-independent, so
-    # every check that CAN be a socket probe IS one; the two netstat-only
-    # checks (udp tftp, LISTEN count) use per-port socket probes instead.
-    planes["forge:8443"] = forge_serving(8443)
+    # every check that CAN be a socket probe IS one.
     # UDP has no connect probe; a real RRQ round-trip is the honest check.
+    probe_path = f"/tmp/tftp/fleet_probe_{os.getpid()}_{int(time.time())}.txt"
     try:
-        marker = f"fleet_probe_{int(time.time())}.txt"
-        with open(f"/tmp/tftp/{marker}", "w") as f:
+        marker = os.path.basename(probe_path)
+        with open(probe_path, "w") as f:
             f.write("probe")
-        t = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        t.settimeout(3)
-        # RRQ: opcode 1, filename, mode netascii
-        t.sendto(b"\x00\x01" + marker.encode() + b"\x00netascii\x00", ("192.168.4.160", 69))
-        data, _ = t.recvfrom(600)
-        t.close()
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as t:
+            t.settimeout(3)
+            # RRQ: opcode 1, filename, mode netascii
+            t.sendto(b"\x00\x01" + marker.encode() + b"\x00netascii\x00", ("192.168.4.160", 69))
+            data, _ = t.recvfrom(600)
         planes["tftp:69"] = data[0:1] == b"\x00" and data[1:2] == b"\x03"  # DATA packet
     except (OSError, IndexError):
         planes["tftp:69"] = False
+    finally:
+        try:
+            os.unlink(probe_path)
+        except OSError:
+            pass
     _, out = sh("sudo -n pfctl -a fss -s nat 2>/dev/null | grep -c rdr")
     planes["pf-rdr"] = int(out.strip()) if out.strip().isdigit() else 0
     # launchd duplicate labels (the outage class)
@@ -116,13 +119,14 @@ def fleet_planes():
     planes["launchd-duplicates"] = dups
     # the RTSP watcher is the only thing that re-enables a unit that rebooted
     # without rtspd; dead means a vendor reset silently costs ingest again
-    planes["rtsp-watch"] = bool(sh("pgrep -f wyze_rtsp_one_shot.py")[1].strip())
+    planes["rtsp-watch"] = bool(sh("pgrep -f '[w]yze_rtsp_one_shot.py'")[1].strip())
     # the flash chain pins image md5s; if the files drift, the chain dies on the camera
     # *after* a shell was won. Single source of truth is the chain script itself.
     chain = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tapo_flash_chain.sh")
     pins = {}
     try:
-        text = open(chain).read()
+        with open(chain, encoding="utf-8") as fh:
+            text = fh.read()
         for kind, name, val in re.findall(r"(IMG|MD5)_(ROOTFS|KERNEL)=([^;\s]+)", text):
             pins[(kind, name)] = val
     except OSError:
@@ -148,7 +152,8 @@ def fleet_planes():
         here = os.path.dirname(os.path.abspath(__file__))
         sh(f"bash {here}/plist_doctor.sh --json > {cache} 2>/dev/null", timeout=60)
     try:
-        doc = json.load(open(cache))
+        with open(cache, encoding="utf-8") as fh:
+            doc = json.load(fh)
         f_ = doc.get("findings", 1)
         planes["plist-doctor"] = f_ == 0
         PLANE_DETAILS["plist-doctor"] = f"{f_} findings / {doc.get('checked', '?')} plists"
@@ -158,23 +163,54 @@ def fleet_planes():
 
 
 def latest_proofs(registry_cameras):
-    """registry-id -> {vector: (pass, ts)} — keys proofs by registry id."""
+    """registry-id -> {vector: (pass, ts)} — keys proofs by registry id.
+
+    Supports both RootProof JSON artifacts (`camera` + `vector`) and native
+    pure-Rust `fss.footage_acceptance.v1` receipts (`fss-footage` / `fss-post-flash`).
+    """
     # ip -> id map for artifacts recorded by ip
-    ip_to_id = {c.get("last_seen_ip"): c["id"] for c in registry_cameras}
+    reg_ids = {c["id"] for c in registry_cameras}
+    ip_to_id = {c.get("last_seen_ip"): c["id"] for c in registry_cameras if c.get("last_seen_ip")}
     id_forms = {}
     for c in registry_cameras:
-        oct = c["id"].split("-")[-1]
-        id_forms[f"192.168.4.{oct}"] = c["id"]
+        oct_part = c["id"].split("-")[-1]
+        if oct_part.isdigit():
+            id_forms[f"192.168.4.{oct_part}"] = c["id"]
     out = {}
     for f in glob.glob(os.path.join(PROOFS, "*.json")):
         try:
-            d = json.load(open(f))
+            with open(f, encoding="utf-8") as fh:
+                d = json.load(fh)
         except (json.JSONDecodeError, OSError):
             continue
-        cam, vec = d.get("camera"), d.get("vector")
-        if not cam or not vec:
+        if not isinstance(d, dict):
             continue
-        rid = cam if cam in {c["id"] for c in registry_cameras} else ip_to_id.get(cam) or id_forms.get(cam)
+        if d.get("schema") == "fss.footage_acceptance.v1":
+            cam_id = d.get("camera_id")
+            if cam_id not in reg_ids:
+                continue
+            ls = d.get("local_scope") if isinstance(d.get("local_scope"), dict) else {}
+            preds = d.get("predicates") if isinstance(d.get("predicates"), dict) else {}
+            admin_p = preds.get("admin_receipt") if isinstance(preds.get("admin_receipt"), dict) else {}
+            ts = str(d.get("recorded_at_utc", ""))
+            cur = out.setdefault(cam_id, {})
+            old = cur.get("fss-footage")
+            if old is None or ts > str(old[1]):
+                cur["fss-footage"] = (bool(ls.get("local_media_accepted")), ts)
+            post_flash_evaluated = (
+                bool(ls.get("require_full"))
+                or bool(ls.get("full_post_flash_accepted"))
+                or admin_p.get("status") not in (None, "not_verified")
+            )
+            if post_flash_evaluated:
+                old_full = cur.get("fss-post-flash")
+                if old_full is None or ts > str(old_full[1]):
+                    cur["fss-post-flash"] = (bool(ls.get("full_post_flash_accepted")), ts)
+            continue
+        cam, vec = d.get("camera"), d.get("vector")
+        if not isinstance(cam, str) or not isinstance(vec, str) or not cam or not vec:
+            continue
+        rid = cam if cam in reg_ids else ip_to_id.get(cam) or id_forms.get(cam)
         if rid is None:
             continue
         cur = out.setdefault(rid, {})
@@ -187,15 +223,16 @@ def latest_proofs(registry_cameras):
 def open_waits():
     out = {}
     try:
-        for line in open(WAITS):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                r = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            out[(r.get("cam"), r.get("expectation"))] = r  # last wins
+        with open(WAITS, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    r = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                out[(r.get("cam"), r.get("expectation"))] = r  # last wins
     except OSError:
         pass
     return out
@@ -212,7 +249,8 @@ def camera_state(cam, table, proofs, waits):
     ROOT_VECTORS = ("telnet9999", "dropbear22", "beacon-uid0")
     rooted = any(ok and vec in ROOT_VECTORS for vec, (ok, _) in cam_proofs.items())
     # derive state from evidence, not aspiration
-    if vector == "fss":
+    footage_ok = bool(cam_proofs.get("fss-footage", (False, ""))[0])
+    if vector == "fss" or (vector == "native-unifi" and footage_ok):
         state = "INGESTING"
     elif rooted:
         state = "ROOTED"
@@ -225,7 +263,7 @@ def camera_state(cam, table, proofs, waits):
     # open wait referencing this camera
     open_wait = None
     for (wcam, wexp), r in waits.items():
-        if cam["id"] in wcam and r.get("event") == "open":
+        if isinstance(wcam, str) and cam["id"] in wcam and r.get("event") == "open":
             open_wait = wexp
             break
     return {

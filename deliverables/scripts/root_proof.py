@@ -32,6 +32,7 @@ import datetime
 import json
 import os
 import re
+import shlex
 import shutil
 import socket
 import subprocess
@@ -135,8 +136,11 @@ def rtsp_capture(ip, timeout, notes):
         return check, "no ffmpeg"
     out = f"/tmp/_rtspcap_{ip.replace('.', '_')}.ts"
     url = f"rtsp://{user}:{pwd}@{ip}/{stream}"
+    redacted_url = f"rtsp://{user}:***@{ip}/{stream}"
     cmd = [ff, "-y", "-v", "error", "-rtsp_transport", "tcp", "-i", url, "-t", str(secs),
            "-c", "copy", "-f", "mpegts", out]
+    redacted_cmd = [ff, "-y", "-v", "error", "-rtsp_transport", "tcp", "-i", redacted_url, "-t", str(secs),
+                    "-c", "copy", "-f", "mpegts", out]
     try:
         subprocess.run(cmd, capture_output=True, text=True, timeout=secs + 30, check=False)
         pr = subprocess.run([fp, "-v", "error", "-count_frames", "-select_streams", "v:0",
@@ -144,28 +148,36 @@ def rtsp_capture(ip, timeout, notes):
                             capture_output=True, text=True, timeout=60, check=False)
     except subprocess.TimeoutExpired:
         check["got"] = "timeout"
-        return check, f"$ {' '.join(cmd)}\nTIMEOUT"
+        return check, f"$ {shlex.join(redacted_cmd)}\nTIMEOUT"
     frames = re.search(r"nb_read_frames=(\d+)", pr.stdout)
     dims = re.search(r"width=(\d+)\s+height=(\d+)", pr.stdout)
     n = int(frames.group(1)) if frames else 0
     check["got"] = f"frames={n} dims={dims.group(0) if dims else '?'} bytes={os.path.getsize(out) if os.path.exists(out) else 0}"
     check["pass"] = n >= secs * 5
-    return check, f"$ {' '.join(cmd)}\n{n} frames, {check['got']}"
+    return check, f"$ {shlex.join(redacted_cmd)}\n{n} frames, {check['got']}"
 
 
 @vector("dropbear22")
 def dropbear22(ip, timeout, notes):
     key = os.path.expanduser(notes.get("key", "") or DEFAULT_KEY)
-    cmd = f"ssh -i {key} -o ConnectTimeout={timeout} -o StrictHostKeyChecking=no -o BatchMode=yes root@{ip} 'id && cat /proc/mtd'"
+    cmd = [
+        "ssh", "-i", key,
+        "-o", f"ConnectTimeout={timeout}",
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "BatchMode=yes",
+        f"root@{ip}",
+        "id && cat /proc/mtd",
+    ]
+    cmd_str = shlex.join(cmd)
     check = {"name": "dropbear22-uid0", "expect": r"uid=0\(", "got": "", "pass": False}
     try:
-        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout + 10)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 10)
         check["got"] = (r.stdout + r.stderr)[:400]
         check["pass"] = bool(re.search(check["expect"], r.stdout)) and r.returncode == 0
-        return check, f"$ {cmd}\nrc={r.returncode}\n{r.stdout}{r.stderr}"
-    except subprocess.TimeoutExpired as e:
+        return check, f"$ {cmd_str}\nrc={r.returncode}\n{r.stdout}{r.stderr}"
+    except subprocess.TimeoutExpired:
         check["got"] = f"timeout after {timeout + 10}s"
-        return check, f"$ {cmd}\nTIMEOUT"
+        return check, f"$ {cmd_str}\nTIMEOUT"
 
 
 @vector("tftp-exfil")
@@ -177,19 +189,21 @@ def tftp_exfil(ip, timeout, notes):
     lines = []
     hits = []
     if os.path.isdir(TFTP_DIR):
-        for f in os.listdir(TFTP_DIR):
+        for f in sorted(os.listdir(TFTP_DIR)):
             p = os.path.join(TFTP_DIR, f)
-            if os.path.getsize(p) > 0:
+            if os.path.isfile(p) and os.path.getsize(p) > 0:
                 hits.append((f, os.path.getsize(p)))
     lines.append(f"files in {TFTP_DIR}: {hits or 'none'}")
     if marker:
         m = os.path.join(TFTP_DIR, marker)
         check2 = {"name": f"marker:{marker}", "expect": "exists non-empty", "got": "", "pass": False}
         if os.path.isfile(m) and os.path.getsize(m) > 0:
-            check2.update(got=f"{os.path.getsize(m)}B", pass_=True)
+            check2["got"] = f"{os.path.getsize(m)}B"
             check2["pass"] = True
         else:
             check2["got"] = "missing or empty"
+        check["pass"] = bool(hits)
+        check["got"] = str(hits)
         return [check, check2], "\n".join(lines)
     check["pass"] = bool(hits)
     check["got"] = str(hits)
@@ -280,9 +294,9 @@ def main():
     base = f"{cam}-{a.vector}-{ts}"
     apath = os.path.join(PROOFS, base + ".json")
     tpath = os.path.join(TRANSCRIPTS, base + ".txt")
-    with open(apath, "w") as f:
+    with open(apath, "w", encoding="utf-8") as f:
         json.dump(artifact, f, indent=1)
-    with open(tpath, "w") as f:
+    with open(tpath, "w", encoding="utf-8") as f:
         f.write(body + "\n")
 
     regenerate_ledger()
@@ -303,10 +317,17 @@ def regenerate_ledger():
         if not f.endswith(".json"):
             continue
         try:
-            d = json.load(open(os.path.join(PROOFS, f)))
+            with open(os.path.join(PROOFS, f), encoding="utf-8") as fh:
+                d = json.load(fh)
         except (json.JSONDecodeError, OSError):
             continue
-        key = (d.get("camera"), d.get("vector"))
+        if not isinstance(d, dict):
+            continue
+        cam = d.get("camera")
+        vec = d.get("vector")
+        if not isinstance(cam, str) or not cam or not isinstance(vec, str) or not vec:
+            continue
+        key = (cam, vec)
         cur = rows.get(key)
         if cur is None or str(d.get("timestamp_utc", "")) > str(cur.get("timestamp_utc", "")):
             rows[key] = d
@@ -333,7 +354,7 @@ def regenerate_ledger():
                 mark = "✅" if d.get("pass") else "❌"
                 cells.append(f"{mark} {d.get('timestamp_utc', '?')}")
         lines.append(f"| {cam} | " + " | ".join(cells) + " |")
-    with open(LEDGER, "w") as f:
+    with open(LEDGER, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
 
 

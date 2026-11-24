@@ -12,8 +12,85 @@
 # The camera is addressed by MAC, not by IP: DHCP moved .4.23/.4.24 to .4.39/.4.51 and the old
 # addresses are now held by other vendors' devices, so a hardcoded IP silently targets the wrong box.
 set -u
-PY=/opt/homebrew/bin/python3
+PY="${PY:-/opt/homebrew/bin/python3}"
+[ -x "$PY" ] || PY="$(command -v python3 || echo python3)"
 HERE="$(cd "$(dirname "$0")" && pwd)"
+FW_DIR="${FW_DIR:-$HERE/../firmware}"
+
+md5_file() {
+  if command -v md5 >/dev/null 2>&1; then
+    md5 -q "$1"
+  else
+    md5sum "$1" | awk '{print $1}'
+  fi
+}
+
+sha256_file() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    sha256sum "$1" | awk '{print $1}'
+  fi
+}
+
+capsule_has_busybox() {
+  [ -s "$1" ] && tar -tf "$1" 2>/dev/null | grep -qx 'Upgrade/busybox'
+}
+
+stage_capsule_and_image() {
+  # Stage the real committed capsule and 16 MiB Thingino image into CAP_DIR so a reboot
+  # wiping /tmp never silently downgrades the served tree to a 20-byte sleep stub or 404 img.bin.
+  mkdir -p "$(dirname "$SERVED")" "$CAP_DIR/fss" "$CAP_DIR/img"
+  if ! capsule_has_busybox "$SERVED"; then
+    local cap_base cand=""
+    cap_base="$(basename "$CAP_PATH")"
+    if [ -s "$FW_DIR/wyze-capsule-$cap_base" ]; then
+      cand="$FW_DIR/wyze-capsule-$cap_base"
+    else
+      cand=$(ls -1 "$FW_DIR"/wyze-capsule-*.tar 2>/dev/null | sort -V | tail -1 || true)
+    fi
+    if [ -n "$cand" ] && capsule_has_busybox "$cand"; then
+      cp "$cand" "$SERVED.tmp" && mv "$SERVED.tmp" "$SERVED"
+      echo "staged committed capsule $cand -> $SERVED"
+    elif [ "${ALLOW_PROBE_STUB:-0}" = 1 ]; then
+      local probe="${PROBE:-/tmp/probe.sh}"
+      [ -s "$probe" ] || printf '#!/bin/sh\nsleep 120\n' > "$probe"
+      "$PY" "$HERE/build_ota_tar.py" --script "$probe" --out-dir /tmp/cap_probe --no-aes >/dev/null \
+        && cp /tmp/cap_probe/Upgrade.tar "$SERVED"
+    else
+      echo "FATAL: no valid capsule with Upgrade/busybox at $SERVED and none found in $FW_DIR" >&2
+      return 1
+    fi
+  fi
+  [ -s "$SERVED" ] || { echo "FATAL: no capsule at $SERVED" >&2; return 1; }
+
+  local pinned img_src
+  pinned=$(tar -xOf "$SERVED" Upgrade/upgraderun.sh 2>/dev/null | awk -F= '/^IMG_SHA=/{print $2; exit}')
+  if [ -n "$pinned" ]; then
+    if [ ! -s "$CAP_DIR/img.bin" ] || [ "$(sha256_file "$CAP_DIR/img.bin")" != "$pinned" ]; then
+      img_src="${IMG_SRC:-$FW_DIR/thingino-wyze_cam4_t41nq_os04d10_atbm6062s-tailnet.bin}"
+      if [ -s "$img_src" ] && [ "$(sha256_file "$img_src")" = "$pinned" ]; then
+        cp "$img_src" "$CAP_DIR/img.bin.tmp" && mv "$CAP_DIR/img.bin.tmp" "$CAP_DIR/img.bin"
+        echo "staged committed image $img_src -> $CAP_DIR/img.bin"
+      elif [ -s "$CAP_DIR/img.bin" ]; then
+        echo "FATAL: img.bin does not match the capsule's pinned sha256 ($pinned)" >&2
+        return 1
+      else
+        echo "FATAL: img.bin missing and $img_src does not match pinned sha256 ($pinned)" >&2
+        return 1
+      fi
+    fi
+  fi
+  return 0
+}
+
+if [ "${1:-}" = "--stage-only" ]; then
+  CAP_DIR="${CAP_DIR:-/tmp/fwserve}"
+  CAP_PATH="${CAP_PATH:-wuv2/upgrade/HL_CAM4/firmware/4.52.17.106.tar}"
+  SERVED="$CAP_DIR/$CAP_PATH"
+  stage_capsule_and_image
+  exit $?
+fi
 
 # Fast port→PID lookup. lsof walks every mount including the /Volumes autofs mounts and
 # takes ~22 SECONDS per call on this machine (measured 2026-11-05), which blew the
@@ -32,6 +109,9 @@ port_pids() {  # $1 = tcp port number → prints space-separated PIDs
 # (as the user) cannot append to them: every plane came up with "Permission denied" instead of a
 # log. Re-own ours before anything writes.
 sudo -n mkdir -p /tmp/ota
+# Ensure /tmp/ota stays world-traversable (0755): root launchd daemons with a restrictive umask
+# created /tmp/ota as 0744, blocking non-root readiness/plist-doctor probes from reading logs.
+sudo -n chmod 0755 /tmp/ota 2>/dev/null || chmod 0755 /tmp/ota 2>/dev/null || true
 for f in /tmp/ota/arm.log /tmp/dns.log /tmp/arp.log /tmp/ota/tls.log /tmp/img8080.log /tmp/img.log \
          /tmp/mqproxy.log /tmp/ota/chain.pem /tmp/serve443.pem /tmp/iot2.pem /tmp/iot2.key; do
   sudo -n touch "$f" 2>/dev/null && sudo -n chown "$(id -u)" "$f" 2>/dev/null
@@ -174,27 +254,14 @@ for f in cert.pem privkey.pem; do sudo cp "$CERTDIR/$f" "$CAP_DIR/fss/$f"; done
 { cat "$CERTDIR/rootCA.crt"; echo; cat "$CERTS/emudhra/aaa-root.pem"; } \
   | sudo tee "$CAP_DIR/fss/rootCA.crt" >/dev/null
 SERVED="$CAP_DIR/$CAP_PATH"
-if [ ! -s "$SERVED" ]; then
-  # zero-write dispatch probe: platform_upgrade never checks the exit status, so extra uptime proves
-  # the script ran. A real capsule is staged by the operator; this only keeps the stack armable.
-  PROBE="${PROBE:-/tmp/probe.sh}"
-  [ -s "$PROBE" ] || printf '#!/bin/sh\nsleep 120\n' > "$PROBE"
-  "$PY" "$HERE/build_ota_tar.py" --script "$PROBE" --out-dir /tmp/cap_probe --no-aes >/dev/null \
-    && cp /tmp/cap_probe/Upgrade.tar "$SERVED"
-fi
-[ -s "$SERVED" ] || { echo "FATAL: no capsule at $SERVED and the build failed"; exit 1; }
-MD5=$(md5 -q "$SERVED")
+stage_capsule_and_image || exit 1
+MD5=$(md5_file "$SERVED")
 # the responder and the capsule must agree, or the device stops at the MD5 gate
 if [ -n "${OTA_MD5:-}" ] && [ "$OTA_MD5" != "$MD5" ]; then
   # the bytes on disk are the truth; a stale env value would make the device stop at the MD5 gate
   echo "WARN: OTA_MD5=$OTA_MD5 but $SERVED is $MD5 — using the file digest"
 fi
 OTA_MD5="$MD5"
-if [ -s "$CAP_DIR/img.bin" ]; then
-  pinned=$(tar xOf "$SERVED" Upgrade/upgraderun.sh 2>/dev/null | awk -F= '/^IMG_SHA=/{print $2; exit}')
-  [ -z "$pinned" ] || [ "$(shasum -a 256 "$CAP_DIR/img.bin" | cut -d' ' -f1)" = "$pinned" ] \
-    || { echo "FATAL: img.bin does not match the capsule's pinned sha256"; exit 1; }
-fi
 
 sudo sysctl -w net.inet.ip.forwarding=1 >/dev/null
 # A listener can belong to a different task or address. Report conflicts without

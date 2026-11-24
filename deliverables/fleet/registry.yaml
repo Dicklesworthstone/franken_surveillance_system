@@ -1,5 +1,5 @@
-generation: 4
-updated: '2026-11-07T09:42:00-05:00'
+generation: 5
+updated: '2026-11-24T01:55:00Z'
 cameras:
 - id: wyze-39
   family: wyze-hl_cam4
@@ -16,10 +16,12 @@ cameras:
     - uid
     - enr
   notes: 'TUTK uid VD46744U86PCN769111A. MITM OTA chain ARMED 2026-11-06 (broker :8883
-    live, accepted-rewrite → 4.52.17.100 capsule, RENDERED 2026-11-09). Backup receivers
-    444-449 up. No root proof yet (root_proof.py telnet9999/beacon-uid0 = FAIL, refusal).
-    RTSP ENABLED 2026-11-09: fssuser, authenticated DESCRIBE 200 (stream0/stream1);
-    proof 192_168_4_39-rtsp-enable-20261109T011815Z.json. Interim ingest path, no root.
+    live, accepted-rewrite -> 4.52.17.104 capsule). Backup receivers 444-449 up.
+    No root proof yet (root_proof.py telnet9999/dropbear22/beacon-uid0 = FAIL).
+    LIVE PURE-RUST FSS INGEST PROVEN 2026-11-23: wyze_rtsp_bridge.py -> fss-capture-rtsp
+    -> fss-import-rtsp -> fss-event watch --sensor-health conservative-v1 -> fss session orient;
+    strict visible-event acceptance proof deliverables/proofs/wyze-39-footage-acceptance-2026-11-23.json
+    (local_media_accepted=true, zero ffmpeg, published event reflected in SituationFrame).
 
     '
 - id: wyze-51
@@ -36,11 +38,29 @@ cameras:
     fields:
     - uid
     - enr
-  notes: 'TUTK uid S3X2PBBR14M8Y2J6111A. 28× 50199 component fetches (dl-loc fix proven).
-    RTSP ENABLED 2026-11-09 via 0x29e8 (needs full_login, not Cam2.login): fssuser,
-    authenticated DESCRIBE 200 (stream0/stream1); proof
-    192_168_4_51-rtsp-enable-20261109T013201Z.json. Interim ingest path, no root.
-    Kept by com.jeffreyemanuel.wyze-rtsp-watch.
+  notes: 'TUTK uid S3X2PBBR14M8Y2J6111A. Kept by com.jeffreyemanuel.wyze-rtsp-watch.
+    No root proof yet. LIVE PURE-RUST FSS INGEST PROVEN 2026-11-24 via --use-wyze-bridge
+    at 10fps night cadence (40/40 frames decoded, 2 durable windows, zero ffmpeg):
+    proof deliverables/proofs/wyze-51-footage-acceptance-2026-11-23.json (local_media_accepted=true).
+
+    '
+- id: unifi-g4-instant
+  family: unifi-g4-instant
+  model: Ubiquiti UVC G4 Instant
+  mac: 58:d6:1f:b2:ba:03
+  mac_colonless: 58d61fb2ba03
+  fw_baseline: UVC.SAV530q.v4.70.37.67.M_9b6a37f.240320.0635
+  vector: native-unifi
+  last_seen_ip: 192.168.4.177
+  dhcp_reserve: true
+  creds:
+    path: null
+    note: owner Protect console export (0600 JSON for fss-capture-rtsp from-unifi) or standalone camera RTSP
+  notes: 'DISCOVERED NATIVELY 2026-11-23 via pure-Rust fss-discover --unifi-only
+    (proof deliverables/proofs/wyze-39-and-unifi-live-2026-11-23.json). Ports 80/443 OPEN;
+    ports 554/7441/7447 closed on camera IP (Protect cameras serve RTSP via Protect console
+    7447 or camera standalone RTSP mode). Needs owner-exported Protect JSON or standalone RTSP URL
+    for native fss-capture-rtsp from-unifi ingestion.
 
     '
 - id: tapo-c460
@@ -145,3 +165,4 @@ CHANGELOG:
 - gen 2: tapo-c460 ip .33 → .243 (observed by c460_fire daemon)
 - gen 3: aosu ip .126 → .86 (ARP observation); wyze .23/.24 tombstoned (DHCP)
 - 'gen 4: tapo-c660 rejoined LAN at 192.168.5.76 (en0) after owner re-provision'
+- 'gen 5: added unifi-g4-instant (192.168.4.177, native fss-discover) and recorded 2026-11-23/24 pure-Rust footage acceptance proofs for wyze-39 and wyze-51'
