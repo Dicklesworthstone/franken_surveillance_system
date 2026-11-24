@@ -141,6 +141,70 @@ fn invalid_budget_and_numeric_inputs_do_not_emit_reports() -> TestResult {
 }
 
 #[test]
+fn fixed_threshold_preserves_over_budget_and_empty_prefix_results() -> TestResult {
+    for (labels, threshold, counts, budget, precision, latency) in [
+        (
+            "labels.tsv",
+            "500000",
+            (1, 1, 0),
+            "over_budget",
+            "defined",
+            true,
+        ),
+        (
+            "labels.tsv",
+            "500001",
+            (1, 0, 0),
+            "within_budget",
+            "defined",
+            true,
+        ),
+        (
+            "labels.tsv",
+            "1000000",
+            (0, 0, 1),
+            "within_budget",
+            "undefined",
+            false,
+        ),
+        (
+            "all-gap-labels.tsv",
+            "0",
+            (0, 0, 0),
+            "no_observed_time",
+            "undefined",
+            false,
+        ),
+    ] {
+        let output = command(labels, "candidates.tsv", "0", "1000")
+            .args(["--fixed-threshold-ppm", threshold])
+            .output()?;
+        assert!(output.status.success());
+        let json = std::str::from_utf8(&output.stdout)?;
+        let (_, fixed) = json
+            .split_once("\"fixed_operating_point\":")
+            .ok_or("missing fixed result")?;
+        let (tp, fp, missed) = counts;
+        for expected in [
+            format!("\"threshold_ppm\":{threshold},"),
+            format!("\"true_positives\":{tp},"),
+            format!("\"false_positives\":{fp},"),
+            format!("\"false_negatives\":{missed},"),
+            format!("\"budget_state\":\"{budget}\""),
+            format!("\"precision\":{{\"state\":\"{precision}\""),
+            "\"digest\":\"sha256:".to_owned(),
+        ] {
+            assert!(fixed.contains(&expected), "{expected} missing from {fixed}");
+        }
+        assert_eq!(fixed.contains("\"min_ns\":\"10\""), latency);
+    }
+    let invalid = command("labels.tsv", "candidates.tsv", "0", "1000")
+        .args(["--fixed-threshold-ppm", "1000001"])
+        .output()?;
+    assert_refusal(&invalid, "evaluation.invalid_threshold")
+}
+
+#[test]
 fn dangling_clip_and_missing_file_are_typed_refusals() -> TestResult {
     let dangling = command("labels.tsv", "unknown-clip-candidates.tsv", "0", "1000").output()?;
     assert_refusal(&dangling, "evaluation.unknown_clip")?;

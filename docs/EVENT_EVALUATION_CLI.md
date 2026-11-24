@@ -69,6 +69,23 @@ Each input file is limited to 16 MiB and must be a regular file; each row is lim
 bytes. The library's clip, truth-event, candidate, interval, and identifier limits still apply.
 Inputs are treated as immutable snapshots, not streams. The adapter adds no dependencies.
 
+## Evaluate a threshold chosen before scoring
+
+Both modes accept `--fixed-threshold-ppm` with an inclusive integer score from 0 to
+1,000,000. For held-out data, choose the threshold on a separate development set and record
+it before inspecting the holdout. The optional `fixed_operating_point` reports true positives,
+false positives, missed observable events, precision, recall, time to detect, and whether the
+actual false-alert count met the declared budget. The denominator is observed clip time.
+Simultaneous views of one property contribute separately, so this exposure measures
+clip-nanoseconds and cannot by itself establish a rate per property-day.
+
+For the synthetic example above, `--fixed-threshold-ppm 500000` includes the false positive
+at exactly 500,000 and reports `over_budget`. At 500,001 it is excluded. A threshold above all
+scored candidates counts every observable event as missed. Zero observed time produces
+`no_observed_time`. The fixed point carries its own digest binding the full evaluation
+report, the exact requested threshold, and its results. The existing budget-selected
+`operating_point` remains available for descriptive analysis.
+
 ## Interchange report and authority boundary
 
 The JSON schema is `fss.evaluation.cli.v1`. Reports retain pipeline/model/policy generation
