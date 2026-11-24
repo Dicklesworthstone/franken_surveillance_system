@@ -100,6 +100,9 @@ use std::fmt;
 
 use fss_core::{CanonicalEncoder, ContentDigest};
 
+#[path = "evaluation/class_breakdown.rs"]
+pub mod class_breakdown;
+
 #[cfg(test)]
 #[path = "evaluation/tests.rs"]
 mod tests;
@@ -359,6 +362,8 @@ pub enum EvaluationLimit {
     NotObservableIntervals,
     /// Caller-admitted candidate by truth matching cells.
     MatchingCells,
+    /// Distinct observed and declared classes in an optional class breakdown.
+    Classes,
 }
 
 /// Why an identifier or identity string was refused.

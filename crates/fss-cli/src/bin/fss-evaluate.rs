@@ -17,9 +17,10 @@ use std::process::ExitCode;
 
 use fss_cli::escape_json_str;
 use fss_fusion::{ScoreCalibration, SplitConformalCalibrator, minimum_calibration_samples};
+use fss_reference::evaluation::class_breakdown::{ClassBreakdown, MAX_EVALUATION_CLASSES};
 use fss_reference::evaluation::{
     CandidateDisposition, CandidateSet, ClosedIntervalNs, EvaluationError, EvaluationIdentity,
-    EvaluationPolicy, EvaluationReport, EventCandidate, FalseAlertBudget, LabelSet, LabeledClip,
+    EvaluationCounts, EvaluationPolicy, EvaluationReport, EventCandidate, FalseAlertBudget, LabelSet, LabeledClip,
     MAX_EVALUATION_CANDIDATES, MAX_EVALUATION_CLIPS, MAX_EVALUATION_NOT_OBSERVABLE_INTERVALS,
     MAX_EVALUATION_TRUTH_EVENTS, MAX_SCORE_PPM, NotObservableInterval, NotObservableReason,
     OperatingPoint, PpmMetric, PrPoint, Ratio, TimeToDetectSummary, TruthDisposition, TruthEvent,
@@ -33,10 +34,13 @@ const HELP: &str = "fss-evaluate --labels LABELS.tsv --candidates CANDIDATES.tsv
 --max-false-alerts N --per-observed-ns N \
 [--early-tolerance-ns N] [--late-tolerance-ns N] [--fixed-threshold-ppm PPM] \
 [--calibration-bins PPM,PPM,... --calibration-generation ID] \
-[--conformal-alpha-ppm PPM]\n\n\
+[--conformal-alpha-ppm PPM] [--class-breakdown all|CLASS,CLASS,...]\n\n\
 Read-only event evaluation; emits JSON to stdout. No threshold is activated.\n\
 Use --fixed-threshold-ppm to measure a threshold chosen before inspecting these labels.\n\
 The fixed operating point includes all scored candidates at or above it, even over budget.\n\
+With --class-breakdown, every observed class is reported at that same fixed threshold,\n\
+using all observed clip time. A comma-separated inventory also includes empty classes.\n\
+Use all for only observed classes. At most 256 classes; --fixed-threshold-ppm is required.\n\
 With --calibration-bins (ascending score edges starting at 0) the report also carries a\n\
 score_calibration: per-bin true/false positive counts and log-likelihood-ratio intervals\n\
 (millibans, Wilson z=2, exact integer bounds) for fss-fuse; neutral and gap candidates\n\
@@ -90,6 +94,7 @@ struct Options {
     calibration: Option<(String, Vec<u32>)>,
     conformal_alpha_ppm: Option<u32>,
     fixed_threshold_ppm: Option<u32>,
+    class_inventory: Option<Vec<String>>,
 }
 
 fn integer(value: &str) -> Result<u64> {
@@ -117,7 +122,7 @@ fn unicode(value: &OsStr) -> Result<&str> {
 fn parse_options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>> {
     let mut bounded = Vec::new();
     for arg in args {
-        if bounded.len() == 26 {
+        if bounded.len() == 28 {
             return Err(Failure::new("evaluation.cli.arguments_limit"));
         }
         bounded.push(arg);
@@ -144,6 +149,7 @@ fn parse_options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Opti
                 | "--calibration-generation"
                 | "--conformal-alpha-ppm"
                 | "--fixed-threshold-ppm"
+                | "--class-breakdown"
         ) {
             return Err(Failure::new("evaluation.cli.unknown_option"));
         }
@@ -217,6 +223,7 @@ fn parse_options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Opti
         calibration,
         conformal_alpha_ppm,
         fixed_threshold_ppm: fixed_threshold(&values)?,
+        class_inventory: class_inventory(&values)?,
     }))
 }
 
@@ -231,6 +238,29 @@ fn fixed_threshold(values: &BTreeMap<String, OsString>) -> Result<Option<u32>> {
             Ok(value as u32)
         })
         .transpose()
+}
+
+fn class_inventory(values: &BTreeMap<String, OsString>) -> Result<Option<Vec<String>>> {
+    let Some(raw) = values.get("--class-breakdown") else {
+        return Ok(None);
+    };
+    if fixed_threshold(values)?.is_none() {
+        return Err(Failure::new("evaluation.cli.class_breakdown_requires_fixed_threshold"));
+    }
+    let raw = unicode(raw)?;
+    if raw == "all" {
+        return Ok(Some(Vec::new()));
+    }
+    // Bound allocation before splitting; the core also validates exact identifiers,
+    // duplicates and the union with classes observed in the matched inputs.
+    if raw.len() > MAX_EVALUATION_CLASSES * (fss_reference::evaluation::MAX_EVALUATION_ID_BYTES + 1) {
+        return Err(Failure::new("evaluation.limit_exceeded"));
+    }
+    let classes: Vec<String> = raw.split(',').map(str::to_owned).collect();
+    if classes.len() > MAX_EVALUATION_CLASSES {
+        return Err(Failure::new("evaluation.limit_exceeded"));
+    }
+    Ok(Some(classes))
 }
 
 fn read_input(path: &Path) -> Result<String> {
@@ -536,6 +566,32 @@ fn calibration_outcomes(report: &EvaluationReport, candidates: &CandidateSet) ->
         .collect()
 }
 
+fn counts_json(counts: &EvaluationCounts) -> String {
+    object(&[
+                ("truth_events", counts.truth_events.to_string()),
+                (
+                    "observable_truth_events",
+                    counts.observable_truth_events.to_string(),
+                ),
+                (
+                    "not_observable_truth_events",
+                    counts.not_observable_truth_events.to_string(),
+                ),
+                ("candidates", counts.candidates.to_string()),
+                (
+                    "candidates_inside_not_observable",
+                    counts.candidates_inside_not_observable.to_string(),
+                ),
+                (
+                    "candidates_matched_not_observable_truth",
+                    counts.candidates_matched_not_observable_truth.to_string(),
+                ),
+                ("true_positives", counts.true_positives.to_string()),
+                ("false_positives", counts.false_positives.to_string()),
+                ("false_negatives", counts.false_negatives.to_string()),
+            ])
+}
+
 fn report_json(report: &EvaluationReport) -> String {
     let counts = &report.counts;
     let truth = report.truth_outcomes.iter().map(|outcome| {
@@ -645,29 +701,7 @@ fn report_json(report: &EvaluationReport) -> String {
         ("report_digest", text(&report.digest.to_string())),
         (
             "counts_full_matching",
-            object(&[
-                ("truth_events", counts.truth_events.to_string()),
-                (
-                    "observable_truth_events",
-                    counts.observable_truth_events.to_string(),
-                ),
-                (
-                    "not_observable_truth_events",
-                    counts.not_observable_truth_events.to_string(),
-                ),
-                ("candidates", counts.candidates.to_string()),
-                (
-                    "candidates_inside_not_observable",
-                    counts.candidates_inside_not_observable.to_string(),
-                ),
-                (
-                    "candidates_matched_not_observable_truth",
-                    counts.candidates_matched_not_observable_truth.to_string(),
-                ),
-                ("true_positives", counts.true_positives.to_string()),
-                ("false_positives", counts.false_positives.to_string()),
-                ("false_negatives", counts.false_negatives.to_string()),
-            ]),
+            counts_json(counts),
         ),
         (
             "durations",
@@ -720,6 +754,65 @@ fn report_with_threshold(report: &EvaluationReport, threshold_ppm: Option<u32>) 
             .strip_suffix('}')
             .ok_or_else(|| Failure::new("evaluation.cli.internal"))?;
         json = format!("{body},\"fixed_operating_point\":{projection}}}");
+    }
+    Ok(json)
+}
+
+fn class_breakdown_json(value: &ClassBreakdown) -> String {
+    object(&[
+        ("schema", text("fss.evaluation.class_breakdown.v1")),
+        ("threshold_ppm", value.threshold_ppm.to_string()),
+        ("threshold_selection", text("caller_fixed")),
+        ("denominator_basis", text("all_observed_clip_time")),
+        ("observed_ns", text(&value.durations.observed_ns.to_string())),
+        ("declared_classes", array(value.declared_classes.iter().map(|class| text(class)))),
+        ("classes", array(value.classes.iter().map(|class| {
+            let fixed = &class.fixed_operating_point;
+            let budget_state = match fixed.within_budget {
+                Some(true) => "within_budget",
+                Some(false) => "over_budget",
+                None => "no_observed_time",
+            };
+            object(&[
+                ("class", text(&class.class)),
+                ("counts_full_matching", counts_json(&class.counts)),
+                ("auprc", ppm(class.auprc)),
+                ("pr_curve", array(class.pr_curve.iter().map(point))),
+                ("fixed_operating_point", object(&[
+                    ("true_positives", fixed.true_positives.to_string()),
+                    ("false_positives", fixed.false_positives.to_string()),
+                    ("false_negatives", fixed.false_negatives.to_string()),
+                    ("precision", ratio(fixed.precision)),
+                    ("recall", ratio(fixed.recall)),
+                    ("budget_state", text(budget_state)),
+                    ("time_to_detect", timing(fixed.time_to_detect)),
+                ])),
+            ])
+        }))),
+        ("report_digest", text(&value.report_digest.to_string())),
+        ("digest", text(&value.digest.to_string())),
+    ])
+}
+
+fn report_with_breakdown(
+    report: &EvaluationReport,
+    labels: &LabelSet,
+    candidates: &CandidateSet,
+    threshold_ppm: Option<u32>,
+    inventory: Option<&[String]>,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<String> {
+    let mut json = report_with_threshold(report, threshold_ppm)?;
+    if let Some(inventory) = inventory {
+        let threshold = threshold_ppm.ok_or_else(|| {
+            Failure::new("evaluation.cli.class_breakdown_requires_fixed_threshold")
+        })?;
+        let breakdown = report.by_class_at_threshold_cancellable(
+            labels, candidates, threshold, inventory, cancelled,
+        )?;
+        let body = json.strip_suffix('}')
+            .ok_or_else(|| Failure::new("evaluation.cli.internal"))?;
+        json = format!("{body},\"class_breakdown\":{}}}", class_breakdown_json(&breakdown));
     }
     Ok(json)
 }
@@ -798,7 +891,14 @@ fn run(args: impl IntoIterator<Item = OsString>) -> Result<String> {
     let labels = parse_labels(&read_input(&options.labels)?)?;
     let candidates = parse_candidates(&read_input(&options.candidates)?)?;
     let report = evaluate(&options.identity, &options.policy, &labels, &candidates)?;
-    let mut json = report_with_threshold(&report, options.fixed_threshold_ppm)?;
+    let mut json = report_with_breakdown(
+        &report,
+        &labels,
+        &candidates,
+        options.fixed_threshold_ppm,
+        options.class_inventory.as_deref(),
+        &|| false,
+    )?;
     let conformal_generation = options
         .calibration
         .as_ref()

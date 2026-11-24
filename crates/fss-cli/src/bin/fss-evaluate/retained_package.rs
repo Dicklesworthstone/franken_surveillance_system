@@ -11,7 +11,7 @@ use fss_core::{
     PrincipalId,
 };
 use fss_reference::ReplayCx;
-use fss_reference::evaluation::{EvaluationPolicy, EventCandidate, FalseAlertBudget};
+use fss_reference::evaluation::{EvaluationPolicy, EventCandidate, FalseAlertBudget, LabelSet};
 use fss_reference::ingest::package_evaluation::contract::{
     MAX_PACKAGE_EVALUATION_OUTPUT_BYTES, MAX_PACKAGE_EVALUATION_SOURCE_BYTES,
     PACKAGE_EVALUATION_LIMITATIONS, PackageEvaluationConfirmation, PackageEvaluationFrameBinding,
@@ -23,8 +23,8 @@ use fss_reference::ingest::package_evaluation::{
 use fss_reference::ingest::package_event::PackageTrackingConfig;
 
 use super::{
-    Failure, Result, array, fixed_threshold, integer, object, parse_labels, read_input,
-    report_with_threshold, text,
+    Failure, Result, array, class_inventory, fixed_threshold, integer, object, parse_labels, read_input,
+    report_with_breakdown, text,
 };
 
 const HELP: &str = "fss-evaluate retained-package --root ABSOLUTE_EXISTING_DIR --site SITE \
@@ -33,7 +33,7 @@ const HELP: &str = "fss-evaluate retained-package --root ABSOLUTE_EXISTING_DIR -
 --max-false-alerts N --per-observed-ns N \
 [--confirmation-hits N] [--maximum-missed-frames N] [--minimum-iou-ppm N] \
 [--early-tolerance-ns N] [--late-tolerance-ns N] [--fixed-threshold-ppm PPM] \
-[--maximum-source-bytes N] [--principal ID]\n\n\
+[--maximum-source-bytes N] [--principal ID] [--class-breakdown all|CLASS,CLASS,...]\n\n\
 Evaluates all tracks of one retained native label against one declared clip.\n\
 Requires a complete report retained by fss-infer package-detect --retain yes.\n\
 First confirmation uses its actual assigned F32 score; later samples never replace it.\n\
@@ -47,7 +47,9 @@ Source reads share a nonrenewing maximum of 4 GiB across construction and revali
 The local principal is an audit label, not remote authentication. Local store-opening\n\
 housekeeping may recover publisher state. No evaluation, event, calibration, threshold,\n\
 or external effect is published, activated, sent, or reconciled.\n\
-Coverage remains caller-declared; scores remain uncalibrated. No model inference runs.\n";
+Coverage remains caller-declared; scores remain uncalibrated. No model inference runs.\n\
+Class breakdown requires --fixed-threshold-ppm and shares the full observed duration.\n\
+The selected native class is always included; an inventory can expose other empty classes.\n";
 
 struct Options {
     root: PathBuf,
@@ -57,6 +59,7 @@ struct Options {
     request: PackageEvaluationRequest,
     policy: EvaluationPolicy,
     fixed_threshold_ppm: Option<u32>,
+    class_inventory: Option<Vec<String>>,
     maximum_source_bytes: u64,
 }
 
@@ -77,7 +80,7 @@ fn signed(value: &str) -> Result<i128> {
 fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>> {
     let mut bounded = Vec::new();
     for arg in args {
-        if bounded.len() == 38 || arg.len() > 4096 {
+        if bounded.len() == 40 || arg.len() > 4096 {
             return Err(Failure::new("evaluation.cli.arguments_limit"));
         }
         bounded.push(arg);
@@ -110,6 +113,7 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>> {
                 | "--late-tolerance-ns"
                 | "--maximum-source-bytes"
                 | "--fixed-threshold-ppm"
+                | "--class-breakdown"
         ) {
             return Err(Failure::new("evaluation.cli.unknown_option"));
         }
@@ -194,6 +198,14 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>> {
     if maximum_source_bytes == 0 || maximum_source_bytes > MAX_PACKAGE_EVALUATION_SOURCE_BYTES {
         return Err(Failure::new("evaluation.retained.source_limit"));
     }
+    let class_inventory = class_inventory(&values)?.map(|mut classes| {
+        // The selected native label is already an explicit class declaration, even when
+        // the retained clip has no candidates or truths.
+        if !classes.contains(&request.label) {
+            classes.push(request.label.clone());
+        }
+        classes
+    });
     Ok(Some(Options {
         root,
         site,
@@ -202,6 +214,7 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>> {
         request,
         policy,
         fixed_threshold_ppm: fixed_threshold(&values)?,
+        class_inventory,
         maximum_source_bytes,
     }))
 }
@@ -404,7 +417,13 @@ fn provenance(value: &PackageEvaluationProvenance) -> String {
     ])
 }
 
-fn output(value: &RetainedPackageEvaluation, threshold_ppm: Option<u32>) -> Result<String> {
+fn output(
+    value: &RetainedPackageEvaluation,
+    labels: &LabelSet,
+    threshold_ppm: Option<u32>,
+    inventory: Option<&[String]>,
+    cx: &ReplayCx,
+) -> Result<String> {
     let result = object(&[
         ("schema", text(RETAINED_PACKAGE_EVALUATION_SCHEMA)),
         ("derived_only", "true".to_owned()),
@@ -425,7 +444,14 @@ fn output(value: &RetainedPackageEvaluation, threshold_ppm: Option<u32>) -> Resu
         ("provenance", provenance(&value.projection().provenance)),
         (
             "evaluation",
-            report_with_threshold(value.report(), threshold_ppm)?,
+            report_with_breakdown(
+                value.report(),
+                labels,
+                &value.projection().candidates,
+                threshold_ppm,
+                inventory,
+                &|| cx.checkpoint("evaluation_cli:class_breakdown").is_err(),
+            )?,
         ),
         (
             "limitations",
@@ -483,7 +509,13 @@ pub(super) fn run(args: impl IntoIterator<Item = OsString>) -> Result<String> {
             &cx,
         )
         .map_err(|error| Failure::new(error.code()))?;
-        let result = output(&evaluated, options.fixed_threshold_ppm)?;
+        let result = output(
+            &evaluated,
+            &labels,
+            options.fixed_threshold_ppm,
+            options.class_inventory.as_deref(),
+            &cx,
+        )?;
         cx.checkpoint("evaluation_cli:complete")
             .map_err(|_| Failure::new("evaluation.cancelled"))?;
         Ok(result)

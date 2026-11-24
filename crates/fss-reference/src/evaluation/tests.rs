@@ -907,3 +907,241 @@ fn evaluation_validation_refusals() {
         })
     );
 }
+
+
+fn class_fixture() -> (LabelSet, CandidateSet, EvaluationPolicy) {
+    (
+        LabelSet {
+            clips: vec![clip("positive", 1_000, &[(500, 599)]), clip("negative", 1_000, &[])],
+            events: vec![
+                truth("person-a", "positive", "person", None, 100, 110),
+                truth("person-b", "positive", "person", None, 200, 210),
+                truth("vehicle", "positive", "vehicle", None, 300, 310),
+                truth("hidden", "positive", "hidden", None, 510, 520),
+                truth("missed", "positive", "missed-only", None, 700, 710),
+                truth("neutral", "positive", "neutral", None, 550, 560),
+            ],
+        },
+        CandidateSet {
+            candidates: vec![
+                cand("person-a", "positive", "person", None, 105, 900_000),
+                cand("person-fp", "negative", "person", None, 400, 800_000),
+                cand("person-b", "positive", "person", None, 205, 700_000),
+                // The right time with the wrong class remains an FP in vehicle, not a
+                // second detection of person-a. The undetected vehicle truth remains FN.
+                cand("wrong-class", "positive", "vehicle", None, 105, 800_000),
+                cand("orphan", "negative", "orphan", None, 20, 800_000),
+                cand("gap", "positive", "gap-only", None, 520, 990_000),
+                cand("neutral", "positive", "neutral", None, 605, 600_000),
+            ],
+        },
+        policy(0, 50, FalseAlertBudget { max_false_alerts: 1, per_observed_ns: 1_000 }),
+    )
+}
+
+#[test]
+fn class_breakdown_exposes_misses_mislabels_neutral_and_empty_classes() -> Result<(), EvaluationError> {
+    let (labels, candidates, policy) = class_fixture();
+    let report = evaluate(&identity(), &policy, &labels, &candidates)?;
+    let pooled_digest = report.digest;
+    let result = report.by_class_at_threshold(&labels, &candidates, 800_000, &["zero".into()])?;
+    assert!(result.verify_digest());
+    assert_eq!(result.report_digest, pooled_digest);
+    assert_eq!(report.digest, pooled_digest);
+    assert_eq!(result.threshold_ppm, 800_000);
+    // Negative clips remain in every class's denominator; 1 FP would exceed the 900 ns
+    // observed positive clip alone, but is within 1 per 1000 across this 1900 ns corpus.
+    assert_eq!(result.durations.observed_ns, 1_900);
+    assert_eq!(
+        result.classes.iter().map(|class| class.class.as_str()).collect::<Vec<_>>(),
+        ["gap-only", "hidden", "missed-only", "neutral", "orphan", "person", "vehicle", "zero"]
+    );
+    let classes: BTreeMap<_, _> = result.classes.iter().map(|class| (class.class.as_str(), class)).collect();
+    let person = classes["person"];
+    assert_eq!(person.counts.observable_truth_events, 2);
+    assert_eq!(person.pr_curve, [
+        point(900_000, 1, 0, 2, true),
+        point(800_000, 1, 1, 2, true),
+        point(700_000, 2, 1, 2, true),
+    ]);
+    // AP = (1/2)*1 + (1/2)*(2/3) = 5/6, rounded half-up.
+    assert_eq!(person.auprc, PpmMetric::Defined(833_333));
+    assert_eq!(person.fixed_operating_point.true_positives, 1);
+    assert_eq!(person.fixed_operating_point.false_positives, 1);
+    assert_eq!(person.fixed_operating_point.false_negatives, 1);
+    assert_eq!(person.fixed_operating_point.precision, ratio(1, 2));
+    assert_eq!(person.fixed_operating_point.recall, ratio(1, 2));
+    assert_eq!(person.fixed_operating_point.within_budget, Some(true));
+    assert_eq!(person.fixed_operating_point.time_to_detect, Some(TimeToDetectSummary {
+        count: 1, min_ns: 5, median_ns: 5, max_ns: 5,
+    }));
+    let vehicle = classes["vehicle"];
+    assert_eq!(vehicle.auprc, PpmMetric::Defined(0));
+    assert_eq!(vehicle.fixed_operating_point.true_positives, 0);
+    assert_eq!(vehicle.fixed_operating_point.false_positives, 1);
+    assert_eq!(vehicle.fixed_operating_point.false_negatives, 1);
+    assert_eq!(vehicle.fixed_operating_point.recall, ratio(0, 1));
+    assert_eq!(classes["missed-only"].auprc, PpmMetric::Defined(0));
+    assert_eq!(classes["missed-only"].fixed_operating_point.false_negatives, 1);
+    assert!(classes["missed-only"].pr_curve.is_empty());
+    assert_eq!(classes["orphan"].fixed_operating_point.false_positives, 1);
+    assert_eq!(classes["gap-only"].counts.candidates_inside_not_observable, 1);
+    assert_eq!(classes["hidden"].counts.not_observable_truth_events, 1);
+    assert_eq!(classes["neutral"].counts.candidates_matched_not_observable_truth, 1);
+    assert_eq!(classes["zero"].counts, EvaluationCounts::default());
+    for name in ["gap-only", "hidden", "neutral", "orphan", "zero"] {
+        assert_eq!(classes[name].auprc, PpmMetric::Undefined(UndefinedReason::NoObservableTruthEvents));
+        assert_eq!(classes[name].fixed_operating_point.recall, Ratio::Undefined(UndefinedReason::NoObservableTruthEvents));
+    }
+    assert_eq!(classes["zero"].fixed_operating_point.precision, Ratio::Undefined(UndefinedReason::NoScoredCandidates));
+    Ok(())
+}
+
+#[test]
+fn class_projection_matches_independent_scoring_at_one_common_threshold() -> Result<(), EvaluationError> {
+    let (labels, candidates, policy) = class_fixture();
+    let report = evaluate(&identity(), &policy, &labels, &candidates)?;
+    for threshold in [0, 600_000, 700_000, 800_000, 800_001, 900_000, 1_000_000] {
+        let result = report.by_class_at_threshold(&labels, &candidates, threshold, &["empty".into()])?;
+        let mut summed_tp = 0;
+        let mut summed_fp = 0;
+        let mut summed_fn = 0;
+        for class in &result.classes {
+            let class_labels = LabelSet {
+                clips: labels.clips.clone(),
+                events: labels.events.iter().filter(|event| event.class == class.class).cloned().collect(),
+            };
+            let class_candidates = CandidateSet {
+                candidates: candidates.candidates.iter().filter(|candidate| candidate.class == class.class).cloned().collect(),
+            };
+            let oracle = evaluate(&identity(), &policy, &class_labels, &class_candidates)?;
+            let fixed = oracle.at_threshold(threshold)?;
+            assert_eq!(class.counts, oracle.counts);
+            assert_eq!(class.pr_curve, oracle.pr_curve);
+            assert_eq!(class.auprc, oracle.auprc);
+            assert_eq!(class.fixed_operating_point.true_positives, fixed.true_positives);
+            assert_eq!(class.fixed_operating_point.false_positives, fixed.false_positives);
+            assert_eq!(class.fixed_operating_point.false_negatives, fixed.false_negatives);
+            assert_eq!(class.fixed_operating_point.precision, fixed.precision);
+            assert_eq!(class.fixed_operating_point.recall, fixed.recall);
+            assert_eq!(class.fixed_operating_point.within_budget, fixed.within_budget);
+            assert_eq!(class.fixed_operating_point.time_to_detect, fixed.time_to_detect);
+            summed_tp += fixed.true_positives;
+            summed_fp += fixed.false_positives;
+            summed_fn += fixed.false_negatives;
+        }
+        let pooled = report.at_threshold(threshold)?;
+        assert_eq!((summed_tp, summed_fp, summed_fn), (pooled.true_positives, pooled.false_positives, pooled.false_negatives));
+    }
+    Ok(())
+}
+
+#[test]
+fn class_projection_preserves_zero_exposure_and_never_tunes_an_over_budget_threshold() -> Result<(), EvaluationError> {
+    let labels = LabelSet {
+        clips: vec![clip("all-gap", 100, &[(0, 99)])],
+        events: vec![truth("hidden", "all-gap", "person", None, 10, 20)],
+    };
+    let candidates = CandidateSet { candidates: vec![cand("gap", "all-gap", "person", None, 10, 1_000_000)] };
+    let policy = policy(0, 0, FalseAlertBudget::per_day(0));
+    let report = evaluate(&identity(), &policy, &labels, &candidates)?;
+    let projected = report.by_class_at_threshold(&labels, &candidates, 0, &["empty".into()])?;
+    assert_eq!(projected.durations.observed_ns, 0);
+    for class in projected.classes {
+        assert_eq!(class.fixed_operating_point.within_budget, None);
+        assert_eq!(class.fixed_operating_point.time_to_detect, None);
+        assert!(class.pr_curve.is_empty());
+    }
+    let (labels, candidates, mut policy) = class_fixture();
+    policy.false_alert_budget.max_false_alerts = 0;
+    let report = evaluate(&identity(), &policy, &labels, &candidates)?;
+    let projected = report.by_class_at_threshold(&labels, &candidates, 800_000, &[])?;
+    let person = projected.classes.iter().find(|class| class.class == "person").ok_or(EvaluationError::InconsistentReport)?;
+    assert_eq!(person.fixed_operating_point.false_positives, 1);
+    assert_eq!(person.fixed_operating_point.within_budget, Some(false));
+    assert_eq!(person.fixed_operating_point.recall, ratio(1, 2));
+    Ok(())
+}
+
+#[test]
+fn class_projection_is_canonical_input_bound_and_cancellable() -> Result<(), EvaluationError> {
+    use std::cell::Cell;
+
+    let (mut labels, mut candidates, policy) = class_fixture();
+    let report = evaluate(&identity(), &policy, &labels, &candidates)?;
+    let first = report.by_class_at_threshold(&labels, &candidates, 800_000, &["z".into(), "a".into()])?;
+    labels.clips.reverse();
+    labels.events.reverse();
+    candidates.candidates.reverse();
+    let reordered = report.by_class_at_threshold(&labels, &candidates, 800_000, &["a".into(), "z".into()])?;
+    assert_eq!(first, reordered);
+    assert_ne!(first.digest, report.by_class_at_threshold(&labels, &candidates, 800_001, &["z".into(), "a".into()])?.digest);
+    assert_ne!(first.digest, report.by_class_at_threshold(&labels, &candidates, 800_000, &["z".into()])?.digest);
+    let mut altered = first.clone();
+    altered.classes[0].fixed_operating_point.false_positives += 1;
+    assert!(!altered.verify_digest());
+    candidates.candidates[0].class = "tampered".into();
+    assert_eq!(report.by_class_at_threshold(&labels, &candidates, 800_000, &[]), Err(EvaluationError::InconsistentReport));
+    let (_, candidates, _) = class_fixture();
+    labels.clips[0].duration_ns += 1;
+    assert_eq!(report.by_class_at_threshold(&labels, &candidates, 800_000, &[]), Err(EvaluationError::InconsistentReport));
+    let (labels, _, _) = class_fixture();
+    assert_eq!(report.by_class_at_threshold(&labels, &candidates, 1_000_001, &[]), Err(EvaluationError::InvalidThreshold));
+    assert!(matches!(
+        report.by_class_at_threshold(&labels, &candidates, 800_000, &["person".into(), "person".into()]),
+        Err(EvaluationError::DuplicateId { field: "evaluation_class", .. })
+    ));
+    assert!(matches!(
+        report.by_class_at_threshold(&labels, &candidates, 800_000, &["bad class".into()]),
+        Err(EvaluationError::InvalidText { .. })
+    ));
+    // The limit applies to the union, not just the supplied inventory. 256 empty labels
+    // cannot make the existing observed classes disappear.
+    let inventory = (0..class_breakdown::MAX_EVALUATION_CLASSES).map(|index| format!("declared-{index}")).collect::<Vec<_>>();
+    assert!(matches!(
+        report.by_class_at_threshold(&labels, &candidates, 800_000, &inventory),
+        Err(EvaluationError::LimitExceeded { limit: EvaluationLimit::Classes, .. })
+    ));
+    let checks = Cell::new(0);
+    let complete = report.by_class_at_threshold_cancellable(&labels, &candidates, 800_000, &[], &|| {
+        checks.set(checks.get() + 1);
+        false
+    })?;
+    assert!(complete.verify_digest());
+    for stop in [1, 15, checks.get()] {
+        let seen = Cell::new(0);
+        assert_eq!(
+            report.by_class_at_threshold_cancellable(&labels, &candidates, 800_000, &[], &|| {
+                seen.set(seen.get() + 1);
+                seen.get() >= stop
+            }),
+            Err(EvaluationError::Cancelled)
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn class_projection_preserves_score_ties_and_duplicate_alert_penalties() -> Result<(), EvaluationError> {
+    let labels = LabelSet {
+        clips: vec![clip("clip", 1_000, &[])],
+        events: vec![truth("event", "clip", "person", None, 100, 200)],
+    };
+    let candidates = CandidateSet {
+        candidates: vec![
+            cand("second", "clip", "person", None, 110, 900_000),
+            cand("first", "clip", "person", None, 120, 900_000),
+        ],
+    };
+    let policy = policy(0, 0, FalseAlertBudget { max_false_alerts: 1, per_observed_ns: 1_000 });
+    let report = evaluate(&identity(), &policy, &labels, &candidates)?;
+    let projected = report.by_class_at_threshold(&labels, &candidates, 900_000, &[])?;
+    assert_eq!(projected.classes.len(), 1);
+    let class = &projected.classes[0];
+    assert_eq!(class.pr_curve, [point(900_000, 1, 1, 1, true)]);
+    assert_eq!(class.auprc, PpmMetric::Defined(500_000));
+    assert_eq!(class.fixed_operating_point.true_positives, 1);
+    assert_eq!(class.fixed_operating_point.false_positives, 1);
+    assert_eq!(class.fixed_operating_point.time_to_detect.map(|latency| latency.min_ns), Some(20));
+    Ok(())
+}

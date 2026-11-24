@@ -228,3 +228,94 @@ fn help_is_available_without_opening_inputs() -> TestResult {
     assert!(help.contains("caller declarations"));
     Ok(())
 }
+
+
+fn class_json<'a>(json: &'a str, class: &str) -> Result<&'a str, Box<dyn Error>> {
+    let class_marker = format!("\"class\":\"{class}\"");
+    Ok(json.split(&class_marker).nth(1).ok_or("missing class")?
+        .split("\"class\":").next().ok_or("missing class body")?)
+}
+
+#[test]
+fn class_breakdown_scores_one_fixed_threshold_without_losing_negative_exposure() -> TestResult {
+    let output = command("class-labels.tsv", "class-candidates.tsv", "1", "1000")
+        .args(["--fixed-threshold-ppm", "800000", "--class-breakdown", "zero,vehicle"])
+        .output()?;
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(output.stderr.is_empty());
+    let json = std::str::from_utf8(&output.stdout)?;
+    let breakdown = json.split("\"class_breakdown\":").nth(1).ok_or("class breakdown")?;
+    for field in [
+        "\"schema\":\"fss.evaluation.class_breakdown.v1\"",
+        "\"threshold_ppm\":800000",
+        "\"threshold_selection\":\"caller_fixed\"",
+        "\"denominator_basis\":\"all_observed_clip_time\"",
+        "\"observed_ns\":\"1900\"",
+        "\"declared_classes\":[\"vehicle\",\"zero\"]",
+        "\"report_digest\":\"sha256:",
+        "\"digest\":\"sha256:",
+    ] {
+        assert!(breakdown.contains(field), "missing {field}");
+    }
+    let person = class_json(breakdown, "person")?;
+    assert!(person.contains("\"auprc\":{\"state\":\"defined\",\"ppm\":833333}"));
+    assert!(person.contains("\"fixed_operating_point\":{\"true_positives\":1,\"false_positives\":1,\"false_negatives\":1"));
+    assert!(person.contains("\"budget_state\":\"within_budget\""));
+    let vehicle = class_json(breakdown, "vehicle")?;
+    assert!(vehicle.contains("\"fixed_operating_point\":{\"true_positives\":0,\"false_positives\":1,\"false_negatives\":1"));
+    let zero = class_json(breakdown, "zero")?;
+    assert!(zero.contains("\"observable_truth_events\":0"));
+    assert!(zero.contains("\"auprc\":{\"state\":\"undefined\",\"reason\":\"no_observable_truth_events\"}"));
+    let missed = class_json(breakdown, "missed-only")?;
+    assert!(missed.contains("\"fixed_operating_point\":{\"true_positives\":0,\"false_positives\":0,\"false_negatives\":1"));
+    let orphan = class_json(breakdown, "orphan")?;
+    assert!(orphan.contains("\"false_positives\":1"));
+    assert!(orphan.contains("\"recall\":{\"state\":\"undefined\",\"reason\":\"no_observable_truth_events\"}"));
+    Ok(())
+}
+
+#[test]
+fn optional_class_breakdown_preserves_the_complete_original_pooled_json() -> TestResult {
+    let pooled = command("labels.tsv", "candidates.tsv", "0", "1000")
+        .args(["--fixed-threshold-ppm", "800000"])
+        .output()?;
+    let first = command("labels.tsv", "candidates.tsv", "0", "1000")
+        .args(["--fixed-threshold-ppm", "800000", "--class-breakdown", "all"])
+        .output()?;
+    let second = command("labels.tsv", "candidates.tsv", "0", "1000")
+        .args(["--fixed-threshold-ppm", "800000", "--class-breakdown", "all"])
+        .output()?;
+    assert!(pooled.status.success());
+    assert!(first.status.success());
+    assert!(second.status.success());
+    assert_eq!(first.stdout, second.stdout);
+    let pooled = std::str::from_utf8(&pooled.stdout)?.trim_end();
+    let complete = std::str::from_utf8(&first.stdout)?;
+    assert_eq!(
+        complete.split(",\"class_breakdown\":").next().ok_or("pooled prefix")?,
+        pooled.strip_suffix('}').ok_or("pooled object")?
+    );
+    Ok(())
+}
+
+#[test]
+fn class_breakdown_requires_fixed_threshold_and_refuses_invalid_inventory() -> TestResult {
+    for (extras, code) in [
+        (vec!["--class-breakdown", "all"], "evaluation.cli.class_breakdown_requires_fixed_threshold"),
+        (vec!["--fixed-threshold-ppm", "800000", "--class-breakdown", "person,person"], "evaluation.duplicate_id"),
+        (vec!["--fixed-threshold-ppm", "800000", "--class-breakdown", "person,,vehicle"], "evaluation.invalid_text"),
+        (vec!["--fixed-threshold-ppm", "800000", "--class-breakdown", "bad class"], "evaluation.invalid_text"),
+    ] {
+        let output = command("labels.tsv", "candidates.tsv", "0", "1000")
+            .args(extras).output()?;
+        assert_refusal(&output, code)?;
+    }
+    let too_many = (0..257).map(|index| format!("class-{index}")).collect::<Vec<_>>().join(",");
+    assert_refusal(
+        &command("labels.tsv", "candidates.tsv", "0", "1000")
+            .args(["--fixed-threshold-ppm", "800000", "--class-breakdown", &too_many])
+            .output()?,
+        "evaluation.limit_exceeded",
+    )?;
+    Ok(())
+}

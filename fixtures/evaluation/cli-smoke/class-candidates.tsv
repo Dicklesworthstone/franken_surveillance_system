@@ -1,0 +1,7 @@
+fss-evaluation-candidates.v1
+candidate	person-a	positive	person	-	105	900000
+candidate	person-fp	negative	person	-	400	800000
+candidate	person-b	positive	person	-	205	700000
+candidate	wrong-class	positive	vehicle	-	105	800000
+candidate	orphan	negative	orphan	-	20	800000
+candidate	gap	positive	gap-only	-	520	990000

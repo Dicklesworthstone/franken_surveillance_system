@@ -1,0 +1,9 @@
+fss-evaluation-labels.v1
+clip	positive	1000
+clip	negative	1000
+truth	person-a	positive	person	-	100	110
+truth	person-b	positive	person	-	200	210
+truth	vehicle	positive	vehicle	-	300	310
+truth	missed	positive	missed-only	-	700	710
+truth	hidden	positive	hidden	-	510	520
+gap	positive	500	599	occluded
