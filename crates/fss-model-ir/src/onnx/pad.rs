@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Static Pad-13 using existing Slice, Concat and Reshape operators.
+//! Static Pad-13 and Pad-18 using existing Slice, Concat and Reshape operators.
 //!
 //! https://onnx.ai/onnx/operators/onnx__Pad.html#pad-13
 //! Crop every negative side before adding constant, edge or reflection borders.
@@ -272,8 +272,13 @@ fn copy_border(
     Ok(())
 }
 
-pub(super) fn lower(mut source: SourceNode<'_>, lowering: &mut Lowering<'_, '_>) -> Result<()> {
-    if !(2..=3).contains(&source.inputs.len())
+pub(super) fn lower(
+    mut source: SourceNode<'_>,
+    lowering: &mut Lowering<'_, '_>,
+    version: u64,
+) -> Result<()> {
+    let max_inputs = if version == 18 { 4 } else { 3 };
+    if !(2..=max_inputs).contains(&source.inputs.len())
         || source.outputs.len() != 1
         || source.inputs[..2].iter().any(String::is_empty)
     {
@@ -304,6 +309,23 @@ pub(super) fn lower(mut source: SourceNode<'_>, lowering: &mut Lowering<'_, '_>)
         return Err(OnnxError::Unsupported);
     }
     let pads = lowering.constant_i64_vector(&source.inputs[1])?;
+    // Pad-18 pairs the two halves of pads with axes in declaration order.
+    // Unselected dimensions undergo neither cropping nor padding.
+    let pads = if let Some(name) = source.inputs.get(3).filter(|name| !name.is_empty()) {
+        let raw_axes = lowering.constant_i64_vector(name)?;
+        let axes = super::structure::axes(raw_axes, dims.len())?;
+        if pads.len() != 2 * axes.len() {
+            return Err(OnnxError::Graph);
+        }
+        let mut full = vec![0; 2 * dims.len()];
+        for (i, &axis) in axes.iter().enumerate() {
+            full[axis as usize] = pads[i];
+            full[dims.len() + axis as usize] = pads[axes.len() + i];
+        }
+        full
+    } else {
+        pads
+    };
     let plan = plan(&dims, &pads)?;
     let value = fill(&source, lowering)?;
     let (nodes, parameters, generated_bytes) = if mode == Mode::Constant {

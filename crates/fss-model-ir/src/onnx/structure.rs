@@ -13,7 +13,7 @@ fn axis(value: i64, rank: usize) -> Result<i64> {
     Ok(if value < 0 { value + rank } else { value })
 }
 
-fn axes(values: Vec<i64>, rank: usize) -> Result<Vec<i64>> {
+pub(super) fn axes(values: Vec<i64>, rank: usize) -> Result<Vec<i64>> {
     let mut seen = std::collections::BTreeSet::new();
     values
         .into_iter()

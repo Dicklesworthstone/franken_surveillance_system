@@ -42,17 +42,6 @@ pub(super) fn admit(version: u64, source: &mut SourceNode<'_>) -> Result<()> {
     }
     if version == 18 {
         match source.op.as_str() {
-            "Pad" => {
-                // Pad-18 adds optional input axes. An omitted placeholder has
-                // exactly the previous all-axis meaning; explicit axes remain
-                // outside this profile and must never be silently discarded.
-                if source.inputs.len() == 4 {
-                    if !source.inputs[3].is_empty() {
-                        return Err(OnnxError::Unsupported);
-                    }
-                    source.inputs.pop();
-                }
-            }
             "Resize" => {
                 // Resize-18 adds subset axes, antialiasing and aspect policy.
                 // Retain the existing nearest/linear spatial resampler only.

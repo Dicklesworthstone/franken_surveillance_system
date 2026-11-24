@@ -609,7 +609,9 @@ fn schema_gates_refuse_old_axis_forms_runtime_controls_and_unimplemented_modes()
         int_weight("axes", &[2], &[0, 1]),
     ]
     .concat();
-    assert_eq!(refusal(&model_at(&graph, 18)), Some(OnnxError::Unsupported));
+    for version in [13, 17] {
+        assert_eq!(refusal(&model_at(&graph, version)), Some(OnnxError::Graph));
+    }
     for op in [
         "Mish",
         "GroupNormalization",
@@ -752,6 +754,44 @@ fn new_axis_and_l2_noop_paths_enforce_exact_limits_and_every_cancellation_checkp
                 Some(OnnxError::Cancelled),
                 "checkpoint={stop}"
             );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn pad18_selected_axes_preserve_order_sign_and_canonical_execution() -> Test {
+    // Crop one column at the start, then pad the bottom and right. The
+    // fourth input names width first, height second, using negative axes.
+    let input = [("input", data(&[1, 2, 3], &[1., 2., 3., 4., 5., 6.])?)];
+    for (mode, expected) in [
+        ("constant", [2., 3., 0., 5., 6., 0., 0., 0., 0.]),
+        ("edge", [2., 3., 3., 5., 6., 6., 5., 6., 6.]),
+        ("reflect", [2., 3., 2., 5., 6., 5., 2., 3., 2.]),
+    ] {
+        let graph = |inputs: &[&str], pads: &[i64], axes: Option<&[i64]>| {
+            [
+                node("Pad", inputs, &["output"], &string_attr("mode", mode)),
+                int_weight("pads", &[pads.len()], pads),
+                axes.map_or_else(Vec::new, |a| int_weight("axes", &[a.len()], a)),
+                bytes(11, &info("input", &[1, 2, 3], 1)),
+                bytes(12, &info("output", &[1, 3, 3], 1)),
+            ]
+            .concat()
+        };
+        let selected = |axes: &[i64]| {
+            let graph = graph(&["input", "pads", "", "axes"], &[-1, 0, 1, 1], Some(axes));
+            model_at(&graph, 18)
+        };
+        let source = selected(&[-1, -2]);
+        let full = model_at(&graph(&["input", "pads"], &[0, 0, -1, 0, 1, 1], None), 17);
+        assert_eq!(
+            export(&import(&source)?)?.graph_bytes(),
+            export(&import(&full)?)?.graph_bytes()
+        );
+        assert_eq!(roundtrip(&source, &input)?["output"], expected);
+        for axes in [&[-1, 2][..], &[3, -2], &[-4, 1], &[2]] {
+            assert_eq!(refusal(&selected(axes)), Some(OnnxError::Graph));
         }
     }
     Ok(())
