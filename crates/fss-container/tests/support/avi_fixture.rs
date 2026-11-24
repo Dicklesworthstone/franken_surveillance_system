@@ -55,9 +55,17 @@ pub fn movie_with_frames(frames: &[&[u8]], audio_first: bool, records: bool) -> 
     bitmap[16..20].copy_from_slice(b"MJPG");
     let mut properties = [0_u8; 68];
     for (offset, value) in [
-        (8, 30), (12, 64), (16, 48), (20, (4 << 16) | 3),
-        (24, 64), (28, 48), (32, 1), (36, 48), (40, 64),
-        (44, 48), (48, 64),
+        (8, 30),
+        (12, 64),
+        (16, 48),
+        (20, (4 << 16) | 3),
+        (24, 64),
+        (28, 48),
+        (32, 1),
+        (36, 48),
+        (40, 64),
+        (44, 48),
+        (48, 64),
     ] {
         set(&mut properties, offset, value);
     }
@@ -67,7 +75,8 @@ pub fn movie_with_frames(frames: &[&[u8]], audio_first: bool, records: bool) -> 
             chunk(b"strh", &video),
             chunk(b"strf", &bitmap),
             chunk(b"vprp", &properties),
-        ].concat(),
+        ]
+        .concat(),
     );
 
     let mut audio = [0_u8; 56];
@@ -81,8 +90,15 @@ pub fn movie_with_frames(frames: &[&[u8]], audio_first: bool, records: bool) -> 
     set(&mut wave, 4, 8000);
     set(&mut wave, 8, 16_000);
     wave[12..16].copy_from_slice(&[2, 0, 16, 0]);
-    let audio = list(b"strl", &[chunk(b"strh", &audio), chunk(b"strf", &wave)].concat());
-    let streams = if audio_first { [audio, video] } else { [video, audio] };
+    let audio = list(
+        b"strl",
+        &[chunk(b"strh", &audio), chunk(b"strf", &wave)].concat(),
+    );
+    let streams = if audio_first {
+        [audio, video]
+    } else {
+        [video, audio]
+    };
     let headers = list(b"hdrl", &[chunk(b"avih", &main), streams.concat()].concat());
     let (video_tag, audio_tag) = if audio_first {
         (b"01dc", b"00wb")

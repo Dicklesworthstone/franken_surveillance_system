@@ -10,7 +10,10 @@ use fss_container::demux::{DemuxError, DemuxLimits};
 type Test = Result<(), Box<dyn std::error::Error>>;
 
 fn tag(bytes: &[u8], name: &[u8; 4]) -> Result<usize, Box<dyn std::error::Error>> {
-    bytes.windows(4).position(|part| part == name).ok_or_else(|| "missing fixture tag".into())
+    bytes
+        .windows(4)
+        .position(|part| part == name)
+        .ok_or_else(|| "missing fixture tag".into())
 }
 
 #[test]
@@ -19,9 +22,13 @@ fn interleaved_audio_and_record_lists_preserve_jpeg_and_rational_stream_time() -
         for records in [false, true] {
             let source = fixture::movie(audio_first, records);
             assert!(matches!(
-                fss_container::probe::probe(&source[..12], &fss_container::probe::ProbeLimits::default()),
+                fss_container::probe::probe(
+                    &source[..12],
+                    &fss_container::probe::ProbeLimits::default()
+                ),
                 fss_container::probe::ProbeOutcome::Identified {
-                    container: fss_container::probe::ContainerKind::Avi, ..
+                    container: fss_container::probe::ContainerKind::Avi,
+                    ..
                 }
             ));
             let video = AviMjpeg::parse(&source, DemuxLimits::default())?;
@@ -57,7 +64,10 @@ fn timing_order_and_profile_disagreements_refuse() -> Test {
     ] {
         let mut changed = source.clone();
         changed[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
-        assert_eq!(AviMjpeg::parse(&changed, DemuxLimits::default()).map(|_| ()), Err(expected));
+        assert_eq!(
+            AviMjpeg::parse(&changed, DemuxLimits::default()).map(|_| ()),
+            Err(expected)
+        );
     }
     let frame = tag(&source, b"00dc")?;
     let mut changed = source.clone();
@@ -79,7 +89,10 @@ fn timing_order_and_profile_disagreements_refuse() -> Test {
 fn every_incomplete_file_refuses_without_returning_a_partial_index() -> Test {
     let source = fixture::movie(true, true);
     for cut in 0..source.len() {
-        assert!(AviMjpeg::parse(&source[..cut], DemuxLimits::default()).is_err(), "cut {cut}");
+        assert!(
+            AviMjpeg::parse(&source[..cut], DemuxLimits::default()).is_err(),
+            "cut {cut}"
+        );
     }
     let mut appended = source;
     appended.extend_from_slice(b"RIFF\x04\0\0\0AVIX");
@@ -95,12 +108,30 @@ fn source_track_chunk_sample_and_metadata_bounds_are_independent() -> Test {
     let source = fixture::movie(false, true);
     let base = DemuxLimits::default();
     for limits in [
-        DemuxLimits { maximum_input_bytes: source.len() - 1, ..base },
-        DemuxLimits { maximum_tracks: 1, ..base },
-        DemuxLimits { maximum_boxes: 5, ..base },
-        DemuxLimits { maximum_samples: 2, ..base },
-        DemuxLimits { maximum_table_entries: 2, ..base },
-        DemuxLimits { maximum_metadata_bytes: 8, ..base },
+        DemuxLimits {
+            maximum_input_bytes: source.len() - 1,
+            ..base
+        },
+        DemuxLimits {
+            maximum_tracks: 1,
+            ..base
+        },
+        DemuxLimits {
+            maximum_boxes: 5,
+            ..base
+        },
+        DemuxLimits {
+            maximum_samples: 2,
+            ..base
+        },
+        DemuxLimits {
+            maximum_table_entries: 2,
+            ..base
+        },
+        DemuxLimits {
+            maximum_metadata_bytes: 8,
+            ..base
+        },
     ] {
         assert!(AviMjpeg::parse(&source, limits).is_err());
     }
@@ -120,8 +151,13 @@ fn every_parser_checkpoint_can_cancel_the_whole_selection() -> Test {
         assert_eq!(
             AviMjpeg::parse_with_checkpoint(&source, DemuxLimits::default(), &mut || {
                 at += 1;
-                if at == stop { Err(DemuxError::Cancelled) } else { Ok(()) }
-            }).map(|_| ()),
+                if at == stop {
+                    Err(DemuxError::Cancelled)
+                } else {
+                    Ok(())
+                }
+            })
+            .map(|_| ()),
             Err(DemuxError::Cancelled)
         );
     }

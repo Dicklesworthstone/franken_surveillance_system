@@ -9,8 +9,7 @@ pub(super) fn sniff(
     maximum_samples: usize,
     check: &mut dyn FnMut() -> Result<(), DemuxError>,
 ) -> Result<(DetectedFileFormat, &'static str), FileIngestError> {
-    AviMjpeg::parse_with_checkpoint(bytes, limits(maximum_samples), check)
-        .map_err(refusal)?;
+    AviMjpeg::parse_with_checkpoint(bytes, limits(maximum_samples), check).map_err(refusal)?;
     Ok((DetectedFileFormat::AviMjpeg, "avi_riff_mjpeg"))
 }
 
@@ -28,10 +27,14 @@ impl ContainerVideo {
         cx: &ReplayCx,
     ) -> Result<Self, FileIngestError> {
         let limits = limits(
-            request.limits.max_segments.min(request.limits.mjpeg_limits.max_frames),
+            request
+                .limits
+                .max_segments
+                .min(request.limits.mjpeg_limits.max_frames),
         );
         let video = AviMjpeg::parse_with_checkpoint(bytes, limits, &mut || {
-            cx.checkpoint(STAGE_SPLIT).map_err(|_| DemuxError::Cancelled)
+            cx.checkpoint(STAGE_SPLIT)
+                .map_err(|_| DemuxError::Cancelled)
         })
         .map_err(refusal)?;
         if video.samples().len() > request.limits.mjpeg_limits.max_frames {
@@ -119,7 +122,9 @@ fn progressive_jpeg(bytes: &[u8], cx: &ReplayCx) -> Result<(), FileIngestError> 
         while bytes.get(at) == Some(&0xff) {
             at += 1;
         }
-        let marker = *bytes.get(at).ok_or_else(|| refusal(DemuxError::Truncated))?;
+        let marker = *bytes
+            .get(at)
+            .ok_or_else(|| refusal(DemuxError::Truncated))?;
         at += 1;
         match marker {
             0x00 | 0x01 | 0xd0..=0xd7 => continue,
@@ -132,8 +137,12 @@ fn progressive_jpeg(bytes: &[u8], cx: &ReplayCx) -> Result<(), FileIngestError> 
             .map(|value| usize::from(u16::from_be_bytes([value[0], value[1]])))
             .filter(|value| *value >= 2)
             .ok_or_else(|| refusal(DemuxError::Layout))?;
-        let end = at.checked_add(length).ok_or_else(|| refusal(DemuxError::Limit))?;
-        let payload = bytes.get(at + 2..end).ok_or_else(|| refusal(DemuxError::Truncated))?;
+        let end = at
+            .checked_add(length)
+            .ok_or_else(|| refusal(DemuxError::Limit))?;
+        let payload = bytes
+            .get(at + 2..end)
+            .ok_or_else(|| refusal(DemuxError::Truncated))?;
         if marker == 0xe0 && payload.starts_with(b"AVI1") && payload.get(4) != Some(&0) {
             return Err(refusal(DemuxError::Unsupported));
         }

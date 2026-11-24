@@ -24,11 +24,11 @@ use fss_pack::{
     ColdArchivePolicy, ColdPackArchiveManifest, ColdProviderKind, ColdS3Credentials,
     ColdS3Endpoint, ColdS3Limits, ColdStorageTier, ColdUploadMode, DEFAULT_ENCRYPTION_CHUNK_BYTES,
     DekId, DurabilityMode, ERR_CRYPTO_AUTH_FAILED_001, ERR_CRYPTO_KEY_ERASED_001,
-    EncryptedStreamKind, KeyEncryptionKey, KeyEnvelopeCatalog, KeyEpoch, PackConfig, PackError,
-    PackId, PackStore, S3CompatiblePackTransport, SCHEMA_EPOCH_PACKFILE, archive_sealed_pack,
+    EncryptedStreamKind, KeyEncryptionKey, KeyEnvelopeCatalog, KeyEpoch,
+    MAX_COLD_MANIFEST_DOWNLOAD_BYTES, PackConfig, PackError, PackId, PackStore,
+    S3CompatiblePackTransport, SCHEMA_EPOCH_PACKFILE, archive_sealed_pack,
     decrypt_and_verify_pack_bytes, decrypt_and_verify_pack_file, encrypt_pack_file,
-    MAX_COLD_MANIFEST_DOWNLOAD_BYTES, fetch_cold_pack_manifest, restore_cold_pack_to_dir,
-    verify_sealed_pack,
+    fetch_cold_pack_manifest, restore_cold_pack_to_dir, verify_sealed_pack,
 };
 use fss_vault::{
     AdapterFamily, CAP_SECRET_READ_001, ERR_SECRET_INVALID_INPUT_001, LocalEncryptedVault,
@@ -409,18 +409,26 @@ fn parse_archive_opts(
     }
 
     if verb == "restore" {
-        match (&opts.manifest_file, &opts.manifest_object_key, opts.expected_manifest) {
+        match (
+            &opts.manifest_file,
+            &opts.manifest_object_key,
+            opts.expected_manifest,
+        ) {
             (Some(_), None, None) | (None, Some(_), Some(_)) => {}
-            (None, None, None) => return Err(err_json(
-                "ERR-CLI-MISSING-VALUE-001",
-                "restore requires --manifest-file or both --manifest-object-key and --expected-manifest",
-                ExitIdentity::MISSING_VALUE,
-            )),
-            _ => return Err(err_json(
-                "ERR-CLI-MALFORMED-VALUE-001",
-                "restore requires either --manifest-file or both --manifest-object-key and --expected-manifest",
-                ExitIdentity::MALFORMED_VALUE,
-            )),
+            (None, None, None) => {
+                return Err(err_json(
+                    "ERR-CLI-MISSING-VALUE-001",
+                    "restore requires --manifest-file or both --manifest-object-key and --expected-manifest",
+                    ExitIdentity::MISSING_VALUE,
+                ));
+            }
+            _ => {
+                return Err(err_json(
+                    "ERR-CLI-MALFORMED-VALUE-001",
+                    "restore requires either --manifest-file or both --manifest-object-key and --expected-manifest",
+                    ExitIdentity::MALFORMED_VALUE,
+                ));
+            }
         }
     }
     Ok(opts)
@@ -870,7 +878,8 @@ fn exec_restore(args: &[ArgToken], control: &crate::RequestControl<'_>) -> (Stri
     };
     let local_manifest = match &opts.manifest_file {
         Some(path) => {
-            let bytes = match read_bounded_regular_file(path, 1024 * 1024, "cold archive manifest") {
+            let bytes = match read_bounded_regular_file(path, 1024 * 1024, "cold archive manifest")
+            {
                 Ok(bytes) => bytes,
                 Err(err) => return err,
             };
@@ -973,14 +982,18 @@ fn exec_restore(args: &[ArgToken], control: &crate::RequestControl<'_>) -> (Stri
                         "manifest_object_key",
                         optional_string(opts.manifest_object_key.as_deref()),
                     ),
-                    ("manifest_pin_verified", opts.expected_manifest.is_some().to_string()),
+                    (
+                        "manifest_pin_verified",
+                        opts.expected_manifest.is_some().to_string(),
+                    ),
                     (
                         "manifest_download_limit_bytes",
                         if opts.manifest_object_key.is_some() {
                             MAX_COLD_MANIFEST_DOWNLOAD_BYTES
                         } else {
                             0
-                        }.to_string(),
+                        }
+                        .to_string(),
                     ),
                     ("pack_id", string(&manifest.pack_id.to_string())),
                     (

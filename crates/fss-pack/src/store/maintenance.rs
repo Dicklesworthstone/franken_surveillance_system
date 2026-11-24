@@ -6,7 +6,9 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
-use fss_core::ContentDigest;
+use fss_core::{ContentDigest, DigestAlgorithm};
+
+use crate::catalog::RootStatus;
 
 use crate::compaction::{
     CompactionPassReport, CompactionPolicy, PackCompactionAction, PackCompactionReceipt,
@@ -132,6 +134,96 @@ impl PackStore {
             batch.evaluated_at_ns,
             ledger_commit_seq,
         )
+    }
+
+    /// Completes object deletion interrupted after a root catalog tombstone was committed.
+    ///
+    /// Only the exact root object is eligible; children and metadata are never inferred as
+    /// deletable. A live root or metadata reference defers cleanup without changing state.
+    /// The original catalog reason is copied into the durable object tombstone log before
+    /// removing the object from the live index. Repeated calls preserve that first reason.
+    ///
+    /// Returns `true` when a new object tombstone was committed, or `false` when the
+    /// object was already tombstoned or is still referenced by a live catalog root.
+    ///
+    /// The caller must verify canonical retirement and current hold authority, and keep
+    /// writers quiesced during recovery. This method does not grant deletion authority.
+    /// Physical reclamation can subsequently resume through [`Self::reclaim_superseded_packs`].
+    pub fn resume_root_object_deletion(
+        &self,
+        root_id: &str,
+        expected_digest: ContentDigest,
+    ) -> Result<bool, PackError> {
+        if expected_digest.algorithm() != DigestAlgorithm::Sha256 {
+            return Err(PackError::UnsupportedDigestAlgorithm(
+                expected_digest.algorithm(),
+            ));
+        }
+        let catalog = self.catalog.read().map_err(|_| PackError::LockPoisoned)?;
+        let entry = catalog
+            .get_root(root_id)
+            .ok_or_else(|| PackError::RootNotFound(root_id.to_owned()))?;
+        let RootStatus::Tombstoned { reason_digest, .. } = entry.status else {
+            return Err(PackError::InvalidTombstoneProof {
+                detail: "root object recovery requires a committed catalog tombstone".to_owned(),
+            });
+        };
+        if entry.record.root_digest != expected_digest {
+            return Err(PackError::InvalidTombstoneProof {
+                detail: "root object recovery digest does not match the catalog root".to_owned(),
+            });
+        }
+
+        let already_deleted = self
+            .tombstones
+            .read()
+            .map_err(|_| PackError::LockPoisoned)?
+            .get(&expected_digest)
+            .is_some();
+        if already_deleted {
+            // A durable tombstone wins over a stale derived index after an interrupted
+            // removal; no new deletion or catalog scan is needed on repeated recovery.
+            let mut index = self.index.write().map_err(|_| PackError::LockPoisoned)?;
+            let _ = index.remove_sha256(&expected_digest.bytes());
+            return Ok(false);
+        }
+
+        // Retain the catalog lock across the entire scan and durable mutation. Bounded
+        // pages avoid materializing the complete catalog, including large deployments.
+        let mut cursor: Option<String> = None;
+        loop {
+            let page = catalog.list_live_roots(cursor.as_deref(), 512);
+            if page.entries.iter().any(|live| {
+                live.record.root_digest == expected_digest
+                    || live.record.metadata_digest == Some(expected_digest)
+            }) {
+                return Ok(false);
+            }
+            if !page.has_more {
+                break;
+            }
+            let next = page.next_cursor.ok_or_else(|| PackError::CorruptCatalog {
+                detail: "live root recovery scan omitted its continuation cursor".to_owned(),
+            })?;
+            if cursor.as_ref().is_some_and(|previous| next <= *previous) {
+                return Err(PackError::CorruptCatalog {
+                    detail: "live root recovery scan did not advance".to_owned(),
+                });
+            }
+            cursor = Some(next);
+        }
+
+        let written = {
+            let mut tombstones = self
+                .tombstones
+                .write()
+                .map_err(|_| PackError::LockPoisoned)?;
+            tombstones.append_batch(&[(expected_digest, reason_digest)])?
+        };
+        // Even an already durable tombstone may precede an interrupted index removal.
+        let mut index = self.index.write().map_err(|_| PackError::LockPoisoned)?;
+        let _ = index.remove_sha256(&expected_digest.bytes());
+        Ok(written != 0)
     }
 
     /// Computes live-object and live-byte ratio statistics for sealed packfile `pack_id`.

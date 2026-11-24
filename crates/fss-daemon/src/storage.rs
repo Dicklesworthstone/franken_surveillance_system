@@ -5,6 +5,8 @@
 //!
 //! Semantic plane: `"authority"`.
 
+mod retention;
+
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::Write;
@@ -46,6 +48,8 @@ use crate::storage_types::{
     CombinerForwardWriter, map_footage_adapter, map_scrub_verdict, sanitize_object_part,
     scrub_report_to_ipc_status,
 };
+use retention::{RetainedRoot, RetiredRoot, recover_retained_roots};
+
 pub use crate::storage_types::{
     MaintenanceTickReport, StorageCommitReceipt, StorageHeadSnapshot, StorageShutdownSummary,
 };
@@ -59,10 +63,13 @@ pub struct StorageEngine {
     projection: Arc<MvccProjectionStore>,
     combiner: Arc<CommitCombiner<LedgerPackProjectionSink>>,
     object_generations: Arc<Mutex<BTreeMap<ObjectId, u64>>>,
+    retention_gate: Arc<Mutex<()>>,
     quota_pinned: Arc<AtomicBool>,
     pinned_bytes: Arc<AtomicU64>,
     retention_config: RetentionRingConfig,
     candidates: BTreeMap<String, RetentionCandidate>,
+    candidate_roots: BTreeMap<String, RetainedRoot>,
+    pending_deletions: Vec<RetiredRoot>,
     gop_buffers: BTreeMap<SensorId, Vec<Arc<CameraFrame>>>,
     scrubber: BackgroundScrubber,
     scrub_budget_bytes: u64,
@@ -184,37 +191,23 @@ impl StorageEngine {
         // committed sequence and published `gop:` root IDs so daemon restarts never collide
         // with existing PackStore virtual roots or ledger delta IDs.
         let head_seq = projection.head_anchor().commit_sequence;
-        let mut max_prior_seq = head_seq;
-        let mut root_cursor: Option<String> = None;
-        for _ in 0..1_024 {
-            let page = pack_store.list_roots(root_cursor.as_deref(), 512)?;
-            for entry in &page.entries {
-                max_prior_seq = max_prior_seq.max(entry.sequence);
-                if let Some(rest) = entry.record.root_id.strip_prefix("gop:")
-                    && let Some(tail) = rest.rsplit(':').next()
-                    && let Ok(parsed) = tail.parse::<u64>()
-                {
-                    max_prior_seq = max_prior_seq.max(parsed);
-                }
-            }
-            if !page.has_more {
-                break;
-            }
-            root_cursor = page.next_cursor;
-        }
-        let seed_seq = max_prior_seq.saturating_add(1).max(1);
+        let (candidates, candidate_roots, pending_deletions, seed_seq) =
+            recover_retained_roots(&pack_store, head_seq)?;
 
-        Ok(Self {
+        let mut engine = Self {
             root_dir,
             site_id: manifest.site_id.clone(),
             pack_store,
             projection,
             combiner,
             object_generations: Arc::new(Mutex::new(initial_gens)),
+            retention_gate: Arc::new(Mutex::new(())),
             quota_pinned: Arc::new(AtomicBool::new(false)),
             pinned_bytes: Arc::new(AtomicU64::new(0)),
             retention_config,
-            candidates: BTreeMap::new(),
+            candidates,
+            candidate_roots,
+            pending_deletions,
             gop_buffers: BTreeMap::new(),
             scrubber: BackgroundScrubber::new(),
             scrub_budget_bytes: manifest.scrub_budget_bytes_per_tick,
@@ -223,7 +216,27 @@ impl StorageEngine {
             next_delta_seq: seed_seq,
             next_chunk_seq: seed_seq,
             ingest_paused_reason: None,
-        })
+        };
+        engine.refresh_retention_pins();
+        engine.refresh_catalog_reference_pins()?;
+        engine.resume_pending_retention_deletions()?;
+        let current = engine.retention_plan_candidates()?;
+        let used = current.iter().fold(0_u64, |sum, candidate| {
+            sum.saturating_add(candidate.byte_size)
+        });
+        let pinned = current
+            .iter()
+            .filter(|candidate| candidate.is_pinned())
+            .fold(0_u64, |sum, candidate| {
+                sum.saturating_add(candidate.byte_size)
+            });
+        engine.pressure = engine.retention_config.classify_pressure(used);
+        let blocked = engine.pressure == CapacityPressure::Critical
+            && current.iter().all(RetentionCandidate::is_pinned);
+        engine.pinned_bytes.store(pinned, Ordering::Release);
+        engine.quota_pinned.store(blocked, Ordering::Release);
+        engine.ingest_paused_reason = blocked.then_some(fss_pack::ERR_STORAGE_QUOTA_PINNED_001);
+        Ok(engine)
     }
 
     /// Creates a [`ForwardBatchWriter`] sharing this engine's `CommitCombiner` for IPC forwarding.
@@ -232,6 +245,7 @@ impl StorageEngine {
         Arc::new(CombinerForwardWriter {
             combiner: Arc::clone(&self.combiner),
             object_generations: Arc::clone(&self.object_generations),
+            retention_gate: Arc::clone(&self.retention_gate),
             quota_pinned: Arc::clone(&self.quota_pinned),
             pinned_bytes: Arc::clone(&self.pinned_bytes),
             cap_bytes: self.retention_config.max_total_deployment_bytes,
@@ -378,6 +392,7 @@ impl StorageEngine {
         let proj_bytes = import_payload.encode_bytes()?;
         let proj_digest = ContentDigest::sha256(&proj_bytes);
         let total_accounted = (chunk.bytes.len() as u64).saturating_add(proj_bytes.len() as u64);
+        let media_bytes = chunk.bytes.len() as u64;
 
         let chunk_seq = self.alloc_chunk_seq();
         let root_id = format!(
@@ -420,7 +435,7 @@ impl StorageEngine {
         let root_record = VirtualRootRecord::new(
             root_id.clone(),
             chunk.chunk_digest,
-            "media-gop-v1",
+            "media-gop-v2",
             chunk.frame_count as u64,
             total_accounted,
             1,
@@ -428,14 +443,22 @@ impl StorageEngine {
             Some(proj_digest),
         )?;
         let _ = self.pack_store.publish_root(root_record)?;
+        self.candidate_roots.insert(
+            root_id.clone(),
+            RetainedRoot {
+                media_digest: chunk.chunk_digest,
+                metadata_digest: proj_digest,
+                legacy_hold_state: false,
+            },
+        );
         self.candidates.insert(
             root_id.clone(),
             RetentionCandidate {
                 import_id: root_id,
                 sensor_id: sensor_id.as_str().to_owned(),
                 capture_end_ns: chunk.window_end_ns,
-                byte_size: total_accounted,
-                object_digests: vec![chunk.chunk_digest, proj_digest],
+                byte_size: media_bytes,
+                object_digests: vec![chunk.chunk_digest],
                 is_derived_proxy: false,
                 held_by: Vec::new(),
                 active_obligation_ids: Vec::new(),
@@ -546,6 +569,10 @@ impl StorageEngine {
         cx: &AuthorityCx,
         tree: &RegionTree,
     ) -> Result<StorageCommitReceipt, DaemonError> {
+        let gate = Arc::clone(&self.retention_gate);
+        let _guard = gate.lock().map_err(|_| DaemonError::LockPoisoned {
+            component: "retention_gate",
+        })?;
         let event_root = event.canonical_digest(EventHypothesis::SCHEMA);
         let proj_bytes = ProjectionRecordPayload::EventRevision(EventRevisionPayload {
             event_id: event.event_id.clone(),
@@ -569,7 +596,7 @@ impl StorageEngine {
         ))?;
         let (prior_gen, new_gen) = self.next_object_generation(&obj_id)?;
         let seq = self.alloc_delta_seq();
-        let proposal = CommitProposal {
+        let mut proposal = CommitProposal {
             request_digest: proj_digest,
             sensor_scope: format!("event:{}", event.event_id.as_str()),
             objects: vec![OwnedPackObject::with_digest(
@@ -592,37 +619,23 @@ impl StorageEngine {
             }],
             batch_id_prefix: format!("evt-{seq}"),
         };
+        let hold_generations = self.append_event_pins(event, &sensor_ids, &mut proposal)?;
         let committed = self.combiner.submit_with_authority(cx, tree, proposal)?;
         self.record_object_generation(obj_id, new_gen)?;
 
-        if event.state == EventState::Corroborated {
-            let ev_id = event.event_id.as_str().to_owned();
-            for sensor in &sensor_ids {
-                if let Some(latest) = self
-                    .candidates
-                    .values_mut()
-                    .filter(|c| c.sensor_id == sensor.as_str())
-                    .max_by_key(|c| c.capture_end_ns)
-                    && !latest.active_event_ids.contains(&ev_id)
-                {
-                    latest.active_event_ids.push(ev_id.clone());
-                }
-            }
+        for (id, generation) in hold_generations {
+            self.record_object_generation(id, generation)?;
         }
+        self.refresh_retention_pins();
         Ok(receipt_from_coalesced(committed))
     }
 
-    /// Attaches an active legal/operator hold to an existing retained media closure.
+    /// Durably attaches a hold through this exclusively owned storage writer.
+    /// Returns false for an unknown closure or a refused/failed canonical commit.
+    /// Use `set_candidate_hold` for an explicit authority context and typed errors.
     pub fn pin_candidate_hold(&mut self, import_id: &str, hold_id: impl Into<String>) -> bool {
-        if let Some(cand) = self.candidates.get_mut(import_id) {
-            let hold = hold_id.into();
-            if !cand.held_by.contains(&hold) {
-                cand.held_by.push(hold);
-            }
-            true
-        } else {
-            false
-        }
+        self.change_candidate_hold(import_id, hold_id.into(), true, None)
+            .unwrap_or(false)
     }
 
     /// Registers an explicit retention candidate (e.g., pinned hold closure) into the ring catalog.
@@ -631,6 +644,15 @@ impl StorageEngine {
         candidate: RetentionCandidate,
     ) -> Result<(), DaemonError> {
         candidate.validate()?;
+        if self.candidate_roots.contains_key(&candidate.import_id)
+            || candidate.import_id == "retention:canonical-history"
+        {
+            return Err(DaemonError::InvalidConfig {
+                detail:
+                    "cannot replace a committed media root with an explicit retention candidate"
+                        .to_owned(),
+            });
+        }
         self.candidates
             .insert(candidate.import_id.clone(), candidate);
         Ok(())
@@ -645,51 +667,85 @@ impl StorageEngine {
         now_ns: TimestampNs,
         force_scrub: bool,
     ) -> Result<MaintenanceTickReport, DaemonError> {
-        let candidates_vec: Vec<RetentionCandidate> = self.candidates.values().cloned().collect();
-        let outcome = plan_retention(&self.retention_config, &candidates_vec, now_ns)?;
-        let head_seq = self.projection.head_anchor().commit_sequence;
+        let gate = Arc::clone(&self.retention_gate);
+        let _guard = gate.lock().map_err(|_| DaemonError::LockPoisoned {
+            component: "retention_gate",
+        })?;
+        if cx.is_cancel_requested(tree)? {
+            return Err(fss_projection_store::CombinerError::Cancelled.into());
+        }
+        self.synchronize_retired_roots()?;
+        self.refresh_retention_pins();
+        self.resume_pending_retention_deletions()?;
+        let candidates_vec = self.retention_plan_candidates()?;
+        let mut outcome = plan_retention(&self.retention_config, &candidates_vec, now_ns)?;
+        if matches!(
+            &outcome,
+            RetentionPlanOutcome::Evict(_)
+                | RetentionPlanOutcome::QuotaPinned {
+                    partial_eviction: Some(_),
+                    ..
+                }
+        ) {
+            self.refresh_catalog_reference_pins()?;
+            outcome = plan_retention(
+                &self.retention_config,
+                &self.retention_plan_candidates()?,
+                now_ns,
+            )?;
+        }
 
         let (mut evicted_imports, mut bytes_reclaimed, mut packs_compacted) = (0_u64, 0_u64, 0_u64);
-        let pinned_bytes;
         match outcome {
-            RetentionPlanOutcome::NoAction {
-                pressure,
-                pinned_bytes: pinned,
-                ..
-            } => {
-                self.pressure = pressure;
-                self.quota_pinned.store(false, Ordering::Release);
-                self.pinned_bytes.store(pinned, Ordering::Release);
-                self.ingest_paused_reason = None;
-                pinned_bytes = pinned;
-            }
+            RetentionPlanOutcome::NoAction { .. } => {}
             RetentionPlanOutcome::Evict(batch) => {
-                self.pressure = batch.pressure_after;
-                pinned_bytes = batch.pinned_bytes;
-                self.pinned_bytes.store(pinned_bytes, Ordering::Release);
-                self.quota_pinned.store(false, Ordering::Release);
-                self.ingest_paused_reason = None;
                 (evicted_imports, bytes_reclaimed, packs_compacted) =
-                    self.execute_eviction_and_compaction(&batch, head_seq)?;
+                    self.execute_eviction_and_compaction(&batch, cx, tree)?;
             }
             RetentionPlanOutcome::QuotaPinned {
-                error_id,
-                pressure,
-                pinned_bytes: pinned,
-                partial_eviction,
-                ..
+                partial_eviction, ..
             } => {
-                if let Some(partial) = partial_eviction {
+                if let Some(batch) = partial_eviction {
                     (evicted_imports, bytes_reclaimed, packs_compacted) =
-                        self.execute_eviction_and_compaction(&partial, head_seq)?;
+                        self.execute_eviction_and_compaction(&batch, cx, tree)?;
                 }
-                self.pressure = pressure;
-                pinned_bytes = pinned;
-                self.pinned_bytes.store(pinned, Ordering::Release);
-                self.quota_pinned.store(true, Ordering::Release);
-                self.ingest_paused_reason = Some(error_id);
             }
         }
+
+        // Resume a prior committed compaction even when this tick selects no new eviction.
+        if evicted_imports == 0 {
+            if cx.is_cancel_requested(tree)? {
+                return Err(fss_projection_store::CombinerError::Cancelled.into());
+            }
+            let resumed = self
+                .pack_store
+                .reclaim_superseded_packs(CompactionPolicy::default())?;
+            bytes_reclaimed = bytes_reclaimed.saturating_add(resumed.total_bytes_reclaimed);
+            packs_compacted = packs_compacted.saturating_add(
+                resumed
+                    .packs_unlinked_empty
+                    .saturating_add(resumed.packs_rewritten),
+            );
+        }
+
+        // Canonical retirement adds protected metadata. Report measured logical occupancy
+        // after that commit, not the planner's pre-commit estimate.
+        let current = self.retention_plan_candidates()?;
+        let used = current.iter().fold(0_u64, |sum, candidate| {
+            sum.saturating_add(candidate.byte_size)
+        });
+        let pinned_bytes = current
+            .iter()
+            .filter(|candidate| candidate.is_pinned())
+            .fold(0_u64, |sum, candidate| {
+                sum.saturating_add(candidate.byte_size)
+            });
+        self.pressure = self.retention_config.classify_pressure(used);
+        let quota_pinned = self.pressure == CapacityPressure::Critical
+            && current.iter().all(RetentionCandidate::is_pinned);
+        self.quota_pinned.store(quota_pinned, Ordering::Release);
+        self.pinned_bytes.store(pinned_bytes, Ordering::Release);
+        self.ingest_paused_reason = quota_pinned.then_some(fss_pack::ERR_STORAGE_QUOTA_PINNED_001);
 
         let sealed_count = self.pack_store.sealed_pack_ids()?.len();
         let (scrub_report, scrub_status) = if sealed_count > 0 || force_scrub {
@@ -746,7 +802,7 @@ impl StorageEngine {
             history_root: anchor.history_root,
             state_root: anchor.authority_root,
             on_disk_pack_bytes: self.pack_store.on_disk_pack_bytes()?,
-            ring_used_bytes: self.candidates.values().map(|c| c.byte_size).sum(),
+            ring_used_bytes: self.accounted_ring_bytes()?,
             ring_cap_bytes: self.retention_config.max_total_deployment_bytes,
             pressure: self.pressure,
             quota_pinned: self.is_quota_pinned(),
@@ -784,10 +840,17 @@ impl StorageEngine {
     fn execute_eviction_and_compaction(
         &mut self,
         batch: &RetentionEvictionBatch,
-        head_seq: u64,
+        cx: &AuthorityCx,
+        tree: &RegionTree,
     ) -> Result<(u64, u64, u64), DaemonError> {
         if batch.tombstones.is_empty() {
             return Ok((0, 0, 0));
+        }
+        // Query retirement is canonical before catalog tombstones or physical reclamation.
+        // Historical projection metadata stays readable for replay from genesis.
+        let head_seq = self.commit_retention_deletions(batch, cx, tree)?;
+        if cx.is_cancel_requested(tree)? {
+            return Err(fss_projection_store::CombinerError::Cancelled.into());
         }
         let proof = self
             .pack_store
@@ -795,6 +858,7 @@ impl StorageEngine {
         let evicted = batch.tombstones.len() as u64;
         for tomb in &batch.tombstones {
             self.candidates.remove(&tomb.import_id);
+            self.candidate_roots.remove(&tomb.import_id);
         }
         let compact = self
             .pack_store

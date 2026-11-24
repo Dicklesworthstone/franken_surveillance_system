@@ -118,17 +118,36 @@ fn native_retained_output_produces_repeatable_bound_scores_and_preserves_journal
     let classified = command(&fixture.root, fixture.report, &labels)
         .args(["--fixed-threshold-ppm", "0", "--class-breakdown", "empty"])
         .output()?;
-    assert!(classified.status.success(), "{}", String::from_utf8_lossy(&classified.stderr));
+    assert!(
+        classified.status.success(),
+        "{}",
+        String::from_utf8_lossy(&classified.stderr)
+    );
     let classified = std::str::from_utf8(&classified.stdout)?;
-    let breakdown = classified.split("\"class_breakdown\":").nth(1).ok_or("class breakdown")?;
+    let breakdown = classified
+        .split("\"class_breakdown\":")
+        .nth(1)
+        .ok_or("class breakdown")?;
     assert!(breakdown.contains("\"schema\":\"fss.evaluation.class_breakdown.v1\""));
     assert!(breakdown.contains("\"declared_classes\":[\"empty\",\"numeric-a\"]"));
     assert!(breakdown.contains("\"observed_ns\":\"200000000\""));
-    let native = breakdown.split("\"class\":\"numeric-a\"").nth(1).ok_or("native class")?;
+    let native = breakdown
+        .split("\"class\":\"numeric-a\"")
+        .nth(1)
+        .ok_or("native class")?;
     assert!(native.contains("\"fixed_operating_point\":{\"true_positives\":1,\"false_positives\":0,\"false_negatives\":0"));
-    let empty = breakdown.split("\"class\":\"empty\"").nth(1).ok_or("empty class")?
-        .split("\"class\":").next().ok_or("empty body")?;
-    assert!(empty.contains("\"auprc\":{\"state\":\"undefined\",\"reason\":\"no_observable_truth_events\"}"));
+    let empty = breakdown
+        .split("\"class\":\"empty\"")
+        .nth(1)
+        .ok_or("empty class")?
+        .split("\"class\":")
+        .next()
+        .ok_or("empty body")?;
+    assert!(
+        empty.contains(
+            "\"auprc\":{\"state\":\"undefined\",\"reason\":\"no_observable_truth_events\"}"
+        )
+    );
     assert_eq!(fixture.journals()?, before);
     assert_eq!(fs::read(labels)?, label_bytes);
     Ok(())
@@ -139,7 +158,12 @@ fn negative_native_clip_still_has_observed_time_without_manual_candidate_rows() 
     let fixture = Fixture::new("cli-negative", [0, 0, 0], Some(0))?;
     let labels = write_labels(&fixture.directory.0, false)?;
     let result = command(&fixture.root, fixture.report, &labels)
-        .args(["--fixed-threshold-ppm", "735000", "--class-breakdown", "all"])
+        .args([
+            "--fixed-threshold-ppm",
+            "735000",
+            "--class-breakdown",
+            "all",
+        ])
         .output()?;
     assert!(
         result.status.success(),
@@ -152,11 +176,18 @@ fn negative_native_clip_still_has_observed_time_without_manual_candidate_rows() 
     assert!(json.contains("\"fixed_operating_point\":{\"threshold_ppm\":735000,\"true_positives\":0,\"false_positives\":0,\"false_negatives\":0"));
     assert!(json.contains("\"budget_state\":\"within_budget\""));
     assert!(json.contains("\"observed_ns\":\"200000000\""));
-    let breakdown = json.split("\"class_breakdown\":").nth(1).ok_or("class breakdown")?;
+    let breakdown = json
+        .split("\"class_breakdown\":")
+        .nth(1)
+        .ok_or("class breakdown")?;
     assert!(breakdown.contains("\"declared_classes\":[\"numeric-a\"]"));
     assert!(breakdown.contains("\"class\":\"numeric-a\""));
     assert!(breakdown.contains("\"observable_truth_events\":0"));
-    assert!(breakdown.contains("\"auprc\":{\"state\":\"undefined\",\"reason\":\"no_observable_truth_events\"}"));
+    assert!(
+        breakdown.contains(
+            "\"auprc\":{\"state\":\"undefined\",\"reason\":\"no_observable_truth_events\"}"
+        )
+    );
     Ok(())
 }
 

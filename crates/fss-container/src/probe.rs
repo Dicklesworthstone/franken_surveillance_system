@@ -95,9 +95,12 @@ impl ContainerKind {
     pub const fn media(self) -> MediaKind {
         match self {
             Self::Jpeg => MediaKind::Image,
-            Self::Avi | Self::IsoBmff | Self::Matroska | Self::Flv | Self::MpegTs | Self::AnnexB => {
-                MediaKind::Video
-            }
+            Self::Avi
+            | Self::IsoBmff
+            | Self::Matroska
+            | Self::Flv
+            | Self::MpegTs
+            | Self::AnnexB => MediaKind::Video,
         }
     }
 }

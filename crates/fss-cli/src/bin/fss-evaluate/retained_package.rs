@@ -23,8 +23,8 @@ use fss_reference::ingest::package_evaluation::{
 use fss_reference::ingest::package_event::PackageTrackingConfig;
 
 use super::{
-    Failure, Result, array, class_inventory, fixed_threshold, integer, object, parse_labels, read_input,
-    report_with_breakdown, text,
+    Failure, Result, array, class_inventory, fixed_threshold, integer, object, parse_labels,
+    read_input, report_with_breakdown, text,
 };
 
 const HELP: &str = "fss-evaluate retained-package --root ABSOLUTE_EXISTING_DIR --site SITE \

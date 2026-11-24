@@ -1003,19 +1003,48 @@ fn fss_archive_cli_seal_verify_s3_upload_restore_and_crypto_erase_e2e() -> TestR
     let remote_key = json_text(&upload, "manifest_object_key")?.to_owned();
     let manifest_pin = json_text(&upload, "manifest_digest")?.to_owned();
     fs::remove_dir_all(&manifests_dir)?;
-    fs::remove_file(dep_root.join("objects/packs").join(PackId::new(1, 1).file_name()))?;
+    fs::remove_file(
+        dep_root
+            .join("objects/packs")
+            .join(PackId::new(1, 1).file_name()),
+    )?;
     fs::remove_file(&restored_pack)?;
     let remote_args = [
-        "archive", "restore", "--packs-dir", &rp,
-        "--manifest-object-key", &remote_key, "--expected-manifest", &manifest_pin,
-        "--key-catalog", &kc, "--peer", &peer_str, "--host", "s3.local",
-        "--bucket", "fss-cold-bucket", "--vault-dir", &vd,
-        "--passphrase-file", &pf, "--kek-secret-id", "secret:kek:site-1",
-        "--s3-secret-id", "secret:s3:cold-1", "--access-key-id", "AKIAIOSFODNN7EXAMPLE",
-        "--site", "site:archive-e2e", "--json",
+        "archive",
+        "restore",
+        "--packs-dir",
+        &rp,
+        "--manifest-object-key",
+        &remote_key,
+        "--expected-manifest",
+        &manifest_pin,
+        "--key-catalog",
+        &kc,
+        "--peer",
+        &peer_str,
+        "--host",
+        "s3.local",
+        "--bucket",
+        "fss-cold-bucket",
+        "--vault-dir",
+        &vd,
+        "--passphrase-file",
+        &pf,
+        "--kek-secret-id",
+        "secret:kek:site-1",
+        "--s3-secret-id",
+        "secret:s3:cold-1",
+        "--access-key-id",
+        "AKIAIOSFODNN7EXAMPLE",
+        "--site",
+        "site:archive-e2e",
+        "--json",
     ];
-    let pin_index = remote_args.iter().position(|arg| *arg == "--expected-manifest")
-        .ok_or("missing pin option")? + 1;
+    let pin_index = remote_args
+        .iter()
+        .position(|arg| *arg == "--expected-manifest")
+        .ok_or("missing pin option")?
+        + 1;
     let wrong_pin = ContentDigest::sha256(b"a different independently retained manifest").to_text();
     let mut wrong_args = remote_args;
     wrong_args[pin_index] = &wrong_pin;
@@ -1024,21 +1053,31 @@ fn fss_archive_cli_seal_verify_s3_upload_restore_and_crypto_erase_e2e() -> TestR
     assert!(!restored_pack.exists());
 
     let remote_path = format!("/fss-cold-bucket/{remote_key}");
-    let remote_bytes = s3.objects.lock().map_err(|_| "S3 lock poisoned")?
-        .get(&remote_path).ok_or("missing remote root")?.clone();
+    let remote_bytes = s3
+        .objects
+        .lock()
+        .map_err(|_| "S3 lock poisoned")?
+        .get(&remote_path)
+        .ok_or("missing remote root")?
+        .clone();
     let mut tampered = remote_bytes.clone();
     tampered[0] ^= 1;
     for bytes in [
         tampered,
         vec![0; fss_pack::MAX_COLD_MANIFEST_DOWNLOAD_BYTES + 1],
     ] {
-        s3.objects.lock().map_err(|_| "S3 lock poisoned")?
+        s3.objects
+            .lock()
+            .map_err(|_| "S3 lock poisoned")?
             .insert(remote_path.clone(), bytes);
         let (code, rejected, _) = run_fss(&remote_args)?;
         assert_ne!(code, 0, "invalid remote manifest was accepted: {rejected}");
         assert!(!restored_pack.exists());
     }
-    s3.objects.lock().map_err(|_| "S3 lock poisoned")?.remove(&remote_path);
+    s3.objects
+        .lock()
+        .map_err(|_| "S3 lock poisoned")?
+        .remove(&remote_path);
     let (code, missing, _) = run_fss(&remote_args)?;
     assert_ne!(code, 0, "missing remote manifest was accepted: {missing}");
     assert!(!restored_pack.exists());
@@ -1059,20 +1098,30 @@ fn fss_archive_cli_seal_verify_s3_upload_restore_and_crypto_erase_e2e() -> TestR
         original_manifest.part_count,
         original_manifest.published_at_ns,
     )?;
-    s3.objects.lock().map_err(|_| "S3 lock poisoned")?
+    s3.objects
+        .lock()
+        .map_err(|_| "S3 lock poisoned")?
         .insert(remote_path.clone(), wrong_source.to_canonical_bytes()?);
     let wrong_source_pin = wrong_source.manifest_digest.to_text();
     let mut wrong_source_args = remote_args;
     wrong_source_args[pin_index] = &wrong_source_pin;
     let (code, rejected, _) = run_fss(&wrong_source_args)?;
-    assert_ne!(code, 0, "incorrect plaintext identity was accepted: {rejected}");
+    assert_ne!(
+        code, 0,
+        "incorrect plaintext identity was accepted: {rejected}"
+    );
     assert!(rejected.contains("plaintext pack length or SHA-256"));
     assert!(!restored_pack.exists());
 
-    s3.objects.lock().map_err(|_| "S3 lock poisoned")?
+    s3.objects
+        .lock()
+        .map_err(|_| "S3 lock poisoned")?
         .insert(remote_path, remote_bytes);
     let (code, recovered_out, err) = run_fss(&remote_args)?;
-    assert_eq!(code, 0, "remote-root recovery failed: {recovered_out} {err}");
+    assert_eq!(
+        code, 0,
+        "remote-root recovery failed: {recovered_out} {err}"
+    );
     let recovered = parse_json(&recovered_out)?;
     assert_eq!(json_text(&recovered, "manifest_source")?, "remote_object");
     assert_eq!(json_text(&recovered, "manifest_digest")?, manifest_pin);
@@ -1151,13 +1200,29 @@ fn fss_archive_cli_seal_verify_s3_upload_restore_and_crypto_erase_e2e() -> TestR
     // A verified remote root cannot revive an archived DEK that the current catalog erased.
     let archive_dek = json_text(&upload, "dek_id")?;
     let erase_args = [
-        "archive", "crypto-erase", "--key-catalog", &kc, "--dek-id", archive_dek,
-        "--reason", "remote-recovery-erasure", "--vault-dir", &vd,
-        "--passphrase-file", &pf, "--kek-secret-id", "secret:kek:site-1",
-        "--site", "site:archive-e2e", "--json",
+        "archive",
+        "crypto-erase",
+        "--key-catalog",
+        &kc,
+        "--dek-id",
+        archive_dek,
+        "--reason",
+        "remote-recovery-erasure",
+        "--vault-dir",
+        &vd,
+        "--passphrase-file",
+        &pf,
+        "--kek-secret-id",
+        "secret:kek:site-1",
+        "--site",
+        "site:archive-e2e",
+        "--json",
     ];
     let (code, preview, err) = run_fss(&erase_args)?;
-    assert_eq!(code, 0, "archived DEK erasure preview failed: {preview} {err}");
+    assert_eq!(
+        code, 0,
+        "archived DEK erasure preview failed: {preview} {err}"
+    );
     let approval = json_text(&parse_json(&preview)?, "approval_digest")?.to_owned();
     let mut approved_erasure = erase_args.to_vec();
     approved_erasure.extend(["--approve", &approval]);
@@ -1456,11 +1521,42 @@ fn remote_archive_restore_refuses_ambiguous_or_unpinned_modes_before_io() -> Tes
     for flags in [
         vec!["--manifest-object-key", "remote/root"],
         vec!["--expected-manifest", valid.as_str()],
-        vec!["--manifest-file", "/absent/local", "--manifest-object-key", "remote/root", "--expected-manifest", valid.as_str()],
-        vec!["--manifest-object-key", "remote/root", "--expected-manifest", zero.as_str()],
-        vec!["--manifest-object-key", "remote/root", "--expected-manifest", blake.as_str()],
-        vec!["--manifest-object-key", "remote/root", "--manifest-object-key", "other/root", "--expected-manifest", valid.as_str()],
-        vec!["--manifest-object-key", "remote/root", "--expected-manifest", valid.as_str(), "--expected-manifest", valid.as_str()],
+        vec![
+            "--manifest-file",
+            "/absent/local",
+            "--manifest-object-key",
+            "remote/root",
+            "--expected-manifest",
+            valid.as_str(),
+        ],
+        vec![
+            "--manifest-object-key",
+            "remote/root",
+            "--expected-manifest",
+            zero.as_str(),
+        ],
+        vec![
+            "--manifest-object-key",
+            "remote/root",
+            "--expected-manifest",
+            blake.as_str(),
+        ],
+        vec![
+            "--manifest-object-key",
+            "remote/root",
+            "--manifest-object-key",
+            "other/root",
+            "--expected-manifest",
+            valid.as_str(),
+        ],
+        vec![
+            "--manifest-object-key",
+            "remote/root",
+            "--expected-manifest",
+            valid.as_str(),
+            "--expected-manifest",
+            valid.as_str(),
+        ],
     ] {
         let mut args = vec!["archive", "restore", "--packs-dir", "/absent/destination"];
         args.extend(flags);

@@ -30,9 +30,8 @@ const RECEIVE: TimestampNs = TimestampNs(30_000_000_000);
 
 fn directory(label: &str) -> Test<PathBuf> {
     for attempt in 0..128 {
-        let root = std::env::temp_dir().join(format!(
-            "fss-avi-{label}-{}-{attempt}", std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("fss-avi-{label}-{}-{attempt}", std::process::id()));
         match fs::create_dir(&root) {
             Ok(()) => return Ok(root),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -59,7 +58,10 @@ fn context(root: &Path) -> Test<ReplayCx> {
         anchor_universe: ContentDigest::sha256(SITE.as_bytes()),
         generation: 1,
     })?;
-    Ok(ReplayCx::from_context_authority(&authority, root.to_path_buf())?)
+    Ok(ReplayCx::from_context_authority(
+        &authority,
+        root.to_path_buf(),
+    )?)
 }
 
 fn request(path: &Path) -> Test<FileIngestRequest> {
@@ -104,7 +106,13 @@ fn auto_and_explicit_import_cold_reopen_and_decode_preserve_original_frames() ->
         assert_eq!(receipt.capsule_count, 3);
         assert_eq!(receipt.capture_time_label, "unknown");
         assert!(!receipt.absence_certifiable);
-        assert!(receipt.manifest.omission_spans.iter().all(|span| span.is_container_structure()));
+        assert!(
+            receipt
+                .manifest
+                .omission_spans
+                .iter()
+                .all(|span| span.is_container_structure())
+        );
         let prior = snapshot(&store)?;
         let retried = FileIngestAdapter::ingest(plan, &cx, &mut deployment)?;
         assert_eq!(retried.outcome, FileIngestOutcome::IdempotentExisting);
@@ -115,7 +123,10 @@ fn auto_and_explicit_import_cold_reopen_and_decode_preserve_original_frames() ->
 
         let mut deployment = ReferenceDeployment::reopen(&store, SITE, &cx)?;
         let retained = RetainedFileImport::open(
-            &deployment, receipt.import_identity, RetainedReadLimits::default(), &cx,
+            &deployment,
+            receipt.import_identity,
+            RetainedReadLimits::default(),
+            &cx,
         )?;
         assert_eq!(
             retained.verify_source(&deployment, RetainedReadLimits::default(), &cx)?,
@@ -135,11 +146,19 @@ fn auto_and_explicit_import_cold_reopen_and_decode_preserve_original_frames() ->
             assert_eq!(span.len, sample.source.len() as u64);
             assert!(!span.gap_before);
             assert_eq!(
-                retained.read_segment(&deployment, sample.index, RetainedReadLimits::default(), &cx)?,
+                retained.read_segment(
+                    &deployment,
+                    sample.index,
+                    RetainedReadLimits::default(),
+                    &cx
+                )?,
                 fixture::JPEG
             );
             let capsule = retained_source_capsule(&deployment, &retained, sample.index)?;
-            assert_eq!(capsule.capture, CaptureInterval::new(TimestampNs(0), RECEIVE)?);
+            assert_eq!(
+                capsule.capture,
+                CaptureInterval::new(TimestampNs(0), RECEIVE)?
+            );
             assert_eq!(capsule.clock_basis, ClockBasis::Estimated);
             let decode = RecordedDecodeRequest {
                 import_identity: receipt.import_identity,
@@ -149,11 +168,17 @@ fn auto_and_explicit_import_cold_reopen_and_decode_preserve_original_frames() ->
                 decode_limits: DecodeLimits::default(),
             };
             let frame = RecordedFrame::decode_and_publish(
-                &mut deployment, &decode, &mut DecodeBudget::new(50_000_000), &cx,
+                &mut deployment,
+                &decode,
+                &mut DecodeBudget::new(50_000_000),
+                &cx,
             )?;
             assert_eq!(frame.pixels(), expected.pixels());
             assert_eq!(frame.receipt().capsule(), &capsule);
-            assert_eq!(RecordedFrame::open(&deployment, &decode, &cx)?.pixels(), expected.pixels());
+            assert_eq!(
+                RecordedFrame::open(&deployment, &decode, &cx)?.pixels(),
+                expected.pixels()
+            );
         }
     }
     Ok(())
@@ -171,7 +196,11 @@ fn capture_assumption_uses_stream_fractional_time_with_a_different_assumed_rate(
     plan.capture_hint = Some(CaptureHint::new(TimestampNs(10_000_000_000), 3, 1.0)?);
     let receipt = FileIngestAdapter::ingest(plan, &cx, &mut deployment)?;
     assert_eq!(receipt.capture_time_label, "operator_assumption");
-    for (capsule, offset) in receipt.capsules.iter().zip([0_i128, 33_366_667, 66_733_333]) {
+    for (capsule, offset) in receipt
+        .capsules
+        .iter()
+        .zip([0_i128, 33_366_667, 66_733_333])
+    {
         assert_eq!(
             capsule.capture,
             CaptureInterval::new(
@@ -193,7 +222,10 @@ fn two_images_in_one_chunk_and_geometry_mismatch_fail_before_retention() -> Test
     let before = snapshot(&store)?;
     let doubled = [fixture::JPEG, fixture::JPEG].concat();
     let mut dimensions = fixture::movie(false, false);
-    let format = dimensions.windows(4).position(|p| p == b"strf").ok_or("strf")?;
+    let format = dimensions
+        .windows(4)
+        .position(|p| p == b"strf")
+        .ok_or("strf")?;
     dimensions[format + 12..format + 16].copy_from_slice(&65_u32.to_le_bytes());
     for bytes in [
         fixture::movie_with_frames(&[&doubled], false, false),

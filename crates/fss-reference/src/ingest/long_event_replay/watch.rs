@@ -159,7 +159,15 @@ pub(super) fn count(d: &mut CanonicalDecoder<'_>, maximum: usize) -> Result<usiz
 pub(super) fn media_format(value: &str) -> Result<String> {
     if !matches!(
         value,
-        "mjpeg" | "avimjpeg" | "annexb" | "hevc" | "mp4avc" | "mp4hevc" | "mkvavc" | "flvavc" | "mkvhevc"
+        "mjpeg"
+            | "avimjpeg"
+            | "annexb"
+            | "hevc"
+            | "mp4avc"
+            | "mp4hevc"
+            | "mkvavc"
+            | "flvavc"
+            | "mkvhevc"
     ) {
         return Err(Error::UnsupportedProfile);
     }

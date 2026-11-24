@@ -813,3 +813,176 @@ fn background_scrubber_incremental_cursor_and_single_byte_corruption_detection()
     }));
     Ok(())
 }
+
+#[test]
+fn catalog_retirement_recovery_finishes_object_deletion_and_compaction() -> TestResult {
+    let dir = TempTestDir::new("resume-catalog-retirement")?;
+    let cfg = pack_cfg(64 * 1024);
+    let media = make_payload("retired-media", 16 * 1024);
+    let metadata = make_payload("canonical-replay-metadata", 256);
+    let child = make_payload("unrelated-child", 512);
+    let media_digest = ContentDigest::sha256(&media);
+    let metadata_digest = ContentDigest::sha256(&metadata);
+    let child_digest = ContentDigest::sha256(&child);
+    let reason = ContentDigest::sha256(b"canonical-footage-retirement");
+    let root_id = "gop:recovery:1";
+
+    let store = PackStore::open(&dir.path, cfg)?;
+    let _ = store.publish_graph(
+        &[
+            PackObjectInput::with_digest(PACK_KIND_MEDIA_CHUNK, 0, &media, media_digest),
+            PackObjectInput::with_digest(PACK_KIND_METADATA, 0, &metadata, metadata_digest),
+            PackObjectInput::with_digest(PACK_KIND_RAW_PAYLOAD, 0, &child, child_digest),
+        ],
+        VirtualRootRecord::new(
+            root_id,
+            media_digest,
+            "media-gop-v2",
+            1,
+            (media.len() + metadata.len()) as u64,
+            1,
+            TimestampNs(10),
+            Some(metadata_digest),
+        )?,
+    )?;
+    let _ = store.seal_active_pack()?;
+    // Reproduce the durable cut after catalog retirement and before object log commitment.
+    let retired = store.tombstone_root(root_id, reason)?;
+    assert_eq!(store.object_tombstone(&media_digest)?, None);
+    drop(store);
+
+    let store = PackStore::open(&dir.path, cfg)?;
+    assert_eq!(store.read_verified(&media_digest)?, media);
+    let bytes_before = store.on_disk_pack_bytes()?;
+    assert!(store.resume_root_object_deletion(root_id, media_digest)?);
+    assert_eq!(store.get_root(root_id)?, Some(retired.clone()));
+    assert_eq!(store.object_tombstone(&media_digest)?, Some(reason));
+    assert_eq!(store.lookup(&media_digest)?, None);
+    assert!(matches!(
+        store.read_verified(&media_digest),
+        Err(PackError::EvidenceDeleted { digest, reason_digest })
+            if digest == media_digest && reason_digest == reason
+    ));
+    assert_eq!(store.read_verified(&metadata_digest)?, metadata);
+    assert_eq!(store.read_verified(&child_digest)?, child);
+    assert!(!store.resume_root_object_deletion(root_id, media_digest)?);
+    assert_eq!(store.on_disk_pack_bytes()?, bytes_before);
+    drop(store);
+
+    // Also restart between the object tombstone and physical compaction.
+    let store = PackStore::open(&dir.path, cfg)?;
+    assert!(!store.resume_root_object_deletion(root_id, media_digest)?);
+    assert_eq!(store.get_root(root_id)?, Some(retired));
+    let reclaimed = store.reclaim_superseded_packs(CompactionPolicy::default())?;
+    assert!(reclaimed.total_bytes_reclaimed > 0);
+    assert!(store.on_disk_pack_bytes()? < bytes_before);
+    assert_eq!(store.object_tombstone(&media_digest)?, Some(reason));
+    assert_eq!(store.read_verified(&metadata_digest)?, metadata);
+    assert_eq!(store.read_verified(&child_digest)?, child);
+    assert_eq!(
+        store
+            .reclaim_superseded_packs(CompactionPolicy::default())?
+            .total_bytes_reclaimed,
+        0
+    );
+    Ok(())
+}
+
+#[test]
+fn catalog_retirement_recovery_requires_exact_dead_root_and_preserves_live_aliases() -> TestResult {
+    for metadata_reference in [false, true] {
+        let dir = TempTestDir::new(if metadata_reference {
+            "resume-live-metadata-reference"
+        } else {
+            "resume-live-root-reference"
+        })?;
+        let store = PackStore::open(&dir.path, pack_cfg(64 * 1024))?;
+        let media = make_payload("shared-retired-media", 1024);
+        let other = make_payload("unrelated-live-root", 256);
+        let media_digest = ContentDigest::sha256(&media);
+        let other_digest = ContentDigest::sha256(&other);
+        let reason = ContentDigest::sha256(b"original-catalog-reason");
+        let _ = store.append_batch(&[
+            PackObjectInput::with_digest(PACK_KIND_MEDIA_CHUNK, 0, &media, media_digest),
+            PackObjectInput::with_digest(PACK_KIND_RAW_PAYLOAD, 0, &other, other_digest),
+        ])?;
+        let root = |id: &str, digest: ContentDigest, metadata: Option<ContentDigest>| {
+            VirtualRootRecord::new(
+                id,
+                digest,
+                "media-gop-v2",
+                1,
+                1024,
+                1,
+                TimestampNs(10),
+                metadata,
+            )
+        };
+        let _ = store.publish_root(root("retired", media_digest, None)?)?;
+        assert!(matches!(
+            store.resume_root_object_deletion("absent", media_digest),
+            Err(PackError::RootNotFound(_))
+        ));
+        assert!(matches!(
+            store.resume_root_object_deletion("retired", media_digest),
+            Err(PackError::InvalidTombstoneProof { .. })
+        ));
+        assert_eq!(store.object_tombstone(&media_digest)?, None);
+        let retired = store.tombstone_root("retired", reason)?;
+        assert!(matches!(
+            store.resume_root_object_deletion("retired", other_digest),
+            Err(PackError::InvalidTombstoneProof { .. })
+        ));
+        assert!(matches!(
+            store.resume_root_object_deletion(
+                "retired",
+                ContentDigest::new(fss_core::DigestAlgorithm::Blake3, media_digest.bytes()),
+            ),
+            Err(PackError::UnsupportedDigestAlgorithm(_))
+        ));
+
+        // Put the protecting reference after a full page of unrelated live roots.
+        let mut live_roots = Vec::new();
+        for i in 0..513 {
+            live_roots.push(root(&format!("a-live-{i:04}"), other_digest, None)?);
+        }
+        live_roots.push(if metadata_reference {
+            root("z-protecting-root", other_digest, Some(media_digest))?
+        } else {
+            root("z-protecting-root", media_digest, None)?
+        });
+        let _ = store.publish_roots_batch(&live_roots)?;
+        assert!(!store.resume_root_object_deletion("retired", media_digest)?);
+        assert_eq!(store.get_root("retired")?, Some(retired.clone()));
+        assert_eq!(store.object_tombstone(&media_digest)?, None);
+        assert_eq!(store.read_verified(&media_digest)?, media);
+        assert_eq!(store.read_verified(&other_digest)?, other);
+
+        let _ = store.tombstone_root(
+            "z-protecting-root",
+            ContentDigest::sha256(b"separate-alias-retirement"),
+        )?;
+        assert!(store.resume_root_object_deletion("retired", media_digest)?);
+        assert!(!store.resume_root_object_deletion("retired", media_digest)?);
+        assert_eq!(store.get_root("retired")?, Some(retired));
+        assert_eq!(store.object_tombstone(&media_digest)?, Some(reason));
+        if !metadata_reference {
+            assert!(!store.resume_root_object_deletion("z-protecting-root", media_digest)?);
+            assert_eq!(store.object_tombstone(&media_digest)?, Some(reason));
+        }
+        assert_eq!(store.read_verified(&other_digest)?, other);
+
+        // Supersession is not deletion authority either.
+        let _ = store.publish_root(root("superseded-old", other_digest, None)?)?;
+        let _ = store.supersede_root(
+            "superseded-old",
+            root("superseded-new", other_digest, None)?,
+        )?;
+        assert!(matches!(
+            store.resume_root_object_deletion("superseded-old", other_digest),
+            Err(PackError::InvalidTombstoneProof { .. })
+        ));
+        assert_eq!(store.object_tombstone(&other_digest)?, None);
+    }
+    Ok(())
+}

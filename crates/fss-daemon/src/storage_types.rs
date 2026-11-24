@@ -44,7 +44,7 @@ pub struct MaintenanceTickReport {
     pub pressure: CapacityPressure,
     /// True when critical capacity is 100% pinned (`ERR-STORAGE-QUOTA-PINNED-001`).
     pub quota_pinned: bool,
-    /// Bytes pinned by active holds, obligations, or active events.
+    /// Bytes protected by active holds, obligations, events, or canonical replay history.
     pub pinned_bytes: u64,
     /// Configured total local ring capacity cap in bytes.
     pub cap_bytes: u64,
@@ -92,7 +92,7 @@ pub struct StorageHeadSnapshot {
     pub state_root: ContentDigest,
     /// Cumulative on-disk `.fssp` packfile bytes.
     pub on_disk_pack_bytes: u64,
-    /// Tracked local ring occupancy bytes.
+    /// Logical local ring occupancy, including protected canonical replay payloads.
     pub ring_used_bytes: u64,
     /// Configured ring capacity ceiling in bytes.
     pub ring_cap_bytes: u64,
@@ -107,6 +107,7 @@ pub struct StorageHeadSnapshot {
 pub(crate) struct CombinerForwardWriter {
     pub(crate) combiner: Arc<CommitCombiner<LedgerPackProjectionSink>>,
     pub(crate) object_generations: Arc<Mutex<BTreeMap<ObjectId, u64>>>,
+    pub(crate) retention_gate: Arc<Mutex<()>>,
     pub(crate) quota_pinned: Arc<AtomicBool>,
     pub(crate) pinned_bytes: Arc<AtomicU64>,
     pub(crate) cap_bytes: u64,
@@ -118,15 +119,29 @@ impl ForwardBatchWriter for CombinerForwardWriter {
         &self,
         batch_bytes: &[u8],
     ) -> Result<(u64, ContentDigest, ContentDigest), DaemonError> {
-        if self.quota_pinned.load(Ordering::Acquire) {
+        let batch = decode_batch(batch_bytes).map_err(|err| DaemonError::InvalidConfig {
+            detail: format!("forwarded batch decode failed: {err}"),
+        })?;
+        let _guard = self
+            .retention_gate
+            .lock()
+            .map_err(|_| DaemonError::LockPoisoned {
+                component: "retention_gate",
+            })?;
+        // Hold releases and deletion authority must remain available to clear pinned pressure.
+        let retention_control = batch.deltas.iter().all(|delta| {
+            matches!(
+                delta.family.as_str(),
+                fss_projection_store::FAMILY_EVIDENCE_HOLD
+                    | fss_projection_store::FAMILY_DELETION_TOMBSTONE
+            )
+        });
+        if self.quota_pinned.load(Ordering::Acquire) && !retention_control {
             return Err(DaemonError::StorageQuotaPinned {
                 pinned_bytes: self.pinned_bytes.load(Ordering::Acquire),
                 cap_bytes: self.cap_bytes,
             });
         }
-        let batch = decode_batch(batch_bytes).map_err(|err| DaemonError::InvalidConfig {
-            detail: format!("forwarded batch decode failed: {err}"),
-        })?;
         let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
         let proposal = CommitProposal {
             request_digest: batch.batch_digest,

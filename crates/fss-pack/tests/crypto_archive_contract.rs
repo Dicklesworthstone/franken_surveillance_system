@@ -1466,13 +1466,20 @@ fn cold_tier_loopback_s3_e2e_archive_audit_tamper_evict_and_restore() -> TestRes
         ContentDigest::new(fss_core::DigestAlgorithm::Sha256, [0; 32]),
         ContentDigest::new(fss_core::DigestAlgorithm::Blake3, [1; 32]),
     ] {
-        assert!(fetch_cold_pack_manifest(
-            &mut transport, &arch_p1.manifest_object_key, invalid_pin, now
-        ).is_err());
+        assert!(
+            fetch_cold_pack_manifest(
+                &mut transport,
+                &arch_p1.manifest_object_key,
+                invalid_pin,
+                now
+            )
+            .is_err()
+        );
     }
-    assert!(fetch_cold_pack_manifest(
-        &mut transport, "", arch_p1.manifest.manifest_digest, now
-    ).is_err());
+    assert!(
+        fetch_cold_pack_manifest(&mut transport, "", arch_p1.manifest.manifest_digest, now)
+            .is_err()
+    );
     assert_eq!(server.requests().len(), manifest_requests);
     assert!(matches!(
         fetch_cold_pack_manifest(
@@ -1495,31 +1502,51 @@ fn cold_tier_loopback_s3_e2e_archive_audit_tamper_evict_and_restore() -> TestRes
         arch_p2.manifest.to_canonical_bytes()?,
         vec![0; fss_pack::MAX_COLD_MANIFEST_DOWNLOAD_BYTES + 1],
     ] {
-        server.state.lock().map_err(|_| "S3 state poisoned")?.objects.insert(
-            format!("/{bucket}/{}", arch_p1.manifest_object_key),
-            (bytes, "\"untrusted-manifest-etag\"".to_owned()),
-        );
+        server
+            .state
+            .lock()
+            .map_err(|_| "S3 state poisoned")?
+            .objects
+            .insert(
+                format!("/{bucket}/{}", arch_p1.manifest_object_key),
+                (bytes, "\"untrusted-manifest-etag\"".to_owned()),
+            );
         let before = server.requests().len();
-        assert!(fetch_cold_pack_manifest(
+        assert!(
+            fetch_cold_pack_manifest(
+                &mut transport,
+                &arch_p1.manifest_object_key,
+                arch_p1.manifest.manifest_digest,
+                now,
+            )
+            .is_err()
+        );
+        let requests = server.requests();
+        assert_eq!(requests.len(), before + 1);
+        assert!(
+            requests[before]
+                .path
+                .ends_with(&arch_p1.manifest_object_key)
+        );
+    }
+    server
+        .state
+        .lock()
+        .map_err(|_| "S3 state poisoned")?
+        .objects
+        .insert(
+            format!("/{bucket}/{}", arch_p1.manifest_object_key),
+            (original_manifest, "\"recovered-manifest-etag\"".to_owned()),
+        );
+    assert_eq!(
+        fetch_cold_pack_manifest(
             &mut transport,
             &arch_p1.manifest_object_key,
             arch_p1.manifest.manifest_digest,
             now,
-        ).is_err());
-        let requests = server.requests();
-        assert_eq!(requests.len(), before + 1);
-        assert!(requests[before].path.ends_with(&arch_p1.manifest_object_key));
-    }
-    server.state.lock().map_err(|_| "S3 state poisoned")?.objects.insert(
-        format!("/{bucket}/{}", arch_p1.manifest_object_key),
-        (original_manifest, "\"recovered-manifest-etag\"".to_owned()),
+        )?,
+        recovered_p1
     );
-    assert_eq!(fetch_cold_pack_manifest(
-        &mut transport,
-        &arch_p1.manifest_object_key,
-        arch_p1.manifest.manifest_digest,
-        now,
-    )?, recovered_p1);
 
     let before = server.requests().len();
     assert!(matches!(

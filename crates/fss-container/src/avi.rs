@@ -105,8 +105,7 @@ impl Reader<'_, '_> {
                 continue;
             }
             if matches!(&chunk.kind, b"JUNK" | b"idx1")
-                || (&chunk.kind[..2] == b"ix"
-                    && chunk.kind[2..].iter().all(u8::is_ascii_digit))
+                || (&chunk.kind[..2] == b"ix" && chunk.kind[2..].iter().all(u8::is_ascii_digit))
             {
                 continue;
             }
@@ -274,7 +273,8 @@ impl<'a> AviMjpeg<'a> {
             let extent = dimensions[0] | (dimensions[1] << 16);
             if rectangle != [0; 8]
                 && (dimensions.iter().any(|value| *value > i16::MAX as u32)
-                    || word(header, 48)? != 0 || word(header, 52)? != extent)
+                    || word(header, 48)? != 0
+                    || word(header, 52)? != extent)
             {
                 return Err(DemuxError::Unsupported);
             }
@@ -289,7 +289,8 @@ impl<'a> AviMjpeg<'a> {
         }
         let (stream, dimensions, scale, rate, start, count) =
             selected.ok_or(DemuxError::TrackSelection)?;
-        if count as usize > limits.maximum_samples || count as usize > limits.maximum_table_entries {
+        if count as usize > limits.maximum_samples || count as usize > limits.maximum_table_entries
+        {
             return Err(DemuxError::Limit);
         }
         let chunks = reader.chunks(movie.body.start + 4..movie.body.end)?;
@@ -299,7 +300,8 @@ impl<'a> AviMjpeg<'a> {
             return Err(DemuxError::Timeline);
         }
         let frame_bytes = samples.iter().try_fold(0_usize, |sum, sample| {
-            sum.checked_add(sample.source.len()).ok_or(DemuxError::Limit)
+            sum.checked_add(sample.source.len())
+                .ok_or(DemuxError::Limit)
         })?;
         if source.len() - frame_bytes > limits.maximum_metadata_bytes {
             return Err(DemuxError::Limit);
@@ -346,16 +348,26 @@ fn identity_properties(body: &[u8], [width, height]: [u32; 2]) -> Result<(), Dem
     let denominator = aspect & 0xffff;
     if numerator == 0
         || denominator == 0
-        || u64::from(numerator) * u64::from(height)
-            != u64::from(denominator) * u64::from(width)
+        || u64::from(numerator) * u64::from(height) != u64::from(denominator) * u64::from(width)
     {
         return Err(DemuxError::Unsupported);
     }
     for (offset, expected) in [
-        (0, 0), (4, 0), (12, width), (16, height),
-        (24, width), (28, height), (32, 1),
-        (36, height), (40, width), (44, height), (48, width),
-        (52, 0), (56, 0), (60, 0), (64, 0),
+        (0, 0),
+        (4, 0),
+        (12, width),
+        (16, height),
+        (24, width),
+        (28, height),
+        (32, 1),
+        (36, height),
+        (40, width),
+        (44, height),
+        (48, width),
+        (52, 0),
+        (56, 0),
+        (60, 0),
+        (64, 0),
     ] {
         if word(body, offset)? != expected {
             return Err(DemuxError::Unsupported);

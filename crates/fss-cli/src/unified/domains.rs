@@ -1376,10 +1376,28 @@ const ARCHIVE_VERBS: &[VerbSpec] = &[
         accepts_root: true,
         accepts_archive: false,
         flags: &[
-            flag("--manifest-file", Some("<file>"), "Local archive manifest", false),
-            flag("--manifest-object-key", Some("<key>"), "Remote root manifest from the upload receipt", false),
-            flag("--expected-manifest", Some("<sha256>"), "Independently retained manifest_digest for remote recovery", false),
-            F_ROOT_OPT, F_SITE, F_JSON, F_HELP,
+            flag(
+                "--manifest-file",
+                Some("<file>"),
+                "Local archive manifest",
+                false,
+            ),
+            flag(
+                "--manifest-object-key",
+                Some("<key>"),
+                "Remote root manifest from the upload receipt",
+                false,
+            ),
+            flag(
+                "--expected-manifest",
+                Some("<sha256>"),
+                "Independently retained manifest_digest for remote recovery",
+                false,
+            ),
+            F_ROOT_OPT,
+            F_SITE,
+            F_JSON,
+            F_HELP,
         ],
     },
     VerbSpec {

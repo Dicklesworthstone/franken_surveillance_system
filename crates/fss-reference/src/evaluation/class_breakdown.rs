@@ -133,8 +133,16 @@ impl EvaluationReport {
         if threshold_ppm > MAX_SCORE_PPM {
             return Err(EvaluationError::InvalidThreshold);
         }
-        check_limit(EvaluationLimit::Classes, MAX_EVALUATION_CLASSES, declared_classes.len())?;
-        check_limit(EvaluationLimit::Clips, MAX_EVALUATION_CLIPS, labels.clips.len())?;
+        check_limit(
+            EvaluationLimit::Classes,
+            MAX_EVALUATION_CLASSES,
+            declared_classes.len(),
+        )?;
+        check_limit(
+            EvaluationLimit::Clips,
+            MAX_EVALUATION_CLIPS,
+            labels.clips.len(),
+        )?;
         check_limit(
             EvaluationLimit::TruthEvents,
             MAX_EVALUATION_TRUTH_EVENTS,
@@ -228,7 +236,11 @@ impl EvaluationReport {
                     state.counts.observable_truth_events += 1;
                     state.counts.false_negatives += 1;
                 }
-                TruthDisposition::Detected { score_ppm, time_to_detect_ns, .. } => {
+                TruthDisposition::Detected {
+                    score_ppm,
+                    time_to_detect_ns,
+                    ..
+                } => {
                     state.counts.observable_truth_events += 1;
                     if *score_ppm >= threshold_ppm {
                         state.fixed_latencies.push(*time_to_detect_ns);
@@ -236,7 +248,8 @@ impl EvaluationReport {
                 }
             }
         }
-        for (index, (candidate, outcome)) in by_id.iter().zip(&self.candidate_outcomes).enumerate() {
+        for (index, (candidate, outcome)) in by_id.iter().zip(&self.candidate_outcomes).enumerate()
+        {
             checkpoint(cancelled)?;
             if candidate.candidate_id != outcome.candidate_id
                 || (index > 0 && by_id[index - 1].candidate_id == candidate.candidate_id)
@@ -316,7 +329,10 @@ impl EvaluationReport {
                     false_positives: fp,
                     precision: Ratio::of(tp, tp + fp, UndefinedReason::NoScoredCandidates),
                     recall: Ratio::of(tp, positives, UndefinedReason::NoObservableTruthEvents),
-                    within_false_alert_budget: self.policy.false_alert_budget.admits(fp, self.durations.observed_ns),
+                    within_false_alert_budget: self
+                        .policy
+                        .false_alert_budget
+                        .admits(fp, self.durations.observed_ns),
                 });
                 if positives > 0 {
                     sum_atto += u128::from(*delta_tp) * u128::from(tp) * ATTO_PER_UNIT
@@ -326,8 +342,8 @@ impl EvaluationReport {
             let auprc = if positives == 0 {
                 PpmMetric::Undefined(UndefinedReason::NoObservableTruthEvents)
             } else {
-                let ppm = ((sum_atto + ATTO_PER_PPM / 2) / ATTO_PER_PPM)
-                    .min(u128::from(MAX_SCORE_PPM));
+                let ppm =
+                    ((sum_atto + ATTO_PER_PPM / 2) / ATTO_PER_PPM).min(u128::from(MAX_SCORE_PPM));
                 PpmMetric::Defined(u32::try_from(ppm).unwrap_or(MAX_SCORE_PPM))
             };
             let fixed_tp = state.fixed_true_positives;
@@ -340,30 +356,44 @@ impl EvaluationReport {
                 fixed_operating_point: ClassOperatingPoint {
                     true_positives: fixed_tp,
                     false_positives: fixed_fp,
-                    false_negatives: positives.checked_sub(fixed_tp)
+                    false_negatives: positives
+                        .checked_sub(fixed_tp)
                         .ok_or(EvaluationError::InconsistentReport)?,
-                    precision: Ratio::of(fixed_tp, fixed_tp + fixed_fp, UndefinedReason::NoScoredCandidates),
-                    recall: Ratio::of(fixed_tp, positives, UndefinedReason::NoObservableTruthEvents),
+                    precision: Ratio::of(
+                        fixed_tp,
+                        fixed_tp + fixed_fp,
+                        UndefinedReason::NoScoredCandidates,
+                    ),
+                    recall: Ratio::of(
+                        fixed_tp,
+                        positives,
+                        UndefinedReason::NoObservableTruthEvents,
+                    ),
                     within_budget: (self.durations.observed_ns > 0).then(|| {
-                        self.policy.false_alert_budget.admits(fixed_fp, self.durations.observed_ns)
+                        self.policy
+                            .false_alert_budget
+                            .admits(fixed_fp, self.durations.observed_ns)
                     }),
                     time_to_detect: TimeToDetectSummary::from_values(state.fixed_latencies),
                 },
             });
         }
-        let total = projected.iter().fold(EvaluationCounts::default(), |mut sum, class| {
-            let counts = class.counts;
-            sum.truth_events += counts.truth_events;
-            sum.observable_truth_events += counts.observable_truth_events;
-            sum.not_observable_truth_events += counts.not_observable_truth_events;
-            sum.candidates += counts.candidates;
-            sum.candidates_inside_not_observable += counts.candidates_inside_not_observable;
-            sum.candidates_matched_not_observable_truth += counts.candidates_matched_not_observable_truth;
-            sum.true_positives += counts.true_positives;
-            sum.false_positives += counts.false_positives;
-            sum.false_negatives += counts.false_negatives;
-            sum
-        });
+        let total = projected
+            .iter()
+            .fold(EvaluationCounts::default(), |mut sum, class| {
+                let counts = class.counts;
+                sum.truth_events += counts.truth_events;
+                sum.observable_truth_events += counts.observable_truth_events;
+                sum.not_observable_truth_events += counts.not_observable_truth_events;
+                sum.candidates += counts.candidates;
+                sum.candidates_inside_not_observable += counts.candidates_inside_not_observable;
+                sum.candidates_matched_not_observable_truth +=
+                    counts.candidates_matched_not_observable_truth;
+                sum.true_positives += counts.true_positives;
+                sum.false_positives += counts.false_positives;
+                sum.false_negatives += counts.false_negatives;
+                sum
+            });
         if total != self.counts {
             return Err(EvaluationError::InconsistentReport);
         }
@@ -444,6 +474,7 @@ impl ClassBreakdown {
     /// Whether the digest binds all fields of this class projection.
     #[must_use]
     pub fn verify_digest(&self) -> bool {
-        self.compute_digest().is_ok_and(|digest| digest == self.digest)
+        self.compute_digest()
+            .is_ok_and(|digest| digest == self.digest)
     }
 }

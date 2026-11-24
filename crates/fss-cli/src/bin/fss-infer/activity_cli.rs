@@ -334,7 +334,9 @@ fn report(options: &Options, receipt: &RecordedActivityReceipt) -> String {
     let plan = &receipt.plan;
     let verification = match result.outcome {
         ExecutorModelOutcome::Abstained { .. } => "null".to_owned(),
-        _ if matches!(receipt.media_format.as_str(), "mjpeg" | "avimjpeg") => strings(verification_arguments(options, receipt)),
+        _ if matches!(receipt.media_format.as_str(), "mjpeg" | "avimjpeg") => {
+            strings(verification_arguments(options, receipt))
+        }
         _ => "null".to_owned(),
     };
     let score = result.outcome.score().map_or_else(

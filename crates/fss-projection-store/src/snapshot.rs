@@ -120,6 +120,11 @@ impl ProjectionSnapshot {
         self.tables.active_holds.get(hold_id)
     }
 
+    /// Iterates latest hold records, including releases, at this immutable authority anchor.
+    pub fn holds(&self) -> impl Iterator<Item = &ProjectedHold> {
+        self.tables.active_holds.values()
+    }
+
     /// Looks up the latest privacy mask policy for `sensor_id`.
     #[must_use]
     pub fn get_privacy_mask(&self, sensor_id: &SensorId) -> Option<&ProjectedPrivacyMask> {

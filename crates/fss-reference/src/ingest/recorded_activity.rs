@@ -576,7 +576,15 @@ pub fn produce_recorded_activity(
     let media_format = retained.manifest().format.clone();
     if !matches!(
         media_format.as_str(),
-        "mjpeg" | "avimjpeg" | "annexb" | "mp4avc" | "mkvavc" | "flvavc" | "hevc" | "mp4hevc" | "mkvhevc"
+        "mjpeg"
+            | "avimjpeg"
+            | "annexb"
+            | "mp4avc"
+            | "mkvavc"
+            | "flvavc"
+            | "hevc"
+            | "mp4hevc"
+            | "mkvhevc"
     ) {
         return Err(Error::UnsupportedMedia);
     }
