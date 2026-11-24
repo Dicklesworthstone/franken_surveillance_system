@@ -327,13 +327,26 @@ fn resample(
     Ok(())
 }
 
-pub(super) fn lower(mut source: SourceNode<'_>, lowering: &mut Lowering<'_, '_>) -> Result<()> {
+pub(super) fn lower(
+    mut source: SourceNode<'_>,
+    lowering: &mut Lowering<'_, '_>,
+    version: u64,
+) -> Result<()> {
     if !(3..=4).contains(&source.inputs.len())
         || source.outputs.len() != 1
         || source.inputs[0].is_empty()
     {
         return Err(OnnxError::Graph);
     }
+    let axes = if version == 18 {
+        match source.attrs.remove("axes") {
+            None => None,
+            Some(AttrValue::IntList(values)) => Some(super::structure::axes(values, 4)?),
+            Some(_) => return Err(OnnxError::Graph),
+        }
+    } else {
+        None
+    };
     let interpolation = attributes(&mut source.attrs)?;
     let input = lowering
         .known
@@ -363,21 +376,35 @@ pub(super) fn lower(mut source: SourceNode<'_>, lowering: &mut Lowering<'_, '_>)
     if scales.is_empty() == sizes.is_empty() {
         return Err(OnnxError::Graph);
     }
+    // Controls follow the declared axis order. Missing dimensions retain
+    // their extents; supplied F32 scales retain their exact source ratios.
+    let selected = axes.as_deref().unwrap_or(&[0, 1, 2, 3]);
     let scales = if !scales.is_empty() {
-        if scales.len() != 4 || scales[0] != 1.0 || scales[1] != 1.0 {
+        if scales.len() != selected.len() {
+            return Err(if axes.is_some() {
+                OnnxError::Graph
+            } else {
+                OnnxError::Unsupported
+            });
+        }
+        let mut full = [1.0; 4];
+        for (&axis, scale) in selected.iter().zip(scales) {
+            full[axis as usize] = scale;
+        }
+        if full[0] != 1.0 || full[1] != 1.0 {
             return Err(OnnxError::Unsupported);
         }
         [
-            Scale::from_f32(scales[2], dims[2])?,
-            Scale::from_f32(scales[3], dims[3])?,
+            Scale::from_f32(full[2], dims[2])?,
+            Scale::from_f32(full[3], dims[3])?,
         ]
     } else {
-        if sizes.len() != 4 {
+        if sizes.len() != selected.len() {
             return Err(OnnxError::Graph);
         }
-        let mut requested = [0_usize; 4];
-        for (target, value) in requested.iter_mut().zip(sizes) {
-            *target = usize::try_from(value).map_err(|_| OnnxError::Unsupported)?;
+        let mut requested = dims;
+        for (&axis, value) in selected.iter().zip(sizes) {
+            requested[axis as usize] = usize::try_from(value).map_err(|_| OnnxError::Unsupported)?;
         }
         if requested[..2] != dims[..2] {
             return Err(OnnxError::Unsupported);

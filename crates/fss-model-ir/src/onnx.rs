@@ -1110,7 +1110,7 @@ pub fn import_onnx<'a>(
         } else if matches!(source.op.as_str(), "AveragePool" | "GlobalAveragePool") {
             pooling::lower(source, &mut lowering)?;
         } else if source.op == "Resize" {
-            resize::lower(source, &mut lowering)?;
+            resize::lower(source, &mut lowering, source_opset)?;
         } else if source.op == "Pad" {
             pad::lower(source, &mut lowering, source_opset)?;
         } else if source.op == "Split" {

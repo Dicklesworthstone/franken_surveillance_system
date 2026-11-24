@@ -40,23 +40,13 @@ pub(super) fn admit(version: u64, source: &mut SourceNode<'_>) -> Result<()> {
     if !matches!(version, 17 | 18) {
         return Err(OnnxError::Unsupported);
     }
-    if version == 18 {
-        match source.op.as_str() {
-            "Resize" => {
-                // Resize-18 adds subset axes, antialiasing and aspect policy.
-                // Retain the existing nearest/linear spatial resampler only.
-                if source.attrs.contains_key("axes") {
-                    return Err(OnnxError::Unsupported);
-                }
-                default_mode(source, "antialias")?;
-                match source.attrs.remove("keep_aspect_ratio_policy") {
-                    None => {}
-                    Some(AttrValue::String(value)) if value == "stretch" => {}
-                    Some(AttrValue::String(_)) => return Err(OnnxError::Unsupported),
-                    Some(_) => return Err(OnnxError::Graph),
-                }
-            }
-            _ => {}
+    if version == 18 && source.op == "Resize" {
+        default_mode(source, "antialias")?;
+        match source.attrs.remove("keep_aspect_ratio_policy") {
+            None => {}
+            Some(AttrValue::String(value)) if value == "stretch" => {}
+            Some(AttrValue::String(_)) => return Err(OnnxError::Unsupported),
+            Some(_) => return Err(OnnxError::Graph),
         }
     }
     match source.op.as_str() {

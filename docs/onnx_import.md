@@ -187,7 +187,7 @@ operator, runtime integer/Boolean computation, dynamic shapes or model activatio
 | [ReduceL2-18](https://onnx.ai/onnx/operators/onnx__ReduceL2.html#reducel2-18) | The same input-axis controls, retaining separate F32 square, reduction and square root | Empty-axis no-op skips only the reduction; square and square root still execute. |
 | [Split-18](https://onnx.ai/onnx/operators/onnx__Split.html#split-18) | Static positive split lengths **or** `num_outputs` equal to the declared one-to-eight output count | Exactly one form is required; zero-sized outputs and dynamic partitions refuse. |
 | [Pad-18](https://onnx.ai/onnx/operators/onnx__Pad.html#pad-18) | Optional static INT64 axes select the dimensions for constant, edge or reflect padding and cropping. Negative axes and source axis order are honored. | Axes must be unique and in range. Pads contain one beginning and one ending value per selected axis. Ranks one through four are supported. |
-| [Resize-18](https://onnx.ai/onnx/operators/onnx__Resize.html#resize-18) | Existing nearest/linear spatial modes, omitted axes, `antialias=0` and `keep_aspect_ratio_policy="stretch"` | Subset axes, enabled antialiasing and other aspect policies refuse. |
+| [Resize-18](https://onnx.ai/onnx/operators/onnx__Resize.html#resize-18) | Existing nearest/linear spatial modes with ordered subset axes, static sizes or original F32 scales, `antialias=0` and `keep_aspect_ratio_policy="stretch"` | Batch and channel extents stay fixed. Duplicate or out-of-range axes, enabled antialiasing and other aspect policies refuse. |
 
 Mean/L2 axes can come from an initializer, Constant or the existing bounded static
 shape program. Omitted or empty axes reduce all dimensions by default. With

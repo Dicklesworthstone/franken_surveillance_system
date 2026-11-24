@@ -596,8 +596,6 @@ fn schema_gates_refuse_old_axis_forms_runtime_controls_and_unimplemented_modes()
         int_attr("antialias", 1),
         string_attr("keep_aspect_ratio_policy", "not_larger"),
         string_attr("keep_aspect_ratio_policy", "not_smaller"),
-        ints_attr("axes", &[2, 3]),
-        ints_attr("axes", &[0, 1, 2, 3]),
     ] {
         assert_eq!(
             refusal(&model_at(&resize_graph(&attr), 18)),
@@ -794,5 +792,85 @@ fn pad18_selected_axes_preserve_order_sign_and_canonical_execution() -> Test {
             assert_eq!(refusal(&selected(axes)), Some(OnnxError::Graph));
         }
     }
+    Ok(())
+}
+
+#[test]
+fn resize18_selected_sizes_and_scales_execute_with_ordered_axes() -> Test {
+    let graph = |resize_inputs: &[&str], control: Vec<u8>, attrs: Vec<u8>, dims: &[usize]| {
+        [
+            node("Resize", resize_inputs, &["output"], &attrs),
+            control,
+            bytes(11, &info("input", &[1, 1, 2, 3], 1)),
+            bytes(12, &info("output", dims, 1)),
+        ]
+        .concat()
+    };
+    let image = [("input", data(&[1, 1, 2, 3], &[1., 2., 3., 4., 5., 6.])?)];
+    // Scale width by 1.5 and height by 2. Nearest asymmetric/floor maps
+    // four output columns to inputs 0,0,1,2 and duplicates both rows.
+    let nearest = [
+        string_attr("coordinate_transformation_mode", "asymmetric"),
+        string_attr("nearest_mode", "floor"),
+    ]
+    .concat();
+    let scale_graph = |axes: &[i64], scales: &[f32]| {
+        graph(
+            &["input", "", "scale"],
+            weight("scale", &[scales.len()], scales),
+            [nearest.clone(), ints_attr("axes", axes)].concat(),
+            &[1, 1, 4, 4],
+        )
+    };
+    let scaled = scale_graph(&[-1, -2], &[1.5, 2.0]);
+    let source = model_at(&scaled, 18);
+    let full = graph(
+        &["input", "", "scale"],
+        weight("scale", &[4], &[1., 1., 2., 1.5]),
+        nearest.clone(),
+        &[1, 1, 4, 4],
+    );
+    assert_eq!(
+        roundtrip(&source, &image)?["output"],
+        [1., 1., 2., 3., 1., 1., 2., 3., 4., 4., 5., 6., 4., 4., 5., 6.]
+    );
+    assert_eq!(
+        export(&import(&source)?)?.graph_bytes(),
+        export(&import(&model_at(&full, 17))?)?.graph_bytes()
+    );
+
+    // Resize only height. The half-way row is interpolated independently
+    // for each column, with width and both non-spatial extents unchanged.
+    let sizes = graph(
+        &["input", "", "", "size"],
+        int_weight("size", &[1], &[3]),
+        [
+            string_attr("mode", "linear"),
+            string_attr("coordinate_transformation_mode", "align_corners"),
+            ints_attr("axes", &[2]),
+        ]
+        .concat(),
+        &[1, 1, 3, 3],
+    );
+    assert_eq!(
+        roundtrip(&model_at(&sizes, 18), &image)?["output"],
+        [1., 2., 3., 2.5, 3.5, 4.5, 4., 5., 6.]
+    );
+    for version in [13, 17] {
+        assert_eq!(
+            refusal(&model_at(&scaled, version)),
+            Some(OnnxError::Unsupported)
+        );
+    }
+    for axes in [&[-1, 3][..], &[4, 2], &[-5, 2], &[3]] {
+        assert_eq!(
+            refusal(&model_at(&scale_graph(axes, &[1.5, 2.0]), 18)),
+            Some(OnnxError::Graph)
+        );
+    }
+    assert_eq!(
+        refusal(&model_at(&scale_graph(&[0, 1], &[1.5, 2.0]), 18)),
+        Some(OnnxError::Unsupported)
+    );
     Ok(())
 }
