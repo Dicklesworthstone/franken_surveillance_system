@@ -64,6 +64,7 @@ fn assert_unchanged(before: &InMemoryObjectStore, after: &InMemoryObjectStore) {
     assert_eq!(before.objects, after.objects);
     assert_eq!(before.visible_manifests, after.visible_manifests);
     assert_eq!(before.invalidated_manifests, after.invalidated_manifests);
+    assert_eq!(before.parents, after.parents);
     assert_eq!(before.total_bytes, after.total_bytes);
     assert_eq!(before.limits, after.limits);
 }
@@ -204,5 +205,54 @@ fn closure_verification_rejects_substituted_cached_descendant_edges() -> TestRes
     assert!(matches!(f.store.publish_manifest(f.outer.clone()),
         Err(ObjectError::Corrupt(root)) if root == f.inner.root()));
     assert_unchanged(&before, &f.store);
+    Ok(())
+}
+
+#[test]
+fn overlapping_ancestor_paths_invalidate_once_and_preserve_independent_roots() -> TestResult {
+    let mut store = InMemoryObjectStore::new(ObjectLimits::default());
+    let source = store.put_verified(b"shared source")?;
+    let witness = store.put_verified(b"surviving independent witness")?;
+    let independent = ObjectManifest::new("unrelated", [witness], None)?;
+    store.publish_manifest(independent.clone())?;
+    let mut tip = source;
+    let mut ancestors = BTreeSet::new();
+    for level in 0..24 {
+        let left = ObjectManifest::new(format!("left-{level}"), [tip, witness], None)?;
+        let right = ObjectManifest::new(format!("right-{level}"), [tip, witness], None)?;
+        store.publish_manifest(left.clone())?;
+        store.publish_manifest(right.clone())?;
+        let join = ObjectManifest::new("join", [left.root(), right.root()], None)?;
+        let receipt = store.publish_manifest(join.clone())?;
+        ancestors.extend([left.root(), right.root(), join.root()]);
+        assert_eq!(receipt.closure_object_count, ancestors.len() + 2);
+        tip = join.root();
+    }
+    // Each new verification must still rehash the shared source.
+    store.corrupt_for_test(source)?;
+    assert_eq!(store.verify_closure(tip), Err(ObjectError::Corrupt(source)));
+    store.corrupt_for_test(source)?;
+    assert_eq!(store.verify_closure(tip)?, ancestors.len() + 2);
+
+    let record = TombstoneRecord::new(
+        ObjectId::parse("object:shared-source")?,
+        Generation(2),
+        Generation(1),
+        TombstoneReason::Deleted,
+        Some(witness),
+        source,
+    )?;
+    store.tombstone(source, record.clone())?;
+    store.tombstone(source, record)?;
+    assert_eq!(
+        store.manifests_with_tombstoned_closure(),
+        ancestors.into_iter().collect::<Vec<_>>()
+    );
+    assert_eq!(store.verify_closure(independent.root())?, 2);
+    assert_eq!(store.published_manifest_count(), 1);
+    assert_eq!(
+        store.parents,
+        BTreeMap::from([(witness, BTreeSet::from([independent.root()]))])
+    );
     Ok(())
 }

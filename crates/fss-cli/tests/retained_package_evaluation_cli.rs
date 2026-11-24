@@ -124,7 +124,9 @@ fn native_retained_output_produces_repeatable_bound_scores_and_preserves_journal
 fn negative_native_clip_still_has_observed_time_without_manual_candidate_rows() -> Test {
     let fixture = Fixture::new("cli-negative", [0, 0, 0], Some(0))?;
     let labels = write_labels(&fixture.directory.0, false)?;
-    let result = command(&fixture.root, fixture.report, &labels).output()?;
+    let result = command(&fixture.root, fixture.report, &labels)
+        .args(["--fixed-threshold-ppm", "735000"])
+        .output()?;
     assert!(
         result.status.success(),
         "{}",
@@ -133,6 +135,8 @@ fn negative_native_clip_still_has_observed_time_without_manual_candidate_rows() 
     let json = std::str::from_utf8(&result.stdout)?;
     assert!(json.contains("\"tracks\":[]"));
     assert!(json.contains("\"candidates\":0"));
+    assert!(json.contains("\"fixed_operating_point\":{\"threshold_ppm\":735000,\"true_positives\":0,\"false_positives\":0,\"false_negatives\":0"));
+    assert!(json.contains("\"budget_state\":\"within_budget\""));
     assert!(json.contains("\"observed_ns\":\"200000000\""));
     Ok(())
 }

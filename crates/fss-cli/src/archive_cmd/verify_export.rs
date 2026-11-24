@@ -121,7 +121,7 @@ fn verify_with_namespace(
     let receipt = bundle.finish()?;
     clock.check()?;
     let report = format!(
-        "{{\"schema\":\"{EXPORT_VERIFICATION_SCHEMA}\",\"command\":\"verify-export\",\"codec\":\"{}\",\"sensor\":{},\"stream\":{},\"generation\":{},\"anchor\":{},\"receive_clock\":{},\"decode_clock\":{},\"time_scale\":{},\"namespace\":{},\"completion_sha256\":{},\"request_sha256_observed\":{},\"request_binding\":\"semantic_consistency_only_unpinned_by_completion_v1\",\"original_snapshot_claim\":{},\"original_query\":{},\"verified_windows\":{},\"verified_recording_bytes\":{},\"bundle_files\":{},\"bundle_file_bytes\":{},\"charged_read_bytes\":{},\"io_calls\":{},\"pending_completion_copy_present\":{},\"native_source_provenance_verified\":true,\"playback_bytes_verified\":true,\"decoded_pictures_verified\":false,\"original_catalog_reconstructed\":false,\"current_archive_or_disclosure_authorized\":false,\"coverage_claim\":\"not_claimed\",\"filesystem_snapshot_atomic\":false,\"complete\":true}}\n",
+        "{{\"schema\":\"{EXPORT_VERIFICATION_SCHEMA}\",\"command\":\"verify-export\",\"codec\":\"{}\",\"sensor\":{},\"stream\":{},\"generation\":{},\"anchor\":{},\"receive_clock\":{},\"decode_clock\":{},\"time_scale\":{},\"namespace\":{},\"completion_sha256\":{},\"request_sha256_observed\":{},\"request_binding\":\"{}\",\"original_snapshot_claim\":{},\"original_query\":{},\"verified_windows\":{},\"verified_recording_bytes\":{},\"bundle_files\":{},\"bundle_file_bytes\":{},\"charged_read_bytes\":{},\"io_calls\":{},\"pending_completion_copy_present\":{},\"native_source_provenance_verified\":true,\"playback_bytes_verified\":true,\"decoded_pictures_verified\":false,\"original_catalog_reconstructed\":false,\"current_archive_or_disclosure_authorized\":false,\"coverage_claim\":\"not_claimed\",\"filesystem_snapshot_atomic\":false,\"complete\":true}}\n",
         options.codec.name(),
         quoted(&scope.sensor),
         quoted(&scope.stream),
@@ -133,6 +133,7 @@ fn verify_with_namespace(
         quoted(&namespace.to_text()),
         quoted(&receipt.completion.to_text()),
         quoted(&receipt.request_observation.to_text()),
+        receipt.request_binding(),
         quoted(&receipt.snapshot_claim.to_text()),
         interval(&receipt.query),
         receipt.windows,

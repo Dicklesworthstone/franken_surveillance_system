@@ -18,8 +18,13 @@ Original sample ranges, decode ticks, composition offsets, durations, and sync a
 remain separate from decoded pixels. Edit lists and track matrices remain source metadata;
 media ticks are not capture-time or UTC evidence.
 
-- The indexed tables must describe complete, nonoverlapping source bytes. The admitted
-  profile requires a known `mdhd` duration to equal the initial indexed decode-duration sum.
+- The indexed tables must describe complete, nonoverlapping source bytes. A known
+  `mdhd` duration can equal the indexed decode-duration sum. An extending movie with
+  no edits, no `cslg` shift and nonnegative composition offsets may also declare a
+  longer duration equal to the latest indexed presentation end measured from media
+  time zero. The reader checks every indexed sample's decode tick, composition
+  offset and duration against that declaration. Fragment decode time still advances
+  from the indexed decode end.
 - Fragments require `mvex` and valid selected-track `trex` defaults. A missing `tfdt`
   continues from the previous decode end, including the end of the indexed prefix.
   An explicit forward gap remains a gap; backwards decode time refuses the whole parse.
@@ -74,8 +79,9 @@ The raw HEVC remux produced by the command above has SHA-256
 [FFmpeg 6.1.1's writer](https://github.com/FFmpeg/FFmpeg/blob/n6.1.1/libavformat/movenc.c)
 uses `calc_samples_pts_duration` for `mdhd`. This open-GOP recording declares 10,240 ticks
 there, while its three indexed decode deltas total 6,144 ticks and the first fragment's
-`tfdt` is 6,144. That declaration is outside FSS's existing admitted indexed-duration
-profile; the production parser continues to refuse it with `Timeline`.
+`tfdt` is 6,144. The three indexed presentation ticks are 4,096, 8,192 and
+6,144. Each sample lasts 2,048 ticks. The reader can therefore verify 10,240
+as the latest presentation end and ingest the unmodified remux.
 
 The retained HEVC laboratory fixture changes only the four-byte video `mdhd.duration`
 field at absolute byte range `[280, 284)` from 10,240 to 6,144. This is an explicit fixture
@@ -98,9 +104,11 @@ assert sha256(adjusted).hexdigest() == "6559942bcf718bc7de53b44f2f134266d5a9f26c
 path.write_bytes(adjusted)
 ```
 
-A regression restores the original field, verifies the original complete-file digest,
-and requires both strict and import-style recovery parsing to refuse it. The production
-reader never performs this laboratory adjustment or silently rewrites source metadata.
+A regression restores the original field and verifies the original complete-file digest.
+Strict parsing must produce the same ten samples and Annex-B bytes as the historical
+fixture, with the first fragment starting at decode time 6,144. Import-style recovery
+must retain all three indexed samples when the first fragment header is torn.
+Adjacent incorrect declarations and unsupported timing conventions still refuse.
 
 The AVC top-level boxes are `ftyp` at 0, `moov` at 36, initial `mdat` at 1561,
 `moof` at 4421, fragment `mdat` at 4745, and `mfra` at 7435. The HEVC equivalents

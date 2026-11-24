@@ -18,6 +18,7 @@ const PLATES = {
   drive: "watch/intrusion/stills/drive.jpg",
   door: "watch/intrusion/stills/door.jpg",
   dusk: "estate/stills/overview.jpg",
+  house: "estate/hero.jpg",
 };
 const CAMERAS = ["gate", "driveway", "doorbell", "porch", "entry"];
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");

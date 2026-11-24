@@ -194,3 +194,62 @@ fn m2ts_prefix_bytes_count_toward_input_limits_and_packets_share_one_cancellatio
         assert_eq!(result.unwrap_err(), TsError::Cancelled);
     }
 }
+
+#[test]
+fn dvb204_retains_trailers_and_maps_only_transport_bytes() {
+    fn parse_dvb(input: &[u8]) -> Result<MpegTsVideo<'_>, TsError> {
+        MpegTsVideo::parse_framed(
+            input,
+            TsFraming::Dvb204,
+            TsSelection::default(),
+            TsLimits::default(),
+        )
+    }
+    for source in [AVC, HEVC] {
+        let standard =
+            MpegTsVideo::parse(source, TsSelection::default(), TsLimits::default()).unwrap();
+        let framed: Vec<_> = source
+            .chunks_exact(TS_PACKET_BYTES)
+            .flat_map(|packet| packet.iter().copied().chain([0x47; 16]))
+            .collect();
+        let parsed = parse_dvb(&framed).unwrap();
+        assert_eq!(parsed.elementary_stream(), standard.elementary_stream());
+        assert_eq!(parsed.pes(), standard.pes());
+        assert_eq!(parsed.payload_spans().len(), standard.payload_spans().len());
+        for (before, after) in standard.payload_spans().iter().zip(parsed.payload_spans()) {
+            let shift = 16 * (before.source.start / TS_PACKET_BYTES);
+            assert_eq!(
+                after.source,
+                before.source.start + shift..before.source.end + shift
+            );
+            assert_eq!(after.elementary, before.elementary);
+        }
+        let receipt = receipt::TsExtractionReceipt::from_extraction(&parsed).unwrap();
+        let cold = receipt::TsExtractionReceipt::from_bytes(&receipt.to_bytes().unwrap()).unwrap();
+        assert_eq!(cold.framing(), TsFraming::Dvb204);
+        assert_eq!(
+            cold.verify_with_checkpoint(&framed, &mut || Ok(()))
+                .unwrap()
+                .pes(),
+            parsed.pes()
+        );
+        assert!(parse_dvb(source).is_err());
+        for cut in 1..204 {
+            assert_eq!(
+                parse_dvb(&framed[..framed.len() - cut]).unwrap_err(),
+                TsError::Truncated
+            );
+        }
+        let mut changed = framed.clone();
+        changed[TS_PACKET_BYTES] ^= 1;
+        assert_eq!(
+            parse_dvb(&changed).unwrap().elementary_stream(),
+            parsed.elementary_stream()
+        );
+        assert_eq!(
+            cold.verify_with_checkpoint(&changed, &mut || Ok(()))
+                .unwrap_err(),
+            TsError::Receipt
+        );
+    }
+}

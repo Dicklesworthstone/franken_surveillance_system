@@ -284,6 +284,10 @@ fn request_is_consistency_checked_but_its_observed_digest_is_not_the_completion_
     let receipt = bundle.finish()?;
     assert_eq!(receipt.completion, fixture.pin);
     assert_eq!(
+        receipt.request_binding(),
+        "semantic_consistency_only_unpinned_by_completion_v1"
+    );
+    assert_eq!(
         receipt.request_observation,
         ContentDigest::sha256(changed.as_bytes())
     );
@@ -294,6 +298,41 @@ fn request_is_consistency_checked_but_its_observed_digest_is_not_the_completion_
     assert!(matches!(
         fixture.open(limits(), &Allowed),
         Err(ExportVerificationError::InvalidReport)
+    ));
+    Ok(())
+}
+
+#[test]
+fn v2_requires_the_request_digest_and_refuses_same_length_request_changes() -> TestResult {
+    let mut fixture = Fixture::new("request-pin")?;
+    let request = fs::read_to_string(fixture.root.join("REQUEST.json"))?;
+    let header = fixture.completion.replace(
+        "fss.local_archive_operator_report.v1",
+        EXPORT_COMPLETION_SCHEMA,
+    );
+    fixture.rewrite(header.clone())?;
+    assert!(matches!(
+        fixture.open(limits(), &Allowed),
+        Err(ExportVerificationError::InvalidReport)
+    ));
+    let field = format!(
+        "{{\"request_sha256\":\"{}\",",
+        ContentDigest::sha256(request.as_bytes())
+    );
+    fixture.rewrite(header.replacen('{', &field, 1))?;
+    let mut bundle = fixture.open(limits(), &Allowed)?;
+    assert!(bundle.next_window()?.is_some());
+    assert_eq!(
+        bundle.finish()?.request_binding(),
+        "sha256_pinned_by_completion_v2"
+    );
+    fs::write(
+        fixture.root.join("REQUEST.json"),
+        request.replace("8388608", "8388609"),
+    )?;
+    assert!(matches!(
+        fixture.open(limits(), &Allowed),
+        Err(ExportVerificationError::Integrity)
     ));
     Ok(())
 }

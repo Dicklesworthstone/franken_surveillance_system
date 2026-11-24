@@ -21,6 +21,7 @@ pub(crate) const MAX_WINDOWS: usize = 4096;
 pub(crate) const MAX_FILES: usize = MAX_WINDOWS * 6 + 3;
 pub(crate) const MAX_IO_CALLS: u64 = 4_000_000;
 pub(crate) const MAX_READ_BYTES: u64 = 1024 * 1024 * 1024 * 1024;
+pub(crate) const EXPORT_COMPLETION_SCHEMA: &str = "fss.local_archive_export_completion.v2";
 const MAX_REQUEST_BYTES: usize = 4096;
 
 /// A payload-free refusal of copied-export verification.
@@ -140,6 +141,7 @@ pub(crate) struct WindowBytes {
 }
 
 struct Document {
+    request_digest: Option<ContentDigest>,
     snapshot: ContentDigest,
     query: Range<u64>,
     windows: Vec<Window>,
@@ -151,6 +153,7 @@ struct Document {
 pub(crate) struct Receipt {
     pub completion: ContentDigest,
     pub request_observation: ContentDigest,
+    request_pinned: bool,
     pub snapshot_claim: ContentDigest,
     pub query: Range<u64>,
     pub windows: usize,
@@ -160,6 +163,16 @@ pub(crate) struct Receipt {
     pub charged_read_bytes: u64,
     pub io_calls: u64,
     pub pending_copy_present: bool,
+}
+
+impl Receipt {
+    pub fn request_binding(&self) -> &'static str {
+        if self.request_pinned {
+            "sha256_pinned_by_completion_v2"
+        } else {
+            "semantic_consistency_only_unpinned_by_completion_v1"
+        }
+    }
 }
 
 pub(crate) struct Bundle<'a> {
@@ -205,8 +218,14 @@ impl<'a> Bundle<'a> {
         drop(value);
         clock.check()?;
         let request = reader.read("REQUEST.json", MAX_REQUEST_BYTES, None)?;
-        format::request(&request, &document, scope, limits)?;
         let request_observation = digest(&request)?;
+        if document
+            .request_digest
+            .is_some_and(|pin| pin != request_observation)
+        {
+            return Err(ExportVerificationError::Integrity);
+        }
+        format::request(&request, &document, scope, limits)?;
         let mut expected = BTreeSet::from(["COMPLETE.json".to_owned(), "REQUEST.json".to_owned()]);
         let mut exported = request.len() as u64;
         for window in &document.windows {
@@ -319,6 +338,7 @@ impl<'a> Bundle<'a> {
         Ok(Receipt {
             completion: self.completion,
             request_observation: self.request_observation,
+            request_pinned: self.document.request_digest.is_some(),
             snapshot_claim: self.document.snapshot,
             query: self.document.query,
             windows: self.next,

@@ -147,7 +147,6 @@
 .footer {
   position: relative;
   isolation: isolate;
-  margin-top: clamp(40px, 6vw, 96px);
   padding: clamp(64px, 7vw, 108px) 0 72px;
   border-top: 1px solid var(--line);
   background: radial-gradient(60rem 26rem at 18% 120%, rgb(255 180 156 / 0.14), transparent 66%), var(--ink);
@@ -227,5 +226,133 @@
   .status__col li {
     padding: 11px 0;
     font-size: 0.86rem;
+  }
+}
+
+/* The scope list reads in two columns where there is room. */
+@media (min-width: 761px) {
+  .nots ul {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: clamp(28px, 4vw, 64px);
+  }
+  .nots li:nth-child(2) {
+    border-top: 0;
+  }
+}
+
+/*
+ * The finale. The minute is over, the house is lit, and the page ends on it like a horizon: the
+ * words and the commands sit in the sky, the house below them, and the footer is the ground.
+ */
+.finale {
+  --chapter: var(--dawn);
+  --plate: min(58vw, 860px);
+  position: relative;
+  isolation: isolate;
+  overflow: clip;
+  padding-block: clamp(80px, 9vw, 136px) calc(var(--plate) * 0.7);
+}
+.finale::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--chapter) 55%, transparent) 22%, transparent 70%);
+}
+.finale__plate {
+  position: absolute;
+  inset: auto 0 0;
+  z-index: -1;
+  height: var(--plate);
+  mask-image: linear-gradient(to bottom, transparent 0%, black 40%, black 90%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 40%, black 90%, transparent 100%);
+}
+.finale__plate img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: 50% 70%;
+}
+/* First light along the roofline, and the sky darkened where the words are. */
+.finale__plate::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(60% 34% at 50% 40%, color-mix(in srgb, var(--dawn) 18%, transparent), transparent 72%),
+    linear-gradient(to bottom, rgb(5 7 11 / 0.9) 0%, rgb(5 7 11 / 0.5) 30%, transparent 52%);
+}
+.finale__grid {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
+  gap: 40px clamp(32px, 5vw, 80px);
+  align-items: center;
+}
+.finale__eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.finale h2 {
+  max-width: 11ch;
+  margin-top: 22px;
+  text-shadow: 0 2px 40px rgb(5 7 11 / 0.8);
+}
+.finale .lede {
+  max-width: 34rem;
+  margin-top: 24px;
+}
+.finale .lede a {
+  color: #fff;
+  text-decoration-color: color-mix(in srgb, var(--chapter) 70%, transparent);
+  text-underline-offset: 0.2em;
+}
+.finale__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 34px;
+}
+.finale__inside {
+  background: linear-gradient(180deg, rgb(255 255 255 / 0.04), rgb(255 255 255 / 0) 42%), rgb(10 13 19 / 0.94);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.05),
+    0 40px 120px -40px rgb(0 0 0 / 0.9);
+}
+@media (max-width: 1080px) {
+  .finale__grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .finale__inside {
+    max-width: 44rem;
+  }
+}
+@media (max-width: 640px) {
+  .finale {
+    --plate: 440px;
+    padding-top: 72px;
+    padding-bottom: calc(var(--plate) * 0.74);
+  }
+  .finale__plate img {
+    object-position: 46% 64%;
+  }
+  .finale__actions .button {
+    flex: 1 1 auto;
+  }
+  .finale__end {
+    display: none;
+  }
+  /* Four tabs in two even rows, rather than three and one. */
+  .cmdbox__bar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .cmdbox__tabs {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .cmdbox__copy {
+    justify-self: end;
   }
 }

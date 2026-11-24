@@ -72,7 +72,7 @@ including hand-computed dense and convolution/pooling results.
   Both use the bounded native lowering described below.
 
 Unknown features refuse rather than being skipped or approximated. In particular,
-runtime or data-dependent shape inputs/computation, negative F32-data Slice strides,
+runtime or data-dependent shape inputs/computation,
 cubic or dynamic Resize and unsupported linear coordinate modes,
 other opsets/domains/dtypes, symbolic or zero-sized shapes, sparse data, external
 weight files, custom functions, training graphs and model activation are not
@@ -172,11 +172,11 @@ optimized executors, canonical graph/Safetensors reload, an independent grouped
 convolution oracle, pooling boundaries, compatibility, limits and cancellation.
 Current execution evidence is recorded in `IMPLEMENTATION_STATUS.md`.
 
-## Opset 18 reductions and partitions
+## Opset 18 reductions, partitions, padding and resizing
 
 The explicit opset-18 profile uses the same closed operator allowlist and static
-F32 runtime. It implements the changed Mean/L2 and Split schemas; Pad and Resize
-admit only source forms equivalent to their existing supported numerical subset.
+F32 runtime. It supports the changed Mean/L2 and Split forms, axis-selective Pad,
+and spatial Resize with static axis and aspect-ratio controls.
 Unchanged operators retain their existing attribute, shape, dtype and budget checks.
 ONNX IR remains limited to versions 7–9. Selecting opset 18 does not admit a new
 operator, runtime integer/Boolean computation, dynamic shapes or model activation.
@@ -186,8 +186,8 @@ operator, runtime integer/Boolean computation, dynamic shapes or model activatio
 | [ReduceMean-18](https://onnx.ai/onnx/operators/onnx__ReduceMean.html#reducemean-18) | Optional static INT64 axes input, `keepdims` and `noop_with_empty_axes` | The former `axes` attribute and runtime axes refuse. |
 | [ReduceL2-18](https://onnx.ai/onnx/operators/onnx__ReduceL2.html#reducel2-18) | The same input-axis controls, retaining separate F32 square, reduction and square root | Empty-axis no-op skips only the reduction; square and square root still execute. |
 | [Split-18](https://onnx.ai/onnx/operators/onnx__Split.html#split-18) | Static positive split lengths **or** `num_outputs` equal to the declared one-to-eight output count | Exactly one form is required; zero-sized outputs and dynamic partitions refuse. |
-| [Pad-18](https://onnx.ai/onnx/operators/onnx__Pad.html#pad-18) | Existing all-axis padding, including an omitted fourth-input placeholder | An explicit axes input remains unsupported. |
-| [Resize-18](https://onnx.ai/onnx/operators/onnx__Resize.html#resize-18) | Existing nearest/linear spatial modes, omitted axes, `antialias=0` and `keep_aspect_ratio_policy="stretch"` | Subset axes, enabled antialiasing and other aspect policies refuse. |
+| [Pad-18](https://onnx.ai/onnx/operators/onnx__Pad.html#pad-18) | Optional static INT64 axes select the dimensions for constant, edge or reflect padding and cropping. Negative axes and source axis order are honored. | Axes must be unique and in range. Pads contain one beginning and one ending value per selected axis. Ranks one through four are supported. |
+| [Resize-18](https://onnx.ai/onnx/operators/onnx__Resize.html#resize-18) | Existing nearest/linear spatial modes with ordered subset axes, static sizes or original F32 scales and `antialias=0`. Static sizes with explicit spatial axes also support `not_larger` (smallest requested ratio) and `not_smaller` (largest). Output extents round half up and sampling retains the common ratio. | Batch and channel extents stay fixed. Non-stretch policies require sizes and explicit height and/or width axes. Zero-sized results, duplicate or out-of-range axes and enabled antialiasing refuse. |
 
 Mean/L2 axes can come from an initializer, Constant or the existing bounded static
 shape program. Omitted or empty axes reduce all dimensions by default. With
@@ -212,7 +212,8 @@ The `opset18` cases in `onnx_attention_execution` exercise rank-zero-through-eig
 reductions against independent ordered arithmetic, exact legacy graph bytes,
 empty-axis bit/overflow behavior, even/uneven partitions, a pooled feature head
 through Split and MatMul, existing LayerNormalization/Where/Resize/Pad compatibility,
-schema refusals, resource boundaries and cancellation. Execution results are recorded
+ordered Pad/Resize axes, aspect-ratio rounding and sampling, schema refusals,
+resource boundaries and cancellation. Execution results are recorded
 in `IMPLEMENTATION_STATUS.md`; these bounded contracts do not qualify arbitrary
 models or trained detector accuracy.
 
@@ -825,54 +826,75 @@ cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir \
   --test-threads=1 --skip scalar_executor:: --skip optimized_executor::
 ```
 
-## Static constant padding and cropping
+## Static padding and cropping
 
 The importer admits [Pad-13](https://onnx.ai/onnx/operators/onnx__Pad.html#pad-13)
 for static F32 tensors of rank one through four, including padding or cropping
-batch and channel axes. `mode` must be absent or `"constant"`. The second input
-must be an embedded INT64 vector containing exactly twice the input rank in the
-order `[begin_axis_0, ..., begin_axis_n, end_axis_0, ..., end_axis_n]`.
+batch and channel axes. `mode` may be `"constant"` (the default), `"edge"` or
+`"reflect"`. The second input must be an embedded INT64 vector containing
+exactly twice the input rank in the order
+`[begin_axis_0, ..., begin_axis_n, end_axis_0, ..., end_axis_n]`.
 Initializers, Constant nodes and the bounded static shape programs below may
 supply this control; its existing eight-element ceiling remains unchanged.
+These modes are available in all admitted opsets (13, 17 and 18).
 
-Positive values add constant borders and negative values remove samples from
-the corresponding side. All cropping happens before padding, and every retained
+Positive values add borders and negative values remove samples from the
+corresponding side. All cropping happens before padding, and every retained
 axis must contain at least one source sample. An entirely cropped axis refuses
 with `Unsupported`, even when padding on the opposite side would make the final
-shape positive. For example, input `[1,2,3,4]`, pads `[-1,2]` and fill `9` produce
-`[2,3,4,9,9]`; pads `[2,-1]` produce `[9,9,1,2,3]`.
+shape positive. For input `[1,2,3,4]` and pads `[-1,2]`, constant fill `9`
+produces `[2,3,4,9,9]`, edge produces `[2,3,4,4,4]`, and reflect produces
+`[2,3,4,3,2]`.
 
-The optional third input is a finite embedded F32 **scalar**, not a length-one
-vector. An omitted input or empty optional input name selects positive zero;
-an empty tensor is not a scalar and refuses. Explicit negative zero and subnormal
-fill values retain their exact F32 bits. A fill also consumed as ordinary model
-data remains an exported parameter, while control-only values are removed from
-the runtime graph without changing the retained original ONNX bytes.
+Edge mode repeats the first or last retained sample and supports singleton axes.
+Reflect mode mirrors neighboring retained samples, excluding the boundary sample.
+Each positive reflection pad must be strictly smaller than the cropped axis
+extent; padding a singleton axis or reflecting farther than this bounded profile
+refuses with `Unsupported`. Cropping without positive reflection padding remains
+valid. This restriction matches the
+[ONNX reference implementation](https://github.com/onnx/onnx/blob/main/onnx/reference/ops/op_pad.py).
 
-Conversion emits at most one positive-stride Slice for cropping, followed by one
-Concat per padded axis with generated constant border tensors. A no-op Pad emits
-a Reshape; crop-only Pad needs no generated parameters. These existing native
-operators move data without floating-point arithmetic, so source sample bits are
-preserved. No frozen operator ID, runtime dependency or package format changes.
-Cropping first also keeps every intermediate tensor within the final output's
-size. Checked output and generated-parameter byte counts, node and tensor counts,
-shared work limits, cancellation and reserved helper names apply before and
-during expansion. Signed pad magnitude and shape overflow produce typed refusals.
+The optional third input must be a finite embedded F32 **scalar**, including in
+edge/reflect mode where its value does not affect the result. An omitted input
+or empty optional input name selects positive zero for constant mode; an empty
+tensor is not a scalar and refuses. Explicit negative-zero and subnormal fills
+retain their exact F32 bits. A fill also consumed as ordinary model data remains
+an exported parameter, while control-only values are removed from the runtime
+graph without changing the retained original ONNX bytes.
 
-Dynamic pads or fill, reflect/edge modes, scalar data, ranks above four, non-F32
-data, later-schema axes inputs and zero-sized retained axes are outside this
-profile. Malformed control rank/type/length, conflicting declared shapes and
-unsupported attributes also refuse conversion.
+Conversion emits at most one positive-stride Slice for cropping. Constant mode
+then uses one Concat per padded axis and generated border tensors, preserving
+the exact previously admitted graph bytes. Edge mode copies one boundary slice
+and doubles it with Concat, so graph growth is logarithmic in the pad count.
+Reflect mode selects neighboring samples with unit Slices and concatenates them
+in reverse order. Edge/reflect generate no weight tensors. A no-op Pad emits a
+Reshape; crop-only Pad needs no generated parameters.
 
-The `onnx_pad_execution` target exercises the production scalar executor before
-and after canonical Model IR and Safetensors export/reload. Literal mixed-sign
-examples and an independent output-to-input coordinate oracle cover all four
-ranks, default and explicit fills, negative zero, subnormals and a Pad-to-Conv
-block. Additional cases cover static shape controls, a scalar's simultaneous
-control/data use, helper-name collisions, crop-first resource bounds, exact
-quota boundaries and cancellation at every import checkpoint. The importer
-identity includes this lowering source. Native results and their scope are
-recorded in `IMPLEMENTATION_STATUS.md`.
+These existing native operators copy data without floating-point arithmetic,
+preserving runtime sample bits, including signed zero, subnormals, infinities
+and NaN payloads. Cropping first keeps intermediates within the final output
+size. Exact node/tensor/helper counts and output/parameter byte bounds are checked
+before expansion; shared work limits and cancellation apply throughout.
+Large reflection expansions can exceed the existing graph limits and refuse.
+Signed pad magnitude and shape overflow produce typed refusals. No frozen
+operator ID, runtime dependency, Model IR version or package format changes.
+
+Opset 18 additionally accepts a fourth static INT64 axes input. Each half of the
+pads vector follows the selected axes in declaration order. Opsets 13 and 17
+require all-axis pads. Dynamic controls, wrap mode, scalar data, ranks above four,
+non-F32 data and zero-sized retained axes remain outside this profile. Malformed control rank/type/length, conflicting declared shapes
+and unsupported attributes also refuse conversion.
+
+The `onnx_pad_execution` target exercises both production scalar and optimized
+executors before and after canonical Model IR and Safetensors export/reload.
+Literal examples and an independent output-to-input coordinate oracle cover
+all four ranks, mixed-sign crops/pads, default/explicit fills, exact runtime bits,
+large edge repetition and Pad-to-Conv composition. Additional cases cover
+static shape controls, simultaneous control/data uses, helper-name collisions,
+crop-first resource bounds, exact quotas and cancellation at every import
+checkpoint. Four graph digests captured from the original constant lowering
+guard compatibility. The importer identity includes this lowering source.
+Native results and their scope are recorded in `IMPLEMENTATION_STATUS.md`.
 
 ## Instance and grouped feature normalization
 
@@ -1267,7 +1289,8 @@ fixtures establish conversion and execution behavior, not trained detector quali
 The importer admits static [Resize-13](https://onnx.ai/onnx/operators/onnx__Resize.html#resize-13)
 for NCHW rank-four tensors, preserving batch/channel sizes while enlarging or shrinking
 the spatial axes. Exactly one nonempty embedded F32 `scales` vector or INT64 `sizes`
-vector supplies four values. Spatial scales must be finite and positive, at most 64,
+vector supplies four values in the all-axis form. Resize-18 with explicit axes
+takes one value per selected axis in source order. Spatial scales must be finite and positive, at most 64,
 and produce positive output dimensions; sizes must be positive and enlarge neither
 axis by more than 64. Fractional factors, downsampling and opposite resize directions
 on the two axes are supported. An omitted ROI or empty F32 ROI is accepted; nonempty
@@ -1278,7 +1301,11 @@ Two precise coordinate profiles are admitted: `asymmetric` with nearest mode `fl
 and `half_pixel` with `round_prefer_floor` (the opset-13 defaults). The source F32 scale
 is retained exactly: output length is `floor(input_length * scale)`, and coordinates
 use that original scale, not a ratio reconstructed from the rounded output length.
-For a sizes control, coordinates instead use the exact ratio `output_length / input_length`.
+For a stretch sizes control, coordinates use the exact ratio `output_length / input_length`.
+Resize-18 spatial aspect policies retain the selected common ratio when rounding each
+output extent. For example, scaling width three by 3/2 gives width five and uses
+3/2 for asymmetric and half-pixel coordinates. Align-corners interpolation uses the
+rounded output extent for its endpoint mapping.
 Checked integer rational arithmetic applies the coordinate transform and nearest
 rounding without losing ties. `asymmetric/floor` selects `floor(x / scale)`;
 `half_pixel/round_prefer_floor` rounds `(x + 0.5) / scale - 0.5` to the nearest integer,
@@ -1418,9 +1445,10 @@ all source names, including later source values.
 value must still be one of the four Resize-13 enum values and have the proper type.
 Finite `cubic_coeff_a` and `extrapolation_value` attributes are validated but unused.
 Cubic interpolation, nonempty ROI, `exclude_outside=1`, crop/extrapolation modes,
-`tf_half_pixel_for_nn`, enabled antialiasing, subset axes and unknown attributes
-remain explicit refusals. Opsets 13/17 also reject the later antialias/axes/aspect
-attributes; opset 18 admits only the equivalent defaults specified above.
+`tf_half_pixel_for_nn`, enabled antialiasing and unknown attributes remain explicit
+refusals. Opsets 13 and 17 also reject the later antialias, axes and aspect
+attributes. Opset 18 accepts ordered subset axes and the bounded spatial size
+policies specified in the opset table above.
 No native operator ID, canonical graph version, production
 runtime dependency or model-activation authority changes. The new lowering/planner
 sources participate in the source-bound importer identity; original ONNX bytes remain
@@ -1457,6 +1485,22 @@ rustc +nightly-2026-08-31 --edition 2024 --test \
 /tmp/fss-linear-resize-coordinates
 ```
 
+## Native layout selection
+
+The scalar executor reads Slice and Transpose samples directly from the original
+validated tensor view. It respects byte offsets, actual element strides and
+zero-stride broadcast axes, and decodes the native-endian F32 storage bytes
+without numerical arithmetic. Strided and offset views therefore have the same
+logical output and exact sample bits as contiguous inputs.
+
+Selection no longer materializes a temporary copy of the entire logical input.
+This removes repeated full-input scans from the bounded Slice expansions used
+by reverse slicing, Gather, padding and Resize. Output buffers, declared
+execution work and byte accounting, the existing logical-input size ceiling,
+and cancellation checkpoints remain unchanged. Concat keeps its existing
+implementation. This is a storage-access improvement with unchanged operator
+semantics, graph formats and runtime dependencies.
+
 ## Static tensor controls and detector heads
 
 The importer lowers [Reshape-13](https://onnx.ai/onnx/operators/onnx__Reshape.html#reshape-13),
@@ -1488,11 +1532,33 @@ axes refuse. Opset 13 has no Reshape `allowzero` attribute; opset 17 admits only
 the explicitly requested integer value zero. Literal-zero mode still refuses.
 
 Slice accepts optional axes and steps, including empty optional input-name slots.
-It normalizes negative axes and endpoints, clamps endpoints to the static dimension,
-and supports positive strides up to `i64::MAX`. Negative strides and empty runtime
-results explicitly refuse. There is no reverse-slice approximation or dynamic
-shape execution. An empty INT64 vector is valid control data for scalar Reshape;
-zero-sized runtime tensors remain unsupported.
+It normalizes negative axes and endpoints and supports both positive and negative
+nonzero strides, including `i64::MIN` and `i64::MAX`. Positive starts/ends clamp
+to `[0, dimension]`; reverse starts clamp to `[0, dimension-1]` and reverse ends
+to `[-1, dimension-1]`, after adding the dimension to negative source endpoints.
+For a complete reverse, use an end of `i64::MIN`: a literal `-1` instead denotes
+the final element's index and can produce an empty selection. Empty runtime
+results still refuse.
+
+Negative strides lower to one positive Slice selecting the same samples in
+ascending order, followed by unit Slices and Concat for each axis that needs
+reversal. Mixed positive/negative strides and unsorted axes retain ONNX order.
+Singleton selections need no reversal, including an `i64::MIN` step. The exact
+expansion is `1 + sum(selected_axis_length + 1)` over reversed axes with more
+than one selected sample. Node, tensor and reserved-name bounds are checked
+before creating those helpers; large reversals may refuse with `Limit`.
+Preselection keeps intermediates at most as large as the selected tensor.
+These native copies preserve runtime sample bits without generated weights.
+Previously admitted positive-only Slice graph bytes and import-work charges
+remain unchanged. This is static shape conversion; runtime shape execution
+remains unsupported.
+
+Six reverse-slicing regressions in `onnx_structure_execution` cover literal
+mixed-axis results, all ranks one through eight, canonical export/reload,
+signed zero/subnormals/infinities/NaN payloads, an independent 1,620-case index
+walk across extreme bounds, exact resource limits, helper-name collisions and
+every import cancellation checkpoint. An empty INT64 vector remains valid
+control data for scalar Reshape; zero-sized runtime tensors remain unsupported.
 
 All embedded controls consume the same aggregate parameter-byte allowance as actual
 F32 weights, even when compilation removes them. Control names also consume tensor

@@ -16,6 +16,7 @@ pub(super) struct Destination {
     root: PathBuf,
     limit: u64,
     written: u64,
+    request_digest: ContentDigest,
 }
 impl Destination {
     pub(super) fn begin(
@@ -67,11 +68,6 @@ impl Destination {
         builder.create(&root).map_err(|e| {
             ArchiveCommandError::ExportIncomplete(Box::new(io_error("create export directory", e)))
         })?;
-        let mut destination = Self {
-            root,
-            limit: options.export_budget,
-            written: 0,
-        };
         let request = format!(
             "{{\"schema\":\"fss.local_archive_export_intent.v1\",\"snapshot\":{},\"codec\":\"{}\",\"query\":{},\"whole_windows_authorized\":true,\"max_export_bytes\":{},\"completion_file\":\"COMPLETE.json\"}}\n",
             quoted(&snapshot.to_text()),
@@ -79,6 +75,12 @@ impl Destination {
             interval(query),
             options.export_budget
         );
+        let mut destination = Self {
+            root,
+            limit: options.export_budget,
+            written: 0,
+            request_digest: ContentDigest::sha256(request.as_bytes()),
+        };
         let result = destination
             .file("REQUEST.json", request.as_bytes(), clock)
             .and_then(|_| sync_directory(&destination.root))
@@ -93,6 +95,10 @@ impl Destination {
         result.map_err(|e| ArchiveCommandError::ExportIncomplete(Box::new(e)))?;
         Ok(destination)
     }
+    pub(super) fn request_digest(&self) -> ContentDigest {
+        self.request_digest
+    }
+
     pub(super) fn payload_bytes(&self) -> u64 {
         self.written
     }

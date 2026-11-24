@@ -437,6 +437,10 @@ pub enum EvaluationError {
     },
     /// The false-alert budget window is zero.
     InvalidBudget,
+    /// The report body does not agree with its digest or counts.
+    InconsistentReport,
+    /// The caller's fixed operating threshold exceeds one million ppm.
+    InvalidThreshold,
     /// Canonical encoding failed.
     Encoding,
     /// The caller cancelled; no partial successful report is returned.
@@ -457,6 +461,8 @@ impl EvaluationError {
             Self::OutsideClip { .. } => "evaluation.outside_clip",
             Self::ScoreOutOfRange { .. } => "evaluation.score_out_of_range",
             Self::InvalidBudget => "evaluation.invalid_budget",
+            Self::InconsistentReport => "evaluation.inconsistent_report",
+            Self::InvalidThreshold => "evaluation.invalid_threshold",
             Self::Encoding => "evaluation.encoding",
             Self::Cancelled => "evaluation.cancelled",
         }
@@ -505,6 +511,8 @@ impl fmt::Display for EvaluationError {
             Self::InvalidBudget => {
                 formatter.write_str("false-alert budget window must be non-zero")
             }
+            Self::InconsistentReport => formatter.write_str("inconsistent evaluation report"),
+            Self::InvalidThreshold => formatter.write_str("threshold exceeds one million ppm"),
             Self::Encoding => formatter.write_str("canonical encoding failed"),
             Self::Cancelled => formatter.write_str("evaluation cancelled before publication"),
         }
@@ -681,6 +689,33 @@ impl OperatingPoint {
             Self::NoObservedTime => Ratio::Undefined(UndefinedReason::NoObservedTime),
         }
     }
+}
+
+/// Metrics at a caller-supplied inclusive score threshold on a particular evaluation report.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FixedOperatingPoint {
+    /// The exact requested score in parts per million.
+    pub threshold_ppm: u32,
+    /// Matched observable truth events at the requested threshold.
+    pub true_positives: u64,
+    /// Unmatched scored candidates at the requested threshold.
+    pub false_positives: u64,
+    /// Observable truth events without a match at the requested threshold.
+    pub false_negatives: u64,
+    /// Fraction of scored alerts that match.
+    pub precision: Ratio,
+    /// Fraction of observable truth events detected.
+    pub recall: Ratio,
+    /// Exposure denominator in observed clip-nanoseconds.
+    pub observed_ns: u128,
+    /// Whether the report's declared false-alert budget was met, or None for zero exposure.
+    pub within_budget: Option<bool>,
+    /// Detection latency over the matches at the requested threshold.
+    pub time_to_detect: Option<TimeToDetectSummary>,
+    /// Digest of the parent event-level evaluation.
+    pub report_digest: ContentDigest,
+    /// Digest binding the parent, requested threshold and metrics.
+    pub digest: ContentDigest,
 }
 
 /// Final disposition of one truth event under the full matching.
@@ -984,6 +1019,30 @@ impl ClipState {
     }
 }
 
+/// Indices in canonical match order and the latest event end in each inclusive prefix.
+#[derive(Default)]
+struct TruthWindows {
+    indices: Vec<usize>,
+    prefix_end: Vec<u64>,
+}
+
+impl TruthWindows {
+    fn candidates_at<'a>(
+        &'a self,
+        events: &[&TruthEvent],
+        instant: u64,
+        policy: &EvaluationPolicy,
+    ) -> &'a [usize] {
+        let earliest_end = instant.saturating_sub(policy.late_tolerance_ns);
+        let latest_start = instant.saturating_add(policy.early_tolerance_ns);
+        let stop = self
+            .indices
+            .partition_point(|&i| events[i].interval.start_ns <= latest_start);
+        let first = self.prefix_end[..stop].partition_point(|&end| end < earliest_end);
+        &self.indices[first..stop]
+    }
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum MatchKind {
     TruePositive(usize),
@@ -1196,20 +1255,29 @@ pub fn evaluate_cancellable(
 
     // ---- matching -------------------------------------------------------------------------
     // (clip, class) -> truth indices ordered by (start_ns, event_id).
-    let mut truth_index: BTreeMap<(&str, &str), Vec<usize>> = BTreeMap::new();
+    let mut truth_index: BTreeMap<(&str, &str), TruthWindows> = BTreeMap::new();
     for (index, event) in events.iter().enumerate() {
         checkpoint()?;
         truth_index
             .entry((event.clip_id.as_str(), event.class.as_str()))
             .or_default()
+            .indices
             .push(index);
     }
-    for indices in truth_index.values_mut() {
+    for windows in truth_index.values_mut() {
         checkpoint()?;
-        indices.sort_unstable_by(|&a, &b| {
+        windows.indices.sort_unstable_by(|&a, &b| {
             (events[a].interval.start_ns, &events[a].event_id)
                 .cmp(&(events[b].interval.start_ns, &events[b].event_id))
         });
+        // Ends need not be sorted: an early, long-running event can cover many later events.
+        let mut latest = 0;
+        windows.prefix_end.reserve(windows.indices.len());
+        for &index in &windows.indices {
+            checkpoint()?;
+            latest = latest.max(events[index].interval.end_ns);
+            windows.prefix_end.push(latest);
+        }
     }
 
     let mut scoring_order: Vec<usize> = (0..by_id.len())
@@ -1239,10 +1307,10 @@ pub fn evaluate_cancellable(
             let candidate = by_id[candidate_index];
             let mut observable_choice = None;
             let mut neutral_choice = None;
-            if let Some(indices) =
+            if let Some(windows) =
                 truth_index.get(&(candidate.clip_id.as_str(), candidate.class.as_str()))
             {
-                for &truth in indices {
+                for &truth in windows.candidates_at(&events, candidate.detect_ns, policy) {
                     checkpoint()?;
                     let event = events[truth];
                     let eligible = truth_match[truth].is_none()
@@ -1405,25 +1473,10 @@ pub fn evaluate_cancellable(
             (Some(first), None) => OperatingPoint::NoThresholdWithinBudget {
                 false_positives_at_highest_threshold: first.false_positives,
             },
-            (Some(_), Some(point)) => {
-                let values = truth_outcomes
-                    .iter()
-                    .filter_map(|outcome| match outcome.disposition {
-                        TruthDisposition::Detected {
-                            score_ppm,
-                            time_to_detect_ns,
-                            ..
-                        } if score_ppm >= point.threshold_ppm => Some(time_to_detect_ns),
-                        TruthDisposition::Detected { .. }
-                        | TruthDisposition::Missed
-                        | TruthDisposition::NotObservable { .. } => None,
-                    })
-                    .collect();
-                OperatingPoint::WithinBudget {
-                    point: *point,
-                    time_to_detect: TimeToDetectSummary::from_values(values),
-                }
-            }
+            (Some(_), Some(point)) => OperatingPoint::WithinBudget {
+                point: *point,
+                time_to_detect: threshold_latency(&truth_outcomes, point.threshold_ppm),
+            },
         }
     };
 
@@ -1463,6 +1516,21 @@ pub fn evaluate_cancellable(
     Ok(report)
 }
 
+fn threshold_latency(outcomes: &[TruthOutcome], threshold_ppm: u32) -> Option<TimeToDetectSummary> {
+    let values = outcomes
+        .iter()
+        .filter_map(|outcome| match outcome.disposition {
+            TruthDisposition::Detected {
+                score_ppm,
+                time_to_detect_ns,
+                ..
+            } if score_ppm >= threshold_ppm => Some(time_to_detect_ns),
+            _ => None,
+        })
+        .collect();
+    TimeToDetectSummary::from_values(values)
+}
+
 fn encode_ttd(encoder: &mut CanonicalEncoder, summary: Option<&TimeToDetectSummary>) {
     match summary {
         Some(summary) => {
@@ -1486,6 +1554,71 @@ fn encode_point(encoder: &mut CanonicalEncoder, point: &PrPoint) {
 }
 
 impl EvaluationReport {
+    /// Score an inclusive, caller-supplied threshold against the same full matching. The
+    /// threshold need not occur in the curve. Its choice is independent of budget admission.
+    pub fn at_threshold(&self, threshold_ppm: u32) -> Result<FixedOperatingPoint, EvaluationError> {
+        if threshold_ppm > MAX_SCORE_PPM {
+            return Err(EvaluationError::InvalidThreshold);
+        }
+        if !self.verify_digest() {
+            return Err(EvaluationError::InconsistentReport);
+        }
+        let prefix = self
+            .pr_curve
+            .partition_point(|p| p.threshold_ppm >= threshold_ppm);
+        let (true_positives, false_positives) = self.pr_curve[..prefix]
+            .last()
+            .map_or((0, 0), |p| (p.true_positives, p.false_positives));
+        let positives = self.counts.observable_truth_events;
+        let false_negatives = positives
+            .checked_sub(true_positives)
+            .ok_or(EvaluationError::InconsistentReport)?;
+        let alerts = true_positives
+            .checked_add(false_positives)
+            .ok_or(EvaluationError::InconsistentReport)?;
+        let precision = Ratio::of(true_positives, alerts, UndefinedReason::NoScoredCandidates);
+        let recall = Ratio::of(
+            true_positives,
+            positives,
+            UndefinedReason::NoObservableTruthEvents,
+        );
+        let observed_ns = self.durations.observed_ns;
+        let within_budget = (observed_ns > 0).then(|| {
+            self.policy
+                .false_alert_budget
+                .admits(false_positives, observed_ns)
+        });
+        let time_to_detect = threshold_latency(&self.truth_outcomes, threshold_ppm);
+        let mut encoder = domain_encoder("fixed-operating-point/v1");
+        encoder.digest(self.digest);
+        encoder.u32(threshold_ppm);
+        encoder.u64(true_positives);
+        encoder.u64(false_positives);
+        encoder.u64(false_negatives);
+        precision.encode(&mut encoder);
+        recall.encode(&mut encoder);
+        encode_u128(&mut encoder, observed_ns);
+        encoder.tag(match within_budget {
+            None => 0,
+            Some(false) => 1,
+            Some(true) => 2,
+        });
+        encode_ttd(&mut encoder, time_to_detect.as_ref());
+        Ok(FixedOperatingPoint {
+            threshold_ppm,
+            true_positives,
+            false_positives,
+            false_negatives,
+            precision,
+            recall,
+            observed_ns,
+            within_budget,
+            time_to_detect,
+            report_digest: self.digest,
+            digest: finish_digest(encoder)?,
+        })
+    }
+
     /// Recomputes the canonical report digest over every field except `digest` itself.
     pub fn compute_digest(&self) -> Result<ContentDigest, EvaluationError> {
         let mut encoder = domain_encoder("report");

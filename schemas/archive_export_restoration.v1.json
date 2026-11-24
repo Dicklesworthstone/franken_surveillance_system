@@ -102,7 +102,10 @@
       "$ref": "#/$defs/digest"
     },
     "request_binding": {
-      "const": "semantic_consistency_only_unpinned_by_completion_v1"
+      "enum": [
+        "semantic_consistency_only_unpinned_by_completion_v1",
+        "sha256_pinned_by_completion_v2"
+      ]
     },
     "original_snapshot_claim": {
       "$ref": "#/$defs/digest",

@@ -26,6 +26,149 @@ All 5 overhaul tracks (Tracks A–E; 33 actionable beads under master epic `fss-
   - Isomorphically decomposed oversized monolith files, shipped unified `fss <domain> <verb>` CLI grammar (14 domains / 57 verbs, including wired `vault`, `notify`, and `archive` packfile/S3/crypto-erase domains), built real read-only Live Operator Cockpit (`fss-dashboard --live` via UDS + loopback HTTP/SSE + headless TUI + MVCC fallback with post-checkpoint WAL replay), unified `fss-daemon` v2 layout with lock-free read-only `fss doctor` / `fss orient`, replaced stubbed network/IPC daemon paths with real persistent RTSP/HTTP-MJPEG decode and real `SnapshotCamera`/`ReloadManifest`/`ProbeDetect` execution, regenerated honest `website/public/watch/intrusion/native.json` and `website/public/capabilities.json` (`scripts/verify_website_showcase.py` PASS), and synchronized `fss capabilities --json` with retained local proof bundles.
 - **Explicitly remaining open / not claimed:** `h265_main10_rext`, `h264_interlaced_or_non_420`, `rtp_over_udp`, `uvc_acquisition`, `real_footage_quality_evaluation`, `agent_protocol_transport`, `mcp_remote_authenticated_transport`, `property_reconstruction`, full multi-target DSR release matrix (`QL-LINUX-001` / `QL-WINDOWS-001` / `QL-RELEASE-001`), and live multi-vendor physical camera field calibration.
 
+## Native AVC random-access and picture recovery — 2026-11-24
+
+The production decoder now honors an IDR picture's instruction to discard
+waiting prior pictures. IDRs that request normal draining preserve display order;
+pictures already released to the output queue remain available in either case.
+Every rejected NAL now discards an incomplete picture and requires a fresh IDR,
+including size, header, parameter-set and unsupported-partition failures that
+previously bypassed slice recovery. Multi-slice pictures pin the complete admitted
+PPS identity and content, so parameter replacement cannot silently change their
+reconstruction. Identical repeats, unrelated parameter sets and valid PPS changes
+between complete pictures remain admitted.
+
+**Native validation passed:** all 186 tests in `cargo +nightly-2026-08-31 test
+--locked --offline -p fss-codec-h264 --all-targets -- --test-threads=1`, including
+the existing decoded-pixel conformance fixtures and seven new real-NAL contracts.
+Before the fix, those new contracts produced five failures and two valid-stream
+passes. They now cover both IDR output choices, already queued output, nine
+rejected-input branches, partial-picture quarantine, recovery and PPS changes.
+The package doctest invocation also passed (zero doctests). Scoped formatting,
+whitespace and independent source review passed. These results validate the bounded
+native decoder changes; full asynchronous reference and release qualification
+remain unestablished, and FSS-124 remains open.
+
+## Native selection without full-input copies — 2026-11-24
+
+Scalar Slice and Transpose now read selected F32 samples directly from the
+original validated tensor storage, using its actual element strides and byte
+offset. Previously each selection first materialized every logical input sample
+into a temporary vector. Removing that copy avoids repeated full-input scans in
+reverse Slice, Gather and Resize expansions while preserving exact sample bits,
+output order, graph encodings, declared work/byte accounting and cancellation
+stages. Zero-stride broadcast views and noncontiguous subviews remain supported.
+The previous 256 MiB logical-input ceiling remains enforced; Concat is unchanged.
+
+**Native validation:** all 28 unfiltered `onnx_structure_execution` tests passed,
+including three new production-executor tests for strided/offset/broadcast/scalar
+views, signed-zero/subnormal/infinity/NaN bits, exact execution budgets, logical
+input overflow refusal and cancellation drain. The six reverse-Slice regressions
+and existing detector-head fixture also passed against the changed executor.
+Reproduce with `cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir
+--test onnx_structure_execution -- --test-threads=1`.
+
+The same changed executor also passed all 142 `onnx_attention_execution` tests
+(with one existing release-mode profiling experiment ignored) and all 18 scoped
+`onnx_pad_execution` tests. The latter exercise both production executors and
+canonical Model IR / Safetensors reload; 28 embedded module tests are filtered
+there, with those modules exercised by the other targets. All three commands
+completed with exit zero under the pinned toolchain and locked/offline
+dependencies. The optional standalone Resize suite was not run.
+
+Scoped pinned formatting, whitespace checks and independent source/bounds review
+passed. This does not establish full asynchronous reference or release
+qualification. FSS-139 / `fss-x4a.14.10` remains open, with one progress comment
+linking the completed importer commits and their bounded validation.
+
+## Native ONNX reverse slicing — 2026-11-24
+
+The static F32 importer now executes negative-step `Slice`, including mixed
+positive/negative strides, multiple or negative axes, clamped extreme endpoints
+and an `i64::MIN` step. Forward preselection plus bounded native Slice/Concat
+reversal preserves exact source sample bits without generated weights or new
+operators. The complete expansion is admitted before helper allocation; empty
+runtime results, zero steps and over-budget expansions retain explicit refusals.
+Previously admitted positive-only Slice graph bytes and work charges are unchanged.
+
+**Native validation passed:** all 23 scoped `onnx_structure_execution` tests
+on pinned `nightly-2026-08-31`, with `--locked --offline`. Six new feature tests
+cover literal mixed-axis selections, exact runtime bits and canonical reload
+through ranks one to eight, an independent 1,620-case endpoint/stride oracle,
+exact node/tensor/parameter/work limits, all import cancellation checkpoints and
+helper collisions. Existing structure and detector-head fixture tests also pass.
+Reproduce with `cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir
+--test onnx_structure_execution -- --test-threads=1 --skip scalar_executor::`.
+The two included scalar-module tests are filtered; the 23 feature tests invoke
+the production scalar executor. Scoped pinned formatting and independent review
+passed.
+
+A broader `fss-model-ir --lib` test attempt was interrupted by rustc SIGKILL while
+building its test binary; it produced no completed test result. Full asynchronous
+reference and release qualification were not established. The earlier clean
+`fss-core --lib` baseline passed 220 tests; that baseline is not changed-code
+qualification. FSS-139 / `fss-x4a.14.10` remains open. See
+[static controls](docs/onnx_import.md#static-tensor-controls-and-detector-heads).
+
+## Native ONNX edge and reflection padding — 2026-11-24
+
+Static F32 models can now import `Pad` modes `edge` and `reflect` under the
+existing opset 13/17/18 profiles. Negative pads crop first. Edge repeats retained
+boundary samples with logarithmic graph growth; reflection mirrors neighboring
+samples without repeating the endpoint. Each positive reflection pad must be
+smaller than its cropped axis. Existing rank-one-through-four and nonempty
+tensor bounds remain explicit. These paths reuse native Slice/Concat/Reshape,
+generate no border weights, and preserve runtime sample bits. Constant padding
+retains its previous graph bytes; no opcode, dependency or Model IR version changes.
+
+**Native validation passed:** all 18 scoped `onnx_pad_execution` tests on pinned
+`nightly-2026-08-31`, using `--locked --offline`. The tests execute both unchanged
+production scalar and optimized kernels and the actual canonical Model IR /
+Safetensors reload path. Coverage includes opsets 13/17/18, ranks one through four,
+mixed cropping/padding, literal and independent coordinate oracles, signed zero,
+subnormals, infinities and NaN payloads, large non-power-of-two edge repetition,
+Pad-to-Conv composition, exact node/tensor/byte/work bounds, helper collisions and
+every import cancellation checkpoint. Four constant-mode graph digests captured
+from the original implementation still match. Scoped pinned formatting and
+independent source review passed.
+
+Reproduce with `cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir
+--test onnx_pad_execution -- --test-threads=1 --skip scalar_executor::
+--skip optimized_executor::`. The 25 embedded module tests are filtered by this
+command; the 18 feature tests themselves invoke both production executors.
+This establishes the bounded importer feature, not full asynchronous reference
+qualification, trained detector accuracy or release qualification. FSS-139 /
+`fss-x4a.14.10` remains open. See [the importer profile](docs/onnx_import.md#static-padding-and-cropping).
+
+## Health-screened short sampled dwell — 2026-11-23
+
+Short `fss-event watch --dwell-for-ns ... --dwell-max-gap-ns ...` now accepts
+`--sensor-health conservative-v1` and `conservative-optical-v1`, including exact
+optical thresholds, through both mutable analysis/publication and immutable previews
+beside an active writer. Rerun and approval commands retain the selected policy.
+
+The native `DwellReport::analyze_with_health` path uses the existing watch screen.
+Degraded frames and dependent tracks cannot contribute to dwell; recovery requires
+fresh background and tracking. Valid independent episodes outside degraded runs can
+survive. Screened analysis identities and approvals bind the complete health summary
+and exact policy. Published provenance retains those bytes and all screened source
+capsules, including excluded observations. Publication rechecks original principal,
+source custody and current privacy before staging, including on retries.
+Unscreened `None` analysis/report bytes are preserved.
+
+A clear screen does not certify sensor health, continuous occupancy, absence,
+independent corroboration or alert authority. Optical screening remains unsupported
+for streaming and long-dwell modes; existing conservative long-mode behavior is
+unchanged.
+
+**The eight native regressions, three process regressions and one active-writer
+parity regression are authored but unexecuted; changed-code typechecking is not
+established.** Reference-library Cargo checks lost the executor without a completed
+native result. Pinned formatting, independent source/API review and whitespace
+checks passed; they are not runtime or release qualification. FSS-078 /
+`fss-x4a.15.3` remains open. See [the workflow](docs/observed_zone_dwell.md) and
+[the session handoff](docs/SESSION_HANDOFF_2026-11-23_SCREENED_DWELL.json).
+
 ## Copied recording exports restored into native archives — 2026-11-23
 
 `fss-archive restore-export` now connects independently pinned copied exports to

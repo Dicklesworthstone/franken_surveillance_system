@@ -55,7 +55,7 @@ pub const HELP: &str = "fss-archive <inspect|query|verify|export|verify-export|r
   verify-export reads only that copied bundle on Linux with /proc/self/fd available.\n\
   It checks the pinned COMPLETE.json, exact files, native source provenance and playback.\n\
   It needs no original archive and performs no writes, network access or publication.\n\
-  REQUEST.json is checked for consistency; v1 completion does not pin its exact bytes.\n\
+  Current exports pin the exact REQUEST.json bytes; legacy v1 requests receive a consistency check.\n\
   Success grants no current archive/disclosure authority, catalog completeness or coverage.\n\
   restore-export: --root COPIED_BUNDLE --expected-completion sha256:HEX\n\
                   --output-dir NEW_DIR --allow-whole-windows yes\n\
@@ -940,11 +940,16 @@ fn execute_for<C: ArchiveCodec>(
     if options.action == Action::QueryUtc {
         return utc::execute(options, publisher, &snapshot, identity, clock);
     }
+    let report_schema = if options.action == Action::Export {
+        verify_export::bundle::EXPORT_COMPLETION_SCHEMA
+    } else {
+        ARCHIVE_REPORT_SCHEMA
+    };
     let mut out = String::new();
     append(
         &mut out,
         &format!(
-            "{{\"schema\":\"{ARCHIVE_REPORT_SCHEMA}\",\"command\":\"{}\",\"codec\":\"{}\",\"snapshot\":{},\"namespace\":{},\"sensor\":{},\"stream\":{},\"generation\":{},\"anchor\":{},\"receive_clock\":{},\"decode_clock\":{},\"time_scale\":{},\"durable_windows\":{},\"indexed_windows\":{},\"pages\":{},\"source_replay_on_recovery\":true,\"coverage_claim\":\"not_claimed\",\"time_basis\":\"owner_declared_decode_ticks\",",
+            "{{\"schema\":\"{report_schema}\",\"command\":\"{}\",\"codec\":\"{}\",\"snapshot\":{},\"namespace\":{},\"sensor\":{},\"stream\":{},\"generation\":{},\"anchor\":{},\"receive_clock\":{},\"decode_clock\":{},\"time_scale\":{},\"durable_windows\":{},\"indexed_windows\":{},\"pages\":{},\"source_replay_on_recovery\":true,\"coverage_claim\":\"not_claimed\",\"time_basis\":\"owner_declared_decode_ticks\",",
             options.action.name(),
             options.codec.name(),
             quoted(&identity.to_text()),
@@ -1061,7 +1066,8 @@ fn execute_for<C: ArchiveCodec>(
                                 append(
                                     &mut out,
                                     &format!(
-                                        ",\"export_payload_bytes_excluding_completion\":{},\"whole_windows_authorized\":true,\"source_may_include_boundary_lookahead\":true,\"completion_file\":\"COMPLETE.json\"",
+                                        ",\"request_sha256\":{},\"export_payload_bytes_excluding_completion\":{},\"whole_windows_authorized\":true,\"source_may_include_boundary_lookahead\":true,\"completion_file\":\"COMPLETE.json\"",
+                                        quoted(&destination.request_digest().to_text()),
                                         destination.payload_bytes()
                                     ),
                                 )?;

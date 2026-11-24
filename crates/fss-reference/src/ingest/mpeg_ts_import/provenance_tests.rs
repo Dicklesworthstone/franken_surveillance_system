@@ -27,7 +27,11 @@ fn request_framing_has_exact_versions_and_no_alternate_legacy_encoding() {
     assert_eq!(request(&legacy_bytes).unwrap().framing, TsFraming::Ts188);
     assert_eq!(request(&framed_bytes).unwrap().framing, TsFraming::M2ts192);
     assert_ne!(legacy.digest().unwrap(), framed.digest().unwrap());
-    for tag in [0, 1, 3, u8::MAX] {
+    let dvb = policy(TsFraming::Dvb204);
+    assert_eq!(dvb.encode()[offset], 3);
+    assert_eq!(request(&dvb.encode()).unwrap().framing, TsFraming::Dvb204);
+    assert_ne!(dvb.digest().unwrap(), framed.digest().unwrap());
+    for tag in [0, 1, 4, u8::MAX] {
         let mut forged = framed_bytes.clone();
         forged[offset] = tag;
         assert!(request(&forged).is_err());

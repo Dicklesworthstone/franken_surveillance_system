@@ -1716,9 +1716,22 @@ impl ScalarExecutor {
                 }
             }
             OpCode::Transpose | OpCode::Slice => {
-                let input = inputs[0].to_vec::<f32>()?;
-                let dims = inputs[0].shape().dims();
-                let strides = layout_strides(dims)?;
+                let input = inputs[0];
+                // Preserve the logical-size admission formerly enforced by
+                // to_vec, including for broadcast views with tiny backing storage.
+                let input_bytes = input.shape().size_bytes(DType::F32)?;
+                if input_bytes > fss_tensor::MAX_STORAGE_BYTES {
+                    return Err(ExecError::Tensor(TensorError::AllocationLimitExceeded {
+                        requested_bytes: input_bytes,
+                        max_bytes: fss_tensor::MAX_STORAGE_BYTES,
+                    }));
+                }
+                // Read selected samples through the original view. Materializing
+                // the entire source makes sparse Slice/Gather/Resize expansions
+                // repeatedly copy unselected data and delays cancellation.
+                let view = input.view();
+                let dims = input.shape().dims();
+                let strides = view.strides().as_slice();
                 let rank = dims.len();
                 let mut axes: Vec<usize> = (0..rank).collect();
                 let mut starts = vec![0_usize; rank];
@@ -1770,11 +1783,18 @@ impl ScalarExecutor {
                                     operation: "layout offset sum",
                                 })?;
                     }
-                    values.push(
-                        *input
-                            .get(offset)
-                            .ok_or_else(|| layout_mismatch(node, "source offset outside tensor"))?,
-                    );
+                    let byte_offset = offset
+                        .checked_mul(DType::F32.size_bytes())
+                        .and_then(|value| value.checked_add(view.offset_bytes()))
+                        .ok_or(ExecError::ArithmeticOverflow {
+                            operation: "layout source byte offset",
+                        })?;
+                    let bytes = view
+                        .storage()
+                        .slice_range(byte_offset, DType::F32.size_bytes())?;
+                    // TensorStorage uses native byte order. No floating-point
+                    // arithmetic or conversion may change the sample's bits.
+                    values.push(f32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]));
                 }
             }
             OpCode::Concat => {
@@ -1884,19 +1904,6 @@ fn layout_product(dims: &[usize]) -> Result<usize, ExecError> {
                 operation: "layout dimension product",
             })
     })
-}
-
-fn layout_strides(dims: &[usize]) -> Result<Vec<usize>, ExecError> {
-    let mut strides = vec![1_usize; dims.len()];
-    for axis in (0..dims.len().saturating_sub(1)).rev() {
-        strides[axis] =
-            strides[axis + 1]
-                .checked_mul(dims[axis + 1])
-                .ok_or(ExecError::ArithmeticOverflow {
-                    operation: "layout stride product",
-                })?;
-    }
-    Ok(strides)
 }
 
 // Frozen v1 normalization: trailing dimensions, population variance, epsilon inside
@@ -2403,6 +2410,205 @@ impl ScalarExecutor {
             generation,
         )?;
         Ok(Tensor::from_view(view))
+    }
+}
+
+#[cfg(test)]
+mod layout_selection_tests {
+    use super::*;
+    use fss_model_ir::{AttrValue, AttributeMap, GraphNode};
+    use fss_tensor::{Strides, TensorView};
+
+    type Test<T = ()> = Result<T, Box<dyn std::error::Error>>;
+    const GENERATION: Generation = Generation(7);
+
+    fn graph(
+        input: &Tensor,
+        output: &[usize],
+        op: OpCode,
+        attrs: AttributeMap,
+    ) -> Test<ModelIrGraph> {
+        Ok(ModelIrGraph::builder("layout-selection", GENERATION)
+            .add_input(TensorPort::new(
+                "x",
+                DType::F32,
+                input.shape().clone(),
+                GENERATION,
+            )?)
+            .add_output(TensorPort::new(
+                "y",
+                DType::F32,
+                Shape::new(output.to_vec())?,
+                GENERATION,
+            )?)
+            .add_node(GraphNode::new(
+                "selection",
+                op,
+                "copy selected view samples",
+                vec!["x".into()],
+                vec!["y".into()],
+                attrs,
+            )?)
+            .build_and_validate()?)
+    }
+
+    fn check(
+        input: Tensor,
+        output: &[usize],
+        op: OpCode,
+        attrs: AttributeMap,
+        expected: &[u32],
+        work: u64,
+        bytes: usize,
+    ) -> Test {
+        let graph = graph(&input, output, op, attrs)?;
+        let bindings = [("x", input)];
+        let result = ScalarExecutor::run(
+            &graph,
+            &bindings,
+            ExecBudget::new(work, bytes),
+            &ScalarExecCx::new(),
+        )?;
+        assert_eq!(
+            result
+                .get_output("y")
+                .ok_or("missing output")?
+                .to_vec::<f32>()?
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            expected,
+        );
+        assert_eq!(result.executed_macs(), work);
+        assert_eq!(result.allocated_bytes(), bytes);
+        for budget in [
+            ExecBudget::new(work - 1, bytes),
+            ExecBudget::new(work, bytes - 1),
+        ] {
+            assert!(matches!(
+                ScalarExecutor::run(&graph, &bindings, budget, &ScalarExecCx::new()),
+                Err(ExecError::BudgetExceeded { .. }),
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn selection_reads_actual_strides_offsets_and_f32_payload_bits() -> Test {
+        let mut bits: Vec<u32> = (0..30).map(|index| 0x3f80_0000 + index).collect();
+        bits[7] = 0x8000_0000;
+        bits[9] = 0x7fc0_1234;
+        bits[11] = 0xff80_0000;
+        bits[19] = 1;
+        bits[21] = 0xffc0_4321;
+        bits[23] = 0x8000_0001;
+        let values: Vec<_> = bits.iter().copied().map(f32::from_bits).collect();
+        let base = Tensor::from_values(Shape::new(vec![5, 6])?, &values, GENERATION)?;
+        let input = base.slice(0, 1, 5, 2)?.slice(1, 1, 6, 2)?;
+        assert_eq!(input.shape().dims(), &[2, 3]);
+        assert_eq!(input.strides().as_slice(), &[12, 2]);
+        assert_eq!(input.view().offset_bytes(), 28);
+        check(
+            input.clone(),
+            &[3, 2],
+            OpCode::Transpose,
+            AttributeMap::new(),
+            &[bits[7], bits[19], bits[9], bits[21], bits[11], bits[23]],
+            18,
+            48,
+        )?;
+        check(
+            input.transpose(0, 1)?,
+            &[2, 2],
+            OpCode::Slice,
+            AttributeMap::from([
+                ("starts".into(), AttrValue::IntList(vec![0, 1])),
+                ("ends".into(), AttrValue::IntList(vec![2, 3])),
+                ("axes".into(), AttrValue::IntList(vec![1, 0])),
+            ]),
+            &[bits[9], bits[21], bits[11], bits[23]],
+            12,
+            40,
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn selection_handles_broadcast_views_and_scalar_offsets() -> Test {
+        let bits = [0_u32, 0x7fc0_1234, 0x8000_0000];
+        let values: Vec<_> = bits.into_iter().map(f32::from_bits).collect();
+        let base = Tensor::from_values(Shape::new(vec![3])?, &values, GENERATION)?;
+        let input = Tensor::from_view(TensorView::new(
+            base.view().storage().clone(),
+            4,
+            DType::F32,
+            Shape::new(vec![4, 2])?,
+            Strides::new(vec![0, 1]),
+            GENERATION,
+        )?);
+        check(
+            input,
+            &[1, 2],
+            OpCode::Slice,
+            AttributeMap::from([
+                ("starts".into(), AttrValue::IntList(vec![3])),
+                ("ends".into(), AttrValue::IntList(vec![4])),
+                ("steps".into(), AttrValue::IntList(vec![i64::MAX])),
+            ]),
+            &bits[1..],
+            6,
+            40,
+        )?;
+        check(
+            base.slice(0, 1, 2, 1)?.reshape(Shape::new(vec![])?)?,
+            &[],
+            OpCode::Transpose,
+            AttributeMap::new(),
+            &bits[1..2],
+            1,
+            8,
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn sparse_selection_preserves_logical_input_limit_and_cancellation() -> Test {
+        let base = Tensor::from_values(Shape::new(vec![1])?, &[1.0_f32], GENERATION)?;
+        let elements = fss_tensor::MAX_STORAGE_BYTES / DType::F32.size_bytes() + 1;
+        let input = Tensor::from_view(TensorView::new(
+            base.view().storage().clone(),
+            0,
+            DType::F32,
+            Shape::new(vec![elements])?,
+            Strides::new(vec![0]),
+            GENERATION,
+        )?);
+        let graph = graph(
+            &input,
+            &[1],
+            OpCode::Slice,
+            AttributeMap::from([
+                ("starts".into(), AttrValue::IntList(vec![0])),
+                ("ends".into(), AttrValue::IntList(vec![1])),
+            ]),
+        )?;
+        let bindings = [("x", input)];
+        assert!(matches!(
+            ScalarExecutor::run(&graph, &bindings, ExecBudget::unlimited(), &ScalarExecCx::new()),
+            Err(ExecError::Tensor(TensorError::AllocationLimitExceeded {
+                requested_bytes,
+                max_bytes,
+            })) if requested_bytes == fss_tensor::MAX_STORAGE_BYTES + 4
+                && max_bytes == fss_tensor::MAX_STORAGE_BYTES,
+        ));
+        let cx = ScalarExecCx::new();
+        cx.request_cancellation();
+        assert!(matches!(
+            ScalarExecutor::run(&graph, &bindings, ExecBudget::unlimited(), &cx),
+            Err(ExecError::CancellationRequested { .. }),
+        ));
+        assert!(cx.is_drain_completed());
+        Ok(())
     }
 }
 

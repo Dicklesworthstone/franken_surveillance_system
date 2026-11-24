@@ -22,14 +22,17 @@ use fss_reference::ingest::package_evaluation::{
 };
 use fss_reference::ingest::package_event::PackageTrackingConfig;
 
-use super::{Failure, Result, array, integer, object, parse_labels, read_input, report_json, text};
+use super::{
+    Failure, Result, array, fixed_threshold, integer, object, parse_labels, read_input,
+    report_with_threshold, text,
+};
 
 const HELP: &str = "fss-evaluate retained-package --root ABSOLUTE_EXISTING_DIR --site SITE \
 --labels LABELS.tsv --package-report SHA256 --label NATIVE_LABEL \
 --clip-id CLIP --clip-origin-ns SIGNED_NS --stream-id STREAM --clock-basis BASIS \
 --max-false-alerts N --per-observed-ns N \
 [--confirmation-hits N] [--maximum-missed-frames N] [--minimum-iou-ppm N] \
-[--early-tolerance-ns N] [--late-tolerance-ns N] \
+[--early-tolerance-ns N] [--late-tolerance-ns N] [--fixed-threshold-ppm PPM] \
 [--maximum-source-bytes N] [--principal ID]\n\n\
 Evaluates all tracks of one retained native label against one declared clip.\n\
 Requires a complete report retained by fss-infer package-detect --retain yes.\n\
@@ -53,6 +56,7 @@ struct Options {
     labels: PathBuf,
     request: PackageEvaluationRequest,
     policy: EvaluationPolicy,
+    fixed_threshold_ppm: Option<u32>,
     maximum_source_bytes: u64,
 }
 
@@ -73,7 +77,7 @@ fn signed(value: &str) -> Result<i128> {
 fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>> {
     let mut bounded = Vec::new();
     for arg in args {
-        if bounded.len() == 36 || arg.len() > 4096 {
+        if bounded.len() == 38 || arg.len() > 4096 {
             return Err(Failure::new("evaluation.cli.arguments_limit"));
         }
         bounded.push(arg);
@@ -105,6 +109,7 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>> {
                 | "--early-tolerance-ns"
                 | "--late-tolerance-ns"
                 | "--maximum-source-bytes"
+                | "--fixed-threshold-ppm"
         ) {
             return Err(Failure::new("evaluation.cli.unknown_option"));
         }
@@ -196,6 +201,7 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>> {
         labels: PathBuf::from(super::required(&values, "--labels")?),
         request,
         policy,
+        fixed_threshold_ppm: fixed_threshold(&values)?,
         maximum_source_bytes,
     }))
 }
@@ -398,7 +404,7 @@ fn provenance(value: &PackageEvaluationProvenance) -> String {
     ])
 }
 
-fn output(value: &RetainedPackageEvaluation) -> Result<String> {
+fn output(value: &RetainedPackageEvaluation, threshold_ppm: Option<u32>) -> Result<String> {
     let result = object(&[
         ("schema", text(RETAINED_PACKAGE_EVALUATION_SCHEMA)),
         ("derived_only", "true".to_owned()),
@@ -417,7 +423,10 @@ fn output(value: &RetainedPackageEvaluation) -> Result<String> {
         ),
         ("source_verification_passes", "2".to_owned()),
         ("provenance", provenance(&value.projection().provenance)),
-        ("evaluation", report_json(value.report())),
+        (
+            "evaluation",
+            report_with_threshold(value.report(), threshold_ppm)?,
+        ),
         (
             "limitations",
             array(
@@ -474,7 +483,7 @@ pub(super) fn run(args: impl IntoIterator<Item = OsString>) -> Result<String> {
             &cx,
         )
         .map_err(|error| Failure::new(error.code()))?;
-        let result = output(&evaluated)?;
+        let result = output(&evaluated, options.fixed_threshold_ppm)?;
         cx.checkpoint("evaluation_cli:complete")
             .map_err(|_| Failure::new("evaluation.cancelled"))?;
         Ok(result)

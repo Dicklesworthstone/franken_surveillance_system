@@ -173,9 +173,13 @@ Unapproved short entry, short dwell and whole-recording watch/dwell previews can
 capture process holds the deployment's publisher lock. They open one immutable retained snapshot
 without acquiring a writer or repairing state. This includes each mode's existing optional
 detector cascade, calibrated class advice, privacy masking, sensor-health screening and tolerant
-decode behavior. Short dwell still refuses sensor-health screening. The original plan, candidate,
-coverage and approval identities are unchanged. Sources must already be completed retained
-imports; short ranges remain at most 128 segments and whole-recording ranges at most 65,536.
+decode behavior. Short dwell accepts `conservative-v1` and `conservative-optical-v1`: suspect
+runs and affected tracks lose dwell support, and recovery starts a fresh episode. Both the
+complete health receipt and exact policy are bound into screened dwell approvals; changing or
+dropping screening requires a fresh approval. Unscreened identities are unchanged. Optical
+screening remains unavailable for whole-recording and incremental modes. Sources must already
+be completed retained imports; short ranges remain at most 128 segments and whole-recording
+ranges at most 65,536.
 
 `--max-read-bytes N` and `--max-read-objects N` bound the entire retained read, including metadata,
 source verification and final custody/authority checks. Defaults are 1 GiB and 1,000,000 read
@@ -186,7 +190,9 @@ trace budgets. A cooperative 60-second deadline is checked at bounded retained-r
 The complete JSON report is buffered until the original source, all supporting capsules, privacy
 policy and authority snapshot pass final validation. Quiet scans, zero dwell episodes and
 health-degraded diagnostics follow the same final custody path. Health findings remain readable
-as diagnostics while still blocking event publication and calibrated class advice. An exhausted
+as diagnostics; affected support cannot supply event candidates. Short modes may propose an
+independent surviving episode, while whole-recording health screening keeps its existing complete-scan
+publication gate. An exhausted
 allowance, cancellation, changed authority, damaged payload or incomplete journal tail produces
 neither stdout nor a new `--report-out` file, and leaves deployment files untouched. An authority
 change during capture requires a fresh preview of a stable completed snapshot.

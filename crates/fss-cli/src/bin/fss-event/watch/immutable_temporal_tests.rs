@@ -146,6 +146,74 @@ fn active_writer_temporal_previews_preserve_native_reports_and_cross_the_old_fra
 }
 
 #[test]
+fn active_writer_screened_dwell_matches_native_and_keeps_complete_health_diagnostics() -> Test {
+    let mut fixture = Fixture::new("immutable-dwell-health")?;
+    let import = fixture.ingest(
+        "sensor:dwell-health",
+        &scene()?,
+        FileFormatHint::JpegStream,
+        Some(0),
+    )?;
+    let root = fixture.deployment.root().to_path_buf();
+    let before = tree(&root)?;
+    for (policy, thresholds, degraded) in [
+        ("conservative-v1", None, false),
+        ("conservative-optical-v1", Some("0"), false),
+        (
+            "conservative-optical-v1",
+            Some("18446744073709551615"),
+            true,
+        ),
+    ] {
+        let mut args = temporal_args(&root, import, "gray", "door:64,0,32,32", Mode::ShortDwell);
+        args.extend(["--sensor-health".into(), policy.into()]);
+        if let Some(variance) = thresholds {
+            args.extend([
+                "--min-laplacian-variance-x1000".into(),
+                variance.into(),
+                "--glare-luma-min".into(),
+                "255".into(),
+                "--max-glare-ppm".into(),
+                "1000000".into(),
+            ]);
+        }
+        let action = crate::watch::parse(&args)?;
+        assert!(action.is_immutable_preview());
+        let mut native = Vec::new();
+        crate::watch::run(
+            &action,
+            &mut fixture.deployment,
+            &root,
+            &fixture.cx,
+            &mut native,
+        )?;
+        let mut preview = Vec::new();
+        invoke(&args, &mut preview)?;
+        assert_eq!(preview, native, "{policy}, degraded={degraded}");
+        let text = std::str::from_utf8(&preview)?;
+        assert!(text.contains("\"sensor_health\":"));
+        assert!(text.contains("\"health_certified\":false"));
+        assert!(text.contains("\"absence_certifiable\":false"));
+        assert!(text.contains("\"continuous_occupancy_certified\":false"));
+        if degraded {
+            assert!(text.contains("severe_blur"));
+            assert!(text.contains("\"candidate_count\":0"));
+            assert!(!text.contains("--approve"));
+        } else {
+            assert!(text.contains("\"candidate_count\":1"), "{text}");
+            assert!(text.contains(&format!("--sensor-health {policy}")));
+        }
+        assert_eq!(
+            tree(&root)?,
+            before,
+            "screened preview mutated the deployment"
+        );
+    }
+    fixture.cx.drain_and_finalize();
+    Ok(())
+}
+
+#[test]
 fn degraded_whole_recording_diagnostics_remain_readable_without_publication() -> Test {
     let mut fixture = Fixture::new("immutable-temporal-health")?;
     let import = fixture.ingest(

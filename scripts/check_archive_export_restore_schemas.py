@@ -148,6 +148,7 @@ accepts('report', 'late-cancellation-of-empty-selection', changed(
     late, selected_windows=0, restored_windows=0, indexed_windows=0, restored_pages=0))
 
 for kind, base in [('report', success), ('completion', receipt)]:
+    accepts(kind, 'exact-v2-request-binding', changed(base, request_binding='sha256_pinned_by_completion_v2'))
     for name in SCHEMAS[kind]['required']:
         bad = copy.deepcopy(base)
         del bad[name]

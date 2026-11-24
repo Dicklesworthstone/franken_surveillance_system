@@ -45,7 +45,8 @@ export function Badge({ kind, children }) {
  * A framed figure: what it is, where its numbers come from, the figure itself,
  * and the source note at its foot.
  */
-export function Figure({ as: Tag = "section", id, eyebrow, title, titleId, badge, note, className = "", children, ...rest }) {
+export function Figure({ as: Tag = "section", id, eyebrow, title, titleId, badge, note, level = 4, className = "", children, ...rest }) {
+  const Title = `h${level}`;
   return (
     <Tag id={id} className={"fig " + className} aria-labelledby={title ? titleId : undefined} {...rest}>
       <Reticle />
@@ -54,9 +55,9 @@ export function Figure({ as: Tag = "section", id, eyebrow, title, titleId, badge
           <div>
             {eyebrow && <p className="micro micro--chapter">{eyebrow}</p>}
             {title && (
-              <h4 className="fig__title" id={titleId}>
+              <Title className="fig__title" id={titleId}>
                 {title}
-              </h4>
+              </Title>
             )}
           </div>
           {badge}
@@ -105,7 +106,7 @@ export function Standing({ rows }) {
       <p className="standing__label micro" aria-hidden="true">
         Where this stands
       </p>
-      <ul aria-label="Where this stands">
+      <ul aria-label="Where this stands" style={{ "--n": rows.length }}>
         {rows.map(([kind, text]) => (
           <li key={kind + text} className={"standing__row standing__row--" + kind}>
             <strong>{STANDING[kind]}</strong>

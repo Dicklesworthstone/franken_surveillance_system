@@ -647,7 +647,7 @@ fn same_receipt(a: &bundle::Receipt, b: &bundle::Receipt) -> bool {
 
 fn context(options: &ArchiveOptions, namespace: ContentDigest, selection: &Selection) -> String {
     format!(
-        "\"codec\":\"{}\",\"sensor\":{},\"stream\":{},\"generation\":{},\"anchor\":{},\"receive_clock\":{},\"decode_clock\":{},\"time_scale\":{},\"namespace\":{},\"completion_sha256\":{},\"request_sha256_observed\":{},\"request_binding\":\"semantic_consistency_only_unpinned_by_completion_v1\",\"original_snapshot_claim\":{},\"original_query\":{}",
+        "\"codec\":\"{}\",\"sensor\":{},\"stream\":{},\"generation\":{},\"anchor\":{},\"receive_clock\":{},\"decode_clock\":{},\"time_scale\":{},\"namespace\":{},\"completion_sha256\":{},\"request_sha256_observed\":{},\"request_binding\":\"{}\",\"original_snapshot_claim\":{},\"original_query\":{}",
         options.codec.name(),
         quoted(options.scope.recording.sensor.as_str()),
         quoted(options.scope.recording.stream.as_str()),
@@ -659,6 +659,7 @@ fn context(options: &ArchiveOptions, namespace: ContentDigest, selection: &Selec
         quoted(&namespace.to_text()),
         quoted(&selection.receipt.completion.to_text()),
         quoted(&selection.receipt.request_observation.to_text()),
+        selection.receipt.request_binding(),
         quoted(&selection.receipt.snapshot_claim.to_text()),
         interval(&selection.receipt.query),
     )

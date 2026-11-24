@@ -132,7 +132,7 @@
     },
     "macos_parity": {
       "path": "target/test-logs/macos-parity/macos_parity_report.json",
-      "sha256": "sha256:d0694b4631d46ec12c4cf6c59ff05c7e2f5758458af1fc4137788b4de51c65cf",
+      "sha256": "sha256:725f3bdccb6ef2df04de038cc952f3183921cfdc09ed8f48a5fd7d9591c1ad13",
       "lane_id": "QL-MACOS-001",
       "status": "PASS",
       "checks_passed": 7,
@@ -140,7 +140,7 @@
     },
     "mcp_14_ops": {
       "path": "target/test-logs/mcp-14-ops/mcp_14_ops_e2e_report.json",
-      "sha256": "sha256:fdcafaac86f0440b7a240db7a418c419f7c79b6baa0023e566726056b0c8a11d",
+      "sha256": "sha256:a6a76e92f9a0c6731f5066f79bd86333ce82363f04e4fa565aa556216c36ab0e",
       "status": "PASS"
     }
   },

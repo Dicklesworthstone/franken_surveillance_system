@@ -3,6 +3,7 @@ import { loadTake } from "../../lib/watch/load";
 import ArchitectureDeck from "./ArchitectureDeck";
 import { CHAPTERS } from "./chapters";
 import Console from "./Console";
+import Finale from "./Finale";
 import HeroMedia from "./HeroMedia";
 import { MeasuredSummary } from "./Measured";
 import RevealController from "./RevealController";
@@ -254,6 +255,7 @@ export default function Home() {
           architecture={<ArchitectureDeck />}
           status={<Status measured={native && <MeasuredSummary native={native} />} films={films} />}
         />
+        <Finale last={story.markers.at(-1)} />
       </main>
       <Footer credits={CREDITS} />
     </>

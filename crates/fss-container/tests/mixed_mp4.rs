@@ -222,28 +222,60 @@ fn backwards_fragment_time_and_invalid_indexed_duration_refuse_the_whole_movie()
 }
 
 #[test]
-fn legacy_hevc_duration_outside_the_admitted_profile_is_not_silently_normalized() -> Test {
+fn original_open_gop_hevc_remux_preserves_decode_order_and_source_on_recovery() -> Test {
     let mdhd = tag(HEVC, b"mdhd")?;
-    assert_eq!(HEVC[mdhd + 4], 0);
-    assert_eq!(mdhd + 20, 280);
-    assert_eq!(word(HEVC, mdhd + 20)?, 6_144);
+    let duration_at = mdhd + 20;
+    assert_eq!(duration_at, 280);
+    assert_eq!(word(HEVC, duration_at)?, 6_144);
     let mut raw = HEVC.to_vec();
-    // Reconstruct the exact original FFmpeg 6.1.1 remux, which uses its presentation
-    // duration here. The admitted indexed profile requires the sum of decode deltas.
-    raw[mdhd + 20..mdhd + 24].copy_from_slice(&10_240_u32.to_be_bytes());
+    raw[duration_at..duration_at + 4].copy_from_slice(&10_240_u32.to_be_bytes());
     assert_eq!(
         hex(&ContentDigest::sha256(&raw).bytes()),
         "01550857c8e27ec3d6a8c8aead61c30f15f84dc0f508067169c1f89f7c89d037"
     );
+    let limits = DemuxLimits::default();
+    let adjusted = AvcMp4::parse(HEVC, None, limits)?;
+    let original = AvcMp4::parse(&raw, None, limits)?;
+    assert_eq!(original.source(), &raw[..]);
+    assert_eq!(original.samples(), adjusted.samples());
+    assert_eq!(original.samples()[3].decode_time, 6_144);
     assert_eq!(
-        AvcMp4::parse(&raw, None, DemuxLimits::default()).map(|_| ()),
-        Err(DemuxError::Timeline)
+        original.annex_b(0, 10)?.bytes(),
+        adjusted.annex_b(0, 10)?.bytes()
     );
-    assert_eq!(
-        AvcMp4::parse_inband_recovering_tail(&raw, None, DemuxLimits::default(), &mut || Ok(()))
-            .map(|_| ()),
-        Err(DemuxError::Timeline)
-    );
+
+    let fragment = tag(&raw, b"moof")? - 4;
+    let cut = &raw[..fragment + 4];
+    let recovered = AvcMp4::parse_inband_recovering_tail(cut, None, limits, &mut || Ok(()))?;
+    assert_eq!(recovered.truncated_tail(), Some(fragment));
+    assert_eq!(recovered.samples(), &original.samples()[..3]);
+    Ok(())
+}
+
+#[test]
+fn a_longer_indexed_duration_requires_the_exact_unshifted_presentation_end() -> Test {
+    let at = tag(HEVC, b"mdhd")? + 20;
+    let limits = DemuxLimits::default();
+    for duration in [10_239_u32, 10_241] {
+        let mut bytes = HEVC.to_vec();
+        bytes[at..at + 4].copy_from_slice(&duration.to_be_bytes());
+        assert_eq!(
+            AvcMp4::parse(&bytes, None, limits).map(|_| ()),
+            Err(DemuxError::Timeline)
+        );
+    }
+    let mut bytes = HEVC.to_vec();
+    bytes[at..at + 4].copy_from_slice(&10_240_u32.to_be_bytes());
+    let prefix_end = tag(&bytes, b"moof")? - 4;
+    for (kind, replacement) in [(b"ctts", b"free"), (b"mvex", b"free"), (b"stss", b"cslg")] {
+        let mut prefix = bytes[..prefix_end].to_vec();
+        let at = tag(&prefix, kind)?;
+        prefix[at..at + 4].copy_from_slice(replacement);
+        assert_eq!(
+            AvcMp4::parse(&prefix, None, limits).map(|_| ()),
+            Err(DemuxError::Timeline)
+        );
+    }
     Ok(())
 }
 

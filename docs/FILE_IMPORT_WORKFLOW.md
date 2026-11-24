@@ -64,7 +64,10 @@ cargo run -p fss-cli --bin fss-file -- import-ts \
   --receive-time-ns 1000000000 --ts-framing m2ts192
 ```
 
-Only `ts188` and `m2ts192` are accepted; no framing is guessed from a filename,
+For 204-byte DVB transport recordings, pass `--ts-framing dvb204`. Every
+16-byte trailer is covered by the original recording digest. Parity is unverified.
+
+The accepted values are `ts188`, `m2ts192` and `dvb204`. No framing is guessed from a filename,
 sync pattern or file length. Truncated packets and incorrect sync positions refuse.
 Every four-byte prefix is retained and covered by the original source digest.
 Elementary byte mappings use offsets in the complete original M2TS file, while

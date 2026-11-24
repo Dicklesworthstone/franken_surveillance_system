@@ -82,6 +82,59 @@ no budget refill per episode, and no assumption that a missing class annotation 
 classification. Cascade identity and outcome digest are bound into the complete analysis.
 Class scores do not decide dwell duration, corroboration or alert authority.
 
+## Optional sensor-health screening
+
+Add `--sensor-health conservative-v1` to a short dwell command to screen persistent dark/bright
+fields, exact repetition and contrast loss. Select `--sensor-health conservative-optical-v1`
+to also screen severe blur and localized highlight glare. For example:
+
+```sh
+fss-event watch \
+  --root /path/to/deployment --site site:home \
+  --import-id "${IMPORT_ID:?supply the retained import identity}" \
+  --interpretation ycbcr --zone porch:100,80,400,300 \
+  --dwell-for-ns 2000000000 --dwell-max-gap-ns 200000000 \
+  --dwell-min-observations 5 \
+  --sensor-health conservative-optical-v1
+```
+
+The optical policy accepts `--min-laplacian-variance-x1000 N`, `--glare-luma-min N` (0..255),
+and `--max-glare-ppm N` (0..1000000). Defaults are the existing uncalibrated optical thresholds;
+the report retains the exact selected values. Every approval command preserves the selected
+policy and any explicit thresholds. Changing a value or dropping screening cannot reuse an
+earlier approval. Both ordinary analysis and immutable preview beside an active capture writer
+use the same native screen. A zero-candidate report still exports the complete diagnostics.
+
+Short dwell does not accept `--retain-health`: standalone historical-health retention remains
+owned by whole-recording modes. Optical screening remains refused with `--stream-watch`,
+`--stream-dwell` and incremental checkpoints.
+
+The short-range library API `DwellReport::analyze_with_health` accepts an explicit
+`Option<RecordedHealthPolicy>` after `WatchOptions`. `ConservativeV1` selects the existing
+conservative temporal screen; `ConservativeOpticalV1(OpticalThresholds)` adds explicit integer
+blur/glare thresholds. The original `DwellReport::analyze` method passes `None` and preserves
+the original analysis, event, proposal and report bytes.
+
+Screening runs through the existing native watch owner on the same privacy-projected decoded
+frames used for foreground detection. Complete qualifying degradation runs and every track
+touching them are withdrawn before dwell selection, including support observed before a temporal
+finding reached its threshold. Recovery resets both background and tracking; a later episode
+must satisfy confirmation and dwell thresholds using fresh matched samples. The dwell rule never
+bridges an excluded run or counts rejected samples as evidence of absence.
+
+A separate surviving episode may still be proposed. Its provenance retains the **complete**
+health summary, exact selected policy, baseline conservative policy and every measured source
+capsule, including negative findings outside that episode. The summary is a non-supporting
+`Derived / RequiredBy` evidence dependency. Changing an optical threshold changes analysis and
+approval identities even when the observed findings remain the same.
+
+`DwellReport::sensor_health()` exposes the exact receipt. When screening is enabled, the JSON
+report adds `sensor_health`; with `None`, the field is absent and the report bytes remain
+unchanged. These are bounded visual diagnostics under the selected policy. A clear receipt does
+not certify physical sensor health, calibrated detection quality or continuous occupancy.
+This native short-range API does not extend optical screening to whole-recording or live-stream
+dwell owners.
+
 ## Approve and retain
 
 The report is `fss.recorded_dwell_report.v1`. Every candidate contains an event ID, proposal
@@ -92,8 +145,11 @@ so clients do not lose precision through floating-point number decoding.
 Review the hypothesis and execute its exact command, or repeat the same request with
 `--approve sha256:PROPOSAL`. Ordinary entry approvals cannot authorize dwell, and changing the
 rule, source, zone, analysis or privacy generation produces another proposal. Before staging,
-the library rechecks the current durable authority head, retained import and mask, and validates
-all supplied approvals. It then stages source-closed provenance, publishes the root, and calls
+the library rechecks the original deployment and principal, current durable authority head,
+exact retained import and manifest, hashes of original source bytes and all contributing
+capsules, and current privacy generation. These checks also apply to already-published retries;
+metadata membership cannot substitute for intact source custody. The library validates all
+supplied approvals, stages source-closed provenance, publishes the root, and calls
 the existing guarded event publisher. A report export failure or stdout failure after that
 commit does not roll back the event.
 
@@ -132,19 +188,23 @@ new domain versions; these are derived records, never new effect authority.
 |---|---|
 | `fss.recorded_dwell_rule.v1` | Fixed conservative policy string, minimum duration, maximum sample gap, minimum observations |
 | `fss.recorded_dwell_analysis.v1` | Rule bytes, site, privacy-bound watch plan, import root, ordered frame identities/times/reliability, decoder refusals, restarts, optional cascade identity/outcome and complete track/zone selection trace |
-| `fss.recorded_dwell_observation.v1` | Import, privacy-bound plan, zone, track, segment, capsule/luma digests, exact capture interval and rounded track box |
+| `fss.recorded_dwell_analysis.v2` | Screened analysis: v1 field order with the complete health-summary digest and exact selected policy digest immediately after the import root and before the frame count; the watch plan also binds the selected screening policy |
+| `fss.recorded_dwell_observation.v1` | Import, privacy-bound and optionally health-screened plan, zone, track, segment, capsule/luma digests, exact capture interval and rounded track box |
 | `fss.recorded_dwell_candidate.v1` | Complete analysis digest, zone/track, first/trigger/final segments and ordered observation/class record digests |
 | `fss.recorded_dwell_approval.v1` | Exact event revision digest and source-closed provenance manifest root |
 
-Global schema/digest-domain registry integration and retained qualification evidence for these
-new records remain pending. The records above are specified here; no central-registry or
-release-qualification pass is claimed.
+These domains are registered in [the central digest-domain registry](../registries/DIGEST_DOMAINS.md).
+The screened analysis uses `SCHEMA-DOMAIN-RECORDED-DWELL-ANALYSIS-002`; the existing v1 analysis
+remains the exact format for `None`. The optional `sensor_health` JSON member extends
+`fss.recorded_dwell_report.v1` without changing unscreened output. Registration does not claim
+release qualification.
 
 ## Executable checks
 
 ```sh
 cargo test -p fss-reference --lib zone_dwell
 cargo test -p fss-reference --lib recorded_dwell
+cargo test -p fss-reference --test recorded_dwell_health_contract
 cargo test -p fss-cli --test watch_dwell_cli
 ```
 
@@ -152,12 +212,23 @@ Eleven temporal-kernel tests cover conservative duration, worst-case sampling ga
 counts, re-entry, missed/unknown samples, explicit discontinuities, signed extremes, timestamp
 regression and bounded output. Nine library tests exercise real synthetic MJPEG imports through
 the real decoder/tracker/publisher, including default-entry equivalence, privacy invalidation,
-source gaps, wrong approvals, cold retry and cancellation after provenance. Six process tests
+source gaps, wrong approvals, cold retry and cancellation after provenance. Nine process tests
 exercise the actual watch command, preview/publication/retry, changed approvals, unknown timing,
 pre-I/O argument refusal and complete report export after the original input file is removed.
+The new process cases bind health-policy approvals across cold retries, export complete blur/glare
+diagnostics and preserve capture-time refusal. An additional active-writer command-dispatch test
+compares native and immutable screened dwell byte-for-byte without deployment writes.
 
-The Rust tests, compilation and rustfmt were not run in the editing environment, which lacked a
-Rust toolchain. An independent Python streaming model was compared with a separately partitioned
-interval oracle on 41,386 exhaustive/seeded cases (seed 83005), all matching. That comparison is
-not an execution or compilation of this Rust implementation. No real-camera detection accuracy,
-performance or production qualification is claimed.
+The eight native health-contract tests use real retained synthetic MJPEG and the native
+decoder/tracker/publisher. They cover unscreened compatibility, exact threshold binding,
+blur/glare recovery, complete frozen-run and track-prefix withdrawal, retained policy/summary
+and capsule closure, immutable retry, privacy/principal/root changes, damaged source custody,
+and cancellation before analysis or event completion.
+
+The new native implementation was formatted with the pinned nightly toolchain. Native test
+execution remains pending in this editing session: the executor failed during the
+reference-library Cargo check before the test target could run. Native compilation and test
+completion are unverified; no Rust compilation or test pass is claimed for this change. Earlier temporal-kernel work compared an independent Python streaming model with
+a separately partitioned interval oracle on 41,386 exhaustive/seeded cases (seed 83005), all
+matching; that historical comparison is not execution of this Rust implementation. No
+real-camera detection accuracy, performance or production qualification is claimed.

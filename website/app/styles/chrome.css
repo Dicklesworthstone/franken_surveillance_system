@@ -175,12 +175,25 @@
 .dock {
   display: none;
 }
-@media (max-width: 1080px) {
+/* The five links fit between the wordmark and the button with room to spare at every width: the
+   chapter numbers go first, then the links tighten. Below 900 px the dock takes over. */
+@media (max-width: 1180px) {
   .topbar__nav .data {
     display: none;
   }
   .topbar__nav a {
     padding: 9px 10px;
+  }
+}
+@media (max-width: 1000px) {
+  .topbar__nav a {
+    gap: 6px;
+    padding: 9px 7px;
+    font-size: 0.8rem;
+  }
+  .topbar__nav a .sphere {
+    width: 6px;
+    height: 6px;
   }
 }
 @media (max-width: 899px) {

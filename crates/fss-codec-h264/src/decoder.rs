@@ -118,6 +118,7 @@ impl DpbFrame {
 struct Pending {
     first: SliceHeader,
     sps: SeqParams,
+    pps: PicParams,
     frame: Frame,
     infos: Vec<MbInfo>,
     slices: Vec<SliceInfo>,
@@ -139,10 +140,11 @@ struct Pending {
 /// the output process of Annex C. Call [`Decoder::finish`] at the end of the
 /// stream to flush the remaining pictures.
 ///
-/// Error discipline: any error inside a picture discards that picture and
+/// Error discipline: any rejected NAL discards the partial picture and
 /// puts the decoder in a "wait for IDR" state, so later pictures can never
-/// silently predict from the wrong reference. Parameter-set errors leave
-/// previously stored parameter sets untouched.
+/// silently predict across rejected input. Already completed pictures remain
+/// available for output. Parameter-set errors leave previously stored parameter
+/// sets untouched.
 pub struct Decoder {
     limits: DecoderLimits,
     syntax_limits: AvcSyntaxLimits,
@@ -236,6 +238,18 @@ impl Decoder {
     /// # Errors
     /// Any [`DecodeError`]; see the type-level error discipline.
     pub fn decode_nal(&mut self, nal: &[u8]) -> Result<Option<Picture>, DecodeError> {
+        let result = self.decode_nal_inner(nal);
+        if result.is_err() {
+            // Header, size, parameter-set and unsupported-NAL failures can occur
+            // before slice decoding. None may leave a partial picture or the old
+            // prediction chain usable by a subsequent continuation/non-IDR.
+            self.pending = None;
+            self.need_idr = true;
+        }
+        result
+    }
+
+    fn decode_nal_inner(&mut self, nal: &[u8]) -> Result<Option<Picture>, DecodeError> {
         if nal.len() > self.limits.max_nal_bytes {
             return Err(DecodeError::Limit);
         }
@@ -243,13 +257,7 @@ impl Decoder {
         match header.unit_type {
             7 => self.store_sps(nal, payload)?,
             8 => self.store_pps(nal, payload)?,
-            1 | 5 => {
-                if let Err(err) = self.decode_slice(header, payload) {
-                    self.pending = None;
-                    self.need_idr = true;
-                    return Err(err);
-                }
-            }
+            1 | 5 => self.decode_slice(header, payload)?,
             2..=4 => {
                 return Err(DecodeError::Unsupported(
                     UnsupportedFeature::DataPartitioning,
@@ -375,7 +383,7 @@ impl Decoder {
             if self.pending.is_some() {
                 return Err(DecodeError::IncompletePicture);
             }
-            self.start_picture(&header, &sps)?;
+            self.start_picture(&header, &sps, &pps)?;
         }
         let pending = self.pending.as_mut().ok_or(DecodeError::Unsupported(
             UnsupportedFeature::ArbitrarySliceOrder,
@@ -390,6 +398,7 @@ impl Decoder {
             || header.delta_poc != first.delta_poc
             || header.marking != first.marking
             || pending.sps != sps
+            || pending.pps != pps
         {
             return Err(DecodeError::Malformed);
         }
@@ -457,7 +466,12 @@ impl Decoder {
         self.finish_picture(pending)
     }
 
-    fn start_picture(&mut self, header: &SliceHeader, sps: &SeqParams) -> Result<(), DecodeError> {
+    fn start_picture(
+        &mut self,
+        header: &SliceHeader,
+        sps: &SeqParams,
+        pps: &PicParams,
+    ) -> Result<(), DecodeError> {
         if self.pictures >= self.limits.max_pictures {
             return Err(DecodeError::Limit);
         }
@@ -472,9 +486,18 @@ impl Decoder {
             if header.frame_num != 0 {
                 return Err(DecodeError::Malformed);
             }
-            // C.4.4: prior pictures are output (in POC order) and the
-            // buffer is emptied before an IDR picture is decoded.
-            self.flush_output()?;
+            // C.4.4: the IDR explicitly chooses whether waiting pictures are
+            // output in POC order or discarded. Already released output is not
+            // part of the DPB and must survive either choice.
+            if !matches!(
+                &header.marking,
+                RefPicMarking::Idr {
+                    no_output_of_prior_pics: true,
+                    ..
+                }
+            ) {
+                self.flush_output()?;
+            }
             self.dpb.clear();
             self.max_long_term_frame_idx = None;
             self.prev_ref_frame_num = 0;
@@ -511,6 +534,7 @@ impl Decoder {
         self.pending = Some(Pending {
             first: header.clone(),
             sps: sps.clone(),
+            pps: pps.clone(),
             frame,
             infos,
             slices: Vec::new(),

@@ -21,9 +21,9 @@ use fss_reference::evaluation::{
     CandidateDisposition, CandidateSet, ClosedIntervalNs, EvaluationError, EvaluationIdentity,
     EvaluationPolicy, EvaluationReport, EventCandidate, FalseAlertBudget, LabelSet, LabeledClip,
     MAX_EVALUATION_CANDIDATES, MAX_EVALUATION_CLIPS, MAX_EVALUATION_NOT_OBSERVABLE_INTERVALS,
-    MAX_EVALUATION_TRUTH_EVENTS, NotObservableInterval, NotObservableReason, OperatingPoint,
-    PpmMetric, PrPoint, Ratio, TimeToDetectSummary, TruthDisposition, TruthEvent, UndefinedReason,
-    evaluate,
+    MAX_EVALUATION_TRUTH_EVENTS, MAX_SCORE_PPM, NotObservableInterval, NotObservableReason,
+    OperatingPoint, PpmMetric, PrPoint, Ratio, TimeToDetectSummary, TruthDisposition, TruthEvent,
+    UndefinedReason, evaluate,
 };
 
 const MAX_INPUT_BYTES: u64 = 16 * 1024 * 1024;
@@ -31,10 +31,12 @@ const MAX_ROW_BYTES: usize = 1024;
 const HELP: &str = "fss-evaluate --labels LABELS.tsv --candidates CANDIDATES.tsv \
 --pipeline-generation ID --model-generation ID --policy-generation ID \
 --max-false-alerts N --per-observed-ns N \
-[--early-tolerance-ns N] [--late-tolerance-ns N] \
+[--early-tolerance-ns N] [--late-tolerance-ns N] [--fixed-threshold-ppm PPM] \
 [--calibration-bins PPM,PPM,... --calibration-generation ID] \
 [--conformal-alpha-ppm PPM]\n\n\
 Read-only event evaluation; emits JSON to stdout. No threshold is activated.\n\
+Use --fixed-threshold-ppm to measure a threshold chosen before inspecting these labels.\n\
+The fixed operating point includes all scored candidates at or above it, even over budget.\n\
 With --calibration-bins (ascending score edges starting at 0) the report also carries a\n\
 score_calibration: per-bin true/false positive counts and log-likelihood-ratio intervals\n\
 (millibans, Wilson z=2, exact integer bounds) for fss-fuse; neutral and gap candidates\n\
@@ -87,6 +89,7 @@ struct Options {
     policy: EvaluationPolicy,
     calibration: Option<(String, Vec<u32>)>,
     conformal_alpha_ppm: Option<u32>,
+    fixed_threshold_ppm: Option<u32>,
 }
 
 fn integer(value: &str) -> Result<u64> {
@@ -114,7 +117,7 @@ fn unicode(value: &OsStr) -> Result<&str> {
 fn parse_options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>> {
     let mut bounded = Vec::new();
     for arg in args {
-        if bounded.len() == 24 {
+        if bounded.len() == 26 {
             return Err(Failure::new("evaluation.cli.arguments_limit"));
         }
         bounded.push(arg);
@@ -140,6 +143,7 @@ fn parse_options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Opti
                 | "--calibration-bins"
                 | "--calibration-generation"
                 | "--conformal-alpha-ppm"
+                | "--fixed-threshold-ppm"
         ) {
             return Err(Failure::new("evaluation.cli.unknown_option"));
         }
@@ -212,7 +216,21 @@ fn parse_options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Opti
         policy,
         calibration,
         conformal_alpha_ppm,
+        fixed_threshold_ppm: fixed_threshold(&values)?,
     }))
+}
+
+fn fixed_threshold(values: &BTreeMap<String, OsString>) -> Result<Option<u32>> {
+    values
+        .get("--fixed-threshold-ppm")
+        .map(|value| {
+            let value = integer(unicode(value)?)?;
+            if value > u64::from(MAX_SCORE_PPM) {
+                return Err(EvaluationError::InvalidThreshold.into());
+            }
+            Ok(value as u32)
+        })
+        .transpose()
 }
 
 fn read_input(path: &Path) -> Result<String> {
@@ -676,6 +694,36 @@ fn report_json(report: &EvaluationReport) -> String {
     ])
 }
 
+fn report_with_threshold(report: &EvaluationReport, threshold_ppm: Option<u32>) -> Result<String> {
+    let mut json = report_json(report);
+    if let Some(threshold_ppm) = threshold_ppm {
+        let fixed = report.at_threshold(threshold_ppm)?;
+        let budget_state = match fixed.within_budget {
+            Some(true) => "within_budget",
+            Some(false) => "over_budget",
+            None => "no_observed_time",
+        };
+        let projection = object(&[
+            ("threshold_ppm", fixed.threshold_ppm.to_string()),
+            ("true_positives", fixed.true_positives.to_string()),
+            ("false_positives", fixed.false_positives.to_string()),
+            ("false_negatives", fixed.false_negatives.to_string()),
+            ("precision", ratio(fixed.precision)),
+            ("recall", ratio(fixed.recall)),
+            ("observed_ns", text(&fixed.observed_ns.to_string())),
+            ("budget_state", text(budget_state)),
+            ("time_to_detect", timing(fixed.time_to_detect)),
+            ("report_digest", text(&fixed.report_digest.to_string())),
+            ("digest", text(&fixed.digest.to_string())),
+        ]);
+        let body = json
+            .strip_suffix('}')
+            .ok_or_else(|| Failure::new("evaluation.cli.internal"))?;
+        json = format!("{body},\"fixed_operating_point\":{projection}}}");
+    }
+    Ok(json)
+}
+
 fn conformal_json(
     generation: &str,
     alpha_ppm: u32,
@@ -750,7 +798,7 @@ fn run(args: impl IntoIterator<Item = OsString>) -> Result<String> {
     let labels = parse_labels(&read_input(&options.labels)?)?;
     let candidates = parse_candidates(&read_input(&options.candidates)?)?;
     let report = evaluate(&options.identity, &options.policy, &labels, &candidates)?;
-    let mut json = report_json(&report);
+    let mut json = report_with_threshold(&report, options.fixed_threshold_ppm)?;
     let conformal_generation = options
         .calibration
         .as_ref()
@@ -876,6 +924,53 @@ mod tests {
         assert_eq!(
             report_json(&score(LABELS, CANDIDATES)?),
             report_json(&score(&reversed(LABELS), &reversed(CANDIDATES))?)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn fixed_point_matches_independent_filtered_evaluations_and_binds_exact_threshold() -> Result<()>
+    {
+        let labels = parse_labels(LABELS)?;
+        let candidates = parse_candidates(CANDIDATES)?;
+        let report = score(LABELS, CANDIDATES)?;
+        for threshold in [0, 500_000, 500_001, 899_999, 900_000, 900_001, 1_000_000] {
+            let fixed = report.at_threshold(threshold)?;
+            let filtered = CandidateSet {
+                candidates: candidates
+                    .candidates
+                    .iter()
+                    .filter(|candidate| candidate.score_ppm >= threshold)
+                    .cloned()
+                    .collect(),
+            };
+            let oracle = evaluate(&report.identity, &report.policy, &labels, &filtered)?;
+            assert_eq!(fixed.report_digest, report.digest);
+            assert_eq!(fixed.true_positives, oracle.counts.true_positives);
+            assert_eq!(fixed.false_positives, oracle.counts.false_positives);
+            assert_eq!(fixed.false_negatives, oracle.counts.false_negatives);
+            assert_eq!(fixed.precision, oracle.precision);
+            assert_eq!(fixed.recall, oracle.recall);
+            assert_eq!(fixed.time_to_detect, oracle.time_to_detect);
+        }
+        assert_ne!(
+            report.at_threshold(500_001)?.digest,
+            report.at_threshold(500_002)?.digest
+        );
+        assert_eq!(
+            report.at_threshold(1_000_001),
+            Err(EvaluationError::InvalidThreshold)
+        );
+        let mut altered = report.clone();
+        altered.pr_curve[0].false_positives = u64::MAX;
+        assert_eq!(
+            altered.at_threshold(900_000),
+            Err(EvaluationError::InconsistentReport)
+        );
+        altered.digest = altered.compute_digest()?;
+        assert_eq!(
+            altered.at_threshold(900_000),
+            Err(EvaluationError::InconsistentReport)
         );
         Ok(())
     }

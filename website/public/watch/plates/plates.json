@@ -92,6 +92,24 @@
       "sha256": "c08813914139287e337ead8e4ebf411ceb0f7a7ca98e5242b18adea9cd3a2f97",
       "bytes": 124368
     },
+    "house-960.webp": {
+      "source": "estate/hero.jpg",
+      "source_sha256": "55fcf2c73a649ca816ef353e6b586654a921cdb9c1d05426ee2f9b22c4dc3d7d",
+      "sha256": "a31f420bb450ba09e99000f423ec6834d308fc57a377dc5aebb9c6a6b96fed58",
+      "bytes": 26420
+    },
+    "house-1600.webp": {
+      "source": "estate/hero.jpg",
+      "source_sha256": "55fcf2c73a649ca816ef353e6b586654a921cdb9c1d05426ee2f9b22c4dc3d7d",
+      "sha256": "be95fde6189f3176db206cc14102393c65fa81a209b210bad941fba146132395",
+      "bytes": 60410
+    },
+    "house-2400.webp": {
+      "source": "estate/hero.jpg",
+      "source_sha256": "55fcf2c73a649ca816ef353e6b586654a921cdb9c1d05426ee2f9b22c4dc3d7d",
+      "sha256": "5564e295ef4b6639672b34818c088b37a0c9170f3b136c01625e59676d5f7934",
+      "bytes": 109148
+    },
     "cam-gate.webp": {
       "source": "watch/intrusion/gate.jpg",
       "source_sha256": "a254442f374f2b3962c0dcc9b95df80f2741408c72fbf8697436955f74852a95",

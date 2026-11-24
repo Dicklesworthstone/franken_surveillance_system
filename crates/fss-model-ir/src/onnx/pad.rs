@@ -1,15 +1,24 @@
 #![forbid(unsafe_code)]
-//! Static constant-mode Pad-13 using existing Slice, Concat and Reshape operators.
+//! Static Pad-13 and Pad-18 using existing Slice, Concat and Reshape operators.
 //!
 //! https://onnx.ai/onnx/operators/onnx__Pad.html#pad-13
-//! Crop every negative side before adding constant borders. Data movement and
-//! generated fill tensors preserve source F32 bits, including negative zero.
+//! Crop every negative side before adding constant, edge or reflection borders.
+//! Edge and reflection move samples without arithmetic or generated parameters.
+//! Reflection requires each positive pad to be smaller than the cropped axis,
+//! matching the bounded profile of the ONNX reference implementation.
 //! The shared eight-element INT64 control bound admits ranks one through four.
 
 use fss_tensor::{DType, Tensor};
 
-use super::{Lowering, OnnxError, Result, SourceNode, port};
+use super::{Lowering, OnnxError, Result, SourceNode, port, push};
 use crate::{AttrValue, AttributeMap, GraphNode, OpCode};
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Mode {
+    Constant,
+    Edge,
+    Reflect,
+}
 
 struct Plan {
     starts: Vec<i64>,
@@ -139,19 +148,152 @@ fn parameter(
     Ok(name)
 }
 
-pub(super) fn lower(mut source: SourceNode<'_>, lowering: &mut Lowering<'_, '_>) -> Result<()> {
-    if !(2..=3).contains(&source.inputs.len())
+fn copied_nodes(plan: &Plan, mode: Mode) -> Result<usize> {
+    let mut nodes = usize::from(plan.crop);
+    for axis in 0..plan.cropped.len() {
+        if plan.before[axis] == 0 && plan.after[axis] == 0 {
+            continue;
+        }
+        nodes = nodes.checked_add(1).ok_or(OnnxError::Limit)?;
+        for count in [plan.before[axis], plan.after[axis]] {
+            if count == 0 {
+                continue;
+            }
+            let added = match mode {
+                // One edge Slice and a doubling Concat for each higher bit.
+                // Selected powers share the final axis Concat with the input.
+                Mode::Edge => (usize::BITS - count.leading_zeros()) as usize,
+                Mode::Reflect if count < plan.cropped[axis] => count,
+                Mode::Reflect => return Err(OnnxError::Unsupported),
+                Mode::Constant => return Err(OnnxError::Graph),
+            };
+            nodes = nodes.checked_add(added).ok_or(OnnxError::Limit)?;
+        }
+    }
+    Ok(nodes.max(1))
+}
+
+struct Border<'a> {
+    base: &'a str,
+    input: &'a str,
+    axis: usize,
+    extent: usize,
+    count: usize,
+    before: bool,
+}
+
+fn sample(
+    source: &SourceNode<'_>,
+    lowering: &mut Lowering<'_, '_>,
+    border: &Border<'_>,
+    ordinal: usize,
+    index: usize,
+) -> Result<String> {
+    lowering.admission.charge(1)?;
+    let start = i64::try_from(index).map_err(|_| OnnxError::Limit)?;
+    let end = start.checked_add(1).ok_or(OnnxError::Limit)?;
+    let id = format!("{}-sample-{ordinal}", border.base);
+    let output = lowering.fresh_name(&id)?;
+    lowering.append(
+        GraphNode::new(
+            id,
+            OpCode::Slice,
+            source.label.clone(),
+            vec![border.input.to_owned()],
+            vec![output.clone()],
+            AttributeMap::from([
+                ("axes".into(), AttrValue::IntList(vec![border.axis as i64])),
+                ("starts".into(), AttrValue::IntList(vec![start])),
+                ("ends".into(), AttrValue::IntList(vec![end])),
+                ("steps".into(), AttrValue::IntList(vec![1])),
+            ]),
+        )
+        .map_err(|_| OnnxError::Graph)?,
+    )?;
+    Ok(output)
+}
+
+fn copy_border(
+    source: &SourceNode<'_>,
+    lowering: &mut Lowering<'_, '_>,
+    mode: Mode,
+    border: Border<'_>,
+    parts: &mut Vec<String>,
+) -> Result<()> {
+    let maximum = lowering.admission.limits.nodes;
+    match mode {
+        Mode::Reflect => {
+            // Reverse the neighboring samples, excluding the boundary sample.
+            // Native Slice has positive strides only; each sample is copied,
+            // never multiplied by a one-hot mask (which would alter NaN/zero).
+            for ordinal in 0..border.count {
+                let index = if border.before {
+                    border.count - ordinal
+                } else {
+                    border.extent - 2 - ordinal
+                };
+                let output = sample(source, lowering, &border, ordinal, index)?;
+                push(parts, output, maximum)?;
+            }
+        }
+        Mode::Edge => {
+            let index = if border.before { 0 } else { border.extent - 1 };
+            let mut output = sample(source, lowering, &border, 0, index)?;
+            let mut remaining = border.count;
+            let mut ordinal = 0;
+            while remaining != 0 {
+                lowering.admission.charge(1)?;
+                if remaining & 1 != 0 {
+                    push(parts, output.clone(), maximum)?;
+                }
+                remaining >>= 1;
+                if remaining == 0 {
+                    break;
+                }
+                let id = format!("{}-repeat-{ordinal}", border.base);
+                let next = lowering.fresh_name(&id)?;
+                lowering.append(
+                    GraphNode::new(
+                        id,
+                        OpCode::Concat,
+                        source.label.clone(),
+                        vec![output.clone(), output],
+                        vec![next.clone()],
+                        AttributeMap::from([("axis".into(), AttrValue::Int(border.axis as i64))]),
+                    )
+                    .map_err(|_| OnnxError::Graph)?,
+                )?;
+                output = next;
+                ordinal += 1;
+            }
+        }
+        Mode::Constant => return Err(OnnxError::Graph),
+    }
+    Ok(())
+}
+
+pub(super) fn lower(
+    mut source: SourceNode<'_>,
+    lowering: &mut Lowering<'_, '_>,
+    version: u64,
+) -> Result<()> {
+    let max_inputs = if version == 18 { 4 } else { 3 };
+    if !(2..=max_inputs).contains(&source.inputs.len())
         || source.outputs.len() != 1
         || source.inputs[..2].iter().any(String::is_empty)
     {
         return Err(OnnxError::Graph);
     }
-    match source.attrs.remove("mode") {
-        None => {}
-        Some(AttrValue::String(mode)) if mode == "constant" => {}
-        Some(AttrValue::String(_)) => return Err(OnnxError::Unsupported),
+    let mode = match source.attrs.remove("mode") {
+        None => Mode::Constant,
+        Some(AttrValue::String(mode)) => match mode.as_str() {
+            "constant" => Mode::Constant,
+            "edge" => Mode::Edge,
+            "reflect" => Mode::Reflect,
+            _ => return Err(OnnxError::Unsupported),
+        },
         Some(_) => return Err(OnnxError::Graph),
-    }
+    };
     if !source.attrs.is_empty() {
         return Err(OnnxError::Unsupported);
     }
@@ -167,10 +309,35 @@ pub(super) fn lower(mut source: SourceNode<'_>, lowering: &mut Lowering<'_, '_>)
         return Err(OnnxError::Unsupported);
     }
     let pads = lowering.constant_i64_vector(&source.inputs[1])?;
+    // Pad-18 pairs the two halves of pads with axes in declaration order.
+    // Unselected dimensions undergo neither cropping nor padding.
+    let pads = if let Some(name) = source.inputs.get(3).filter(|name| !name.is_empty()) {
+        let raw_axes = lowering.constant_i64_vector(name)?;
+        let axes = super::structure::axes(raw_axes, dims.len())?;
+        if pads.len() != 2 * axes.len() {
+            return Err(OnnxError::Graph);
+        }
+        let mut full = vec![0; 2 * dims.len()];
+        for (i, &axis) in axes.iter().enumerate() {
+            full[axis as usize] = pads[i];
+            full[dims.len() + axis as usize] = pads[axes.len() + i];
+        }
+        full
+    } else {
+        pads
+    };
     let plan = plan(&dims, &pads)?;
     let value = fill(&source, lowering)?;
-    let nodes = (usize::from(plan.crop) + plan.axes).max(1);
-    let values = nodes.checked_add(plan.parameters).ok_or(OnnxError::Limit)?;
+    let (nodes, parameters, generated_bytes) = if mode == Mode::Constant {
+        (
+            (usize::from(plan.crop) + plan.axes).max(1),
+            plan.parameters,
+            plan.bytes,
+        )
+    } else {
+        (copied_nodes(&plan, mode)?, 0, 0)
+    };
+    let values = nodes.checked_add(parameters).ok_or(OnnxError::Limit)?;
     let helpers = values - 1; // The source output name is already reserved.
     let limits = lowering.admission.limits;
     if byte_count(&plan.output)? > limits.tensor_bytes
@@ -194,7 +361,7 @@ pub(super) fn lower(mut source: SourceNode<'_>, lowering: &mut Lowering<'_, '_>)
             > limits.tensors
         || lowering
             .parameter_bytes
-            .checked_add(plan.bytes)
+            .checked_add(generated_bytes)
             .ok_or(OnnxError::Limit)?
             > limits.parameter_bytes
     {
@@ -259,26 +426,50 @@ pub(super) fn lower(mut source: SourceNode<'_>, lowering: &mut Lowering<'_, '_>)
         }
         let base = format!("{}-pad-axis-{axis}", source.id);
         let mut parts = Vec::new();
-        if before > 0 {
-            let mut fill_shape = shape.clone();
-            fill_shape[axis] = before;
-            parts.push(parameter(
-                lowering,
-                &format!("{base}-before"),
-                fill_shape,
-                value,
-            )?);
-        }
-        parts.push(input);
-        if after > 0 {
-            let mut fill_shape = shape.clone();
-            fill_shape[axis] = after;
-            parts.push(parameter(
-                lowering,
-                &format!("{base}-after"),
-                fill_shape,
-                value,
-            )?);
+        if mode == Mode::Constant {
+            if before > 0 {
+                let mut fill_shape = shape.clone();
+                fill_shape[axis] = before;
+                parts.push(parameter(
+                    lowering,
+                    &format!("{base}-before"),
+                    fill_shape,
+                    value,
+                )?);
+            }
+            parts.push(input);
+            if after > 0 {
+                let mut fill_shape = shape.clone();
+                fill_shape[axis] = after;
+                parts.push(parameter(
+                    lowering,
+                    &format!("{base}-after"),
+                    fill_shape,
+                    value,
+                )?);
+            }
+        } else {
+            for (is_before, count, side) in [(true, before, "before"), (false, after, "after")] {
+                if !is_before {
+                    push(&mut parts, input.clone(), limits.nodes)?;
+                }
+                if count != 0 {
+                    copy_border(
+                        &source,
+                        lowering,
+                        mode,
+                        Border {
+                            base: &format!("{base}-{side}"),
+                            input: &input,
+                            axis,
+                            extent: shape[axis],
+                            count,
+                            before: is_before,
+                        },
+                        &mut parts,
+                    )?;
+                }
+            }
         }
         remaining -= 1;
         let output = if remaining == 0 {
