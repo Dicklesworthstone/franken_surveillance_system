@@ -235,12 +235,19 @@ fn missing_extra_and_wrong_timestamp_rows_return_native_request_without_recipe()
         (vec![row(1)], "mismatch"),
     ] {
         let error = failure(&p, &mut author(&archive, rows)?)?;
-        assert!(match (&error.reason, expected) {
-            (AuthoringError::Recipe(RecordingRecipeError::MissingTiming), "missing")
-            | (AuthoringError::Recipe(RecordingRecipeError::UnusedTiming), "extra")
-            | (AuthoringError::Recipe(RecordingRecipeError::Mismatch), "mismatch") => true,
-            _ => false,
-        });
+        assert!(matches!(
+            (&error.reason, expected),
+            (
+                AuthoringError::Recipe(RecordingRecipeError::MissingTiming),
+                "missing"
+            ) | (
+                AuthoringError::Recipe(RecordingRecipeError::UnusedTiming),
+                "extra"
+            ) | (
+                AuthoringError::Recipe(RecordingRecipeError::Mismatch),
+                "mismatch"
+            )
+        ));
         let retired = error.retirement.ok_or("retirement")?;
         assert!(retired.candidate.is_none());
         assert!(retired.withheld.is_some());

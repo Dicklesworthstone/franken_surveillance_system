@@ -682,14 +682,13 @@ fn validate_config(config: &ClientConfig, token: Option<&str>) -> Result<(), Cli
     if !within_root(config.device.target(), &config.service_root) {
         return Err(ClientError::Scope);
     }
-    if let Some(AuthenticationConfig::HttpDigest(auth)) = &config.auth {
-        if auth.expected_realm.is_empty()
+    if let Some(AuthenticationConfig::HttpDigest(auth)) = &config.auth
+        && (auth.expected_realm.is_empty()
             || auth.expected_realm.len() > 512
             || !auth.expected_realm.bytes().all(|b| (32..127).contains(&b))
-            || auth.policy.allow_legacy_no_qop && !auth.policy.allow_legacy_md5
-        {
-            return Err(ClientError::Credentials);
-        }
+            || auth.policy.allow_legacy_no_qop && !auth.policy.allow_legacy_md5)
+    {
+        return Err(ClientError::Credentials);
     }
     if let Some(scope) = &config.rtsp {
         validate_authority(&scope.authority, scope.peer, 554)?;

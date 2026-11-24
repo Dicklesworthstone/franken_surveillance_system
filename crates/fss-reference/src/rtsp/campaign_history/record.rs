@@ -16,6 +16,7 @@ pub(super) const KIND: &str = "rtsp_campaign_transition_v1";
 pub(super) const MAX_RECORD_BYTES: usize = 256 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub(super) enum Transition {
     Start(u32),
     Finish(u32, CampaignFinish),

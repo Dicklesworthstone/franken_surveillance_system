@@ -252,6 +252,7 @@ fn admitted_bounds(history: &DeploymentHistory, request: &FollowRequest) -> bool
         .all(|(value, ceiling)| value > 0 && value <= ceiling)
 }
 
+#[allow(clippy::result_large_err)]
 fn next_position(
     history: &DeploymentHistory,
     since: HistoryPosition,
@@ -305,6 +306,7 @@ fn next_position(
 /// never loops across the backlog, and uses the existing native compiler without reclassification.
 /// A continued page uses the same `since` and `horizon`; only after its final page has been
 /// acknowledged may an owner supply `result_anchor` as the next `since`.
+#[allow(clippy::result_large_err)]
 pub fn follow_replay_step<C: ReplayControl + ?Sized>(
     history: &DeploymentHistory,
     since: &AnchorToken,
@@ -325,6 +327,7 @@ pub fn follow_replay_step<C: ReplayControl + ?Sized>(
 ///
 /// `None` is exactly [`follow_replay_step`]. Supplying a binding never adds a capability, refreshes
 /// a lease, edits a workspace or post-hoc relabels a sealed `MeaningfulDelta`.
+#[allow(clippy::result_large_err)]
 pub fn follow_replay_step_for<C: ReplayControl + ?Sized>(
     history: &DeploymentHistory,
     since: &AnchorToken,

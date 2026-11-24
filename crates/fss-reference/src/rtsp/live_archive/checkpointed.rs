@@ -11,11 +11,8 @@ use crate::rtsp::recording_archive::checkpoint::write_ahead::{
     ArchiveCheckpoint, CheckpointBarrier, CheckpointedArchiveProgress,
 };
 
-// Compile the same pure sequencer privately for both native ownership paths. No public
-// injection API or alternate control implementation can bypass either owner's admission.
-#[path = "../live_avc/automatic/control.rs"]
-mod automatic_control;
-use automatic_control::{Action, ControlDriver};
+// Reuse the single private RTSP control sequencer without duplicating the module.
+use crate::rtsp::live_avc::automatic::control::{Action, ControlDriver};
 
 /// Original terminal source/network/archive ownership plus the exact recovery candidates.
 /// Pins alone are neither durable publication receipts nor current disclosure authority.
@@ -86,6 +83,41 @@ impl<'a> CheckpointedLiveAvcArchive<'a> {
         &mut self,
     ) -> Result<(), crate::rtsp::recording_capture::CaptureError> {
         self.inner.enable_timing_lookahead()
+    }
+    /// Opt in before DESCRIBE to acquire H.264 SPS/PPS in-band from RTP when SDP omits
+    /// `sprop-parameter-sets`.
+    pub fn set_allow_inband_parameter_sets(
+        &mut self,
+        enabled: bool,
+    ) -> Result<(), LiveArchiveError> {
+        self.inner.set_allow_inband_parameter_sets(enabled)
+    }
+    /// Override bounded pre-roll ceilings for in-band parameter-set acquisition before DESCRIBE.
+    pub fn set_inband_sync_limits(
+        &mut self,
+        limits: crate::rtsp::client::inband::InbandSyncLimits,
+    ) -> Result<(), LiveArchiveError> {
+        self.inner.set_inband_sync_limits(limits)
+    }
+    /// Opt in before DESCRIBE to SETUP companion `m=audio` tracks and drain their interleaved packets.
+    pub fn set_setup_companion_tracks(&mut self, enabled: bool) -> Result<(), LiveArchiveError> {
+        self.inner.set_setup_companion_tracks(enabled)
+    }
+    /// Explicit provenance and pre-sync / companion-track discard counters.
+    pub fn intake_telemetry(&self) -> crate::rtsp::client::inband::RtspIntakeTelemetry {
+        self.inner.intake_telemetry()
+    }
+    /// Best-effort bounded `TEARDOWN` write before closing the socket.
+    pub fn send_teardown(
+        &mut self,
+        credentials: &DigestCredentials<'_>,
+        cnonce: [u8; 16],
+        now: u64,
+        authority: &dyn TcpAuthority,
+    ) -> Result<bool, CheckpointedLiveArchiveFailure> {
+        self.inner
+            .send_teardown(credentials, cnonce, now, authority)
+            .map_err(|e| self.failure(e))
     }
 
     /// Next held picture's unverified source metadata, when present.
@@ -341,6 +373,7 @@ impl<'a> CheckpointedLiveAvcArchive<'a> {
 /// Queued means local preparation, never successful dispatch, recording or durable custody.
 #[must_use]
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum AutomaticLiveArchiveStep {
     /// One existing request queued without performing a socket write in this call.
     Queued(QueuedAvcRequest),

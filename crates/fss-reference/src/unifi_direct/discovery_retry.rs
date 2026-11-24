@@ -81,11 +81,24 @@ impl std::error::Error for Error {}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Event {
     /// A current retryable failure was rearmed against the latest scan.
-    Rearmed { index: usize, state: fleet::State },
+    Rearmed {
+        /// Fleet inventory index rearmed for retry.
+        index: usize,
+        /// Resulting fleet eligibility state.
+        state: fleet::State,
+    },
     /// The original failed operation is no longer the current retry candidate.
-    Stale { index: usize },
+    Stale {
+        /// Fleet inventory index whose failed operation became stale.
+        index: usize,
+    },
     /// Fleet capacity or another explicit precondition refused rearming.
-    Refused { index: usize, reason: fleet::Error },
+    Refused {
+        /// Fleet inventory index refused for retry.
+        index: usize,
+        /// Payload-free refusal reason from the fleet planner.
+        reason: fleet::Error,
+    },
 }
 
 struct Entry {
@@ -254,7 +267,7 @@ impl<'fleet, 'report, 'scope, 'task> Queue<'fleet, 'report, 'scope, 'task> {
             let now = self.cx.now().as_nanos();
             let due = self.pending[index].due;
             if now < due {
-                let quantum = u64::try_from(CANCEL_POLL.as_nanos()).expect("bounded quantum");
+                let quantum = u64::try_from(CANCEL_POLL.as_nanos()).unwrap_or(u64::MAX);
                 sleep_until(Time::from_nanos(due.min(now.saturating_add(quantum)))).await;
                 continue;
             }

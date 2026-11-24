@@ -114,6 +114,7 @@ pub enum Refusal {
     },
 }
 /// Outcome of a fully drained blocking closure.
+#[allow(clippy::large_enum_variant)]
 pub enum Outcome {
     /// The closure never started; the event remains pending.
     NotStarted,
@@ -182,6 +183,7 @@ impl archive::RetainAuthority for CurrentRetention<'_> {
 
 impl Worker {
     /// Construct without I/O; invalid configuration returns all owners.
+    #[allow(clippy::result_large_err)]
     pub fn new(parts: Parts) -> Result<Self, Parts> {
         if !event_evidence::valid_digest(parts.retention)
             || !(1..=super::MAX_MESSAGE_BYTES).contains(&parts.max_event_bytes)
@@ -216,6 +218,7 @@ impl Worker {
     }
 
     /// Transfer an event into an idle worker, or recover it unchanged.
+    #[allow(clippy::result_large_err)]
     pub fn offer(&mut self, input: Input) -> Result<(), OfferRefusal> {
         if self.fenced {
             return Err(OfferRefusal::Fenced(input));

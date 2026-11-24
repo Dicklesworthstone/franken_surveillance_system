@@ -377,7 +377,7 @@ fn insert_candidate(
     if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(MetadataError::Custody);
     }
-    let identity = ContentDigest::parse(&format!("sha256:{hex}"))?;
+    let identity = ContentDigest::parse(format!("sha256:{hex}"))?;
     match metadata::check_deleted_for_unit(
         deletions,
         identity,

@@ -337,13 +337,13 @@ fn stale_and_racing_deployment_heads_refuse_the_entire_session_union() -> TestRe
     let changed = AtomicBool::new(false);
     let mutation_failed = AtomicBool::new(false);
     let mutate = || {
-        if io.call_count(SpoolIoCall::OpenRead) >= 5 && !changed.swap(true, Ordering::SeqCst) {
-            if f.publish_hypothesis("event:utc-sessions-racing-head")
+        if io.call_count(SpoolIoCall::OpenRead) >= 5
+            && !changed.swap(true, Ordering::SeqCst)
+            && f.publish_hypothesis("event:utc-sessions-racing-head")
                 .is_err()
-            {
-                mutation_failed.store(true, Ordering::SeqCst);
-                return true;
-            }
+        {
+            mutation_failed.store(true, Ordering::SeqCst);
+            return true;
         }
         false
     };

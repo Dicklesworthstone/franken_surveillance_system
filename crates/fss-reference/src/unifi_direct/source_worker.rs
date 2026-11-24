@@ -148,6 +148,7 @@ pub enum Refusal {
 }
 
 /// Outcome of the fully drained blocking closure.
+#[allow(clippy::large_enum_variant)]
 pub enum Outcome {
     /// The closure never started; the original record remains pending.
     NotStarted,
@@ -825,6 +826,7 @@ fn valid_input(input: &Input, parts: &Parts) -> bool {
 impl Retirement {
     /// Detach an unfenced worker's resources and predecessor; a pending input
     /// remains owned, as does any earlier verified transition custody.
+    #[allow(clippy::result_large_err)]
     pub fn into_rollover(
         mut self,
     ) -> Result<(RolloverResources, archive::journal::rollover::Previous), Self> {
@@ -846,14 +848,13 @@ impl Retirement {
         {
             return Err(self);
         }
-        if let Some(custody) = &mut self.rollover_custody {
-            if custody
+        if let Some(custody) = &mut self.rollover_custody
+            && (custody
                 .check(&self.parts.journal, &self.parts.keeper, &self.parts.replay)
                 .is_err()
-                || !custody.reserve_next()
-            {
-                return Err(self);
-            }
+                || !custody.reserve_next())
+        {
+            return Err(self);
         }
         let Parts {
             deployment,
@@ -932,6 +933,7 @@ impl RolloverResources {
     }
 
     /// Restore the exact original predecessor after an uncommitted transition.
+    #[allow(clippy::result_large_err)]
     pub fn restore(
         self,
         previous: archive::journal::rollover::Previous,
@@ -965,6 +967,7 @@ impl RolloverResources {
 
     /// Attach a replayed successor, retaining rollover custody in the worker.
     /// On refusal both resources and transition remain available.
+    #[allow(clippy::result_large_err)]
     pub fn attach(
         mut self,
         active: archive::journal::rollover::Active,
@@ -980,13 +983,13 @@ impl RolloverResources {
                 active,
             });
         }
-        if let Some(prior) = &mut self.prior_custody {
-            if active.check_prior(prior, &self.replay).is_err() {
-                return Err(RolloverAttachRefusal {
-                    resources: self,
-                    active,
-                });
-            }
+        if let Some(prior) = &mut self.prior_custody
+            && active.check_prior(prior, &self.replay).is_err()
+        {
+            return Err(RolloverAttachRefusal {
+                resources: self,
+                active,
+            });
         }
         let (journal, keeper, custody) = match active.into_worker_parts(&self.replay) {
             Ok(parts) => parts,
@@ -1111,6 +1114,7 @@ impl Worker {
     }
 
     /// Construct without I/O; invalid limits return all owners unchanged.
+    #[allow(clippy::result_large_err)]
     pub fn new(parts: Parts) -> Result<Self, Parts> {
         if !valid_configuration(parts.work_limit, parts.max_source_bytes, parts.retention) {
             return Err(parts);
@@ -1129,6 +1133,7 @@ impl Worker {
 
     /// Reattach a replayed cold-recovered lineage to a new source worker.
     /// Refusal returns both the supplied resources and all switch owners.
+    #[allow(clippy::result_large_err)]
     pub fn from_recovered(
         parts: Parts,
         mut custody: archive::journal::rollover::WorkerCustody,
@@ -1157,6 +1162,7 @@ impl Worker {
     }
 
     /// Transfer one exact source into the idle worker; refusal returns it.
+    #[allow(clippy::result_large_err)]
     pub fn offer(&mut self, input: Input) -> Result<(), OfferRefusal> {
         if self.fenced {
             return Err(OfferRefusal::Fenced(input));
@@ -1240,14 +1246,14 @@ impl Worker {
                 });
                 return;
             }
-            if let Some(custody) = rollover_custody {
-                if let Err(error) = custody.check(&parts.journal, &parts.keeper, &parts.replay) {
-                    *report = Some(Publication::Refused {
-                        pin: None,
-                        reason: Refusal::BeforePublication(av_worker::journal_reason(error)),
-                    });
-                    return;
-                }
+            if let Some(custody) = rollover_custody
+                && let Err(error) = custody.check(&parts.journal, &parts.keeper, &parts.replay)
+            {
+                *report = Some(Publication::Refused {
+                    pin: None,
+                    reason: Refusal::BeforePublication(av_worker::journal_reason(error)),
+                });
+                return;
             }
             if child.is_cancel_requested() {
                 *report = Some(Publication::Refused {

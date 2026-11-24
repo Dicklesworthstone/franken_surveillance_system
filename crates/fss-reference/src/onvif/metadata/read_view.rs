@@ -168,8 +168,11 @@ pub enum OnvifAnalysisResult {
     Tracks,
     /// Every lifecycle row and every original document disposition.
     Lifecycle {
+        /// Projected ONVIF metadata lifecycle report.
         report: LifecycleReport,
+        /// Per-document disposition receipts observed in the closure.
         documents: Vec<LifecycleDocumentReceipt>,
+        /// Canonical digest over the ordered document receipts.
         documents_digest: ContentDigest,
     },
     /// Complete zone cells, frame samples and observed transitions.

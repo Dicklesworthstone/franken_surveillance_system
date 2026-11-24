@@ -53,6 +53,7 @@ impl Codec {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 enum Client {
     Avc(RtspAvcClient),
     Hevc(RtspHevcClient),

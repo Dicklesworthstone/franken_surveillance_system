@@ -60,6 +60,7 @@ impl ReportCatalogFamily {
     }
 
     /// Parse an exact native family without normalization.
+    #[allow(clippy::result_large_err)]
     pub fn parse(value: &str) -> Result<Self, ReportCatalogError> {
         match value {
             PACKAGE_DETECTION_FAMILY => Ok(Self::PackageDetectionRecord),
@@ -83,6 +84,7 @@ pub struct ReportCatalogFilter {
 
 impl ReportCatalogFilter {
     /// Refuse an inverted interval before filesystem access.
+    #[allow(clippy::result_large_err)]
     pub fn validate(&self) -> Result<(), ReportCatalogError> {
         if self
             .from_ns
@@ -152,6 +154,7 @@ pub struct ReportCatalogRequest {
 
 impl ReportCatalogRequest {
     /// Validate scalar inputs and exact cursor spelling before any I/O.
+    #[allow(clippy::result_large_err)]
     pub fn validate(&self) -> Result<(), ReportCatalogError> {
         self.filter.validate()?;
         if !(1..=MAX_REPORT_CATALOG_ENTRIES).contains(&self.max_entries) {
@@ -203,6 +206,7 @@ impl Default for ReportCatalogLimits {
 
 impl ReportCatalogLimits {
     /// Refuse zero or widened limits before opening an existing deployment.
+    #[allow(clippy::result_large_err)]
     pub fn validate(&self) -> Result<(), ReportCatalogError> {
         let ceiling = Self::default();
         for (value, maximum) in [
@@ -241,6 +245,7 @@ impl ReportCatalogLimits {
     }
 
     /// Admitted payload bytes and read attempts; not a syscall, CPU or observed-latency claim.
+    #[allow(clippy::result_large_err)]
     pub fn allowance(&self) -> Result<BudgetVector, ReportCatalogError> {
         self.validate()?;
         Ok(BudgetVector::from_quantities(BudgetQuantitiesSpec {
@@ -362,6 +367,7 @@ impl std::error::Error for ReportCatalogError {}
 /// `ReplayCx` binds metadata I/O to its root and principal; it does not retain the original
 /// `ContextAuthority` grant set or quantities. Canonical transports admit `AgentQuery` and bind
 /// these caller-supplied limits and the live deadline before constructing that context.
+#[allow(clippy::result_large_err)]
 pub fn query_report_catalog(
     root: &Path,
     request: &ReportCatalogRequest,

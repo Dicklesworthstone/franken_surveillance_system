@@ -31,7 +31,7 @@ fn packet(fields: &Fields, name: &'static str) -> Result<[u8; 48], SiteError> {
         return Err(SiteError::InvalidField(name));
     }
     let mut bytes = [0; 48];
-    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+    for (index, pair) in value.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         let digit = |b: u8| if b <= b'9' { b - b'0' } else { b - b'a' + 10 };
         bytes[index] = digit(pair[0]) * 16 + digit(pair[1]);
     }

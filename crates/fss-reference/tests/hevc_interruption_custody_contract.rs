@@ -1,8 +1,8 @@
 #![forbid(unsafe_code)]
-#![cfg(target_os = "linux")]
-#![feature(tcp_linger)]
 //! Independent real-reset HEVC custody, bounded drain and cold-work recovery contracts.
 //! Synthetic media and an injected owner clock; no wall-clock deadline races or camera claims.
+#![cfg_attr(target_os = "linux", feature(tcp_linger))]
+#![cfg(target_os = "linux")]
 
 mod hevc_recording_support;
 

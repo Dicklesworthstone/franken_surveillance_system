@@ -94,6 +94,7 @@ pub struct Plan {
 
 impl Plan {
     /// Check ordered ranges before consuming any original owner.
+    #[allow(clippy::result_large_err)]
     pub fn new(retirement: pipeline::Retirement) -> Result<Self, Refusal> {
         let inspect = || -> Result<(Option<u64>, Option<u64>, usize), Error> {
             let mut start = None;
@@ -330,7 +331,7 @@ impl Plan {
             .map_err(|_| Error::Allocation)?;
         self.items.extend(copies);
         self.items
-            .sort_unstable_by(|a, b| b.record.offset().cmp(&a.record.offset()));
+            .sort_unstable_by_key(|item| std::cmp::Reverse(item.record.offset()));
         self.start = ranges.first().map(|range| range.0);
         self.end = ranges.last().map(|range| range.1);
         Ok(count)
@@ -416,6 +417,7 @@ pub struct DriverParts {
 
 /// One ownership-preserving archive step for a retired source tail.
 #[must_use]
+#[allow(clippy::large_enum_variant)]
 pub enum DriverStep {
     /// A source record was accepted by the worker, but not yet published.
     Offered {
@@ -466,6 +468,7 @@ impl Driver {
     }
 
     /// Join an idle source worker to a checked retirement plan.
+    #[allow(clippy::result_large_err)]
     pub fn begin(
         worker: source_worker::Worker,
         plan: Plan,
@@ -535,6 +538,7 @@ impl Driver {
     }
 
     /// Recover both owners after any active attempt drains.
+    #[allow(clippy::result_large_err)]
     pub fn into_parts(self) -> Result<DriverParts, Self> {
         if self.parts.worker.is_running() {
             Err(self)

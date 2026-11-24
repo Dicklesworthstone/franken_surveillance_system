@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use fss_reference::discovery::{CensusConfig, OUI_SNAPSHOT, OuiTable, run_census};
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let subnets: Vec<String> = std::env::args()
         .skip(1)
         .filter(|a| a.contains('/'))
@@ -28,7 +28,7 @@ fn main() {
     };
     let cancel = AtomicBool::new(false);
     let t0 = std::time::Instant::now();
-    let report = run_census(&cfg, &oui, &cancel).expect("census");
+    let report = run_census(&cfg, &oui, &cancel)?;
     println!(
         "census: {} ping targets, {} hosts observed ({:.1}s)",
         report.ping_targets,
@@ -44,4 +44,5 @@ fn main() {
             h.open_ports
         );
     }
+    Ok(())
 }

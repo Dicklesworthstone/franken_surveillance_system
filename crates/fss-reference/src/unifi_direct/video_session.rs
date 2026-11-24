@@ -27,6 +27,7 @@ use super::{
 
 /// One complete control, custody, admission or archive outcome.
 #[must_use]
+#[allow(clippy::large_enum_variant)]
 pub enum Step {
     /// An unrelated supervisor event remains caller-owned.
     Supervisor(supervisor::Step),
@@ -115,6 +116,7 @@ pub struct Retired {
 
 /// Ownership-preserving refusal to prepare a retired video session.
 #[must_use = "retain or reconcile all returned owners and controller facts"]
+#[allow(clippy::large_enum_variant)]
 pub enum RetirementRefusal<'scope, 'task, IO> {
     /// An attempt, admission flag, or source worker is not ready; no owner was retired.
     NotDrained(Parts<'scope, 'task, IO>),
@@ -159,6 +161,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Parts<'scope, 'task, IO>
     /// capture time, or account for bytes not received from the socket. On
     /// A pending video segment remains in the returned video worker; it is not
     /// retried or published. On refusal all original owners remain available.
+    #[allow(clippy::result_large_err)]
     pub fn prepare_retirement(self) -> Result<Retired, RetirementRefusal<'scope, 'task, IO>> {
         if self.video_armed
             || self.source_armed
@@ -230,6 +233,7 @@ pub struct Session<'scope, 'task, IO> {
 impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, IO> {
     /// Pause a pending video segment and retain the controller across an
     /// explicitly supplied rollover. Refusal returns the unchanged owners.
+    #[allow(clippy::result_large_err)]
     pub fn begin_rollover(
         self,
         supplies: super::av_rollover_worker::Supplies,
@@ -289,6 +293,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
     /// Attach idle workers to a supervisor whose audio tracker is disabled.
     /// The sink and recorder source keys must match; the caller must still
     /// bind the configuration to the same connection.
+    #[allow(clippy::result_large_err)]
     pub fn attach(
         supervisor: supervisor::Supervisor<'scope, 'task, IO>,
         video: video_worker::Worker,
@@ -377,6 +382,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
     }
 
     /// Recover all owners after active attempts have drained.
+    #[allow(clippy::result_large_err)]
     pub fn into_parts(self) -> Result<Parts<'scope, 'task, IO>, Self> {
         if self.parts.video.is_running() || self.parts.source.is_running() {
             Err(self)
@@ -387,6 +393,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
 
     /// Drive one bounded decision. A retained source pauses media polling while
     /// control traffic continues; failures are never silently retried.
+    #[allow(clippy::too_many_arguments)]
     pub async fn step(
         &mut self,
         owner: &mut conversation::Owner<'_, 'scope, 'task>,
@@ -665,6 +672,7 @@ pub enum RolloverStartError {
 
 /// One bounded control or transition decision.
 #[must_use]
+#[allow(clippy::large_enum_variant)]
 pub enum RolloverStep {
     /// Controller traffic serviced while media remains paused.
     Control(supervisor::Step),
@@ -696,6 +704,7 @@ pub struct AutomaticRollover<'scope, 'task, IO> {
 
 /// A bounded automatic admission, control, or transition result.
 #[must_use]
+#[allow(clippy::large_enum_variant)]
 pub enum AutomaticRolloverStep {
     /// A preflight or transition task was admitted.
     Started,
@@ -707,6 +716,7 @@ pub enum AutomaticRolloverStep {
 
 impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> AutomaticRollover<'scope, 'task, IO> {
     /// Own a new, not-yet-started rollover and arm its preflight once.
+    #[allow(clippy::result_large_err)]
     pub fn new(rollover: Rollover<'scope, 'task, IO>) -> Result<Self, Rollover<'scope, 'task, IO>> {
         if rollover.parts.cancelled
             || !matches!(&rollover.parts.state, RolloverState::Preflight(worker) if !worker.is_running())
@@ -750,6 +760,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> AutomaticRollover<'scope
 
     /// Automatically start each stage once, while returning every control and
     /// refusal result to the caller. Failed admission is never retried silently.
+    #[allow(clippy::too_many_arguments)]
     pub async fn step(
         &mut self,
         owner: &mut conversation::Owner<'_, 'scope, 'task>,
@@ -1070,6 +1081,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Rollover<'scope, 'task, 
     }
 
     /// Recover the original session only after successful successor attachment.
+    #[allow(clippy::result_large_err)]
     pub fn resume(
         self,
     ) -> Result<
@@ -1141,6 +1153,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Rollover<'scope, 'task, 
     }
 
     /// Recover all owners after the active stage has drained.
+    #[allow(clippy::result_large_err)]
     pub fn into_parts(self) -> Result<RolloverParts<'scope, 'task, IO>, Self> {
         let running = match &self.parts.state {
             RolloverState::Preflight(worker) => worker.is_running(),
@@ -1241,6 +1254,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> ManagedSession<'scope, '
 
     /// Resume management at an explicitly reported pending-candidate boundary.
     /// A mismatch returns the unchanged session.
+    #[allow(clippy::result_large_err)]
     pub fn at_capacity(
         session: Session<'scope, 'task, IO>,
         candidate: super::archive::UnknownTimePin,
@@ -1265,6 +1279,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> ManagedSession<'scope, '
     }
 
     /// Install exactly one fresh successor without overwriting retained supplies.
+    #[allow(clippy::result_large_err)]
     pub fn provide(
         &mut self,
         supplies: super::av_rollover_worker::Supplies,
@@ -1336,6 +1351,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> ManagedSession<'scope, '
 
     /// Advance one bounded operation. Capacity is acted on only on a later
     /// call, after the original completion has been returned to the caller.
+    #[allow(clippy::too_many_arguments)]
     pub async fn step(
         &mut self,
         owner: &mut conversation::Owner<'_, 'scope, 'task>,
@@ -1461,21 +1477,16 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> ManagedSession<'scope, '
                     completion: Some(completion),
                     ..
                 } = &step
+                    && completion.runtime.is_ok()
+                    && let video_worker::Outcome::Publication(video_worker::Publication::Refused {
+                        pending: Some(pin),
+                        reason:
+                            video_worker::Refusal::BeforePublication(
+                                av_worker::FailureReason::JournalCapacity,
+                            ),
+                    }) = &completion.outcome
                 {
-                    if completion.runtime.is_ok() {
-                        if let video_worker::Outcome::Publication(
-                            video_worker::Publication::Refused {
-                                pending: Some(pin),
-                                reason:
-                                    video_worker::Refusal::BeforePublication(
-                                        av_worker::FailureReason::JournalCapacity,
-                                    ),
-                            },
-                        ) = &completion.outcome
-                        {
-                            self.parts.capacity = Some(*pin);
-                        }
-                    }
+                    self.parts.capacity = Some(*pin);
                 }
                 ManagedStep::Session(step)
             }

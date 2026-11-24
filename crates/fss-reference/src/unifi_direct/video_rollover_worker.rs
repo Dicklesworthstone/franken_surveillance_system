@@ -123,6 +123,7 @@ pub struct AttachRefusal {
 
 impl Retirement {
     /// Attach a prepared successor only after a classified, unfenced drain.
+    #[allow(clippy::result_large_err)]
     pub fn attach(
         self,
         attachment: video_worker::PreparedAttachment,

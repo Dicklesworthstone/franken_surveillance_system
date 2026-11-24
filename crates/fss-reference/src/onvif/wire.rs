@@ -255,6 +255,8 @@ impl SoapRequest {
         tail.split_once("</wsa:MessageID>").map(|(id, _)| id)
     }
 
+    // Shared with standalone `#[path]` wire contract tests in `fss-core` that do not invoke auth injection.
+    #[allow(dead_code)]
     pub(super) fn with_security_header(mut self, header: &[u8]) -> Result<Self, WireError> {
         if self.username_token || self.action == OnvifOperation::GetSystemDateAndTime.action() {
             return Err(WireError::UnsupportedHeader);
@@ -835,17 +837,18 @@ fn response_with_addressing(
                 } else {
                     false
                 };
-                if understood {
-                    if doc.attribute(field, SOAP_NS, "role").is_some_and(|role| {
+                if understood
+                    && doc.attribute(field, SOAP_NS, "role").is_some_and(|role| {
                         role != "http://www.w3.org/2003/05/soap-envelope/role/ultimateReceiver"
-                    }) {
-                        return Err(WireError::UnsupportedHeader);
-                    }
+                    })
+                {
+                    return Err(WireError::UnsupportedHeader);
                 }
-                if let Some(required) = doc.attribute(field, SOAP_NS, "mustUnderstand") {
-                    if parse_boolean(required)? && !understood {
-                        return Err(WireError::UnsupportedHeader);
-                    }
+                if let Some(required) = doc.attribute(field, SOAP_NS, "mustUnderstand")
+                    && parse_boolean(required)?
+                    && !understood
+                {
+                    return Err(WireError::UnsupportedHeader);
                 }
             }
         } else if doc.named(child, SOAP_NS, "Body") && body.is_none() {
@@ -877,10 +880,10 @@ fn response_with_addressing(
     if !doc.named(response, namespace, local) || !doc.only_whitespace(response) {
         return Err(WireError::UnexpectedResponse);
     }
-    if let (Some(expected), Some(observed)) = (expected_action, action) {
-        if observed != expected {
-            return Err(WireError::UnexpectedResponse);
-        }
+    if let (Some(expected), Some(observed)) = (expected_action, action)
+        && observed != expected
+    {
+        return Err(WireError::UnexpectedResponse);
     }
     Ok((doc, response))
 }

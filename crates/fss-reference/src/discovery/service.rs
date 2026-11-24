@@ -15,16 +15,23 @@
 //! in CI without network access.
 
 use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 
-use crate::discovery::census::{CensusConfig, CensusError, OUI_SNAPSHOT, OuiTable, run_census};
+use crate::discovery::census::{
+    CensusConfig, CensusError, OUI_SNAPSHOT, OuiTable, run_census_with_extra_observations,
+};
 use crate::discovery::dispatch::AdapterDispatch;
 use crate::discovery::fingerprint::{Brand, BrandConfidence};
+use crate::discovery::probes::{
+    RtspBannerObs, UniFiDiscoveryObs, rtsp_options_peek, unifi_udp_probe,
+};
 use crate::discovery::standards::{build_mdns_query, mdns_observe, ssdp_probe, wsdiscovery_probe};
 use crate::discovery::tuya_beacon::listen;
 
 mod evidence;
 pub use evidence::{
     CameraServiceHint, DiscoveryResponse, DiscoverySighting, MAX_SERVICE_HINTS, assemble_discovery,
+    assemble_discovery_with_probes,
 };
 
 /// Discovery admission failures produce no partial candidate report.
@@ -123,9 +130,14 @@ pub struct DiscoverReport {
     pub current_responses: Vec<DiscoveryResponse>,
     /// Source-attributed camera service claims requiring owner enrollment.
     pub advertised_services: Vec<CameraServiceHint>,
+    /// Validated in-scope Ubiquiti v1 UDP-10001 TLV discovery observations.
+    pub unifi_observations: Vec<UniFiDiscoveryObs>,
+    /// Sanitized in-scope non-intrusive RTSP `OPTIONS *` banner/realm peeks.
+    pub rtsp_banners: Vec<RtspBannerObs>,
 }
 
-/// Runs the full discovery sweep (owner-network scope only).
+/// Runs the full pure-Rust discovery sweep (owner-network scope only; zero
+/// external subprocesses).
 pub fn discover(
     cfg: &DiscoverConfig,
     cancel: &AtomicBool,
@@ -144,15 +156,38 @@ pub fn discover(
             ..DiscoverReport::default()
         });
     }
-    // Stage 1: passive-first listening + standards probes.
+    // Stage 1: passive-first listening + multicast standards probes + UniFi UDP-10001.
     let beacons = listen(cfg.beacon_seconds, 256, cancel).unwrap_or_default();
     let mdns = mdns_observe(cfg.iface_ip, &cfg.mdns_types, cfg.standards_seconds, cancel);
     let ssdp = ssdp_probe(cfg.iface_ip, cfg.standards_seconds, cancel);
     let wsd = wsdiscovery_probe(cfg.iface_ip, cfg.standards_seconds, cancel);
+    let unifi = unifi_udp_probe(
+        &scope,
+        &cfg.census.subnets,
+        cfg.iface_ip,
+        Duration::from_secs(cfg.standards_seconds.min(3)),
+        cancel,
+    );
 
-    // Stage 2: census.
+    // Stage 2: pure-Rust TCP liveness + `/proc/net/arp` (Linux) + registered ports.
     let oui = OuiTable::parse_snapshot(OUI_SNAPSHOT);
-    let census = run_census(&cfg.census, &oui, cancel)?;
+    let unifi_neighbors: Vec<_> = unifi.iter().filter_map(|obs| obs.to_arp_row()).collect();
+    let unifi_responders: Vec<_> = unifi.iter().map(|obs| obs.ip).collect();
+    let census = run_census_with_extra_observations(
+        &cfg.census,
+        &oui,
+        &unifi_neighbors,
+        &unifi_responders,
+        cancel,
+    )?;
+
+    // Stage 2b: non-intrusive RTSP `OPTIONS *` banner/realm peek on open RTSP ports.
+    let rtsp_banners = rtsp_options_peek(
+        &census.hosts,
+        cfg.census.workers,
+        cfg.census.tcp_timeout,
+        cancel,
+    );
 
     // NOTE (negative finding, 2026-10-09): TUTK-NEW discovery corroboration
     // is NOT credential-less — the 0x1002 HMAC is keyed by the CAMERA's own
@@ -162,9 +197,18 @@ pub fn discover(
     // Possible until the owner provisions credentials, which both corroborate
     // and onboard. See NEG-005 in docs/NEGATIVE_EVIDENCE.md.
 
-    // Stage 3+4: combine all attributed responders and service chains, then
-    // classify and dispatch only within the original authorized host set.
-    assemble_discovery(&scope, census, &beacons, &mdns, &ssdp, &wsd)
+    // Stage 3+4: combine all attributed responders, active protocol observations,
+    // and service chains, then classify and dispatch strictly within scope.
+    assemble_discovery_with_probes(
+        &scope,
+        census,
+        &beacons,
+        &mdns,
+        &ssdp,
+        &wsd,
+        &unifi,
+        &rtsp_banners,
+    )
 }
 
 impl DiscoverReport {
@@ -249,8 +293,10 @@ mod tests {
 
     #[test]
     fn filter_selectivity() {
-        let mut report = DiscoverReport::default();
-        report.candidates = vec![];
+        let report = DiscoverReport {
+            candidates: vec![],
+            ..DiscoverReport::default()
+        };
         assert_eq!(report.camera_candidates().len(), 0);
         assert_eq!(report.onboarding_candidates().len(), 0);
         let s = report.summary();

@@ -217,12 +217,14 @@ fn policy() -> CalibrationMonitorPolicy {
         minimum_image_span: 0.08,
     }
 }
+#[allow(clippy::result_large_err)]
 fn checkpoint(cx: &ReplayCx, stage: &'static str) -> Result<()> {
     cx.checkpoint(stage).map_err(|_| MonitorError::Cancelled)
 }
 fn sha(bytes: [u8; 32]) -> ContentDigest {
     ContentDigest::new(DigestAlgorithm::Sha256, bytes)
 }
+#[allow(clippy::result_large_err)]
 fn checked(digest: ContentDigest) -> Result<()> {
     if digest.algorithm() != DigestAlgorithm::Sha256 || digest.bytes() == [0; 32] {
         return Err(MonitorError::InvalidInput("nonzero SHA-256 pins required"));
@@ -247,6 +249,7 @@ enum AdoptionCheck {
     },
 }
 
+#[allow(clippy::result_large_err)]
 fn checked_adoption(
     deployment: &ReferenceDeployment,
     request: &MonitorRequest<'_>,
@@ -343,6 +346,7 @@ impl RecordedCalibrationMonitor {
         self.recipe.identity()
     }
     /// Expected complete replay graph root, also available before retention.
+    #[allow(clippy::result_large_err)]
     pub fn publication_root(&self) -> Result<ContentDigest> {
         Ok(manifest(&self.recipe)?.root())
     }
@@ -367,6 +371,7 @@ impl RecordedCalibrationMonitor {
         }
     }
     /// Deterministic metadata/residual projection without source pixels or descriptors.
+    #[allow(clippy::result_large_err)]
     pub fn to_json(&self) -> Result<String> {
         let (adoption_basis, adoption_sequence, adoption_root) = match &self.adoption_check {
             AdoptionCheck::Current => ("current", "null".to_owned(), "null".to_owned()),
@@ -460,6 +465,7 @@ impl RecordedCalibrationMonitor {
     }
 }
 
+#[allow(clippy::result_large_err)]
 fn encode_observation(
     deployment: &ReferenceDeployment,
     request: &MonitorRequest<'_>,
@@ -588,6 +594,7 @@ fn encode_observation(
 
 /// Re-run exact retained native perception against the current unwithdrawn frozen adoption.
 /// No source, calibration, monitor object or authority is staged by a preview, including refusals.
+#[allow(clippy::result_large_err)]
 pub fn preview_monitor(
     deployment: &mut ReferenceDeployment,
     request: &MonitorRequest<'_>,
@@ -607,6 +614,7 @@ pub fn preview_monitor(
     )
 }
 
+#[allow(clippy::result_large_err)]
 fn observe(
     deployment: &mut ReferenceDeployment,
     request: &MonitorRequest<'_>,
@@ -799,11 +807,13 @@ fn observe(
     })
 }
 
+#[allow(clippy::result_large_err)]
 fn slot(identity: ContentDigest) -> Result<SlotName> {
     checked(identity)?;
     SlotName::parse(&format!("calibration-monitor-{}", &identity.to_text()[7..]))
         .map_err(|_| MonitorError::Custody("invalid monitor slot"))
 }
+#[allow(clippy::result_large_err)]
 fn manifest(recipe: &Recipe) -> Result<ObjectManifest> {
     ObjectManifest::new(
         slot(recipe.identity())?.as_str(),
@@ -819,6 +829,7 @@ fn manifest(recipe: &Recipe) -> Result<ObjectManifest> {
     )
     .map_err(|_| MonitorError::Custody("invalid monitor object graph"))
 }
+#[allow(clippy::result_large_err)]
 fn read(
     deployment: &ReferenceDeployment,
     digest: ContentDigest,
@@ -834,6 +845,7 @@ fn read(
         .read_bounded(digest, maximum)
         .map_err(|_| MonitorError::Custody("missing or corrupt monitor replay object"))
 }
+#[allow(clippy::result_large_err)]
 fn check_publication(
     deployment: &ReferenceDeployment,
     recipe: &Recipe,
@@ -903,6 +915,7 @@ fn check_publication(
 
 /// Explicit approval retains only the measured observation and replay graph. It never consumes
 /// a calibration withdrawal approval or changes which camera calibration is adopted.
+#[allow(clippy::result_large_err)]
 pub fn retain_monitor(
     deployment: &mut ReferenceDeployment,
     request: &MonitorRequest<'_>,
@@ -987,6 +1000,7 @@ pub fn retain_monitor(
 /// verified publication prefix; a later withdrawal or replacement remains intact. Current source
 /// and privacy custody still apply. Historical reproduction is no continuing validity lease.
 /// Nothing is staged, repaired or appended by this replay.
+#[allow(clippy::result_large_err, clippy::too_many_arguments)]
 pub fn replay_monitor(
     deployment: &mut ReferenceDeployment,
     identity: ContentDigest,

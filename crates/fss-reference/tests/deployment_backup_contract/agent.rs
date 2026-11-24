@@ -994,6 +994,10 @@ fn rehash_learning_corruption(
         _ => return Err("unknown learning corruption".into()),
     }
     children.push(publisher.stage_object(&binding_bytes)?);
+    publisher.verify_object(learning.experience_digest)?;
+    for child in &children {
+        publisher.verify_object(*child)?;
+    }
     let replacement =
         ObjectManifest::new("agent-learning", children, Some(learning.experience_digest))?;
     let root = publisher.publish(&slot, &replacement)?.root;

@@ -417,7 +417,7 @@ fn interrupted_root_link_resumes_once_and_incomplete_publication_is_not_readable
         .visible_roots()
         .find(|root| root.slot.as_str().starts_with("recorded-localization-"))
         .ok_or("root reached injected durability boundary")?;
-    let identity = ContentDigest::parse(&format!("sha256:{}", &cut_root.slot.as_str()[22..]))?;
+    let identity = ContentDigest::parse(format!("sha256:{}", &cut_root.slot.as_str()[22..]))?;
     assert!(read(&imported, identity).is_err());
     drop(imported.deployment);
     imported.deployment =

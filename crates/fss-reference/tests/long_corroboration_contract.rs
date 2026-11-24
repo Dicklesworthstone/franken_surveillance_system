@@ -582,11 +582,13 @@ fn entry_provenance_cancellation_reopens_the_retained_full_recipe_and_one_exact_
 }
 
 fn nondefault_recipe_limits() -> LongCorroborationLimits {
-    let mut value = LongCorroborationLimits::default();
-    value.maximum_source_chunk_bytes = 2 * 1024 * 1024;
-    value.maximum_pixel_samples = 2_000_000;
-    value.maximum_assignment_work = 32_000_000;
-    value.maximum_trace_bytes = 262_144;
+    let mut value = LongCorroborationLimits {
+        maximum_source_chunk_bytes: 2 * 1024 * 1024,
+        maximum_pixel_samples: 2_000_000,
+        maximum_assignment_work: 32_000_000,
+        maximum_trace_bytes: 262_144,
+        ..LongCorroborationLimits::default()
+    };
     value.decode.read_limits = RetainedReadLimits {
         max_source_bytes: 2 * 1024 * 1024,
         max_chunk_bytes: 4096,
@@ -865,8 +867,10 @@ fn trained_refusals_consume_admission_and_head_work_is_not_renewed_at_camera_two
         max_inferences: 1,
         ..CascadeConfig::default()
     };
-    let mut zero_head = PackageDetectLimits::default();
-    zero_head.detection_work_units = 0;
+    let zero_head = PackageDetectLimits {
+        detection_work_units: 0,
+        ..PackageDetectLimits::default()
+    };
     let detector = LongWatchDetector::new(&package, DETECTOR_PACKAGE, config, zero_head, &scalar)?;
     let before = f.snapshot();
     let refused = f.annotate(&detector, false)?;
@@ -895,8 +899,10 @@ fn trained_refusals_consume_admission_and_head_work_is_not_renewed_at_camera_two
     let one_head = one.detection_head_work_used();
     assert!(one_head > 0);
     assert_eq!(one.inferences_completed(), 1);
-    let mut bounded_head = PackageDetectLimits::default();
-    bounded_head.detection_work_units = one_head;
+    let bounded_head = PackageDetectLimits {
+        detection_work_units: one_head,
+        ..PackageDetectLimits::default()
+    };
     let detector = LongWatchDetector::new(
         &package,
         DETECTOR_PACKAGE,

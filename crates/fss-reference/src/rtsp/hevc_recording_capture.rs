@@ -588,6 +588,7 @@ pub mod live {
     /// One request preparation, native step or collection step; never hidden bulk progress.
     #[must_use]
     #[derive(Debug)]
+    #[allow(clippy::large_enum_variant)]
     pub enum AutomaticHevcRecordingStep {
         /// One automatically prepared request; any consumed challenge transfers with it.
         Queued(QueuedHevcRequest),
@@ -803,10 +804,10 @@ pub mod live {
             match self.capture.poll(now) {
                 Ok(HevcCapturePoll::Pending { .. }) => {}
                 Ok(event) => {
-                    if let HevcCapturePoll::Receiver(source) = &event {
-                        if let Some(control) = control(source) {
-                            self.next = Some(control);
-                        }
+                    if let HevcCapturePoll::Receiver(source) = &event
+                        && let Some(control) = control(source)
+                    {
+                        self.next = Some(control);
                     }
                     let terminal = matches!(
                         &event,

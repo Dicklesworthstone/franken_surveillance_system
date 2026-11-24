@@ -61,6 +61,7 @@ pub struct EventChangesRequest {
 
 impl EventChangesRequest {
     /// Existing explanation default and maximum, without performing I/O.
+    #[allow(clippy::result_large_err)]
     pub fn token_limit(&self) -> Result<u64, EventChangesError> {
         let default = match self.view {
             AgentView::DecisionDiff => self.view.maximum_tokens(),
@@ -75,6 +76,7 @@ impl EventChangesRequest {
     }
 
     /// Validate exact scalar identities before storage is touched.
+    #[allow(clippy::result_large_err)]
     pub fn validate(&self) -> Result<(), EventChangesError> {
         self.token_limit()?;
         if self.event_id.as_str().len() > fss_core::event::MAX_EVENT_ID_LEN
@@ -114,6 +116,7 @@ impl Default for EventChangesLimits {
 
 impl EventChangesLimits {
     /// Reject empty or widened limits before constructing the immutable owner.
+    #[allow(clippy::result_large_err)]
     pub fn validate(&self) -> Result<(), EventChangesError> {
         let maximum = Self::default();
         for (value, ceiling) in [
@@ -148,6 +151,7 @@ impl EventChangesLimits {
     }
 
     /// Metadata bytes and payload-read attempts admitted by the caller, never replenished.
+    #[allow(clippy::result_large_err)]
     pub fn allowance(&self) -> Result<BudgetVector, EventChangesError> {
         self.validate()?;
         Ok(BudgetVector::from_quantities(BudgetQuantitiesSpec {
@@ -406,6 +410,7 @@ fn request_digest(
 /// Canonical transports must admit CAP-AGENT-EXPLAIN-001, bind these limits, and pass their live
 /// cancellation/deadline guard. No ReadMedia grant is required or inferred. The shared owner
 /// verifies current deletion, selected metadata and the full authority/effect prefix before return.
+#[allow(clippy::result_large_err)]
 pub fn explain_event_changes_in_deployment(
     root: &Path,
     request: &EventChangesRequest,
@@ -434,6 +439,7 @@ impl PreparedEventChanges<'_> {
     }
 
     /// Finish the live read after rendering admission, or return no deliverable comparison.
+    #[allow(clippy::result_large_err)]
     pub fn finish(mut self) -> Result<DeploymentEventChanges, EventChangesError> {
         // Protected context also contains non-event metadata loaded by the opening snapshot.
         // Rehash it under this owner's remaining allowance before the final authority check.
@@ -464,6 +470,7 @@ impl PreparedEventChanges<'_> {
 
 /// Prepare a complete current-head comparison while retaining its immutable owner for finish.
 /// The caller must not disclose answer() before finish() succeeds under the same allowance.
+#[allow(clippy::result_large_err)]
 pub fn prepare_event_changes_in_deployment<'a>(
     root: &Path,
     request: &EventChangesRequest,

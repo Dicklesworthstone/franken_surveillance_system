@@ -22,6 +22,10 @@ use fss_reference::{DeploymentLimits, ReferenceDeployment};
 #[path = "../package_evaluation_support/mod.rs"]
 mod package;
 
+#[allow(
+    unused_imports,
+    reason = "Shared test support re-exports used across multiple test targets"
+)]
 pub use package::{Directory, PRINCIPAL, SITE, Test, context};
 
 pub fn config() -> QsrConfig {

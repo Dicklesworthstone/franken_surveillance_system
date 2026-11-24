@@ -68,6 +68,7 @@ fn source(e: &mut CanonicalEncoder, source: &RecordedLocalizationSource) {
     }
 }
 
+#[allow(clippy::result_large_err)]
 pub(super) fn encode(r: &Recipe) -> Result<Vec<u8>> {
     let mut e = CanonicalEncoder::new();
     e.text(PACKAGE_DOMAIN);
@@ -107,24 +108,28 @@ pub(super) fn encode(r: &Recipe) -> Result<Vec<u8>> {
 
 struct Reader<'a>(CanonicalDecoder<'a>);
 impl Reader<'_> {
+    #[allow(clippy::result_large_err)]
     fn byte(&mut self) -> Result<u8> {
         self.0
             .u8()
             .map_err(RecordedDecodeError::from)
             .map_err(Into::into)
     }
+    #[allow(clippy::result_large_err)]
     fn u32(&mut self) -> Result<u32> {
         self.0
             .u32()
             .map_err(RecordedDecodeError::from)
             .map_err(Into::into)
     }
+    #[allow(clippy::result_large_err)]
     fn u64(&mut self) -> Result<u64> {
         self.0
             .u64()
             .map_err(RecordedDecodeError::from)
             .map_err(Into::into)
     }
+    #[allow(clippy::result_large_err)]
     fn digest(&mut self) -> Result<ContentDigest> {
         let value = self.0.digest().map_err(RecordedDecodeError::from)?;
         if value.algorithm() != DigestAlgorithm::Sha256 || value.bytes() == [0; 32] {
@@ -132,9 +137,11 @@ impl Reader<'_> {
         }
         Ok(value)
     }
+    #[allow(clippy::result_large_err)]
     fn hash(&mut self) -> Result<[u8; 32]> {
         Ok(self.digest()?.bytes())
     }
+    #[allow(clippy::result_large_err)]
     fn float(&mut self) -> Result<f64> {
         let bits = self.u64()?;
         let value = f64::from_bits(bits);
@@ -143,6 +150,7 @@ impl Reader<'_> {
         }
         Ok(value)
     }
+    #[allow(clippy::result_large_err)]
     fn usize(&mut self, maximum: usize) -> Result<usize> {
         let n = usize::try_from(self.u64()?).map_err(|_| invalid())?;
         if n > maximum {
@@ -150,6 +158,7 @@ impl Reader<'_> {
         }
         Ok(n)
     }
+    #[allow(clippy::result_large_err)]
     fn camera(&mut self) -> Result<PinholeIntrinsics> {
         let w = self.u32()?;
         let h = self.u32()?;
@@ -165,6 +174,7 @@ impl Reader<'_> {
             self.float()?,
         )?)
     }
+    #[allow(clippy::result_large_err)]
     fn image(&mut self) -> Result<RecordedImageMode> {
         match self.byte()? {
             0 => Ok(RecordedImageMode::Pinhole(LocalizationCamera {
@@ -206,6 +216,7 @@ impl Reader<'_> {
             _ => Err(invalid()),
         }
     }
+    #[allow(clippy::result_large_err)]
     fn options(&mut self) -> Result<ImageLocalizationOptions> {
         let extraction = ExtractionOptions {
             threshold: self.byte()?,
@@ -234,6 +245,7 @@ impl Reader<'_> {
         validate_options(options)?;
         Ok(options)
     }
+    #[allow(clippy::result_large_err)]
     fn source(&mut self) -> Result<RecordedLocalizationSource> {
         let tag = self.byte()?;
         let import_identity = self.digest()?;
@@ -364,6 +376,7 @@ impl Reader<'_> {
     }
 }
 
+#[allow(clippy::result_large_err)]
 pub(super) fn decode(bytes: &[u8]) -> Result<Recipe> {
     if bytes.len() > MAX_PACKAGE_BYTES {
         return Err(invalid());

@@ -554,10 +554,10 @@ pub(super) fn reconstruct_rtp(
         if read(document.source_digest(), document.bytes.len())? != document.bytes {
             return Err(MetadataError::Custody);
         }
-        if let Some(projection) = &document.projection {
-            if read(ContentDigest::sha256(projection), projection.len())? != *projection {
-                return Err(MetadataError::Custody);
-            }
+        if let Some(projection) = &document.projection
+            && read(ContentDigest::sha256(projection), projection.len())? != *projection
+        {
+            return Err(MetadataError::Custody);
         }
     }
     Ok(ReconstructedRtpMetadata {

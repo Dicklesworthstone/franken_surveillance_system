@@ -1,26 +1,26 @@
 //! Owner-network camera census engine (DISC-1, fss-yodhk.1).
 //!
-//! Enumerates host candidates on an operator LAN for camera identification:
-//! ICMP/ping sweep (warms the ARP table; the reference oracle shells out to the
-//! system `ping`, which needs no raw-socket privilege) → ARP harvest → IEEE OUI
-//! enrichment from a vendored, versioned snapshot → bounded TCP connect-only
-//! scan of the REGISTERED camera-signature port set (no auth attempts, no
-//! banner grabs in this stage). Output: [`HostObs`] rows.
+//! Pure-Rust, zero-subprocess enumeration of host candidates on an operator LAN
+//! for camera identification: bounded TCP liveness probe (`SYN-ACK` / `RST`) +
+//! optional Linux `/proc/net/arp` direct read + pure-Rust active protocol MAC
+//! enrichment (UniFi UDP-10001 TLV) → IEEE OUI enrichment from a vendored,
+//! versioned snapshot → bounded TCP connect-only scan of the REGISTERED
+//! camera-signature port set. Output: [`HostObs`] rows.
 //!
 //! Architecture: a pure, deterministic core (parsers, OUI table, planning,
 //! assembly — golden-replay testable against fixtures) plus a bounded IO shell
-//! (thread pool with per-item cancellation; sockets/processes close on drop —
-//! mid-sweep cancellation leaves no orphans). The 2026-10-07 owner-LAN census
-//! is retained as the golden replay fixture (lab notes, redacted shape below).
-//!
-//! Reference oracle: `~/projects/fss-interop-lab/discover.py` (byte-shape
-//! parity for the `arp -a` parser).
+//! (scoped thread pool with per-item cancellation; sockets close on drop —
+//! mid-sweep cancellation leaves no orphans and never spawns external OS
+//! binaries such as `ping`, `arp`, `sudo`, or `netstat`). The 2026-10-07
+//! owner-LAN census is retained as the golden replay fixture.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
+
+use crate::discovery::probes::unifi_udp_probe;
 
 /// Vendored camera/network OUI snapshot (IEEE MA-L subset) and its SHA-256.
 pub const OUI_SNAPSHOT: &str = include_str!("../../fixtures/discovery/camera_oui_snapshot.txt");
@@ -30,18 +30,33 @@ pub const OUI_SNAPSHOT_SHA256: &str =
     "sha256:659a82c8f5a818c706fdceeaad85abb07fc55d4dd3315b2cadc709b36936b84c";
 
 /// Registered camera-signature TCP port set (connect-only semantics).
-/// Never extended ad hoc: ports are part of the discovery contract.
-pub const REGISTERED_PORTS: [u16; 11] = [
-    80, 443, 554, 6668, 8554, 8888, 8899, 10554, 32761, 34567, 37777,
+/// Never extended ad hoc: ports are part of the discovery contract and remain
+/// sorted ascending with at most 32 entries.
+pub const REGISTERED_PORTS: [u16; 21] = [
+    80, 443, 554, 1935, 2020, 6668, 7080, 7441, 7442, 7447, 7550, 8000, 8080, 8554, 8800, 8888,
+    8899, 10554, 32761, 34567, 37777,
 ];
+
+/// High-signal pure-Rust TCP liveness probe ports for Phase-A host discovery.
+/// Either `SYN-ACK` (open) or `TCP RST` (`ConnectionRefused`) proves an active
+/// Layer-4 host on the LAN without spawning `ping` or requiring raw sockets.
+const LIVENESS_PROBE_PORTS: [u16; 10] = [80, 443, 554, 2020, 6668, 7442, 7447, 8000, 8554, 8800];
+
+/// Hard upper bound on bytes read from Linux `/proc/net/arp`.
+#[cfg(target_os = "linux")]
+const MAX_PROC_ARP_BYTES: usize = 256 * 1024;
 
 /// Absolute bounds (a census that exceeds any of these is misconfigured).
 pub const MAX_SUBNET_HOSTS: u32 = 65_536;
 /// Maximum CIDR declarations admitted before expanding any addresses.
 pub const MAX_SUBNETS: usize = 8;
+/// Minimum concurrent census worker threads allowed.
 pub const MIN_WORKERS: usize = 1;
+/// Maximum concurrent census worker threads allowed.
 pub const MAX_WORKERS: usize = 256;
+/// Minimum per-probe TCP connect timeout.
 pub const MIN_TCP_TIMEOUT: Duration = Duration::from_millis(50);
+/// Maximum per-probe TCP connect timeout.
 pub const MAX_TCP_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// One observed host: identity from ARP, vendor from OUI, reachability from
@@ -181,7 +196,7 @@ pub fn parse_arp_a(output: &str) -> Vec<ArpRow> {
         }
         rows.push(ArpRow { ip, mac, iface });
     }
-    rows.sort_by(|a, b| a.ip.cmp(&b.ip));
+    rows.sort_by_key(|a| a.ip);
     rows.dedup_by(|a, b| a.ip == b.ip && a.mac == b.mac);
     rows
 }
@@ -222,6 +237,85 @@ pub fn parse_netstat_rn(output: &str) -> Vec<ArpRow> {
     rows
 }
 
+/// Parses Linux `/proc/net/arp` directly (pure Rust, zero subprocesses).
+///
+/// Format:
+/// `IP address       HW type     Flags       HW address            Mask     Device`
+/// `192.168.4.177    0x1         0x2         74:ac:b9:11:22:33     *        eth0`
+///
+/// Incomplete entries (`flags & 0x2 == 0`), all-zero, broadcast, and multicast
+/// MACs are skipped.
+#[must_use]
+pub fn parse_proc_net_arp(output: &str) -> Vec<ArpRow> {
+    let mut lines = output.lines().filter(|line| !line.trim().is_empty());
+    let Some(header) = lines.next() else {
+        return Vec::new();
+    };
+    if !header.trim_start().starts_with("IP address") {
+        return Vec::new();
+    }
+    let mut rows = Vec::new();
+    for line in lines {
+        let mut fields = line.split_ascii_whitespace();
+        let (Some(ip_s), Some(_hw_type), Some(flags_s), Some(mac_s), Some(_mask), Some(iface)) = (
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+        ) else {
+            continue;
+        };
+        let Ok(ip) = ip_s.parse::<Ipv4Addr>() else {
+            continue;
+        };
+        let Some(flags) = flags_s
+            .strip_prefix("0x")
+            .or_else(|| flags_s.strip_prefix("0X"))
+            .and_then(|hex| u32::from_str_radix(hex, 16).ok())
+        else {
+            continue;
+        };
+        // ATF_COM (0x2): complete ARP entry.
+        if flags & 0x2 == 0 {
+            continue;
+        }
+        let Some(mac) = normalize_mac(mac_s) else {
+            continue;
+        };
+        if !is_usable_unicast_mac(&mac) {
+            continue;
+        }
+        rows.push(ArpRow {
+            ip,
+            mac,
+            iface: iface.to_owned(),
+        });
+    }
+    rows.sort_by(|a, b| (&a.ip, &a.mac, &a.iface).cmp(&(&b.ip, &b.mac, &b.iface)));
+    rows.dedup();
+    rows
+}
+
+/// Formats 6 raw MAC octets into lowercase colon-separated canonical form.
+#[must_use]
+pub(crate) fn normalize_mac_bytes(octets: [u8; 6]) -> String {
+    format!(
+        "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+        octets[0], octets[1], octets[2], octets[3], octets[4], octets[5]
+    )
+}
+
+fn is_usable_unicast_mac(mac: &str) -> bool {
+    if mac == "00:00:00:00:00:00" || mac == "ff:ff:ff:ff:ff:ff" || mac.starts_with("01:00:5e") {
+        return false;
+    }
+    mac.get(..2)
+        .and_then(|hex| u8::from_str_radix(hex, 16).ok())
+        .is_some_and(|first| first & 0x01 == 0)
+}
+
 /// Lowercase-colon normalization; `None` for non-MAC tokens.
 fn normalize_mac(raw: &str) -> Option<String> {
     let parts: Vec<&str> = raw.split(':').collect();
@@ -230,7 +324,7 @@ fn normalize_mac(raw: &str) -> Option<String> {
     }
     let mut out = String::with_capacity(17);
     for (i, p) in parts.iter().enumerate() {
-        if p.len() == 0 || p.len() > 2 || !p.bytes().all(|b| b.is_ascii_hexdigit()) {
+        if p.is_empty() || p.len() > 2 || !p.bytes().all(|b| b.is_ascii_hexdigit()) {
             return None;
         }
         if i > 0 {
@@ -412,7 +506,7 @@ fn expand_cidr(cidr: &str) -> Result<Vec<Ipv4Addr>, CensusError> {
     let prefix: u32 = prefix
         .parse()
         .map_err(|_| CensusError::SubnetTooLarge(cidr.to_owned()))?;
-    if prefix > 32 || prefix < 8 {
+    if !(8..=32).contains(&prefix) {
         return Err(CensusError::SubnetTooLarge(cidr.to_owned()));
     }
     let base = u32::from(ip) & (!0u32 << (32 - prefix));
@@ -433,11 +527,12 @@ fn expand_cidr(cidr: &str) -> Result<Vec<Ipv4Addr>, CensusError> {
     Ok(out)
 }
 
-/// IO shell: runs the census with bounded parallelism.
+/// IO shell: runs the pure-Rust census with bounded parallelism and zero OS
+/// subprocesses (`ping`/`arp`/`sudo`/`netstat` are never invoked).
 ///
-/// `cancel` is polled before every ping and every TCP connect batch item; a
+/// `cancel` is polled before every probe and every TCP connect batch item; a
 /// set flag stops new work immediately (running items finish their bounded
-/// timeout; all sockets/processes drop closed — no orphans).
+/// timeout; all sockets drop closed — no orphans).
 pub fn run_census(
     cfg: &CensusConfig,
     oui: &OuiTable,
@@ -447,43 +542,60 @@ pub fn run_census(
     if cancel.load(Ordering::Relaxed) {
         return Ok(plan.assemble_report(Vec::new(), &[], &BTreeMap::new(), oui));
     }
-    let responders = ping_sweep(&plan.ping_targets, cfg.workers, cancel);
+    let unifi = unifi_udp_probe(
+        &plan,
+        &cfg.subnets,
+        Ipv4Addr::UNSPECIFIED,
+        Duration::from_secs(1),
+        cancel,
+    );
+    let extra_neighbors: Vec<ArpRow> = unifi.iter().filter_map(|obs| obs.to_arp_row()).collect();
+    let extra_responders: Vec<Ipv4Addr> = unifi.iter().map(|obs| obs.ip).collect();
+    run_census_with_extra_observations(cfg, oui, &extra_neighbors, &extra_responders, cancel)
+}
+
+/// Internal IO shell accepting already-collected pure-Rust active protocol
+/// neighbor/responder observations (e.g., from UniFi UDP-10001) so the full
+/// discovery pipeline avoids duplicating UDP probes.
+pub(crate) fn run_census_with_extra_observations(
+    cfg: &CensusConfig,
+    oui: &OuiTable,
+    extra_neighbors: &[ArpRow],
+    extra_responders: &[Ipv4Addr],
+    cancel: &AtomicBool,
+) -> Result<CensusReport, CensusError> {
+    let plan = cfg.plan()?;
     if cancel.load(Ordering::Relaxed) {
-        return Ok(plan.assemble_report(Vec::new(), &responders, &BTreeMap::new(), oui));
+        return Ok(plan.assemble_report(Vec::new(), &[], &BTreeMap::new(), oui));
     }
-    // A ping reply can arrive before the kernel has committed the neighbour
-    // entry, and the cache is read once per sweep otherwise: re-read briefly
-    // until every responder we can resolve has a MAC, so the vendor lookup is
-    // not silently starved (macOS also expires entries under sweep load).
-    let mut rows = Vec::new();
-    let debug = std::env::var_os("FSS_DISCOVER_DEBUG").is_some();
-    for attempt in 0..4 {
-        let mut raw = parse_arp_a(&arp_a());
-        raw.extend(parse_netstat_rn(&netstat_rn()));
-        if debug {
-            eprintln!("DEBUG raw={} first={:?}", raw.len(), raw.first());
+
+    // Phase A: bounded pure-Rust TCP liveness sweep across admitted hosts.
+    // Either SYN-ACK (open port) or TCP RST (ConnectionRefused) proves a live
+    // host without spawning `ping` or requiring raw sockets, and warms the
+    // kernel neighbor table on Linux.
+    let (tcp_responders, mut open) =
+        tcp_liveness_sweep(&plan.ping_targets, cfg.workers, cfg.tcp_timeout, cancel);
+    if cancel.load(Ordering::Relaxed) {
+        return Ok(plan.assemble_report(Vec::new(), &tcp_responders, &open, oui));
+    }
+
+    // Read OS neighbor cache purely via filesystem on Linux (`/proc/net/arp`)
+    // and combine with pure-Rust active protocol MAC observations (e.g. UniFi
+    // UDP-10001 TLV). Never shell out to `arp`, `sudo`, or `netstat`.
+    let mut raw_neighbors = read_os_neighbor_table();
+    raw_neighbors.extend_from_slice(extra_neighbors);
+    let rows = plan.scoped_neighbors(raw_neighbors);
+
+    let mut responders_set: BTreeSet<Ipv4Addr> = tcp_responders.into_iter().collect();
+    for &ip in extra_responders {
+        if plan.contains(ip) {
+            responders_set.insert(ip);
         }
-        rows = plan.scoped_neighbors(raw);
-        let resolved = rows.len();
-        if resolved >= responders.len() || attempt == 3 {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(150));
     }
-    if debug {
-        let n = netstat_rn();
-        eprintln!(
-            "DEBUG responders={} rows={} arp_len={} netstat_len={} sample={:?}",
-            responders.len(),
-            rows.len(),
-            arp_a().len(),
-            n.len(),
-            n.lines()
-                .filter(|l| l.contains("UHLW"))
-                .take(2)
-                .collect::<Vec<_>>()
-        );
-    }
+    let responders: Vec<Ipv4Addr> = responders_set.into_iter().collect();
+
+    // Phase B: scan the full REGISTERED_PORTS set on all live responders and
+    // scoped neighbors (merging with any open ports already confirmed in Phase A).
     let targets: Vec<Ipv4Addr> = rows
         .iter()
         .map(|r| r.ip)
@@ -491,13 +603,20 @@ pub fn run_census(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
-    let open = tcp_connect_scan(
+    let scanned = tcp_connect_scan(
         &targets,
         &REGISTERED_PORTS,
         cfg.workers,
         cfg.tcp_timeout,
         cancel,
     );
+    for (ip, ports) in scanned {
+        let entry = open.entry(ip).or_default();
+        entry.extend(ports);
+        entry.sort_unstable();
+        entry.dedup();
+    }
+
     Ok(plan.assemble_report(rows, &responders, &open, oui))
 }
 
@@ -506,123 +625,131 @@ pub fn run_census(
 pub struct CensusReport {
     /// Observed hosts, ascending by IP.
     pub hosts: Vec<HostObs>,
-    /// Number of admitted ping targets; cancellation may stop before all are tried.
+    /// Number of admitted target hosts; cancellation may stop before all are tried.
     pub ping_targets: usize,
-    /// Sorted unique IPs with an actual successful ICMP reply or accepted TCP
-    /// connection in this sweep. Cached neighbors alone never appear here.
+    /// Sorted unique IPs with an actual live Layer-4/protocol response in this
+    /// sweep. Cached neighbors alone never appear here.
     pub responders: Vec<Ipv4Addr>,
 }
 
-/// Shells out to system `ping` (oracle parity; no raw-socket privilege).
-/// Short-lived child processes join before return; cancellation skips
-/// outstanding targets.
-fn ping_sweep(ips: &[Ipv4Addr], workers: usize, cancel: &AtomicBool) -> Vec<Ipv4Addr> {
-    let (tx, rx) = mpsc::sync_channel::<Ipv4Addr>(workers.max(1));
+/// Reads the OS ARP table without spawning any external process.
+///
+/// On Linux this reads `/proc/net/arp` directly with a strict byte bound.
+/// On macOS and other platforms where ARP is not exposed without privileged
+/// tools, this safely returns an empty list; MAC identities are instead
+/// populated from pure-Rust active protocol probes (such as UniFi UDP-10001).
+#[cfg(target_os = "linux")]
+fn read_os_neighbor_table() -> Vec<ArpRow> {
+    use std::io::Read;
+    let Ok(file) = std::fs::File::open("/proc/net/arp") else {
+        return Vec::new();
+    };
+    let mut bytes = Vec::new();
+    if file
+        .take((MAX_PROC_ARP_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .is_err()
+        || bytes.len() > MAX_PROC_ARP_BYTES
+    {
+        return Vec::new();
+    }
+    let Ok(text) = std::str::from_utf8(&bytes) else {
+        return Vec::new();
+    };
+    parse_proc_net_arp(text)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_os_neighbor_table() -> Vec<ArpRow> {
+    Vec::new()
+}
+
+/// Pure-Rust bounded TCP liveness sweep (no `ping`, no raw sockets).
+///
+/// Probes high-signal camera ports with a short bounded timeout per host:
+/// - `Ok(_)` proves both host liveness and an open port.
+/// - `ConnectionRefused` (TCP RST) proves host liveness even when all TCP
+///   ports on that host are closed (e.g., TUTK/UDP-only cameras).
+///
+/// As soon as a host answers with either SYN-ACK or RST, Phase A stops probing
+/// that host and moves on; Phase B scans the full [`REGISTERED_PORTS`] set.
+fn tcp_liveness_sweep(
+    ips: &[Ipv4Addr],
+    workers: usize,
+    timeout: Duration,
+    cancel: &AtomicBool,
+) -> (Vec<Ipv4Addr>, BTreeMap<Ipv4Addr, Vec<u16>>) {
+    if ips.is_empty() || cancel.load(Ordering::Relaxed) {
+        return (Vec::new(), BTreeMap::new());
+    }
+    let probe_timeout = timeout.clamp(MIN_TCP_TIMEOUT, Duration::from_millis(200));
+    let probe_ports: &[u16] = if ips.len() <= 32 {
+        &REGISTERED_PORTS
+    } else {
+        &LIVENESS_PROBE_PORTS
+    };
+    let worker_count = workers.clamp(MIN_WORKERS, MAX_WORKERS).min(ips.len());
+    let (tx, rx) = mpsc::sync_channel::<Ipv4Addr>(worker_count);
     let rx = std::sync::Mutex::new(rx);
-    let responders = std::sync::Mutex::new(BTreeSet::new());
+    let responders = std::sync::Mutex::new(BTreeSet::<Ipv4Addr>::new());
+    let open_ports = std::sync::Mutex::new(BTreeMap::<Ipv4Addr, Vec<u16>>::new());
+
     std::thread::scope(|s| {
-        for _ in 0..workers.min(ips.len().max(1)) {
+        for _ in 0..worker_count {
             let rx = &rx;
             let responders = &responders;
+            let open_ports = &open_ports;
             s.spawn(move || {
                 while let Ok(ip) = rx.lock().map(|r| r.recv()).unwrap_or(Err(mpsc::RecvError)) {
                     if cancel.load(Ordering::Relaxed) {
-                        continue; // drain without spawning
+                        continue;
                     }
-                    // macOS uses milliseconds for -W and -t for a deadline;
-                    // Linux uses seconds for -W and -w for the total deadline.
-                    #[cfg(target_os = "macos")]
-                    let flags = ["-c", "1", "-W", "150", "-t", "1"];
-                    #[cfg(not(target_os = "macos"))]
-                    let flags = ["-c", "1", "-W", "1", "-w", "1"];
-                    let status = std::process::Command::new("ping")
-                        .args(flags)
-                        .arg(ip.to_string())
-                        .stdout(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::null())
-                        .status();
-                    if status.is_ok_and(|status| status.success())
-                        && let Ok(mut replies) = responders.lock()
-                    {
-                        replies.insert(ip);
+                    for &port in probe_ports {
+                        if cancel.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        let sa = SocketAddr::new(IpAddr::V4(ip), port);
+                        match TcpStream::connect_timeout(&sa, probe_timeout) {
+                            Ok(_stream) => {
+                                if let Ok(mut live) = responders.lock() {
+                                    live.insert(ip);
+                                }
+                                if let Ok(mut open) = open_ports.lock() {
+                                    open.entry(ip).or_default().push(port);
+                                }
+                                break;
+                            }
+                            Err(err) if err.kind() == std::io::ErrorKind::ConnectionRefused => {
+                                if let Ok(mut live) = responders.lock() {
+                                    live.insert(ip);
+                                }
+                                break;
+                            }
+                            Err(_) => {}
+                        }
                     }
                 }
             });
         }
-        for ip in ips {
-            if cancel.load(Ordering::Relaxed) || tx.send(*ip).is_err() {
+        for &ip in ips {
+            if cancel.load(Ordering::Relaxed) || tx.send(ip).is_err() {
                 break;
             }
         }
         drop(tx);
     });
-    responders
+
+    let live_ips = responders
         .into_inner()
         .unwrap_or_default()
         .into_iter()
-        .collect()
-}
-
-/// Runs `arp -a` and returns its stdout.
-fn arp_a() -> String {
-    // `arp` lives in /usr/sbin on macOS, which is absent from the PATH of a
-    // GUI-spawned process; falling back by absolute path keeps the vendor
-    // lookup from silently starving (every MAC empty, every row Unknown).
-    // macOS 27 returns an empty table for `arp -a` (reverse-DNS form) while
-    // `arp -an` answers immediately; try the numeric form first and keep `-a`
-    // only as a fallback for older hosts.
-    //
-    // macOS 27 also hands an empty table to a *spawned* process that lacks Local
-    // Network authority, even though the same binary prints the whole table from an
-    // interactive shell (measured: 0 bytes from a child, 426 rows from zsh). The
-    // table itself is readable by root, so a prompt-less `sudo -n` retry recovers it
-    // without needing a raw-socket ARP read (the crate forbids `unsafe_code`).
-    for (program, args) in [
-        ("arp", &["-an"][..]),
-        ("/usr/sbin/arp", &["-an"][..]),
-        ("/sbin/arp", &["-an"][..]),
-        ("arp", &["-a"][..]),
-        ("/usr/sbin/arp", &["-a"][..]),
-        ("/sbin/arp", &["-a"][..]),
-        ("/usr/bin/sudo", &["-n", "/usr/sbin/arp", "-an"][..]),
-        ("/usr/bin/sudo", &["-n", "/sbin/arp", "-an"][..]),
-    ] {
-        match std::process::Command::new(program).args(args).output() {
-            Ok(o) => {
-                if std::env::var_os("FSS_DISCOVER_DEBUG").is_some() {
-                    eprintln!(
-                        "DEBUG arp prog={program} args={args:?} status={:?} out={} err={:?}",
-                        o.status.code(),
-                        o.stdout.len(),
-                        String::from_utf8_lossy(&o.stderr)
-                    );
-                }
-                // An empty table is the macOS 27 failure shape: `arp` exits 0 with no rows,
-                // so an empty success must fall through instead of ending the search.
-                if o.status.success() && !o.stdout.is_empty() {
-                    return String::from_utf8_lossy(&o.stdout).into_owned();
-                }
-            }
-            Err(e) => {
-                if std::env::var_os("FSS_DISCOVER_DEBUG").is_some() {
-                    eprintln!("DEBUG arp prog={program} spawn_err={e:?}");
-                }
-            }
-        }
+        .collect();
+    let mut open = open_ports.into_inner().unwrap_or_default();
+    for ports in open.values_mut() {
+        ports.sort_unstable();
+        ports.dedup();
     }
-    String::new()
-}
-
-/// Neighbour view from the routing table (`arp` may be unavailable in sandboxes).
-fn netstat_rn() -> String {
-    for program in ["/usr/sbin/netstat", "/usr/bin/netstat", "netstat"] {
-        if let Ok(o) = std::process::Command::new(program).arg("-rn").output() {
-            if o.status.success() {
-                return String::from_utf8_lossy(&o.stdout).into_owned();
-            }
-        }
-    }
-    String::new()
+    (live_ips, open)
 }
 
 /// TCP connect-only scan (drop closes; cancellation skips remaining targets).
@@ -683,19 +810,70 @@ fn tcp_connect_scan(
 mod tests {
     use super::*;
 
-    /// macOS 27 gives a spawned process an empty `arp` table unless it has Local Network
-    /// authority; the capture must still find a source (the `sudo -n` retry) on an operator host.
-    #[cfg(target_os = "macos")]
     #[test]
-    fn arp_capture_reads_the_local_table() {
-        let out = arp_a();
+    fn proc_net_arp_parser_extracts_complete_unicast_neighbors() {
+        let table = "IP address       HW type     Flags       HW address            Mask     Device\n\
+                     192.168.4.177    0x1         0x2         74:ac:b9:11:22:33     *        eth0\n\
+                     192.168.4.243    0x1         0x2         50:3d:d1:e3:e2:07     *        eth0\n\
+                     192.168.4.99     0x1         0x0         00:00:00:00:00:00     *        eth0\n\
+                     224.0.0.251      0x1         0x2         01:00:5e:00:00:fb     *        eth0\n\
+                     192.168.4.255    0x1         0x2         ff:ff:ff:ff:ff:ff     *        eth0\n";
+        let rows = parse_proc_net_arp(table);
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert_eq!(rows[0].ip, Ipv4Addr::new(192, 168, 4, 177));
+        assert_eq!(rows[0].mac, "74:ac:b9:11:22:33");
+        assert_eq!(rows[0].iface, "eth0");
+        assert_eq!(rows[1].ip, Ipv4Addr::new(192, 168, 4, 243));
+        assert_eq!(rows[1].mac, "50:3d:d1:e3:e2:07");
+
+        // Invalid header or empty table returns empty safely.
+        assert!(parse_proc_net_arp("").is_empty());
         assert!(
-            !out.is_empty(),
-            "every ARP source returned an empty table (macOS 27 Local Network denial?)"
+            parse_proc_net_arp("not a header\n192.168.4.1 0x1 0x2 aa:bb:cc:dd:ee:ff * eth0\n")
+                .is_empty()
         );
+    }
+
+    #[test]
+    fn discovery_source_tree_has_zero_command_shell_outs() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/discovery");
+        let mut stack = vec![dir];
+        let mut checked = 0usize;
+        // Assemble forbidden patterns dynamically so this guard itself never
+        // triggers a raw grep for subprocess invocations.
+        let forbidden = [
+            concat!("Command", "::new"),
+            concat!("std::process::", "Command"),
+            concat!("/usr/bin/", "sudo"),
+            concat!("/usr/sbin/", "arp"),
+            concat!("/usr/sbin/", "netstat"),
+        ];
+        while let Some(path) = stack.pop() {
+            for entry in std::fs::read_dir(&path).unwrap() {
+                let entry = entry.unwrap();
+                let p = entry.path();
+                if p.is_dir() {
+                    stack.push(p);
+                    continue;
+                }
+                if p.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                let src = std::fs::read_to_string(&p).unwrap();
+                let prod_slice = src.split("#[cfg(test)]").next().unwrap_or(&src);
+                for needle in forbidden {
+                    assert!(
+                        !prod_slice.contains(needle),
+                        "forbidden shell-out token `{needle}` found in {}",
+                        p.display()
+                    );
+                }
+                checked += 1;
+            }
+        }
         assert!(
-            !parse_arp_a(&out).is_empty(),
-            "ARP rows captured but none parsed: {out:.200}"
+            checked >= 5,
+            "expected to audit discovery modules, checked {checked}"
         );
     }
 
@@ -791,7 +969,7 @@ mod tests {
             base(8, Duration::from_millis(10)).plan(),
             Err(CensusError::InvalidTimeout)
         ));
-        assert!(matches!(base(8, Duration::from_millis(200)).plan(), Ok(_)));
+        assert!(base(8, Duration::from_millis(200)).plan().is_ok());
     }
 
     /// Golden replay: the 2026-10-07 owner-LAN census (lab notes). The pure

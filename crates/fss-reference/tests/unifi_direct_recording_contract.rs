@@ -27,10 +27,20 @@ fn retired_source_plan_rejects_gap_and_returns_original_bytes() -> TestResult {
     framer.append(0, b"FLV")?;
     let retirement = pipeline::Retirement {
         ingress: ingress::Retirement {
-            source: Retirement { state: EndState::Open, received: 4, pending: None, reserved_bytes: 0 },
-            framing: framer.retire(), buffered: None,
+            source: Retirement {
+                state: EndState::Open,
+                received: 4,
+                pending: None,
+                reserved_bytes: 0,
+            },
+            framing: framer.retire(),
+            buffered: None,
         },
-        recorder: recording::Retirement { pending: Vec::new(), source_bytes: 0, fenced: false },
+        recorder: recording::Retirement {
+            pending: Vec::new(),
+            source_bytes: 0,
+            fenced: false,
+        },
         pending_audio: None,
     };
     let refusal = match retirement_source::Plan::new(retirement) {
@@ -47,7 +57,10 @@ fn retired_source_plan_rejects_gap_and_returns_original_bytes() -> TestResult {
 #[test]
 fn bootstrap_copies_preserve_gaps_and_refuse_overlap_without_consuming_collector() -> TestResult {
     use fss_core::ContentDigest;
-    use fss_reference::unifi_direct::{av_bootstrap, av_owned_sink, evidence, ingress, pipeline, recording, retirement_source, source_batch};
+    use fss_reference::unifi_direct::{
+        av_bootstrap, av_owned_sink, evidence, ingress, pipeline, recording, retirement_source,
+        source_batch,
+    };
     use fss_runtime::tcp_ingress::{EndState, Retirement};
     let (wire, mut records) = video_only_fixture_with_frames(10)?;
     let _header = records.remove(0);
@@ -61,22 +74,50 @@ fn bootstrap_copies_preserve_gaps_and_refuse_overlap_without_consuming_collector
     while let Next::Record(_) = framer.take()? {}
     let mut plan = retirement_source::Plan::new(pipeline::Retirement {
         ingress: ingress::Retirement {
-            source: Retirement { state: EndState::Eof, received: wire.len() as u64, pending: None, reserved_bytes: 0 },
-            framing: framer.retire(), buffered: None,
+            source: Retirement {
+                state: EndState::Eof,
+                received: wire.len() as u64,
+                pending: None,
+                reserved_bytes: 0,
+            },
+            framing: framer.retire(),
+            buffered: None,
         },
-        recorder: recording::Retirement { pending: records, source_bytes: pending_bytes, fenced: false },
+        recorder: recording::Retirement {
+            pending: records,
+            source_bytes: pending_bytes,
+            fenced: false,
+        },
         pending_audio: None,
-    }).map_err(|_| "tail plan refused")?;
+    })
+    .map_err(|_| "tail plan refused")?;
     let retention = ContentDigest::sha256(b"bootstrap retention");
     let policy = av_owned_sink::BootstrapPolicy {
-        allow_initial_video_only: false, max_separation_ms: 5_000, jitter_ms: 5,
-        max_epoch_frames: 1_000_000, max_audio_frames: fss_container::Mp4Limits::default().max_samples,
-        media_limits: fss_container::Mp4Limits::default(), evidence_limits: evidence::Limits::default(),
+        allow_initial_video_only: false,
+        max_separation_ms: 5_000,
+        jitter_ms: 5,
+        max_epoch_frames: 1_000_000,
+        max_audio_frames: fss_container::Mp4Limits::default().max_samples,
+        media_limits: fss_container::Mp4Limits::default(),
+        evidence_limits: evidence::Limits::default(),
     };
     let mut collector = av_bootstrap::Collector::new(None, retention, policy);
-    assert!(matches!(collector.collect(Push::Source { record: configuration, disposition: SourceDisposition::Configuration }, None), av_bootstrap::Collected::Retained));
+    assert!(matches!(
+        collector.collect(
+            Push::Source {
+                record: configuration,
+                disposition: SourceDisposition::Configuration
+            },
+            None
+        ),
+        av_bootstrap::Collected::Retained
+    ));
     let before = plan.len();
-    assert_eq!(plan.include_collector_copies(&collector).map_err(|_| "collector copy refused")?, 1);
+    assert_eq!(
+        plan.include_collector_copies(&collector)
+            .map_err(|_| "collector copy refused")?,
+        1
+    );
     assert_eq!(plan.len(), before + 1);
     {
         let mut held = plan.items_in_order();
@@ -87,28 +128,47 @@ fn bootstrap_copies_preserve_gaps_and_refuse_overlap_without_consuming_collector
         assert_eq!(first.disposition, SourceDisposition::BootstrapCopy);
         assert!(configuration_offset + (first.record.bytes().len() as u64) < next.record.offset());
     }
-    assert!(matches!(plan.include_collector_copies(&collector), Err(retirement_source::Error::Range)));
+    assert!(matches!(
+        plan.include_collector_copies(&collector),
+        Err(retirement_source::Error::Range)
+    ));
     assert_eq!(plan.len(), before + 1);
-    let source = collector.retained_source_records().next().ok_or("collector original lost")?;
+    let source = collector
+        .retained_source_records()
+        .next()
+        .ok_or("collector original lost")?;
     assert_eq!(source.bytes(), configuration_bytes);
     let camera = ContentDigest::sha256(b"bootstrap camera");
     assert!(source_batch::Prepared::new(&plan, KEY, camera, retention, 1, 1024 * 1024).is_ok());
-    assert!(matches!(source_batch::Prepared::new(&plan, KEY, camera, retention, 2048, 1024 * 1024), Err(source_batch::Error::Configuration)));
+    assert!(matches!(
+        source_batch::Prepared::new(&plan, KEY, camera, retention, 2048, 1024 * 1024),
+        Err(source_batch::Error::Configuration)
+    ));
     Ok(())
 }
 
 #[test]
 fn bootstrap_copies_include_first_segment_but_not_lookahead_witnesses() -> TestResult {
     use fss_core::ContentDigest;
-    use fss_reference::unifi_direct::{av_bootstrap, av_owned_sink, evidence, ingress, pipeline, retirement_source};
+    use fss_reference::unifi_direct::{
+        av_bootstrap, av_owned_sink, evidence, ingress, pipeline, retirement_source,
+    };
     use fss_runtime::tcp_ingress::{EndState, Retirement};
     let (wire, records) = video_only_fixture_with_frames(10)?;
     let policy = av_owned_sink::BootstrapPolicy {
-        allow_initial_video_only: false, max_separation_ms: 5_000, jitter_ms: 5,
-        max_epoch_frames: 1_000_000, max_audio_frames: fss_container::Mp4Limits::default().max_samples,
-        media_limits: fss_container::Mp4Limits::default(), evidence_limits: evidence::Limits::default(),
+        allow_initial_video_only: false,
+        max_separation_ms: 5_000,
+        jitter_ms: 5,
+        max_epoch_frames: 1_000_000,
+        max_audio_frames: fss_container::Mp4Limits::default().max_samples,
+        media_limits: fss_container::Mp4Limits::default(),
+        evidence_limits: evidence::Limits::default(),
     };
-    let mut collector = av_bootstrap::Collector::new(Some([0x14, 0x08]), ContentDigest::sha256(b"collector retention"), policy);
+    let mut collector = av_bootstrap::Collector::new(
+        Some([0x14, 0x08]),
+        ContentDigest::sha256(b"collector retention"),
+        policy,
+    );
     let mut recorder = Recorder::new(KEY, Limits::default())?;
     let mut consumed = 0usize;
     let mut segment_count = 0usize;
@@ -116,36 +176,74 @@ fn bootstrap_copies_include_first_segment_but_not_lookahead_witnesses() -> TestR
     for record in records {
         consumed += 1;
         match recorder.push(record).map_err(|refusal| refusal.reason)? {
-            push @ Push::Source { disposition: SourceDisposition::Configuration, .. } => {
-                assert!(matches!(collector.collect(push, None), av_bootstrap::Collected::Retained));
+            push @ Push::Source {
+                disposition: SourceDisposition::Configuration,
+                ..
+            } => {
+                assert!(matches!(
+                    collector.collect(push, None),
+                    av_bootstrap::Collected::Retained
+                ));
             }
             Push::Segment(segment) => {
                 segment_count = segment.source().len();
-                witnesses.extend(segment.lookahead_copies().iter().map(|record| record.offset()));
-                assert!(matches!(collector.collect(Push::Segment(segment), None), av_bootstrap::Collected::Retained));
+                witnesses.extend(
+                    segment
+                        .lookahead_copies()
+                        .iter()
+                        .map(|record| record.offset()),
+                );
+                assert!(matches!(
+                    collector.collect(Push::Segment(segment), None),
+                    av_bootstrap::Collected::Retained
+                ));
                 break;
             }
             _ => (),
         }
     }
     assert!(segment_count > 0 && !witnesses.is_empty());
-    let originals: Vec<_> = collector.retained_source_records().map(|record| (record.offset(), record.bytes().to_vec())).collect();
+    let originals: Vec<_> = collector
+        .retained_source_records()
+        .map(|record| (record.offset(), record.bytes().to_vec()))
+        .collect();
     assert_eq!(originals.len(), segment_count + 1);
-    assert!(originals.iter().all(|(offset, _)| !witnesses.contains(offset)));
+    assert!(
+        originals
+            .iter()
+            .all(|(offset, _)| !witnesses.contains(offset))
+    );
     let mut framer = Framer::new(FlvLimits::default(), 1024 * 1024)?;
     framer.append(0, &wire)?;
     for _ in 0..consumed {
-        if !matches!(framer.take()?, Next::Record(_)) { return Err("fixture ended before segment".into()); }
+        if !matches!(framer.take()?, Next::Record(_)) {
+            return Err("fixture ended before segment".into());
+        }
     }
     let mut plan = retirement_source::Plan::new(pipeline::Retirement {
         ingress: ingress::Retirement {
-            source: Retirement { state: EndState::Eof, received: wire.len() as u64, pending: None, reserved_bytes: 0 },
-            framing: framer.retire(), buffered: None,
+            source: Retirement {
+                state: EndState::Eof,
+                received: wire.len() as u64,
+                pending: None,
+                reserved_bytes: 0,
+            },
+            framing: framer.retire(),
+            buffered: None,
         },
-        recorder: recorder.retire(), pending_audio: None,
-    }).map_err(|_| "segment tail plan refused")?;
-    assert_eq!(plan.include_collector_copies(&collector).map_err(|_| "segment copies refused")?, originals.len());
-    let copies: Vec<_> = plan.items_in_order().filter(|item| item.disposition == SourceDisposition::BootstrapCopy).collect();
+        recorder: recorder.retire(),
+        pending_audio: None,
+    })
+    .map_err(|_| "segment tail plan refused")?;
+    assert_eq!(
+        plan.include_collector_copies(&collector)
+            .map_err(|_| "segment copies refused")?,
+        originals.len()
+    );
+    let copies: Vec<_> = plan
+        .items_in_order()
+        .filter(|item| item.disposition == SourceDisposition::BootstrapCopy)
+        .collect();
     assert_eq!(copies.len(), originals.len());
     for (copy, original) in copies.iter().zip(originals.iter()) {
         assert_eq!(copy.record.offset(), original.0);
@@ -153,7 +251,12 @@ fn bootstrap_copies_include_first_segment_but_not_lookahead_witnesses() -> TestR
     }
     for offset in witnesses {
         assert!(!copies.iter().any(|item| item.record.offset() == offset));
-        assert_eq!(plan.items_in_order().filter(|item| item.record.offset() == offset).count(), 1);
+        assert_eq!(
+            plan.items_in_order()
+                .filter(|item| item.record.offset() == offset)
+                .count(),
+            1
+        );
     }
     assert_eq!(collector.retained_source_records().count(), originals.len());
     Ok(())
@@ -164,7 +267,9 @@ fn bootstrap_collector_exposes_inband_audio_configuration_for_copying() -> TestR
     use fss_container::Mp4Limits;
     use fss_core::ContentDigest;
     use fss_packet::extended_flv::{aac, aac_track};
-    use fss_reference::unifi_direct::{av_bootstrap, av_owned_sink, evidence, pipeline, source_evidence};
+    use fss_reference::unifi_direct::{
+        av_bootstrap, av_owned_sink, evidence, pipeline, source_evidence,
+    };
     let (mut wire, original) = fixture_with_audio_intervals(0, false, false, false, Some(64))?;
     let insertion = usize::try_from(original[1].offset())? + original[1].bytes().len();
     let mut config_wire = vec![0x77; 3];
@@ -175,9 +280,13 @@ fn bootstrap_collector_exposes_inband_audio_configuration_for_copying() -> TestR
     let mut track = aac_track::Track::new(FlvLimits::default(), aac::Limits::default());
     let retention = ContentDigest::sha256(b"inband collector retention");
     let policy = av_owned_sink::BootstrapPolicy {
-        allow_initial_video_only: false, max_separation_ms: 5_000, jitter_ms: 5,
-        max_epoch_frames: 1_000_000, max_audio_frames: Mp4Limits::default().max_samples,
-        media_limits: Mp4Limits::default(), evidence_limits: evidence::Limits::default(),
+        allow_initial_video_only: false,
+        max_separation_ms: 5_000,
+        jitter_ms: 5,
+        max_epoch_frames: 1_000_000,
+        max_audio_frames: Mp4Limits::default().max_samples,
+        media_limits: Mp4Limits::default(),
+        evidence_limits: evidence::Limits::default(),
     };
     let mut collector = av_bootstrap::Collector::new(None, retention, policy);
     let mut expected = None;
@@ -185,10 +294,16 @@ fn bootstrap_collector_exposes_inband_audio_configuration_for_copying() -> TestR
         let observation = track.observe(&record)?;
         if matches!(observation, aac_track::Observation::Configuration { .. }) {
             expected = Some((record.offset(), record.bytes().to_vec()));
-            assert!(matches!(collector.collect(
-                Push::Source { record, disposition: SourceDisposition::PreRoll },
-                Some(pipeline::AudioEvent::Observed(observation)),
-            ), av_bootstrap::Collected::Retained));
+            assert!(matches!(
+                collector.collect(
+                    Push::Source {
+                        record,
+                        disposition: SourceDisposition::PreRoll
+                    },
+                    Some(pipeline::AudioEvent::Observed(observation)),
+                ),
+                av_bootstrap::Collected::Retained
+            ));
             break;
         }
     }
@@ -198,37 +313,77 @@ fn bootstrap_collector_exposes_inband_audio_configuration_for_copying() -> TestR
     assert_eq!(records[0].offset(), offset);
     assert_eq!(records[0].bytes(), bytes);
     let camera = ContentDigest::sha256(b"inband collector camera");
-    assert!(source_evidence::Prepared::new(records[0], KEY, SourceDisposition::BootstrapCopy, camera, retention, 1024 * 1024).is_ok());
+    assert!(
+        source_evidence::Prepared::new(
+            records[0],
+            KEY,
+            SourceDisposition::BootstrapCopy,
+            camera,
+            retention,
+            1024 * 1024
+        )
+        .is_ok()
+    );
     Ok(())
 }
 
 #[test]
 fn source_tail_batch_publishes_and_reads_exact_ordered_originals() -> TestResult {
-    use fss_core::{BudgetVector, ContentDigest, OperationId, RootAuthoritySpec, region::ContextAuthority};
+    use fss_core::{
+        BudgetVector, ContentDigest, OperationId, RootAuthoritySpec, region::ContextAuthority,
+    };
     use fss_geometry::WorkBudget;
-    use fss_object::{HostSpoolIo, effect_journal::{EffectJournalLimits, FileEffectJournal}};
-    use fss_reference::{ReferenceDeployment, ReplayCx, unifi_direct::{archive, ingress, pipeline, recording, retirement_source, source_batch}};
+    use fss_object::{
+        HostSpoolIo,
+        effect_journal::{EffectJournalLimits, FileEffectJournal},
+    };
+    use fss_reference::{
+        ReferenceDeployment, ReplayCx,
+        unifi_direct::{archive, ingress, pipeline, recording, retirement_source, source_batch},
+    };
     use fss_runtime::tcp_ingress::{EndState, Retirement};
     use std::sync::Arc;
 
     struct Access(bool);
-    impl archive::RetainAuthority for Access { fn permits(&self, _: ContentDigest, _: ContentDigest) -> bool { self.0 } }
-    impl archive::ReadAuthority for Access { fn permits(&self, _: ContentDigest, _: ContentDigest) -> bool { self.0 } }
+    impl archive::RetainAuthority for Access {
+        fn permits(&self, _: ContentDigest, _: ContentDigest) -> bool {
+            self.0
+        }
+    }
+    impl archive::ReadAuthority for Access {
+        fn permits(&self, _: ContentDigest, _: ContentDigest) -> bool {
+            self.0
+        }
+    }
 
     let (wire, mut records) = video_only_fixture_with_frames(10)?;
-    assert!(matches!(records.remove(0).kind(), fss_packet::extended_flv::stream::RecordKind::Header));
+    assert!(matches!(
+        records.remove(0).kind(),
+        fss_packet::extended_flv::stream::RecordKind::Header
+    ));
     let pending_bytes = records.iter().map(|record| record.bytes().len()).sum();
     let mut framer = Framer::new(FlvLimits::default(), 1024 * 1024)?;
     framer.append(0, &wire)?;
     while let Next::Record(_) = framer.take()? {}
     let plan = retirement_source::Plan::new(pipeline::Retirement {
         ingress: ingress::Retirement {
-            source: Retirement { state: EndState::Eof, received: wire.len() as u64, pending: None, reserved_bytes: 0 },
-            framing: framer.retire(), buffered: None,
+            source: Retirement {
+                state: EndState::Eof,
+                received: wire.len() as u64,
+                pending: None,
+                reserved_bytes: 0,
+            },
+            framing: framer.retire(),
+            buffered: None,
         },
-        recorder: recording::Retirement { pending: records, source_bytes: pending_bytes, fenced: false },
+        recorder: recording::Retirement {
+            pending: records,
+            source_bytes: pending_bytes,
+            fenced: false,
+        },
         pending_audio: None,
-    }).map_err(|_| "source retirement refused")?;
+    })
+    .map_err(|_| "source retirement refused")?;
     let count = plan.len();
     assert!(count > 3);
     let camera = ContentDigest::sha256(b"batch-camera");
@@ -236,7 +391,10 @@ fn source_tail_batch_publishes_and_reads_exact_ordered_originals() -> TestResult
     let partial = source_batch::Prepared::new(&plan, KEY, camera, retention, 3, 1024 * 1024)?;
     assert_eq!(partial.records(), 3);
     assert_eq!(plan.len(), count);
-    assert!(matches!(source_batch::Prepared::new(&plan, KEY, camera, retention, 3, 1), Err(source_batch::Error::FirstRecordTooLarge)));
+    assert!(matches!(
+        source_batch::Prepared::new(&plan, KEY, camera, retention, 3, 1),
+        Err(source_batch::Error::FirstRecordTooLarge)
+    ));
     assert_eq!(plan.len(), count);
     let prepared = source_batch::Prepared::new(&plan, KEY, camera, retention, 2048, 1024 * 1024)?;
     assert_eq!(prepared.records(), count);
@@ -245,24 +403,67 @@ fn source_tail_batch_publishes_and_reads_exact_ordered_originals() -> TestResult
     let root = std::env::temp_dir().join(format!("fss-source-batch-{}", std::process::id()));
     std::fs::create_dir(&root)?;
     let auth = ContextAuthority::new_root(RootAuthoritySpec {
-        trace_id: "trace:source-batch".into(), operation_id: OperationId::parse("operation:source-batch")?,
-        principal: "principal:fixture".into(), capabilities: vec!["ADP-REPLAY-001".into()],
-        deadline: None, priority: 1, budgets: BudgetVector::builder().bytes(128 * 1024 * 1024).build()?,
-        privacy_scope: "privacy:test".into(), retention_scope: "retention:test".into(),
-        anchor_universe: camera, generation: 1,
+        trace_id: "trace:source-batch".into(),
+        operation_id: OperationId::parse("operation:source-batch")?,
+        principal: "principal:fixture".into(),
+        capabilities: vec!["ADP-REPLAY-001".into()],
+        deadline: None,
+        priority: 1,
+        budgets: BudgetVector::builder().bytes(128 * 1024 * 1024).build()?,
+        privacy_scope: "privacy:test".into(),
+        retention_scope: "retention:test".into(),
+        anchor_universe: camera,
+        generation: 1,
     })?;
     let replay = ReplayCx::from_context_authority(&auth, root.clone())?;
-    let mut deployment = ReferenceDeployment::open(&root.join("deployment"), "site:source-batch", &replay)?;
-    let journal = FileEffectJournal::create(root.join("journal"), EffectJournalLimits::default(), Arc::new(HostSpoolIo))?;
-    let mut journal = archive::journal::UnknownTimeJournal::create(Box::new(journal), ContentDigest::sha256(b"batch-scope"), &replay)?;
-    let keeper = FileEffectJournal::create(root.join("keeper"), EffectJournalLimits::default(), Arc::new(HostSpoolIo))?;
-    let mut keeper = archive::journal::UnknownTimeAnchorKeeper::create(Box::new(keeper), &journal, &replay)?;
-    archive::publish_unknown_time_source_batch_anchored(&prepared, &mut deployment, &Access(true), archive::Limits::default(),
-        &mut WorkBudget::new(4_000_000_000), &replay, &mut journal, &mut keeper)?;
-    assert!(archive::read_unknown_time_source_batch(&mut deployment, pin, &Access(false), archive::Limits::default(),
-        &mut WorkBudget::new(4_000_000_000), &replay).is_err());
-    let recovered = archive::read_unknown_time_source_batch(&mut deployment, pin, &Access(true), archive::Limits::default(),
-        &mut WorkBudget::new(4_000_000_000), &replay)?;
+    let mut deployment =
+        ReferenceDeployment::open(&root.join("deployment"), "site:source-batch", &replay)?;
+    let journal = FileEffectJournal::create(
+        root.join("journal"),
+        EffectJournalLimits::default(),
+        Arc::new(HostSpoolIo),
+    )?;
+    let mut journal = archive::journal::UnknownTimeJournal::create(
+        Box::new(journal),
+        ContentDigest::sha256(b"batch-scope"),
+        &replay,
+    )?;
+    let keeper = FileEffectJournal::create(
+        root.join("keeper"),
+        EffectJournalLimits::default(),
+        Arc::new(HostSpoolIo),
+    )?;
+    let mut keeper =
+        archive::journal::UnknownTimeAnchorKeeper::create(Box::new(keeper), &journal, &replay)?;
+    archive::publish_unknown_time_source_batch_anchored(
+        &prepared,
+        &mut deployment,
+        &Access(true),
+        archive::Limits::default(),
+        &mut WorkBudget::new(4_000_000_000),
+        &replay,
+        &mut journal,
+        &mut keeper,
+    )?;
+    assert!(
+        archive::read_unknown_time_source_batch(
+            &mut deployment,
+            pin,
+            &Access(false),
+            archive::Limits::default(),
+            &mut WorkBudget::new(4_000_000_000),
+            &replay
+        )
+        .is_err()
+    );
+    let recovered = archive::read_unknown_time_source_batch(
+        &mut deployment,
+        pin,
+        &Access(true),
+        archive::Limits::default(),
+        &mut WorkBudget::new(4_000_000_000),
+        &replay,
+    )?;
     assert_eq!(recovered.key, KEY);
     assert_eq!(recovered.camera_claim, camera);
     assert_eq!(recovered.records.len(), count);
@@ -279,7 +480,10 @@ fn source_tail_batch_publishes_and_reads_exact_ordered_originals() -> TestResult
 
     // Stop after staging but before publication, reopen the journal, and prove
     // that the exact pending batch can be reconstructed rather than discarded.
-    struct Cutoff { calls: std::cell::Cell<usize>, allow: usize }
+    struct Cutoff {
+        calls: std::cell::Cell<usize>,
+        allow: usize,
+    }
     impl archive::RetainAuthority for Cutoff {
         fn permits(&self, _: ContentDigest, _: ContentDigest) -> bool {
             let next = self.calls.get() + 1;
@@ -287,14 +491,32 @@ fn source_tail_batch_publishes_and_reads_exact_ordered_originals() -> TestResult
             next <= self.allow
         }
     }
-    let second_key = fss_container::flv_avc::SourceKey { connection: 88, generation: 1 };
-    let staged_plan = source_batch::Prepared::new(&plan, second_key, camera, retention, 2048, 1024 * 1024)?;
+    let second_key = fss_container::flv_avc::SourceKey {
+        connection: 88,
+        generation: 1,
+    };
+    let staged_plan =
+        source_batch::Prepared::new(&plan, second_key, camera, retention, 2048, 1024 * 1024)?;
     let staged_pin = archive::UnknownTimePin::from_source_batch(&staged_plan);
-    let cutoff = Cutoff { calls: std::cell::Cell::new(0), allow: 4 };
-    assert!(matches!(archive::publish_unknown_time_source_batch_anchored(
-        &staged_plan, &mut deployment, &cutoff, archive::Limits::default(),
-        &mut WorkBudget::new(4_000_000_000), &replay, &mut journal, &mut keeper),
-        Err(archive::UnknownTimePublishError::Archive(archive::Error::Denied))));
+    let cutoff = Cutoff {
+        calls: std::cell::Cell::new(0),
+        allow: 4,
+    };
+    assert!(matches!(
+        archive::publish_unknown_time_source_batch_anchored(
+            &staged_plan,
+            &mut deployment,
+            &cutoff,
+            archive::Limits::default(),
+            &mut WorkBudget::new(4_000_000_000),
+            &replay,
+            &mut journal,
+            &mut keeper
+        ),
+        Err(archive::UnknownTimePublishError::Archive(
+            archive::Error::Denied
+        ))
+    ));
     assert_eq!(journal.pending(), Some(staged_pin));
     let journal_anchor = journal.anchor();
     let keeper_anchor = keeper.anchor();
@@ -302,35 +524,99 @@ fn source_tail_batch_publishes_and_reads_exact_ordered_originals() -> TestResult
     drop(journal);
     drop(keeper);
     drop(deployment);
-    let store = FileEffectJournal::open(root.join("journal"), EffectJournalLimits::default(), Arc::new(HostSpoolIo), journal_anchor)?;
+    let store = FileEffectJournal::open(
+        root.join("journal"),
+        EffectJournalLimits::default(),
+        Arc::new(HostSpoolIo),
+        journal_anchor,
+    )?;
     let mut journal = archive::journal::UnknownTimeJournal::reopen(
-        Box::new(store), ContentDigest::sha256(b"batch-scope"), journal_anchor, &replay)?;
-    let store = FileEffectJournal::open(root.join("keeper"), EffectJournalLimits::default(), Arc::new(HostSpoolIo), keeper_anchor)?;
-    let mut keeper = archive::journal::UnknownTimeAnchorKeeper::reopen(Box::new(store), &journal, keeper_anchor, &replay)?;
-    let mut deployment = ReferenceDeployment::open(&root.join("deployment"), "site:source-batch", &replay)?;
-    assert!(matches!(archive::read_staged_unknown_time_source_batch(&deployment, &journal, &keeper,
-        &Access(false), archive::Limits::default(), &mut WorkBudget::new(4_000_000_000), &replay),
-        Err(archive::Error::Denied)));
-    let mut tampered = archive::read_staged_unknown_time_source_batch(&deployment, &journal, &keeper,
-        &Access(true), archive::Limits::default(), &mut WorkBudget::new(4_000_000_000), &replay)?;
+        Box::new(store),
+        ContentDigest::sha256(b"batch-scope"),
+        journal_anchor,
+        &replay,
+    )?;
+    let store = FileEffectJournal::open(
+        root.join("keeper"),
+        EffectJournalLimits::default(),
+        Arc::new(HostSpoolIo),
+        keeper_anchor,
+    )?;
+    let mut keeper = archive::journal::UnknownTimeAnchorKeeper::reopen(
+        Box::new(store),
+        &journal,
+        keeper_anchor,
+        &replay,
+    )?;
+    let mut deployment =
+        ReferenceDeployment::open(&root.join("deployment"), "site:source-batch", &replay)?;
+    assert!(matches!(
+        archive::read_staged_unknown_time_source_batch(
+            &deployment,
+            &journal,
+            &keeper,
+            &Access(false),
+            archive::Limits::default(),
+            &mut WorkBudget::new(4_000_000_000),
+            &replay
+        ),
+        Err(archive::Error::Denied)
+    ));
+    let mut tampered = archive::read_staged_unknown_time_source_batch(
+        &deployment,
+        &journal,
+        &keeper,
+        &Access(true),
+        archive::Limits::default(),
+        &mut WorkBudget::new(4_000_000_000),
+        &replay,
+    )?;
     tampered.payload[0] ^= 1;
     assert!(source_batch::Prepared::from_recovered(tampered).is_err());
-    let staged = archive::read_staged_unknown_time_source_batch(&deployment, &journal, &keeper,
-        &Access(true), archive::Limits::default(), &mut WorkBudget::new(4_000_000_000), &replay)?;
+    let staged = archive::read_staged_unknown_time_source_batch(
+        &deployment,
+        &journal,
+        &keeper,
+        &Access(true),
+        archive::Limits::default(),
+        &mut WorkBudget::new(4_000_000_000),
+        &replay,
+    )?;
     assert_eq!(staged.key, second_key);
     let replay_plan = source_batch::Prepared::from_recovered(staged)?;
-    assert_eq!(archive::UnknownTimePin::from_source_batch(&replay_plan), staged_pin);
-    archive::publish_unknown_time_source_batch_anchored(&replay_plan, &mut deployment, &Access(true),
-        archive::Limits::default(), &mut WorkBudget::new(4_000_000_000), &replay, &mut journal, &mut keeper)?;
-    let recovered = archive::read_unknown_time_source_batch(&mut deployment, staged_pin, &Access(true),
-        archive::Limits::default(), &mut WorkBudget::new(4_000_000_000), &replay)?;
+    assert_eq!(
+        archive::UnknownTimePin::from_source_batch(&replay_plan),
+        staged_pin
+    );
+    archive::publish_unknown_time_source_batch_anchored(
+        &replay_plan,
+        &mut deployment,
+        &Access(true),
+        archive::Limits::default(),
+        &mut WorkBudget::new(4_000_000_000),
+        &replay,
+        &mut journal,
+        &mut keeper,
+    )?;
+    let recovered = archive::read_unknown_time_source_batch(
+        &mut deployment,
+        staged_pin,
+        &Access(true),
+        archive::Limits::default(),
+        &mut WorkBudget::new(4_000_000_000),
+        &replay,
+    )?;
     assert_eq!(recovered.records.len(), count);
     assert_eq!(recovered.payload, replay_plan_payload_for_test(&plan));
     Ok(())
 }
 
-fn replay_plan_payload_for_test(plan: &fss_reference::unifi_direct::retirement_source::Plan) -> Vec<u8> {
-    plan.items_in_order().flat_map(|item| item.record.bytes().iter().copied()).collect()
+fn replay_plan_payload_for_test(
+    plan: &fss_reference::unifi_direct::retirement_source::Plan,
+) -> Vec<u8> {
+    plan.items_in_order()
+        .flat_map(|item| item.record.bytes().iter().copied())
+        .collect()
 }
 
 #[test]
@@ -342,9 +628,39 @@ fn unframed_source_evidence_rejects_a_framed_disposition() -> TestResult {
         .unwrap_or_else(|_| panic!("valid raw bytes refused"));
     let camera = ContentDigest::sha256(b"fixture camera");
     let retention = ContentDigest::sha256(b"fixture retention");
-    assert!(source_evidence::Prepared::new(&raw, KEY, SourceDisposition::Unframed, camera, retention, 1024).is_ok());
-    assert!(source_evidence::Prepared::new(&raw, KEY, SourceDisposition::PreRoll, camera, retention, 1024).is_err());
-    assert!(source_evidence::Prepared::new(&raw, KEY, SourceDisposition::Unclosed, camera, retention, 1024).is_err());
+    assert!(
+        source_evidence::Prepared::new(
+            &raw,
+            KEY,
+            SourceDisposition::Unframed,
+            camera,
+            retention,
+            1024
+        )
+        .is_ok()
+    );
+    assert!(
+        source_evidence::Prepared::new(
+            &raw,
+            KEY,
+            SourceDisposition::PreRoll,
+            camera,
+            retention,
+            1024
+        )
+        .is_err()
+    );
+    assert!(
+        source_evidence::Prepared::new(
+            &raw,
+            KEY,
+            SourceDisposition::Unclosed,
+            camera,
+            retention,
+            1024
+        )
+        .is_err()
+    );
     Ok(())
 }
 
@@ -389,111 +705,254 @@ fn async_published_still_selects_color_from_sps() -> TestResult {
 }
 
 fn async_video_worker_scenario(rollover: bool, background: u8) -> TestResult {
-    use asupersync::{runtime::{RuntimeBuilder, yield_now}, time::timeout};
+    use asupersync::{
+        runtime::{RuntimeBuilder, yield_now},
+        time::timeout,
+    };
     use fss_container::Mp4Limits;
-    use fss_core::{BudgetVector, ContentDigest, OperationId, RegionId, RegionKind, RootAuthoritySpec,
-        RuntimeGrant, TaskId, TaskOutcome, TimestampNs, region::ContextAuthority};
+    use fss_core::{
+        BudgetVector, ContentDigest, OperationId, RegionId, RegionKind, RootAuthoritySpec,
+        RuntimeGrant, TaskId, TaskOutcome, TimestampNs, region::ContextAuthority,
+    };
     use fss_geometry::WorkBudget;
-    use fss_object::{HostSpoolIo, effect_journal::{EffectJournalLimits, FileEffectJournal}};
-    use fss_reference::{ReferenceDeployment, ReplayCx, unifi_direct::{archive, av_worker, evidence,
-        metered::MeteredClock, video_owned_sink, video_rollover_preflight, video_rollover_worker, video_worker}};
-    use fss_runtime::{authority::AuthorityCx, execution::{TaskCompletion, TaskSpec, run_owned_async}};
-    use std::{future::{Future, poll_fn}, path::PathBuf, pin::pin, sync::{Arc,
-        atomic::{AtomicBool, Ordering}}, task::Poll, time::Duration};
+    use fss_object::{
+        HostSpoolIo,
+        effect_journal::{EffectJournalLimits, FileEffectJournal},
+    };
+    use fss_reference::{
+        ReferenceDeployment, ReplayCx,
+        unifi_direct::{
+            archive, av_worker, evidence, metered::MeteredClock, video_owned_sink,
+            video_rollover_preflight, video_rollover_worker, video_worker,
+        },
+    };
+    use fss_runtime::{
+        authority::AuthorityCx,
+        execution::{TaskCompletion, TaskSpec, run_owned_async},
+    };
+    use std::{
+        future::{Future, poll_fn},
+        path::PathBuf,
+        pin::pin,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        task::Poll,
+        time::Duration,
+    };
 
     struct Temp(PathBuf);
-    impl Drop for Temp { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
-    struct Access { allow: AtomicBool, block: AtomicBool, entered: AtomicBool }
+    impl Drop for Temp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    struct Access {
+        allow: AtomicBool,
+        block: AtomicBool,
+        entered: AtomicBool,
+    }
     impl archive::RetainAuthority for Access {
         fn permits(&self, _: ContentDigest, _: ContentDigest) -> bool {
             self.entered.store(true, Ordering::Release);
             for _ in 0..2500 {
-                if !self.block.load(Ordering::Acquire) { return self.allow.load(Ordering::Acquire); }
+                if !self.block.load(Ordering::Acquire) {
+                    return self.allow.load(Ordering::Acquire);
+                }
                 std::thread::sleep(Duration::from_millis(2));
             }
             false
         }
     }
     impl archive::ReadAuthority for Access {
-        fn permits(&self, _: ContentDigest, _: ContentDigest) -> bool { self.allow.load(Ordering::Acquire) }
+        fn permits(&self, _: ContentDigest, _: ContentDigest) -> bool {
+            self.allow.load(Ordering::Acquire)
+        }
     }
-    struct BlockingRead { calls: std::sync::atomic::AtomicUsize, entered: AtomicBool, block: AtomicBool }
+    struct BlockingRead {
+        calls: std::sync::atomic::AtomicUsize,
+        entered: AtomicBool,
+        block: AtomicBool,
+    }
     impl archive::ReadAuthority for BlockingRead {
         fn permits(&self, _: ContentDigest, _: ContentDigest) -> bool {
-            if self.calls.fetch_add(1, Ordering::AcqRel) == 0 { return true; }
+            if self.calls.fetch_add(1, Ordering::AcqRel) == 0 {
+                return true;
+            }
             self.entered.store(true, Ordering::Release);
             for _ in 0..2500 {
-                if !self.block.load(Ordering::Acquire) { return true; }
+                if !self.block.load(Ordering::Acquire) {
+                    return true;
+                }
                 std::thread::sleep(Duration::from_millis(2));
             }
             false
         }
     }
     struct ReleaseStillRead(Arc<BlockingRead>);
-    impl Drop for ReleaseStillRead { fn drop(&mut self) { self.0.block.store(false, Ordering::Release); } }
-    struct RevokeOnRecheck { first: ContentDigest, last: ContentDigest, seen_last: AtomicBool }
+    impl Drop for ReleaseStillRead {
+        fn drop(&mut self) {
+            self.0.block.store(false, Ordering::Release);
+        }
+    }
+    struct RevokeOnRecheck {
+        first: ContentDigest,
+        last: ContentDigest,
+        seen_last: AtomicBool,
+    }
     impl archive::ReadAuthority for RevokeOnRecheck {
         fn permits(&self, _: ContentDigest, root: ContentDigest) -> bool {
-            if root == self.last { self.seen_last.store(true, Ordering::Release); }
+            if root == self.last {
+                self.seen_last.store(true, Ordering::Release);
+            }
             root != self.first || !self.seen_last.load(Ordering::Acquire)
         }
     }
     struct Unblock(Arc<Access>);
-    impl Drop for Unblock { fn drop(&mut self) { self.0.block.store(false, Ordering::Release); } }
+    impl Drop for Unblock {
+        fn drop(&mut self) {
+            self.0.block.store(false, Ordering::Release);
+        }
+    }
 
     let (_, records) = if background == 4 || background == 5 {
-        video_only_fixture_with_source(7, include_bytes!("../../fss-packet/tests/fixtures/avc/baseline_bt709_full.264"))?
-    } else if rollover { video_only_fixture_with_frames(10)? } else { video_only_fixture()? };
+        video_only_fixture_with_source(
+            7,
+            include_bytes!("../../fss-packet/tests/fixtures/avc/baseline_bt709_full.264"),
+        )?
+    } else if rollover {
+        video_only_fixture_with_frames(10)?
+    } else {
+        video_only_fixture()?
+    };
     let mut recorder = Recorder::new(KEY, Limits::default())?;
     let mut configuration = None;
     let mut segments = Vec::new();
     for record in records {
         match recorder.push(record).map_err(|refusal| refusal.reason)? {
-            Push::Source { record, disposition: SourceDisposition::Configuration } => configuration = Some(record),
+            Push::Source {
+                record,
+                disposition: SourceDisposition::Configuration,
+            } => configuration = Some(record),
             Push::Segment(segment) => segments.push(segment),
             _ => (),
         }
     }
     assert_eq!(segments.len(), if rollover { 3 } else { 2 });
-    let third = if rollover { Some(segments.pop().ok_or("third segment missing")?) } else { None };
+    let third = if rollover {
+        Some(segments.pop().ok_or("third segment missing")?)
+    } else {
+        None
+    };
     let second = segments.pop().ok_or("second segment missing")?;
     let first = segments.pop().ok_or("first segment missing")?;
     let first_digest = ContentDigest::sha256(first.fragment().bytes());
     let retention = ContentDigest::sha256(b"video-worker-retention");
     let sink = video_owned_sink::Sink::new(video_owned_sink::Inputs {
-        configuration: configuration.ok_or("configuration missing")?, source: KEY, inband: false,
-        retention, media_limits: Mp4Limits::default(), evidence_limits: evidence::Limits::default(),
-    }).map_err(|_| "sink refused")?;
-    let temp = Temp(std::env::temp_dir().join(format!("fss-video-worker-{}-{rollover}-{background}", std::process::id())));
+        configuration: configuration.ok_or("configuration missing")?,
+        source: KEY,
+        inband: false,
+        retention,
+        media_limits: Mp4Limits::default(),
+        evidence_limits: evidence::Limits::default(),
+    })
+    .map_err(|_| "sink refused")?;
+    let temp = Temp(std::env::temp_dir().join(format!(
+        "fss-video-worker-{}-{rollover}-{background}",
+        std::process::id()
+    )));
     std::fs::create_dir(&temp.0)?;
-    let budget = BudgetVector::builder().bytes(128 * 1024 * 1024).storage_operations(10_000).build()?;
+    let budget = BudgetVector::builder()
+        .bytes(128 * 1024 * 1024)
+        .storage_operations(10_000)
+        .build()?;
     let replay_authority = ContextAuthority::new_root(RootAuthoritySpec {
-        trace_id: "trace:video-worker-replay".into(), operation_id: OperationId::parse("operation:video-worker-replay")?,
-        principal: "principal:fixture".into(), capabilities: vec!["ADP-REPLAY-001".into()], deadline: None,
-        priority: 1, budgets: budget, privacy_scope: "privacy:test".into(), retention_scope: "retention:test".into(),
-        anchor_universe: ContentDigest::sha256(b"video-worker-site"), generation: 1,
+        trace_id: "trace:video-worker-replay".into(),
+        operation_id: OperationId::parse("operation:video-worker-replay")?,
+        principal: "principal:fixture".into(),
+        capabilities: vec!["ADP-REPLAY-001".into()],
+        deadline: None,
+        priority: 1,
+        budgets: budget,
+        privacy_scope: "privacy:test".into(),
+        retention_scope: "retention:test".into(),
+        anchor_universe: ContentDigest::sha256(b"video-worker-site"),
+        generation: 1,
     })?;
     let replay = ReplayCx::from_context_authority(&replay_authority, temp.0.clone())?;
-    let deployment = ReferenceDeployment::open(&temp.0.join("deployment"), "site:video-worker", &replay)?;
-    let journal_limits = if rollover { EffectJournalLimits { max_records: 5, ..EffectJournalLimits::default() } } else { EffectJournalLimits::default() };
-    let store = FileEffectJournal::create(temp.0.join("journal"), journal_limits, Arc::new(HostSpoolIo))?;
-    let journal = archive::journal::UnknownTimeJournal::create(Box::new(store), ContentDigest::sha256(b"video-worker-scope"), &replay)?;
-    let store = FileEffectJournal::create(temp.0.join("keeper"), EffectJournalLimits::default(), Arc::new(HostSpoolIo))?;
-    let keeper = archive::journal::UnknownTimeAnchorKeeper::create(Box::new(store), &journal, &replay)?;
-    let access = Arc::new(Access { allow: AtomicBool::new(false), block: AtomicBool::new(true), entered: AtomicBool::new(false) });
+    let deployment =
+        ReferenceDeployment::open(&temp.0.join("deployment"), "site:video-worker", &replay)?;
+    let journal_limits = if rollover {
+        EffectJournalLimits {
+            max_records: 5,
+            ..EffectJournalLimits::default()
+        }
+    } else {
+        EffectJournalLimits::default()
+    };
+    let store = FileEffectJournal::create(
+        temp.0.join("journal"),
+        journal_limits,
+        Arc::new(HostSpoolIo),
+    )?;
+    let journal = archive::journal::UnknownTimeJournal::create(
+        Box::new(store),
+        ContentDigest::sha256(b"video-worker-scope"),
+        &replay,
+    )?;
+    let store = FileEffectJournal::create(
+        temp.0.join("keeper"),
+        EffectJournalLimits::default(),
+        Arc::new(HostSpoolIo),
+    )?;
+    let keeper =
+        archive::journal::UnknownTimeAnchorKeeper::create(Box::new(store), &journal, &replay)?;
+    let access = Arc::new(Access {
+        allow: AtomicBool::new(false),
+        block: AtomicBool::new(true),
+        entered: AtomicBool::new(false),
+    });
     let _unblock = Unblock(access.clone());
     let mut worker = video_worker::Worker::new(video_worker::Parts {
-        sink, deployment, journal, keeper, replay, authority: access.clone(), limits: archive::Limits::default(),
+        sink,
+        deployment,
+        journal,
+        keeper,
+        replay,
+        authority: access.clone(),
+        limits: archive::Limits::default(),
         work_limit: 4_000_000_000,
-    }).map_err(|_| "worker refused")?;
+    })
+    .map_err(|_| "worker refused")?;
     worker.offer(first).map_err(|_| "first offer refused")?;
-    let (mut authority, mut tree) = AuthorityCx::root(RootAuthoritySpec {
-        trace_id: "trace:video-worker".into(), operation_id: OperationId::parse("operation:video-worker")?,
-        principal: "principal:fixture".into(), capabilities: vec![RuntimeGrant::ObjectStage.as_str().into(), RuntimeGrant::ObjectPublish.as_str().into(), RuntimeGrant::ReadMedia.as_str().into(), RuntimeGrant::MediaDecode.as_str().into()],
-        deadline: None, priority: 1, budgets: budget, privacy_scope: "privacy:test".into(), retention_scope: "retention:test".into(),
-        anchor_universe: ContentDigest::sha256(b"video-worker-site"), generation: 1,
-    }, RegionId::new("region:video-worker")?, RegionKind::Process, budget, TimestampNs(1))?;
-    let runtime = RuntimeBuilder::current_thread().blocking_threads(2, 2).build()?;
+    let (mut authority, mut tree) = AuthorityCx::root(
+        RootAuthoritySpec {
+            trace_id: "trace:video-worker".into(),
+            operation_id: OperationId::parse("operation:video-worker")?,
+            principal: "principal:fixture".into(),
+            capabilities: vec![
+                RuntimeGrant::ObjectStage.as_str().into(),
+                RuntimeGrant::ObjectPublish.as_str().into(),
+                RuntimeGrant::ReadMedia.as_str().into(),
+                RuntimeGrant::MediaDecode.as_str().into(),
+            ],
+            deadline: None,
+            priority: 1,
+            budgets: budget,
+            privacy_scope: "privacy:test".into(),
+            retention_scope: "retention:test".into(),
+            anchor_universe: ContentDigest::sha256(b"video-worker-site"),
+            generation: 1,
+        },
+        RegionId::new("region:video-worker")?,
+        RegionKind::Process,
+        budget,
+        TimestampNs(1),
+    )?;
+    let runtime = RuntimeBuilder::current_thread()
+        .blocking_threads(2, 2)
+        .build()?;
     runtime.block_on(async {
         let cx = asupersync::Cx::current().ok_or("missing runtime")?;
         let run = run_owned_async(&mut authority, &mut tree, TaskSpec { task_id: TaskId::new("task:video-worker").map_err(|e| e.to_string())?, started_at: TimestampNs(2) }, &cx, async |task, cx| {
@@ -800,22 +1259,42 @@ fn async_video_worker_scenario(rollover: bool, background: u8) -> TestResult {
 fn video_only_sink_replays_private_camera_video() -> TestResult {
     use std::io::Read;
     let mut wire = Vec::new();
-    std::io::stdin().lock().take(8 * 1024 * 1024 + 1).read_to_end(&mut wire)?;
-    if wire.len() < 13 || wire.len() > 8 * 1024 * 1024 { return Err("private video input bound refused".into()); }
+    std::io::stdin()
+        .lock()
+        .take(8 * 1024 * 1024 + 1)
+        .read_to_end(&mut wire)?;
+    if wire.len() < 13 || wire.len() > 8 * 1024 * 1024 {
+        return Err("private video input bound refused".into());
+    }
     video_only_sink_check(Some(wire))
 }
 
 fn video_only_sink_check(private_wire: Option<Vec<u8>>) -> TestResult {
     use fss_container::Mp4Limits;
-    use fss_core::{BudgetVector, ContentDigest, OperationId, RootAuthoritySpec, region::ContextAuthority};
+    use fss_core::{
+        BudgetVector, ContentDigest, OperationId, RootAuthoritySpec, region::ContextAuthority,
+    };
     use fss_geometry::WorkBudget;
-    use fss_object::{HostSpoolIo, effect_journal::{EffectJournalLimits, FileEffectJournal}};
-    use fss_reference::{ReferenceDeployment, ReplayCx, unifi_direct::{archive, evidence, video_owned_sink}};
+    use fss_object::{
+        HostSpoolIo,
+        effect_journal::{EffectJournalLimits, FileEffectJournal},
+    };
+    use fss_reference::{
+        ReferenceDeployment, ReplayCx,
+        unifi_direct::{archive, evidence, video_owned_sink},
+    };
     use std::{cell::Cell, path::PathBuf, sync::Arc};
 
     struct Temp(PathBuf);
-    impl Drop for Temp { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
-    struct Access { allowed: Cell<bool>, retention: ContentDigest }
+    impl Drop for Temp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    struct Access {
+        allowed: Cell<bool>,
+        retention: ContentDigest,
+    }
     impl archive::RetainAuthority for Access {
         fn permits(&self, retention: ContentDigest, _: ContentDigest) -> bool {
             self.allowed.get() && retention == self.retention
@@ -833,137 +1312,295 @@ fn video_only_sink_check(private_wire: Option<Vec<u8>>) -> TestResult {
         trace_id: "trace:video-only-test".into(),
         operation_id: OperationId::parse("operation:video-only-test")?,
         principal: "principal:test".into(),
-        capabilities: vec!["ADP-REPLAY-001".into()], deadline: None, priority: 1,
+        capabilities: vec!["ADP-REPLAY-001".into()],
+        deadline: None,
+        priority: 1,
         budgets: BudgetVector::builder().bytes(64 * 1024 * 1024).build()?,
-        privacy_scope: "privacy:test".into(), retention_scope: "retention:test".into(),
-        anchor_universe: ContentDigest::sha256(b"video-only-test"), generation: 1,
+        privacy_scope: "privacy:test".into(),
+        retention_scope: "retention:test".into(),
+        anchor_universe: ContentDigest::sha256(b"video-only-test"),
+        generation: 1,
     })?;
     let cx = ReplayCx::from_context_authority(&authority, temp.0.clone())?;
-    let mut deployment = ReferenceDeployment::open(&temp.0.join("deployment"), "site:video-only-test", &cx)?;
-    let journal_store = FileEffectJournal::create(temp.0.join("journal"), EffectJournalLimits::default(), Arc::new(HostSpoolIo))?;
-    let mut journal = archive::journal::UnknownTimeJournal::create(Box::new(journal_store), ContentDigest::sha256(b"video-only-scope"), &cx)?;
-    let keeper_store = FileEffectJournal::create(temp.0.join("keeper"), EffectJournalLimits::default(), Arc::new(HostSpoolIo))?;
-    let mut keeper = archive::journal::UnknownTimeAnchorKeeper::create(Box::new(keeper_store), &journal, &cx)?;
+    let mut deployment =
+        ReferenceDeployment::open(&temp.0.join("deployment"), "site:video-only-test", &cx)?;
+    let journal_store = FileEffectJournal::create(
+        temp.0.join("journal"),
+        EffectJournalLimits::default(),
+        Arc::new(HostSpoolIo),
+    )?;
+    let mut journal = archive::journal::UnknownTimeJournal::create(
+        Box::new(journal_store),
+        ContentDigest::sha256(b"video-only-scope"),
+        &cx,
+    )?;
+    let keeper_store = FileEffectJournal::create(
+        temp.0.join("keeper"),
+        EffectJournalLimits::default(),
+        Arc::new(HostSpoolIo),
+    )?;
+    let mut keeper =
+        archive::journal::UnknownTimeAnchorKeeper::create(Box::new(keeper_store), &journal, &cx)?;
     let retention = ContentDigest::sha256(b"video-only-retention");
-    let access = Access { allowed: Cell::new(false), retention };
+    let access = Access {
+        allowed: Cell::new(false),
+        retention,
+    };
     let private = private_wire.is_some();
     let (records, framing_tail_bytes) = if let Some(wire) = private_wire {
         use fss_packet::extended_flv::stream::SearchMode;
         let limits = FlvLimits::default();
-        let mut framer = Framer::with_mode(limits, limits.complete_candidate_buffer()?, SearchMode::ZeroStreamId)?;
+        let mut framer = Framer::with_mode(
+            limits,
+            limits.complete_candidate_buffer()?,
+            SearchMode::ZeroStreamId,
+        )?;
         framer.append(0, &wire)?;
         let mut records = Vec::new();
-        while let Next::Record(record) = framer.take()? { records.push(record); }
+        while let Next::Record(record) = framer.take()? {
+            records.push(record);
+        }
         let tail = framer.retire().bytes().len();
         (records, tail)
     } else {
         (video_only_fixture()?.1, 0)
     };
-    let mut recorder = if private { Recorder::new_inband(KEY, Limits::default())? } else { Recorder::new(KEY, Limits::default())? };
+    let mut recorder = if private {
+        Recorder::new_inband(KEY, Limits::default())?
+    } else {
+        Recorder::new(KEY, Limits::default())?
+    };
     let mut configuration = None;
     let mut segments = Vec::new();
     let mut separately_returned_bytes = 0usize;
     let mut records = records.into_iter();
     for record in records.by_ref() {
         match recorder.push(record).map_err(|refusal| refusal.reason)? {
-            Push::Source { record, disposition: SourceDisposition::Configuration } => configuration = Some(record),
+            Push::Source {
+                record,
+                disposition: SourceDisposition::Configuration,
+            } => configuration = Some(record),
             Push::Source { record, .. } => separately_returned_bytes += record.bytes().len(),
-            Push::Segment(segment) => { segments.push(segment); if private { break; } },
+            Push::Segment(segment) => {
+                segments.push(segment);
+                if private {
+                    break;
+                }
+            }
             _ => (),
         }
     }
     separately_returned_bytes += records.map(|record| record.bytes().len()).sum::<usize>();
     separately_returned_bytes += recorder.retire().source_bytes + framing_tail_bytes;
-    if private { assert_eq!(segments.len(), 1); } else { assert_eq!(segments.len(), 2); }
+    if private {
+        assert_eq!(segments.len(), 1);
+    } else {
+        assert_eq!(segments.len(), 2);
+    }
     let mut sink = video_owned_sink::Sink::new(video_owned_sink::Inputs {
-        configuration: configuration.ok_or("missing configuration")?, source: KEY, inband: private,
-        retention, media_limits: Mp4Limits::default(), evidence_limits: evidence::Limits::default(),
-    }).map_err(|_| "video sink initialization refused")?;
-    let second = if private { None } else { Some(segments.pop().ok_or("second segment missing")?) };
-    sink.offer(segments.pop().ok_or("first segment missing")?).map_err(|_| "first offer refused")?;
+        configuration: configuration.ok_or("missing configuration")?,
+        source: KEY,
+        inband: private,
+        retention,
+        media_limits: Mp4Limits::default(),
+        evidence_limits: evidence::Limits::default(),
+    })
+    .map_err(|_| "video sink initialization refused")?;
+    let second = if private {
+        None
+    } else {
+        Some(segments.pop().ok_or("second segment missing")?)
+    };
+    sink.offer(segments.pop().ok_or("first segment missing")?)
+        .map_err(|_| "first offer refused")?;
     let refused = if let Some(second) = second {
-        let refused = sink.offer(second).err().ok_or("busy sink accepted second segment")?;
+        let refused = sink
+            .offer(second)
+            .err()
+            .ok_or("busy sink accepted second segment")?;
         assert_eq!(refused.reason, video_owned_sink::OfferError::Busy);
         Some(refused.segment)
-    } else { None };
-    assert!(matches!(sink.flush(&mut deployment, &access, archive::Limits::default(), &mut WorkBudget::new(4_000_000_000), &cx, &mut journal, &mut keeper),
-        Err(video_owned_sink::FlushError::Publication(_))));
-    let pending = journal.pending().ok_or("denied publication did not retain its pin")?;
+    } else {
+        None
+    };
+    assert!(matches!(
+        sink.flush(
+            &mut deployment,
+            &access,
+            archive::Limits::default(),
+            &mut WorkBudget::new(4_000_000_000),
+            &cx,
+            &mut journal,
+            &mut keeper
+        ),
+        Err(video_owned_sink::FlushError::Publication(_))
+    ));
+    let pending = journal
+        .pending()
+        .ok_or("denied publication did not retain its pin")?;
     access.allowed.set(true);
-    let mut first = sink.flush(&mut deployment, &access, archive::Limits::default(), &mut WorkBudget::new(4_000_000_000), &cx, &mut journal, &mut keeper)
+    let mut first = sink
+        .flush(
+            &mut deployment,
+            &access,
+            archive::Limits::default(),
+            &mut WorkBudget::new(4_000_000_000),
+            &cx,
+            &mut journal,
+            &mut keeper,
+        )
         .map_err(|error| format!("first publication refused: {error:?}"))?;
     assert_eq!(first.pin, pending);
     assert_eq!(journal.confirmed(), Some(first.pin));
-    let original_pin=first.pin;
-    first.pin.root=ContentDigest::sha256(b"tampered publication root");
-    let invalid=first.into_still_source();
-    let invalid_limits=fss_codec_jpeg_encode::EncodeLimits::default();
-    assert!(matches!(fss_reference::unifi_direct::video_still::from_published_with_probe(
-        &invalid,fss_reference::unifi_direct::video_still::Color::Bt601Full,90,&invalid_limits,
-        invalid_limits.maximum_pixels as u64,invalid_limits.work_bound(fss_codec_jpeg_encode::PixelFormat::Rgb),&||false,
-    ),Err(fss_reference::unifi_direct::video_still::Error::SourceMismatch)));
-    let mut first=invalid.into_publication(); first.pin=original_pin;
-    let published_source=first.into_still_source();
-    let published_still=fss_reference::unifi_direct::video_still::from_published_with_probe(
-        &published_source,fss_reference::unifi_direct::video_still::Color::Bt601Full,90,&invalid_limits,
-        invalid_limits.maximum_pixels as u64,invalid_limits.work_bound(fss_codec_jpeg_encode::PixelFormat::Rgb),&||false,
+    let original_pin = first.pin;
+    first.pin.root = ContentDigest::sha256(b"tampered publication root");
+    let invalid = first.into_still_source();
+    let invalid_limits = fss_codec_jpeg_encode::EncodeLimits::default();
+    assert!(matches!(
+        fss_reference::unifi_direct::video_still::from_published_with_probe(
+            &invalid,
+            fss_reference::unifi_direct::video_still::Color::Bt601Full,
+            90,
+            &invalid_limits,
+            invalid_limits.maximum_pixels as u64,
+            invalid_limits.work_bound(fss_codec_jpeg_encode::PixelFormat::Rgb),
+            &|| false,
+        ),
+        Err(fss_reference::unifi_direct::video_still::Error::SourceMismatch)
+    ));
+    let mut first = invalid.into_publication();
+    first.pin = original_pin;
+    let published_source = first.into_still_source();
+    let published_still = fss_reference::unifi_direct::video_still::from_published_with_probe(
+        &published_source,
+        fss_reference::unifi_direct::video_still::Color::Bt601Full,
+        90,
+        &invalid_limits,
+        invalid_limits.maximum_pixels as u64,
+        invalid_limits.work_bound(fss_codec_jpeg_encode::PixelFormat::Rgb),
+        &|| false,
     )?;
-    assert_eq!(published_still.pin(),original_pin);
-    assert_eq!(published_still.provenance(),fss_reference::unifi_direct::video_still::Provenance::ConfirmedPublication);
-    let mut first=published_source.into_publication();
-    let video = archive::read_unknown_time_video_clip(&mut deployment, first.pin, &access,
-        archive::Limits::default(), &mut WorkBudget::new(4_000_000_000), &cx)?;
+    assert_eq!(published_still.pin(), original_pin);
+    assert_eq!(
+        published_still.provenance(),
+        fss_reference::unifi_direct::video_still::Provenance::ConfirmedPublication
+    );
+    let mut first = published_source.into_publication();
+    let video = archive::read_unknown_time_video_clip(
+        &mut deployment,
+        first.pin,
+        &access,
+        archive::Limits::default(),
+        &mut WorkBudget::new(4_000_000_000),
+        &cx,
+    )?;
     assert_eq!(video.claimed_source(), KEY);
     assert_eq!(video.pin(), first.pin);
     let still_limits = fss_codec_jpeg_encode::EncodeLimits::default();
     let stop = std::sync::atomic::AtomicBool::new(false);
     let still = fss_reference::unifi_direct::video_still::from_archive(
-        &video, fss_reference::unifi_direct::video_still::Color::Bt601Full, 90,
-        &still_limits, still_limits.maximum_pixels as u64,
-        still_limits.work_bound(fss_codec_jpeg_encode::PixelFormat::Rgb), &stop,
+        &video,
+        fss_reference::unifi_direct::video_still::Color::Bt601Full,
+        90,
+        &still_limits,
+        still_limits.maximum_pixels as u64,
+        still_limits.work_bound(fss_codec_jpeg_encode::PixelFormat::Rgb),
+        &stop,
     )?;
     assert_eq!(still.pin(), first.pin);
     assert_eq!(still.claimed_source(), KEY);
-    assert_eq!(still.provenance(),fss_reference::unifi_direct::video_still::Provenance::RecoveredArchive);
-    assert_ne!(still.identity(),published_still.identity());
-    assert_eq!(still.still().jpeg().receipt().encoded_sha256,published_still.still().jpeg().receipt().encoded_sha256);
+    assert_eq!(
+        still.provenance(),
+        fss_reference::unifi_direct::video_still::Provenance::RecoveredArchive
+    );
+    assert_ne!(still.identity(), published_still.identity());
+    assert_eq!(
+        still.still().jpeg().receipt().encoded_sha256,
+        published_still.still().jpeg().receipt().encoded_sha256
+    );
     stop.store(true, std::sync::atomic::Ordering::Release);
-    assert!(matches!(fss_reference::unifi_direct::video_still::from_archive(
-        &video, fss_reference::unifi_direct::video_still::Color::Bt601Full, 90,
-        &still_limits, still_limits.maximum_pixels as u64,
-        still_limits.work_bound(fss_codec_jpeg_encode::PixelFormat::Rgb), &stop,
-    ), Err(fss_reference::unifi_direct::video_still::Error::Cancelled)));
+    assert!(matches!(
+        fss_reference::unifi_direct::video_still::from_archive(
+            &video,
+            fss_reference::unifi_direct::video_still::Color::Bt601Full,
+            90,
+            &still_limits,
+            still_limits.maximum_pixels as u64,
+            still_limits.work_bound(fss_codec_jpeg_encode::PixelFormat::Rgb),
+            &stop,
+        ),
+        Err(fss_reference::unifi_direct::video_still::Error::Cancelled)
+    ));
     let movie = AvcMp4::parse_inband(video.bytes(), None, DemuxLimits::default())?;
     assert!(!movie.samples().is_empty());
-    assert_eq!(still.still().jpeg().receipt().dimensions, movie.dimensions().map(u32::from));
-    if private { assert_eq!(movie.dimensions(), [2688, 1512]); }
+    assert_eq!(
+        still.still().jpeg().receipt().dimensions,
+        movie.dimensions().map(u32::from)
+    );
+    if private {
+        assert_eq!(movie.dimensions(), [2688, 1512]);
+    }
     if private {
         let annex = movie.annex_b(0, movie.samples().len().min(3))?;
         let mut decoder = fss_codec_h264::Decoder::new(fss_codec_h264::DecoderLimits::default())?;
         let mut frames = decoder.decode_annex_b(annex.bytes())?;
         frames.extend(decoder.finish()?);
         let frame = frames.first().ok_or("private video decode missing")?;
-        if (frame.width(), frame.height()) != (2688, 1512) { return Err("private video resolution mismatch".into()); }
-        println!("private_video_replay=passed width={} height={} frames={} audio_samples=0 audio_coverage=unknown source_provenance=caller_supplied source_timing=unknown separately_omitted_bytes={} capture_bounds=unknown", frame.width(), frame.height(), frames.len(), separately_returned_bytes);
+        if (frame.width(), frame.height()) != (2688, 1512) {
+            return Err("private video resolution mismatch".into());
+        }
+        println!(
+            "private_video_replay=passed width={} height={} frames={} audio_samples=0 audio_coverage=unknown source_provenance=caller_supplied source_timing=unknown separately_omitted_bytes={} capture_bounds=unknown",
+            frame.width(),
+            frame.height(),
+            frames.len(),
+            separately_returned_bytes
+        );
     }
     access.allowed.set(false);
-    assert!(archive::read_unknown_time_video_clip(&mut deployment, first.pin, &access,
-        archive::Limits::default(), &mut WorkBudget::new(4_000_000_000), &cx).is_err());
+    assert!(
+        archive::read_unknown_time_video_clip(
+            &mut deployment,
+            first.pin,
+            &access,
+            archive::Limits::default(),
+            &mut WorkBudget::new(4_000_000_000),
+            &cx
+        )
+        .is_err()
+    );
     access.allowed.set(true);
     if let Some(second) = refused {
         sink.offer(second).map_err(|_| "second offer refused")?;
-        let mut second = sink.flush(&mut deployment, &access, archive::Limits::default(), &mut WorkBudget::new(4_000_000_000), &cx, &mut journal, &mut keeper)
+        let mut second = sink
+            .flush(
+                &mut deployment,
+                &access,
+                archive::Limits::default(),
+                &mut WorkBudget::new(4_000_000_000),
+                &cx,
+                &mut journal,
+                &mut keeper,
+            )
             .map_err(|error| format!("second publication refused: {error:?}"))?;
         assert_ne!(first.pin, second.pin);
-        std::mem::swap(&mut first.segment,&mut second.segment);
-        let swapped=first.into_still_source();
-        assert!(matches!(fss_reference::unifi_direct::video_still::from_published_with_probe(
-            &swapped,fss_reference::unifi_direct::video_still::Color::Bt601Full,90,&invalid_limits,
-            invalid_limits.maximum_pixels as u64,invalid_limits.work_bound(fss_codec_jpeg_encode::PixelFormat::Rgb),&||false,
-        ),Err(fss_reference::unifi_direct::video_still::Error::SourceMismatch)));
-        let mut restored=swapped.into_publication();
-        std::mem::swap(&mut restored.segment,&mut second.segment);
-        assert_eq!(restored.pin,original_pin);
+        std::mem::swap(&mut first.segment, &mut second.segment);
+        let swapped = first.into_still_source();
+        assert!(matches!(
+            fss_reference::unifi_direct::video_still::from_published_with_probe(
+                &swapped,
+                fss_reference::unifi_direct::video_still::Color::Bt601Full,
+                90,
+                &invalid_limits,
+                invalid_limits.maximum_pixels as u64,
+                invalid_limits.work_bound(fss_codec_jpeg_encode::PixelFormat::Rgb),
+                &|| false,
+            ),
+            Err(fss_reference::unifi_direct::video_still::Error::SourceMismatch)
+        ));
+        let mut restored = swapped.into_publication();
+        std::mem::swap(&mut restored.segment, &mut second.segment);
+        assert_eq!(restored.pin, original_pin);
     }
     let retired = sink.retire();
     assert!(retired.pending.is_none() && retired.pending_pin.is_none());
@@ -972,37 +1609,124 @@ fn video_only_sink_check(private_wire: Option<Vec<u8>>) -> TestResult {
     {
         use fss_publication::RootLedgerOutcome;
         struct DenyRetain;
-        impl archive::RetainAuthority for DenyRetain { fn permits(&self, _: ContentDigest, _: ContentDigest) -> bool { false } }
+        impl archive::RetainAuthority for DenyRetain {
+            fn permits(&self, _: ContentDigest, _: ContentDigest) -> bool {
+                false
+            }
+        }
         let confirmed = journal.confirmed().ok_or("confirmed video root missing")?;
         let journal_head = journal.anchor();
         let keeper_head = keeper.anchor();
         drop(journal);
         drop(keeper);
-        let store = FileEffectJournal::open(temp.0.join("journal"), EffectJournalLimits::default(), Arc::new(HostSpoolIo), journal_head)?;
-        let mut journal = archive::journal::UnknownTimeJournal::reopen(Box::new(store), ContentDigest::sha256(b"video-only-scope"), journal_head, &cx)?;
-        let store = FileEffectJournal::open(temp.0.join("keeper"), EffectJournalLimits::default(), Arc::new(HostSpoolIo), keeper_head)?;
-        let mut keeper = archive::journal::UnknownTimeAnchorKeeper::reopen(Box::new(store), &journal, keeper_head, &cx)?;
+        let store = FileEffectJournal::open(
+            temp.0.join("journal"),
+            EffectJournalLimits::default(),
+            Arc::new(HostSpoolIo),
+            journal_head,
+        )?;
+        let mut journal = archive::journal::UnknownTimeJournal::reopen(
+            Box::new(store),
+            ContentDigest::sha256(b"video-only-scope"),
+            journal_head,
+            &cx,
+        )?;
+        let store = FileEffectJournal::open(
+            temp.0.join("keeper"),
+            EffectJournalLimits::default(),
+            Arc::new(HostSpoolIo),
+            keeper_head,
+        )?;
+        let mut keeper = archive::journal::UnknownTimeAnchorKeeper::reopen(
+            Box::new(store),
+            &journal,
+            keeper_head,
+            &cx,
+        )?;
         assert_eq!(journal.replay_pin(), Some(confirmed));
-        let objects = archive::StagedAvLimits { max_objects: 8192, max_object_bytes: deployment.publisher().limits().spool.max_object_bytes, max_total_bytes: 128 * 1024 * 1024 };
-        let replay_work = if private { 100_000_000_000 } else { 4_000_000_000 };
-        assert!(matches!(archive::replay_confirmed_unknown_time_av_anchored(&mut deployment, &access, &access, archive::Limits::default(), objects,
-            &mut WorkBudget::new(replay_work), &cx, &mut journal, &mut keeper), Err(archive::ConfirmedAvReplayError::Readback(archive::Error::Mismatch))));
+        let objects = archive::StagedAvLimits {
+            max_objects: 8192,
+            max_object_bytes: deployment.publisher().limits().spool.max_object_bytes,
+            max_total_bytes: 128 * 1024 * 1024,
+        };
+        let replay_work = if private {
+            100_000_000_000
+        } else {
+            4_000_000_000
+        };
+        assert!(matches!(
+            archive::replay_confirmed_unknown_time_av_anchored(
+                &mut deployment,
+                &access,
+                &access,
+                archive::Limits::default(),
+                objects,
+                &mut WorkBudget::new(replay_work),
+                &cx,
+                &mut journal,
+                &mut keeper
+            ),
+            Err(archive::ConfirmedAvReplayError::Readback(
+                archive::Error::Mismatch
+            ))
+        ));
         assert_eq!(journal.replay_pin(), Some(confirmed));
         access.allowed.set(false);
-        assert!(matches!(archive::replay_confirmed_unknown_time_video_anchored(&mut deployment, &access, &access, archive::Limits::default(), objects,
-            &mut WorkBudget::new(replay_work), &cx, &mut journal, &mut keeper), Err(archive::ConfirmedVideoReplayError::Readback(archive::Error::Denied))));
+        assert!(matches!(
+            archive::replay_confirmed_unknown_time_video_anchored(
+                &mut deployment,
+                &access,
+                &access,
+                archive::Limits::default(),
+                objects,
+                &mut WorkBudget::new(replay_work),
+                &cx,
+                &mut journal,
+                &mut keeper
+            ),
+            Err(archive::ConfirmedVideoReplayError::Readback(
+                archive::Error::Denied
+            ))
+        ));
         access.allowed.set(true);
         assert_eq!(journal.replay_pin(), Some(confirmed));
-        assert!(matches!(archive::replay_confirmed_unknown_time_video_anchored(&mut deployment, &access, &DenyRetain, archive::Limits::default(), objects,
-            &mut WorkBudget::new(replay_work), &cx, &mut journal, &mut keeper), Err(archive::ConfirmedVideoReplayError::Publication(archive::UnknownTimePublishError::Archive(archive::Error::Denied)))));
+        assert!(matches!(
+            archive::replay_confirmed_unknown_time_video_anchored(
+                &mut deployment,
+                &access,
+                &DenyRetain,
+                archive::Limits::default(),
+                objects,
+                &mut WorkBudget::new(replay_work),
+                &cx,
+                &mut journal,
+                &mut keeper
+            ),
+            Err(archive::ConfirmedVideoReplayError::Publication(
+                archive::UnknownTimePublishError::Archive(archive::Error::Denied)
+            ))
+        ));
         assert_eq!(journal.replay_pin(), Some(confirmed));
-        let receipt = archive::replay_confirmed_unknown_time_video_anchored(&mut deployment, &access, &access, archive::Limits::default(), objects,
-            &mut WorkBudget::new(replay_work), &cx, &mut journal, &mut keeper)?;
+        let receipt = archive::replay_confirmed_unknown_time_video_anchored(
+            &mut deployment,
+            &access,
+            &access,
+            archive::Limits::default(),
+            objects,
+            &mut WorkBudget::new(replay_work),
+            &cx,
+            &mut journal,
+            &mut keeper,
+        )?;
         assert_eq!(receipt.outcome, RootLedgerOutcome::AlreadyLedgered);
         assert_eq!(journal.replay_pin(), None);
         assert_eq!(journal.anchor(), journal_head);
         assert_eq!(keeper.anchor(), keeper_head);
-        if private { println!("private_video_confirmed_root_replay=passed outcome=already_ledgered capture_bounds=unknown"); }
+        if private {
+            println!(
+                "private_video_confirmed_root_replay=passed outcome=already_ledgered capture_bounds=unknown"
+            );
+        }
     }
     Ok(())
 }
@@ -1433,6 +2157,7 @@ fn consecutive_av_segments_publish_and_reopen_with_contiguous_audio() -> TestRes
             &mut WorkBudget::new(4_000_000_000),
             &cx,
         )
+        .map_err(Box::new)
     }));
     assert!(first_interruption.is_err());
     assert_eq!(panic_muxer.pending_publication(), Some(first_pin));
@@ -1461,6 +2186,7 @@ fn consecutive_av_segments_publish_and_reopen_with_contiguous_audio() -> TestRes
             &mut WorkBudget::new(4_000_000_000),
             &cx,
         )
+        .map_err(Box::new)
     }));
     assert!(interruption.is_err());
     assert_eq!(transactional.pending_publication(), Some(first_pin));
@@ -3376,17 +4102,30 @@ fn video_only_fixture() -> Result<(Vec<u8>, Vec<SourceRecord>), Box<dyn std::err
 fn selected_dimensions_gate_both_avc_profiles_without_losing_source() -> TestResult {
     // The independent FFmpeg fixture oracle reports 160 x 128 for BASELINE.
     for inband in [false, true] {
-        let create = if inband { Recorder::new_inband } else { Recorder::new };
+        let create = if inband {
+            Recorder::new_inband
+        } else {
+            Recorder::new
+        };
         let mut matching = create(KEY, Limits::default())?;
-        assert_eq!(matching.require_dimensions([0, 128]), Err(Error::Configuration));
+        assert_eq!(
+            matching.require_dimensions([0, 128]),
+            Err(Error::Configuration)
+        );
         matching.require_dimensions([160, 128])?;
-        assert_eq!(matching.require_dimensions([160, 128]), Err(Error::Configuration));
+        assert_eq!(
+            matching.require_dimensions([160, 128]),
+            Err(Error::Configuration)
+        );
         let (_, records) = video_only_fixture()?;
         let mut configured = false;
         let mut segments = 0;
         for record in records {
             match matching.push(record).map_err(|r| r.reason)? {
-                Push::Source { disposition: SourceDisposition::Configuration, .. } => configured = true,
+                Push::Source {
+                    disposition: SourceDisposition::Configuration,
+                    ..
+                } => configured = true,
                 Push::Segment(_) => segments += 1,
                 _ => (),
             }
@@ -3403,15 +4142,29 @@ fn selected_dimensions_gate_both_avc_profiles_without_losing_source() -> TestRes
             match wrong.push(record) {
                 Ok(_) => (),
                 Err(refusal) => {
-                    assert_eq!(refusal.reason, Error::DimensionsMismatch {
-                        expected: [2688, 1512], observed: [160, 128],
-                    });
+                    assert_eq!(
+                        refusal.reason,
+                        Error::DimensionsMismatch {
+                            expected: [2688, 1512],
+                            observed: [160, 128],
+                        }
+                    );
                     let source = refusal.unaccepted.ok_or("configuration source lost")?;
                     assert_eq!(source.offset(), offset);
                     assert_eq!(source.bytes(), bytes);
                     assert!(wrong.initialization().is_none());
-                    assert_eq!(wrong.require_dimensions([160, 128]), Err(Error::Configuration));
-                    assert_eq!(wrong.push(source).err().ok_or("fenced owner resumed")?.reason, Error::Fenced);
+                    assert_eq!(
+                        wrong.require_dimensions([160, 128]),
+                        Err(Error::Configuration)
+                    );
+                    assert_eq!(
+                        wrong
+                            .push(source)
+                            .err()
+                            .ok_or("fenced owner resumed")?
+                            .reason,
+                        Error::Fenced
+                    );
                     refused = true;
                     break;
                 }
@@ -3425,22 +4178,41 @@ fn selected_dimensions_gate_both_avc_profiles_without_losing_source() -> TestRes
         let mut late = create(KEY, Limits::default())?;
         let first = records.into_iter().next().ok_or("fixture header missing")?;
         let first_push = late.push(first).map_err(|r| r.reason)?;
-        assert!(matches!(first_push, Push::Source { disposition: SourceDisposition::Header, .. }));
-        assert_eq!(late.require_dimensions([160, 128]), Err(Error::Configuration));
+        assert!(matches!(
+            first_push,
+            Push::Source {
+                disposition: SourceDisposition::Header,
+                ..
+            }
+        ));
+        assert_eq!(
+            late.require_dimensions([160, 128]),
+            Err(Error::Configuration)
+        );
     }
     Ok(())
 }
 
-fn video_only_fixture_with_frames(frame_count: usize) -> Result<(Vec<u8>, Vec<SourceRecord>), Box<dyn std::error::Error>> {
+fn video_only_fixture_with_frames(
+    frame_count: usize,
+) -> Result<(Vec<u8>, Vec<SourceRecord>), Box<dyn std::error::Error>> {
     video_only_fixture_with_source(frame_count, BASELINE)
 }
 
-fn video_only_fixture_with_source(frame_count: usize, source: &[u8]) -> Result<(Vec<u8>, Vec<SourceRecord>), Box<dyn std::error::Error>> {
+fn video_only_fixture_with_source(
+    frame_count: usize,
+    source: &[u8],
+) -> Result<(Vec<u8>, Vec<SourceRecord>), Box<dyn std::error::Error>> {
     let nals: Vec<_> = fss_codec_h264::annex_b_nal_units(source).collect();
     let sps = nals.iter().copied().find(|n| n[0] & 31 == 7).ok_or("SPS")?;
     let pps = nals.iter().copied().find(|n| n[0] & 31 == 8).ok_or("PPS")?;
-    let pictures: Vec<_> = nals.into_iter().filter(|n| matches!(n[0] & 31, 1 | 5)).collect();
-    if pictures.len() != 4 || pictures[0][0] & 31 != 5 { return Err("unexpected fixture".into()); }
+    let pictures: Vec<_> = nals
+        .into_iter()
+        .filter(|n| matches!(n[0] & 31, 1 | 5))
+        .collect();
+    if pictures.len() != 4 || pictures[0][0] & 31 != 5 {
+        return Err("unexpected fixture".into());
+    }
     let mut config = vec![0x17, 0, 0, 0, 0, 1, sps[1], sps[2], sps[3], 0xff, 0xe1];
     config.extend_from_slice(&u16::try_from(sps.len())?.to_be_bytes());
     config.extend_from_slice(sps);
@@ -3460,7 +4232,9 @@ fn video_only_fixture_with_source(frame_count: usize, source: &[u8]) -> Result<(
     let mut framer = Framer::new(FlvLimits::default(), 1024 * 1024)?;
     framer.append(0, &wire)?;
     let mut records = Vec::new();
-    while let Next::Record(record) = framer.take()? { records.push(record); }
+    while let Next::Record(record) = framer.take()? {
+        records.push(record);
+    }
     Ok((wire, records))
 }
 
@@ -4209,6 +4983,7 @@ fn ledger_publication_fixture(av_flag: bool) -> TestResult {
         }
     }
     impl ReadAuthority for Access {
+        #[allow(clippy::unwrap_used)]
         fn permits(&self, retention: ContentDigest, _: ContentDigest) -> bool {
             let calls = self.read_calls.get() + 1;
             self.read_calls.set(calls);
@@ -4369,7 +5144,10 @@ fn ledger_publication_fixture(av_flag: bool) -> TestResult {
                     matches!(reopened.ledgered_publisher().state(&archive::slot(&plan)?)?, RootLedgerState::Ledgered { root, .. } if root == plan.manifest().root())
                 );
                 plan.visit_objects(|digest, original| {
-                    assert_eq!(reopened.publisher().spool().read(digest).unwrap(), original);
+                    assert_eq!(
+                        reopened.publisher().spool().read(digest).ok().as_deref(),
+                        Some(original)
+                    );
                 });
                 assert_eq!(
                     archive::read_object(
@@ -6693,27 +7471,61 @@ async fn verify_recovered_startup<'scope, 'task>(
     custody: fss_reference::unifi_direct::archive::journal::rollover::WorkerCustody,
     switch_fail: std::sync::Arc<std::sync::atomic::AtomicBool>,
     fail_preflight: bool,
-) -> Result<Option<(Box<fss_reference::unifi_direct::av_worker::UnknownTimeParts>, fss_reference::unifi_direct::archive::journal::rollover::WorkerCustody)>, Box<dyn std::error::Error>> {
+) -> Result<
+    Option<(
+        Box<fss_reference::unifi_direct::av_worker::UnknownTimeParts>,
+        fss_reference::unifi_direct::archive::journal::rollover::WorkerCustody,
+    )>,
+    Box<dyn std::error::Error>,
+> {
     use fss_core::BudgetVector;
-    use fss_reference::unifi_direct::{av_recovered_startup, av_unknown_worker_guard::BootstrapResources, av_worker};
+    use fss_reference::unifi_direct::{
+        av_recovered_startup, av_unknown_worker_guard::BootstrapResources, av_worker,
+    };
     use std::sync::atomic::Ordering;
     let saved_limit = parts.work_limit;
-    let (parts, custody) = match av_worker::UnknownTimeWorker::from_recovered_preverified(*parts, custody) {
-        Err(owners) => owners,
-        Ok(_) => return Err("unverified recovered worker accepted".into()),
-    };
-    let av_worker::UnknownTimeParts { sink, deployment, journal, keeper, replay, authority, limits, work_limit } = parts;
+    let (parts, custody) =
+        match av_worker::UnknownTimeWorker::from_recovered_preverified(*parts, custody) {
+            Err(owners) => owners,
+            Ok(_) => return Err("unverified recovered worker accepted".into()),
+        };
+    let av_worker::UnknownTimeParts {
+        sink,
+        deployment,
+        journal,
+        keeper,
+        replay,
+        authority,
+        limits,
+        work_limit,
+    } = parts;
     let sink = Box::new(sink);
     let resources = Box::new(BootstrapResources {
-        deployment, journal, keeper, replay, authority, limits, work_limit, rollover_custody: Some(custody),
+        deployment,
+        journal,
+        keeper,
+        replay,
+        authority,
+        limits,
+        work_limit,
+        rollover_custody: Some(custody),
     });
-    let mut preflight = av_recovered_startup::Worker::new(resources).map_err(|_| "recovered preflight refused resources")?;
-    if fail_preflight { switch_fail.store(true, Ordering::Release); }
-    preflight.start(task, cx, clock, "fixture:av-rollover", &BudgetVector::ZERO)
-        .map_err(|e| format!("recovered preflight start: {e:?}"))?;
-    let checked = preflight.join().await.ok_or("missing recovered preflight")?;
+    let mut preflight = av_recovered_startup::Worker::new(resources)
+        .map_err(|_| "recovered preflight refused resources")?;
     if fail_preflight {
-        if checked.runtime.is_err() || !matches!(checked.outcome, av_recovered_startup::Outcome::Refused(_)) {
+        switch_fail.store(true, Ordering::Release);
+    }
+    preflight
+        .start(task, cx, clock, "fixture:av-rollover", &BudgetVector::ZERO)
+        .map_err(|e| format!("recovered preflight start: {e:?}"))?;
+    let checked = preflight
+        .join()
+        .await
+        .ok_or("missing recovered preflight")?;
+    if fail_preflight {
+        if checked.runtime.is_err()
+            || !matches!(checked.outcome, av_recovered_startup::Outcome::Refused(_))
+        {
             return Err("failed switch check was accepted".into());
         }
         let retired = preflight.retire().map_err(|_| "refused preflight busy")?;
@@ -6723,28 +7535,52 @@ async fn verify_recovered_startup<'scope, 'task>(
         let _retained = (retired, sink);
         return Ok(None);
     }
-    if checked.runtime.is_err() || !matches!(checked.outcome, av_recovered_startup::Outcome::Verified) {
+    if checked.runtime.is_err()
+        || !matches!(checked.outcome, av_recovered_startup::Outcome::Verified)
+    {
         return Err("recovered preflight failed".into());
     }
     let retired = preflight.retire().map_err(|_| "recovered preflight busy")?;
-    if retired.fenced { return Err("recovered preflight fenced".into()); }
-    let BootstrapResources { deployment, journal, keeper, replay, authority, limits, work_limit, rollover_custody } = *retired.resources;
+    if retired.fenced {
+        return Err("recovered preflight fenced".into());
+    }
+    let BootstrapResources {
+        deployment,
+        journal,
+        keeper,
+        replay,
+        authority,
+        limits,
+        work_limit,
+        rollover_custody,
+    } = *retired.resources;
     let custody = rollover_custody.ok_or("lost recovered custody")?;
-    let mut parts = av_worker::UnknownTimeParts { sink: *sink, deployment, journal, keeper, replay, authority, limits, work_limit };
-    parts.work_limit = 0;
-    let (mut parts, custody) = match av_worker::UnknownTimeWorker::from_recovered_preverified(parts, custody) {
-        Err(owners) => owners,
-        Ok(_) => return Err("invalid preverified worker limit accepted".into()),
+    let mut parts = av_worker::UnknownTimeParts {
+        sink: *sink,
+        deployment,
+        journal,
+        keeper,
+        replay,
+        authority,
+        limits,
+        work_limit,
     };
+    parts.work_limit = 0;
+    let (mut parts, custody) =
+        match av_worker::UnknownTimeWorker::from_recovered_preverified(parts, custody) {
+            Err(owners) => owners,
+            Ok(_) => return Err("invalid preverified worker limit accepted".into()),
+        };
     parts.work_limit = saved_limit;
     let worker = av_worker::UnknownTimeWorker::from_recovered_preverified(parts, custody)
         .map_err(|_| "preverified recovered worker attachment refused")?;
     let retired = worker.retire().map_err(|_| "preverified worker busy")?;
     let custody = retired.rollover_custody.ok_or("lost preverified custody")?;
-    let (parts, custody) = match av_worker::UnknownTimeWorker::from_recovered_preverified(retired.parts, custody) {
-        Err(owners) => owners,
-        Ok(_) => return Err("consumed recovery observation was reused".into()),
-    };
+    let (parts, custody) =
+        match av_worker::UnknownTimeWorker::from_recovered_preverified(retired.parts, custody) {
+            Err(owners) => owners,
+            Ok(_) => return Err("consumed recovery observation was reused".into()),
+        };
     Ok(Some((Box::new(parts), custody)))
 }
 
@@ -6773,7 +7609,11 @@ fn recovered_startup_preflight_preserves_failed_custody() -> TestResult {
     av_worker_rollover_scenario(false, 0, true)
 }
 
-fn av_worker_rollover_scenario(pre_replay_fault: bool, capacity_case: u8, fail_preflight: bool) -> TestResult {
+fn av_worker_rollover_scenario(
+    pre_replay_fault: bool,
+    capacity_case: u8,
+    fail_preflight: bool,
+) -> TestResult {
     use asupersync::runtime::RuntimeBuilder;
     use fss_container::Mp4Limits;
     use fss_core::{
@@ -6908,7 +7748,8 @@ fn av_worker_rollover_scenario(pre_replay_fault: bool, capacity_case: u8, fail_p
     let fault_fragment = ContentDigest::sha256(fault_segment.fragment().bytes());
     let switch_fail = Arc::new(AtomicBool::new(false));
     let temp = Temp(std::env::temp_dir().join(format!(
-        "fss-av-worker-rollover-{}-{pre_replay_fault}-{capacity_case}-{fail_preflight}", std::process::id()
+        "fss-av-worker-rollover-{}-{pre_replay_fault}-{capacity_case}-{fail_preflight}",
+        std::process::id()
     )));
     std::fs::create_dir(&temp.0)?;
     let budget = BudgetVector::builder()
@@ -6918,7 +7759,7 @@ fn av_worker_rollover_scenario(pre_replay_fault: bool, capacity_case: u8, fail_p
     let spec = |name: &str, capabilities: Vec<String>| -> TestResultSpec {
         Ok(RootAuthoritySpec {
             trace_id: format!("trace:{name}"),
-            operation_id: OperationId::parse(&format!("operation:{name}"))?,
+            operation_id: OperationId::parse(format!("operation:{name}"))?,
             principal: "principal:fixture".into(),
             capabilities,
             deadline: None,
@@ -6941,7 +7782,10 @@ fn av_worker_rollover_scenario(pre_replay_fault: bool, capacity_case: u8, fail_p
         let limits = if (capacity_case == 1 && name == "old-keeper")
             || (capacity_case == 2 && name == "old-journal")
         {
-            EffectJournalLimits { max_records: 5, ..store_limits }
+            EffectJournalLimits {
+                max_records: 5,
+                ..store_limits
+            }
         } else {
             store_limits
         };
@@ -7020,10 +7864,13 @@ fn av_worker_rollover_scenario(pre_replay_fault: bool, capacity_case: u8, fail_p
                     worker.offer(pending).map_err(|_| "pending offer refused")?;
                     let mut capacity_need = None;
                     if capacity_case != 0 {
-                        worker.start(task, cx, clock, "fixture:av-rollover", &BudgetVector::ZERO)
+                        worker
+                            .start(task, cx, clock, "fixture:av-rollover", &BudgetVector::ZERO)
                             .map_err(|e| format!("capacity start: {e:?}"))?;
                         let completed = worker.join().await.ok_or("capacity completion missing")?;
-                        if completed.runtime.is_err() { return Err("capacity task failed".into()); }
+                        if completed.runtime.is_err() {
+                            return Err("capacity task failed".into());
+                        }
                         capacity_need = match completed.outcome {
                             av_worker::UnknownTimeOutcome::Publication(
                                 av_worker::UnknownTimePublication::Refused {
@@ -7032,20 +7879,26 @@ fn av_worker_rollover_scenario(pre_replay_fault: bool, capacity_case: u8, fail_p
                                     pending: None,
                                     receipt: None,
                                     rollover: Some(need),
-                                }
+                                },
                             ) => Some(need),
                             _ => return Err("capacity was not refused before publication".into()),
                         };
                     }
                     let retired = worker.retire().map_err(|_| "worker busy")?;
                     if capacity_case != 0 {
-                        assert_eq!(retired.parts.deployment.publisher().visible_roots().count(), 2);
+                        assert_eq!(
+                            retired.parts.deployment.publisher().visible_roots().count(),
+                            2
+                        );
                         assert!(retired.parts.sink.pending_publication().is_none());
                         assert_eq!(retired.parts.journal.confirmed(), Some(pins[1]));
                         assert_eq!(retired.parts.journal.pending(), None);
                         assert_eq!(retired.parts.journal.anchor().sequence, 5);
                         assert_eq!(retired.parts.keeper.anchor().sequence, 5);
-                        assert_eq!(retired.parts.keeper.target(), retired.parts.journal.anchor());
+                        assert_eq!(
+                            retired.parts.keeper.target(),
+                            retired.parts.journal.anchor()
+                        );
                         let need = capacity_need.ok_or("rollover need missing")?;
                         assert_eq!(need.confirmed, pins[1]);
                         assert_eq!(need.journal, retired.parts.journal.anchor());
@@ -7145,16 +7998,40 @@ fn av_worker_rollover_scenario(pre_replay_fault: bool, capacity_case: u8, fail_p
                         return Err("reattachment fixture was not settled".into());
                     }
                     let parts = retired.parts;
-                    let custody = retired.rollover_custody.ok_or("reattachment lost custody")?;
+                    let custody = retired
+                        .rollover_custody
+                        .ok_or("reattachment lost custody")?;
                     assert_eq!(custody.transition_count(), 1);
-                    let av_worker::UnknownTimeParts { sink, mut deployment, journal, keeper, replay, authority, limits, work_limit } = parts;
+                    let av_worker::UnknownTimeParts {
+                        sink,
+                        mut deployment,
+                        journal,
+                        keeper,
+                        replay,
+                        authority,
+                        limits,
+                        work_limit,
+                    } = parts;
                     let heads = (journal.anchor(), keeper.anchor());
                     let current = archive::journal::rollover::Previous { journal, keeper };
-                    let mut lineage = archive::journal::rollover::RecoveredLineage::from_worker_parts(current, custody, &replay)
+                    let mut lineage =
+                        archive::journal::rollover::RecoveredLineage::from_worker_parts(
+                            current, custody, &replay,
+                        )
                         .map_err(|_| "settled lineage reconstruction refused")?;
                     assert!(matches!(
-                        lineage.verify_confirmed_av(&mut deployment, &Deny, access.as_ref(), limits, objects, &mut WorkBudget::new(4_000_000_000), &replay),
-                        Err(archive::journal::rollover::SettledAvError::Verification(archive::ConfirmedAvReplayError::Readback(archive::Error::Denied)))
+                        lineage.verify_confirmed_av(
+                            &mut deployment,
+                            &Deny,
+                            access.as_ref(),
+                            limits,
+                            objects,
+                            &mut WorkBudget::new(4_000_000_000),
+                            &replay
+                        ),
+                        Err(archive::journal::rollover::SettledAvError::Verification(
+                            archive::ConfirmedAvReplayError::Readback(archive::Error::Denied)
+                        ))
                     ));
                     struct RevokeAfterGraph(std::cell::Cell<usize>);
                     impl archive::RetainAuthority for RevokeAfterGraph {
@@ -7166,50 +8043,125 @@ fn av_worker_rollover_scenario(pre_replay_fault: bool, capacity_case: u8, fail_p
                     }
                     let revoke = RevokeAfterGraph(std::cell::Cell::new(0));
                     assert!(matches!(
-                        lineage.verify_confirmed_av(&mut deployment, access.as_ref(), &revoke, limits, objects, &mut WorkBudget::new(4_000_000_000), &replay),
-                        Err(archive::journal::rollover::SettledAvError::Verification(archive::ConfirmedAvReplayError::Readback(archive::Error::Denied)))
+                        lineage.verify_confirmed_av(
+                            &mut deployment,
+                            access.as_ref(),
+                            &revoke,
+                            limits,
+                            objects,
+                            &mut WorkBudget::new(4_000_000_000),
+                            &replay
+                        ),
+                        Err(archive::journal::rollover::SettledAvError::Verification(
+                            archive::ConfirmedAvReplayError::Readback(archive::Error::Denied)
+                        ))
                     ));
                     assert_eq!(revoke.0.get(), 3);
-                    let checked = lineage.verify_confirmed_av(&mut deployment, access.as_ref(), access.as_ref(), limits, objects, &mut WorkBudget::new(4_000_000_000), &replay)?;
+                    let checked = lineage.verify_confirmed_av(
+                        &mut deployment,
+                        access.as_ref(),
+                        access.as_ref(),
+                        limits,
+                        objects,
+                        &mut WorkBudget::new(4_000_000_000),
+                        &replay,
+                    )?;
                     assert_eq!(checked, third);
                     let (current, custody) = lineage.into_parts();
                     assert_eq!((current.journal.anchor(), current.keeper.anchor()), heads);
-                    let mut parts = av_worker::UnknownTimeParts { sink, deployment, journal: current.journal, keeper: current.keeper, replay, authority, limits, work_limit };
+                    let mut parts = av_worker::UnknownTimeParts {
+                        sink,
+                        deployment,
+                        journal: current.journal,
+                        keeper: current.keeper,
+                        replay,
+                        authority,
+                        limits,
+                        work_limit,
+                    };
                     let saved_limit = parts.work_limit;
                     parts.work_limit = 0;
-                    let (mut parts, custody) = match av_worker::UnknownTimeWorker::from_recovered(parts, custody) {
-                        Err(owners) => owners,
-                        Ok(_) => return Err("invalid recovered worker limit accepted".into()),
-                    };
+                    let (mut parts, custody) =
+                        match av_worker::UnknownTimeWorker::from_recovered(parts, custody) {
+                            Err(owners) => owners,
+                            Ok(_) => return Err("invalid recovered worker limit accepted".into()),
+                        };
                     assert_eq!(custody.transition_count(), 1);
                     parts.work_limit = saved_limit;
                     let Some((parts, custody)) = Box::pin(verify_recovered_startup(
-                        task, cx, clock, Box::new(parts), custody, Arc::clone(&switch_fail), fail_preflight,
-                    )).await? else { return Ok(()); };
+                        task,
+                        cx,
+                        clock,
+                        Box::new(parts),
+                        custody,
+                        Arc::clone(&switch_fail),
+                        fail_preflight,
+                    ))
+                    .await?
+                    else {
+                        return Ok(());
+                    };
                     let mut worker = av_worker::UnknownTimeWorker::from_recovered(*parts, custody)
                         .map_err(|_| "settled recovered worker attachment refused")?;
-                    worker.offer(fault_segment).map_err(|_| "second rollover pending segment refused")?;
+                    worker
+                        .offer(fault_segment)
+                        .map_err(|_| "second rollover pending segment refused")?;
                     let retired = worker.retire().map_err(|_| "first rollover worker busy")?;
-                    let (resources, previous) = retired.into_rollover().map_err(|_| "second A/V detach refused")?;
+                    let (resources, previous) = retired
+                        .into_rollover()
+                        .map_err(|_| "second A/V detach refused")?;
                     assert!(resources.has_pending());
                     let stage = archive::journal::rollover::Staged::begin(
-                        previous, store("second-abort-journal")?, store("second-abort-keeper")?, resources.replay(),
-                    ).map_err(|_| "second A/V abort stage refused")?;
-                    let retired = resources.restore(stage.abort()).map_err(|_| "second A/V restore refused")?;
-                    assert_eq!(retired.rollover_custody.as_ref().ok_or("lost first A/V transition")?.transition_count(), 1);
-                    let (mut resources, previous) = retired.into_rollover().map_err(|_| "second A/V redetach refused")?;
+                        previous,
+                        store("second-abort-journal")?,
+                        store("second-abort-keeper")?,
+                        resources.replay(),
+                    )
+                    .map_err(|_| "second A/V abort stage refused")?;
+                    let retired = resources
+                        .restore(stage.abort())
+                        .map_err(|_| "second A/V restore refused")?;
+                    assert_eq!(
+                        retired
+                            .rollover_custody
+                            .as_ref()
+                            .ok_or("lost first A/V transition")?
+                            .transition_count(),
+                        1
+                    );
+                    let (mut resources, previous) = retired
+                        .into_rollover()
+                        .map_err(|_| "second A/V redetach refused")?;
                     let stage = archive::journal::rollover::Staged::begin(
-                        previous, store("second-journal")?, store("second-keeper")?, resources.replay(),
-                    ).map_err(|_| "second A/V stage refused")?;
+                        previous,
+                        store("second-journal")?,
+                        store("second-keeper")?,
+                        resources.replay(),
+                    )
+                    .map_err(|_| "second A/V stage refused")?;
                     let root = FileTrustedRootPinRetainer::create(
-                        temp.0.join("second-switch-root"), store_limits, Arc::new(HostSpoolIo),
+                        temp.0.join("second-switch-root"),
+                        store_limits,
+                        Arc::new(HostSpoolIo),
                         ContentDigest::sha256(b"second av switch custody"),
                     )?;
-                    let switch = PinRetainedEffectJournal::new(store("second-switch")?, Box::new(root))?;
-                    let mut active = stage.commit(switch, resources.replay()).map_err(|_| "second A/V switch refused")?;
+                    let switch =
+                        PinRetainedEffectJournal::new(store("second-switch")?, Box::new(root))?;
+                    let mut active = stage
+                        .commit(switch, resources.replay())
+                        .map_err(|_| "second A/V switch refused")?;
                     if pre_replay_fault {
                         switch_fail.store(true, Ordering::Release);
-                        assert!(resources.replay_confirmed_av(&mut active, access.as_ref(), objects, &mut WorkBudget::new(4_000_000_000)).is_err());
+                        assert!(
+                            resources
+                                .replay_confirmed_av(
+                                    &mut active,
+                                    access.as_ref(),
+                                    objects,
+                                    &mut WorkBudget::new(4_000_000_000)
+                                )
+                                .is_err()
+                        );
                         assert!(resources.has_pending());
                         let refusal = match resources.attach(active) {
                             Err(refusal) => refusal,
@@ -7218,8 +8170,15 @@ fn av_worker_rollover_scenario(pre_replay_fault: bool, capacity_case: u8, fail_p
                         assert!(refusal.resources.has_pending());
                         return Ok(());
                     }
-                    resources.replay_confirmed_av(&mut active, access.as_ref(), objects, &mut WorkBudget::new(4_000_000_000))?;
-                    let mut worker = resources.attach(active).map_err(|_| "second A/V attach refused")?;
+                    resources.replay_confirmed_av(
+                        &mut active,
+                        access.as_ref(),
+                        objects,
+                        &mut WorkBudget::new(4_000_000_000),
+                    )?;
+                    let mut worker = resources
+                        .attach(active)
+                        .map_err(|_| "second A/V attach refused")?;
                     switch_fail.store(true, Ordering::Release);
                     worker
                         .start(task, cx, clock, "fixture:av-rollover", &BudgetVector::ZERO)
@@ -7245,7 +8204,14 @@ fn av_worker_rollover_scenario(pre_replay_fault: bool, capacity_case: u8, fail_p
                             && retired.rollover_custody.is_some()
                             && retired.parts.sink.has_pending()
                     );
-                    assert_eq!(retired.rollover_custody.as_ref().ok_or("lost A/V transition chain")?.transition_count(), 2);
+                    assert_eq!(
+                        retired
+                            .rollover_custody
+                            .as_ref()
+                            .ok_or("lost A/V transition chain")?
+                            .transition_count(),
+                        2
+                    );
                     assert_eq!(
                         retired.parts.deployment.publisher().visible_roots().count(),
                         3
@@ -7267,7 +8233,9 @@ fn av_worker_rollover_scenario(pre_replay_fault: bool, capacity_case: u8, fail_p
                         &retired.parts.replay,
                     )?;
                     let required = sufficient.used();
-                    if required == 0 { return Err("sequence read charged no work".into()); }
+                    if required == 0 {
+                        return Err("sequence read charged no work".into());
+                    }
                     let insufficient = archive::read_unknown_time_av_sequence(
                         &mut retired.parts.deployment,
                         &pins,
@@ -7280,7 +8248,12 @@ fn av_worker_rollover_scenario(pre_replay_fault: bool, capacity_case: u8, fail_p
                         &mut WorkBudget::new(required - 1),
                         &retired.parts.replay,
                     );
-                    assert!(matches!(insufficient, Err(archive::Error::Work(fss_geometry::GeometryError::BudgetExhausted))));
+                    assert!(matches!(
+                        insufficient,
+                        Err(archive::Error::Work(
+                            fss_geometry::GeometryError::BudgetExhausted
+                        ))
+                    ));
                     assert_eq!(sequence.parts().len(), 3);
                     assert_eq!(sequence.parts()[2].video_samples, pending_samples);
                     let retired = match retired.into_rollover() {

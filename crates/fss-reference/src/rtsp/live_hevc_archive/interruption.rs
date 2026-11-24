@@ -33,6 +33,7 @@ impl JournaledLiveHevcArchive<'_, '_> {
         self.interrupted.as_ref().map(|state| &state.receipt)
     }
 
+    #[allow(clippy::result_large_err)]
     pub(super) fn preserve_read_failure(
         &mut self,
         failure: LiveHevcFailure,
@@ -108,6 +109,7 @@ impl JournaledLiveHevcArchive<'_, '_> {
         Ok(LiveHevcArchiveStep::WindowAccepted(admission))
     }
 
+    #[allow(clippy::result_large_err)]
     pub(super) fn finish_archive(
         &mut self,
         archive: ArchiveWriteProgress,

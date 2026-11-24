@@ -487,6 +487,7 @@ impl<C: S3Clock> NativeS3Transport<C> {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn exchange(
         &mut self,
         cx: &mut TransportCx<'_>,
@@ -618,12 +619,12 @@ impl<C: S3Clock> NativeS3Transport<C> {
         {
             return Err(S3Error::Binding);
         }
-        if !self.intended.contains_key(&chunk.index) {
+        if let std::collections::btree_map::Entry::Vacant(e) = self.intended.entry(chunk.index) {
             // Admit the retained map entry before allocation. Its lifetime
             // includes a lost ACK, so recovery can compare the original bytes.
             cx.charge_io(cx.now(), 256, 0)
                 .map_err(|_| S3Error::Authority)?;
-            self.intended.insert(chunk.index, intended);
+            e.insert(intended);
         }
         let confirmed_bytes = self
             .confirmed_bytes

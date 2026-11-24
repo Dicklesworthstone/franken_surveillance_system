@@ -131,6 +131,7 @@ pub struct Owners<'scope, 'task, IO> {
 
 impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> RetainedSession<'scope, 'task, IO> {
     /// Bind a managed owner and one unstarted reservation, without I/O.
+    #[allow(clippy::result_large_err)]
     pub fn new(
         managed: ManagedSession<'scope, 'task, IO>,
         reservation: ReservationWorker,
@@ -156,6 +157,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> RetainedSession<'scope, 
     }
 
     /// Bind a managed owner and unstarted retained-plan bootstrap without I/O.
+    #[allow(clippy::result_large_err)]
     pub fn with_bootstrap(
         managed: ManagedSession<'scope, 'task, IO>,
         bootstrap: BootstrapWorker,
@@ -529,6 +531,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> RetainedSession<'scope, 
 
     /// Advance one bounded step. Pending reservation work never blocks the
     /// controller path; no creator starts before a successful retained receipt.
+    #[allow(clippy::too_many_arguments)]
     pub async fn step(
         &mut self,
         owner: &mut conversation::Owner<'_, 'scope, 'task>,
@@ -575,11 +578,10 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> RetainedSession<'scope, 
                 }
             };
         }
-        if owner.cx.checkpoint().is_err() {
-            if let Some(bootstrap) = &self.bootstrap {
+        if owner.cx.checkpoint().is_err()
+            && let Some(bootstrap) = &self.bootstrap {
                 bootstrap.abort();
             }
-        }
         if self.bootstrap_started && self.bootstrap_completion.is_none() {
             poll_fn(|context| {
                 let mut future = pin!(self.join_bootstrap());
@@ -609,8 +611,8 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> RetainedSession<'scope, 
                 && !completion.cancellation_requested
                 && completion.outcome == BootstrapOutcome::Ready
                 && !retirement.fenced;
-            if safe {
-                if let Some(plan) = retirement.take_ready() {
+            if safe
+                && let Some(plan) = retirement.take_ready() {
                     let inputs = ReservationInputs {
                         plan,
                         request: ReservationRequest::Reserve,
@@ -630,7 +632,6 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> RetainedSession<'scope, 
                         }
                     }
                 }
-            }
             self.bootstrap_retirement = Some(retirement);
             return Step::BootstrapStopped(completion);
         }
@@ -659,11 +660,10 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> RetainedSession<'scope, 
                 }
             };
         }
-        if owner.cx.checkpoint().is_err() {
-            if let Some(reservation) = &self.reservation {
+        if owner.cx.checkpoint().is_err()
+            && let Some(reservation) = &self.reservation {
                 reservation.abort();
             }
-        }
         if self.started && self.completion.is_none() {
             poll_fn(|context| {
                 let mut future = pin!(self.join_reservation());
@@ -700,8 +700,8 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> RetainedSession<'scope, 
                 }
                 _ => false,
             };
-            if safe && matches_pending {
-                if let Some(ReservationOutcome::Reserved { identity, worker }) =
+            if safe && matches_pending
+                && let Some(ReservationOutcome::Reserved { identity, worker }) =
                     retirement.outcome.take()
                 {
                     match self.inner.offer_worker(worker) {
@@ -715,10 +715,9 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> RetainedSession<'scope, 
                         }
                     }
                 }
-            }
-            if safe {
-                if let Some(ReservationOutcome::Reconciled(pin)) = &retirement.outcome {
-                    if matches!(
+            if safe
+                && let Some(ReservationOutcome::Reconciled(pin)) = &retirement.outcome
+                    && matches!(
                         &retirement.inputs.request,
                         ReservationRequest::Reconcile { .. }
                             | ReservationRequest::ObservedCreator(_)
@@ -771,8 +770,6 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> RetainedSession<'scope, 
                         self.retirement = Some(retirement);
                         return Step::Reconciled(pin);
                     }
-                }
-            }
             self.retirement = Some(retirement);
             return Step::ReservationStopped(completion);
         }
@@ -783,8 +780,8 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> RetainedSession<'scope, 
             .inner
             .step(owner, operation, wait, task, cx, clock, av, source, cost)
             .await;
-        if self.automatic.is_some() {
-            if let provision::Step::SupplyInstalled(completion) = step {
+        if self.automatic.is_some()
+            && let provision::Step::SupplyInstalled(completion) = step {
                 if self.observe_installed_creator(&completion) {
                     return Step::Session(provision::Step::SupplyInstalled(completion));
                 }
@@ -793,7 +790,6 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> RetainedSession<'scope, 
                 }
                 return Step::AutomaticRefused(completion);
             }
-        }
         let exhausted = self
             .automatic
             .as_ref()

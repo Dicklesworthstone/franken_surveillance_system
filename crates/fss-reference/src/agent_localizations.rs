@@ -111,6 +111,7 @@ pub struct LocalizationsQueryRequest {
 
 impl LocalizationsQueryRequest {
     /// Reject malformed scalar identities and cursor spelling before filesystem access.
+    #[allow(clippy::result_large_err)]
     pub fn validate(&self) -> Result<(), LocalizationsQueryError> {
         if !(1..=MAX_LOCALIZATIONS_QUERY_ENTRIES).contains(&self.max_entries) {
             return Err(LocalizationsQueryError::InvalidRequest(
@@ -172,6 +173,7 @@ impl Default for LocalizationsQueryLimits {
 
 impl LocalizationsQueryLimits {
     /// Reject zero or widened bounds before opening any deployment path.
+    #[allow(clippy::result_large_err)]
     pub fn validate(&self) -> Result<(), LocalizationsQueryError> {
         let ceiling = Self::default();
         for (value, maximum) in [
@@ -210,6 +212,7 @@ impl LocalizationsQueryLimits {
     }
 
     /// Admitted payload bytes and read attempts, not a syscall/CPU/latency measurement.
+    #[allow(clippy::result_large_err)]
     pub fn allowance(&self) -> Result<BudgetVector, LocalizationsQueryError> {
         self.validate()?;
         Ok(BudgetVector::from_quantities(BudgetQuantitiesSpec {
@@ -321,6 +324,7 @@ impl std::error::Error for LocalizationsQueryError {}
 /// The whole native current index and protected metadata are verified before predicates and
 /// pagination. Canonical transports admit AgentQuery and the exact limits with a live deadline.
 /// This read grants no ReadMedia, camera activation, calibration or effect authority.
+#[allow(clippy::result_large_err)]
 pub fn query_localizations(
     root: &Path,
     request: &LocalizationsQueryRequest,

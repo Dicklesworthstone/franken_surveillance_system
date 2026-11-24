@@ -66,26 +66,70 @@ fn motion_setting_is_correlated_and_kept_distinct_from_video() -> TestResult {
     use fss_core::ContentDigest;
     use fss_reference::unifi_direct::motion;
     let mut c = ready()?;
-    assert_eq!(c.prepare_motion([0; 6], true, TIME), Err(Error::InvalidConfiguration));
+    assert_eq!(
+        c.prepare_motion([0; 6], true, TIME),
+        Err(Error::InvalidConfiguration)
+    );
     let p = c.prepare_motion([0, 0x11, 0x22, 0xaa, 0xbb, 0xcc], true, TIME)?;
     assert_eq!((p.id(), p.kind()), (3, MessageKind::SetMotion(true)));
     let v = fields(p.bytes())?;
     let o = v.object().ok_or("missing envelope")?;
-    assert_eq!(o.get("functionName").and_then(Value::text), Some("ChangeSmartMotionSettings"));
-    let payload = o.get("payload").and_then(Value::object).ok_or("missing payload")?;
-    assert_eq!(payload.get("deviceID").and_then(Value::text), Some("001122AABBCC"));
+    assert_eq!(
+        o.get("functionName").and_then(Value::text),
+        Some("ChangeSmartMotionSettings")
+    );
+    let payload = o
+        .get("payload")
+        .and_then(Value::object)
+        .ok_or("missing payload")?;
+    assert_eq!(
+        payload.get("deviceID").and_then(Value::text),
+        Some("001122AABBCC")
+    );
     assert_eq!(payload.get("enable").and_then(Value::boolean), Some(true));
-    let conditions = motion::Preconditions { camera: ContentDigest::sha256(b"camera"), peer_admission: ContentDigest::sha256(b"peer"), session_generation: 1, previous_motion: None, lease_fence: 1 };
+    let conditions = motion::Preconditions {
+        camera: ContentDigest::sha256(b"camera"),
+        peer_admission: ContentDigest::sha256(b"peer"),
+        session_generation: 1,
+        previous_motion: None,
+        lease_fence: 1,
+    };
     let intent = motion::Intent::new(p, conditions)?;
     assert!(intent.enabled());
-    assert!(intent.check_preconditions(motion::Preconditions { lease_fence: 2, ..conditions }).is_err());
+    assert!(
+        intent
+            .check_preconditions(motion::Preconditions {
+                lease_fence: 2,
+                ..conditions
+            })
+            .is_err()
+    );
     c.finish_dispatch(3, Dispatch::Written)?;
-    assert_eq!(c.prepare_motion([0, 0x11, 0x22, 0xaa, 0xbb, 0xcc], false, TIME), Err(Error::InvalidState));
-    assert_eq!(c.observe(&message("ChangeSmartMotionSettings", 9, 4, "{}")), Err(Error::UnexpectedMessage));
+    assert_eq!(
+        c.prepare_motion([0, 0x11, 0x22, 0xaa, 0xbb, 0xcc], false, TIME),
+        Err(Error::InvalidState)
+    );
+    assert_eq!(
+        c.observe(&message("ChangeSmartMotionSettings", 9, 4, "{}")),
+        Err(Error::UnexpectedMessage)
+    );
     let p = c.prepare_stream_start(&stream(VideoChannel::Video2, AudioCodec::Aac)?, TIME)?;
     assert_eq!(p.id(), 4);
     c.finish_dispatch(4, Dispatch::Written)?;
-    assert_eq!(c.observe(&message("ChangeSmartMotionSettings", 10, 3, "{\"success\":true,\"statusCode\":200}"))?, Observation::MotionSettingsReply { request_id: 3, enabled: true, status_code: Some(200), success: Some(true) });
+    assert_eq!(
+        c.observe(&message(
+            "ChangeSmartMotionSettings",
+            10,
+            3,
+            "{\"success\":true,\"statusCode\":200}"
+        ))?,
+        Observation::MotionSettingsReply {
+            request_id: 3,
+            enabled: true,
+            status_code: Some(200),
+            success: Some(true)
+        }
+    );
     let retired = c.close();
     assert_eq!(retired.motion_request, None);
     assert_eq!(retired.stream_request, Some((4, VideoChannel::Video2)));
@@ -246,26 +290,42 @@ fn unhandled_response_requests_are_counted_without_echo_or_payload() -> TestResu
     assert_eq!(c.observe(request)?, Observation::Other);
     let correlated = br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"FixtureChallenge","messageId":42,"inResponseTo":8,"responseExpected":true}"#;
     assert_eq!(c.observe(correlated)?, Observation::Other);
-    assert_eq!(c.observe(&message("FixtureNotification", 43, 0, "{}"))?, Observation::Other);
+    assert_eq!(
+        c.observe(&message("FixtureNotification", 43, 0, "{}"))?,
+        Observation::Other
+    );
     // A recognized correlated clock message remains a clock observation, not
     // an unhandled-function count, even under the conservative policy.
     let clock = br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"ubnt_avclient_timeSync","messageId":44,"inResponseTo":7,"responseExpected":true}"#;
     assert_eq!(c.observe(clock)?, Observation::Other);
     assert!(c.prepared().is_none());
-    assert_eq!(c.observe(&message("ubnt_avclient_hello", 45, 0, "{}"))?, Observation::Hello);
+    assert_eq!(
+        c.observe(&message("ubnt_avclient_hello", 45, 0, "{}"))?,
+        Observation::Hello
+    );
     let later = br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"FixtureChallenge","messageId":46,"responseExpected":true}"#;
     assert_eq!(c.observe(later)?, Observation::Other);
     let malformed = br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"FixtureChallenge","messageId":47,"responseExpected":"yes"}"#;
     assert_eq!(c.observe(malformed), Err(Error::InvalidEnvelope));
-    let expected = UnhandledRequestCounts { pre_hello: 2, later: 1, correlated: 1 };
+    let expected = UnhandledRequestCounts {
+        pre_hello: 2,
+        later: 1,
+        correlated: 1,
+    };
     assert_eq!(c.unhandled_request_counts(), expected);
     let retired = c.close();
     assert_eq!(retired.unhandled_requests, expected);
     assert!(!format!("{retired:?}").contains("do-not-retain"));
     let mut events = controller(1)?;
     let event = br#"{"from":"ubnt_avclient","to":"UniFiVideo","functionName":"EventMotion","messageId":50,"responseExpected":true,"payload":{}}"#;
-    assert!(matches!(events.observe_event_claims(event)?, Observation::CameraEvent { .. }));
-    assert_eq!(events.unhandled_request_counts(), UnhandledRequestCounts::default());
+    assert!(matches!(
+        events.observe_event_claims(event)?,
+        Observation::CameraEvent { .. }
+    ));
+    assert_eq!(
+        events.unhandled_request_counts(),
+        UnhandledRequestCounts::default()
+    );
     Ok(())
 }
 
@@ -349,19 +409,42 @@ fn bounded_any_pre_hello_clock_accepts_fresh_nonlatest_correlations_with_limits(
     for camera_id in 100..132 {
         // The first response ID becomes stale after the next written reply.
         let correlation = if camera_id == 100 { 999 } else { 1 };
-        assert_eq!(c.observe(&message("ubnt_avclient_timeSync", camera_id, correlation, "{}"))?, Observation::TimeSyncRequested);
+        assert_eq!(
+            c.observe(&message(
+                "ubnt_avclient_timeSync",
+                camera_id,
+                correlation,
+                "{}"
+            ))?,
+            Observation::TimeSyncRequested
+        );
         if camera_id == 100 {
-            assert_eq!(c.observe(&message("ubnt_avclient_timeSync", 999, 42, "{}")), Err(Error::TimeSyncLimit));
+            assert_eq!(
+                c.observe(&message("ubnt_avclient_timeSync", 999, 42, "{}")),
+                Err(Error::TimeSyncLimit)
+            );
         }
         let reply = c.prepare_time_sync(123_456, TIME)?.id();
         c.finish_dispatch(reply, Dispatch::Written)?;
         if camera_id == 100 {
-            assert_eq!(c.observe(&message("ubnt_avclient_timeSync", camera_id, 999, "{}")), Err(Error::UnexpectedMessage));
+            assert_eq!(
+                c.observe(&message("ubnt_avclient_timeSync", camera_id, 999, "{}")),
+                Err(Error::UnexpectedMessage)
+            );
         }
     }
-    assert_eq!(c.observe(&message("ubnt_avclient_timeSync", 132, 999, "{}")), Err(Error::TimeSyncLimit));
-    assert_eq!(c.observe(&message("ubnt_avclient_hello", 500, 0, "{}"))?, Observation::Hello);
-    assert_eq!(c.observe(&message("ubnt_avclient_timeSync", 501, 999, "{}"))?, Observation::Other);
+    assert_eq!(
+        c.observe(&message("ubnt_avclient_timeSync", 132, 999, "{}")),
+        Err(Error::TimeSyncLimit)
+    );
+    assert_eq!(
+        c.observe(&message("ubnt_avclient_hello", 500, 0, "{}"))?,
+        Observation::Hello
+    );
+    assert_eq!(
+        c.observe(&message("ubnt_avclient_timeSync", 501, 999, "{}"))?,
+        Observation::Other
+    );
     Ok(())
 }
 
@@ -375,33 +458,72 @@ fn continuing_clock_exchange_handles_correlated_requests_before_and_after_hello(
     assert_eq!(c.startup_time_sync_limit(), 32);
     let mut correlation = 0;
     for camera_id in 100..110 {
-        let request = String::from_utf8(message("ubnt_avclient_timeSync", camera_id, correlation, "{}"))?
-            .replace("\"responseExpected\":false", "\"responseExpected\":true");
-        assert_eq!(c.observe(request.as_bytes())?, Observation::TimeSyncRequested);
+        let request = String::from_utf8(message(
+            "ubnt_avclient_timeSync",
+            camera_id,
+            correlation,
+            "{}",
+        ))?
+        .replace("\"responseExpected\":false", "\"responseExpected\":true");
+        assert_eq!(
+            c.observe(request.as_bytes())?,
+            Observation::TimeSyncRequested
+        );
         let reply = c.prepare_time_sync(123_456, TIME)?;
-        assert_eq!(fields(reply.bytes())?.object().and_then(|v| v.get("inResponseTo")).and_then(Value::integer), Some(i128::from(camera_id)));
+        assert_eq!(
+            fields(reply.bytes())?
+                .object()
+                .and_then(|v| v.get("inResponseTo"))
+                .and_then(Value::integer),
+            Some(i128::from(camera_id))
+        );
         correlation = reply.id();
         c.finish_dispatch(correlation, Dispatch::Written)?;
     }
-    assert_eq!(c.observe(&message("ubnt_avclient_hello", 500, 0, "{}"))?, Observation::Hello);
+    assert_eq!(
+        c.observe(&message("ubnt_avclient_hello", 500, 0, "{}"))?,
+        Observation::Hello
+    );
     let hello = c.prepare_hello(TIME)?.id();
     c.finish_dispatch(hello, Dispatch::Written)?;
     let agreement = c.prepare_agreement(TIME, AGREEMENT_DELAY_NS)?.id();
     c.finish_dispatch(agreement, Dispatch::Written)?;
-    assert_eq!(c.observe(&message("ubnt_avclient_paramAgreement", 501, agreement, "{}"))?, Observation::AgreementReply);
+    assert_eq!(
+        c.observe(&message(
+            "ubnt_avclient_paramAgreement",
+            501,
+            agreement,
+            "{}"
+        ))?,
+        Observation::AgreementReply
+    );
     for chain in 0..3 {
         correlation = 0;
         for offset in 0..20 {
             let camera_id = 1_000 + chain * 20 + offset;
-            assert_eq!(c.observe(&message("ubnt_avclient_timeSync", camera_id, correlation, "{}"))?, Observation::TimeSyncRequested);
+            assert_eq!(
+                c.observe(&message(
+                    "ubnt_avclient_timeSync",
+                    camera_id,
+                    correlation,
+                    "{}"
+                ))?,
+                Observation::TimeSyncRequested
+            );
             correlation = c.prepare_time_sync(123_456, TIME)?.id();
             c.finish_dispatch(correlation, Dispatch::Written)?;
         }
     }
     assert_eq!(c.phase(), Phase::AgreementReplyObserved);
-    assert_eq!(c.observe(&message("ubnt_avclient_timeSync", 1_059, 0, "{}")), Err(Error::UnexpectedMessage));
+    assert_eq!(
+        c.observe(&message("ubnt_avclient_timeSync", 1_059, 0, "{}")),
+        Err(Error::UnexpectedMessage)
+    );
     // Replay protection is a rolling window, not an unbounded history.
-    assert_eq!(c.observe(&message("ubnt_avclient_timeSync", 100, 0, "{}"))?, Observation::TimeSyncRequested);
+    assert_eq!(
+        c.observe(&message("ubnt_avclient_timeSync", 100, 0, "{}"))?,
+        Observation::TimeSyncRequested
+    );
     let reply = c.prepare_time_sync(123_456, TIME)?.id();
     c.finish_dispatch(reply, Dispatch::Written)?;
     Ok(())
@@ -416,22 +538,48 @@ fn continuing_clock_exchange_fences_recent_replays_and_each_chain_limit() -> Tes
     )?;
     let mut correlation = 0;
     for camera_id in 100..132 {
-        assert_eq!(c.observe(&message("ubnt_avclient_timeSync", camera_id, correlation, "{}"))?, Observation::TimeSyncRequested);
+        assert_eq!(
+            c.observe(&message(
+                "ubnt_avclient_timeSync",
+                camera_id,
+                correlation,
+                "{}"
+            ))?,
+            Observation::TimeSyncRequested
+        );
         correlation = c.prepare_time_sync(123_456, TIME)?.id();
         c.finish_dispatch(correlation, Dispatch::Written)?;
     }
-    assert_eq!(c.observe(&message("ubnt_avclient_timeSync", 132, correlation, "{}")), Err(Error::TimeSyncLimit));
-    assert_eq!(c.observe(&message("ubnt_avclient_timeSync", 131, 0, "{}")), Err(Error::UnexpectedMessage));
-    assert_eq!(c.observe(&message("ubnt_avclient_timeSync", 200, 0, "{}"))?, Observation::TimeSyncRequested);
-    assert_eq!(c.observe(&message("ubnt_avclient_timeSync", 201, 0, "{}")), Err(Error::TimeSyncLimit));
+    assert_eq!(
+        c.observe(&message("ubnt_avclient_timeSync", 132, correlation, "{}")),
+        Err(Error::TimeSyncLimit)
+    );
+    assert_eq!(
+        c.observe(&message("ubnt_avclient_timeSync", 131, 0, "{}")),
+        Err(Error::UnexpectedMessage)
+    );
+    assert_eq!(
+        c.observe(&message("ubnt_avclient_timeSync", 200, 0, "{}"))?,
+        Observation::TimeSyncRequested
+    );
+    assert_eq!(
+        c.observe(&message("ubnt_avclient_timeSync", 201, 0, "{}")),
+        Err(Error::TimeSyncLimit)
+    );
     let prepared = c.prepare_time_sync(123_456, TIME)?;
     let id = prepared.id();
     let bytes = prepared.bytes().to_vec();
     c.finish_dispatch(id, Dispatch::NotWritten)?;
-    assert_eq!(c.prepared().ok_or("unwritten reply missing")?.bytes(), bytes);
+    assert_eq!(
+        c.prepared().ok_or("unwritten reply missing")?.bytes(),
+        bytes
+    );
     c.finish_dispatch(id, Dispatch::Indeterminate)?;
     assert_eq!(c.phase(), Phase::Indeterminate);
-    assert_eq!(c.observe(&message("ubnt_avclient_timeSync", 202, id, "{}")), Err(Error::InvalidState));
+    assert_eq!(
+        c.observe(&message("ubnt_avclient_timeSync", 202, id, "{}")),
+        Err(Error::InvalidState)
+    );
     Ok(())
 }
 

@@ -51,6 +51,7 @@ impl FollowWaitBinding {
     ///
     /// `max_reads` may reduce the fixed ceiling, never increase it. Native per-read limits may
     /// likewise be narrowed but not widened. Continuations must be drained without waiting.
+    #[allow(clippy::result_large_err)]
     pub fn new(
         root: impl Into<PathBuf>,
         since: AnchorToken,
@@ -98,6 +99,7 @@ impl FollowWaitBinding {
 
     /// Narrows the immutable whole-call source-custody allowance before admission. Every
     /// selected source must still verify; a smaller allowance never shrinks the evidence scope.
+    #[allow(clippy::result_large_err)]
     pub fn with_source_limits(
         mut self,
         max_reads: u32,
@@ -328,6 +330,7 @@ impl std::fmt::Display for FollowWaitError {
 }
 impl std::error::Error for FollowWaitError {}
 
+#[allow(clippy::result_large_err)]
 pub(crate) fn checkpoint(
     binding: &FollowWaitBinding,
     control: &mut dyn FollowWaitControl,
@@ -344,6 +347,7 @@ pub(crate) fn checkpoint(
     Ok(())
 }
 
+#[allow(clippy::result_large_err)]
 pub(crate) fn account(
     progress: &mut FollowWaitProgress,
     follow: &DeploymentFollow,
@@ -386,6 +390,7 @@ pub(crate) fn certified_quiet(follow: &DeploymentFollow) -> bool {
 /// advances and every advance after a park require resnapshot. Quiet timeouts return only the
 /// last actual retained-evidence comparison; they never extend its coverage window, synthesize
 /// a new publication, renew a cursor, or claim to have observed an unbroken live interval.
+#[allow(clippy::result_large_err)]
 pub fn follow_deployment_wait(
     binding: &FollowWaitBinding,
     control: &mut dyn FollowWaitControl,

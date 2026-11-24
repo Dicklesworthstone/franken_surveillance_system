@@ -468,6 +468,7 @@ pub struct MediaCandidates<'scope, 'task, 'policy> {
 impl<'scope, 'task, 'policy> MediaCandidates<'scope, 'task, 'policy> {
     /// Start with the fresh first connection from a retained-listener startup.
     /// The count includes that connection. Refusal returns both owners.
+    #[allow(clippy::result_large_err)]
     pub fn new(
         listener: Listener<'scope, 'task, 'policy>,
         pipeline: Pipeline,
@@ -514,6 +515,7 @@ impl<'scope, 'task, 'policy> MediaCandidates<'scope, 'task, 'policy> {
     /// cannot hold the shortest legal header. The first pipeline keeps its
     /// separately configured limit. This neither authenticates a peer nor proves
     /// that any subsequent media tag is valid.
+    #[allow(clippy::result_large_err)]
     pub fn new_validating(
         listener: Listener<'scope, 'task, 'policy>,
         pipeline: Pipeline,
@@ -596,11 +598,10 @@ impl<'scope, 'task, 'policy> MediaCandidates<'scope, 'task, 'policy> {
                 .clock
                 .now()
                 .map_err(|_| CandidateError::Accept(Error::Authority))?;
-            let probe = self
-                .current
-                .as_mut()
-                .expect("candidate installed")
-                .probe_first_byte(self.listener.task, self.listener.cx, now);
+            let Some(current) = self.current.as_mut() else {
+                return Err(CandidateError::Configuration);
+            };
+            let probe = current.probe_first_byte(self.listener.task, self.listener.cx, now);
             match timeout_at(self.deadline, probe).await {
                 Err(_) => return Err(CandidateError::Deadline),
                 Ok(Err(error)) => return Err(CandidateError::Probe(error)),
@@ -609,12 +610,10 @@ impl<'scope, 'task, 'policy> MediaCandidates<'scope, 'task, 'policy> {
                     return Ok(());
                 }
                 Ok(Ok(super::ingress::FirstByte::Empty)) => {
-                    let retired = self
-                        .current
-                        .take()
-                        .expect("empty candidate retained")
-                        .retire();
-                    debug_assert_eq!(retired.ingress.source.received, 0);
+                    if let Some(candidate) = self.current.take() {
+                        let retired = candidate.retire();
+                        debug_assert_eq!(retired.ingress.source.received, 0);
+                    }
                 }
             }
         }
@@ -712,6 +711,7 @@ impl<'scope, 'task, 'policy> MediaCandidates<'scope, 'task, 'policy> {
             First(super::ingress::FirstByte),
             Header(super::ingress::HeaderProbe),
         }
+        #[allow(clippy::large_enum_variant)]
         enum Ready {
             Probe(usize, Result<Observation, super::pipeline::ProbeError>),
             Name(
@@ -813,10 +813,10 @@ impl<'scope, 'task, 'policy> MediaCandidates<'scope, 'task, 'policy> {
                             }
                         }
                     }
-                    if let Some(accept) = accept.as_mut() {
-                        if let Poll::Ready(result) = accept.as_mut().poll(context) {
-                            return Poll::Ready(Ready::Accept(result));
-                        }
+                    if let Some(accept) = accept.as_mut()
+                        && let Poll::Ready(result) = accept.as_mut().poll(context)
+                    {
+                        return Poll::Ready(Ready::Accept(result));
                     }
                     Poll::Pending
                 }),
@@ -829,13 +829,16 @@ impl<'scope, 'task, 'policy> MediaCandidates<'scope, 'task, 'policy> {
                 Ready::Accept(Ok(pipeline)) => {
                     self.keys[self.attempts] = key;
                     self.attempts += 1;
-                    let (index, slot) = self
+                    let Some((index, slot)) = self
                         .additional
                         .iter_mut()
                         .enumerate()
                         .find(|(_, slot)| slot.is_none())
-                        .expect("bounded candidate slot");
-                    *slot = Some(Box::new(pipeline));
+                    else {
+                        self.fenced = true;
+                        return Err(CandidateError::Configuration);
+                    };
+                    let installed = slot.insert(Box::new(pipeline));
                     if let Some(requirement) = &self.name_requirement {
                         let probe = match requirement.owner() {
                             Ok(probe) => probe,
@@ -844,12 +847,7 @@ impl<'scope, 'task, 'policy> MediaCandidates<'scope, 'task, 'policy> {
                                 return Err(error);
                             }
                         };
-                        if slot
-                            .as_deref_mut()
-                            .expect("installed candidate")
-                            .begin_name_probe(probe)
-                            .is_err()
-                        {
+                        if installed.begin_name_probe(probe).is_err() {
                             self.fenced = true;
                             return Err(CandidateError::Configuration);
                         }
@@ -899,14 +897,15 @@ impl<'scope, 'task, 'policy> MediaCandidates<'scope, 'task, 'policy> {
                     self.probeable[index] = false;
                     self.cursor = (index + 1) % MAX_MEDIA_CANDIDATES;
                     let retired = if index == 0 {
-                        self.current.take().expect("probed candidate").retire()
+                        self.current.take().map(Pipeline::retire)
                     } else {
                         self.additional[index - 1]
                             .take()
-                            .expect("probed candidate")
-                            .retire()
+                            .map(|candidate| candidate.retire())
                     };
-                    debug_assert_eq!(retired.ingress.source.received, 0);
+                    if let Some(retired) = retired {
+                        debug_assert_eq!(retired.ingress.source.received, 0);
+                    }
                 }
                 Ready::Probe(
                     index,
@@ -946,14 +945,15 @@ impl<'scope, 'task, 'policy> MediaCandidates<'scope, 'task, 'policy> {
                     self.probeable[index] = false;
                     self.cursor = (index + 1) % MAX_MEDIA_CANDIDATES;
                     let retired = if index == 0 {
-                        self.current.take().expect("probed candidate").retire()
+                        self.current.take().map(Pipeline::retire)
                     } else {
                         self.additional[index - 1]
                             .take()
-                            .expect("probed candidate")
-                            .retire()
+                            .map(|candidate| candidate.retire())
                     };
-                    debug_assert_eq!(retired.ingress.source.received, 0);
+                    if let Some(retired) = retired {
+                        debug_assert_eq!(retired.ingress.source.received, 0);
+                    }
                 }
             }
         }
@@ -1244,6 +1244,7 @@ where
 
 /// Start the media listener while also requesting an explicitly authorized
 /// baseline motion setting. Both traces remain caller-owned on cancellation.
+#[allow(clippy::too_many_arguments)]
 pub async fn start_before_reply_with_motion_tracked<
     IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite + Unpin,
 >(
@@ -1291,6 +1292,7 @@ pub async fn start_before_reply_with_motion_tracked<
 
 /// Start with bounded event replies, optionally alongside a motion setting.
 /// A caller-owned inbox must already be bound, and both traces survive failure.
+#[allow(clippy::too_many_arguments)]
 pub async fn start_before_reply_with_events_tracked<
     IO: asupersync::io::AsyncRead + asupersync::io::AsyncWrite + Unpin,
 >(
@@ -1345,6 +1347,7 @@ pub async fn start_before_reply_with_events_tracked<
 
 /// Event-aware startup that retains the media listener for candidate selection.
 /// The caller still owns both traces, the controller session and every source.
+#[allow(clippy::too_many_arguments)]
 pub async fn start_with_events_retaining_listener<'scope, 'task, 'policy, IO>(
     owner: &mut super::conversation::Owner<'_, 'scope, 'task>,
     session: &mut super::receive::Session<'_, '_, IO>,
@@ -1441,6 +1444,7 @@ pub struct ValidatedMediaSelection<'scope, 'task, 'policy> {
 impl<'scope, 'task, 'policy> ValidatedMediaSelection<'scope, 'task, 'policy> {
     /// Wrap an already accepted startup and install a bounded validating
     /// selector. Refusal returns the complete original startup owner.
+    #[allow(clippy::result_large_err)]
     pub fn new(
         startup: StartedWithListener<'scope, 'task, 'policy>,
         max_attempts: usize,
@@ -1659,6 +1663,7 @@ where
             .filter(|v| *v > 0)
             .map(Duration::from_nanos)
             .ok_or(CandidateControlError::Candidate(CandidateError::Deadline))?;
+        #[allow(clippy::large_enum_variant)]
         enum Ready {
             Media(Result<(), CandidateError>),
             Control(Result<super::receive::Step, super::receive::Error>),
@@ -1778,6 +1783,7 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn start_inner<
     'scope,
     'task,
@@ -1920,6 +1926,7 @@ async fn start_inner<
                 .filter(|v| *v > 0)
                 .map(Duration::from_nanos)
                 .ok_or(StartError::Listener(Error::Deadline))?;
+            #[allow(clippy::large_enum_variant)]
             enum Ready {
                 Media(Result<Pipeline, Error>),
                 Control(Result<super::receive::Step, super::receive::Error>),

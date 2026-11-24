@@ -351,6 +351,7 @@ pub fn create<'task>(
 /// Create fresh archive owners whose four history prefixes are retained by
 /// caller-supplied custodians before each append is acknowledged. This does
 /// not establish the custodians' independence or authorize restart/retry.
+#[allow(clippy::too_many_arguments)]
 pub fn create_retained<'task>(
     task: &TaskCx<'task>,
     cx: &Cx,
@@ -373,6 +374,7 @@ pub fn create_retained<'task>(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn create_inner<'task>(
     task: &TaskCx<'task>,
     cx: &Cx,
@@ -504,6 +506,7 @@ fn create_store(
 /// exact pending and replay states for reconciliation. It does not open the
 /// archive deployments, infer anchor independence, resume a session, or
 /// authorize repeating any effect. A missing or changed root is never created.
+#[allow(clippy::too_many_arguments)]
 pub fn recover_histories<'task>(
     task: &TaskCx<'task>,
     cx: &Cx,
@@ -534,6 +537,7 @@ pub fn recover_histories<'task>(
 /// is refused without advancing either side. The returned journals preserve
 /// replay fences; reattaching custody alone does not authorize publication,
 /// prove failure-domain independence, or restore media/muxer state.
+#[allow(clippy::too_many_arguments)]
 pub fn recover_histories_retained<'task>(
     task: &TaskCx<'task>,
     cx: &Cx,
@@ -562,6 +566,7 @@ pub fn recover_histories_retained<'task>(
 /// the A/V predecessor a second time while a recovered lineage owns it.
 /// On I/O failure, reopen the exact source histories and custodians again;
 /// no network operation or recording session is started.
+#[allow(clippy::too_many_arguments)]
 pub fn recover_source_retained<'task>(
     task: &TaskCx<'task>,
     cx: &Cx,
@@ -605,6 +610,7 @@ pub fn recover_source_retained<'task>(
 /// Join a retained source owner to an already replayed A/V rollover lineage.
 /// The selected lineage is caller supplied; this does not establish that it
 /// is the latest one, authenticate a camera, or start a session.
+#[allow(clippy::result_large_err)]
 pub fn join_source_and_av_lineage(
     cfg: Configuration<'_>,
     source: RetainedSourceHistory,
@@ -643,6 +649,7 @@ pub fn join_source_and_av_lineage(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn recover_histories_inner<'task>(
     task: &TaskCx<'task>,
     cx: &Cx,
@@ -721,6 +728,7 @@ fn recover_histories_inner<'task>(
 /// A fresh collector must bootstrap new muxer clocks and honor the prior A/V
 /// retention decision unless a separately authorized change is made. The
 /// caller must separately settle all camera-control effects before reconnecting.
+#[allow(clippy::result_large_err, clippy::too_many_arguments)]
 pub fn resume_confirmed<'task>(
     task: &TaskCx<'task>,
     cx: &Cx,
@@ -749,6 +757,7 @@ pub fn resume_confirmed<'task>(
 /// This has the same custody, restart-boundary and camera-effect requirements
 /// as [`resume_confirmed`]. The caller selects the profile explicitly; a
 /// failed A/V read is never treated as evidence of a video-only graph.
+#[allow(clippy::result_large_err, clippy::too_many_arguments)]
 pub fn resume_confirmed_video<'task>(
     task: &TaskCx<'task>,
     cx: &Cx,
@@ -772,6 +781,7 @@ pub fn resume_confirmed_video<'task>(
     )
 }
 
+#[allow(clippy::result_large_err, clippy::too_many_arguments)]
 fn resume_confirmed_inner<'task>(
     task: &TaskCx<'task>,
     cx: &Cx,
@@ -1113,6 +1123,7 @@ pub fn readback_confirmed<'task>(
     Ok(ConfirmedReadback { source, av_samples })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn recover_one<'task>(
     task: &TaskCx<'task>,
     cx: &Cx,

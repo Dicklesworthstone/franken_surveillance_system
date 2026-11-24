@@ -71,6 +71,7 @@ fn setup(name: &str) -> TestResult<(Fixture, [ContentDigest; 2])> {
     Ok((f, [a, b]))
 }
 
+#[allow(clippy::large_enum_variant)]
 enum Analysis {
     Watch(WatchReport),
     Corroboration(CorroborationReport),

@@ -133,8 +133,19 @@ impl SpoolIo for CancellableSpool<'_> {
         Err(TryLockError::Error(mutation_refused()))
     }
 
-    fn try_lock_shared(&self, _: &File) -> Result<(), TryLockError> {
-        Err(TryLockError::Error(mutation_refused()))
+    fn try_lock_shared(&self, file: &File) -> Result<(), TryLockError> {
+        #[cfg(target_os = "linux")]
+        {
+            let _ = file;
+            Err(TryLockError::Error(mutation_refused()))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.admission.check().map_err(TryLockError::Error)?;
+            let result = self.inner.try_lock_shared(file);
+            self.admission.check().map_err(TryLockError::Error)?;
+            result
+        }
     }
 
     fn unlock(&self, _: &File) -> io::Result<()> {
@@ -226,6 +237,10 @@ struct CancellableLockTable<'a> {
 impl LockTableSource for CancellableLockTable<'_> {
     fn read_lock_table(&self, maximum: usize) -> io::Result<String> {
         self.admission.call(|| self.inner.read_lock_table(maximum))
+    }
+
+    fn supports_shared_probe_fallback(&self) -> bool {
+        self.inner.supports_shared_probe_fallback()
     }
 }
 

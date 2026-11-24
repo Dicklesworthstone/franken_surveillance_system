@@ -176,6 +176,7 @@ impl RtpMotionStats {
 
 /// A source/decoder event, one bounded observation, or terminal accounting. No pixels escape.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum RtpMotionStep {
     /// Existing payload-free progress, including native retirement and recovery decisions.
     Progress {

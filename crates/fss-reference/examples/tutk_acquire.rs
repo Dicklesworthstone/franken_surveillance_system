@@ -37,7 +37,7 @@ fn cfg_field(json: &str, key: &str) -> Option<String> {
     Some(rest[..end].trim().to_string())
 }
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 3 {
         eprintln!("usage: tutk_acquire <cfg.json> <root> [--secs N] [--site S]");
@@ -51,16 +51,18 @@ fn main() {
     let secs: u64 = flag("--secs").and_then(|v| v.parse().ok()).unwrap_or(30);
     let site = flag("--site").unwrap_or_else(|| "site:lab:tutk:acquire".into());
 
-    let raw = std::fs::read_to_string(cfg_path).expect("read cfg");
-    let get = |k: &str| cfg_field(&raw, k).unwrap_or_else(|| panic!("cfg missing {k}"));
-    let (uid, enr, mac) = (get("uid"), get("enr"), get("mac"));
-    let cam_ip = get("camera_ip");
-    let cam_port: u16 = get("camera_port").parse().unwrap();
+    let raw = std::fs::read_to_string(cfg_path)?;
+    let get = |k: &str| -> Result<String, Box<dyn std::error::Error>> {
+        cfg_field(&raw, k).ok_or_else(|| format!("cfg missing {k}").into())
+    };
+    let (uid, enr, mac) = (get("uid")?, get("enr")?, get("mac")?);
+    let cam_ip = get("camera_ip")?;
+    let cam_port: u16 = get("camera_port")?.parse()?;
     let bind_ip = cfg_field(&raw, "bind_ip").unwrap_or_else(|| "0.0.0.0".into());
 
     let authority = ContextAuthority::new_root(RootAuthoritySpec {
         trace_id: "trace:tutk-acquire".into(),
-        operation_id: OperationId::parse("op:tutk-acquire:01").expect("operation id"),
+        operation_id: OperationId::parse("op:tutk-acquire:01")?,
         principal: "principal:operator:tutk-acquire".into(),
         capabilities: vec![
             "ADP-REPLAY-001".to_owned(),
@@ -73,25 +75,21 @@ fn main() {
         priority: 10,
         budgets: fss_core::BudgetVector::builder()
             .bytes(1u64 << 30)
-            .build()
-            .expect("budget"),
+            .build()?,
         privacy_scope: "privacy:owner-authorized-lan".into(),
         retention_scope: "retention:existing-deployment-policy".into(),
         anchor_universe: fss_core::ContentDigest::sha256(site.as_bytes()),
         generation: 1,
-    })
-    .expect("authority");
-    let cx = ReplayCx::from_context_authority(&authority, &root).expect("replay cx");
-    let mut deployment = ReferenceDeployment::open(&root, &site, &cx).expect("open deployment");
+    })?;
+    let cx = ReplayCx::from_context_authority(&authority, &root)?;
+    let mut deployment = ReferenceDeployment::open(&root, &site, &cx)?;
 
-    let sock = UdpSocket::bind((bind_ip.as_str(), 0u16)).expect("bind");
-    sock.set_read_timeout(Some(Duration::from_millis(20)))
-        .unwrap();
-    let mut peer: std::net::SocketAddr = format!("{cam_ip}:{cam_port}").parse().unwrap();
+    let sock = UdpSocket::bind((bind_ip.as_str(), 0u16))?;
+    sock.set_read_timeout(Some(Duration::from_millis(20)))?;
+    let mut peer: std::net::SocketAddr = format!("{cam_ip}:{cam_port}").parse()?;
 
     let seed = (std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)?
         .as_nanos() as u64)
         | 1;
     let cfg = TutkIngestConfig {
@@ -105,14 +103,14 @@ fn main() {
             entropy: None,
             known_tuples: vec![("HL_CAM4".to_string(), "4.52.17.26".to_string())],
         },
-        sensor_id: SensorId::parse("sensor:tutk:acquire:01").unwrap(),
-        stream_id: StreamId::parse("stream:tutk:acquire:01").unwrap(),
+        sensor_id: SensorId::parse("sensor:tutk:acquire:01")?,
+        stream_id: StreamId::parse("stream:tutk:acquire:01")?,
         site_lineage: site.clone(),
         audio: AudioPolicy::Disabled,
         limits: TutkIngestLimits::default(),
         known_tuples: vec![("HL_CAM4".to_string(), "4.52.17.26".to_string())],
     };
-    let mut ing = TutkIngest::new(cfg).expect("construct ingest");
+    let mut ing = TutkIngest::new(cfg)?;
 
     println!(
         "acquire: {cam_ip}:{cam_port} -> {} ({}s)",
@@ -153,7 +151,7 @@ fn main() {
             break;
         }
     }
-    ing.flush().expect("flush");
+    ing.flush()?;
 
     let stats = ing.stats();
     println!(
@@ -167,9 +165,7 @@ fn main() {
     // Seal into the deployment as a decodable file-import-shaped custody
     // contract (RetainedFileImport-compatible): payloads staged, capsule
     // batches committed, fi- slot published, manifest batch completes gen 2.
-    let seal = ing
-        .seal_acquisition(&mut deployment, "HL_CAM4/4.52.17.26", &cx)
-        .expect("seal acquisition");
+    let seal = ing.seal_acquisition(&mut deployment, "HL_CAM4/4.52.17.26", &cx)?;
     println!(
         "acquire: SEALED import={} manifest={} root={} batch={} capsules={} bytes={}",
         seal.import_identity,
@@ -183,4 +179,5 @@ fn main() {
         "acquire: inspect with: fss doctor --root {}",
         root.display()
     );
+    Ok(())
 }

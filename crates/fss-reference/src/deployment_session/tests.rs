@@ -518,6 +518,77 @@ fn equal_committed_bytes_give_equal_sessions_and_handoffs() -> TestResult {
     Ok(())
 }
 
+fn tree_snapshot(root: &Path) -> TestResult<Vec<(PathBuf, Vec<u8>)>> {
+    let mut entries = Vec::new();
+    for file in files_under(root)? {
+        let rel = file.strip_prefix(root)?.to_path_buf();
+        entries.push((rel, fs::read(&file)?));
+    }
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(entries)
+}
+
+#[test]
+fn open_session_preflight_refusal_leaves_agent_directory_byte_identical() -> TestResult {
+    // Case 1: agent/publications is an invalid non-directory layout.
+    {
+        let fixture = Fixture::new("preflight-invalid-layout", SITE)?;
+        let agent_dir = fixture.root.join("agent");
+        fs::create_dir_all(&agent_dir)?;
+        fs::write(fixture.root.join(PUBLICATIONS_RELPATH), b"not-a-directory")?;
+        let before = tree_snapshot(&fixture.root)?;
+        let result = open_session(&fixture.root, &open_request()?);
+        assert!(
+            matches!(
+                result,
+                Err(DeploymentSessionError::StoreInvalid(ref msg))
+                    if msg.contains("invalid layout") || msg.contains("non-directory")
+            ),
+            "expected invalid/non-directory layout refusal, got {result:?}"
+        );
+        assert!(!fixture.root.join(SESSIONS_RELPATH).exists());
+        assert_eq!(tree_snapshot(&fixture.root)?, before);
+    }
+
+    // Case 2: agent/publications has a foreign file (incomplete/corrupt inventory).
+    {
+        let fixture = Fixture::new("preflight-foreign-root", SITE)?;
+        let publications = fixture.root.join(PUBLICATIONS_RELPATH);
+        drop(fss_publication::LocalRootPublisher::open(
+            &publications,
+            super::publication_limits(),
+        )?);
+        fs::write(publications.join("roots").join("stray.foreign"), b"corrupt")?;
+        let before = tree_snapshot(&fixture.root)?;
+        let result = open_session(&fixture.root, &open_request()?);
+        assert!(
+            matches!(result, Err(DeploymentSessionError::StoreInvalid(ref msg)) if msg.contains("incomplete or corrupt")),
+            "expected incomplete/corrupt inventory refusal, got {result:?}"
+        );
+        assert!(!fixture.root.join(SESSIONS_RELPATH).exists());
+        assert_eq!(tree_snapshot(&fixture.root)?, before);
+    }
+
+    // Case 3: concurrent writer actively holds agent/publications/LOCK.
+    {
+        let fixture = Fixture::new("preflight-locked-publications", SITE)?;
+        let publications = fixture.root.join(PUBLICATIONS_RELPATH);
+        let holder =
+            fss_publication::LocalRootPublisher::open(&publications, super::publication_limits())?;
+        let before = tree_snapshot(&fixture.root)?;
+        let result = open_session(&fixture.root, &open_request()?);
+        drop(holder);
+        assert!(
+            matches!(result, Err(DeploymentSessionError::StoreInvalid(ref msg)) if msg.contains("incomplete or corrupt")),
+            "expected writer-held refusal, got {result:?}"
+        );
+        assert!(!fixture.root.join(SESSIONS_RELPATH).exists());
+        assert_eq!(tree_snapshot(&fixture.root)?, before);
+    }
+
+    Ok(())
+}
+
 fn files_under(directory: &Path) -> TestResult<Vec<PathBuf>> {
     let mut out = Vec::new();
     let mut pending = vec![directory.to_path_buf()];

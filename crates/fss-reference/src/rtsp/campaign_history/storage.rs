@@ -198,6 +198,7 @@ pub(super) fn publish(
     Ok(())
 }
 
+#[allow(clippy::large_enum_variant)]
 enum Source<'a> {
     Live(&'a LocalRootPublisher),
     Cold {

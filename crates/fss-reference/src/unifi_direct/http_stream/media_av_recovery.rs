@@ -32,6 +32,7 @@ pub struct Scope<'scope, 'task, 'policy> {
 
 /// Original bridge-creation refusal with its listener removed.
 #[must_use = "retain the connected source or rejected tail and effect"]
+#[allow(clippy::large_enum_variant)]
 pub enum BridgeRefusal {
     /// Original connected source and effect.
     NotStopped(Box<media::Connected>),
@@ -170,6 +171,7 @@ pub enum ReuseRefusal {
         )>,
     ),
     /// Successor attachment refused.
+    #[allow(clippy::type_complexity)]
     Attach(
         Box<(
             Box<startup::AttachRefusal>,
@@ -517,10 +519,9 @@ impl Drain {
         if let Some(parked) = recovery.parked.as_mut() {
             parked.abort();
         }
-        let phase = recovery
-            .phase
-            .as_mut()
-            .expect("phase checked before mutation");
+        let Some(phase) = recovery.phase.as_mut() else {
+            return Err(recovery);
+        };
         phase_source(phase).abort();
         phase_av(phase).abort();
         if let Some(worker) = phase_verifier(phase) {
@@ -539,11 +540,20 @@ impl Drain {
 
     /// Inspect worker handles without treating an absent completion as proof.
     pub fn running_workers(&mut self) -> RunningWorkers {
-        let phase = self
-            .recovery
-            .phase
-            .as_mut()
-            .expect("drain requires a phase");
+        let Some(phase) = self.recovery.phase.as_mut() else {
+            return RunningWorkers {
+                source: false,
+                av: false,
+                verification: false,
+                recording_background: false,
+                parked_creator: self
+                    .recovery
+                    .parked
+                    .as_ref()
+                    .and_then(|parked| parked.parts.creator.as_ref())
+                    .is_some_and(|worker| worker.is_running()),
+            };
+        };
         let source = phase_source(phase).is_running();
         let av = phase_av(phase).is_running();
         let verification = phase_verifier(phase).is_some_and(|worker| worker.is_running());
@@ -634,30 +644,30 @@ impl Drain {
 
     /// Join the parked creator; its completion remains in parked custody.
     pub async fn join_parked_creator(&mut self) -> JoinResult {
-        if let Some(parked) = self.recovery.parked.as_mut() {
-            if parked.join_creator().await {
-                return JoinResult::Retained;
-            }
+        if let Some(parked) = self.recovery.parked.as_mut()
+            && parked.join_creator().await
+        {
+            return JoinResult::Retained;
         }
         JoinResult::NoCompletion
     }
 
     /// Join the recording manager's creator; it retains its own completion.
     pub async fn join_recording_creator(&mut self) -> JoinResult {
-        if let Some(Phase::Recording(owner)) = self.recovery.phase.as_mut() {
-            if owner.join_creator().await {
-                return JoinResult::Retained;
-            }
+        if let Some(Phase::Recording(owner)) = self.recovery.phase.as_mut()
+            && owner.join_creator().await
+        {
+            return JoinResult::Retained;
         }
         JoinResult::NoCompletion
     }
 
     /// Join a recording manager's rollover worker; its owner retains the result.
     pub async fn join_rollover(&mut self) -> JoinResult {
-        if let Some(Phase::Recording(owner)) = self.recovery.phase.as_mut() {
-            if owner.join_rollover().await {
-                return JoinResult::Retained;
-            }
+        if let Some(Phase::Recording(owner)) = self.recovery.phase.as_mut()
+            && owner.join_rollover().await
+        {
+            return JoinResult::Retained;
         }
         JoinResult::NoCompletion
     }

@@ -579,12 +579,10 @@ pub fn screen_optical_quality(
             .saturating_mul(sum_lap.unsigned_abs());
         let numer = sum_sq_term.saturating_sub(mean_sq_term);
         let denom = n.saturating_mul(n);
-        let var_x1000 = if denom == 0 {
-            0
-        } else {
-            let scaled = numer.saturating_mul(1000) / denom;
-            u64::try_from(scaled).unwrap_or(u64::MAX)
-        };
+        let var_x1000 = numer
+            .saturating_mul(1000)
+            .checked_div(denom)
+            .map_or(0, |scaled| u64::try_from(scaled).unwrap_or(u64::MAX));
         if var_x1000 < thresholds.min_laplacian_variance_x1000 {
             findings.push(OpticalFinding::SevereBlur);
         }

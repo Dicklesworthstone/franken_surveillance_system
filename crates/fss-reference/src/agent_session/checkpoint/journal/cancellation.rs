@@ -253,10 +253,11 @@ pub(crate) fn retained_receipt(
             continue;
         }
         let receipt = decode_record(record.payload(), record.root())?;
-        if receipt.plan.session_id == *session && receipt.plan.principal == *principal {
-            if found.replace(receipt).is_some() {
-                return Err(DurableSessionError::InvalidHistory);
-            }
+        if receipt.plan.session_id == *session
+            && receipt.plan.principal == *principal
+            && found.replace(receipt).is_some()
+        {
+            return Err(DurableSessionError::InvalidHistory);
         }
     }
     Ok(found)

@@ -82,6 +82,7 @@ impl RecordedLocalizationMetadata {
     /// checked against current deletion/tombstone restrictions without requiring their bytes.
     /// Receipt geometry and decoder output are not independently interpreted or reproduced.
     /// Immutable callers must revalidate the same owner before releasing a complete response.
+    #[allow(clippy::result_large_err)]
     pub fn read(
         source: &dyn RetainedSource,
         identity: ContentDigest,
@@ -154,6 +155,7 @@ fn codec(source: &RecordedLocalizationSource) -> &'static str {
 
 /// The source-binding prefix belongs to this native owner. Do not infer geometry from the
 /// opaque remaining candidate receipt: exact reproduction belongs to verify_by_replay.
+#[allow(clippy::result_large_err)]
 pub(super) fn receipt_binding(
     bytes: &[u8],
     recipe: &Recipe,
@@ -246,6 +248,7 @@ pub(super) fn receipt_binding(
     Ok(mask_policy)
 }
 
+#[allow(clippy::result_large_err)]
 pub(super) fn publication<'a>(
     source: &'a dyn RetainedSource,
     slot: &SlotName,
@@ -306,6 +309,7 @@ pub(super) fn publication<'a>(
 
 /// Follow only current native publication roots. All other digests remain opaque leaves,
 /// exactly as LocalRootPublisher::root_closure does; never sniff leaf bytes as manifests.
+#[allow(clippy::result_large_err)]
 pub(super) fn metadata_closure(
     source: &dyn RetainedSource,
     expected: &ObjectManifest,

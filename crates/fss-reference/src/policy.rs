@@ -951,6 +951,7 @@ pub struct CalibratedPolicyDecision {
 ///   open tamper, distinct sensors/capture roots/domains) and `fss-fusion` both must agree before
 ///   [`ReferencePolicyAction::PrepareAlert`] is surfaced; `PrepareAlert` remains an affordance,
 ///   never effect authority.
+#[allow(clippy::too_many_arguments)]
 pub fn evaluate_unknown_presence_calibrated(
     event_id: EventId,
     observations: Vec<CalibratedModelObservation>,

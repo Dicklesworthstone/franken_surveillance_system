@@ -350,6 +350,7 @@ impl std::error::Error for UnknownTimePublishError {}
 /// No audio configuration, clock or physical capture time is inferred. The
 /// caller retains the exact source and must reconcile an uncertain result
 /// against this same root and storage history.
+#[allow(clippy::too_many_arguments)]
 pub fn publish_unknown_time_video_anchored(
     plan: &Prepared<'_>,
     deployment: &mut ReferenceDeployment,
@@ -370,6 +371,7 @@ pub fn publish_unknown_time_video_anchored(
 /// anchored intent and confirmation. The caller still owns the source, graph,
 /// muxer reconstruction and independently retained keeper minimum. A failure
 /// after intent preparation must be reconciled against this exact root.
+#[allow(clippy::too_many_arguments)]
 pub fn publish_unknown_time_av_anchored(
     plan: &PreparedAv<'_>,
     deployment: &mut ReferenceDeployment,
@@ -389,6 +391,7 @@ pub fn publish_unknown_time_av_anchored(
 /// Publish a video-only A/V candidate with journaled intent and confirmation.
 /// It records no audio samples, not audio absence or complete coverage. Any
 /// uncertain outcome must be reconciled against the same root.
+#[allow(clippy::too_many_arguments)]
 pub fn publish_unknown_time_av_video_only_anchored(
     plan: &PreparedAvVideoOnly<'_>,
     deployment: &mut ReferenceDeployment,
@@ -409,6 +412,7 @@ pub fn publish_unknown_time_av_video_only_anchored(
 /// Retain one separately returned source record using a dedicated unknown-time
 /// journal and independent anchor. The source remains caller-owned on every
 /// return; an indeterminate result must be reconciled against the same pin.
+#[allow(clippy::too_many_arguments)]
 pub fn publish_unknown_time_source_anchored(
     plan: &source_evidence::Prepared<'_>,
     deployment: &mut ReferenceDeployment,
@@ -427,6 +431,7 @@ pub fn publish_unknown_time_source_anchored(
 
 /// Retain a source-tail batch with one journaled root and explicit retention.
 /// Original records remain caller-owned; uncertainty requires reconciliation.
+#[allow(clippy::too_many_arguments)]
 pub fn publish_unknown_time_source_batch_anchored(
     plan: &source_batch::Prepared,
     deployment: &mut ReferenceDeployment,
@@ -446,6 +451,7 @@ pub fn publish_unknown_time_source_batch_anchored(
 /// Retain one event source using an explicit retention grant and dedicated
 /// unknown-time journal and anchor. The caller retains the original frame;
 /// uncertain publication requires reconciliation against the same pin.
+#[allow(clippy::too_many_arguments)]
 pub fn publish_unknown_time_event_anchored(
     plan: &event_evidence::Prepared<'_>,
     deployment: &mut ReferenceDeployment,
@@ -462,6 +468,7 @@ pub fn publish_unknown_time_event_anchored(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn publish_unknown_time_anchored(
     plan: &impl Graph,
     pin: UnknownTimePin,
@@ -537,6 +544,7 @@ pub struct UnknownTimeMuxer {
 }
 impl UnknownTimeMuxer {
     /// Transfer an idle, unbound muxer, or return it unchanged on refusal.
+    #[allow(clippy::result_large_err)]
     pub fn new(inner: av_recording::Muxer) -> Result<Self, av_recording::Muxer> {
         if inner.pending_publication().is_some() || inner.publication_scope().is_some() {
             return Err(inner);
@@ -622,6 +630,7 @@ pub enum UnknownTimeAvKind {
 /// Derive and publish one unknown-time segment under an anchored journal.
 /// The muxer advances only after both publication and confirmation succeed;
 /// on failure it retains the exact candidate fence for reconciliation.
+#[allow(clippy::too_many_arguments)]
 pub fn publish_next_unknown_time_av_segment_anchored(
     input: &UnknownTimeAvSegment<'_>,
     muxer: &mut UnknownTimeMuxer,
@@ -877,6 +886,7 @@ pub struct PublishedAvSegment {
 /// staged or committed. Reconcile or retry the same exact input and root before
 /// proceeding. This synchronous reference path is not a production async
 /// persistence worker or a continuous recording service.
+#[allow(clippy::result_large_err)]
 pub fn publish_next_av_segment(
     input: &AvSegmentPublication<'_>,
     muxer: &mut av_recording::Muxer,
@@ -899,6 +909,7 @@ pub fn publish_next_av_segment(
 /// The caller must independently retain journal anchors, source media and muxer
 /// reconstruction state. This is synchronous reference I/O, not a running
 /// recorder or a complete crash-recovery protocol.
+#[allow(clippy::result_large_err, clippy::too_many_arguments)]
 pub fn publish_next_av_segment_journaled(
     input: &AvSegmentPublication<'_>,
     muxer: &mut av_recording::Muxer,
@@ -913,10 +924,10 @@ pub fn publish_next_av_segment_journaled(
         return Err(AvSegmentPublishError::JournalScope);
     }
     if let Some(expected) = journal.pending().or(journal.replay_pin()) {
-        if let Some(proposed) = muxer.pending_publication() {
-            if expected != proposed {
-                return Err(AvSegmentPublishError::PendingMismatch { expected, proposed });
-            }
+        if let Some(proposed) = muxer.pending_publication()
+            && expected != proposed
+        {
+            return Err(AvSegmentPublishError::PendingMismatch { expected, proposed });
         }
         muxer.restore_publication_fence(expected);
     }
@@ -936,6 +947,7 @@ pub fn publish_next_av_segment_journaled(
 /// Publish while independently journaling each intent and confirmation prefix
 /// before proceeding. Both stores need exclusive ownership and the keeper's
 /// minimum must be independently retained; this does not reconstruct a muxer.
+#[allow(clippy::result_large_err, clippy::too_many_arguments)]
 pub fn publish_next_av_segment_anchored(
     input: &AvSegmentPublication<'_>,
     muxer: &mut av_recording::Muxer,
@@ -951,10 +963,10 @@ pub fn publish_next_av_segment_anchored(
         return Err(AvSegmentPublishError::JournalScope);
     }
     if let Some(expected) = journal.pending().or(journal.replay_pin()) {
-        if let Some(proposed) = muxer.pending_publication() {
-            if expected != proposed {
-                return Err(AvSegmentPublishError::PendingMismatch { expected, proposed });
-            }
+        if let Some(proposed) = muxer.pending_publication()
+            && expected != proposed
+        {
+            return Err(AvSegmentPublishError::PendingMismatch { expected, proposed });
         }
         muxer.restore_publication_fence(expected);
     }
@@ -971,6 +983,7 @@ pub fn publish_next_av_segment_anchored(
     )
 }
 
+#[allow(clippy::result_large_err, clippy::too_many_arguments)]
 fn publish_next_av_segment_inner(
     input: &AvSegmentPublication<'_>,
     muxer: &mut av_recording::Muxer,
@@ -1036,13 +1049,13 @@ fn publish_next_av_segment_inner(
                     retention: input.retention,
                     capture: input.capture,
                 };
-                if let Some(expected) = *pending {
-                    if expected != pin {
-                        return Err(AvSegmentPublishError::PendingMismatch {
-                            expected,
-                            proposed: pin,
-                        });
-                    }
+                if let Some(expected) = *pending
+                    && expected != pin
+                {
+                    return Err(AvSegmentPublishError::PendingMismatch {
+                        expected,
+                        proposed: pin,
+                    });
                 }
                 // Establish the reconciliation fence before entering any archive
                 // effect. It survives both ordinary errors and unwinding in this
@@ -1072,7 +1085,7 @@ fn publish_next_av_segment_inner(
                         source: Error::Mismatch,
                     });
                 }
-                if let Some(journal) = journal.as_deref_mut() {
+                if let Some(journal) = journal {
                     if let Err(source) = journal.confirm(pin, cx) {
                         return Err(AvSegmentPublishError::JournalAfterCommit {
                             pin,
@@ -1080,14 +1093,14 @@ fn publish_next_av_segment_inner(
                             source,
                         });
                     }
-                    if let Some(keeper) = keeper.as_deref_mut() {
-                        if let Err(source) = keeper.retain(journal, cx) {
-                            return Err(AvSegmentPublishError::AnchorAfterCommit {
-                                pin,
-                                receipt: Box::new(receipt),
-                                source,
-                            });
-                        }
+                    if let Some(keeper) = keeper
+                        && let Err(source) = keeper.retain(journal, cx)
+                    {
+                        return Err(AvSegmentPublishError::AnchorAfterCommit {
+                            pin,
+                            receipt: Box::new(receipt),
+                            source,
+                        });
                     }
                 }
                 Ok(PublishedAvSegment { pin, receipt })
@@ -1251,6 +1264,7 @@ impl std::error::Error for ConfirmedAvReplayError {}
 /// must verify again. It does not rebuild muxer clocks, establish source
 /// identity, infer capture bounds, authorize a new connection, or prove
 /// independent retention of the keeper or its anchors.
+#[allow(clippy::too_many_arguments)]
 pub fn replay_confirmed_unknown_time_av_anchored(
     deployment: &mut ReferenceDeployment,
     read_authority: &dyn ReadAuthority,
@@ -1282,6 +1296,7 @@ pub type ConfirmedVideoReplayError = ConfirmedAvReplayError;
 /// Verify the complete source mapping and replay the exact confirmed video
 /// root under current read and retention authority. This does not restore the
 /// muxer, authenticate a camera, infer capture time, or establish coverage.
+#[allow(clippy::too_many_arguments)]
 pub fn replay_confirmed_unknown_time_video_anchored(
     deployment: &mut ReferenceDeployment,
     read_authority: &dyn ReadAuthority,
@@ -1319,6 +1334,7 @@ enum ConfirmedGraphProfile {
 /// must separately establish whether a replay occurred and validate any
 /// rollover lineage and independent pin custody. The returned pin is a checked
 /// claim, not camera identity or coverage proof.
+#[allow(clippy::too_many_arguments)]
 pub fn verify_settled_unknown_time_av_anchored(
     deployment: &mut ReferenceDeployment,
     read_authority: &dyn ReadAuthority,
@@ -1346,6 +1362,7 @@ pub fn verify_settled_unknown_time_av_anchored(
 
 /// Recheck a settled video-only history and its complete bounded graph.
 /// This performs no publication and does not prove identity or continuity.
+#[allow(clippy::too_many_arguments)]
 pub fn verify_settled_unknown_time_video_anchored(
     deployment: &mut ReferenceDeployment,
     read_authority: &dyn ReadAuthority,
@@ -1371,6 +1388,7 @@ pub fn verify_settled_unknown_time_video_anchored(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn verify_settled_unknown_time_graph_anchored(
     deployment: &mut ReferenceDeployment,
     read_authority: &dyn ReadAuthority,
@@ -1407,6 +1425,7 @@ fn verify_settled_unknown_time_graph_anchored(
     Ok(pin)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn replay_confirmed_unknown_time_graph_anchored(
     deployment: &mut ReferenceDeployment,
     read_authority: &dyn ReadAuthority,
@@ -1441,6 +1460,7 @@ fn replay_confirmed_unknown_time_graph_anchored(
     .map_err(ConfirmedAvReplayError::Publication)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn read_confirmed_unknown_time_graph(
     deployment: &mut ReferenceDeployment,
     read_authority: &dyn ReadAuthority,
@@ -1641,6 +1661,7 @@ fn check_unknown_ledger_validity(
     Err(Error::Mismatch)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn stage_graph(
     plan: &impl Graph,
     deployment: &mut ReferenceDeployment,
@@ -1934,6 +1955,7 @@ pub fn read_staged_unknown_time_event(
     Ok(recovered)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn recover_event_components(
     deployment: &ReferenceDeployment,
     pin: UnknownTimePin,
@@ -2308,6 +2330,7 @@ pub fn read_staged_unknown_time_source(
     Ok(recovered)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn recover_source_components(
     deployment: &ReferenceDeployment,
     pin: UnknownTimePin,
@@ -2418,6 +2441,7 @@ fn recover_source_components(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn read_unknown_time_object_kind(
     deployment: &mut ReferenceDeployment,
     pin: UnknownTimePin,
@@ -2496,6 +2520,7 @@ fn read_av_audio_configuration_with_time(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn read_av_audio_configuration_profile(
     deployment: &mut ReferenceDeployment,
     pin: Pin,
@@ -2617,6 +2642,7 @@ fn open_graph(
     open_graph_kind(deployment, pin, authority, limits, work, cx, KIND, DOMAIN)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn open_graph_kind(
     deployment: &mut ReferenceDeployment,
     pin: Pin,
@@ -2632,6 +2658,7 @@ fn open_graph_kind(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn open_graph_kind_with_time(
     deployment: &mut ReferenceDeployment,
     pin: Pin,
@@ -2655,6 +2682,7 @@ fn open_graph_kind_with_time(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn open_graph_allowed_with_time(
     deployment: &mut ReferenceDeployment,
     pin: Pin,
@@ -3062,6 +3090,7 @@ fn verify_staged_av_candidate_with_time(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn staged_source_index(
     deployment: &ReferenceDeployment,
     pin: Pin,
@@ -3793,6 +3822,7 @@ fn open_av_video_graph_with_time(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn open_av_video_graph_profile(
     deployment: &mut ReferenceDeployment,
     pin: Pin,
@@ -5031,6 +5061,7 @@ fn verify_av_graph_with_time(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn recover_video_graph(
     deployment: &mut ReferenceDeployment,
     pin: Pin,

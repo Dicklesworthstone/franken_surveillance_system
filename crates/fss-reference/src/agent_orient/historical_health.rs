@@ -49,6 +49,7 @@ pub struct HistoricalHealthDeletion {
 
 /// Availability of historical diagnostic metadata, separate from the physical sensor state.
 #[derive(Clone, Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum HistoricalHealthMetadata {
     /// Exact receipt and its committed provenance metadata were read and verified.
     Retained {

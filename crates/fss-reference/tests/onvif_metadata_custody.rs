@@ -164,7 +164,7 @@ const LEGACY_SUPPORTED_ANALYTICS: LegacyFixture = legacy_fixture!(
 const LEGACY_PROJECTION: &str = "72cbcc587675d80c11226e0b01c337114f9c9a2d84b973e0592002f868c5a4cb";
 
 fn fixture_digest(hex: &str) -> Test<ContentDigest> {
-    Ok(ContentDigest::parse(&format!("sha256:{hex}"))?)
+    Ok(ContentDigest::parse(format!("sha256:{hex}"))?)
 }
 
 fn fixture_bytes(hex: &str) -> Test<Vec<u8>> {
@@ -173,7 +173,9 @@ fn fixture_bytes(hex: &str) -> Test<Vec<u8>> {
         return Err("invalid hexadecimal compatibility fixture".into());
     }
     hex.as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| Ok(u8::from_str_radix(std::str::from_utf8(pair)?, 16)?))
         .collect()
 }
@@ -455,10 +457,7 @@ fn root_durable_ledger_interruption_is_not_success_and_retry_completes_exact_roo
             .as_str()
             .strip_prefix("onvif-metadata-")
             .ok_or("slot")?;
-        (
-            ContentDigest::parse(&format!("sha256:{hex}"))?,
-            visible.root,
-        )
+        (ContentDigest::parse(format!("sha256:{hex}"))?, visible.root)
     };
     let mut deployment = ReferenceDeployment::reopen(&directory.0, SITE, &cx)?;
     assert!(RetainedMetadata::open(&deployment, identity, Some(root), &cx).is_err());

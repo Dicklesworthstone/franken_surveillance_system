@@ -42,6 +42,10 @@ pub const MAX_EVIDENCE_HYDRATION_TOKENS: u64 = 16_000;
 pub const EVIDENCE_HYDRATION_CAPABILITY: &str = "CAP-AGENT-EVIDENCE-HYDRATE-001";
 /// Existing AOP-005 read grant required alongside the exact hydration grant.
 pub const EVIDENCE_QUERY_CAPABILITY: &str = "CAP-AGENT-QUERY-001";
+/// Required capability for H2 structured analytic hydration (tracks, model receipts, graph).
+pub const EVIDENCE_HYDRATION_H2_CAPABILITY: &str = "CAP-AGENT-HYDRATE-H2-001";
+/// Required capability for H3 privacy-masked visual keyframe and crop hydration.
+pub const EVIDENCE_HYDRATION_H3_CAPABILITY: &str = "CAP-AGENT-HYDRATE-H3-001";
 
 /// One exact event revision at the current, unchanged session basis.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -70,6 +74,7 @@ pub struct EvidenceHydrationRequest {
 
 impl EvidenceHydrationRequest {
     /// Refuses malformed scalar scope before any deployment/session read.
+    #[allow(clippy::result_large_err)]
     pub fn validate(&self) -> Result<(), EvidenceHydrationError> {
         let digest_valid = |digest: ContentDigest| {
             digest.algorithm() == DigestAlgorithm::Sha256 && digest.bytes() != [0; 32]
@@ -268,6 +273,7 @@ impl fmt::Display for EvidenceHydrationFailure {
 }
 impl std::error::Error for EvidenceHydrationFailure {}
 
+#[allow(clippy::result_large_err)]
 fn cancelled_check(cancelled: &(dyn Fn() -> bool + Sync)) -> Result<(), EvidenceHydrationError> {
     if cancelled() {
         Err(EvidenceHydrationError::Cancelled)
@@ -280,6 +286,7 @@ fn cancelled_check(cancelled: &(dyn Fn() -> bool + Sync)) -> Result<(), Evidence
 // object set must retain the selected lineage for every later revalidation. The event's whole
 // revision history contributes to sticky tamper/uncertainty, so checking only its latest manifest
 // would omit a dependency of the delivered explanation. This reads no model or media child.
+#[allow(clippy::result_large_err)]
 fn retain_event_custody(
     owner: &ImmutableRetainedSource<'_>,
     event: &EventId,
@@ -313,6 +320,7 @@ fn retain_event_custody(
 /// charge and cursor; explicit retry never refunds it, revives a cursor or replays an effect.
 /// The shared metadata allowance includes admission snapshots and final revalidation. Existing
 /// journal/pin verification and restore-fence checks retain their separate native owner bounds.
+#[allow(clippy::result_large_err)]
 pub fn hydrate_event_evidence(
     root: impl super::SessionRoot,
     request: &EvidenceHydrationRequest,

@@ -228,6 +228,7 @@ impl std::fmt::Debug for RetainedRtpH264Frame {
 
 /// Exactly one payload-free progress step or one privacy-projected picture.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum RetainedRtpDecodeStep {
     /// Source/receiver facts and decode consequences are both preserved without wire bytes.
     Progress {

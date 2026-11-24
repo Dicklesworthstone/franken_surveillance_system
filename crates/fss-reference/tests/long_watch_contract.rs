@@ -726,10 +726,12 @@ fn long_detector_refusals_are_explicit_and_changed_privacy_invalidates_publicati
     )?;
     let scalar = fss_reference::ScalarExecCx::new();
     let package = trained_package(&f, &scalar)?;
-    let mut limits = PackageDetectLimits::default();
     // The native model may complete, but a head budget of zero must still record the pipeline
     // attempt and its explicit refusal instead of falsely claiming no inference was invoked.
-    limits.detection_work_units = 0;
+    let limits = PackageDetectLimits {
+        detection_work_units: 0,
+        ..PackageDetectLimits::default()
+    };
     let detector = LongWatchDetector::new(
         &package,
         DETECTOR_PACKAGE,

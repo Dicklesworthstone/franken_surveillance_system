@@ -25,6 +25,7 @@ pub struct ReplaySourceReadPermit<'a> {
 impl<'a> ReplaySourceReadPermit<'a> {
     /// Narrow current query+media-read authority to exact source pins and query read ceilings.
     /// All validation is pure and precedes filesystem access.
+    #[allow(clippy::result_large_err)]
     pub fn authorize(
         authority: &'a ContextAuthority,
         request: &RecordingReplayContextRequest,
@@ -96,6 +97,7 @@ impl<'a> ReplaySourceReadPermit<'a> {
         self.digest
     }
 
+    #[allow(clippy::result_large_err)]
     pub(super) fn check(
         &self,
         request: &RecordingReplayContextRequest,
@@ -113,6 +115,7 @@ impl<'a> ReplaySourceReadPermit<'a> {
         self.check_current()
     }
 
+    #[allow(clippy::result_large_err)]
     pub(super) fn check_current(&self) -> Result<(), RecordingReplayContextError> {
         if self.authority.cancellation_reason.is_some()
             || self
@@ -127,6 +130,7 @@ impl<'a> ReplaySourceReadPermit<'a> {
     }
 }
 
+#[allow(clippy::result_large_err)]
 pub(super) fn read_allowance(
     limits: ReplayTimeReadLimits,
 ) -> Result<(u64, u64), RecordingReplayContextError> {

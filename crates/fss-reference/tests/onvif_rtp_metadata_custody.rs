@@ -121,6 +121,7 @@ fn header() -> Vec<u8> {
     bytes.extend([0_u8; 16]);
     bytes
 }
+#[allow(clippy::expect_used)]
 fn append(bytes: &mut Vec<u8>, packet: &[u8], offset: u32, original_len: u16) {
     bytes.extend(
         u16::try_from(packet.len() + 8)

@@ -92,6 +92,7 @@ impl<P> fmt::Debug for ConfigurationRefusal<'_, '_, '_, '_, '_, P> {
 
 /// One completed upgrade or payload-free refusal.
 #[must_use = "handle or retire the returned session or refusal"]
+#[allow(clippy::large_enum_variant)]
 pub enum Event<'scope, 'task, 'policy, IO> {
     /// An upgraded session that owns its route's active slot.
     Session {
@@ -153,6 +154,7 @@ where
     /// Peer admission must be independent, bounded and nonblocking; a network
     /// source address or claimed MAC is not authenticated physical identity.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::result_large_err)]
     pub fn new(
         router: Router<'fleet, 'report, 'scope, 'task, 'policy>,
         cx: &'scope Cx,
@@ -267,9 +269,15 @@ where
                     drop(route);
                     return Poll::Ready(Event::HandshakeCapacity { index });
                 }
-                let controller =
+                let Ok(controller) =
                     Controller::new_with_time_sync_policy(self.identity.clone(), 1, self.time_sync)
-                        .expect("fixed first controller message ID is valid");
+                else {
+                    drop(route);
+                    return Poll::Ready(Event::HandshakeFailed {
+                        index,
+                        reason: controller_upgrade::Error::Configuration,
+                    });
+                };
                 let (owner_cx, admission, transport, protocol, max_poll, wait) = (
                     self.cx,
                     self.admission,

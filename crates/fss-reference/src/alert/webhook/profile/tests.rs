@@ -185,7 +185,7 @@ fn incomplete_ambiguous_or_unknown_disclosure_selection_never_falls_back() -> Te
         (WebhookDisclosureProfile::EventMetadataV1, None),
         (
             WebhookDisclosureProfile::EventMetadataV1,
-            Some(ContentDigest::parse(&format!("sha256:{}", "0".repeat(64)))?),
+            Some(ContentDigest::parse(format!("sha256:{}", "0".repeat(64)))?),
         ),
     ] {
         assert_eq!(
@@ -412,7 +412,7 @@ fn metadata_requires_exact_valid_canonical_revision_not_only_matching_opaque_ref
 #[test]
 fn metadata_digest_algorithms_are_preserved_instead_of_relabelled() -> Test {
     let mut event = event()?;
-    let declared = ContentDigest::parse(&format!("blake3:{}", "ab".repeat(32)))?;
+    let declared = ContentDigest::parse(format!("blake3:{}", "ab".repeat(32)))?;
     event.decision_path.fingerprint = declared;
     event.decision_path.policy_generation = declared;
     event.probability.calibration_generation = Some(declared);

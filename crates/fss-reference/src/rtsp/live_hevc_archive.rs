@@ -14,6 +14,7 @@ use interruption::InterruptedCapture;
 
 use std::fmt;
 
+use fss_packet::PacketLimits;
 use fss_packet::hevc::{HevcConfiguration, HevcConfigurationLimits};
 use fss_publication::{LocalRootPublisher, PublishCancellation};
 
@@ -22,10 +23,13 @@ use super::archive_pins::{
     JournaledArchiveProgress, JournaledHevcArchiveRetirement, JournaledHevcArchiveWriter,
 };
 use super::authentication::DigestCredentials;
+use super::client::inband::{
+    H265InbandSync, H265SyncOutcome, InbandSyncLimits, ParameterSetOrigin, RtspIntakeTelemetry,
+};
 use super::client::replay::ReplayWindow;
-use super::client::{ClientCommand, ClientState};
-use super::hevc_client::HevcClientError;
+use super::client::{ClientCommand, ClientProgress, ClientState};
 use super::hevc_client::pictures::{HevcPictureClientError, HevcPictureClientPoll as Event};
+use super::hevc_client::{HevcClientError, HevcClientPoll};
 use super::hevc_recording_capture::live::{
     AutomaticHevcRecordingStep, Control, LiveHevcRecordingConfig, control,
 };
@@ -251,6 +255,10 @@ pub struct JournaledLiveHevcArchive<'a, 'p> {
     next: Option<Control>,
     keepalive: ClientCommand,
     replay: Option<ReplayWindow>,
+    allow_inband_parameter_sets: bool,
+    inband_limits: InbandSyncLimits,
+    inband_sync: Option<H265InbandSync>,
+    telemetry: RtspIntakeTelemetry,
     control_blocked: bool,
     network_ended: bool,
     completion: Option<LiveArchiveCompletion>,
@@ -276,6 +284,7 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
     /// Validate all owner ceilings and settled protected HEVC history before connecting once.
     /// SDP supplies only the exact selected configuration, never authority or capture timing.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::result_large_err)]
     pub fn connect(
         live: LiveHevcConfig,
         recording: SelectedHevcRecordingConfig,
@@ -358,6 +367,10 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
             next: Some(Control::Request(ClientCommand::Describe)),
             keepalive: ClientCommand::KeepAlive,
             replay: None,
+            allow_inband_parameter_sets: false,
+            inband_limits: InbandSyncLimits::default(),
+            inband_sync: None,
+            telemetry: RtspIntakeTelemetry::default(),
             control_blocked: false,
             network_ended: false,
             completion: None,
@@ -371,6 +384,7 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
     /// This pure configuration call performs no I/O and grants no network or secret authority.
     /// No active or challenged request can have its method changed, and no refusal enables
     /// automatic fallback. Invalid/late selection leaves all original ownership intact.
+    #[allow(clippy::result_large_err)]
     pub fn select_keepalive(
         &mut self,
         command: ClientCommand,
@@ -398,6 +412,7 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
     /// Replay always requires the caller's pinned SSRC and uses the same native
     /// source, timing and protected publication owners as live HEVC acquisition.
     /// This pure selection grants no authority and never enables a live fallback.
+    #[allow(clippy::result_large_err)]
     pub fn select_replay(&mut self, window: ReplayWindow) -> Result<(), LiveHevcArchiveFailure> {
         if self.finished
             || self.completion.is_some()
@@ -422,6 +437,49 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
         self.replay
     }
 
+    /// Opt in before DESCRIBE to acquire HEVC VPS/SPS/PPS in-band from RTP when SDP omits
+    /// or partially omits `sprop-vps`/`sprop-sps`/`sprop-pps`. Default is strict SDP (`false`).
+    #[allow(clippy::result_large_err)]
+    pub fn set_allow_inband_parameter_sets(
+        &mut self,
+        enabled: bool,
+    ) -> Result<(), LiveHevcArchiveFailure> {
+        if self.finished
+            || self.completion.is_some()
+            || self.network_ended
+            || self.supplied_collector.is_some()
+            || self.state() != ClientState::Idle
+            || !matches!(self.next, Some(Control::Request(ClientCommand::Describe)))
+        {
+            return Err(safe(LiveHevcArchiveError::Configuration));
+        }
+        self.allow_inband_parameter_sets = enabled;
+        Ok(())
+    }
+
+    /// Override bounded pre-roll ceilings for in-band HEVC parameter-set acquisition before DESCRIBE.
+    #[allow(clippy::result_large_err)]
+    pub fn set_inband_sync_limits(
+        &mut self,
+        limits: InbandSyncLimits,
+    ) -> Result<(), LiveHevcArchiveFailure> {
+        if self.finished
+            || self.completion.is_some()
+            || self.network_ended
+            || self.state() != ClientState::Idle
+            || limits.validate().is_err()
+        {
+            return Err(safe(LiveHevcArchiveError::Configuration));
+        }
+        self.inband_limits = limits;
+        Ok(())
+    }
+
+    /// Explicit provenance and pre-sync discard counters for HEVC intake.
+    pub fn intake_telemetry(&self) -> RtspIntakeTelemetry {
+        self.telemetry
+    }
+
     fn selected_control(&self, event: &Event) -> Option<Control> {
         control(event).map(|command| match (command, self.replay) {
             (Control::Request(ClientCommand::Setup), Some(_)) => {
@@ -438,6 +496,7 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
     /// must still select the exact expected HEVC payload before SETUP; it cannot replace this
     /// configuration. Source parameter changes remain subject to the normal collector checks.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::result_large_err)]
     pub fn connect_with_configuration(
         live: LiveHevcConfig,
         recording: LiveHevcRecordingConfig,
@@ -542,6 +601,13 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
         }
         if self.completion.is_none() && self.interrupted.is_none() {
             at = at.min(self.live_deadline_ns);
+            if let Some(deadline) = self
+                .inband_sync
+                .as_ref()
+                .and_then(H265InbandSync::deadline_ns)
+            {
+                at = at.min(deadline);
+            }
             if self.needs_credentials() {
                 at = at.min(self.last_ns);
             } else if !self.capture_busy()
@@ -555,6 +621,7 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
     }
     /// Supply independent timing for the exact held, source-closed HEVC picture.
     /// Safe timing errors keep the original picture and its fixed residence deadline intact.
+    #[allow(clippy::result_large_err)]
     pub fn supply_timing(
         &mut self,
         timing: HevcRecordingTiming,
@@ -572,6 +639,7 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
     }
     /// Seal only an actually completed prefix with its real final boundary witness packet.
     /// Released original packets remain caller-owned; some may already occur in prepared custody.
+    #[allow(clippy::result_large_err)]
     pub fn seal(
         &mut self,
         now: u64,
@@ -587,6 +655,7 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
             .map_err(|e| safe(LiveHevcArchiveError::Capture(e)))
     }
     /// Request an immutable catalog page through its independent pin/work protection.
+    #[allow(clippy::result_large_err)]
     pub fn flush(
         &mut self,
         now: u64,
@@ -609,6 +678,7 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
     /// Close input now, including at WindowAccepted before any checkpoint publication.
     /// No seal, EOF or remote TEARDOWN is fabricated. Accepted windows drain independently;
     /// untimed, incomplete and unsealed source transfers immediately and is not called archived.
+    #[allow(clippy::result_large_err)]
     pub fn finish_capture(
         &mut self,
         now: u64,
@@ -636,6 +706,7 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
     /// Borrow fresh cnonce entropy only when needs_credentials is true. The caller owns secret
     /// acquisition policy and must refuse a held challenge if it lacks credential authority.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::result_large_err)]
     pub fn poll(
         &mut self,
         readiness: SocketReadiness,
@@ -666,6 +737,9 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
         }
         if self.network_ended || self.completion.is_some() {
             return Err(self.fatal(LiveHevcArchiveError::Invariant, None, None));
+        }
+        if self.inband_sync.as_ref().is_some_and(|s| s.is_expired(now)) {
+            return Err(self.fatal(LiveHevcArchiveError::Selection, None, None));
         }
         if let Some(action) = self.next.filter(|_| !self.control_blocked) {
             let connection = self
@@ -743,6 +817,7 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
     fn capture_busy(&self) -> bool {
         self.capture.as_ref().is_some_and(|c| c.busy())
     }
+    #[allow(clippy::result_large_err)]
     fn require_input(&self) -> Result<(), LiveHevcArchiveFailure> {
         if self.completion.is_some() || self.interrupted.is_some() {
             return Err(safe(LiveHevcArchiveError::Closed));
@@ -756,6 +831,7 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
         self.ready = false;
         self.storage_since_ns = self.storage_since_ns.or(Some(now));
     }
+    #[allow(clippy::result_large_err)]
     fn admit(
         &mut self,
         now: u64,
@@ -808,6 +884,7 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
         }
         Ok(())
     }
+    #[allow(clippy::result_large_err)]
     fn storage_step(
         &mut self,
         now: u64,
@@ -836,6 +913,7 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
             progress => Ok(LiveHevcArchiveStep::Archive(Box::new(progress))),
         }
     }
+    #[allow(clippy::result_large_err)]
     fn capture_step(
         &mut self,
         event: HevcCapturePoll,
@@ -939,6 +1017,7 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
             }
         }
     }
+    #[allow(clippy::result_large_err)]
     fn protocol_step(
         &mut self,
         event: Event,
@@ -947,13 +1026,98 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
     ) -> Result<LiveHevcArchiveStep, LiveHevcArchiveFailure> {
         self.network_ended |= transport.is_some();
         if self.capture.is_none() {
-            if matches!(
-                control(&event),
-                Some(Control::Request(ClientCommand::Setup))
-            ) {
+            if self.inband_sync.is_none()
+                && matches!(
+                    control(&event),
+                    Some(Control::Request(ClientCommand::Setup))
+                )
+            {
                 if let Err(reason) = self.initialize_capture() {
                     let recording = self.retire_input(None, Some(Box::new(event)), transport);
                     return Err(self.fatal(reason, recording, None));
+                }
+            } else if self.inband_sync.is_some() {
+                if let Some(next) = self.selected_control(&event) {
+                    self.next = Some(next);
+                }
+                if let Event::Client {
+                    event: client_event,
+                    ..
+                } = &event
+                    && matches!(
+                        client_event.as_ref(),
+                        HevcClientPoll::Control {
+                            progress: ClientProgress::Accepted(ClientState::Playing)
+                                | ClientProgress::ReplayAccepted(_),
+                            ..
+                        }
+                    )
+                    && let Some(sync) = self.inband_sync.as_mut()
+                {
+                    sync.start(now);
+                }
+                if let Event::Source { source, .. } = &event {
+                    let Some(mut sync) = self.inband_sync.take() else {
+                        let recording = self.retire_input(None, Some(Box::new(event)), transport);
+                        return Err(self.fatal(LiveHevcArchiveError::Invariant, recording, None));
+                    };
+                    match sync.observe(source, now) {
+                        Ok(H265SyncOutcome::Awaiting) => {
+                            self.telemetry.pre_sync_discarded = sync.pre_sync_discarded();
+                            self.inband_sync = Some(sync);
+                            let trigger =
+                                AutomaticHevcRecordingStep::Network(LiveHevcStep::Protocol {
+                                    event,
+                                    transport,
+                                });
+                            if self.network_ended {
+                                let retained = self.retire(None, None);
+                                return Ok(LiveHevcArchiveStep::Stopped {
+                                    trigger: Box::new(trigger),
+                                    retained: Box::new(retained),
+                                });
+                            }
+                            return Ok(LiveHevcArchiveStep::Recording(Box::new(trigger)));
+                        }
+                        Ok(H265SyncOutcome::Synced {
+                            configuration,
+                            prefix_packets,
+                        }) => {
+                            self.telemetry.pre_sync_discarded = sync.pre_sync_discarded();
+                            self.telemetry.parameter_set_origin =
+                                Some(ParameterSetOrigin::InbandRtp);
+                            if let Err(reason) =
+                                self.install_inband_capture(*configuration, prefix_packets, now)
+                            {
+                                let recording =
+                                    self.retire_input(None, Some(Box::new(event)), transport);
+                                return Err(self.fatal(reason, recording, None));
+                            }
+                        }
+                        Err(_) => {
+                            self.telemetry.pre_sync_discarded = sync.pre_sync_discarded();
+                            let recording =
+                                self.retire_input(None, Some(Box::new(event)), transport);
+                            return Err(self.fatal(
+                                LiveHevcArchiveError::Selection,
+                                recording,
+                                None,
+                            ));
+                        }
+                    }
+                } else {
+                    let trigger = AutomaticHevcRecordingStep::Network(LiveHevcStep::Protocol {
+                        event,
+                        transport,
+                    });
+                    if self.network_ended {
+                        let retained = self.retire(None, None);
+                        return Ok(LiveHevcArchiveStep::Stopped {
+                            trigger: Box::new(trigger),
+                            retained: Box::new(retained),
+                        });
+                    }
+                    return Ok(LiveHevcArchiveStep::Recording(Box::new(trigger)));
                 }
             } else {
                 if let Some(next) = self.selected_control(&event) {
@@ -972,6 +1136,23 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
                 }
                 return Ok(LiveHevcArchiveStep::Recording(Box::new(trigger)));
             }
+        }
+        // If in-band sync was initialized during DESCRIBE, self.capture is still None:
+        // forward the DESCRIBE event as a normal pre-capture network event so SETUP runs next.
+        if self.capture.is_none() {
+            if let Some(next) = self.selected_control(&event) {
+                self.next = Some(next);
+            }
+            let trigger =
+                AutomaticHevcRecordingStep::Network(LiveHevcStep::Protocol { event, transport });
+            if self.network_ended {
+                let retained = self.retire(None, None);
+                return Ok(LiveHevcArchiveStep::Stopped {
+                    trigger: Box::new(trigger),
+                    retained: Box::new(retained),
+                });
+            }
+            return Ok(LiveHevcArchiveStep::Recording(Box::new(trigger)));
         }
         if self.awaiting_sender
             && let Some(key) = self.connection.as_ref().and_then(|c| c.bound_key())
@@ -1036,7 +1217,20 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
             return Ok(());
         }
         if media.vps().len() != 1 || media.sps().len() != 1 || media.pps().len() != 1 {
-            return Err(LiveHevcArchiveError::Selection);
+            if !self.allow_inband_parameter_sets {
+                return Err(LiveHevcArchiveError::Selection);
+            }
+            let sync = H265InbandSync::new(
+                PacketLimits::default(),
+                selected.configuration_limits,
+                self.inband_limits,
+                (media.vps().len() == 1).then(|| media.vps()[0].clone()),
+                (media.sps().len() == 1).then(|| media.sps()[0].clone()),
+                (media.pps().len() == 1).then(|| media.pps()[0].clone()),
+            )
+            .map_err(|_| LiveHevcArchiveError::Selection)?;
+            self.inband_sync = Some(sync);
+            return Ok(());
         }
         let configuration = HevcConfiguration::parse(
             &media.vps()[0],
@@ -1045,6 +1239,7 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
             selected.configuration_limits,
         )
         .map_err(|_| LiveHevcArchiveError::Selection)?;
+        self.telemetry.parameter_set_origin = Some(ParameterSetOrigin::SdpFmtp);
         let selected = self
             .selected
             .take()
@@ -1068,6 +1263,63 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
         self.capture = Some(HevcRecordingCapture::new(collector));
         Ok(())
     }
+    fn install_inband_capture(
+        &mut self,
+        configuration: HevcConfiguration,
+        prefix_packets: Vec<super::client::inband::HevcPrefixPacket>,
+        now: u64,
+    ) -> Result<(), LiveHevcArchiveError> {
+        let selected = self
+            .selected
+            .take()
+            .ok_or(LiveHevcArchiveError::Invariant)?;
+        let key = if self.awaiting_sender {
+            self.connection
+                .as_ref()
+                .and_then(|c| c.bound_key())
+                .unwrap_or_else(|| self.binding.key())
+        } else {
+            self.binding.key()
+        };
+        let mut collector = HevcRecordingCollector::new(
+            selected.scope,
+            key,
+            selected.payload_type,
+            configuration,
+            selected.time_scale,
+            selected.limits,
+        )
+        .map_err(|e| LiveHevcArchiveError::Capture(CaptureError::Collection(e)))?;
+        if self.awaiting_sender {
+            if self
+                .connection
+                .as_ref()
+                .and_then(|c| c.bound_key())
+                .is_some()
+            {
+                self.awaiting_sender = false;
+            } else {
+                collector = collector
+                    .defer_initial_sender()
+                    .map_err(|e| LiveHevcArchiveError::Capture(CaptureError::Collection(e)))?;
+            }
+        }
+        for packet in prefix_packets {
+            collector
+                .push_source(
+                    key,
+                    super::recording::RecordingPacket {
+                        sequence: packet.sequence,
+                        received_ns: packet.received_ns,
+                        bytes: &packet.bytes,
+                    },
+                    now,
+                )
+                .map_err(|e| LiveHevcArchiveError::Capture(CaptureError::Collection(e)))?;
+        }
+        self.capture = Some(HevcRecordingCapture::new(collector));
+        Ok(())
+    }
     fn network_failure(&mut self, failure: LiveHevcFailure) -> LiveHevcArchiveFailure {
         let reason = LiveHevcArchiveError::Network(failure.reason);
         match failure.retirement {
@@ -1088,6 +1340,7 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
         let capture = self.capture.take().map(|mut c| c.cancel());
         self.selected = None;
         self.supplied_collector = None;
+        self.inband_sync = None;
         self.next = None;
         self.network_ended = true;
         let connection = connection.or(owned_connection);

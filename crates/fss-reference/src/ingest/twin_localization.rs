@@ -59,12 +59,16 @@ pub enum RecordedLocalizationSource {
     Jpeg(RecordedDecodeRequest),
     /// A picture within an explicitly bounded IDR-starting AVC range.
     H264 {
+        /// Bounded retained H.264 decode request.
         request: RecordedH264Request,
+        /// Coding-order segment index to localize.
         segment: usize,
     },
     /// A picture within an explicitly bounded IRAP-starting HEVC range; skipped RASL is refused.
     H265 {
+        /// Bounded retained H.265 decode request.
         request: RecordedH265Request,
+        /// Coding-order segment index to localize.
         segment: usize,
     },
 }
@@ -318,6 +322,7 @@ impl RecordedLocalization {
 
 /// Deterministic identity of an original retained exposure. Hashing both the exact capsule and
 /// its source bytes identity prevents a caller from borrowing an atlas reference identity.
+#[allow(clippy::result_large_err)]
 pub fn retained_exposure(capsule: &SensorCapsule) -> Result<ContentDigest> {
     let bytes = capsule
         .try_canonical_bytes()
@@ -349,6 +354,7 @@ impl Frame {
             Self::H265(f) => f.receipt().capsule(),
         }
     }
+    #[allow(clippy::result_large_err)]
     fn binding(
         &self,
         retained: &RetainedFileImport,
@@ -422,11 +428,13 @@ impl Frame {
     }
 }
 
+#[allow(clippy::result_large_err)]
 fn checkpoint(cx: &ReplayCx, stage: &'static str) -> Result<()> {
     cx.checkpoint(stage)
         .map_err(|_| RecordedLocalizationError::Cancelled)
 }
 
+#[allow(clippy::result_large_err)]
 fn validate(plan: RecordedLocalizationPlan<'_>, source: &RecordedLocalizationSource) -> Result<()> {
     let (start, count) = source.range();
     if count == 0
@@ -442,6 +450,7 @@ fn validate(plan: RecordedLocalizationPlan<'_>, source: &RecordedLocalizationSou
     validate_options(plan.options)
 }
 
+#[allow(clippy::result_large_err)]
 fn validate_options(options: ImageLocalizationOptions) -> Result<()> {
     let e = options.extraction;
     let m = options.matching;
@@ -469,6 +478,7 @@ struct DecodeAccess<'a> {
     source_budget: Option<&'a SourceReadBudget>,
 }
 
+#[allow(clippy::result_large_err)]
 fn decode(
     deployment: &mut ReferenceDeployment,
     source: &RecordedLocalizationSource,
@@ -577,6 +587,7 @@ fn decode(
     }
 }
 
+#[allow(clippy::result_large_err)]
 fn allowed_mask(
     mask: &MaskBinding,
     dimensions: [u32; 2],
@@ -619,6 +630,7 @@ fn allowed_mask(
 /// and the supplied geometry budget before each output. A complete requested range is required
 /// before localization; neither budget exhaustion nor a later damaged AU returns partial poses.
 /// JPEG's existing decode publication can complete before a later localization refusal.
+#[allow(clippy::result_large_err)]
 pub fn localize_recorded_frame(
     deployment: &mut ReferenceDeployment,
     source: &RecordedLocalizationSource,
@@ -640,6 +652,7 @@ pub fn localize_recorded_frame(
     )
 }
 
+#[allow(clippy::result_large_err, clippy::too_many_arguments)]
 fn localize_inner(
     deployment: &mut ReferenceDeployment,
     source: &RecordedLocalizationSource,

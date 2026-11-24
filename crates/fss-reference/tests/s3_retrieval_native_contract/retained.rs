@@ -63,11 +63,14 @@ fn retained_fixture<C: S3ReadClock>(
     reader.request_cancellation(&mut tree, DEADLINE).unwrap();
     reader.begin_drain(&mut tree, DEADLINE).unwrap();
     reader.finalize(&mut tree, DEADLINE).unwrap();
-    property.release_scope_reservation(&tree, &reader).unwrap();
+    property
+        .release_scope_reservation(&tree, &mut reader)
+        .unwrap();
     property.request_cancellation(&mut tree, DEADLINE).unwrap();
     property.begin_drain(&mut tree, DEADLINE).unwrap();
     property.finalize(&mut tree, DEADLINE).unwrap();
-    root.release_scope_reservation(&tree, &property).unwrap();
+    root.release_scope_reservation(&tree, &mut property)
+        .unwrap();
     root.request_cancellation(&mut tree, DEADLINE).unwrap();
     root.begin_drain(&mut tree, DEADLINE).unwrap();
     root.finalize(&mut tree, DEADLINE).unwrap();
@@ -106,7 +109,9 @@ fn standalone_recovery_returns_exact_bytes_only_after_complete_verification() {
         assert!(head.contains(&format!("range: bytes={}-{end}\r\n", n * 1024)));
         if n != 0 {
             assert!(head.contains("if-match: \"stable\"\r\n"));
-            assert!(head.contains("SignedHeaders=accept-encoding;host;if-match;range;"));
+            assert!(
+                head.contains("SignedHeaders=accept-encoding;content-length;host;if-match;range;")
+            );
         }
     }
     let canonical = verified.receipt().encode().unwrap();

@@ -777,7 +777,7 @@ impl HorizontalTapPlan {
         let denom = 2 * dst_w as u64;
         let max_x = src_w - 1;
         for dx in 0..dst_w {
-            let sx_raw = ((2 * dx as u64 + 1) * (src_w as u64) << 16) / denom;
+            let sx_raw = (((2 * dx as u64 + 1) * (src_w as u64)) << 16) / denom;
             let sx = sx_raw.saturating_sub(1 << 15);
             let ix0 = ((sx >> 16) as usize).min(max_x);
             let ix1 = (ix0 + 1).min(max_x);
@@ -875,7 +875,7 @@ fn resize_bilinear_luma_simd_metered(
     let tail_start = full_tiles * RESIZE_TILE_LANES;
 
     for dy in 0..dst_h {
-        let sy_raw = ((2 * dy as u64 + 1) * (src_h as u64) << 16) / y_denom;
+        let sy_raw = (((2 * dy as u64 + 1) * (src_h as u64)) << 16) / y_denom;
         let sy = sy_raw.saturating_sub(1 << 15);
         let y0 = ((sy >> 16) as usize).min(max_y);
         let y1 = (y0 + 1).min(max_y);
@@ -1052,7 +1052,7 @@ fn rgb_to_luma_simd_metered(
         });
     }
 
-    for px in rem.chunks_exact(3) {
+    for px in rem.as_chunks::<3>().0 {
         let val =
             (u32::from(px[0]) * 77 + u32::from(px[1]) * 150 + u32::from(px[2]) * 29 + 128) >> 8;
         out[out_offset] = val.min(255) as u8;
@@ -1103,8 +1103,8 @@ fn normalize_luma_simd_metered(
     // Pass 1: 16-lane vectorizable min/max reduction.
     let mut mins = [u8::MAX; NORMALIZE_LANES];
     let mut maxs = [0u8; NORMALIZE_LANES];
-    let mut chunks = plane.chunks_exact(NORMALIZE_LANES);
-    for chunk in &mut chunks {
+    let (chunks, rem) = plane.as_chunks::<NORMALIZE_LANES>();
+    for chunk in chunks {
         for lane in 0..NORMALIZE_LANES {
             let v = chunk[lane];
             if v < mins[lane] {
@@ -1121,7 +1121,7 @@ fn normalize_luma_simd_metered(
         min_v = min_v.min(mins[lane]);
         max_v = max_v.max(maxs[lane]);
     }
-    for &v in chunks.remainder() {
+    for &v in rem {
         min_v = min_v.min(v);
         max_v = max_v.max(v);
     }
@@ -1168,9 +1168,9 @@ fn normalize_luma_simd_metered(
                 (u64::from(idx as u8).saturating_sub(u64::from(min_v)) * gain + half) >> 16;
             *entry = scaled.min(255) as u8;
         }
-        let mut in_chunks = plane.chunks_exact(NORMALIZE_LANES);
+        let (in_chunks, rem) = plane.as_chunks::<NORMALIZE_LANES>();
         let mut offset = 0usize;
-        for chunk in &mut in_chunks {
+        for chunk in in_chunks {
             if cancel_after_chunks.is_some_and(|limit| simd_chunks >= limit) {
                 return Ok(MeteredResult::Cancelled {
                     completed_chunks: simd_chunks,
@@ -1193,7 +1193,6 @@ fn normalize_luma_simd_metered(
             simd_chunks = simd_chunks.saturating_add(1);
             work_units = work_units.saturating_add(NORMALIZE_LANES as u64);
         }
-        let rem = in_chunks.remainder();
         if cancel_after_chunks.is_some_and(|limit| simd_chunks >= limit && !rem.is_empty()) {
             return Ok(MeteredResult::Cancelled {
                 completed_chunks: simd_chunks,
@@ -1227,9 +1226,9 @@ fn normalize_luma_simd_metered(
     }
 
     // Small plane (< 256 pixels): direct 16-lane fixed-point scaling (zero LUT allocation).
-    let mut in_chunks = plane.chunks_exact(NORMALIZE_LANES);
+    let (in_chunks, rem) = plane.as_chunks::<NORMALIZE_LANES>();
     let mut offset = 0usize;
-    for chunk in &mut in_chunks {
+    for chunk in in_chunks {
         if cancel_after_chunks.is_some_and(|limit| simd_chunks >= limit) {
             return Ok(MeteredResult::Cancelled {
                 completed_chunks: simd_chunks,
@@ -1254,7 +1253,6 @@ fn normalize_luma_simd_metered(
         simd_chunks = simd_chunks.saturating_add(1);
         work_units = work_units.saturating_add(NORMALIZE_LANES as u64);
     }
-    let rem = in_chunks.remainder();
     if cancel_after_chunks.is_some_and(|limit| simd_chunks >= limit && !rem.is_empty()) {
         return Ok(MeteredResult::Cancelled {
             completed_chunks: simd_chunks,

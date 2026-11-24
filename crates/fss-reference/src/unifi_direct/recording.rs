@@ -145,6 +145,7 @@ impl Segment {
 /// Result of admitting one source record.
 #[must_use]
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum Push {
     /// The source record is returned immediately for custody or explicit omission.
     Source {
@@ -393,13 +394,13 @@ impl Recorder {
                 match constructor(self.key, &record, self.limits.mp4) {
                     Ok(mux) => {
                         let observed = mux.display_dimensions();
-                        if let Some(expected) = self.expected_dimensions {
-                            if expected != observed {
-                                return Err(self.refuse(
-                                    Error::DimensionsMismatch { expected, observed },
-                                    Some(record),
-                                ));
-                            }
+                        if let Some(expected) = self.expected_dimensions
+                            && expected != observed
+                        {
+                            return Err(self.refuse(
+                                Error::DimensionsMismatch { expected, observed },
+                                Some(record),
+                            ));
                         }
                         self.configuration = Some(ConfigurationBinding {
                             inband: self.inband,
@@ -447,7 +448,7 @@ impl Recorder {
                     }
                     return result;
                 }
-                if self.videos.len() >= self.limits.mp4.max_samples + 1 {
+                if self.videos.len() > self.limits.mp4.max_samples {
                     return Err(self.refuse(Error::Limit, Some(record)));
                 }
                 if self.videos.try_reserve(1).is_err() {
@@ -465,9 +466,7 @@ impl Recorder {
                 self.last_video_time = Some((timestamp_ms, time));
                 let result = self.buffer(record, Some(time));
                 if contains_idr_nal_type && self.videos.len() > 1 {
-                    if result.is_err() {
-                        return result;
-                    }
+                    let _ = result?;
                     self.segment()
                 } else {
                     result

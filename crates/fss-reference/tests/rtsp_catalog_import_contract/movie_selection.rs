@@ -17,7 +17,7 @@ use std::ops::Range;
 #[path = "gaps.rs"]
 mod gaps;
 
-#[allow(dead_code)]
+#[allow(dead_code, clippy::duplicate_mod)]
 #[path = "../support/import_integrity.rs"]
 mod integrity;
 

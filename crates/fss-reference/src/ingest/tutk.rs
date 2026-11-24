@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Owner-authorized TUTK/IOTC NEW-protocol (magic `0xCC51`) live adapter.
 //!
 //! Maps the sans-IO `fss-tutk` session onto FSS packet truth per the
@@ -27,10 +28,17 @@ use fss_tutk::session::{
     AssembledFrame, PhaseName, SessionConfig, SessionEvent, SessionStats, TutkSession,
 };
 
-use super::file_adapter::{FileImportManifest, SegmentSpan};
+use super::file_adapter::{
+    FileImportManifest, SegmentSpan, append_planned_batch, check_commit_admission,
+    plan_capsule_batches,
+};
 use super::file_publication::FilePublicationPlan;
 use crate::{ReferenceDeployment, ReplayCx};
 
+/// Registered adapter identity for the TUTK/IOTC NEW-protocol live adapter.
+pub const ADAPTER: &str = crate::ADP_WYZE_ROW_ID;
+/// Canonical adapter family tag used by unified footage discovery.
+pub const ADAPTER_FAMILY: &str = "tutk_p2p";
 /// Uniform custody chunk size for the acquisition seal (1 MiB).
 pub const SEAL_CHUNK_BYTES: u64 = 1024 * 1024;
 /// Maximum sealed input size (bound on the one-pass concatenation).
@@ -71,22 +79,43 @@ pub enum AcquisitionState {
     Requested,
     /// K-command challenge-response accepted by the camera; witness is the
     /// digest of the exact K10003 payload bytes (the auth receipt).
-    Authenticated { auth_receipt: ContentDigest },
+    Authenticated {
+        /// SHA-256 digest of the exact K10003 camera authentication receipt.
+        auth_receipt: ContentDigest,
+    },
     /// Camera accepted the stream start (K10011); witness is the digest of
     /// the exact K10011 payload bytes (the adapter ACK).
-    AdapterAccepted { accept_digest: ContentDigest },
+    AdapterAccepted {
+        /// SHA-256 digest of the exact K10011 stream-acceptance payload.
+        accept_digest: ContentDigest,
+    },
     /// First source-linked frame reassembled; witness is its capsule id.
-    FirstFrameObserved { capsule_id: CapsuleId },
+    FirstFrameObserved {
+        /// Capsule identity of the first observed source frame.
+        capsule_id: CapsuleId,
+    },
     /// `window_frames` consecutive frames arrived without a continuity gap.
-    ContinuityVerified { window_frames: u32 },
+    ContinuityVerified {
+        /// Consecutive gapless frame count reaching continuity verification.
+        window_frames: u32,
+    },
     /// Running with explicit degradation (drops, resyncs, evictions).
-    Degraded { reason: String },
+    Degraded {
+        /// Secret-free description of the observed stream degradation.
+        reason: String,
+    },
     /// Terminal failure with a concrete reason.
-    Failed { reason: String },
+    Failed {
+        /// Secret-free description of the terminal failure.
+        reason: String,
+    },
     /// Cancelled by the owner.
     Cancelled,
     /// Timeout after dispatch; outcome unknown until readback (plan §8.6).
-    Indeterminate { reason: String },
+    Indeterminate {
+        /// Secret-free description of why the post-dispatch outcome is unknown.
+        reason: String,
+    },
 }
 
 /// Adapter errors (typed, non-secret-bearing).
@@ -141,9 +170,13 @@ pub struct TutkIngestConfig {
 /// Monotone adapter counters (drops always visible).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct IngestStats {
+    /// Total source-linked capsules committed into the adapter ledger.
     pub capsules_committed: u64,
+    /// Total batches committed into the adapter ledger.
     pub batches_committed: u64,
+    /// Continuity gaps observed across reassembled frames.
     pub gaps: u64,
+    /// Transitions into [`AcquisitionState::Degraded`].
     pub degraded_transitions: u64,
 }
 
@@ -297,6 +330,25 @@ impl TutkIngest {
         self.session.send_raw(frame);
     }
 
+    /// Active audio privacy policy configured for this acquisition.
+    #[must_use]
+    pub fn audio_policy(&self) -> AudioPolicy {
+        self.audio
+    }
+
+    /// Number of observed access units currently buffered for acquisition sealing.
+    #[must_use]
+    pub fn frame_count(&self) -> usize {
+        self.au_records.len()
+    }
+
+    /// Number of observed access units whose camera `FRAMEINFO` marked a keyframe.
+    #[must_use]
+    pub fn keyframe_count(&self) -> u64 {
+        self.au_records.iter().filter(|au| au.keyframe).count() as u64
+    }
+
+    /// Advance the session clock (timeouts, retransmissions, ACK ticker) and drain events.
     pub fn advance(&mut self, now_ns: u64) {
         self.session.advance(now_ns);
         self.pump(now_ns);
@@ -306,6 +358,17 @@ impl TutkIngest {
     pub fn cancel(&mut self) {
         self.session.close();
         self.state = AcquisitionState::Cancelled;
+    }
+
+    /// Cancel the acquisition and discard all unsealed in-memory custody buffers
+    /// without mutating any durable deployment on disk.
+    pub fn discard_unsealed(&mut self) {
+        self.cancel();
+        if self.sealed.is_none() {
+            self.pending.clear();
+            self.au_records.clear();
+            self.custody.clear();
+        }
     }
 
     /// Drain session events into state transitions, capsules, and batches.
@@ -322,11 +385,15 @@ impl TutkIngest {
     }
 
     /// Seal the acquisition into the durable deployment as a decodable
-    /// file-import-shaped custody contract (RetainedFileImport-compatible):
-    /// stage every custody payload, commit the capsule batches, publish the
-    /// fi- slot root, and commit the manifest batch that moves the import to
-    /// generation 2 (complete). The input is the exact received AU byte
-    /// stream — truthful live acquisition, never a fabricated file.
+    /// file-import-shaped custody contract (`RetainedFileImport`-compatible):
+    /// preflight capacity and cancellation, stage only the exact payloads
+    /// linked by the `FilePublicationPlan` closure, commit the planned init and
+    /// capsule batches, publish the `fi-` slot root (and any parts) root-last,
+    /// and commit the manifest batch moving the import to generation 2.
+    ///
+    /// Every staged object is explicitly linked into the published immutable
+    /// root closure, leaving zero unreferenced objects on both normal
+    /// completion and finalized partial-import sealing after cancellation.
     pub fn seal_acquisition(
         &mut self,
         deployment: &mut ReferenceDeployment,
@@ -336,6 +403,16 @@ impl TutkIngest {
         if let Some(seal) = &self.sealed {
             return Ok(seal.clone());
         }
+        if cx.is_cancelled() {
+            return Err(TutkIngestError::Seal(
+                "acquisition seal cancelled before staging".to_string(),
+            ));
+        }
+        if adapter_generation.trim().is_empty() {
+            return Err(TutkIngestError::Seal(
+                "adapter generation must be non-empty".to_string(),
+            ));
+        }
         if self.au_records.is_empty() {
             return Err(TutkIngestError::Seal(
                 "no frames observed; nothing to seal".to_string(),
@@ -344,20 +421,29 @@ impl TutkIngest {
         self.flush()?;
 
         let import_identity = self.acquisition_identity;
-        let hex: String = import_identity
-            .bytes()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
+        let hex = self.acquisition_hex.clone();
 
         // Input = the exact received AU stream, concatenated once (bounded).
-        let total: u64 = self.au_records.iter().map(|au| au.len).sum();
+        let mut total = 0u64;
+        for au in &self.au_records {
+            if au.len == 0 {
+                return Err(TutkIngestError::Seal(
+                    "empty access unit cannot be sealed".to_string(),
+                ));
+            }
+            total = total.checked_add(au.len).ok_or_else(|| {
+                TutkIngestError::Seal("acquisition byte length overflow".to_string())
+            })?;
+        }
         if total > SEAL_MAX_INPUT_BYTES {
             return Err(TutkIngestError::Seal(format!(
                 "acquisition exceeds seal bound ({total} > {SEAL_MAX_INPUT_BYTES} bytes)"
             )));
         }
-        let mut stream = Vec::with_capacity(total as usize);
+        let total_usize = usize::try_from(total).map_err(|_| {
+            TutkIngestError::Seal("acquisition exceeds addressable memory".to_string())
+        })?;
+        let mut stream = Vec::with_capacity(total_usize);
         for au in &self.au_records {
             let bytes = self.custody.get(&au.digest).ok_or_else(|| {
                 TutkIngestError::Seal(format!("custody missing AU {}", au.digest))
@@ -366,15 +452,18 @@ impl TutkIngest {
         }
         let input_bytes = stream.len() as u64;
         let input_sha256 = ContentDigest::sha256(&stream);
+
         // Uniform custody chunks of the stream (the file-import contract);
-        // segment spans reference byte ranges inside it.
+        // segment spans reference byte ranges inside it. Every staged payload
+        // goes into `payloads` and is pinned in `FilePublicationPlan`, so no
+        // staged object can escape the published root closure.
         let chunk_size = SEAL_CHUNK_BYTES as usize;
         let mut ordered_chunks = Vec::new();
-        let mut chunk_slices: Vec<(ContentDigest, &[u8])> = Vec::new();
+        let mut payloads: BTreeMap<ContentDigest, Vec<u8>> = BTreeMap::new();
         for chunk in stream.chunks(chunk_size) {
             let digest = ContentDigest::sha256(chunk);
             ordered_chunks.push(digest);
-            chunk_slices.push((digest, chunk));
+            payloads.entry(digest).or_insert_with(|| chunk.to_vec());
         }
 
         let mut dedup = ordered_chunks.clone();
@@ -384,6 +473,7 @@ impl TutkIngest {
             .map_err(|e| TutkIngestError::Seal(format!("custody manifest: {e}")))?;
         let custody_manifest_bytes = custody_manifest.canonical_bytes();
         let custody_manifest_digest = ContentDigest::sha256(&custody_manifest_bytes);
+        payloads.insert(custody_manifest_digest, custody_manifest_bytes);
 
         // Segment spans: one per AU, covering every input byte exactly once.
         let mut spans = Vec::with_capacity(self.au_records.len());
@@ -397,7 +487,9 @@ impl TutkIngest {
                 capsule_id: au.capsule_id.clone(),
                 gap_before: au.gap_before,
             });
-            offset += au.len;
+            offset = offset
+                .checked_add(au.len)
+                .ok_or_else(|| TutkIngestError::Seal("segment span offset overflow".to_string()))?;
         }
 
         let capsule_ids: Vec<CapsuleId> = self
@@ -415,170 +507,113 @@ impl TutkIngest {
                 .unwrap_or_else(|| "annexb".to_string()),
             detector_evidence: "tutk_newprotocol_live_acquisition:session_port_adopted".to_string(),
             chunk_bytes: SEAL_CHUNK_BYTES,
-            ordered_chunks: ordered_chunks.clone(),
+            ordered_chunks,
             segment_spans: spans,
             omission_spans: Vec::new(),
             capsule_ids,
             limits_digest,
-            adapter_id: "ADP-WYZE-V4-LAB-001".to_string(),
+            adapter_id: ADAPTER.to_string(),
             adapter_generation: adapter_generation.to_string(),
             part_roots: Vec::new(),
             capture_time_label: "unknown".to_string(),
         };
+
+        let earliest = self
+            .au_records
+            .iter()
+            .map(|au| au.capture.earliest)
+            .min()
+            .ok_or_else(|| {
+                TutkIngestError::Seal("no frames observed; nothing to seal".to_string())
+            })?;
+        let latest = self
+            .au_records
+            .iter()
+            .map(|au| au.capture.latest)
+            .max()
+            .ok_or_else(|| {
+                TutkIngestError::Seal("no frames observed; nothing to seal".to_string())
+            })?;
+        let overall_validity =
+            CaptureInterval::new(earliest, latest).map_err(TutkIngestError::Contract)?;
+        let import_object_id = ObjectId::parse(format!("object:file-import:{hex}"))
+            .map_err(TutkIngestError::Contract)?;
+        let manifest_object_id = ObjectId::parse(format!("object:file-import-manifest:{hex}"))
+            .map_err(TutkIngestError::Contract)?;
+
+        // Entry 0: file_import gen 1 (init); then one sensor_capsule delta per
+        // frame matching the canonical file-import schema (`witness_digest: None`,
+        // since `capsule.source_digest` and `segment_spans` already bind the AU).
+        let mut planned_entries: Vec<(EvidenceDelta, ContentDigest)> =
+            Vec::with_capacity(self.au_records.len() + 1);
+        planned_entries.push((
+            EvidenceDelta {
+                delta_id: format!("delta:file-import:{hex}:init"),
+                family: "file_import".to_string(),
+                object_id: import_object_id.clone(),
+                prior_generation: None,
+                new_generation: 1,
+                validity: overall_validity,
+                plane: Plane::Authority,
+                payload_digest: custody_manifest_digest,
+                witness_digest: None,
+                operation_id: None,
+            },
+            custody_manifest_digest,
+        ));
+        for batch in self.ledger.batches() {
+            for delta in &batch.deltas {
+                if delta.family != "sensor_capsule" {
+                    continue;
+                }
+                let bytes = self.custody.get(&delta.payload_digest).ok_or_else(|| {
+                    TutkIngestError::Seal(format!(
+                        "custody missing encoding {}",
+                        delta.payload_digest
+                    ))
+                })?;
+                payloads
+                    .entry(delta.payload_digest)
+                    .or_insert_with(|| bytes.clone());
+                let mut deployment_delta = delta.clone();
+                deployment_delta.witness_digest = None;
+                planned_entries.push((deployment_delta, delta.payload_digest));
+            }
+        }
+        if planned_entries.len() != self.au_records.len() + 1 {
+            return Err(TutkIngestError::Seal(
+                "capsule authority count disagrees with observed frames".to_string(),
+            ));
+        }
 
         let closure_bound = deployment
             .limits()
             .manifest_children_max
             .min(deployment.limits().batch_entries_max)
             .min(MAX_MANIFEST_CHILDREN);
-        let encoding_digests: Vec<ContentDigest> = self
-            .ledger
-            .batches()
-            .iter()
-            .flat_map(|b| {
-                b.deltas
-                    .iter()
-                    .filter_map(|d| (d.family == "sensor_capsule").then_some(d.payload_digest))
-            })
-            .collect();
-        let publication = FilePublicationPlan::new(
-            import_identity,
-            ordered_chunks
-                .iter()
-                .copied()
-                .chain(std::iter::once(custody_manifest_digest))
-                .chain(encoding_digests.iter().copied()),
-            closure_bound,
-        )
-        .map_err(|e| TutkIngestError::Seal(format!("publication plan: {e}")))?;
+        let publication =
+            FilePublicationPlan::new(import_identity, payloads.keys().copied(), closure_bound)
+                .map_err(|e| TutkIngestError::Seal(format!("publication plan: {e}")))?;
         import_manifest.part_roots = publication.part_roots();
         let slot_manifest = publication
             .root_manifest(&import_manifest)
             .map_err(|e| TutkIngestError::Seal(format!("slot manifest: {e}")))?;
-        let manifest_bytes = import_manifest.canonical_bytes();
+        let import_root = slot_manifest.root();
         let manifest_digest = import_manifest.canonical_digest();
 
-        // Stage every custody payload and verify before any publish.
-        for (_, slice) in &chunk_slices {
-            deployment
-                .publisher_mut()
-                .stage_object(slice)
-                .map_err(|e| TutkIngestError::Seal(format!("stage chunk: {e}")))?;
-        }
-        for au in &self.au_records {
-            let bytes = self.custody.get(&au.digest).expect("checked above");
-            deployment
-                .publisher_mut()
-                .stage_object(bytes)
-                .map_err(|e| TutkIngestError::Seal(format!("stage AU: {e}")))?;
-        }
-        deployment
-            .publisher_mut()
-            .stage_object(&custody_manifest_bytes)
-            .map_err(|e| TutkIngestError::Seal(format!("stage custody manifest: {e}")))?;
-        for digest in &encoding_digests {
-            let bytes = self.custody.get(digest).ok_or_else(|| {
-                TutkIngestError::Seal(format!("custody missing encoding {digest}"))
-            })?;
-            deployment
-                .publisher_mut()
-                .stage_object(bytes)
-                .map_err(|e| TutkIngestError::Seal(format!("stage encoding: {e}")))?;
-        }
-        deployment
-            .publisher_mut()
-            .stage_object(&manifest_bytes)
-            .map_err(|e| TutkIngestError::Seal(format!("stage manifest: {e}")))?;
-        for (digest, _) in &chunk_slices {
-            deployment
-                .publisher_mut()
-                .verify_object(*digest)
-                .map_err(|e| TutkIngestError::Seal(format!("verify chunk: {e}")))?;
-        }
-        for au in &self.au_records {
-            deployment
-                .publisher_mut()
-                .verify_object(au.digest)
-                .map_err(|e| TutkIngestError::Seal(format!("verify AU: {e}")))?;
-        }
-        deployment
-            .publisher_mut()
-            .verify_object(custody_manifest_digest)
-            .map_err(|e| TutkIngestError::Seal(format!("verify custody manifest: {e}")))?;
-        deployment
-            .publisher_mut()
-            .verify_object(manifest_digest)
-            .map_err(|e| TutkIngestError::Seal(format!("verify manifest: {e}")))?;
-        for digest in &encoding_digests {
-            deployment
-                .publisher_mut()
-                .verify_object(*digest)
-                .map_err(|e| TutkIngestError::Seal(format!("verify encoding: {e}")))?;
-        }
-
-        // Commit the capsule batches (idempotent per batch identity).
-        for batch in self.ledger.batches().to_vec() {
-            deployment
-                .append_batch(
-                    batch.batch_id.clone(),
-                    batch.deltas.clone(),
-                    batch.children.clone(),
-                    cx,
-                )
-                .map_err(|e| TutkIngestError::Seal(format!("append capsule batch: {e}")))?;
-        }
-
-        let overall_validity = {
-            let first = self.au_records.first().expect("nonempty");
-            let last = self.au_records.last().expect("nonempty");
-            CaptureInterval::new(first.capture.earliest, last.capture.latest)
-                .map_err(TutkIngestError::Contract)?
-        };
-        // Manifest completion: init batch (gen 1), then manifest batch
-        // (gen 1->2 complete + manifest gen 1) — the durable ledger admits one
-        // transition per object per batch.
-        let import_object_id = ObjectId::parse(format!("object:file-import:{hex}"))
-            .map_err(TutkIngestError::Contract)?;
-        let manifest_object_id = ObjectId::parse(format!("object:file-import-manifest:{hex}"))
-            .map_err(TutkIngestError::Contract)?;
-        deployment
-            .append_batch(
-                BatchId::parse(format!(
-                    "batch:file-import:{hex}:c{}",
-                    self.ledger.batches().len()
-                ))
-                .map_err(TutkIngestError::Contract)?,
-                vec![EvidenceDelta {
-                    delta_id: format!("delta:file-import:{hex}:init"),
-                    family: "file_import".to_string(),
-                    object_id: import_object_id.clone(),
-                    prior_generation: None,
-                    new_generation: 1,
-                    validity: overall_validity,
-                    plane: Plane::Authority,
-                    payload_digest: custody_manifest_digest,
-                    witness_digest: None,
-                    operation_id: None,
-                }],
-                vec![custody_manifest_digest],
-                cx,
-            )
-            .map_err(|e| TutkIngestError::Seal(format!("append init batch: {e}")))?;
-
-        // Publish the fi- slot root (root-last).
-        let import_root = deployment
-            .publisher_mut()
-            .stage_manifest(publication.slot(), &slot_manifest)
-            .map_err(|e| TutkIngestError::Seal(format!("stage slot manifest: {e}")))?;
-        if publication.parts().is_empty() {
-            deployment
-                .publish_and_commit(publication.slot(), &slot_manifest, overall_validity, cx)
-                .map_err(|e| TutkIngestError::Seal(format!("publish root: {e}")))?;
-        } else {
-            publication
-                .publish(deployment, &import_manifest, overall_validity, cx)
-                .map_err(|e| TutkIngestError::Seal(format!("publish parts: {e}")))?;
-        }
+        let max_batch_entries = self
+            .limits
+            .max_batch_deltas
+            .max(1)
+            .min(deployment.limits().batch_entries_max);
+        let capsule_batches = plan_capsule_batches(
+            planned_entries,
+            max_batch_entries,
+            deployment.limits().journal_record_max_bytes as usize,
+            deployment.current_anchor(),
+            &hex,
+        )
+        .map_err(|e| TutkIngestError::Seal(format!("plan capsule batches: {e}")))?;
 
         let deltas = vec![
             EvidenceDelta {
@@ -606,16 +641,74 @@ impl TutkIngest {
                 operation_id: None,
             },
         ];
+        let manifest_children = vec![manifest_digest, import_root];
         let manifest_batch = BatchId::parse(format!("batch:file-import:{hex}:manifest"))
             .map_err(TutkIngestError::Contract)?;
-        deployment
-            .append_batch(
-                manifest_batch.clone(),
-                deltas,
-                vec![manifest_digest, import_root],
+
+        // Preflight complete storage, root, and batch admission BEFORE staging
+        // any object so cancellation or capacity refusal leaves zero orphans.
+        publication
+            .preflight_unstaged(
+                deployment,
+                &import_manifest,
+                overall_validity,
+                payloads
+                    .iter()
+                    .map(|(digest, bytes)| (*digest, bytes.len())),
                 cx,
             )
-            .map_err(|e| TutkIngestError::Seal(format!("append manifest batch: {e}")))?;
+            .map_err(|e| TutkIngestError::Seal(format!("preflight custody: {e}")))?;
+        check_commit_admission(
+            deployment,
+            &manifest_batch,
+            &deltas,
+            &manifest_children,
+            &publication,
+            &capsule_batches,
+            cx,
+        )
+        .map_err(|e| TutkIngestError::Seal(format!("preflight commit: {e}")))?;
+        if cx.is_cancelled() {
+            return Err(TutkIngestError::Seal(
+                "acquisition seal cancelled before staging".to_string(),
+            ));
+        }
+
+        // Stage and verify ONLY the exact payloads bound into `publication`.
+        for (digest, bytes) in &payloads {
+            let staged = deployment
+                .publisher_mut()
+                .stage_object(bytes)
+                .map_err(|e| TutkIngestError::Seal(format!("stage payload: {e}")))?;
+            if staged != *digest {
+                return Err(TutkIngestError::Contract(ContractError::DigestMismatch));
+            }
+            deployment
+                .publisher_mut()
+                .verify_object(staged)
+                .map_err(|e| TutkIngestError::Seal(format!("verify payload: {e}")))?;
+        }
+
+        // Commit the planned init and capsule batches (idempotent per identity).
+        for batch in capsule_batches {
+            append_planned_batch(deployment, batch.batch_id, batch.deltas, batch.children, cx)
+                .map_err(|e| TutkIngestError::Seal(format!("append capsule batch: {e}")))?;
+        }
+
+        // Publish parts (when partitioned) and the fi- slot root (root-last).
+        publication
+            .publish(deployment, &import_manifest, overall_validity, cx)
+            .map_err(|e| TutkIngestError::Seal(format!("publish root: {e}")))?;
+
+        // Commit the completion manifest batch (import gen 1 -> 2).
+        append_planned_batch(
+            deployment,
+            manifest_batch.clone(),
+            deltas,
+            manifest_children,
+            cx,
+        )
+        .map_err(|e| TutkIngestError::Seal(format!("append manifest batch: {e}")))?;
 
         let seal = AcquisitionSeal {
             import_identity,
@@ -638,7 +731,8 @@ impl TutkIngest {
         ContentDigest::sha256(&encoder.finish())
     }
 
-    fn handle_event(&mut self, ev: SessionEvent, now_ns: u64) {
+    /// Apply one typed session event at monotonic host time `now_ns`.
+    pub fn handle_event(&mut self, ev: SessionEvent, now_ns: u64) {
         if self.failed {
             return;
         }
@@ -1215,5 +1309,258 @@ mod tests {
             AcquisitionState::Failed { reason } => assert!(reason.contains("0x20")),
             s => panic!("expected Failed, got {s:?}"),
         }
+    }
+
+    fn fresh_root(label: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "fss-tutk-{label}-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn unreferenced_count(report: &crate::doctor::DoctorReport) -> i64 {
+        let check = report
+            .check("objects.unreferenced")
+            .expect("objects.unreferenced check present");
+        match check.fields.get("counts") {
+            Some(crate::doctor::DoctorValue::Object(map)) => {
+                match map.get("unreferenced_objects") {
+                    Some(crate::doctor::DoctorValue::Number(n)) => *n,
+                    other => panic!("unexpected unreferenced_objects field: {other:?}"),
+                }
+            }
+            other => panic!("unexpected counts field: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn seal_186_frames_is_doctor_healthy_with_zero_unreferenced_objects() {
+        let root = fresh_root("seal-186");
+        let cx = test_cx(&root);
+        let mut deployment = ReferenceDeployment::open(&root, "site:tutk-seal-test", &cx).unwrap();
+        let mut ing = sealed_ingest(186);
+        let seal = ing
+            .seal_acquisition(&mut deployment, "HL_CAM4/4.52.17.26", &cx)
+            .unwrap();
+        assert_eq!(seal.capsule_count, 186);
+
+        // RetainedFileImport opens and verifies the entire byte stream cleanly.
+        let retained = crate::ingest::retained::RetainedFileImport::open(
+            &deployment,
+            seal.import_identity,
+            crate::ingest::retained::RetainedReadLimits::default(),
+            &cx,
+        )
+        .unwrap();
+        assert_eq!(retained.manifest().capsule_ids.len(), 186);
+        assert_eq!(
+            retained
+                .verify_source(
+                    &deployment,
+                    crate::ingest::retained::RetainedReadLimits::default(),
+                    &cx,
+                )
+                .unwrap(),
+            retained.manifest().input_sha256
+        );
+        drop(deployment);
+
+        // Doctor reports Healthy with zero unreferenced objects (eliminates 186-object leak).
+        let report = crate::doctor::inspect_deployment(&root);
+        assert_eq!(
+            report.verdict,
+            crate::doctor::DoctorVerdict::Healthy,
+            "doctor report: {}",
+            report.to_json()
+        );
+        assert_eq!(unreferenced_count(&report), 0);
+
+        // Unified footage query admits TUTK with zero other_adapter_imports.
+        let req = crate::agent_footage::FootageQueryRequest {
+            filter: crate::agent_footage::FootageQueryFilter::default(),
+            principal: fss_core::PrincipalId::parse("principal:tutk-test").unwrap(),
+            max_entries: 32,
+            expected_anchor: None,
+            continuation: None,
+        };
+        let page = crate::agent_footage::query_footage(
+            &root,
+            &req,
+            &crate::agent_footage::FootageQueryLimits::default(),
+            &mut |_| true,
+        )
+        .unwrap();
+        assert_eq!(page.scanned_capsules, 186);
+        assert_eq!(page.matched_capsules, 186);
+        assert_eq!(page.other_adapter_imports, 0);
+        assert_eq!(page.rows[0].adapter_id, ADAPTER);
+        assert_eq!(page.rows[0].adapter_family(), ADAPTER_FAMILY);
+        assert_eq!(page.rows[0].adapter_generation, "HL_CAM4/4.52.17.26");
+
+        // Orient sees the completed TUTK import cleanly.
+        let orient_limits = crate::agent_orient::OrientLimits::default();
+        let snapshot = crate::agent_orient::read_deployment(&root, &orient_limits).unwrap();
+        assert_eq!(
+            snapshot.doctor_verdict,
+            crate::doctor::DoctorVerdict::Healthy
+        );
+        assert_eq!(snapshot.completed_imports.len(), 1);
+        let orient_req = crate::agent_orient::OrientRequest {
+            view: fss_core::AgentView::Brief,
+            principal: fss_core::PrincipalId::parse("principal:tutk-test").unwrap(),
+            budget_tokens: None,
+        };
+        let oriented =
+            crate::agent_orient::orient_deployment(&snapshot, &orient_req, &orient_limits).unwrap();
+        assert!(
+            oriented.capsule().frame.knowledge_cells.iter().any(|cell| {
+                cell.claim_id() == crate::agent_orient::CLAIM_IMPORTS
+                    && cell.evidence_digests().contains(&seal.manifest_digest)
+            }),
+            "orient CLAIM_IMPORTS cell must reference the TUTK import manifest"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn seal_multipart_tutk_acquisition_has_zero_unreferenced_objects() {
+        let root = fresh_root("seal-multipart");
+        let cx = test_cx(&root);
+        let mut deployment = ReferenceDeployment::open_with_limits(
+            &root,
+            "site:tutk-seal-test",
+            crate::DeploymentLimits {
+                manifest_children_max: 8,
+                ..crate::DeploymentLimits::standard()
+            },
+            &cx,
+        )
+        .unwrap();
+        let mut ing = sealed_ingest(20);
+        let seal = ing
+            .seal_acquisition(&mut deployment, "SIM-CAM/9.99.0.SIM", &cx)
+            .unwrap();
+        let retained = crate::ingest::retained::RetainedFileImport::open(
+            &deployment,
+            seal.import_identity,
+            crate::ingest::retained::RetainedReadLimits::default(),
+            &cx,
+        )
+        .unwrap();
+        assert!(!retained.manifest().part_roots.is_empty());
+        drop(deployment);
+
+        let report = crate::doctor::inspect_deployment(&root);
+        assert_eq!(
+            report.verdict,
+            crate::doctor::DoctorVerdict::Healthy,
+            "doctor report: {}",
+            report.to_json()
+        );
+        assert_eq!(unreferenced_count(&report), 0);
+
+        let req = crate::agent_footage::FootageQueryRequest {
+            filter: crate::agent_footage::FootageQueryFilter::default(),
+            principal: fss_core::PrincipalId::parse("principal:tutk-test").unwrap(),
+            max_entries: 32,
+            expected_anchor: None,
+            continuation: None,
+        };
+        let page = crate::agent_footage::query_footage(
+            &root,
+            &req,
+            &crate::agent_footage::FootageQueryLimits::default(),
+            &mut |_| true,
+        )
+        .unwrap();
+        assert_eq!(page.scanned_capsules, 20);
+        assert_eq!(page.other_adapter_imports, 0);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn mid_capture_cancellation_leaves_zero_unreferenced_objects() {
+        // Path A: cancel mid-capture and finalize/seal the partial capture.
+        let root_partial = fresh_root("cancel-partial");
+        let cx_partial = test_cx(&root_partial);
+        let mut dep_partial =
+            ReferenceDeployment::open(&root_partial, "site:tutk-seal-test", &cx_partial).unwrap();
+        let mut ing_partial = sealed_ingest(12);
+        ing_partial.cancel();
+        assert!(matches!(ing_partial.state(), AcquisitionState::Cancelled));
+        let seal = ing_partial
+            .seal_acquisition(&mut dep_partial, "SIM-CAM/9.99.0.SIM", &cx_partial)
+            .unwrap();
+        assert_eq!(seal.capsule_count, 12);
+        drop(dep_partial);
+        let report_partial = crate::doctor::inspect_deployment(&root_partial);
+        assert_eq!(
+            report_partial.verdict,
+            crate::doctor::DoctorVerdict::Healthy,
+            "partial doctor: {}",
+            report_partial.to_json()
+        );
+        assert_eq!(unreferenced_count(&report_partial), 0);
+        let _ = std::fs::remove_dir_all(&root_partial);
+
+        // Path B: cancel mid-capture with cx cancelled at preflight (request->drain->finalize)
+        // and discard unsealed buffers without leaking any staged objects.
+        let root_abort = fresh_root("cancel-abort");
+        let cx_abort = test_cx(&root_abort);
+        let mut dep_abort =
+            ReferenceDeployment::open(&root_abort, "site:tutk-seal-test", &cx_abort).unwrap();
+        let mut ing_abort = sealed_ingest(12);
+        cx_abort.set_cancel_at_checkpoint_occurrence(
+            crate::ingest::file_publication::STAGE_FILE_PART_PREFLIGHT,
+            1,
+        );
+        assert!(
+            ing_abort
+                .seal_acquisition(&mut dep_abort, "SIM-CAM/9.99.0.SIM", &cx_abort)
+                .is_err()
+        );
+        ing_abort.discard_unsealed();
+        assert_eq!(ing_abort.frame_count(), 0);
+        cx_abort.drain_and_finalize();
+        drop(dep_abort);
+        let report_abort = crate::doctor::inspect_deployment(&root_abort);
+        assert_eq!(
+            report_abort.verdict,
+            crate::doctor::DoctorVerdict::Healthy,
+            "abort doctor: {}",
+            report_abort.to_json()
+        );
+        assert_eq!(unreferenced_count(&report_abort), 0);
+        let _ = std::fs::remove_dir_all(&root_abort);
+    }
+
+    #[test]
+    fn audio_policy_and_keyframe_count_reflect_stream() {
+        let mut ing = TutkIngest::new(cfg(AudioPolicy::Disabled)).unwrap();
+        assert_eq!(ing.audio_policy(), AudioPolicy::Disabled);
+        assert_eq!(ing.frame_count(), 0);
+        assert_eq!(ing.keyframe_count(), 0);
+
+        let mut f0 = frame(0, &[0x00, 0x00, 0x00, 0x01, 0x65, 0x88], 100, 105, false);
+        f0.info = Some(fss_tutk::av::FrameInfo {
+            codec_id: 0x4E,
+            codec: fss_tutk::av::Codec::H264,
+            is_keyframe: true,
+            framerate: 15,
+            payload_size: 6,
+            frame_no: 0,
+            timestamp_us: 0,
+        });
+        let f1 = frame(1, &[0x00, 0x00, 0x00, 0x01, 0x41, 0x9A], 200, 205, false);
+        ing.handle_event(SessionEvent::Frame(f0), 105);
+        ing.handle_event(SessionEvent::Frame(f1), 205);
+        assert_eq!(ing.frame_count(), 2);
+        assert_eq!(ing.keyframe_count(), 1);
     }
 }

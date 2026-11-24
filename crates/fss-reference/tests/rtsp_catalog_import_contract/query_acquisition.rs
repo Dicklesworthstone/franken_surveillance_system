@@ -79,6 +79,7 @@ impl RtspQueryImportAuthority for Owner {
     }
 }
 
+#[allow(clippy::expect_used)]
 fn acquire(
     f: &mut Fixture,
     plan: &RtspQueryImportPlan,

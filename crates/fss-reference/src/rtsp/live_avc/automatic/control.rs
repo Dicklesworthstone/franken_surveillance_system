@@ -9,7 +9,7 @@ use crate::rtsp::live_avc::{LiveAvcError, LiveAvcStep};
 use crate::rtsp::tcp::{TcpError, TcpWriteStep};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum Action {
+pub(in crate::rtsp) enum Action {
     Request(ClientCommand),
     Respond,
 }
@@ -17,14 +17,14 @@ pub(super) enum Action {
 /// An unsent intent is different from a prepared request. Only the former may wait
 /// for protocol drainage; this owner never replays a prepared or partially sent request.
 #[derive(Debug)]
-pub(super) struct ControlDriver {
-    pub(super) next: Option<Action>,
+pub(in crate::rtsp) struct ControlDriver {
+    pub(in crate::rtsp) next: Option<Action>,
     ready_at_ns: u64,
     draining: bool,
     keepalive: ClientCommand,
 }
 impl ControlDriver {
-    pub(super) fn new(now: u64) -> Self {
+    pub(in crate::rtsp) fn new(now: u64) -> Self {
         Self {
             next: Some(Action::Request(ClientCommand::Describe)),
             ready_at_ns: now,
@@ -32,7 +32,7 @@ impl ControlDriver {
             keepalive: ClientCommand::KeepAlive,
         }
     }
-    pub(super) fn select_keepalive(&mut self, command: ClientCommand) -> bool {
+    pub(in crate::rtsp) fn select_keepalive(&mut self, command: ClientCommand) -> bool {
         if !command.is_keepalive()
             || self.next != Some(Action::Request(ClientCommand::Describe))
             || self.draining
@@ -42,24 +42,24 @@ impl ControlDriver {
         self.keepalive = command;
         true
     }
-    pub(super) fn keepalive_command(&self) -> ClientCommand {
+    pub(in crate::rtsp) fn keepalive_command(&self) -> ClientCommand {
         self.keepalive
     }
-    pub(super) fn action(&self) -> Option<Action> {
+    pub(in crate::rtsp) fn action(&self) -> Option<Action> {
         self.next.filter(|_| !self.draining)
     }
-    pub(super) fn wake(&self, underlying: Option<u64>) -> Option<u64> {
+    pub(in crate::rtsp) fn wake(&self, underlying: Option<u64>) -> Option<u64> {
         match (self.action(), underlying) {
             (Some(_), Some(at)) => Some(at.min(self.ready_at_ns)),
             (Some(_), None) => Some(self.ready_at_ns),
             (None, at) => at,
         }
     }
-    pub(super) fn clear(&mut self) {
+    pub(in crate::rtsp) fn clear(&mut self) {
         self.next = None;
         self.draining = false;
     }
-    pub(super) fn refused(&mut self, reason: &LiveAvcError, retired: bool) {
+    pub(in crate::rtsp) fn refused(&mut self, reason: &LiveAvcError, retired: bool) {
         if retired || matches!(reason, LiveAvcError::Closed) {
             self.clear();
         } else if self.next.is_some() && backpressured(reason) {
@@ -68,7 +68,7 @@ impl ControlDriver {
         }
         // Clock and other safe correction refusals change neither intent nor drain state.
     }
-    pub(super) fn observe(&mut self, step: &LiveAvcStep, now: u64) {
+    pub(in crate::rtsp) fn observe(&mut self, step: &LiveAvcStep, now: u64) {
         if terminal(step) {
             self.clear();
             return;

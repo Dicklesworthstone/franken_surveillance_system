@@ -9,10 +9,10 @@
 //! cargo run -p fss-reference --example regen_activity_package
 //! ```
 
-fn main() {
-    let bytes = fss_reference::executor_activity_package::build_activity_package().expect("build");
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let bytes = fss_reference::executor_activity_package::build_activity_package()?;
     let path = "models/fss-activity/fss_activity_v1.fmpk";
-    std::fs::write(path, &bytes).expect("write fmpk");
+    std::fs::write(path, &bytes)?;
     println!("wrote {path} ({} bytes)", bytes.len());
     println!(
         "new ACTIVITY_PACKAGE_V1_SHA256 pin: sha256:{}",
@@ -20,4 +20,5 @@ fn main() {
             .to_string()
             .trim_start_matches("sha256:")
     );
+    Ok(())
 }

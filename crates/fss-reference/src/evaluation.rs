@@ -514,6 +514,7 @@ impl fmt::Display for EvaluationError {
 impl std::error::Error for EvaluationError {}
 
 /// Why a metric has no value. Never flattened into zero or NaN.
+#[allow(clippy::enum_variant_names)]
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum UndefinedReason {
     /// There are no observable truth events, so recall and AUPRC are undefined.

@@ -76,6 +76,7 @@ enum AudioError {
 
 /// One bounded scheduling decision while an archive attempt is active.
 #[must_use]
+#[allow(clippy::large_enum_variant)]
 pub enum Drive {
     /// There is no running archive attempt to drive.
     NotRunning,
@@ -199,6 +200,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
     /// Build an idle archive worker directly from a bootstrap handoff and
     /// retain its first segment pending independently justified capture bounds.
     /// No task or I/O is started. Every input is returned on construction refusal.
+    #[allow(clippy::result_large_err)]
     pub fn from_bootstrap(
         handoff: av_bootstrap_driver::Handoff<'scope, 'task, IO>,
         resources: BootstrapResources,
@@ -264,6 +266,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
 
     /// Attach an idle worker. Both original owners are returned on refusal.
     /// The caller must bind their configuration and identity to the same camera.
+    #[allow(clippy::result_large_err)]
     pub fn new(
         supervisor: supervisor::Supervisor<'scope, 'task, IO>,
         worker: av_worker::Worker,
@@ -291,6 +294,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
     }
 
     /// Retain a completed source from an earlier supervisor step.
+    #[allow(clippy::result_large_err)]
     pub fn hold_segment(&mut self, segment: recording::Segment) -> Result<(), recording::Segment> {
         if self.awaiting_capture.is_some() || self.archive != ArchiveState::Idle {
             return Err(segment);
@@ -619,6 +623,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
 
     /// Retire only after the archive operation has actually drained. On
     /// refusal this returns the entire unchanged guard to its caller.
+    #[allow(clippy::result_large_err)]
     pub fn retire(self) -> Result<Retirement, Self> {
         let Self {
             supervisor,

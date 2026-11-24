@@ -204,11 +204,10 @@ impl DirectIngress {
                     .take_chunk()
                     .map_err(Error::Source)?
                     .ok_or(Error::Source(tcp_ingress::IngressError::PendingChunk))?;
-                self.buffered = Some(BufferedChunk {
+                let buffered = self.buffered.insert(BufferedChunk {
                     source,
                     appended: 0,
                 });
-                let buffered = self.buffered.as_mut().expect("buffered first byte");
                 if buffered.source.offset() != 0 || buffered.source.bytes().len() != 1 {
                     return Err(Error::Source(tcp_ingress::IngressError::Configuration));
                 }
@@ -263,11 +262,10 @@ impl DirectIngress {
             .take_chunk()
             .map_err(Error::Source)?
             .ok_or(Error::Source(tcp_ingress::IngressError::PendingChunk))?;
-        self.buffered = Some(BufferedChunk {
+        let buffered = self.buffered.insert(BufferedChunk {
             source,
             appended: 0,
         });
-        let buffered = self.buffered.as_mut().expect("header byte retained");
         if buffered.source.bytes().len() != 1
             || buffered.source.offset() != self.framer.next_offset()
         {

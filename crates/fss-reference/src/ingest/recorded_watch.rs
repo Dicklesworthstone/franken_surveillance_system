@@ -78,6 +78,11 @@ use super::eventgen::{
     ZoneEventConfig, ZoneEventError, ZoneEventGenerator, ZoneObservation, ZoneSpec,
 };
 use super::foreground::{ForegroundConfig, ForegroundDetector, ForegroundError};
+pub use super::osd_mask::{ImageRect, MAX_IGNORE_REGIONS, ignore_regions_digest};
+use super::osd_mask::{
+    OsdMaskError, ignore_regions_bytes, ignore_regions_plan_digest,
+    mask_ignore_regions_for_foreground, validate_ignore_regions, validate_ignore_regions_in_bounds,
+};
 use super::privacy_mask::coverage::mask_coverage_zones;
 use super::privacy_mask::{MaskBinding, current_mask, lineage_digest};
 use super::recorded_coverage::{
@@ -506,10 +511,11 @@ pub struct WatchLimits {
 }
 impl Default for WatchLimits {
     fn default() -> Self {
+        let jpeg_limits = DecodeLimits::default();
         Self {
             read_limits: RetainedReadLimits::default(),
-            jpeg_limits: DecodeLimits::default(),
-            jpeg_work_units: 100_000_000,
+            jpeg_limits,
+            jpeg_work_units: jpeg_limits.luma_work_bound(),
             h264_limits: DecoderLimits::default(),
             h265_limits: H265DecoderLimits::default(),
         }
@@ -659,6 +665,7 @@ pub struct WatchReport {
     decode_restarts: Vec<usize>,
     sensor_health: Option<RecordedHealthSummary>,
     privacy: MaskBinding,
+    ignore_regions: Vec<ImageRect>,
 }
 
 /// Detector-cascade record of one analysis.
@@ -802,9 +809,45 @@ impl WatchReport {
         health: Option<RecordedHealthPolicy>,
         cx: &ReplayCx,
     ) -> Result<Self> {
+        Self::analyze_with_ignore_regions(
+            deployment,
+            plan,
+            limits,
+            detector,
+            options,
+            health,
+            &[],
+            cx,
+        )
+    }
+
+    /// [`Self::analyze_with_health`] with explicit OSD/static-overlay ignore rectangles.
+    ///
+    /// Unlike privacy masks, ignore regions leave source custody, `luma_digest`, and
+    /// sensor-health observations untouched; they exclude only pixels inside `ignore_regions`
+    /// from foreground motion extraction. Non-empty sets are canonically sorted, validated
+    /// inside frame bounds, and digest-pinned into `plan_digest`, `analysis_digest`, coverage
+    /// pipeline generation, and candidate provenance. Empty `ignore_regions` is byte-identical
+    /// to [`Self::analyze_with_health`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn analyze_with_ignore_regions(
+        deployment: &dyn RetainedSource,
+        plan: &WatchPlan,
+        limits: &WatchLimits,
+        detector: Option<&mut DetectorCascade<'_>>,
+        options: WatchOptions,
+        health: Option<RecordedHealthPolicy>,
+        ignore_regions: &[ImageRect],
+        cx: &ReplayCx,
+    ) -> Result<Self> {
         checkpoint(cx, "recorded_watch:analyze")?;
         plan.validate()?;
         validate_limits(limits.jpeg_limits)?;
+        let ignore_regions =
+            validate_ignore_regions(ignore_regions).map_err(|error| match error {
+                OsdMaskError::InvalidRect(why) => WatchError::InvalidPlan(why),
+                _ => WatchError::InvalidPlan("invalid ignore region"),
+            })?;
         let retained =
             RetainedFileImport::open(deployment, plan.import_identity, limits.read_limits, cx)?;
         let spans = &retained.manifest().segment_spans;
@@ -897,7 +940,13 @@ impl WatchReport {
             }
             _ => return Err(RecordedDecodeError::UnsupportedMedia.into()),
         };
-        let plan_digest = screened_plan_digest(masked_plan_digest(plan.digest(), &privacy), health);
+        let plan_digest = screened_plan_digest(
+            ignore_regions_plan_digest(
+                masked_plan_digest(plan.digest(), &privacy),
+                &ignore_regions,
+            ),
+            health,
+        );
         let mut health_screen = health
             .map(|policy| {
                 RecordedHealthScreen::with_policy(
@@ -941,6 +990,7 @@ impl WatchReport {
         }
         let mut background: Option<ForegroundDetector> = None;
         let mut dimensions = [0, 0];
+        let mut fg_scratch: Vec<u8> = Vec::new();
         let mut tracker = MultiObjectTracker::new(plan.tracker_config())?;
         let mut frames = Vec::with_capacity(plan.segment_count);
         let mut histories: BTreeMap<u64, TrackHistory> = BTreeMap::new();
@@ -1008,6 +1058,12 @@ impl WatchReport {
             if sensor.is_none() {
                 sensor = Some(frame.capsule.sensor_id.clone());
                 dimensions = frame.dimensions;
+                validate_ignore_regions_in_bounds(&ignore_regions, dimensions).map_err(
+                    |error| match error {
+                        OsdMaskError::InvalidRect(why) => WatchError::InvalidPlan(why),
+                        _ => WatchError::InvalidPlan("invalid ignore region"),
+                    },
+                )?;
             }
             if frame.capsule.sensor_id != first_capsule.sensor_id {
                 return Err(RecordedDecodeError::InvalidReceipt.into());
@@ -1064,7 +1120,18 @@ impl WatchReport {
                 background = Some(ForegroundDetector::new(plan.foreground_config(dimensions))?);
             }
             let detector = background.as_mut().ok_or(WatchError::Limit)?;
-            let foreground = detector.observe(&frame.pixels, dimensions[0], dimensions[1])?;
+            let fg_pixels: &[u8] = if ignore_regions.is_empty() {
+                &frame.pixels
+            } else {
+                mask_ignore_regions_for_foreground(
+                    &frame.pixels,
+                    dimensions,
+                    &ignore_regions,
+                    &mut fg_scratch,
+                );
+                &fg_scratch
+            };
+            let foreground = detector.observe(fg_pixels, dimensions[0], dimensions[1])?;
             let detections: Vec<Detection> = foreground
                 .boxes
                 .iter()
@@ -1304,6 +1371,7 @@ impl WatchReport {
             &decode_refusals,
             &restarts,
             sensor_health.as_ref(),
+            &ignore_regions,
         );
         let sensor = sensor.ok_or(WatchError::Limit)?;
         let coverage = watch_coverage(&WatchCoverageContext {
@@ -1323,6 +1391,7 @@ impl WatchReport {
             restarts: &restarts,
             sensor_health: sensor_health.as_ref(),
             privacy: &privacy,
+            ignore_regions: &ignore_regions,
         })?;
         let coverage_status = coverage_status(deployment, &[&coverage])?;
         let mut prepared = Vec::with_capacity(candidates.len());
@@ -1335,6 +1404,7 @@ impl WatchReport {
                 sensor.as_str(),
                 &privacy,
                 sensor_health.as_ref(),
+                &ignore_regions,
             )?;
             let PendingCandidate {
                 zone_id,
@@ -1385,7 +1455,15 @@ impl WatchReport {
             decode_restarts,
             sensor_health,
             privacy,
+            ignore_regions,
         })
+    }
+
+    /// Explicit OSD/static-overlay ignore regions excluded from foreground motion extraction.
+    /// Always empty unless explicitly supplied by the operator; distinct from [`Self::privacy_mask`].
+    #[must_use]
+    pub fn ignore_regions(&self) -> &[ImageRect] {
+        &self.ignore_regions
     }
 
     /// Refused segment runs of a tolerant analysis (always empty otherwise), in segment order.
@@ -1698,7 +1776,7 @@ impl WatchReport {
                 "\"authority_sequence\":{},\"event_kind\":\"unclassified\",",
                 "\"event_state\":\"indeterminate\",\"calibrated\":false,\"corroborated\":false,",
                 "\"alert_authorized\":false,\"effects_authorized\":false,",
-                "\"absence_certifiable\":false,\"detection_quality_claim\":false{}{}{}{}{}}}"
+                "\"absence_certifiable\":false,\"detection_quality_claim\":false{}{}{}{}{}{}}}"
             ),
             self.plan.import_identity,
             self.import_root,
@@ -1729,6 +1807,7 @@ impl WatchReport {
                 ",\"privacy_mask\":{}",
                 self.privacy.to_json()
             )),
+            ignore_regions_json(&self.ignore_regions),
             self.cascade.as_ref().map_or_else(String::new, |c| format!(
                 ",\"detector_cascade\":{{{},{}}}",
                 c.policy_json,
@@ -1743,6 +1822,28 @@ impl WatchReport {
             coverage_json.map_or_else(String::new, |json| format!(",\"coverage\":{json}")),
         )
     }
+}
+
+/// `,"ignore_regions":[...],"ignore_regions_digest":"..."` when explicit OSD ignore regions
+/// were supplied; empty otherwise so historical reports keep byte-identical output.
+fn ignore_regions_json(regions: &[ImageRect]) -> String {
+    if regions.is_empty() {
+        return String::new();
+    }
+    let items: Vec<String> = regions
+        .iter()
+        .map(|rect| {
+            format!(
+                "{{\"x\":{},\"y\":{},\"width\":{},\"height\":{}}}",
+                rect.x, rect.y, rect.width, rect.height
+            )
+        })
+        .collect();
+    format!(
+        ",\"ignore_regions\":[{}],\"ignore_regions_digest\":\"{}\"",
+        items.join(","),
+        ignore_regions_digest(regions),
+    )
 }
 
 /// `,"decode_refusals":[...]` for a tolerant analysis that refused segments; empty otherwise, so
@@ -1882,6 +1983,7 @@ struct WatchCoverageContext<'a> {
     restarts: &'a [usize],
     sensor_health: Option<&'a RecordedHealthSummary>,
     privacy: &'a MaskBinding,
+    ignore_regions: &'a [ImageRect],
 }
 
 /// The plan identity of an analysis under `privacy`: unchanged without a policy, otherwise
@@ -1919,6 +2021,12 @@ fn watch_coverage(context: &WatchCoverageContext<'_>) -> Result<CoverageRecord> 
         &mut parameters,
         context.sensor_health.map(RecordedHealthSummary::digest),
     );
+    if !context.ignore_regions.is_empty() {
+        bind_cascade_parameters(
+            &mut parameters,
+            Some(ignore_regions_digest(context.ignore_regions)),
+        );
+    }
     let frames: Vec<CoverageFrame> = context
         .frames
         .iter()
@@ -2021,6 +2129,7 @@ fn analysis_bytes(
     refusals: &[DecodeRefusal],
     restarts: &[usize],
     sensor_health: Option<&RecordedHealthSummary>,
+    ignore_regions: &[ImageRect],
 ) -> Vec<u8> {
     let mut e = CanonicalEncoder::new();
     e.text(ANALYSIS_DOMAIN);
@@ -2072,6 +2181,10 @@ fn analysis_bytes(
         e.text("sensor_health");
         e.bytes(&summary.to_bytes());
     }
+    if !ignore_regions.is_empty() {
+        e.text("ignore_regions");
+        e.bytes(&ignore_regions_bytes(ignore_regions));
+    }
     e.finish()
 }
 
@@ -2088,6 +2201,7 @@ fn provenance(
     sensor: &str,
     privacy: &MaskBinding,
     sensor_health: Option<&RecordedHealthSummary>,
+    ignore_regions: &[ImageRect],
 ) -> Result<Provenance> {
     let observations = &candidate.observations;
     let analysis_digest = ContentDigest::sha256(analysis);
@@ -2151,6 +2265,20 @@ fn provenance(
         // The applied privacy transform is a typed dependency of the event: the exact retained
         // policy the pixels were masked with, never support for the event itself.
         let digest = insert(&mut objects, policy.to_bytes());
+        evidence.push(EventEvidence {
+            digest,
+            class: EvidenceClass::Assertion,
+            failure_domain: failure_domain.clone(),
+            supports: false,
+            relation: EvidenceEdgeRelation::RequiredBy,
+            capsule_digest: None,
+            identity_digest: Some(sensor_digest),
+        });
+    }
+    if !ignore_regions.is_empty() {
+        // Explicit OSD ignore regions are foreground-exclusion assertions only (never pixel
+        // redaction or event support) and are retained with the candidate provenance graph.
+        let digest = insert(&mut objects, ignore_regions_bytes(ignore_regions));
         evidence.push(EventEvidence {
             digest,
             class: EvidenceClass::Assertion,

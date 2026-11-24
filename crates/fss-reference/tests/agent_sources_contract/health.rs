@@ -4,8 +4,7 @@
 use super::*;
 
 #[test]
-fn filters_preserve_complete_historical_health_and_obligations_without_source_bytes()
-    -> TestResult
+fn filters_preserve_complete_historical_health_and_obligations_without_source_bytes() -> TestResult
 {
     let fixture = qsr_observations_support::Fixture::new("sources-protected-health")?;
     let root = &fixture.source.root;
@@ -29,7 +28,10 @@ fn filters_preserve_complete_historical_health_and_obligations_without_source_by
     let filtered = query_sources(root, &request, limits, &cx, &|| false)?;
     assert!(filtered.rows.is_empty());
     assert_eq!(filtered.summary, full.summary);
-    assert_eq!(filtered.snapshot.historical_health, full.snapshot.historical_health);
+    assert_eq!(
+        filtered.snapshot.historical_health,
+        full.snapshot.historical_health
+    );
     assert_eq!(filtered.snapshot.obligations, full.snapshot.obligations);
     assert_eq!(filtered.snapshot.operations, full.snapshot.operations);
     assert_eq!(files(root)?, without_media);
@@ -38,9 +40,7 @@ fn filters_preserve_complete_historical_health_and_obligations_without_source_by
 }
 
 #[test]
-fn protected_receipt_changed_after_initial_snapshot_refuses_even_an_unmatched_page()
-    -> TestResult
-{
+fn protected_receipt_changed_after_initial_snapshot_refuses_even_an_unmatched_page() -> TestResult {
     let fixture = qsr_observations_support::Fixture::new("sources-health-final-reread")?;
     let root = &fixture.source.root;
     let mut request = request()?;
@@ -54,7 +54,11 @@ fn protected_receipt_changed_after_initial_snapshot_refuses_even_an_unmatched_pa
         false
     };
     let owner = ImmutableRetainedSource::open_cancellable(root, limits.read, &cx, &admission)?;
-    let receipt = owner.snapshot().historical_health.first().ok_or("historical receipt")?
+    let receipt = owner
+        .snapshot()
+        .historical_health
+        .first()
+        .ok_or("historical receipt")?
         .receipt_digest;
     let count = opening_calls.load(Ordering::SeqCst);
     drop(owner);
@@ -67,14 +71,23 @@ fn protected_receipt_changed_after_initial_snapshot_refuses_even_an_unmatched_pa
     // Corrupting it here exercises the query's final complete-snapshot reread, not opening.
     let result = query_sources(root, &request, limits, &cx, &|| {
         if calls.fetch_add(1, Ordering::SeqCst) + 1 == count + 2 {
-            assert!(fs::write(&path, b"protected diagnostic changed after the opening snapshot").is_ok());
+            assert!(
+                fs::write(
+                    &path,
+                    b"protected diagnostic changed after the opening snapshot"
+                )
+                .is_ok()
+            );
             changed.store(true, Ordering::SeqCst);
         }
         false
     });
     fs::write(&path, original)?;
     assert!(changed.load(Ordering::SeqCst));
-    assert!(result.is_err(), "unmatched rows cannot hide changed historical diagnostics");
+    assert!(
+        result.is_err(),
+        "unmatched rows cannot hide changed historical diagnostics"
+    );
     let restored = query_sources(root, &request, limits, &cx, &|| false)?;
     assert!(restored.rows.is_empty());
     assert!(!restored.snapshot.historical_health.is_empty());

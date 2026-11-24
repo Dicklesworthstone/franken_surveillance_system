@@ -109,6 +109,7 @@ impl Drop for Headers {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn authorization(
     credentials: &S3Credentials,
     region: &str,
@@ -141,7 +142,7 @@ fn authorization(
         hex(&ContentDigest::sha256(canonical.as_bytes()).bytes())
     ));
     let initial = Zeroizing::new(format!("AWS4{}", credentials.secret_key.as_str()));
-    let date_key = Zeroizing::new(hmac_sha256(initial.as_bytes(), timestamp[..8].as_bytes()));
+    let date_key = Zeroizing::new(hmac_sha256(initial.as_bytes(), &timestamp.as_bytes()[..8]));
     let region_key = Zeroizing::new(hmac_sha256(&date_key[..], region.as_bytes()));
     let service_key = Zeroizing::new(hmac_sha256(&region_key[..], b"s3"));
     let signing_key = Zeroizing::new(hmac_sha256(&service_key[..], b"aws4_request"));
@@ -153,6 +154,7 @@ fn authorization(
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn request_head(
     endpoint: &S3Endpoint,
     credentials: &S3Credentials,

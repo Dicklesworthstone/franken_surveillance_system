@@ -446,8 +446,10 @@ fn scan_output_and_hydration_allowances_are_aggregate_and_atomic() -> TestResult
         Err(RecordingQueryError::Catalog(CatalogError::Limit))
     );
     fixture.request.max_hydration_bytes += 1;
-    let mut limits = RecordingSetQueryLimits::default();
-    limits.max_scanned_windows = 3;
+    let mut limits = RecordingSetQueryLimits {
+        max_scanned_windows: 3,
+        ..RecordingSetQueryLimits::default()
+    };
     assert_eq!(
         fixture.with_limits(limits),
         Err(RecordingQueryError::Catalog(CatalogError::Limit))
@@ -809,10 +811,10 @@ fn rewrite_first_descriptor(
             numbers,
             objects,
         };
-        if ordinal == 0 {
-            if let Some(change) = change.take() {
-                change(&mut descriptor);
-            }
+        if ordinal == 0
+            && let Some(change) = change.take()
+        {
+            change(&mut descriptor);
         }
         encoder.text(&descriptor.slot);
         encoder.digest(descriptor.root);

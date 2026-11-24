@@ -43,7 +43,7 @@ use super::episode::{PublishedEpisode, read_episode};
 use super::plan::{PlanRecord, read_control_plan};
 use super::{
     DeploymentSessionError, MissionRecord, OperationFacts, SESSION_PRIVACY_SCOPE, SessionJournal,
-    digest_of, evidence_now, hex, mission_for_workspace, operation_facts, orient_bound,
+    digest_of, hex, mission_for_workspace, operation_facts, orient_bound,
 };
 
 const REQUEST_DOMAIN: &str = "fss.reference_mission_native_request.v1";
@@ -779,7 +779,7 @@ fn assess_facts(
     let episode = checked_episode(root, &selected.record, facts.as_ref())?.map(|pair| pair.0);
     Ok(MissionAssessmentFacts {
         anchor: snapshot.anchor.clone(),
-        evidence_time: evidence_now(snapshot),
+        evidence_time: now,
         effect_journal_present: snapshot.effect_journal_present,
         effect_journal_root: snapshot.effect_journal_root,
         effect_record_count: snapshot.position.effect_records.unwrap_or(0),
@@ -849,19 +849,20 @@ pub(super) fn projection_current(
     let Some(assessment) = revision.assessment() else {
         return Ok(criterion.baseline_anchor == snapshot.anchor);
     };
-    if let Some(retained) = &assessment.episode {
-        if episode.as_ref().is_none_or(|current| {
+    if let Some(retained) = &assessment.episode
+        && episode.as_ref().is_none_or(|current| {
             current.record_digest != retained.record_digest
                 || current.publication_root != retained.publication_root
-        }) {
-            return Err(MissionError::InvalidProof);
-        }
+        })
+    {
+        return Err(MissionError::InvalidProof);
     }
     // An immutable episode may be newer than this view. Verify its custody above, then
     // classify the retained assessment as historical before comparing receipts across times.
     if assessment.episode != episode
         || assessment.anchor != snapshot.anchor
-        || assessment.evidence_time != evidence_now(snapshot)
+        || assessment.evidence_time > now
+        || revision.deadline_reached() != (now >= criterion.decision_deadline)
         || assessment.effect_journal_present != snapshot.effect_journal_present
         || assessment.effect_journal_root != snapshot.effect_journal_root
         || assessment.effect_record_count != snapshot.position.effect_records.unwrap_or(0)
@@ -921,13 +922,12 @@ pub fn execute(
     if plan_id.is_empty() || plan_id.len() > PLAN_ID_LIMIT || !plan_id.starts_with("plan:") {
         return Err(MissionError::Contract(ContractError::InvalidIdentifier));
     }
-    if let MissionAction::Assess { expected, .. } = &request.action {
-        if expected.algorithm() != DigestAlgorithm::Sha256
+    if let MissionAction::Assess { expected, .. } = &request.action
+        && (expected.algorithm() != DigestAlgorithm::Sha256
             || expected.bytes() == [0; 32]
-            || expected.is_laboratory()
-        {
-            return Err(MissionError::Contract(ContractError::InvalidDigest));
-        }
+            || expected.is_laboratory())
+    {
+        return Err(MissionError::Contract(ContractError::InvalidDigest));
     }
     let limits = OrientLimits::default();
     let history = DeploymentHistory::read(root, &limits).map_err(DeploymentSessionError::from)?;

@@ -248,6 +248,7 @@ pub struct ProbeCaseLinkFailure {
 }
 
 /// Link only the native result of this preflight, with exact native-record adjacency.
+#[allow(clippy::result_large_err)]
 pub fn commit_probe_case(
     root: impl crate::deployment_session::SessionRoot,
     admission: &ProbeCaseAdmission,
@@ -372,6 +373,7 @@ pub struct ProbeCaseInspectionFailure {
 
 /// Recover an exact historical link even when a later case revision or new session is current.
 /// No pending report, native attempt, case revision or source-hydration cursor is changed.
+#[allow(clippy::result_large_err)]
 pub fn inspect_probe_case(
     root: impl crate::deployment_session::SessionRoot,
     request: &ProbeRequest,
@@ -433,6 +435,7 @@ pub fn inspect_probe_case(
 }
 
 #[allow(clippy::too_many_arguments)] // every sealed authority and budget coordinate stays explicit
+#[allow(clippy::result_large_err)]
 fn charge_case_output(
     root: impl crate::deployment_session::SessionRoot,
     request: &ProbeRequest,
@@ -492,6 +495,7 @@ fn charge_case_output(
 }
 
 /// Charge under the sealed post-link root without changing the original native delivery root.
+#[allow(clippy::result_large_err)]
 pub fn charge_linked_probe_delivery(
     root: impl crate::deployment_session::SessionRoot,
     request: &ProbeRequest,
@@ -534,6 +538,7 @@ pub fn charge_linked_probe_delivery(
 }
 
 /// Price metadata-only historical inspection under the current reader, without reviving its source.
+#[allow(clippy::result_large_err)]
 pub fn charge_probe_case_inspection(
     root: impl crate::deployment_session::SessionRoot,
     request: &ProbeRequest,

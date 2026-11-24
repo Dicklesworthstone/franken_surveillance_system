@@ -236,6 +236,51 @@ impl LiveAvcRecording {
     pub fn state(&self) -> ClientState {
         self.connection.state()
     }
+    /// Opt in before DESCRIBE to acquire H.264 SPS/PPS in-band from RTP when SDP omits
+    /// `sprop-parameter-sets`. Default is strict SDP (`false`).
+    pub fn set_allow_inband_parameter_sets(
+        &mut self,
+        enabled: bool,
+    ) -> Result<(), LiveRecordingError> {
+        self.connection
+            .set_allow_inband_parameter_sets(enabled)
+            .map_err(LiveRecordingError::Network)
+    }
+    /// Override bounded pre-roll ceilings for in-band parameter-set acquisition before DESCRIBE.
+    pub fn set_inband_sync_limits(
+        &mut self,
+        limits: crate::rtsp::client::inband::InbandSyncLimits,
+    ) -> Result<(), LiveRecordingError> {
+        self.connection
+            .set_inband_sync_limits(limits)
+            .map_err(LiveRecordingError::Network)
+    }
+    /// Opt in before DESCRIBE to SETUP companion `m=audio` tracks and drain their interleaved packets.
+    pub fn set_setup_companion_tracks(&mut self, enabled: bool) -> Result<(), LiveRecordingError> {
+        self.connection
+            .set_setup_companion_tracks(enabled)
+            .map_err(LiveRecordingError::Network)
+    }
+    /// Explicit provenance and pre-sync / companion-track discard counters.
+    pub fn intake_telemetry(&self) -> crate::rtsp::client::inband::RtspIntakeTelemetry {
+        self.connection.intake_telemetry()
+    }
+    /// Best-effort bounded `TEARDOWN` write before closing the socket.
+    pub fn send_teardown(
+        &mut self,
+        credentials: &DigestCredentials<'_>,
+        cnonce: [u8; 16],
+        now: u64,
+        authority: &dyn TcpAuthority,
+    ) -> Result<bool, LiveRecordingFailure> {
+        if self.closed || self.network_ended {
+            return Ok(false);
+        }
+        self.admit(now, authority)?;
+        self.connection
+            .send_teardown(credentials, cnonce, now, authority)
+            .map_err(|e| self.network_failure(e))
+    }
     /// Immutable collection accounting, without an injection or mutable bypass of event order.
     pub fn collector(&self) -> &RecordingCollector {
         self.capture.collector()

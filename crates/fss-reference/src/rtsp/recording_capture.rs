@@ -490,12 +490,14 @@ impl RecordingCapture {
                     Ok(CapturePoll::Pending {
                         wake_at_ns: self.next_wake_ns(),
                     })
-                } else {
+                } else if let Some(retained) = self.picture.as_ref() {
                     Ok(CapturePoll::TimingRequired(
-                        PictureTimingRequest::for_picture(
-                            self.picture.as_ref().expect("picture just retained"),
-                        ),
+                        PictureTimingRequest::for_picture(retained),
                     ))
+                } else {
+                    Ok(CapturePoll::Pending {
+                        wake_at_ns: self.next_wake_ns(),
+                    })
                 }
             }
             AvcReceivePoll::Ended { tail, .. } => {
@@ -520,12 +522,14 @@ impl RecordingCapture {
                             Ok(CapturePoll::Pending {
                                 wake_at_ns: self.next_wake_ns(),
                             })
-                        } else {
+                        } else if let Some(retained) = self.picture.as_ref() {
                             Ok(CapturePoll::TimingRequired(
-                                PictureTimingRequest::for_picture(
-                                    self.picture.as_ref().expect("picture just retained"),
-                                ),
+                                PictureTimingRequest::for_picture(retained),
                             ))
+                        } else {
+                            Ok(CapturePoll::Pending {
+                                wake_at_ns: self.next_wake_ns(),
+                            })
                         }
                     }
                     Some(out) => {

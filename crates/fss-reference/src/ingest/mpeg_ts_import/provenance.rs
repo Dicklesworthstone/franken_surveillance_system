@@ -244,7 +244,7 @@ fn proof_digest(manifest: &FileImportManifest) -> Result<Option<ContentDigest>, 
                     .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
         })
         .ok_or_else(|| corrupt("adapter generation"))?;
-    Ok(Some(ContentDigest::parse(&format!("sha256:{suffix}"))?))
+    Ok(Some(ContentDigest::parse(format!("sha256:{suffix}"))?))
 }
 
 fn proof(

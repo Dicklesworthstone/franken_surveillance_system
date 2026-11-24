@@ -27,6 +27,7 @@ pub struct FollowSessionWaitBinding {
 
 impl FollowSessionWaitBinding {
     /// Admit bounds before opening any file. Native ceilings may be narrowed, never widened.
+    #[allow(clippy::result_large_err)]
     pub fn new(
         root: impl Into<std::path::PathBuf>,
         principal: PrincipalId,
@@ -59,6 +60,7 @@ impl FollowSessionWaitBinding {
     }
 
     /// Reduce whole-invocation source allowances without reducing the selected evidence scope.
+    #[allow(clippy::result_large_err)]
     pub fn with_source_limits(
         mut self,
         max_reads: u32,
@@ -141,6 +143,7 @@ struct Waiting<'a> {
 }
 
 impl Waiting<'_> {
+    #[allow(clippy::result_large_err)]
     fn checkpoint(
         &mut self,
         control: &mut impl FollowWaitControl,
@@ -149,6 +152,7 @@ impl Waiting<'_> {
         bounded::checkpoint(self.binding, control, boundary, &mut self.progress).map_err(wait_error)
     }
 
+    #[allow(clippy::result_large_err)]
     fn admit_more(&self) -> Result<(), FollowSessionError> {
         if self.progress.elapsed_ms >= self.binding.wait_ms() {
             return Err(FollowSessionError::Denied(ReplayDenial::Deadline));
@@ -257,6 +261,7 @@ pub fn follow_session_wait<C: FollowSessionControl + FollowWaitControl>(
 
 /// Wait with an explicit runtime clock, sampled again after every unlocked park.
 /// The context must name the same deployment as the immutable wait binding.
+#[allow(clippy::result_large_err)]
 pub fn follow_session_wait_with_context<C: FollowSessionControl + FollowWaitControl>(
     context: super::super::SessionContext<'_>,
     binding: &FollowSessionWaitBinding,

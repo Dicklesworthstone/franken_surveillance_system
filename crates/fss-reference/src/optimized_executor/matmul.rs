@@ -190,9 +190,9 @@ impl PreparedMatMul {
                             }
                         }
                     }
-                    for ri in 0..rows {
+                    for (ri, sum_row) in sums.iter().enumerate().take(rows) {
                         let start = (row + ri) * self.n + column;
-                        output[start..start + columns].copy_from_slice(&sums[ri][..columns]);
+                        output[start..start + columns].copy_from_slice(&sum_row[..columns]);
                     }
                 }
             }

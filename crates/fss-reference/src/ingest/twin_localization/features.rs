@@ -197,6 +197,7 @@ impl RecordedFeatures {
     /// structural spans that can supply decoder bootstrap. No codec output is regenerated.
     /// Ordinary unrelated ledger appends, including another JPEG decode, do not stale this
     /// snapshot: the immutable source-completion anchor is the binding, not the latest tip.
+    #[allow(clippy::result_large_err)]
     pub fn revalidate(
         &self,
         deployment: &ReferenceDeployment,
@@ -251,6 +252,7 @@ impl RecordedFeatures {
         Ok(())
     }
 
+    #[allow(clippy::result_large_err)]
     fn revalidate_video(
         &self,
         deployment: &ReferenceDeployment,
@@ -293,6 +295,7 @@ impl RecordedFeatures {
     }
 }
 
+#[allow(clippy::result_large_err)]
 fn guard(
     source: &SourceReadBudget,
     cx: &ReplayCx,
@@ -304,6 +307,7 @@ fn guard(
     checkpoint(cx, stage)
 }
 
+#[allow(clippy::result_large_err)]
 fn validate(request: &RecordedFeatureRequest) -> Result<()> {
     let (start, count) = request.source.range();
     let options = request.extraction;
@@ -345,6 +349,7 @@ fn bounded_source(source: &RecordedLocalizationSource) -> RecordedLocalizationSo
 /// refusal. AVC/HEVC decode the entire admitted range and publish no decode objects. The initial
 /// return and every later revalidation consume the same original-source allowance. All feature
 /// selection, omission counts and descriptor generations come from the existing native extractor.
+#[allow(clippy::result_large_err)]
 pub fn extract_recorded_features(
     deployment: &mut ReferenceDeployment,
     request: &RecordedFeatureRequest,
@@ -446,6 +451,7 @@ pub fn extract_recorded_features(
 /// refusal. It publishes no rectified pixels or feature objects. All source-range reads and
 /// final revalidation share the supplied nonrenewable allowance. Plan compilation is a prior
 /// caller-owned operation; this operation's geometry work begins at source decoding.
+#[allow(clippy::result_large_err)]
 pub fn extract_recorded_rectified_features(
     deployment: &mut ReferenceDeployment,
     request: &RecordedRectifiedFeatureRequest<'_>,
@@ -566,6 +572,7 @@ pub fn extract_recorded_rectified_features(
     Ok(result)
 }
 
+#[allow(clippy::result_large_err)]
 fn rectified_feature_digest(
     binding: &RecordedLocalizationBinding,
     native_receipt: &[u8],
@@ -592,6 +599,7 @@ fn rectified_feature_digest(
     Ok(ContentDigest::sha256(&bytes))
 }
 
+#[allow(clippy::result_large_err)]
 fn feature_digest(
     binding: &RecordedLocalizationBinding,
     native_receipt: &[u8],

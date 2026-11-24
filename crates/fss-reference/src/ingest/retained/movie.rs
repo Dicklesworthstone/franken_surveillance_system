@@ -194,6 +194,8 @@ impl RetainedFileImport {
     /// Bound adjacent decoded samples to the retained container's declared media times. A
     /// break with a known hole also restarts tracking. Missing or reordered timing withdraws
     /// the negative bridge without suppressing the frames available for positive detection.
+    // Retained from 33d690d5a for the orient coverage reader integration.
+    #[allow(dead_code)]
     pub(crate) fn coverage_presentation_breaks(
         &self,
         deployment: &dyn RetainedSource,

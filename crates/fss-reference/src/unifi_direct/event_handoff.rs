@@ -14,6 +14,7 @@ use super::{
 
 /// Original session context, including any unrelated archive completion.
 #[must_use]
+#[allow(clippy::large_enum_variant)]
 pub enum Origin {
     /// The supervisor returned this event directly.
     Source,

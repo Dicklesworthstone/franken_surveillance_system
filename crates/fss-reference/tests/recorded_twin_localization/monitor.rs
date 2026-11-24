@@ -142,6 +142,7 @@ impl Fixture {
             package,
         })
     }
+    #[allow(clippy::result_large_err)]
     fn observe(
         &mut self,
         approve: Option<ContentDigest>,
@@ -184,6 +185,7 @@ impl Fixture {
         result
     }
 
+    #[allow(clippy::result_large_err)]
     fn replay(
         &mut self,
         retained: &RecordedCalibrationMonitor,

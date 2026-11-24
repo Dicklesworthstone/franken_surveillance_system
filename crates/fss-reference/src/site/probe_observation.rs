@@ -170,7 +170,7 @@ impl<'a> RtspProbeObserver<'a> {
             return Err(ObservationError::Limit);
         }
         if negotiated.media_index > 63
-            || negotiated.rtp_channel % 2 != 0
+            || !negotiated.rtp_channel.is_multiple_of(2)
             || (!(96..=127).contains(&negotiated.payload_type)
                 && !(negotiated.codec == ProbeCodec::Jpeg && negotiated.payload_type == 26))
             || negotiated.server_identity.is_empty()

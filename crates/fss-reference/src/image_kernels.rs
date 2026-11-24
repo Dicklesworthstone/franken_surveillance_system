@@ -104,17 +104,17 @@ pub fn resize_bilinear_luma(
     // ((2d + 1) * src << 15) / (2 * dst) - (1 << 15), clamped at zero.
     let mut out = Vec::with_capacity(dst_w * dst_h);
     for dy in 0..dst_h {
-        let sy_raw = ((2 * dy as u64 + 1) * (src_h as u64) << 16) / (2 * dst_h as u64);
+        let sy_raw = (((2 * dy as u64 + 1) * (src_h as u64)) << 16) / (2 * dst_h as u64);
         let sy = sy_raw.saturating_sub(1 << 15);
         let y0 = ((sy >> 16) as usize).min(src_h - 1);
         let y1 = (y0 + 1).min(src_h - 1);
-        let fy = (sy & 0xFFFF) as u64;
+        let fy = sy & 0xFFFF;
         for dx in 0..dst_w {
-            let sx_raw = ((2 * dx as u64 + 1) * (src_w as u64) << 16) / (2 * dst_w as u64);
+            let sx_raw = (((2 * dx as u64 + 1) * (src_w as u64)) << 16) / (2 * dst_w as u64);
             let sx = sx_raw.saturating_sub(1 << 15);
             let x0 = ((sx >> 16) as usize).min(src_w - 1);
             let x1 = (x0 + 1).min(src_w - 1);
-            let fx = (sx & 0xFFFF) as u64;
+            let fx = sx & 0xFFFF;
             let p00 = src[y0 * src_w + x0] as u64;
             let p01 = src[y0 * src_w + x1] as u64;
             let p10 = src[y1 * src_w + x0] as u64;
@@ -134,7 +134,7 @@ pub fn resize_bilinear_luma(
 /// # Errors
 /// Typed refusals when the buffer is not exactly 3 x pixels.
 pub fn rgb_to_luma(rgb: &[u8]) -> Result<Vec<u8>, ImageKernelError> {
-    if rgb.len() % 3 != 0 {
+    if !rgb.len().is_multiple_of(3) {
         return Err(ImageKernelError::BufferMismatch {
             expected: rgb.len() + 3 - rgb.len() % 3,
             observed: rgb.len(),
@@ -146,7 +146,7 @@ pub fn rgb_to_luma(rgb: &[u8]) -> Result<Vec<u8>, ImageKernelError> {
     }
     // (R*77 + G*150 + B*29 + 128) >> 8 — the classic integer BT.601.
     let mut out = Vec::with_capacity(pixels);
-    for px in rgb.chunks_exact(3) {
+    for px in rgb.as_chunks::<3>().0 {
         let value =
             (u32::from(px[0]) * 77 + u32::from(px[1]) * 150 + u32::from(px[2]) * 29 + 128) >> 8;
         out.push(value.min(255) as u8);

@@ -907,15 +907,34 @@ impl LongCorroborationReport {
             let retained_recipe = deployment.publisher().spool().read(self.plan_digest)?;
             LongCorroborationRecipe::from_retained_bytes(&retained_recipe, self.plan_digest)?;
         }
-        if let Some(geometry) = &self.geometry {
-            if recipe_required
+        if let Some(geometry) = &self.geometry
+            && (recipe_required
                 || self
                     .cameras
                     .iter()
-                    .any(|camera| deployment.publisher().root(&camera.slot).is_some())
+                    .any(|camera| deployment.publisher().root(&camera.slot).is_some()))
+        {
+            for (digest, bytes) in geometry.archives() {
+                checkpoint(cx, "long_corroboration:retained_geometry_archive")?;
+                if deployment
+                    .publisher()
+                    .spool()
+                    .read_bounded(digest, bytes.len())?
+                    != bytes
+                {
+                    return Err(CorroborationError::Conflict);
+                }
+            }
+        }
+        // A completed retry cannot reconstruct lost model evidence from the caller's loose
+        // package. Published camera roots must still own their exact detector closure.
+        for camera in &self.cameras {
+            if let Some(detector) = &camera.detector
+                && (recipe_required || deployment.publisher().root(&camera.slot).is_some())
             {
-                for (digest, bytes) in geometry.archives() {
-                    checkpoint(cx, "long_corroboration:retained_geometry_archive")?;
+                for bytes in detector.completed.staged() {
+                    checkpoint(cx, "long_corroboration:retained_detector")?;
+                    let digest = ContentDigest::sha256(bytes);
                     if deployment
                         .publisher()
                         .spool()
@@ -925,34 +944,14 @@ impl LongCorroborationReport {
                         return Err(CorroborationError::Conflict);
                     }
                 }
-            }
-        }
-        // A completed retry cannot reconstruct lost model evidence from the caller's loose
-        // package. Published camera roots must still own their exact detector closure.
-        for camera in &self.cameras {
-            if let Some(detector) = &camera.detector {
-                if recipe_required || deployment.publisher().root(&camera.slot).is_some() {
-                    for bytes in detector.completed.staged() {
-                        checkpoint(cx, "long_corroboration:retained_detector")?;
-                        let digest = ContentDigest::sha256(bytes);
-                        if deployment
-                            .publisher()
-                            .spool()
-                            .read_bounded(digest, bytes.len())?
-                            != bytes
-                        {
-                            return Err(CorroborationError::Conflict);
-                        }
-                    }
-                    let bytes = detector.completed.recipe.to_bytes();
-                    if deployment
-                        .publisher()
-                        .spool()
-                        .read_bounded(detector.completed.recipe.digest(), bytes.len())?
-                        != bytes
-                    {
-                        return Err(CorroborationError::Conflict);
-                    }
+                let bytes = detector.completed.recipe.to_bytes();
+                if deployment
+                    .publisher()
+                    .spool()
+                    .read_bounded(detector.completed.recipe.digest(), bytes.len())?
+                    != bytes
+                {
+                    return Err(CorroborationError::Conflict);
                 }
             }
         }
@@ -1186,6 +1185,7 @@ fn retained_read_error(error: crate::ingest::FileIngestError) -> CorroborationEr
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn prepare_camera(
     deployment: &dyn RetainedSource,
     plan: &CorroborationPlan,

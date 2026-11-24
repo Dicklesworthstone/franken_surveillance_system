@@ -6,7 +6,7 @@
 //! retains credentials. Owners still schedule readiness/deadlines and retain every
 //! wire/media/retirement output before polling again.
 
-mod control;
+pub(in crate::rtsp) mod control;
 /// Separately granted, finite reconnection using fresh native owners and generations.
 pub mod reconnect;
 
@@ -149,10 +149,9 @@ impl AutomaticAvcConnection {
         let step = self
             .connection
             .poll(readiness, now, authority)
-            .map_err(|failure| {
+            .inspect_err(|failure| {
                 self.control
                     .refused(&failure.reason, failure.retirement.is_some());
-                failure
             })?;
         // A native wait can still contain a partial exact frame. Do not busy-retry
         // preparation until that same input has drained, or a semantic event arrives.

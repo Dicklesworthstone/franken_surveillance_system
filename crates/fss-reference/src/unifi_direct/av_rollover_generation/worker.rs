@@ -97,6 +97,7 @@ pub enum ReservationStartError {
 
 /// Detailed result retained until the drained worker is retired.
 #[must_use = "retain the creator or reconcile the exact refusal"]
+#[allow(clippy::large_enum_variant)]
 pub enum ReservationOutcome {
     /// A durably reserved identity and its unstarted creator.
     Reserved {
@@ -226,6 +227,7 @@ impl ReservationWorker {
             })
     }
     /// Bind an unstarted operation without filesystem I/O.
+    #[allow(clippy::result_large_err)]
     pub fn new(inputs: ReservationInputs) -> Result<Self, ReservationInputs> {
         if !direct_child(&inputs.journal_resource, inputs.journal_replay.root_dir())
             || !direct_child(&inputs.custody_resource, inputs.custody_replay.root_dir())

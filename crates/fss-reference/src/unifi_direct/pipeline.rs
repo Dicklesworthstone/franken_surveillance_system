@@ -17,6 +17,7 @@ use std::fmt;
 /// One bounded source and recorder step.
 #[must_use]
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum Step {
     /// One original-source or in-memory fragment result from the recorder.
     Recording(recording::Push),

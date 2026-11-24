@@ -70,6 +70,7 @@ impl Default for RecordingReplayContextLimits {
 }
 
 impl RecordingReplayContextLimits {
+    #[allow(clippy::result_large_err)]
     fn validate(&self) -> Result<(), RecordingReplayContextError> {
         let ceiling = Self::default();
         for (value, maximum) in [
@@ -103,6 +104,7 @@ impl RecordingReplayContextLimits {
     }
 
     /// Combined declared cost, preserving separate metered counters in the result.
+    #[allow(clippy::result_large_err)]
     pub fn allowance(&self) -> Result<BudgetVector, RecordingReplayContextError> {
         self.validate()?;
         let (bytes, calls) = permit::read_allowance(self.replay)?;
@@ -198,6 +200,7 @@ pub struct DeploymentRecordingReplayQuery {
 /// gate actual response delivery on its execution deadline. No writer, recovery, archive scan,
 /// device connection or media disclosure occurs.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::result_large_err)]
 pub fn query_recordings_replay_in_deployment(
     io: &dyn SpoolIo,
     deployment_root: &Path,

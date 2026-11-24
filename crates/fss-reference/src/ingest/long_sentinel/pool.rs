@@ -135,12 +135,14 @@ mod tests {
 
     #[test]
     fn next_native_grant_cannot_refill_any_campaign_axis() -> Result<()> {
-        let mut limits = LongSentinelLimits::default();
-        limits.maximum_source_chunk_bytes = 100;
-        limits.maximum_pixel_samples = 100;
+        let mut limits = LongSentinelLimits {
+            maximum_source_chunk_bytes: 100,
+            maximum_pixel_samples: 100,
+            maximum_report_bytes: 100,
+            ..LongSentinelLimits::default()
+        };
         limits.package.jpeg_work_units = 100;
         limits.package.detection_work_units = 100;
-        limits.maximum_report_bytes = 100;
         let mut pool = Pool::new(limits);
         pool.charge_usage(
             LongSentinelUsage {

@@ -599,9 +599,11 @@ impl<'a, F: FnMut() -> bool> Encoder<'a, F> {
     }
 }
 
+type OperationKeySides = (Vec<Option<String>>, Vec<Option<String>>);
+
 struct CheckedFrame {
     keys: Vec<String>,
-    operation_keys: Vec<(Vec<Option<String>>, Vec<Option<String>>)>,
+    operation_keys: Vec<OperationKeySides>,
     opaque: bool,
 }
 #[derive(Clone, Copy)]
@@ -960,6 +962,7 @@ struct EndpointContext<'a> {
     opaque: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn resolve_endpoint<F: FnMut() -> bool>(
     reference: &LifecycleReference,
     key: Option<&str>,
@@ -993,12 +996,11 @@ fn resolve_endpoint<F: FnMut() -> bool>(
                 LifecycleObservationBasis::PreviousModuleFrame,
             ));
         }
-        if let (Some(current), Some(previous)) = (current, previous) {
-            if context.tracks.occurrences[*current].transformation_digest
+        if let (Some(current), Some(previous)) = (current, previous)
+            && context.tracks.occurrences[*current].transformation_digest
                 != context.tracks.occurrences[*previous].transformation_digest
-            {
-                issues.insert(LifecycleIssue::ObjectTransformChanged);
-            }
+        {
+            issues.insert(LifecycleIssue::ObjectTransformChanged);
         }
         if current.is_none() && (destination || previous.is_none()) {
             issues.insert(LifecycleIssue::NoObservation);
@@ -1355,16 +1357,15 @@ pub fn project_lifecycle<F: FnMut() -> bool>(
             if operation.kind == LifecycleOperationKind::Delete
                 && !context.opaque
                 && operation_state != LifecycleEndpointState::Conflicted
+                && let Some(Some(key)) = from.first()
             {
-                if let Some(Some(key)) = from.first() {
-                    new_deletions.push((
-                        key.clone(),
-                        DeleteClaim {
-                            identity,
-                            frame: ordinal,
-                        },
-                    ));
-                }
+                new_deletions.push((
+                    key.clone(),
+                    DeleteClaim {
+                        identity,
+                        frame: ordinal,
+                    },
+                ));
             }
             report.operations.push(LifecycleOperationRow {
                 identity,
@@ -1414,18 +1415,18 @@ pub fn project_lifecycle<F: FnMut() -> bool>(
         for (key, claim) in new_deletions {
             deleted.insert(key, claim);
         }
-        if !check.opaque {
-            if let Some(module) = summary.module_digest {
-                modules.insert(
-                    module,
-                    ModuleState {
-                        time: summary.vendor_time_ns,
-                        transformation: summary.transformation_digest,
-                        objects: current,
-                        deleted,
-                    },
-                );
-            }
+        if !check.opaque
+            && let Some(module) = summary.module_digest
+        {
+            modules.insert(
+                module,
+                ModuleState {
+                    time: summary.vendor_time_ns,
+                    transformation: summary.transformation_digest,
+                    objects: current,
+                    deleted,
+                },
+            );
         }
         report.frames.push(LifecycleFrameRow {
             reference: summary.reference.clone(),

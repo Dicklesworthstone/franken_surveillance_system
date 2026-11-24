@@ -444,7 +444,7 @@ fn prepare_selection(
             payloads.insert(digest, bytes.to_vec());
         }
     }
-    drop(access);
+    let _ = access;
     authorize(destination)?;
     // The explicit gap profile independently reparses decode timing after the existing scan.
     // Preserve the original continuous-profile work charge and account for that extra pass.

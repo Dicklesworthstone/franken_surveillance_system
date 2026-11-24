@@ -709,11 +709,11 @@ impl TuyaEventMapper {
         // Observability/event evidence only moves when something was
         // actually staged — an empty report is a sighting at most, never
         // event evidence and never coverage.
-        if !digests.is_empty() {
-            if let Some(tracker) = self.trackers.get_mut(cam_id) {
-                tracker.events_seen += 1;
-                tracker.observability = CamObservability::Observable;
-            }
+        if !digests.is_empty()
+            && let Some(tracker) = self.trackers.get_mut(cam_id)
+        {
+            tracker.events_seen += 1;
+            tracker.observability = CamObservability::Observable;
         }
         Ok(digests)
     }

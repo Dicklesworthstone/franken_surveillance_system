@@ -319,7 +319,8 @@ fn owner_camera_audio_video_pipeline_replay() -> TestResult {
         let result = run_owned_async(&mut authority, &mut tree, TaskSpec {
             task_id: TaskId::new("task:g4-av-pipeline-lab")?, started_at: TimestampNs(2),
         }, &cx, async |task, cx| {
-            let output: Result<(usize, usize, usize, usize, usize), Box<dyn Error>> = async {
+            type PipelineAudioCounts = (usize, usize, usize, usize, usize);
+            let output: Result<PipelineAudioCounts, Box<dyn Error>> = async {
                 let listener = TcpListener::bind("127.0.0.1:0").await?;
                 let address = listener.local_addr()?;
                 let original = wire.clone();

@@ -7,6 +7,7 @@
 
 use super::super::metered::MeteredClock;
 use asupersync::Cx;
+#[cfg(target_os = "linux")]
 use fss_core::{BudgetVector, RuntimeGrant};
 use fss_runtime::execution::TaskCx;
 use std::{

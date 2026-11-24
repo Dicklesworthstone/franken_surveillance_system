@@ -45,7 +45,7 @@ fn learning_admission_cancels_before_reading_an_absent_deployment() -> TestResul
     };
     let observed = std::cell::Cell::new(false);
     let result =
-        inspect_learning_cancellable(&directory.0.join("absent"), &request, &|| true, |_, _| {
+        inspect_learning_cancellable(directory.0.join("absent"), &request, &|| true, |_, _| {
             observed.set(true);
         });
     assert!(is_cancelled(&result), "{result:?}");

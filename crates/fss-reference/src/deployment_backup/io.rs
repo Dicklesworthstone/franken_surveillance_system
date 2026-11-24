@@ -41,6 +41,48 @@ pub(super) fn checked_path(path: &Path) -> Result<PathBuf> {
     Ok(current)
 }
 
+/// Admits an existing top-level deployment or bundle directory. Resolves OS-level ancestor
+/// symlinks (e.g. macOS `/tmp` -> `/private/tmp`, `/var` -> `/private/var`) by canonicalizing
+/// the parent directory while strictly refusing a symlink at the target directory itself or
+/// anywhere inside the resolved tree.
+pub(super) fn admit_root_directory(path: &Path) -> Result<PathBuf> {
+    for component in path.components() {
+        if matches!(component, Component::ParentDir | Component::Prefix(_)) {
+            return Err(BackupError::InvalidPath);
+        }
+    }
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let leaf_meta = fs::symlink_metadata(&absolute)?;
+    if leaf_meta.file_type().is_symlink() {
+        return Err(BackupError::Unsupported("symlink"));
+    }
+    if !leaf_meta.is_dir() {
+        return Err(BackupError::InvalidPath);
+    }
+    let canonical = match (absolute.parent(), absolute.file_name()) {
+        (Some(parent), Some(name)) if !parent.as_os_str().is_empty() => {
+            fs::canonicalize(parent)?.join(name)
+        }
+        _ => absolute,
+    };
+    let resolved_meta = fs::symlink_metadata(&canonical)?;
+    if resolved_meta.file_type().is_symlink() || !resolved_meta.is_dir() {
+        return Err(BackupError::Unsupported("symlink"));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if (leaf_meta.dev(), leaf_meta.ino()) != (resolved_meta.dev(), resolved_meta.ino()) {
+            return Err(BackupError::Changed);
+        }
+    }
+    directory(&canonical)
+}
+
 pub(super) fn directory(path: &Path) -> Result<PathBuf> {
     let path = checked_path(path)?;
     if !fs::symlink_metadata(&path)?.is_dir() {
@@ -50,14 +92,20 @@ pub(super) fn directory(path: &Path) -> Result<PathBuf> {
 }
 
 pub(super) fn fresh_path(path: &Path, forbidden: &[&Path]) -> Result<PathBuf> {
+    for component in path.components() {
+        if matches!(component, Component::ParentDir | Component::Prefix(_)) {
+            return Err(BackupError::InvalidPath);
+        }
+    }
     let name = path.file_name().ok_or(BackupError::InvalidPath)?;
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
-    let path = directory(parent)?.join(name);
+    let canonical_parent = directory(&fs::canonicalize(parent)?)?;
+    let path = canonical_parent.join(name);
     for other in forbidden {
-        let other = directory(other)?;
+        let other = admit_root_directory(other)?;
         if path.starts_with(&other) || other.starts_with(&path) {
             return Err(BackupError::InvalidPath);
         }

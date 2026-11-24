@@ -266,6 +266,7 @@ impl BootstrapWorker {
     }
 
     /// Bind one operation without storage I/O.
+    #[allow(clippy::result_large_err)]
     pub fn new(inputs: BootstrapInputs) -> Result<Self, BootstrapInputs> {
         let s = &inputs.storage;
         if !direct_child(&s.journal_root, s.journal_replay.root_dir())
@@ -651,10 +652,8 @@ impl BootstrapWorker {
                                 | BootstrapOutcome::Refused(_)
                         )
                     );
-                if fenced {
-                    if let Some(ready) = state.ready.as_mut() {
-                        ready.fence();
-                    }
+                if fenced && let Some(ready) = state.ready.as_mut() {
+                    ready.fence();
                 }
                 Ok(BootstrapRetirement {
                     plan: state.plan,

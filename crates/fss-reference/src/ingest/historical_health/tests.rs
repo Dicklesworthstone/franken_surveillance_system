@@ -474,8 +474,10 @@ fn cold_prefix_cross_bindings_and_exact_reservation_admission_fail_closed() -> T
     let mut bytes = diagnostic.record.to_bytes();
     bytes.push(0);
     assert!(HistoricalHealthRecord::from_bytes(&bytes).is_err());
-    let mut limits = HistoricalHealthReadLimits::default();
-    limits.maximum_metadata_bytes = 1;
+    let limits = HistoricalHealthReadLimits {
+        maximum_metadata_bytes: 1,
+        ..HistoricalHealthReadLimits::default()
+    };
     assert!(read_retained(&f.deployment, retained.record_digest, &limits, &f.cx).is_err());
     let mut limits = HistoricalHealthReadLimits::default();
     limits.execution.maximum_pixel_samples -= 1;

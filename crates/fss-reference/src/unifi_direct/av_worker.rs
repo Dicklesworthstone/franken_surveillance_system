@@ -182,6 +182,7 @@ pub struct Retirement {
 }
 
 /// Worker outcome; source remains owned on every refusal or uncertain result.
+#[allow(clippy::large_enum_variant)]
 pub enum Outcome {
     /// The closure did not start; its source remains pending.
     NotStarted,
@@ -368,6 +369,7 @@ impl Worker {
 
     /// Create an idle worker without starting a task or performing I/O. Invalid
     /// work bounds return every original part unchanged.
+    #[allow(clippy::result_large_err)]
     pub fn new(parts: Parts) -> Result<Self, Parts> {
         if !(1..=100_000_000_000).contains(&parts.work_limit) {
             return Err(parts);
@@ -383,6 +385,7 @@ impl Worker {
     }
 
     /// Admit a segment without blocking on a running worker.
+    #[allow(clippy::result_large_err)]
     pub fn offer(
         &mut self,
         segment: recording::Segment,
@@ -647,6 +650,7 @@ pub enum UnknownTimePublication {
 }
 
 /// Joined blocking-attempt result for an unknown-time worker.
+#[allow(clippy::large_enum_variant)]
 pub enum UnknownTimeOutcome {
     /// The closure did not start; its source remains pending.
     NotStarted,
@@ -767,6 +771,7 @@ pub enum RolloverPauseError {
 impl UnknownTimeRetirement {
     /// Detach an unfenced A/V worker while retaining its sink and any pending
     /// segment and previous rollover custody. Unresolved muxer effects refuse.
+    #[allow(clippy::result_large_err)]
     pub fn into_rollover(
         mut self,
     ) -> Result<
@@ -819,6 +824,7 @@ impl UnknownTimeRetirement {
     }
 
     /// Transfer a verified predecessor without another storage read.
+    #[allow(clippy::result_large_err)]
     pub(crate) fn into_rollover_verified(
         self,
         verified: VerifiedRolloverPause,
@@ -894,6 +900,7 @@ impl UnknownTimeRolloverResources {
 
     /// Perform all fallible custody reads before returning an opaque
     /// attachment. Pending media remains in `self` throughout the checks.
+    #[allow(clippy::result_large_err)]
     pub(crate) fn prepare_attachment(
         &mut self,
         active: archive::journal::rollover::Active,
@@ -908,15 +915,12 @@ impl UnknownTimeRolloverResources {
         {
             return Err(active);
         }
-        if let Some(prior) = &mut self.prior_custody {
-            if active.check_prior(prior, &self.replay).is_err() {
-                return Err(active);
-            }
+        if let Some(prior) = &mut self.prior_custody
+            && active.check_prior(prior, &self.replay).is_err()
+        {
+            return Err(active);
         }
-        let (journal, keeper, custody) = match active.into_worker_parts(&self.replay) {
-            Ok(parts) => parts,
-            Err(active) => return Err(active),
-        };
+        let (journal, keeper, custody) = active.into_worker_parts(&self.replay)?;
         let custody = match self.prior_custody.take() {
             Some(mut prior) => {
                 prior.append(custody);
@@ -934,6 +938,7 @@ impl UnknownTimeRolloverResources {
 
     /// Attach a previously checked successor without reading its storage.
     /// A fresh in-memory cancellation checkpoint still applies.
+    #[allow(clippy::result_large_err)]
     pub(crate) fn attach_prepared(
         self,
         attachment: PreparedUnknownTimeAttachment,
@@ -1008,6 +1013,7 @@ impl UnknownTimeRolloverResources {
     }
 
     /// Restore the exact predecessor after an uncommitted transition.
+    #[allow(clippy::result_large_err)]
     pub fn restore(
         self,
         previous: archive::journal::rollover::Previous,
@@ -1038,6 +1044,7 @@ impl UnknownTimeRolloverResources {
     }
 
     /// Attach a replayed successor and retain predecessor/switch custody.
+    #[allow(clippy::result_large_err)]
     pub fn attach(
         mut self,
         active: archive::journal::rollover::Active,
@@ -1054,13 +1061,13 @@ impl UnknownTimeRolloverResources {
                 active,
             });
         }
-        if let Some(prior) = &mut self.prior_custody {
-            if active.check_prior(prior, &self.replay).is_err() {
-                return Err(UnknownTimeRolloverAttachRefusal {
-                    resources: self,
-                    active,
-                });
-            }
+        if let Some(prior) = &mut self.prior_custody
+            && active.check_prior(prior, &self.replay).is_err()
+        {
+            return Err(UnknownTimeRolloverAttachRefusal {
+                resources: self,
+                active,
+            });
         }
         let (journal, keeper, custody) = match active.into_worker_parts(&self.replay) {
             Ok(parts) => parts,
@@ -1271,6 +1278,7 @@ impl UnknownTimeWorker {
     }
 
     /// Construct an idle worker or return every original owner unchanged.
+    #[allow(clippy::result_large_err)]
     pub fn new(parts: UnknownTimeParts) -> Result<Self, UnknownTimeParts> {
         if !(1..=100_000_000_000).contains(&parts.work_limit) {
             return Err(parts);
@@ -1288,6 +1296,7 @@ impl UnknownTimeWorker {
 
     /// Reattach a replayed cold-recovered lineage to an A/V worker.
     /// The sink and all switch owners are returned if verification fails.
+    #[allow(clippy::result_large_err)]
     pub fn from_recovered(
         parts: UnknownTimeParts,
         mut custody: archive::journal::rollover::WorkerCustody,
@@ -1319,6 +1328,7 @@ impl UnknownTimeWorker {
     /// Attach a lineage verified by the drained recovered-startup worker.
     /// This consumes its observation without performing storage I/O. The
     /// worker rechecks custody inside every later publication operation.
+    #[allow(clippy::result_large_err)]
     pub fn from_recovered_preverified(
         parts: UnknownTimeParts,
         mut custody: archive::journal::rollover::WorkerCustody,
@@ -1345,6 +1355,7 @@ impl UnknownTimeWorker {
     }
 
     /// Admit a single original segment; refusal returns it unchanged.
+    #[allow(clippy::result_large_err)]
     pub fn offer(&mut self, segment: recording::Segment) -> Result<(), UnknownTimeOfferRefusal> {
         if self.fenced {
             return Err(UnknownTimeOfferRefusal::Fenced(segment));
@@ -1423,17 +1434,17 @@ impl UnknownTimeWorker {
                 });
                 return;
             }
-            if let Some(custody) = rollover_custody {
-                if let Err(error) = custody.check(&parts.journal, &parts.keeper, &parts.replay) {
-                    *report = Some(UnknownTimePublication::Refused {
-                        stage: UnknownTimeFailureStage::BeforePublication,
-                        reason: journal_reason(error),
-                        pending: parts.sink.pending_publication(),
-                        receipt: None,
-                        rollover: None,
-                    });
-                    return;
-                }
+            if let Some(custody) = rollover_custody
+                && let Err(error) = custody.check(&parts.journal, &parts.keeper, &parts.replay)
+            {
+                *report = Some(UnknownTimePublication::Refused {
+                    stage: UnknownTimeFailureStage::BeforePublication,
+                    reason: journal_reason(error),
+                    pending: parts.sink.pending_publication(),
+                    receipt: None,
+                    rollover: None,
+                });
+                return;
             }
             if child.is_cancel_requested() {
                 *report = Some(UnknownTimePublication::Refused {

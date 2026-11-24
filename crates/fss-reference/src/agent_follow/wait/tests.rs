@@ -279,11 +279,11 @@ impl FollowWaitControl for VirtualControl<'_> {
         if !self.short_park {
             self.now += delay_ms;
         }
-        if let Some(mut action) = self.action.take() {
-            if let Err(error) = action() {
-                self.action_error = Some(error.to_string());
-                return Err(FollowWaitDenial::Unauthorized);
-            }
+        if let Some(mut action) = self.action.take()
+            && let Err(error) = action()
+        {
+            self.action_error = Some(error.to_string());
+            return Err(FollowWaitDenial::Unauthorized);
         }
         if self.cancel_after_park {
             self.denial = Some(FollowWaitDenial::Cancelled);

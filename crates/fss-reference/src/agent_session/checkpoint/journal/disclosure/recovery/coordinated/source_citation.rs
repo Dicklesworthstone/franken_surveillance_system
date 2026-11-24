@@ -73,7 +73,7 @@ impl DurableDisclosureStore {
         let binding = self
             .catalog
             .source_binding(&request.handle_id, request.expected_descriptor_digest)
-            .ok_or_else(|| {
+            .ok_or({
                 SourceCitationError::Preflight(DurableInvestigationError::Refused(
                     InvestigationError::EvidenceRequired,
                 ))

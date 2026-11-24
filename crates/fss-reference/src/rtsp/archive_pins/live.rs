@@ -101,6 +101,7 @@ pub struct JournaledLiveAvcArchive<'a, 'p> {
     inner: Option<CheckpointedLiveAvcArchive<'a>>,
     pins: &'p mut ArchivePinJournal,
     last_ns: u64,
+    last_telemetry: crate::rtsp::client::inband::RtspIntakeTelemetry,
     finished: bool,
 }
 impl fmt::Debug for JournaledLiveAvcArchive<'_, '_> {
@@ -118,6 +119,62 @@ impl<'a, 'p> JournaledLiveAvcArchive<'a, 'p> {
             .as_mut()
             .ok_or(CaptureError::Closed)?
             .enable_timing_lookahead()
+    }
+    /// Opt in before DESCRIBE to acquire H.264 SPS/PPS in-band from RTP when SDP omits
+    /// `sprop-parameter-sets`.
+    pub fn set_allow_inband_parameter_sets(
+        &mut self,
+        enabled: bool,
+    ) -> Result<(), JournaledLiveArchiveError> {
+        self.inner
+            .as_mut()
+            .ok_or(JournaledLiveArchiveError::Live(LiveArchiveError::Closed))?
+            .set_allow_inband_parameter_sets(enabled)
+            .map_err(JournaledLiveArchiveError::Live)
+    }
+    /// Override bounded pre-roll ceilings for in-band parameter-set acquisition before DESCRIBE.
+    pub fn set_inband_sync_limits(
+        &mut self,
+        limits: crate::rtsp::client::inband::InbandSyncLimits,
+    ) -> Result<(), JournaledLiveArchiveError> {
+        self.inner
+            .as_mut()
+            .ok_or(JournaledLiveArchiveError::Live(LiveArchiveError::Closed))?
+            .set_inband_sync_limits(limits)
+            .map_err(JournaledLiveArchiveError::Live)
+    }
+    /// Opt in before DESCRIBE to SETUP companion `m=audio` tracks and drain their interleaved packets.
+    pub fn set_setup_companion_tracks(
+        &mut self,
+        enabled: bool,
+    ) -> Result<(), JournaledLiveArchiveError> {
+        self.inner
+            .as_mut()
+            .ok_or(JournaledLiveArchiveError::Live(LiveArchiveError::Closed))?
+            .set_setup_companion_tracks(enabled)
+            .map_err(JournaledLiveArchiveError::Live)
+    }
+    /// Explicit provenance and pre-sync / companion-track discard counters.
+    pub fn intake_telemetry(&self) -> crate::rtsp::client::inband::RtspIntakeTelemetry {
+        self.inner.as_ref().map_or(
+            self.last_telemetry,
+            CheckpointedLiveAvcArchive::intake_telemetry,
+        )
+    }
+    /// Best-effort bounded `TEARDOWN` write before closing the socket.
+    pub fn send_teardown(
+        &mut self,
+        credentials: &DigestCredentials<'_>,
+        cnonce: [u8; 16],
+        now: u64,
+        authority: &dyn TcpAuthority,
+    ) -> Result<bool, JournaledLiveFailure> {
+        let Some(inner) = self.inner.as_mut() else {
+            return Ok(false);
+        };
+        let result = inner.send_teardown(credentials, cnonce, now, authority);
+        self.last_telemetry = inner.intake_telemetry();
+        result.map_err(|e| self.live_failure(e))
     }
 
     /// Next held picture's unverified source metadata, when present.
@@ -163,6 +220,7 @@ impl<'a, 'p> JournaledLiveAvcArchive<'a, 'p> {
             inner: Some(inner),
             pins,
             last_ns: now,
+            last_telemetry: Default::default(),
             finished: false,
         })
     }
@@ -375,6 +433,9 @@ impl<'a, 'p> JournaledLiveAvcArchive<'a, 'p> {
                 Ok(JournaledLiveArchiveStep::Live(step))
             }
             CheckpointedLiveArchiveStep::Stopped { trigger, retained } => {
+                if let Some(inner) = &self.inner {
+                    self.last_telemetry = inner.intake_telemetry();
+                }
                 self.finished = true;
                 self.inner = None;
                 Ok(JournaledLiveArchiveStep::Stopped {
@@ -386,6 +447,9 @@ impl<'a, 'p> JournaledLiveAvcArchive<'a, 'p> {
     }
     /// Stop without writing, forgetting source, or claiming remote teardown. Metadata remains on disk.
     pub fn cancel(&mut self) -> Option<JournaledLiveRetirement> {
+        if let Some(inner) = &self.inner {
+            self.last_telemetry = inner.intake_telemetry();
+        }
         self.finished = true;
         self.inner
             .take()
@@ -428,6 +492,9 @@ impl<'a, 'p> JournaledLiveAvcArchive<'a, 'p> {
         error: ArchivePinError,
         unrecorded: Option<UnrecordedWorkConfirmation>,
     ) -> JournaledLiveFailure {
+        if let Some(inner) = &self.inner {
+            self.last_telemetry = inner.intake_telemetry();
+        }
         self.finished = true;
         let retirement = self
             .inner
@@ -441,6 +508,9 @@ impl<'a, 'p> JournaledLiveAvcArchive<'a, 'p> {
     }
     fn live_failure(&mut self, error: CheckpointedLiveArchiveFailure) -> JournaledLiveFailure {
         let retirement = error.retirement.map(|r| {
+            if let Some(inner) = &self.inner {
+                self.last_telemetry = inner.intake_telemetry();
+            }
             self.finished = true;
             self.inner = None;
             Box::new(self.retirement(*r, None))

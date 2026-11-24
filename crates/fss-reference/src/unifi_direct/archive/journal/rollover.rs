@@ -181,6 +181,7 @@ pub struct Active {
 #[must_use = "retain or explicitly reconcile this rollover custody"]
 pub struct WorkerCustody {
     transitions: Vec<WorkerTransition>,
+    latest_binding: Binding,
     startup_verification: Option<StartupVerification>,
 }
 
@@ -390,8 +391,7 @@ impl WorkerCustody {
     pub fn binding(&self) -> Binding {
         self.transitions
             .last()
-            .expect("custody is nonempty")
-            .binding
+            .map_or(self.latest_binding, |transition| transition.binding)
     }
 
     /// Number of retained transitions, without implying restart recovery.
@@ -463,6 +463,7 @@ impl WorkerCustody {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn verify_settled_av(
         &mut self,
         journal: &UnknownTimeJournal,
@@ -480,6 +481,7 @@ impl WorkerCustody {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn verify_settled_video(
         &mut self,
         journal: &UnknownTimeJournal,
@@ -497,6 +499,7 @@ impl WorkerCustody {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn verify_settled(
         &mut self,
         journal: &UnknownTimeJournal,
@@ -915,6 +918,7 @@ pub fn select_successor_switch(
 /// publication, or prove that no other process holds a writer. It never
 /// appends. Each successor still requires exact-root archive replay before
 /// another publication can be admitted.
+#[allow(clippy::result_large_err)]
 pub fn recover(
     previous: Previous,
     successor: Previous,
@@ -925,6 +929,7 @@ pub fn recover(
     recover_inner(previous, successor, switch, heads, cx, false)
 }
 
+#[allow(clippy::result_large_err)]
 fn recover_inner(
     previous: Previous,
     successor: Previous,
@@ -1028,6 +1033,7 @@ impl RecoveredLineage {
 
     /// Reconstitute a settled lineage from an idle worker's exact owners.
     /// This checks the chain but does not independently locate or authenticate it.
+    #[allow(clippy::result_large_err)]
     pub fn from_worker_parts(
         current: Previous,
         mut custody: WorkerCustody,
@@ -1051,6 +1057,7 @@ impl RecoveredLineage {
     /// Recheck this complete lineage and its settled A/V graph without replay.
     /// This does not locate the latest generation, authenticate the camera,
     /// or create a publication receipt. All owners remain in this lineage.
+    #[allow(clippy::too_many_arguments)]
     pub fn verify_confirmed_av(
         &mut self,
         deployment: &mut ReferenceDeployment,
@@ -1081,6 +1088,7 @@ impl RecoveredLineage {
 
     /// Admit the next independently reopened switch without duplicating the
     /// intermediate history. The current exact root must already be replayed.
+    #[allow(clippy::result_large_err)]
     pub fn advance(
         mut self,
         successor: Previous,
@@ -1133,6 +1141,7 @@ impl ChainedActive {
     }
 
     /// Recheck the older lineage, then replay the exact successor source root.
+    #[allow(clippy::too_many_arguments)]
     pub fn replay_confirmed_source(
         &mut self,
         deployment: &mut ReferenceDeployment,
@@ -1158,6 +1167,7 @@ impl ChainedActive {
     }
 
     /// Recheck the older lineage, then replay the exact successor A/V root.
+    #[allow(clippy::too_many_arguments)]
     pub fn replay_confirmed_av(
         &mut self,
         deployment: &mut ReferenceDeployment,
@@ -1176,6 +1186,7 @@ impl ChainedActive {
     }
 
     /// Recheck the older lineage, then replay the exact successor video root.
+    #[allow(clippy::too_many_arguments)]
     pub fn replay_confirmed_video(
         &mut self,
         deployment: &mut ReferenceDeployment,
@@ -1201,6 +1212,7 @@ impl ChainedActive {
     }
 
     /// Finish only after replay and a fresh verification of every older switch.
+    #[allow(clippy::result_large_err)]
     pub fn into_recovered_lineage(mut self, cx: &ReplayCx) -> Result<RecoveredLineage, Self> {
         if self.active.check_prior(&mut self.prior, cx).is_err() {
             return Err(self);
@@ -1225,6 +1237,7 @@ impl Staged {
     /// partially written successor on disk; it never modifies `previous`.
     /// The predecessor must contain more than the successor's three seed
     /// records so the two histories cannot have the same exact head.
+    #[allow(clippy::result_large_err)]
     pub fn begin(
         previous: Previous,
         next_journal_store: Box<dyn EffectJournalStore>,
@@ -1288,6 +1301,7 @@ impl Staged {
 
     /// Append and independently retain one exact switch before exposing a successor.
     /// A failure during append or readback is indeterminate and cannot be retried.
+    #[allow(clippy::result_large_err)]
     pub fn commit(
         self,
         mut switch: PinRetainedEffectJournal,
@@ -1377,6 +1391,7 @@ impl Active {
     /// Verify and replay the exact ledgered A/V root after rollover.
     /// Success clears only the in-memory replay fence; it does not rebuild
     /// muxer state, authenticate the camera, or establish coverage or time.
+    #[allow(clippy::too_many_arguments)]
     pub fn replay_confirmed_av(
         &mut self,
         deployment: &mut ReferenceDeployment,
@@ -1424,6 +1439,7 @@ impl Active {
     /// Verify and replay the exact ledgered video-only root after rollover.
     /// This clears only the in-memory replay fence and proves no camera or
     /// capture-time claim.
+    #[allow(clippy::too_many_arguments)]
     pub fn replay_confirmed_video(
         &mut self,
         deployment: &mut ReferenceDeployment,
@@ -1470,6 +1486,7 @@ impl Active {
 
     /// Transfer the successor only after verified replay, retaining its prior
     /// histories and switch in a guard which must accompany the worker.
+    #[allow(clippy::result_large_err)]
     pub(crate) fn into_worker_parts(
         self,
         cx: &ReplayCx,
@@ -1508,6 +1525,7 @@ impl Active {
             next_keeper,
             WorkerCustody {
                 transitions,
+                latest_binding: binding,
                 startup_verification: None,
             },
         ))
@@ -1515,6 +1533,7 @@ impl Active {
 
     /// Start a recovered lineage after the exact successor root was replayed.
     /// A refused conversion returns the complete active transition unchanged.
+    #[allow(clippy::result_large_err)]
     pub fn into_recovered_lineage(self, cx: &ReplayCx) -> Result<RecoveredLineage, Self> {
         let (journal, keeper, custody) = self.into_worker_parts(cx)?;
         Ok(RecoveredLineage {
@@ -1538,6 +1557,7 @@ impl Active {
     /// in-memory replay fence. The expected camera value is a caller-supplied
     /// claim, not device authentication. This neither starts a worker nor
     /// proves continuous coverage, physical time, or independent custody.
+    #[allow(clippy::too_many_arguments)]
     pub fn replay_confirmed_source(
         &mut self,
         deployment: &mut ReferenceDeployment,

@@ -380,10 +380,10 @@ pub fn parse_ssdp_response(ip: &str, data: &[u8]) -> Option<SsdpResponse> {
 
 fn header(text: &str, name: &str) -> String {
     for line in text.split("\r\n") {
-        if let Some((k, v)) = line.split_once(':') {
-            if k.trim().eq_ignore_ascii_case(name) {
-                return v.trim().to_owned();
-            }
+        if let Some((k, v)) = line.split_once(':')
+            && k.trim().eq_ignore_ascii_case(name)
+        {
+            return v.trim().to_owned();
         }
     }
     String::new()
@@ -443,10 +443,10 @@ fn extract_tags(text: &str, tag: &str) -> Vec<String> {
     let mut rest = text;
     while let Some(i) = find_tag_open(rest, tag) {
         let after = &rest[i..];
-        if let Some(start) = after.find('>') {
-            if let Some(end_rel) = find_tag_close(&after[start + 1..], tag) {
-                out.push(after[start + 1..start + 1 + end_rel].to_owned());
-            }
+        if let Some(start) = after.find('>')
+            && let Some(end_rel) = find_tag_close(&after[start + 1..], tag)
+        {
+            out.push(after[start + 1..start + 1 + end_rel].to_owned());
         }
         let consumed = i + 4;
         rest = &rest[consumed.min(rest.len())..];
@@ -724,8 +724,7 @@ fn set_multicast_if(sock: &UdpSocket, ip: Ipv4Addr) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::io::AsRawFd;
-        let opt = libc_setsockopt_mcast_if(sock.as_raw_fd(), ip.octets())?;
-        let _ = opt;
+        libc_setsockopt_mcast_if(sock.as_raw_fd(), ip.octets())?;
         Ok(())
     }
     #[cfg(not(unix))]

@@ -651,3 +651,148 @@ fn final_admission_cancellation_discards_the_page_without_mutation() -> TestResu
     }
     Ok(())
 }
+
+fn seed_tutk_import(
+    deployment: &mut ReferenceDeployment,
+    context: &ReplayCx,
+    sensor: &str,
+    stream: &str,
+    frames: u32,
+) -> TestResult<crate::ingest::tutk::AcquisitionSeal> {
+    use crate::ingest::tutk::{AudioPolicy, TutkIngest, TutkIngestConfig, TutkIngestLimits};
+    use fss_tutk::session::{AssembledFrame, SessionConfig, SessionEvent};
+
+    let mut ing = TutkIngest::new(TutkIngestConfig {
+        session: SessionConfig {
+            uid: "SIMCAMSIMCAMSIMCAM11".to_owned(),
+            enr: "sim-enr-16byte!!".to_owned(),
+            mac: "00AA11BB22CC".to_owned(),
+            audio: false,
+            psk_truncated: false,
+            seed: 77,
+            entropy: None,
+            known_tuples: vec![("HL_CAM4".to_owned(), "4.52.17.26".to_owned())],
+        },
+        sensor_id: SensorId::parse(sensor)?,
+        stream_id: StreamId::parse(stream)?,
+        site_lineage: SITE.to_owned(),
+        audio: AudioPolicy::Disabled,
+        limits: TutkIngestLimits::default(),
+        known_tuples: vec![("HL_CAM4".to_owned(), "4.52.17.26".to_owned())],
+    })?;
+    ing.handle_event(
+        SessionEvent::KAuthComplete {
+            camera_info: r#"{"connectionRes":"1"}"#.to_owned(),
+        },
+        1_000,
+    );
+    ing.handle_event(
+        SessionEvent::StreamStarted {
+            payload: b"k10011".to_vec(),
+        },
+        1_100,
+    );
+    for i in 0..frames {
+        let mut au = vec![0x00, 0x00, 0x00, 0x01, if i == 0 { 0x65 } else { 0x41 }];
+        au.extend((0..24 + i as usize).map(|b| (b * 5 + i as usize) as u8));
+        ing.handle_event(
+            SessionEvent::Frame(AssembledFrame {
+                channel: 0x05,
+                frame_no: i,
+                au,
+                info: None,
+                first_recv_ns: 3_000_000_000 + u64::from(i) * 33_333_333,
+                last_recv_ns: 3_000_001_000 + u64::from(i) * 33_333_333,
+                packets: 1,
+                gap_before: false,
+            }),
+            3_000_001_000 + u64::from(i) * 33_333_333,
+        );
+    }
+    Ok(ing.seal_acquisition(deployment, "HL_CAM4/4.52.17.26", context)?)
+}
+
+#[test]
+fn tutk_and_file_imports_coexist_in_unified_footage_index_with_zero_other_adapters() -> TestResult {
+    let (root, file_receipt) = fixture("tutk-unified")?;
+    let context = cx(&root)?;
+    let mut deployment = ReferenceDeployment::open(&root, SITE, &context)?;
+    let tutk_seal = seed_tutk_import(
+        &mut deployment,
+        &context,
+        "sensor:tutk-front-porch",
+        "stream:tutk-main",
+        4,
+    )?;
+    drop(deployment);
+
+    let report = crate::doctor::inspect_deployment(&root);
+    assert_eq!(report.verdict, crate::doctor::DoctorVerdict::Healthy);
+
+    let mut req = request()?;
+    req.max_entries = 32;
+    let all = query(&root, &req)?;
+    assert_eq!(all.other_adapter_imports, 0);
+    assert_eq!(all.scanned_capsules, file_receipt.capsule_count + 4);
+    assert_eq!(all.matched_capsules, file_receipt.capsule_count + 4);
+
+    let file_rows: Vec<_> = all
+        .rows
+        .iter()
+        .filter(|r| r.adapter_id == crate::ingest::ADP_FILE_ROW_ID)
+        .collect();
+    let tutk_rows: Vec<_> = all
+        .rows
+        .iter()
+        .filter(|r| r.adapter_id == crate::ingest::tutk::ADAPTER)
+        .collect();
+    assert_eq!(file_rows.len(), file_receipt.capsule_count);
+    assert_eq!(tutk_rows.len(), 4);
+    assert!(file_rows.iter().all(|r| r.adapter_family() == "file"));
+    assert!(tutk_rows.iter().all(|r| {
+        r.adapter_family() == crate::ingest::tutk::ADAPTER_FAMILY
+            && r.adapter_generation == "HL_CAM4/4.52.17.26"
+            && r.import_identity == tutk_seal.import_identity
+            && r.import_root == tutk_seal.import_root
+            && r.manifest_digest == tutk_seal.manifest_digest
+            && r.declared_origin_digest.is_none()
+            && r.capsule.sensor_id.as_str() == "sensor:tutk-front-porch"
+            && r.capsule.stream_id.as_str() == "stream:tutk-main"
+    }));
+    assert!(all.epistemic().propositions.iter().any(|p| {
+        p.id == "claim:footage:record-selection"
+            && p.statement
+                .contains("Other-adapter completed imports outside this scope: 0.")
+    }));
+
+    // Filter down to only the TUTK sensor.
+    req.filter.sensor = Some(SensorId::parse("sensor:tutk-front-porch")?);
+    let filtered = query(&root, &req)?;
+    assert_eq!(filtered.matched_capsules, 4);
+    assert!(
+        filtered
+            .rows
+            .iter()
+            .all(|r| r.adapter_id == crate::ingest::tutk::ADAPTER)
+    );
+
+    // Deletion cleanly removes the TUTK import from footage queries.
+    let context = cx(&root)?;
+    let mut deployment = ReferenceDeployment::open(&root, SITE, &context)?;
+    let plan = plan_deletion(&deployment, tutk_seal.import_identity, &context)?;
+    assert!(plan.blockers.is_empty());
+    let digest = plan.digest()?;
+    let approval = approval_digest(digest, SITE, "operator:footage-query")?;
+    commit_deletion(
+        &mut deployment,
+        digest,
+        approval,
+        "operator:footage-query",
+        &context,
+    )?;
+    drop(deployment);
+    let after_delete = query(&root, &req)?;
+    assert_eq!(after_delete.matched_capsules, 0);
+    assert_eq!(after_delete.other_adapter_imports, 0);
+    Ok(())
+}

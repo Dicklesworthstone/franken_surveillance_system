@@ -196,10 +196,10 @@ fn serve(listener: TcpListener, case: &Case) -> Test<Vec<String>> {
             response.extend_from_slice(body);
         }
         // A cancelled/expired owner may close before the final response is written.
-        if let Err(error) = stream.write_all(&response) {
-            if !(index == 2 && (case.cancel || !case.delay.is_zero())) {
-                return Err(error.into());
-            }
+        if let Err(error) = stream.write_all(&response)
+            && !(index == 2 && (case.cancel || !case.delay.is_zero()))
+        {
+            return Err(error.into());
         }
     }
     Ok(requests)

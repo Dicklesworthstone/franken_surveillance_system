@@ -216,6 +216,7 @@ impl fmt::Debug for RtspMetadataClient {
 
 impl RtspMetadataClient {
     /// Validate scope, expected source and both independent budgets before any request.
+    #[allow(clippy::result_large_err)]
     pub fn new(
         config: ClientConfig,
         key: StreamKey,
@@ -257,6 +258,7 @@ impl RtspMetadataClient {
 
     /// Pin a credential realm/policy before the first request. Passwords and HA1
     /// values are never stored. SHA-256 remains the default; no legacy fallback.
+    #[allow(clippy::result_large_err)]
     pub fn with_digest(
         config: ClientConfig,
         key: StreamKey,
@@ -347,6 +349,7 @@ impl RtspMetadataClient {
 
     /// Prepare a plain request. A Digest-enabled client cannot bypass its secret owner.
     /// Write the prepared request once or close; preparation is not a send receipt.
+    #[allow(clippy::result_large_err)]
     pub fn request(
         &mut self,
         command: ClientCommand,
@@ -364,6 +367,7 @@ impl RtspMetadataClient {
 
     /// Borrow credentials for one scoped request. The first request is unsigned;
     /// accepted challenges are reused only under the shared monotone nonce policy.
+    #[allow(clippy::result_large_err)]
     pub fn request_digest(
         &mut self,
         command: ClientCommand,
@@ -387,6 +391,7 @@ impl RtspMetadataClient {
     /// Consume the internally retained exact 401. Return both the prepared retry
     /// and original challenge; no reserialization, lost raw challenge, or clock reset.
     /// A refused challenge closes this attempt and transfers every retained source.
+    #[allow(clippy::result_large_err)]
     pub fn respond_digest(
         &mut self,
         credentials: &DigestCredentials<'_>,
@@ -419,6 +424,7 @@ impl RtspMetadataClient {
     /// Admit one bounded TCP chunk. Backpressure and input-limit refusals consume
     /// no bytes. On fatal failure the retirement owns previously accepted wire;
     /// the new, refused chunk still belongs to the caller.
+    #[allow(clippy::result_large_err)]
     pub fn ingest(&mut self, bytes: &[u8], now: u64) -> Result<(), MetadataClientFailure> {
         self.check_time(now).map_err(safe)?;
         if self.closed || self.input_ended {
@@ -449,6 +455,7 @@ impl RtspMetadataClient {
 
     /// One bounded progress step. Deadlines run before queued output, and document
     /// expiry cannot consume the next original datagram. Poll even without traffic.
+    #[allow(clippy::result_large_err)]
     pub fn poll(&mut self, now: u64) -> Result<MetadataClientPoll, MetadataClientError> {
         self.check_time(now)?;
         self.last_ns = now;
@@ -678,6 +685,7 @@ impl RtspMetadataClient {
         }
     }
 
+    #[allow(clippy::result_large_err)]
     fn configure_metadata(&mut self) -> Result<(), MetadataClientError> {
         if self
             .session
@@ -724,6 +732,7 @@ impl RtspMetadataClient {
         }
     }
 
+    #[allow(clippy::result_large_err)]
     fn check_time(&self, now: u64) -> Result<(), MetadataClientError> {
         if now < self.last_ns {
             Err(MetadataClientError::Session(ClientError::ClockReversed))
@@ -745,6 +754,7 @@ impl RtspMetadataClient {
         .any(|at| now >= at);
         expired.then_some(MetadataClientError::Wire(WireIntakeError::Deadline))
     }
+    #[allow(clippy::result_large_err)]
     fn admit_operation(&mut self, now: u64) -> Result<(), MetadataClientFailure> {
         self.check_time(now).map_err(safe)?;
         if self.closed || self.input_ended {
@@ -756,6 +766,7 @@ impl RtspMetadataClient {
         }
         Ok(())
     }
+    #[allow(clippy::result_large_err)]
     fn admit_request(&mut self, now: u64) -> Result<(), MetadataClientFailure> {
         self.admit_operation(now)?;
         if self.buffered_wire_bytes() != 0 {

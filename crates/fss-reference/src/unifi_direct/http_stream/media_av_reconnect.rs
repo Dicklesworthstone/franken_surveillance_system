@@ -140,6 +140,7 @@ pub enum AutoError {
 
 /// One bounded automatic decision; every tail completion remains caller-owned.
 #[must_use]
+#[allow(clippy::large_enum_variant)]
 pub enum AutoStep {
     /// One old-source archival decision, including any publication receipt.
     Tail(retirement_source::DriverStep),
@@ -644,6 +645,7 @@ pub enum ReuseRefusal<'scope, 'task, 'policy> {
 
 /// A failed successor archive attachment preserves every original owner.
 #[must_use = "retain the recording, storage, listener and effect owners"]
+#[allow(clippy::large_enum_variant)]
 pub enum FinishRecordingRefusal<'scope, 'task, 'policy> {
     /// A successor is not yet accepted or the old tail is not published.
     NotReady {
@@ -702,6 +704,7 @@ pub enum FinishRefusal<'scope, 'task, 'policy> {
 impl<'scope, 'task, 'policy> Transition<'scope, 'task, 'policy> {
     /// Join the stopped recording, its listener and its exact source tail.
     /// Pending A/V output or an unsealed prefix must be resolved first.
+    #[allow(clippy::result_large_err)]
     pub fn new(
         parts: archive::Parts,
         listener: listener::Listener<'scope, 'task, 'policy>,
@@ -839,6 +842,7 @@ impl<'scope, 'task, 'policy> Transition<'scope, 'task, 'policy> {
     }
 
     /// Reserve a successor accept only after the old tail has been published.
+    #[allow(clippy::result_large_err)]
     pub fn accept_next(
         &mut self,
         inputs: media_reconnect::Inputs,
@@ -1276,6 +1280,7 @@ impl<'scope, 'task, 'policy> Transition<'scope, 'task, 'policy> {
     /// Attach the accepted successor to independently provisioned archive
     /// resources. The normal A/V startup checks source key, camera claim,
     /// retention and worker state before reading any successor bytes.
+    #[allow(clippy::result_large_err)]
     pub fn finish_recording(
         self,
         storage: recording_storage::Created,
@@ -1354,6 +1359,7 @@ impl<'scope, 'task, 'policy> Transition<'scope, 'task, 'policy> {
     }
 
     /// Attach A/V bootstrap to the accepted successor, retaining the old archive.
+    #[allow(clippy::result_large_err)]
     pub fn finish(
         self,
         retention: ContentDigest,

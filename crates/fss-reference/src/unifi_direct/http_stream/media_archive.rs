@@ -53,6 +53,7 @@ pub struct Parts {
 
 /// A complete bounded decision or ownership-preserving refusal.
 #[must_use]
+#[allow(clippy::large_enum_variant)]
 pub enum Step {
     /// A source was transferred to the archive worker.
     SourceOffered(recording::SourceDisposition),
@@ -221,6 +222,7 @@ pub enum StartPreflight {
 
 /// Every stopped start returns its remaining effect and archive owners.
 #[must_use = "retain or reconcile every returned owner and camera effect"]
+#[allow(clippy::large_enum_variant)]
 pub enum StartRefusal<'a> {
     /// No request was sent; all original start inputs are returned.
     Preflight {
@@ -248,6 +250,7 @@ pub enum StartRefusal<'a> {
 /// No blocking pool, mismatched binding, invalid policy, or cancellation can
 /// trigger a camera request. A dropped in-flight write can still leave an
 /// indeterminate effect in the durable journal; reconcile before any retry.
+#[allow(clippy::result_large_err, clippy::too_many_arguments)]
 pub async fn start<'a, 'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
     task: &'scope TaskCx<'task>,
     cx: &'scope Cx,
@@ -274,6 +277,7 @@ pub async fn start<'a, 'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
 
 /// Start with caller-owned custody of the camera's untrusted HTTP response.
 /// A custody failure retains the permit and never authorizes a retry.
+#[allow(clippy::result_large_err, clippy::too_many_arguments)]
 pub async fn start_with_response<'a, 'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
     task: &'scope TaskCx<'task>,
     cx: &'scope Cx,
@@ -441,6 +445,7 @@ impl Driver {
     }
 
     /// Attach fresh storage to the caller-bound stream without starting I/O.
+    #[allow(clippy::result_large_err)]
     pub fn attach(
         connected: media::Connected,
         storage: recording_storage::Created,
@@ -537,6 +542,7 @@ impl Driver {
     }
 
     /// Recover every owner after all archive attempts have drained.
+    #[allow(clippy::result_large_err)]
     pub fn into_parts(self) -> Result<Parts, Self> {
         if self.parts.source.is_running()
             || self

@@ -152,6 +152,7 @@ pub enum LiveHevcArchiveCompletion {
 /// Distinct native, admission, pin, durability, indexing and finalization boundaries.
 #[must_use]
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum JournaledLiveHevcArchiveStep {
     /// Unchanged wire, challenge, control, timing, released source or terminal capture output.
     /// Prepared windows alone are intercepted and moved to the archive writer instead.

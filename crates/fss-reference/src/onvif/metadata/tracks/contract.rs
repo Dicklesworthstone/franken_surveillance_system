@@ -512,10 +512,10 @@ pub fn project_tracklets<F: FnMut() -> bool>(
         }
         reasons.sort_unstable();
         reasons.dedup();
-        if !reasons.is_empty() {
-            if let Some(old) = state.take() {
-                end_objects(old.objects, &mut report.tracklets, &reasons, &mut meter)?;
-            }
+        if !reasons.is_empty()
+            && let Some(old) = state.take()
+        {
+            end_objects(old.objects, &mut report.tracklets, &reasons, &mut meter)?;
         }
         let mut old_objects = state.map(|old| old.objects).unwrap_or_default();
         let mut new_objects = BTreeMap::new();
@@ -759,16 +759,16 @@ fn check_inputs<F: FnMut() -> bool>(
             if !identities.insert(key.clone()) {
                 return Err(TrackError::DuplicateObject);
             }
-            if let Some(appearance) = &object.appearance {
-                if let Some(class) = &appearance.class {
-                    if class.candidates.len() > MAX_ANALYTICS_CLASSES {
-                        return Err(TrackError::InvalidInput);
-                    }
-                    for candidate in &class.candidates {
-                        validate_label(&candidate.label, 256, meter)?;
-                        if let Some(value) = &candidate.likelihood {
-                            validate_label(value.as_str(), MAX_ANALYTICS_NUMBER_BYTES, meter)?;
-                        }
+            if let Some(appearance) = &object.appearance
+                && let Some(class) = &appearance.class
+            {
+                if class.candidates.len() > MAX_ANALYTICS_CLASSES {
+                    return Err(TrackError::InvalidInput);
+                }
+                for candidate in &class.candidates {
+                    validate_label(&candidate.label, 256, meter)?;
+                    if let Some(value) = &candidate.likelihood {
+                        validate_label(value.as_str(), MAX_ANALYTICS_NUMBER_BYTES, meter)?;
                     }
                 }
             }

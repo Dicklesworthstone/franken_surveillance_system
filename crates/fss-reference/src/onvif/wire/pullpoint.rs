@@ -366,13 +366,13 @@ fn reply_relationship(
         return Err(WireError::UnexpectedEnvelope);
     }
     let header = unique(&doc, root, SOAP_NS, "Header")?;
-    if let Some(header) = header {
-        if let Some(field) = unique(&doc, header, ADDRESSING_NS, "RelatesTo")? {
-            if relates_to(&doc, field)? != expected_id {
-                return Err(WireError::UnexpectedResponse);
-            }
-            return Ok(());
+    if let Some(header) = header
+        && let Some(field) = unique(&doc, header, ADDRESSING_NS, "RelatesTo")?
+    {
+        if relates_to(&doc, field)? != expected_id {
+            return Err(WireError::UnexpectedResponse);
         }
+        return Ok(());
     }
     if require_explicit {
         return Err(WireError::UnexpectedResponse);
@@ -395,10 +395,10 @@ pub(super) fn message_id(id: &str) -> Result<(), WireError> {
 }
 
 pub(super) fn relates_to(doc: &xml::Document, id: usize) -> Result<&str, WireError> {
-    if let Some(kind) = doc.attribute(id, "", "RelationshipType") {
-        if kind != "http://www.w3.org/2005/08/addressing/reply" {
-            return Err(WireError::UnsupportedHeader);
-        }
+    if let Some(kind) = doc.attribute(id, "", "RelationshipType")
+        && kind != "http://www.w3.org/2005/08/addressing/reply"
+    {
+        return Err(WireError::UnsupportedHeader);
     }
     let value = scalar(doc, id)?;
     message_id(value)?;

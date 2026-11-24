@@ -44,6 +44,7 @@ impl SourceAudit<'_> {
         self.history
     }
 
+    #[allow(clippy::result_large_err)]
     fn checkpoint(&mut self) -> Result<(), FollowWaitError> {
         super::checkpoint(
             self.binding,
@@ -71,6 +72,7 @@ impl SourceAudit<'_> {
             .saturating_sub(self.progress.source_read_attempts) as usize
     }
 
+    #[allow(clippy::result_large_err)]
     fn reserve(&mut self, envelope: u64) -> Result<(), FollowWaitError> {
         let reads = self
             .progress
@@ -115,6 +117,7 @@ impl SourceAudit<'_> {
         Ok(())
     }
 
+    #[allow(clippy::result_large_err)]
     fn verified(
         &mut self,
         bytes: usize,
@@ -168,6 +171,7 @@ impl SourceAudit<'_> {
         Ok(())
     }
 
+    #[allow(clippy::result_large_err)]
     fn read(&mut self, digest: ContentDigest) -> Result<&[u8], FollowWaitError> {
         self.checkpoint()?;
         if !self.objects.contains_key(&digest) {
@@ -226,6 +230,7 @@ impl SourceAudit<'_> {
             .ok_or_else(|| invalid("verified source cache lost an admitted object"))
     }
 
+    #[allow(clippy::result_large_err)]
     fn verify_publication(
         &mut self,
         slot: &SlotName,
@@ -259,6 +264,7 @@ impl SourceAudit<'_> {
     }
 }
 
+#[allow(clippy::result_large_err)]
 pub(crate) fn verify(
     history: &DeploymentHistory,
     snapshot: &DeploymentSnapshot,

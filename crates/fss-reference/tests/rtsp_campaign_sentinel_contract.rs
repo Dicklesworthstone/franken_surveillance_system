@@ -106,6 +106,7 @@ fn limits(f: &Fixture) -> RtspCampaignSentinelLimits {
     limits
 }
 
+#[allow(clippy::expect_used)]
 fn run(
     f: &mut Fixture,
     package: &RgbDetectorPackage,

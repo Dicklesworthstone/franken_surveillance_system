@@ -526,15 +526,16 @@ impl Report {
                 result.incomplete_claim_at_address |=
                     !other.mac.is_some_and(valid_mac) || !other.source_advertised;
             }
-            if let (Some(mac), Some(other_mac)) = (candidate.mac, other.mac) {
-                if valid_mac(mac) && valid_mac(other_mac) {
-                    result.conflicting_macs_at_address |= same_ip && mac != other_mac;
-                    result.same_mac_at_multiple_addresses |= !same_ip && mac == other_mac;
-                    result.conflicting_metadata |= same_ip
-                        && mac == other_mac
-                        && (candidate.platform != other.platform
-                            || candidate.firmware != other.firmware);
-                }
+            if let (Some(mac), Some(other_mac)) = (candidate.mac, other.mac)
+                && valid_mac(mac)
+                && valid_mac(other_mac)
+            {
+                result.conflicting_macs_at_address |= same_ip && mac != other_mac;
+                result.same_mac_at_multiple_addresses |= !same_ip && mac == other_mac;
+                result.conflicting_metadata |= same_ip
+                    && mac == other_mac
+                    && (candidate.platform != other.platform
+                        || candidate.firmware != other.firmware);
             }
         }
         Some(result)

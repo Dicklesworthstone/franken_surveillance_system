@@ -1,6 +1,11 @@
 #![forbid(unsafe_code)]
 //! Exact-source contracts: this suite also runs directly with rustc --test.
 
+#[allow(
+    dead_code,
+    unused_imports,
+    reason = "Standalone test includes full ONVIF wire module via #[path]"
+)]
 #[path = "../src/onvif/wire.rs"]
 mod wire;
 

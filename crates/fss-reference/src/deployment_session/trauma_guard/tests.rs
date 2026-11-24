@@ -65,7 +65,7 @@ fn proposal(principal: &PrincipalId, identity: &str) -> TestResult<AgentFeedback
     Ok(AgentFeedbackProposal::new(
         format!("feedback:{identity}"),
         principal.clone(),
-        SessionId::parse(&format!("session:{identity}"))?,
+        SessionId::parse(format!("session:{identity}"))?,
         LedgerAnchor::genesis("site:memory-tests"),
         target_json(&FeedbackTarget::Event("event:memory-target".to_owned())),
         FeedbackProposalKind::HardNegativeCandidate,

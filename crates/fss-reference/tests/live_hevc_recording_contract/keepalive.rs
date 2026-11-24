@@ -14,13 +14,12 @@ fn due_command(f: &mut Fixture) -> Test<(u64, QueuedHevcRequest, Vec<u8>)> {
                 event,
                 connection: None,
             } => {
-                if let HevcCapturePoll::Receiver(source) = *event {
-                    if matches!(source.as_ref(), Event::Client { event, work: None }
+                if let HevcCapturePoll::Receiver(source) = *event
+                    && matches!(source.as_ref(), Event::Client { event, work: None }
                         if matches!(event.as_ref(), HevcClientPoll::KeepAliveDue))
-                    {
-                        let (queued, wire) = f.command(due)?;
-                        return Ok((due, queued, wire));
-                    }
+                {
+                    let (queued, wire) = f.command(due)?;
+                    return Ok((due, queued, wire));
                 }
             }
             _ => return Err("unexpected progress before keepalive due".into()),

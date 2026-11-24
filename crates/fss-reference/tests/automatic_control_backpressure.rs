@@ -123,6 +123,7 @@ impl Step {
         )
     }
 }
+#[allow(clippy::large_enum_variant)]
 enum Driver {
     Connection(AutomaticAvcConnection),
     Recording(AutomaticAvcRecording),
@@ -158,6 +159,7 @@ impl Driver {
             Self::Recording(d) => d.totals(),
         }
     }
+    #[allow(clippy::expect_used)]
     fn poll(
         &mut self,
         ready: SocketReadiness,

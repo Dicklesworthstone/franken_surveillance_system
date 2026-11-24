@@ -102,7 +102,7 @@ fn event_worker_drains_cancellation_retries_and_preserves_exact_sources() -> Tes
         |operation: &str, capabilities: Vec<String>| -> Result<RootAuthoritySpec, Box<dyn Error>> {
             Ok(RootAuthoritySpec {
                 trace_id: format!("trace:{operation}"),
-                operation_id: OperationId::parse(&format!("operation:{operation}"))?,
+                operation_id: OperationId::parse(format!("operation:{operation}"))?,
                 principal: "principal:fixture".into(),
                 capabilities,
                 deadline: None,

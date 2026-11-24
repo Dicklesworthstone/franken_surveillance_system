@@ -23,22 +23,33 @@ const MAX_PINNED_DIRECTORIES: usize = 3
     + crate::deployment_backup::snapshot::DIRECTORIES.len()
     + crate::deployment_backup::agent::DIRECTORIES.len();
 
-// Linux UAPI values differ for these two supported native architectures. See the identical
-// tables and rationale in ingest/file_adapter.rs and fss-export-package/file.rs.
+// Platform open(2) UAPI values for zero-unsafe O_NONBLOCK | O_NOFOLLOW | O_DIRECTORY.
+// Verified against Linux UAPI headers (x86_64/aarch64) and macOS SDK <sys/fcntl.h>.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod flags {
+    pub const NONBLOCK: i32 = 0o4_000;
     pub const DIRECTORY: i32 = 0o200_000;
     pub const NOFOLLOW: i32 = 0o400_000;
 }
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 mod flags {
+    pub const NONBLOCK: i32 = 0o4_000;
     pub const DIRECTORY: i32 = 0o40_000;
     pub const NOFOLLOW: i32 = 0o100_000;
+}
+#[cfg(all(
+    target_os = "macos",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+mod flags {
+    pub const NONBLOCK: i32 = 0x0000_0004;
+    pub const NOFOLLOW: i32 = 0x0000_0100;
+    pub const DIRECTORY: i32 = 0x0010_0000;
 }
 
 fn supported() -> Result<()> {
     if cfg!(all(
-        target_os = "linux",
+        any(target_os = "linux", target_os = "macos"),
         any(target_arch = "x86_64", target_arch = "aarch64")
     )) {
         Ok(())
@@ -60,17 +71,17 @@ fn identity(metadata: &Metadata) -> Result<(u64, u64)> {
 }
 fn flags(options: &mut OpenOptions, is_directory: bool) {
     #[cfg(all(
-        target_os = "linux",
+        any(target_os = "linux", target_os = "macos"),
         any(target_arch = "x86_64", target_arch = "aarch64")
     ))]
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(
-            0o4_000 | flags::NOFOLLOW | if is_directory { flags::DIRECTORY } else { 0 },
+            flags::NONBLOCK | flags::NOFOLLOW | if is_directory { flags::DIRECTORY } else { 0 },
         );
     }
     #[cfg(not(all(
-        target_os = "linux",
+        any(target_os = "linux", target_os = "macos"),
         any(target_arch = "x86_64", target_arch = "aarch64")
     )))]
     let _ = (options, is_directory);
@@ -131,7 +142,13 @@ impl DirectoryPin {
             }
             Ok(path)
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "macos")]
+        {
+            self.check()?;
+            super::checked_path(&self.path)?;
+            Ok(self.path.clone())
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             Err(BackupError::Unsupported("pinned_directory_platform"))
         }
@@ -328,20 +345,37 @@ impl WriteTree {
             .map_err(|_| BackupError::Indeterminate)?;
         self.check().map_err(|_| BackupError::Indeterminate)
     }
-    pub(in crate::deployment_backup) fn held_file_path(&self, file: &File) -> Result<PathBuf> {
+    pub(in crate::deployment_backup) fn held_file_path_for(
+        &self,
+        file: &File,
+        path: &Path,
+    ) -> Result<PathBuf> {
         self.check()?;
-        regular(&file.metadata()?)?;
+        let meta = file.metadata()?;
+        regular(&meta)?;
         #[cfg(target_os = "linux")]
         {
+            let _ = path;
             use std::os::fd::AsRawFd;
-            let path = PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()));
-            if identity(&fs::metadata(&path)?)? != identity(&file.metadata()?)? {
+            let fd_path = PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()));
+            if identity(&fs::metadata(&fd_path)?)? != identity(&meta)? {
                 return Err(BackupError::Changed);
             }
-            Ok(path)
+            Ok(fd_path)
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "macos")]
         {
+            let held = self.parent(path)?.held(name(path)?)?;
+            let observed = fs::symlink_metadata(&held)?;
+            regular(&observed)?;
+            if !same_file(&meta, &observed) {
+                return Err(BackupError::Changed);
+            }
+            Ok(held)
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            let _ = path;
             Err(BackupError::Unsupported("pinned_directory_platform"))
         }
     }
@@ -582,6 +616,48 @@ mod tests {
                 .is_err()
         );
         assert!(fs::read_dir(&outside)?.next().is_none());
+        drop(tree);
+        fs::remove_dir_all(base)?;
+        Ok(())
+    }
+}
+
+#[cfg(all(
+    test,
+    target_os = "macos",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+mod macos_tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    #[test]
+    fn macos_write_tree_pins_identity_roundtrips_and_detects_symlink_replacement()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let base = fs::canonicalize(std::env::temp_dir())?
+            .join(format!("fss-backup-macos-pin-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir(&base)?;
+        let root = base.join("selected");
+        let outside = base.join("outside");
+        fs::create_dir(&outside)?;
+
+        let mut tree = WriteTree::reserve(&root, &|| Ok(()))?;
+        tree.create_directory(&root.join("ledger"), &|| Ok(()))?;
+        let file = tree.write_new(&root.join("ledger/journal.fssj"), b"journal-bytes", &|| {
+            Ok(())
+        })?;
+        let held = tree.held_file_path_for(&file, &root.join("ledger/journal.fssj"))?;
+        assert_eq!(fs::read(&held)?, b"journal-bytes");
+
+        // Replacing root with a symlink to `outside` must immediately be refused before writing.
+        let moved = base.join("old-selected");
+        fs::rename(&root, &moved)?;
+        symlink(&outside, &root)?;
+        let err = tree.write_new(&root.join("later"), b"must-not-write", &|| Ok(()));
+        assert!(matches!(err, Err(BackupError::Changed)));
+        assert!(fs::read_dir(&outside)?.next().is_none());
+
         drop(tree);
         fs::remove_dir_all(base)?;
         Ok(())

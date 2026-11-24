@@ -38,7 +38,7 @@ pub struct DeploymentFootageQuery {
     pub scanned_capsules: usize,
     /// Total matching records, independent of this page's length.
     pub matched_capsules: usize,
-    /// Complete imports outside the admitted file/native-camera adapter set (e.g. lab profiles).
+    /// Complete imports outside the admitted file/native-camera/TUTK adapter set.
     pub other_adapter_imports: usize,
     /// Native cursor consumed by this page.
     pub cursor: ContinuationCursor,
@@ -61,7 +61,7 @@ impl DeploymentFootageQuery {
     pub fn epistemic(&self) -> EnvelopeEpistemic {
         let mut propositions=vec![EnvelopeProposition {
             id:"claim:footage:record-selection".to_owned(),
-            statement:format!("Verified {} retained completed-import capsule metadata records from admitted file and native HTTP/RTSP adapters; {} overlap the requested source-native filters; this page returns {} from position {}; {} remain. Other-adapter completed imports outside this scope: {}. Metadata availability is verified; original-source reconstruction and source payload availability are unknown.",
+            statement:format!("Verified {} retained completed-import capsule metadata records from admitted file and native HTTP/RTSP/TUTK adapters; {} overlap the requested source-native filters; this page returns {} from position {}; {} remain. Other-adapter completed imports outside this scope: {}. Metadata availability is verified; original-source reconstruction and source payload availability are unknown.",
                 self.scanned_capsules,self.matched_capsules,self.rows.len(),self.cursor.position,self.remaining_capsules(),self.other_adapter_imports),
             state:KnowledgeState::Known,provenance:"derived".to_owned(),
             evidence:vec![self.selection_witness.to_text()],
@@ -95,9 +95,9 @@ impl DeploymentFootageQuery {
     pub fn coverage(&self) -> EnvelopeCoverage {
         let remaining = self.remaining_capsules();
         EnvelopeCoverage {
-            authorized_domain:vec!["local committed file, HTTP MJPEG, RTSP JPEG, AVC/HEVC recording, catalog, catalog-page, gap-preserving and whole-replay import capsule metadata".to_owned()],
+            authorized_domain:vec!["local committed file, HTTP MJPEG, RTSP JPEG, AVC/HEVC recording, catalog, catalog-page, gap-preserving, whole-replay and TUTK live-acquisition import capsule metadata".to_owned()],
             observed_domain:vec!["verified metadata of complete, non-deleted imports from the admitted adapters at the exact committed head".to_owned()],
-            not_observable_domain:vec!["live streams, laboratory/other adapters, incomplete or deleted imports".to_owned(),
+            not_observable_domain:vec!["live unsealed streams, other adapters outside the admitted set, incomplete or deleted imports".to_owned(),
                 "adapter-origin reconstruction, original packet/wire validity, source payload availability/content, trusted UTC, physical activity, continuous coverage and absence".to_owned()],
             omitted_count:remaining as u64,
             omission_reasons:if remaining==0 {Vec::new()} else {vec!["remaining matching metadata is available through the exact continuation".to_owned()]},

@@ -456,7 +456,8 @@ fn listener_retains_port_after_cancel_empty_peer_and_denied_peer() -> Test {
         TimestampNs(1),
     )?;
     let runtime = RuntimeBuilder::current_thread().build()?;
-    let run = runtime.block_on(async {
+
+    runtime.block_on(async {
         let cx = asupersync::Cx::current().ok_or("missing runtime")?;
         let run = run_owned_async(
             &mut authority,
@@ -934,6 +935,5 @@ fn listener_retains_port_after_cancel_empty_peer_and_denied_peer() -> Test {
         .await?;
         run.receipt?;
         run.output
-    });
-    run
+    })
 }

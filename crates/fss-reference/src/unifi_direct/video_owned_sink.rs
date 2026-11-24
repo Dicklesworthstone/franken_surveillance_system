@@ -230,6 +230,7 @@ impl Sink {
     }
 
     /// Validate video initialization without doing I/O or consuming a refusal.
+    #[allow(clippy::result_large_err)]
     pub fn new(inputs: Inputs) -> Result<Self, ConstructionRefusal> {
         let constructor = if inputs.inband {
             flv_avc::Muxer::new_inband
@@ -278,6 +279,7 @@ impl Sink {
     }
 
     /// Admit the next exact source segment without starting publication.
+    #[allow(clippy::result_large_err)]
     pub fn offer(&mut self, segment: recording::Segment) -> Result<(), OfferRefusal> {
         let binding = segment.configuration();
         let fragment = segment.fragment();
@@ -295,7 +297,7 @@ impl Sink {
         {
             Some(OfferError::Binding)
         } else if self.next_sequence != Some(fragment.sequence())
-            || fragment.samples().first().is_none()
+            || fragment.samples().is_empty()
             || fragment
                 .samples()
                 .last()
@@ -326,6 +328,7 @@ impl Sink {
 
     /// Publish or explicitly retry the same retained candidate. The caller
     /// must keep the same deployment, journal and keeper across reconciliation.
+    #[allow(clippy::too_many_arguments)]
     pub fn flush(
         &mut self,
         deployment: &mut ReferenceDeployment,

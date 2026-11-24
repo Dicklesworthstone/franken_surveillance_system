@@ -22,66 +22,126 @@ type TestResult = Result<(), Box<dyn Error>>;
 #[test]
 fn sweep_pump_stops_on_partial_window_without_refresh_or_retry() -> TestResult {
     use fss_reference::unifi_direct::{
-        discovery::{SweepPage, fleet::Fleet, sweep::{Phase, Runner, Step}, sweep_pump::{Driver, Event, Pump}},
+        discovery::{
+            SweepPage,
+            fleet::Fleet,
+            sweep::{Phase, Runner, Step},
+            sweep_pump::{Driver, Event, Pump},
+        },
         metered::MeteredClock,
     };
-    use std::{rc::Rc, task::{Context, Poll}};
+    use std::{
+        rc::Rc,
+        task::{Context, Poll},
+    };
 
     struct Idle;
     impl<'scope, 'task> Driver<'scope, 'task> for Idle {
         type Event = ();
-        fn matches_sweep(&self, _: &Runner<'scope, 'task>, _: &Fleet<'_>) -> bool { true }
-        fn poll_driver(&mut self, _: &mut Context<'_>) -> Poll<()> { Poll::Pending }
+        fn matches_sweep(&self, _: &Runner<'scope, 'task>, _: &Fleet<'_>) -> bool {
+            true
+        }
+        fn poll_driver(&mut self, _: &mut Context<'_>) -> Poll<()> {
+            Poll::Pending
+        }
     }
     let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
     server.set_read_timeout(Some(Duration::from_secs(5)))?;
-    let destination = match server.local_addr()? { std::net::SocketAddr::V4(address) => address, _ => return Err("not IPv4".into()) };
+    let destination = match server.local_addr()? {
+        std::net::SocketAddr::V4(address) => address,
+        _ => return Err("not IPv4".into()),
+    };
     let responder = std::thread::spawn(move || -> std::io::Result<()> {
         let mut query = [0u8; 32];
         let (_, peer) = server.recv_from(&mut query)?;
         server.send_to(&packet(), peer)?;
         Ok(())
     });
-    let config = Config::new(Ipv4Addr::LOCALHOST, 8, destination, "fixture:sweep-pump-partial", Duration::from_secs(1), 1)?;
-    let empty = Report { cameras: Vec::new(), datagrams: 0, malformed: 0, out_of_scope: 0, stop: Stop::WindowElapsed };
+    let config = Config::new(
+        Ipv4Addr::LOCALHOST,
+        8,
+        destination,
+        "fixture:sweep-pump-partial",
+        Duration::from_secs(1),
+        1,
+    )?;
+    let empty = Report {
+        cameras: Vec::new(),
+        datagrams: 0,
+        malformed: 0,
+        out_of_scope: 0,
+        stop: Stop::WindowElapsed,
+    };
     let scope = ContentDigest::sha256(b"sweep pump partial scope");
-    let pages = [SweepPage { scope, index: 0, count: 1, report: &empty }];
+    let pages = [SweepPage {
+        scope,
+        index: 0,
+        count: 1,
+        report: &empty,
+    }];
     let fleet = Fleet::from_sweep(&pages, &[])?;
     let before = fleet.latest_snapshot();
     let runtime = RuntimeBuilder::current_thread().build()?;
     let (mut authority, mut tree) = root()?;
     let run = runtime.block_on(async {
         let cx = asupersync::Cx::current().ok_or("missing runtime context")?;
-        let run = run_owned_async(&mut authority, &mut tree,
-            TaskSpec { task_id: TaskId::new("task:sweep-pump-partial")?, started_at: TimestampNs(2) }, &cx,
+        let run = run_owned_async(
+            &mut authority,
+            &mut tree,
+            TaskSpec {
+                task_id: TaskId::new("task:sweep-pump-partial")?,
+                started_at: TimestampNs(2),
+            },
+            &cx,
             async |owner, cx| {
                 let start = cx.now().as_nanos();
                 let output: TestResult = async {
                     let clock = MeteredClock::new(owner, cx, TimestampNs(3))?;
-                    let runner = Runner::new(cx, owner, clock, scope, vec![vec![config]], Duration::from_secs(1))?;
+                    let runner = Runner::new(
+                        cx,
+                        owner,
+                        clock,
+                        scope,
+                        vec![vec![config]],
+                        Duration::from_secs(1),
+                    )?;
                     let mut driver = Idle;
                     let mut pump = Pump::new(&runner, &fleet, &mut driver)?;
                     match pump.next().await {
                         Event::Discovery(Ok(Step::Incomplete { report, .. })) => {
                             assert_eq!(report.stop, Stop::PacketLimit);
                             assert_eq!(report.cameras.len(), 1);
-                        },
+                        }
                         _ => return Err("partial window not returned".into()),
                     }
                     assert!(pump.sweep_drained());
                     assert!(Rc::ptr_eq(&before, &fleet.latest_snapshot()));
                     assert_eq!(runner.phase(), Phase::Interrupted);
-                    assert!(matches!(pump.resume_sweeping(), Err(discovery::sweep::Error::Interrupted)));
+                    assert!(matches!(
+                        pump.resume_sweeping(),
+                        Err(discovery::sweep::Error::Interrupted)
+                    ));
                     drop(pump);
                     let retired = runner.retire();
                     assert!(retired.completed.is_empty());
                     assert_eq!(retired.phase, Phase::Interrupted);
                     assert_eq!(retired.fleet_bound, Some(true));
                     Ok(())
-                }.await;
-                let outcome = if output.is_ok() { TaskOutcome::Success } else { TaskOutcome::Failed("partial sweep pump fixture failed".into()) };
-                TaskCompletion { output, outcome, completed_at: TimestampNs(3 + i128::from(cx.now().as_nanos() - start)) }
-            }).await?;
+                }
+                .await;
+                let outcome = if output.is_ok() {
+                    TaskOutcome::Success
+                } else {
+                    TaskOutcome::Failed("partial sweep pump fixture failed".into())
+                };
+                TaskCompletion {
+                    output,
+                    outcome,
+                    completed_at: TimestampNs(3 + i128::from(cx.now().as_nanos() - start)),
+                }
+            },
+        )
+        .await?;
         Ok::<_, Box<dyn Error>>(run)
     })?;
     responder.join().map_err(|_| "responder panicked")??;
@@ -97,8 +157,8 @@ fn sweep_pump_coordinates_setup_routes_and_complete_fleet_refresh() -> TestResul
         controller_listener,
         discovery::{
             SweepPage,
-            fleet::{Fleet, Router, RouterEvent, RouteError},
-            pump::{CameraWorkSet, SetupCompletion, RetryDisposition},
+            fleet::{Fleet, RouteError, Router, RouterEvent},
+            pump::{CameraWorkSet, RetryDisposition, SetupCompletion},
             retry::{Policy, Queue},
             sweep::{Phase, Runner, Step},
             sweep_pump::{Coordinated, Event, Pump},
@@ -106,84 +166,202 @@ fn sweep_pump_coordinates_setup_routes_and_complete_fleet_refresh() -> TestResul
         listener::Admission,
         metered::MeteredClock,
     };
-    use std::{future::{Future, poll_fn}, rc::Rc, sync::{Arc, atomic::{AtomicBool, Ordering}}, task::Poll};
+    use std::{
+        future::{Future, poll_fn},
+        rc::Rc,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        task::Poll,
+    };
 
     struct LocalAdmission;
     impl Admission for LocalAdmission {
-        fn listener(&self, _: SocketAddrV4, _: Option<SocketAddrV4>) -> bool { true }
-        fn peer(&self, _: SocketAddrV4, _: SocketAddrV4) -> bool { true }
+        fn listener(&self, _: SocketAddrV4, _: Option<SocketAddrV4>) -> bool {
+            true
+        }
+        fn peer(&self, _: SocketAddrV4, _: SocketAddrV4) -> bool {
+            true
+        }
     }
 
     let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
     server.set_read_timeout(Some(Duration::from_secs(5)))?;
-    let destination = match server.local_addr()? { std::net::SocketAddr::V4(address) => address, _ => return Err("not IPv4".into()) };
+    let destination = match server.local_addr()? {
+        std::net::SocketAddr::V4(address) => address,
+        _ => return Err("not IPv4".into()),
+    };
     let query_seen = Arc::new(AtomicBool::new(false));
     let observed = Arc::clone(&query_seen);
     let responder = std::thread::spawn(move || -> std::io::Result<()> {
         for _ in 0..2 {
             let mut query = [0u8; 32];
             let (len, peer) = server.recv_from(&mut query)?;
-            if &query[..len] != fss_packet::unifi_discovery::V1_QUERY.as_slice() { return Err(std::io::Error::other("bad query")); }
+            if &query[..len] != fss_packet::unifi_discovery::V1_QUERY.as_slice() {
+                return Err(std::io::Error::other("bad query"));
+            }
             server.send_to(&packet(), peer)?;
             observed.store(true, Ordering::Release);
         }
         Ok(())
     });
-    let config = Config::new(Ipv4Addr::LOCALHOST, 8, destination, "fixture:sweep-pump", Duration::from_secs(2), 8)?;
-    let empty = Report { cameras: Vec::new(), datagrams: 0, malformed: 0, out_of_scope: 0, stop: Stop::WindowElapsed };
+    let config = Config::new(
+        Ipv4Addr::LOCALHOST,
+        8,
+        destination,
+        "fixture:sweep-pump",
+        Duration::from_secs(2),
+        8,
+    )?;
+    let empty = Report {
+        cameras: Vec::new(),
+        datagrams: 0,
+        malformed: 0,
+        out_of_scope: 0,
+        stop: Stop::WindowElapsed,
+    };
     let scope = ContentDigest::sha256(b"sweep pump scope");
-    let pages = [SweepPage { scope, index: 0, count: 2, report: &empty }, SweepPage { scope, index: 1, count: 2, report: &empty }];
+    let pages = [
+        SweepPage {
+            scope,
+            index: 0,
+            count: 2,
+            report: &empty,
+        },
+        SweepPage {
+            scope,
+            index: 1,
+            count: 2,
+            report: &empty,
+        },
+    ];
     let fleet = Fleet::from_sweep(&pages, &[])?;
     let other = Fleet::from_sweep(&pages, &[])?;
     let runtime = RuntimeBuilder::current_thread().build()?;
     let (mut authority, mut tree) = root()?;
     let run = runtime.block_on(async {
         let cx = asupersync::Cx::current().ok_or("missing runtime context")?;
-        let run = run_owned_async(&mut authority, &mut tree,
-            TaskSpec { task_id: TaskId::new("task:sweep-pump")?, started_at: TimestampNs(2) }, &cx,
+        let run = run_owned_async(
+            &mut authority,
+            &mut tree,
+            TaskSpec {
+                task_id: TaskId::new("task:sweep-pump")?,
+                started_at: TimestampNs(2),
+            },
+            &cx,
             async |owner, cx| {
                 let start = cx.now().as_nanos();
                 let output: TestResult = async {
                     let clock = MeteredClock::new(owner, cx, TimestampNs(3))?;
-                    let runner = Runner::new(cx, owner, clock, scope, vec![vec![config.clone()], vec![config]], Duration::from_secs(5))?;
+                    let runner = Runner::new(
+                        cx,
+                        owner,
+                        clock,
+                        scope,
+                        vec![vec![config.clone()], vec![config]],
+                        Duration::from_secs(5),
+                    )?;
                     let admission = LocalAdmission;
-                    let listener = controller_listener::Listener::bind(owner, cx, clock, &admission,
-                        SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0), "fixture:sweep-pump-controller", Duration::from_secs(5)).await?;
-                    let mut wrong = Router::new(&other, &listener, 2, 4096, Duration::from_secs(5))?;
-                    assert!(matches!(Pump::new(&runner, &fleet, &mut wrong), Err(discovery::sweep::Error::Configuration)));
+                    let listener = controller_listener::Listener::bind(
+                        owner,
+                        cx,
+                        clock,
+                        &admission,
+                        SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0),
+                        "fixture:sweep-pump-controller",
+                        Duration::from_secs(5),
+                    )
+                    .await?;
+                    let mut wrong =
+                        Router::new(&other, &listener, 2, 4096, Duration::from_secs(5))?;
+                    assert!(matches!(
+                        Pump::new(&runner, &fleet, &mut wrong),
+                        Err(discovery::sweep::Error::Configuration)
+                    ));
                     drop(wrong);
-                    let mut router = Router::new(&fleet, &listener, 2, 4096, Duration::from_secs(5))?;
-                    let wrong_scope = Runner::new(cx, owner, clock, ContentDigest::sha256(b"other sweep scope"),
-                        vec![vec![Config::new(Ipv4Addr::LOCALHOST, 8, destination, "fixture:sweep-pump", Duration::from_secs(2), 8)?]], Duration::from_secs(5))?;
-                    assert!(matches!(Pump::new(&wrong_scope, &fleet, &mut router), Err(discovery::sweep::Error::Configuration)));
+                    let mut router =
+                        Router::new(&fleet, &listener, 2, 4096, Duration::from_secs(5))?;
+                    let wrong_scope = Runner::new(
+                        cx,
+                        owner,
+                        clock,
+                        ContentDigest::sha256(b"other sweep scope"),
+                        vec![vec![Config::new(
+                            Ipv4Addr::LOCALHOST,
+                            8,
+                            destination,
+                            "fixture:sweep-pump",
+                            Duration::from_secs(2),
+                            8,
+                        )?]],
+                        Duration::from_secs(5),
+                    )?;
+                    assert!(matches!(
+                        Pump::new(&wrong_scope, &fleet, &mut router),
+                        Err(discovery::sweep::Error::Configuration)
+                    ));
                     let mut pump = Pump::new(&runner, &fleet, &mut router)?;
-                    let policy = Policy::new(Duration::from_millis(100), Duration::from_secs(1), 2)?;
+                    let policy =
+                        Policy::new(Duration::from_millis(100), Duration::from_secs(1), 2)?;
                     let mut retries = Queue::new(&fleet, owner, cx, clock, policy)?;
                     let mut wrong_retries = Queue::new(&other, owner, cx, clock, policy)?;
                     let mut work = CameraWorkSet::new(2).map_err(|_| "invalid work capacity")?;
                     assert!(!pump.accepts_retries(&wrong_retries));
-                    assert!(matches!(pump.next_coordinated(&mut work, &mut wrong_retries).await, Err(discovery::retry::Error::Configuration)));
+                    assert!(matches!(
+                        pump.next_coordinated(&mut work, &mut wrong_retries).await,
+                        Err(discovery::retry::Error::Configuration)
+                    ));
                     assert!(pump.accepts_retries(&retries));
                     let before = fleet.latest_snapshot();
                     let mut next = Box::pin(pump.next());
-                    timeout(cx.now(), Duration::from_secs(5), poll_fn(|context| match next.as_mut().poll(context) {
-                        Poll::Pending if runner.phase() == Phase::Probing && query_seen.load(Ordering::Acquire) => Poll::Ready(()),
-                        Poll::Pending => { context.waker().wake_by_ref(); Poll::Pending },
-                        Poll::Ready(_) => panic!("sweep ended before route or setup"),
-                    })).await.map_err(|_| "sweep did not begin")?;
+                    timeout(
+                        cx.now(),
+                        Duration::from_secs(5),
+                        poll_fn(|context| match next.as_mut().poll(context) {
+                            Poll::Pending
+                                if runner.phase() == Phase::Probing
+                                    && query_seen.load(Ordering::Acquire) =>
+                            {
+                                Poll::Ready(())
+                            }
+                            Poll::Pending => {
+                                context.waker().wake_by_ref();
+                                Poll::Pending
+                            }
+                            Poll::Ready(_) => panic!("sweep ended before route or setup"),
+                        }),
+                    )
+                    .await
+                    .map_err(|_| "sweep did not begin")?;
                     drop(next);
                     assert_eq!(runner.phase(), Phase::Probing);
                     let operation = OperationId::parse("operation:sweep-pump-completion")?;
-                    work.insert(0, Box::pin(async move { SetupCompletion { operation, outcome: Err(discovery::fleet::Error::Configuration) } }))
-                        .map_err(|_| "work admission failed")?;
+                    work.insert(
+                        0,
+                        Box::pin(async move {
+                            SetupCompletion {
+                                operation,
+                                outcome: Err(discovery::fleet::Error::Configuration),
+                            }
+                        }),
+                    )
+                    .map_err(|_| "work admission failed")?;
                     match pump.next_coordinated(&mut work, &mut retries).await? {
-                        Coordinated::Setup { index: 0, retry: RetryDisposition::NotEligible, .. } => (),
+                        Coordinated::Setup {
+                            index: 0,
+                            retry: RetryDisposition::NotEligible,
+                            ..
+                        } => (),
                         _ => return Err("setup completion not preserved".into()),
                     }
                     assert_eq!(runner.phase(), Phase::Probing);
                     let client = asupersync::net::TcpStream::connect(listener.local_addr()).await?;
                     match pump.next().await {
-                        Event::Route(RouterEvent::Refused { reason: RouteError::UnknownPeer, .. }) => (),
+                        Event::Route(RouterEvent::Refused {
+                            reason: RouteError::UnknownPeer,
+                            ..
+                        }) => (),
                         _ => return Err("route was not driven during sweep".into()),
                     }
                     pump.request_sweep_stop();
@@ -195,7 +373,10 @@ fn sweep_pump_coordinates_setup_routes_and_complete_fleet_refresh() -> TestResul
                     assert!(Rc::ptr_eq(&before, &fleet.latest_snapshot()));
                     pump.resume_sweeping()?;
                     match pump.next().await {
-                        Event::Discovery(Ok(Step::Finished { batch, refresh: Some(Ok(snapshot)) })) => {
+                        Event::Discovery(Ok(Step::Finished {
+                            batch,
+                            refresh: Some(Ok(snapshot)),
+                        })) => {
                             assert_eq!(batch.windows().len(), 2);
                             assert_eq!(snapshot.report().cameras.len(), 1);
                             assert!(!Rc::ptr_eq(&before, &snapshot));
@@ -207,10 +388,21 @@ fn sweep_pump_coordinates_setup_routes_and_complete_fleet_refresh() -> TestResul
                     drop(pump);
                     drop(client);
                     Ok(())
-                }.await;
-                let outcome = if output.is_ok() { TaskOutcome::Success } else { TaskOutcome::Failed("sweep pump fixture failed".into()) };
-                TaskCompletion { output, outcome, completed_at: TimestampNs(3 + i128::from(cx.now().as_nanos() - start)) }
-            }).await?;
+                }
+                .await;
+                let outcome = if output.is_ok() {
+                    TaskOutcome::Success
+                } else {
+                    TaskOutcome::Failed("sweep pump fixture failed".into())
+                };
+                TaskCompletion {
+                    output,
+                    outcome,
+                    completed_at: TimestampNs(3 + i128::from(cx.now().as_nanos() - start)),
+                }
+            },
+        )
+        .await?;
         Ok::<_, Box<dyn Error>>(run)
     })?;
     responder.join().map_err(|_| "responder panicked")??;
@@ -363,16 +555,31 @@ fn discovery_and_routing_pump_retains_inflight_scan_across_events() -> TestResul
     use asupersync::time::timeout;
     use fss_reference::unifi_direct::{
         controller_listener,
-        discovery::{fleet::{Enrollment, Fleet, RouteError, Router, RouterEvent, State}, pump::{Event, Pump}, scan::{Outcome, Phase, Scanner}},
+        discovery::{
+            fleet::{Enrollment, Fleet, RouteError, Router, RouterEvent, State},
+            pump::{Event, Pump},
+            scan::{Outcome, Phase, Scanner},
+        },
         listener::Admission,
         metered::MeteredClock,
     };
-    use std::{future::{Future, poll_fn}, sync::{Arc, atomic::{AtomicBool, Ordering}}, task::Poll};
+    use std::{
+        future::{Future, poll_fn},
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        task::Poll,
+    };
 
     struct LocalAdmission;
     impl Admission for LocalAdmission {
-        fn listener(&self, _: SocketAddrV4, _: Option<SocketAddrV4>) -> bool { true }
-        fn peer(&self, _: SocketAddrV4, _: SocketAddrV4) -> bool { true }
+        fn listener(&self, _: SocketAddrV4, _: Option<SocketAddrV4>) -> bool {
+            true
+        }
+        fn peer(&self, _: SocketAddrV4, _: SocketAddrV4) -> bool {
+            true
+        }
     }
 
     let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
@@ -390,46 +597,98 @@ fn discovery_and_routing_pump_retains_inflight_scan_across_events() -> TestResul
         observed.store(true, Ordering::Release);
         Ok(())
     });
-    let config = Config::new(Ipv4Addr::LOCALHOST, 8, destination, "fixture:pump-discovery",
-        Duration::from_secs(2), 8)?;
-    let empty = Report { cameras: Vec::new(), datagrams: 0, malformed: 0,
-        out_of_scope: 0, stop: Stop::WindowElapsed };
+    let config = Config::new(
+        Ipv4Addr::LOCALHOST,
+        8,
+        destination,
+        "fixture:pump-discovery",
+        Duration::from_secs(2),
+        8,
+    )?;
+    let empty = Report {
+        cameras: Vec::new(),
+        datagrams: 0,
+        malformed: 0,
+        out_of_scope: 0,
+        stop: Stop::WindowElapsed,
+    };
     let fleet = Fleet::from_report(empty.clone(), &[])?;
     let other = Fleet::from_report(empty, &[])?;
     let runtime = RuntimeBuilder::current_thread().build()?;
     let (mut authority, mut tree) = root()?;
     let run = runtime.block_on(async {
         let cx = asupersync::Cx::current().ok_or("missing runtime context")?;
-        let run = run_owned_async(&mut authority, &mut tree,
-            TaskSpec { task_id: TaskId::new("task:discovery-pump")?, started_at: TimestampNs(2) },
-            &cx, async |owner, cx| {
+        let run = run_owned_async(
+            &mut authority,
+            &mut tree,
+            TaskSpec {
+                task_id: TaskId::new("task:discovery-pump")?,
+                started_at: TimestampNs(2),
+            },
+            &cx,
+            async |owner, cx| {
                 let start = cx.now().as_nanos();
                 let output: TestResult = async {
                     let clock = MeteredClock::new(owner, cx, TimestampNs(3))?;
-                    let scanner = Scanner::new(cx, owner, clock, &fleet, config.clone(), Duration::from_secs(5))?;
+                    let scanner = Scanner::new(
+                        cx,
+                        owner,
+                        clock,
+                        &fleet,
+                        config.clone(),
+                        Duration::from_secs(5),
+                    )?;
                     let admission = LocalAdmission;
-                    let listener = controller_listener::Listener::bind(owner, cx, clock, &admission,
-                        SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0), "fixture:pump-controller", Duration::from_secs(5)).await?;
-                    let mut wrong = Router::new(&other, &listener, 2, 4096, Duration::from_secs(5))?;
-                    assert!(matches!(Pump::new(&scanner, &mut wrong), Err(discovery::scan::Error::Configuration)));
+                    let listener = controller_listener::Listener::bind(
+                        owner,
+                        cx,
+                        clock,
+                        &admission,
+                        SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0),
+                        "fixture:pump-controller",
+                        Duration::from_secs(5),
+                    )
+                    .await?;
+                    let mut wrong =
+                        Router::new(&other, &listener, 2, 4096, Duration::from_secs(5))?;
+                    assert!(matches!(
+                        Pump::new(&scanner, &mut wrong),
+                        Err(discovery::scan::Error::Configuration)
+                    ));
                     drop(wrong);
-                    let mut router = Router::new(&fleet, &listener, 2, 4096, Duration::from_secs(5))?;
+                    let mut router =
+                        Router::new(&fleet, &listener, 2, 4096, Duration::from_secs(5))?;
                     let mut pump = Pump::new(&scanner, &mut router)?;
                     let mut next = Box::pin(pump.next());
-                    timeout(cx.now(), Duration::from_secs(5), poll_fn(|context| {
-                        match next.as_mut().poll(context) {
-                            Poll::Pending if scanner.phase() == Phase::Probing && query_seen.load(Ordering::Acquire) => Poll::Ready(()),
-                            Poll::Pending => { context.waker().wake_by_ref(); Poll::Pending },
+                    timeout(
+                        cx.now(),
+                        Duration::from_secs(5),
+                        poll_fn(|context| match next.as_mut().poll(context) {
+                            Poll::Pending
+                                if scanner.phase() == Phase::Probing
+                                    && query_seen.load(Ordering::Acquire) =>
+                            {
+                                Poll::Ready(())
+                            }
+                            Poll::Pending => {
+                                context.waker().wake_by_ref();
+                                Poll::Pending
+                            }
                             Poll::Ready(_) => panic!("pump completed before the early connection"),
-                        }
-                    })).await.map_err(|_| "scan did not begin")?;
+                        }),
+                    )
+                    .await
+                    .map_err(|_| "scan did not begin")?;
                     drop(next);
                     assert_eq!(scanner.phase(), Phase::Probing);
                     pump.request_scan_stop();
                     assert!(!pump.scan_drained());
                     let client = asupersync::net::TcpStream::connect(listener.local_addr()).await?;
                     match pump.next().await {
-                        Event::Route(RouterEvent::Refused { reason: RouteError::UnknownPeer, .. }) => (),
+                        Event::Route(RouterEvent::Refused {
+                            reason: RouteError::UnknownPeer,
+                            ..
+                        }) => (),
                         _ => return Err("expected unrecognized local connection".into()),
                     }
                     assert_eq!(scanner.phase(), Phase::Probing);
@@ -462,33 +721,61 @@ fn discovery_and_routing_pump_retains_inflight_scan_across_events() -> TestResul
 
                     // A competing caller can still misuse the shared scanner.
                     // The pump must surface Busy and stop instead of retrying.
-                    let scanner = Scanner::new(cx, owner, clock, &fleet, config, Duration::from_secs(5))?;
-                    let mut router = Router::new(&fleet, &listener, 2, 4096, Duration::from_secs(5))?;
+                    let scanner =
+                        Scanner::new(cx, owner, clock, &fleet, config, Duration::from_secs(5))?;
+                    let mut router =
+                        Router::new(&fleet, &listener, 2, 4096, Duration::from_secs(5))?;
                     let mut pump = Pump::new(&scanner, &mut router)?;
                     let mut competing = Box::pin(scanner.next());
                     poll_fn(|context| match competing.as_mut().poll(context) {
                         Poll::Pending if scanner.phase() == Phase::Probing => Poll::Ready(()),
-                        Poll::Pending => { context.waker().wake_by_ref(); Poll::Pending },
+                        Poll::Pending => {
+                            context.waker().wake_by_ref();
+                            Poll::Pending
+                        }
                         Poll::Ready(_) => panic!("competing scan unexpectedly completed"),
-                    }).await;
-                    assert!(matches!(pump.next().await, Event::Discovery(Err(discovery::scan::Error::Busy))));
+                    })
+                    .await;
+                    assert!(matches!(
+                        pump.next().await,
+                        Event::Discovery(Err(discovery::scan::Error::Busy))
+                    ));
                     assert!(pump.scan_drained());
-                    assert!(matches!(pump.resume_scanning(), Err(discovery::scan::Error::Busy)));
+                    assert!(matches!(
+                        pump.resume_scanning(),
+                        Err(discovery::scan::Error::Busy)
+                    ));
                     drop(competing);
                     assert_eq!(scanner.phase(), Phase::Interrupted);
-                    assert!(matches!(pump.resume_scanning(), Err(discovery::scan::Error::Interrupted)));
+                    assert!(matches!(
+                        pump.resume_scanning(),
+                        Err(discovery::scan::Error::Interrupted)
+                    ));
                     scanner.acknowledge_interruption()?;
                     pump.resume_scanning()?;
                     pump.request_scan_stop();
                     assert!(pump.scan_drained());
                     Ok(())
-                }.await;
-                let outcome = if output.is_ok() { TaskOutcome::Success } else { TaskOutcome::Failed("discovery pump fixture failed".into()) };
-                TaskCompletion { output, outcome, completed_at: TimestampNs(3 + i128::from(cx.now().as_nanos() - start)) }
-            }).await?;
+                }
+                .await;
+                let outcome = if output.is_ok() {
+                    TaskOutcome::Success
+                } else {
+                    TaskOutcome::Failed("discovery pump fixture failed".into())
+                };
+                TaskCompletion {
+                    output,
+                    outcome,
+                    completed_at: TimestampNs(3 + i128::from(cx.now().as_nanos() - start)),
+                }
+            },
+        )
+        .await?;
         Ok::<_, Box<dyn Error>>(run)
     })?;
-    responder.join().map_err(|_| "discovery responder panicked")??;
+    responder
+        .join()
+        .map_err(|_| "discovery responder panicked")??;
     run.output?;
     run.receipt?;
     Ok(())
@@ -611,12 +898,15 @@ fn periodic_scanner_updates_fleet_and_preserves_cancelled_ownership() -> TestRes
                         Err((ScanError::WrongFleet, parked)) => parked,
                         _ => return Err("scanner accepted a different fleet".into()),
                     };
-                    let scanner = parked.resume(&fleet).map_err(|_| "scanner resume refused")?;
+                    let scanner = parked
+                        .resume(&fleet)
+                        .map_err(|_| "scanner resume refused")?;
                     let mut resumed_wait = Box::pin(scanner.next());
                     poll_fn(|context| {
                         assert!(matches!(resumed_wait.as_mut().poll(context), Poll::Pending));
                         Poll::Ready(())
-                    }).await;
+                    })
+                    .await;
                     assert_eq!(scanner.phase(), Phase::Waiting);
                     assert_eq!(observed.load(Ordering::Acquire), 1);
                     drop(resumed_wait);
@@ -633,7 +923,9 @@ fn periodic_scanner_updates_fleet_and_preserves_cancelled_ownership() -> TestRes
                     assert_eq!(fleet.state(0), Some(State::Ready { candidate: 0 }));
                     assert!(fleet.latest_snapshot().unknown_claims().is_empty());
                     assert_eq!(second.unknown_claims(), &[0]);
-                    let scanner = parked.resume(&fleet).map_err(|_| "enrolled scanner resume refused")?;
+                    let scanner = parked
+                        .resume(&fleet)
+                        .map_err(|_| "enrolled scanner resume refused")?;
                     assert!(first.report().cameras.is_empty());
                     sleep(cx.now(), Duration::from_millis(1100)).await;
                     let mut pending = Box::pin(scanner.next());
@@ -658,7 +950,10 @@ fn periodic_scanner_updates_fleet_and_preserves_cancelled_ownership() -> TestRes
                     .map_err(|_| "third query not observed")?;
                     drop(pending);
                     assert_eq!(scanner.phase(), Phase::Interrupted);
-                    let scanner = scanner.park().resume(&fleet).map_err(|_| "interrupted scanner resume refused")?;
+                    let scanner = scanner
+                        .park()
+                        .resume(&fleet)
+                        .map_err(|_| "interrupted scanner resume refused")?;
                     assert_eq!(scanner.phase(), Phase::Interrupted);
                     assert!(matches!(scanner.next().await, Err(ScanError::Interrupted)));
                     scanner.acknowledge_interruption()?;
@@ -1098,6 +1393,7 @@ fn periodic_scanner_cancellation_during_probe_preserves_uncertainty() -> TestRes
     Ok(())
 }
 
+#[allow(clippy::expect_used)]
 fn execute(config: &Config) -> Result<Report, Box<dyn Error>> {
     let runtime = RuntimeBuilder::current_thread().build()?;
     let (mut authority, mut tree) = root()?;
@@ -1267,57 +1563,134 @@ fn completed_windows_detect_conflicts_that_each_window_alone_cannot() -> TestRes
     let scope = ContentDigest::sha256(b"owner-scoped discovery sweep fixture");
     let mut repeated = first.clone();
     repeated.datagrams = 128; // Synthetic valid traffic; one retained candidate.
-    let pages: Vec<_> = (0..6).map(|index| discovery::SweepPage {
-        scope, index, count: 6, report: if index == 5 { &second } else { &repeated },
-    }).collect();
+    let pages: Vec<_> = (0..6)
+        .map(|index| discovery::SweepPage {
+            scope,
+            index,
+            count: 6,
+            report: if index == 5 { &second } else { &repeated },
+        })
+        .collect();
     let sweep = Report::combine_sweep_pages(&pages)?;
     assert_eq!(sweep.datagrams, 641);
     assert_eq!(sweep.cameras.len(), 2);
     let reordered: Vec<_> = pages.iter().rev().copied().collect();
-    assert_eq!(Report::combine_sweep_pages(&reordered)?.cameras, sweep.cameras);
-    assert_eq!(sweep.select_mac_claim([0x10, 2, 3, 4, 5, 6]), Err(discovery::SelectionError::Conflicted));
+    assert_eq!(
+        Report::combine_sweep_pages(&reordered)?.cameras,
+        sweep.cameras
+    );
+    assert_eq!(
+        sweep.select_mac_claim([0x10, 2, 3, 4, 5, 6]),
+        Err(discovery::SelectionError::Conflicted)
+    );
     let enrollment = discovery::fleet::Enrollment::new(
-        [0x10, 2, 3, 4, 5, 6], ContentDigest::sha256(b"sweep camera"),
-        ContentDigest::sha256(b"sweep peer admission"), ContentDigest::sha256(b"sweep certificate"),
-        ContentDigest::sha256(b"sweep credential handle"), 1,
+        [0x10, 2, 3, 4, 5, 6],
+        ContentDigest::sha256(b"sweep camera"),
+        ContentDigest::sha256(b"sweep peer admission"),
+        ContentDigest::sha256(b"sweep certificate"),
+        ContentDigest::sha256(b"sweep credential handle"),
+        1,
     )?;
     let fleet = discovery::fleet::Fleet::from_sweep(&pages, &[enrollment])?;
     assert_eq!(fleet.state(0), Some(discovery::fleet::State::Conflicted));
-    let repeated_pages: Vec<_> = (0..6).rev().map(|index| discovery::SweepPage {
-        scope, index, count: 6, report: &repeated,
-    }).collect();
+    let repeated_pages: Vec<_> = (0..6)
+        .rev()
+        .map(|index| discovery::SweepPage {
+            scope,
+            index,
+            count: 6,
+            report: &repeated,
+        })
+        .collect();
     let ready = discovery::fleet::Fleet::from_sweep(&repeated_pages, &[enrollment])?;
-    assert_eq!(ready.state(0), Some(discovery::fleet::State::Ready { candidate: 0 }));
-    assert!(matches!(ready.refresh(repeated.clone()),
-        Err(discovery::fleet::RefreshRefusal { reason: discovery::fleet::Error::SweepRequired, .. })));
-    let wrong_scope: Vec<_> = (0..6).map(|index| discovery::SweepPage {
-        scope: ContentDigest::sha256(b"other sweep scope"), index, count: 6, report: &repeated,
-    }).collect();
-    assert!(matches!(ready.refresh_sweep(&wrong_scope), Err(discovery::fleet::SweepRefreshError::ScopeMismatch)));
-    assert!(matches!(ready.refresh_sweep(&pages[..5]),
-        Err(discovery::fleet::SweepRefreshError::Discovery(discovery::CombineError::PageMismatch))));
-    assert_eq!(ready.state(0), Some(discovery::fleet::State::Ready { candidate: 0 }));
+    assert_eq!(
+        ready.state(0),
+        Some(discovery::fleet::State::Ready { candidate: 0 })
+    );
+    assert!(matches!(
+        ready.refresh(repeated.clone()),
+        Err(discovery::fleet::RefreshRefusal {
+            reason: discovery::fleet::Error::SweepRequired,
+            ..
+        })
+    ));
+    let wrong_scope: Vec<_> = (0..6)
+        .map(|index| discovery::SweepPage {
+            scope: ContentDigest::sha256(b"other sweep scope"),
+            index,
+            count: 6,
+            report: &repeated,
+        })
+        .collect();
+    assert!(matches!(
+        ready.refresh_sweep(&wrong_scope),
+        Err(discovery::fleet::SweepRefreshError::ScopeMismatch)
+    ));
+    assert!(matches!(
+        ready.refresh_sweep(&pages[..5]),
+        Err(discovery::fleet::SweepRefreshError::Discovery(
+            discovery::CombineError::PageMismatch
+        ))
+    ));
+    assert_eq!(
+        ready.state(0),
+        Some(discovery::fleet::State::Ready { candidate: 0 })
+    );
     ready.refresh_sweep(&pages)?;
     assert_eq!(ready.state(0), Some(discovery::fleet::State::Conflicted));
-    let mut duplicate: Vec<_> = (0..6).map(|index| discovery::SweepPage {
-        scope, index, count: 6, report: &first,
-    }).collect();
+    let mut duplicate: Vec<_> = (0..6)
+        .map(|index| discovery::SweepPage {
+            scope,
+            index,
+            count: 6,
+            report: &first,
+        })
+        .collect();
     duplicate[5].index = 4;
-    assert!(matches!(Report::combine_sweep_pages(&duplicate), Err(discovery::CombineError::PageMismatch)));
-    assert!(matches!(discovery::fleet::Fleet::from_sweep(&duplicate, &[enrollment]),
-        Err(discovery::fleet::SweepError::Discovery(discovery::CombineError::PageMismatch))));
+    assert!(matches!(
+        Report::combine_sweep_pages(&duplicate),
+        Err(discovery::CombineError::PageMismatch)
+    ));
+    assert!(matches!(
+        discovery::fleet::Fleet::from_sweep(&duplicate, &[enrollment]),
+        Err(discovery::fleet::SweepError::Discovery(
+            discovery::CombineError::PageMismatch
+        ))
+    ));
     duplicate[5].index = 5;
     duplicate[5].scope = ContentDigest::sha256(b"other scope");
-    assert!(matches!(Report::combine_sweep_pages(&duplicate), Err(discovery::CombineError::PageMismatch)));
-    assert!(matches!(Report::combine_sweep_pages(&pages[..5]), Err(discovery::CombineError::PageMismatch)));
-    let excessive: Vec<_> = (0..18).map(|index| discovery::SweepPage {
-        scope, index, count: 18, report: &first,
-    }).collect();
-    assert!(matches!(Report::combine_sweep_pages(&excessive), Err(discovery::CombineError::WindowCount)));
+    assert!(matches!(
+        Report::combine_sweep_pages(&duplicate),
+        Err(discovery::CombineError::PageMismatch)
+    ));
+    assert!(matches!(
+        Report::combine_sweep_pages(&pages[..5]),
+        Err(discovery::CombineError::PageMismatch)
+    ));
+    let excessive: Vec<_> = (0..18)
+        .map(|index| discovery::SweepPage {
+            scope,
+            index,
+            count: 18,
+            report: &first,
+        })
+        .collect();
+    assert!(matches!(
+        Report::combine_sweep_pages(&excessive),
+        Err(discovery::CombineError::WindowCount)
+    ));
     let mut oversized = first.clone();
     oversized.datagrams = 513;
-    let oversized_page = [discovery::SweepPage { scope, index: 0, count: 1, report: &oversized }];
-    assert!(matches!(Report::combine_sweep_pages(&oversized_page), Err(discovery::CombineError::InvalidReport)));
+    let oversized_page = [discovery::SweepPage {
+        scope,
+        index: 0,
+        count: 1,
+        report: &oversized,
+    }];
+    assert!(matches!(
+        Report::combine_sweep_pages(&oversized_page),
+        Err(discovery::CombineError::InvalidReport)
+    ));
 
     let incomplete = Report {
         cameras: Vec::new(),
@@ -1331,10 +1704,23 @@ fn completed_windows_detect_conflicts_that_each_window_alone_cannot() -> TestRes
         Err(discovery::CombineError::Incomplete)
     ));
     let incomplete_pages = [
-        discovery::SweepPage { scope, index: 0, count: 2, report: &first },
-        discovery::SweepPage { scope, index: 1, count: 2, report: &incomplete },
+        discovery::SweepPage {
+            scope,
+            index: 0,
+            count: 2,
+            report: &first,
+        },
+        discovery::SweepPage {
+            scope,
+            index: 1,
+            count: 2,
+            report: &incomplete,
+        },
     ];
-    assert!(matches!(Report::combine_sweep_pages(&incomplete_pages), Err(discovery::CombineError::Incomplete)));
+    assert!(matches!(
+        Report::combine_sweep_pages(&incomplete_pages),
+        Err(discovery::CombineError::Incomplete)
+    ));
     assert!(matches!(
         Report::combine_completed(&[]),
         Err(discovery::CombineError::WindowCount)
@@ -1355,46 +1741,124 @@ fn completed_windows_detect_conflicts_that_each_window_alone_cannot() -> TestRes
 
 #[test]
 fn sweep_runner_refreshes_only_after_all_pages_and_keeps_cross_page_conflicts() -> TestResult {
-    use fss_reference::unifi_direct::{discovery::{fleet::{Enrollment, Fleet, State}, sweep::{Error as SweepError, Phase, Runner, Step}}, metered::MeteredClock};
+    use fss_reference::unifi_direct::{
+        discovery::{
+            fleet::{Enrollment, Fleet, State},
+            sweep::{Error as SweepError, Phase, Runner, Step},
+        },
+        metered::MeteredClock,
+    };
     use std::rc::Rc;
     let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
     server.set_read_timeout(Some(Duration::from_secs(5)))?;
-    let destination = match server.local_addr()? { std::net::SocketAddr::V4(value) => value, _ => return Err("not IPv4".into()) };
+    let destination = match server.local_addr()? {
+        std::net::SocketAddr::V4(value) => value,
+        _ => return Err("not IPv4".into()),
+    };
     let responder = std::thread::spawn(move || -> std::io::Result<()> {
         for index in 0..6 {
             let mut query = [0_u8; 32];
             let (length, peer) = server.recv_from(&mut query)?;
-            if &query[..length] != fss_packet::unifi_discovery::V1_QUERY.as_slice() { return Err(std::io::Error::other("bad query")); }
-            let reply = if index == 5 { packet_with(Some([0x12, 2, 3, 4, 5, 6]), b"UVC.v4.example", true) } else { packet() };
+            if &query[..length] != fss_packet::unifi_discovery::V1_QUERY.as_slice() {
+                return Err(std::io::Error::other("bad query"));
+            }
+            let reply = if index == 5 {
+                packet_with(Some([0x12, 2, 3, 4, 5, 6]), b"UVC.v4.example", true)
+            } else {
+                packet()
+            };
             server.send_to(&reply, peer)?;
         }
         Ok(())
     });
-    let config = Config::new(Ipv4Addr::LOCALHOST, 8, destination, "fixture:sweep-runner", Duration::from_millis(120), 8)?;
+    let config = Config::new(
+        Ipv4Addr::LOCALHOST,
+        8,
+        destination,
+        "fixture:sweep-runner",
+        Duration::from_millis(120),
+        8,
+    )?;
     let scope = ContentDigest::sha256(b"sweep runner scope");
-    let enrollment = Enrollment::new([0x10, 2, 3, 4, 5, 6], ContentDigest::sha256(b"runner camera"),
-        ContentDigest::sha256(b"runner admission"), ContentDigest::sha256(b"runner certificate"),
-        ContentDigest::sha256(b"runner credential"), 1)?;
+    let enrollment = Enrollment::new(
+        [0x10, 2, 3, 4, 5, 6],
+        ContentDigest::sha256(b"runner camera"),
+        ContentDigest::sha256(b"runner admission"),
+        ContentDigest::sha256(b"runner certificate"),
+        ContentDigest::sha256(b"runner credential"),
+        1,
+    )?;
     let runtime = RuntimeBuilder::current_thread().build()?;
     let (mut authority, mut tree) = root()?;
     let run = runtime.block_on(async {
         let cx = asupersync::Cx::current().ok_or("missing runtime context")?;
-        let run = run_owned_async(&mut authority, &mut tree,
-            TaskSpec { task_id: TaskId::new("task:sweep-runner")?, started_at: TimestampNs(2) }, &cx,
+        let run = run_owned_async(
+            &mut authority,
+            &mut tree,
+            TaskSpec {
+                task_id: TaskId::new("task:sweep-runner")?,
+                started_at: TimestampNs(2),
+            },
+            &cx,
             async |owner, cx| {
                 let start = cx.now().as_nanos();
                 let output: TestResult = async {
                     let clock = MeteredClock::new(owner, cx, TimestampNs(3))?;
-                    assert!(matches!(Runner::new(cx, owner, clock, scope, Vec::new(), Duration::from_secs(1)), Err(SweepError::Configuration)));
-                    assert!(matches!(Runner::new(cx, owner, clock, scope, vec![vec![config.clone()]; 18], Duration::from_secs(1)), Err(SweepError::Configuration)));
-                    let other = Config::new(Ipv4Addr::LOCALHOST, 8, destination, "fixture:other-sweep", Duration::from_millis(120), 8)?;
-                    assert!(matches!(Runner::new(cx, owner, clock, scope, vec![vec![config.clone()], vec![other]], Duration::from_secs(1)), Err(SweepError::Configuration)));
-                    let runner = Runner::new(cx, owner, clock, scope,
-                        vec![vec![config.clone(), config.clone()], vec![config.clone()]], Duration::from_millis(1))?;
-                    assert!(matches!(runner.next(None).await?, Step::Progress { page: 0, window: 0 }));
-                    assert!(matches!(runner.next(None).await?, Step::Progress { page: 0, window: 1 }));
+                    assert!(matches!(
+                        Runner::new(cx, owner, clock, scope, Vec::new(), Duration::from_secs(1)),
+                        Err(SweepError::Configuration)
+                    ));
+                    assert!(matches!(
+                        Runner::new(
+                            cx,
+                            owner,
+                            clock,
+                            scope,
+                            vec![vec![config.clone()]; 18],
+                            Duration::from_secs(1)
+                        ),
+                        Err(SweepError::Configuration)
+                    ));
+                    let other = Config::new(
+                        Ipv4Addr::LOCALHOST,
+                        8,
+                        destination,
+                        "fixture:other-sweep",
+                        Duration::from_millis(120),
+                        8,
+                    )?;
+                    assert!(matches!(
+                        Runner::new(
+                            cx,
+                            owner,
+                            clock,
+                            scope,
+                            vec![vec![config.clone()], vec![other]],
+                            Duration::from_secs(1)
+                        ),
+                        Err(SweepError::Configuration)
+                    ));
+                    let runner = Runner::new(
+                        cx,
+                        owner,
+                        clock,
+                        scope,
+                        vec![vec![config.clone(), config.clone()], vec![config.clone()]],
+                        Duration::from_millis(1),
+                    )?;
+                    assert!(matches!(
+                        runner.next(None).await?,
+                        Step::Progress { page: 0, window: 0 }
+                    ));
+                    assert!(matches!(
+                        runner.next(None).await?,
+                        Step::Progress { page: 0, window: 1 }
+                    ));
                     let batch = match runner.next(None).await? {
-                        Step::Finished { batch, refresh: None } => batch,
+                        Step::Finished {
+                            batch,
+                            refresh: None,
+                        } => batch,
                         _ => return Err("initial sweep did not finish".into()),
                     };
                     assert_eq!(batch.windows().len(), 3);
@@ -1404,16 +1868,32 @@ fn sweep_runner_refreshes_only_after_all_pages_and_keeps_cross_page_conflicts() 
                     let other_fleet = Fleet::from_sweep(&pages, &[enrollment])?;
                     assert_eq!(fleet.state(0), Some(State::Ready { candidate: 0 }));
                     let before = fleet.latest_snapshot();
-                    assert!(matches!(runner.next(Some(&fleet)).await?, Step::Progress { page: 0, window: 0 }));
+                    assert!(matches!(
+                        runner.next(Some(&fleet)).await?,
+                        Step::Progress { page: 0, window: 0 }
+                    ));
                     assert!(Rc::ptr_eq(&before, &fleet.latest_snapshot()));
-                    assert!(matches!(runner.next(None).await, Err(SweepError::WrongFleet)));
-                    assert!(matches!(runner.next(Some(&other_fleet)).await, Err(SweepError::WrongFleet)));
+                    assert!(matches!(
+                        runner.next(None).await,
+                        Err(SweepError::WrongFleet)
+                    ));
+                    assert!(matches!(
+                        runner.next(Some(&other_fleet)).await,
+                        Err(SweepError::WrongFleet)
+                    ));
                     assert!(Rc::ptr_eq(&before, &fleet.latest_snapshot()));
-                    assert!(matches!(runner.next(Some(&fleet)).await?, Step::Progress { page: 0, window: 1 }));
+                    assert!(matches!(
+                        runner.next(Some(&fleet)).await?,
+                        Step::Progress { page: 0, window: 1 }
+                    ));
                     assert!(Rc::ptr_eq(&before, &fleet.latest_snapshot()));
                     let next = match runner.next(Some(&fleet)).await? {
-                        Step::Finished { batch, refresh: Some(Ok(snapshot)) } => {
-                            assert!(!Rc::ptr_eq(&before, &snapshot)); batch
+                        Step::Finished {
+                            batch,
+                            refresh: Some(Ok(snapshot)),
+                        } => {
+                            assert!(!Rc::ptr_eq(&before, &snapshot));
+                            batch
                         }
                         _ => return Err("completed sweep did not refresh".into()),
                     };
@@ -1425,51 +1905,128 @@ fn sweep_runner_refreshes_only_after_all_pages_and_keeps_cross_page_conflicts() 
                     assert!(retired.completed.is_empty());
                     assert_eq!(retired.plans.len(), 2);
                     Ok(())
-                }.await;
-                let outcome = if output.is_ok() { TaskOutcome::Success } else { TaskOutcome::Failed("sweep runner failed".into()) };
-                TaskCompletion { output, outcome, completed_at: TimestampNs(3 + i128::from(cx.now().as_nanos() - start)) }
-            }).await?;
+                }
+                .await;
+                let outcome = if output.is_ok() {
+                    TaskOutcome::Success
+                } else {
+                    TaskOutcome::Failed("sweep runner failed".into())
+                };
+                TaskCompletion {
+                    output,
+                    outcome,
+                    completed_at: TimestampNs(3 + i128::from(cx.now().as_nanos() - start)),
+                }
+            },
+        )
+        .await?;
         Ok::<_, Box<dyn Error>>(run)
     })?;
     responder.join().map_err(|_| "responder panicked")??;
-    run.output?; run.receipt?;
+    run.output?;
+    run.receipt?;
     Ok(())
 }
 
 #[test]
 fn sweep_runner_keeps_partial_windows_and_does_not_refresh_fleet() -> TestResult {
-    use fss_reference::unifi_direct::{discovery::{fleet::Fleet, sweep::{Phase, Runner, Step}}, metered::MeteredClock};
+    use fss_reference::unifi_direct::{
+        discovery::{
+            fleet::Fleet,
+            sweep::{Phase, Runner, Step},
+        },
+        metered::MeteredClock,
+    };
     use std::rc::Rc;
     let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
     server.set_read_timeout(Some(Duration::from_secs(5)))?;
-    let destination = match server.local_addr()? { std::net::SocketAddr::V4(value) => value, _ => return Err("not IPv4".into()) };
+    let destination = match server.local_addr()? {
+        std::net::SocketAddr::V4(value) => value,
+        _ => return Err("not IPv4".into()),
+    };
     let responder = std::thread::spawn(move || -> std::io::Result<()> {
-        for _ in 0..2 { let mut query = [0_u8; 32]; let (_, peer) = server.recv_from(&mut query)?; server.send_to(&packet(), peer)?; }
+        for _ in 0..2 {
+            let mut query = [0_u8; 32];
+            let (_, peer) = server.recv_from(&mut query)?;
+            server.send_to(&packet(), peer)?;
+        }
         Ok(())
     });
-    let first = Config::new(Ipv4Addr::LOCALHOST, 8, destination, "fixture:sweep-partial", Duration::from_millis(120), 8)?;
-    let second = Config::new(Ipv4Addr::LOCALHOST, 8, destination, "fixture:sweep-partial", Duration::from_millis(120), 1)?;
+    let first = Config::new(
+        Ipv4Addr::LOCALHOST,
+        8,
+        destination,
+        "fixture:sweep-partial",
+        Duration::from_millis(120),
+        8,
+    )?;
+    let second = Config::new(
+        Ipv4Addr::LOCALHOST,
+        8,
+        destination,
+        "fixture:sweep-partial",
+        Duration::from_millis(120),
+        1,
+    )?;
     let scope = ContentDigest::sha256(b"partial sweep scope");
-    let empty = Report { cameras: Vec::new(), datagrams: 0, malformed: 0, out_of_scope: 0, stop: Stop::WindowElapsed };
-    let initial = [discovery::SweepPage { scope, index: 0, count: 2, report: &empty },
-        discovery::SweepPage { scope, index: 1, count: 2, report: &empty }];
+    let empty = Report {
+        cameras: Vec::new(),
+        datagrams: 0,
+        malformed: 0,
+        out_of_scope: 0,
+        stop: Stop::WindowElapsed,
+    };
+    let initial = [
+        discovery::SweepPage {
+            scope,
+            index: 0,
+            count: 2,
+            report: &empty,
+        },
+        discovery::SweepPage {
+            scope,
+            index: 1,
+            count: 2,
+            report: &empty,
+        },
+    ];
     let fleet = Fleet::from_sweep(&initial, &[])?;
     let before = fleet.latest_snapshot();
     let runtime = RuntimeBuilder::current_thread().build()?;
     let (mut authority, mut tree) = root()?;
     let run = runtime.block_on(async {
         let cx = asupersync::Cx::current().ok_or("missing runtime context")?;
-        let run = run_owned_async(&mut authority, &mut tree,
-            TaskSpec { task_id: TaskId::new("task:sweep-partial")?, started_at: TimestampNs(2) }, &cx,
+        let run = run_owned_async(
+            &mut authority,
+            &mut tree,
+            TaskSpec {
+                task_id: TaskId::new("task:sweep-partial")?,
+                started_at: TimestampNs(2),
+            },
+            &cx,
             async |owner, cx| {
                 let start = cx.now().as_nanos();
                 let output: TestResult = async {
                     let clock = MeteredClock::new(owner, cx, TimestampNs(3))?;
-                    let runner = Runner::new(cx, owner, clock, scope, vec![vec![first], vec![second]], Duration::from_secs(1))?;
-                    assert!(matches!(runner.next(Some(&fleet)).await?, Step::Progress { page: 0, window: 0 }));
+                    let runner = Runner::new(
+                        cx,
+                        owner,
+                        clock,
+                        scope,
+                        vec![vec![first], vec![second]],
+                        Duration::from_secs(1),
+                    )?;
+                    assert!(matches!(
+                        runner.next(Some(&fleet)).await?,
+                        Step::Progress { page: 0, window: 0 }
+                    ));
                     assert!(Rc::ptr_eq(&before, &fleet.latest_snapshot()));
                     match runner.next(Some(&fleet)).await? {
-                        Step::Incomplete { page: 1, window: 0, report } => assert_eq!(report.stop, Stop::PacketLimit),
+                        Step::Incomplete {
+                            page: 1,
+                            window: 0,
+                            report,
+                        } => assert_eq!(report.stop, Stop::PacketLimit),
                         _ => return Err("expected incomplete page".into()),
                     }
                     assert!(Rc::ptr_eq(&before, &fleet.latest_snapshot()));
@@ -1478,25 +2035,50 @@ fn sweep_runner_keeps_partial_windows_and_does_not_refresh_fleet() -> TestResult
                     assert_eq!(retired.completed.len(), 1);
                     assert_eq!((retired.page, retired.window), (1, 0));
                     Ok(())
-                }.await;
-                let outcome = if output.is_ok() { TaskOutcome::Success } else { TaskOutcome::Failed("partial sweep failed".into()) };
-                TaskCompletion { output, outcome, completed_at: TimestampNs(3 + i128::from(cx.now().as_nanos() - start)) }
-            }).await?;
+                }
+                .await;
+                let outcome = if output.is_ok() {
+                    TaskOutcome::Success
+                } else {
+                    TaskOutcome::Failed("partial sweep failed".into())
+                };
+                TaskCompletion {
+                    output,
+                    outcome,
+                    completed_at: TimestampNs(3 + i128::from(cx.now().as_nanos() - start)),
+                }
+            },
+        )
+        .await?;
         Ok::<_, Box<dyn Error>>(run)
     })?;
     responder.join().map_err(|_| "responder panicked")??;
-    run.output?; run.receipt?;
+    run.output?;
+    run.receipt?;
     Ok(())
 }
 
 #[test]
 fn sweep_runner_dropped_probe_retains_completed_windows_and_fences_retry() -> TestResult {
     use asupersync::time::timeout;
-    use fss_reference::unifi_direct::{discovery::sweep::{Error as SweepError, Phase, Runner, Step}, metered::MeteredClock};
-    use std::{future::{Future, poll_fn}, sync::{Arc, atomic::{AtomicBool, Ordering}}, task::Poll};
+    use fss_reference::unifi_direct::{
+        discovery::sweep::{Error as SweepError, Phase, Runner, Step},
+        metered::MeteredClock,
+    };
+    use std::{
+        future::{Future, poll_fn},
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        task::Poll,
+    };
     let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
     server.set_read_timeout(Some(Duration::from_secs(5)))?;
-    let destination = match server.local_addr()? { std::net::SocketAddr::V4(value) => value, _ => return Err("not IPv4".into()) };
+    let destination = match server.local_addr()? {
+        std::net::SocketAddr::V4(value) => value,
+        _ => return Err("not IPv4".into()),
+    };
     let seen = Arc::new(AtomicBool::new(false));
     let responder_seen = Arc::clone(&seen);
     let responder = std::thread::spawn(move || -> std::io::Result<()> {
@@ -1507,100 +2089,196 @@ fn sweep_runner_dropped_probe_retains_completed_windows_and_fences_retry() -> Te
         responder_seen.store(true, Ordering::Release);
         Ok(())
     });
-    let config = Config::new(Ipv4Addr::LOCALHOST, 8, destination, "fixture:sweep-drop", Duration::from_millis(200), 8)?;
+    let config = Config::new(
+        Ipv4Addr::LOCALHOST,
+        8,
+        destination,
+        "fixture:sweep-drop",
+        Duration::from_millis(200),
+        8,
+    )?;
     let runtime = RuntimeBuilder::current_thread().build()?;
     let (mut authority, mut tree) = root()?;
     let run = runtime.block_on(async {
         let cx = asupersync::Cx::current().ok_or("missing runtime context")?;
-        let run = run_owned_async(&mut authority, &mut tree,
-            TaskSpec { task_id: TaskId::new("task:sweep-drop")?, started_at: TimestampNs(2) }, &cx,
+        let run = run_owned_async(
+            &mut authority,
+            &mut tree,
+            TaskSpec {
+                task_id: TaskId::new("task:sweep-drop")?,
+                started_at: TimestampNs(2),
+            },
+            &cx,
             async |owner, cx| {
                 let start = cx.now().as_nanos();
                 let output: TestResult = async {
                     let clock = MeteredClock::new(owner, cx, TimestampNs(3))?;
-                    let runner = Runner::new(cx, owner, clock, ContentDigest::sha256(b"drop sweep scope"),
-                        vec![vec![config.clone()], vec![config]], Duration::from_secs(1))?;
-                    assert!(matches!(runner.next(None).await?, Step::Progress { page: 0, window: 0 }));
+                    let runner = Runner::new(
+                        cx,
+                        owner,
+                        clock,
+                        ContentDigest::sha256(b"drop sweep scope"),
+                        vec![vec![config.clone()], vec![config]],
+                        Duration::from_secs(1),
+                    )?;
+                    assert!(matches!(
+                        runner.next(None).await?,
+                        Step::Progress { page: 0, window: 0 }
+                    ));
                     let mut pending = Box::pin(runner.next(None));
-                    timeout(cx.now(), Duration::from_secs(3), poll_fn(|context| match pending.as_mut().poll(context) {
-                        Poll::Pending if seen.load(Ordering::Acquire) => Poll::Ready(()),
-                        Poll::Pending => { context.waker().wake_by_ref(); Poll::Pending },
-                        Poll::Ready(_) => panic!("probe unexpectedly completed"),
-                    })).await.map_err(|_| "second query not observed")?;
+                    timeout(
+                        cx.now(),
+                        Duration::from_secs(3),
+                        poll_fn(|context| match pending.as_mut().poll(context) {
+                            Poll::Pending if seen.load(Ordering::Acquire) => Poll::Ready(()),
+                            Poll::Pending => {
+                                context.waker().wake_by_ref();
+                                Poll::Pending
+                            }
+                            Poll::Ready(_) => panic!("probe unexpectedly completed"),
+                        }),
+                    )
+                    .await
+                    .map_err(|_| "second query not observed")?;
                     drop(pending);
                     assert_eq!(runner.phase(), Phase::Interrupted);
-                    assert!(matches!(runner.next(None).await, Err(SweepError::Interrupted)));
+                    assert!(matches!(
+                        runner.next(None).await,
+                        Err(SweepError::Interrupted)
+                    ));
                     let retired = runner.retire();
                     assert_eq!(retired.completed.len(), 1);
                     assert_eq!((retired.page, retired.window), (1, 0));
                     Ok(())
-                }.await;
-                let outcome = if output.is_ok() { TaskOutcome::Success } else { TaskOutcome::Failed("dropped sweep failed".into()) };
-                TaskCompletion { output, outcome, completed_at: TimestampNs(3 + i128::from(cx.now().as_nanos() - start)) }
-            }).await?;
+                }
+                .await;
+                let outcome = if output.is_ok() {
+                    TaskOutcome::Success
+                } else {
+                    TaskOutcome::Failed("dropped sweep failed".into())
+                };
+                TaskCompletion {
+                    output,
+                    outcome,
+                    completed_at: TimestampNs(3 + i128::from(cx.now().as_nanos() - start)),
+                }
+            },
+        )
+        .await?;
         Ok::<_, Box<dyn Error>>(run)
     })?;
     responder.join().map_err(|_| "responder panicked")??;
-    run.output?; run.receipt?;
+    run.output?;
+    run.receipt?;
     Ok(())
 }
 
 #[test]
 fn sweep_runner_wait_observes_task_cancellation_without_another_query() -> TestResult {
     use asupersync::time::timeout;
-    use fss_reference::unifi_direct::{discovery::sweep::{Error as SweepError, Phase, Runner, Step}, metered::MeteredClock};
-    use std::{future::{Future, poll_fn}, task::Poll};
+    use fss_reference::unifi_direct::{
+        discovery::sweep::{Error as SweepError, Phase, Runner, Step},
+        metered::MeteredClock,
+    };
+    use std::{
+        future::{Future, poll_fn},
+        task::Poll,
+    };
     let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
     server.set_read_timeout(Some(Duration::from_secs(5)))?;
-    let destination = match server.local_addr()? { std::net::SocketAddr::V4(value) => value, _ => return Err("not IPv4".into()) };
+    let destination = match server.local_addr()? {
+        std::net::SocketAddr::V4(value) => value,
+        _ => return Err("not IPv4".into()),
+    };
     let responder = std::thread::spawn(move || -> std::io::Result<()> {
         let mut query = [0_u8; 32];
         let (_, peer) = server.recv_from(&mut query)?;
         server.send_to(&packet(), peer)?;
         server.set_read_timeout(Some(Duration::from_millis(700)))?;
         match server.recv_from(&mut query) {
-            Err(error) if matches!(error.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock) => Ok(()),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                ) =>
+            {
+                Ok(())
+            }
             Err(error) => Err(error),
             Ok(_) => Err(std::io::Error::other("query sent after cancellation")),
         }
     });
-    let config = Config::new(Ipv4Addr::LOCALHOST, 8, destination, "fixture:sweep-wait-cancel", Duration::from_millis(120), 8)?;
+    let config = Config::new(
+        Ipv4Addr::LOCALHOST,
+        8,
+        destination,
+        "fixture:sweep-wait-cancel",
+        Duration::from_millis(120),
+        8,
+    )?;
     let runtime = RuntimeBuilder::current_thread().build()?;
     let (mut authority, mut tree) = root()?;
     let run = runtime.block_on(async {
         let cx = asupersync::Cx::current().ok_or("missing runtime context")?;
-        let run = run_owned_async(&mut authority, &mut tree,
-            TaskSpec { task_id: TaskId::new("task:sweep-wait-cancel")?, started_at: TimestampNs(2) }, &cx,
+        let run = run_owned_async(
+            &mut authority,
+            &mut tree,
+            TaskSpec {
+                task_id: TaskId::new("task:sweep-wait-cancel")?,
+                started_at: TimestampNs(2),
+            },
+            &cx,
             async |owner, cx| {
                 let start = cx.now().as_nanos();
                 let output: TestResult = async {
                     let clock = MeteredClock::new(owner, cx, TimestampNs(3))?;
-                    let runner = Runner::new(cx, owner, clock, ContentDigest::sha256(b"wait sweep scope"),
-                        vec![vec![config]], Duration::from_secs(10))?;
+                    let runner = Runner::new(
+                        cx,
+                        owner,
+                        clock,
+                        ContentDigest::sha256(b"wait sweep scope"),
+                        vec![vec![config]],
+                        Duration::from_secs(10),
+                    )?;
                     assert!(matches!(runner.next(None).await?, Step::Finished { .. }));
                     let mut pending = Box::pin(runner.next(None));
                     poll_fn(|context| {
                         assert!(matches!(pending.as_mut().poll(context), Poll::Pending));
                         Poll::Ready(())
-                    }).await;
+                    })
+                    .await;
                     assert_eq!(runner.phase(), Phase::Waiting);
                     let now = clock.now()?;
                     owner.request_cancellation(now)?;
-                    assert!(matches!(timeout(cx.now(), Duration::from_secs(2), pending).await,
-                        Ok(Err(SweepError::Authority))));
+                    assert!(matches!(
+                        timeout(cx.now(), Duration::from_secs(2), pending).await,
+                        Ok(Err(SweepError::Authority))
+                    ));
                     assert_eq!(runner.phase(), Phase::Idle);
                     let retired = runner.retire();
                     assert!(retired.completed.is_empty());
                     owner.begin_drain(now)?;
                     Ok(())
-                }.await;
-                let outcome = if output.is_ok() { TaskOutcome::Cancelled } else { TaskOutcome::Failed("waiting sweep cancellation failed".into()) };
-                TaskCompletion { output, outcome, completed_at: TimestampNs(3 + i128::from(cx.now().as_nanos() - start)) }
-            }).await?;
+                }
+                .await;
+                let outcome = if output.is_ok() {
+                    TaskOutcome::Cancelled
+                } else {
+                    TaskOutcome::Failed("waiting sweep cancellation failed".into())
+                };
+                TaskCompletion {
+                    output,
+                    outcome,
+                    completed_at: TimestampNs(3 + i128::from(cx.now().as_nanos() - start)),
+                }
+            },
+        )
+        .await?;
         Ok::<_, Box<dyn Error>>(run)
     })?;
     responder.join().map_err(|_| "responder panicked")??;
-    run.output?; run.receipt?;
+    run.output?;
+    run.receipt?;
     Ok(())
 }
 
@@ -1750,7 +2428,7 @@ fn real_udp_discovery_deduplicates_and_never_exposes_unknown_fields() -> TestRes
     let worker = std::thread::spawn(move || -> std::io::Result<()> {
         let mut query = [0_u8; 32];
         let (len, peer) = server.recv_from(&mut query)?;
-        if &query[..len] != [1, 0, 0, 0] {
+        if query[..len] != [1, 0, 0, 0] {
             return Err(std::io::Error::other("wrong query"));
         }
         server.send_to(&packet(), peer)?;

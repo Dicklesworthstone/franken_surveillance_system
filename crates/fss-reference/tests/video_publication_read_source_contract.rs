@@ -213,6 +213,7 @@ fn immutable_video_read_succeeds_while_writer_remains_exclusive_and_requires_sam
 }
 
 #[test]
+#[allow(clippy::result_large_err)]
 fn one_nonrenewing_allowance_covers_open_metadata_source_pixels_and_final_rereads() -> Test {
     let fixture = Fixture::new("allowance")?;
     let cx = context(&fixture.root, true)?;

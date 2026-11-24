@@ -554,6 +554,7 @@ fn nal_list_matches_independent_start_code_scan_across_configs() -> Result<(), B
 
 #[test]
 fn verify_manifest_binds_the_digest_to_one_named_row() -> Result<(), Box<dyn Error>> {
+    let started = std::time::Instant::now();
     let hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
     let row = format!(r#"{{"sha256":"{hash}","name":"clip"}}"#);
     verify_fixture_manifest(&format!(r#"{{"fixtures":[{row}]}}"#), "clip", b"")?;
@@ -570,7 +571,11 @@ fn verify_manifest_binds_the_digest_to_one_named_row() -> Result<(), Box<dyn Err
         ));
     }
     Record::new("media_fixture_h264_named_manifest_row")
-        .check("ambiguous_manifests_refused", 4_usize, invalid_manifests.len())
-        .emit();
+        .check(
+            "ambiguous_manifests_refused",
+            4_usize,
+            invalid_manifests.len(),
+        )
+        .emit(started.elapsed().as_millis());
     Ok(())
 }

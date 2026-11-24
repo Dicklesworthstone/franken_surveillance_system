@@ -835,10 +835,10 @@ fn test_f5_single_camera_capture_two_models_rejected_as_corroborated() -> Result
         &mut journal,
     );
     match prepare_attempt {
-        Err(ReferenceError::InvalidSpec("alert_not_eligible")) => {}
+        Err(ReferenceError::AlertNotEligible(_)) => {}
         other => {
             return Err(format!(
-                "expected alert_not_eligible when preparing alert on single-sensor event, got: {other:?}"
+                "expected AlertNotEligible when preparing alert on single-sensor event, got: {other:?}"
             )
             .into());
         }

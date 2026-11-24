@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! Unix-socket UniFi direct IPC diagnostic contracts.
 #![cfg(unix)]
 
 use asupersync::runtime::RuntimeBuilder;

@@ -11,10 +11,12 @@ use fss_reference::onvif::http::{
 use fss_reference::onvif::wire::{self, WireError};
 use fss_reference::rtsp::authentication::{DigestChallenge, DigestCredentials, DigestPolicy};
 
+#[allow(clippy::unwrap_used)]
 fn created() -> UtcDateTime {
     UtcDateTime::new(2024, 2, 29, 23, 59, 59).unwrap()
 }
 
+#[allow(clippy::unwrap_used)]
 fn token() -> UsernameToken {
     UsernameToken::new(
         &DigestCredentials::new("fixture-user", "fixture-password").unwrap(),
@@ -144,6 +146,7 @@ impl HttpAuthority for DenyIo {
     }
 }
 
+#[allow(clippy::unwrap_used)]
 fn route() -> HttpRoute {
     HttpRoute::new(
         "127.0.0.1:9".parse().unwrap(),

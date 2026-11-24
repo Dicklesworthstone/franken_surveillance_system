@@ -27,6 +27,7 @@ use super::{
 
 /// Refusal preserves the complete session or the exact paused transition.
 #[must_use = "recover every returned session and storage owner"]
+#[allow(clippy::large_enum_variant)]
 pub enum PrepareRefusal<'scope, 'task, IO> {
     /// The source owner or recording guard is not at a safe capacity boundary.
     NotReady {
@@ -67,6 +68,7 @@ pub enum ManagedOwners<'scope, 'task, IO> {
 
 /// One policy-aware recording, control, or rollover decision.
 #[must_use = "account for every returned recording and control result"]
+#[allow(clippy::large_enum_variant)]
 pub enum ManagedStep {
     /// Normal session or audio-allowance result.
     Recording(AudioAllowanceStep),
@@ -140,6 +142,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> ManagedSession<'scope, '
 
     /// Stage one fresh successor without overwriting an existing one.
     /// The caller remains responsible for creating and authorizing the stores.
+    #[allow(clippy::result_large_err)]
     pub fn provide(
         &mut self,
         supplies: av_rollover_worker::Supplies,
@@ -170,6 +173,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> ManagedSession<'scope, '
 
     /// Advance one owned stage. The prior session result is always delivered
     /// before a later call consumes its retained capacity signal.
+    #[allow(clippy::too_many_arguments)]
     pub async fn step(
         &mut self,
         owner: &mut conversation::Owner<'_, 'scope, 'task>,
@@ -366,6 +370,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>
     RecordingRolloverPreflight<'scope, 'task, IO>
 {
     /// Transfer a capacity-stopped session without reading its switch storage.
+    #[allow(clippy::result_large_err)]
     pub fn prepare(
         session: Session<'scope, 'task, IO>,
         supplies: av_rollover_worker::Supplies,
@@ -432,6 +437,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>
         self.deferred.join().await
     }
     /// Recover the original session and stores after a pre-start refusal.
+    #[allow(clippy::result_large_err)]
     pub fn into_unstarted(
         self,
     ) -> Result<(Session<'scope, 'task, IO>, av_rollover_worker::Supplies), Self> {
@@ -453,6 +459,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>
         }
     }
     /// Transfer a verified predecessor to the existing background rollover.
+    #[allow(clippy::result_large_err)]
     pub fn finish(self) -> Result<PreflightFinished<'scope, 'task, IO>, Self> {
         let Self {
             coordinator,
@@ -490,6 +497,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>
 
 /// A completed switch either returns the session or the unresolved owners.
 #[must_use = "continue the session or reconcile the unresolved transition"]
+#[allow(clippy::large_enum_variant)]
 pub enum Finished<'scope, 'task, IO> {
     /// Matching successor verified and attached to the original session.
     Resumed {
@@ -511,6 +519,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> RecordingRollover<'scope
     /// Transfer a session only when its separate source is idle and the A/V
     /// scheduler has retained a capacity signal. Later generations may
     /// synchronously revalidate retained switch custody while pausing.
+    #[allow(clippy::result_large_err)]
     pub fn prepare(
         session: Session<'scope, 'task, IO>,
         supplies: av_rollover_worker::Supplies,
@@ -589,6 +598,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> RecordingRollover<'scope
 
     /// Return the resumed session or the exact unresolved transition. A still
     /// running or unjoined worker returns this owner unchanged.
+    #[allow(clippy::result_large_err)]
     pub fn finish(self) -> Result<Finished<'scope, 'task, IO>, Self> {
         let Self {
             coordinator,
@@ -612,6 +622,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> RecordingRollover<'scope
 
     /// Recover the paused guard and unused inputs after a refused start. This
     /// method does not classify or retry a transition that entered the pool.
+    #[allow(clippy::result_large_err)]
     pub fn into_unstarted(
         self,
     ) -> Result<
@@ -644,6 +655,7 @@ pub struct AutomaticRollover<'scope, 'task, IO> {
 
 /// Exact owners retained during or after the two-stage rollover.
 #[must_use = "account for the returned session, workers, and any effects"]
+#[allow(clippy::large_enum_variant)]
 pub enum AutomaticOwners<'scope, 'task, IO> {
     /// Prior-custody check and unconsumed successor supplies.
     Preflight(RecordingRolloverPreflight<'scope, 'task, IO>),
@@ -657,6 +669,7 @@ pub enum AutomaticOwners<'scope, 'task, IO> {
 
 /// One bounded decision from the automatic two-stage driver.
 #[must_use = "account for control results and any refusal"]
+#[allow(clippy::large_enum_variant)]
 pub enum AutomaticStep {
     /// The current stage has not been started.
     NotRunning,
@@ -675,6 +688,7 @@ pub enum AutomaticStep {
 impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> AutomaticRollover<'scope, 'task, IO> {
     /// Bind caller-supplied stores to a capacity-stopped source-aware session.
     /// This performs no storage I/O or camera management write.
+    #[allow(clippy::result_large_err)]
     pub fn prepare(
         session: Session<'scope, 'task, IO>,
         supplies: av_rollover_worker::Supplies,
@@ -708,6 +722,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> AutomaticRollover<'scope
     /// Drive one control or completion decision. After a verified preflight,
     /// this starts the successor worker under the supplied current authority.
     /// The owner remains inside `self` across the await.
+    #[allow(clippy::too_many_arguments)]
     pub async fn step<'a, 'b>(
         &mut self,
         owner: &mut conversation::Owner<'_, '_, '_>,
@@ -802,6 +817,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> AutomaticRollover<'scope
     }
 
     /// Recover the original session and stores before the first stage starts.
+    #[allow(clippy::result_large_err)]
     pub fn into_unstarted(
         self,
     ) -> Result<(Session<'scope, 'task, IO>, av_rollover_worker::Supplies), Self> {

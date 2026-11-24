@@ -232,6 +232,7 @@ impl std::error::Error for ProbeFailure {}
 /// One bounded owner step. No variant contains raw SDP, credentials, session tokens or media.
 #[derive(Debug)]
 #[must_use]
+#[allow(clippy::large_enum_variant)]
 pub enum ProbeStep {
     /// Local work or one bounded native read/write progressed; re-check credential needs.
     Progress,
@@ -864,7 +865,7 @@ fn validate_config(
             != format!("rtsp://{}{}", route.authority(), route.presentation())
         || config.protocol.control_root_uri
             != format!("rtsp://{}{}", route.authority(), route.control_root())
-        || config.protocol.channels.0 % 2 != 0
+        || !config.protocol.channels.0.is_multiple_of(2)
         || config.payload_type.is_some_and(|value| {
             !(96..=127).contains(&value) && !(config.codec == ProbeCodec::Jpeg && value == 26)
         })

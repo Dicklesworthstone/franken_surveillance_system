@@ -420,6 +420,7 @@ impl ReservedPlan {
 
     /// Bind a fresh plan to empty, separately retained custody. A failed append
     /// returns both owners and may require cold reconciliation.
+    #[allow(clippy::result_large_err)]
     pub fn create(
         plan: Plan,
         journal: PinRetainedEffectJournal,
@@ -428,6 +429,7 @@ impl ReservedPlan {
         Self::create_guarded(plan, journal, cx, &mut || Ok(()))
     }
 
+    #[allow(clippy::result_large_err)]
     pub(crate) fn create_guarded(
         plan: Plan,
         mut journal: PinRetainedEffectJournal,
@@ -476,6 +478,7 @@ impl ReservedPlan {
     /// Reopen against the exact independently retained current head. The caller
     /// supplies a fresh plan beginning at the first unreserved generation.
     /// Reopening restores no permission to start or repeat a previous creator.
+    #[allow(clippy::result_large_err)]
     pub fn recover(
         plan: Plan,
         journal: PinRetainedEffectJournal,
@@ -493,6 +496,7 @@ impl ReservedPlan {
     /// reuse and still needs explicit reconciliation. This does not locate an
     /// active switch or prove storage independence. This synchronous method
     /// performs I/O and belongs on a drained blocking worker.
+    #[allow(clippy::result_large_err)]
     pub fn recover_discovered(
         plan: Plan,
         journal: PinRetainedEffectJournal,
@@ -503,6 +507,7 @@ impl ReservedPlan {
         Self::recover_discovered_guarded(plan, journal, cx, max_records, work, &mut || Ok(()))
     }
 
+    #[allow(clippy::result_large_err)]
     pub(crate) fn recover_discovered_guarded(
         mut plan: Plan,
         mut journal: PinRetainedEffectJournal,
@@ -593,6 +598,7 @@ impl ReservedPlan {
         })
     }
 
+    #[allow(clippy::result_large_err)]
     pub(crate) fn recover_guarded(
         plan: Plan,
         mut journal: PinRetainedEffectJournal,
@@ -679,6 +685,7 @@ impl ReservedPlan {
     /// Durably reserve the next identity before returning its unstarted worker.
     /// On any refusal the owner fences; the caller must retain a returned
     /// candidate and reconcile rather than retrying or starting it.
+    #[allow(clippy::result_large_err)]
     pub fn reserve_next(
         &mut self,
         cx: &ReplayCx,
@@ -686,6 +693,7 @@ impl ReservedPlan {
         self.reserve_next_guarded(cx, &mut || Ok(()))
     }
 
+    #[allow(clippy::result_large_err)]
     pub(crate) fn reserve_next_guarded(
         &mut self,
         cx: &ReplayCx,

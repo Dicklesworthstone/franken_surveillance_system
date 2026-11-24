@@ -131,7 +131,7 @@ impl HelloBinding {
             return false;
         }
         let mut decoded = Zeroizing::new([0u8; 32]);
-        for (dst, pair) in decoded.iter_mut().zip(text.chunks_exact(2)) {
+        for (dst, pair) in decoded.iter_mut().zip(text.as_chunks::<2>().0) {
             fn nibble(b: u8) -> Option<u8> {
                 match b {
                     b'0'..=b'9' => Some(b - b'0'),

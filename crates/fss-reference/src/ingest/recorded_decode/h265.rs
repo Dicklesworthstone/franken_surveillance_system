@@ -843,9 +843,7 @@ impl<const LEGACY: bool> ProfiledRecordedH265Range<LEGACY> {
         let parameters = if index > self.request.first_segment {
             self.inband
                 .as_mut()
-                .map(|state| {
-                    super::next_inband_parameters(state, &bytes, budget.as_deref_mut(), cx)
-                })
+                .map(|state| super::next_inband_parameters(state, &bytes, budget, cx))
                 .transpose()?
         } else {
             None

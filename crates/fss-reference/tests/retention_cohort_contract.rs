@@ -43,8 +43,8 @@ use fss_reference::media_fixture::jpeg::{JpegConfig, Subsampling, encode_jpeg};
 use fss_reference::{
     DeliveryPlan, MockModelScript, MockModelSpec, MockSemanticLabel, PrepareAlertParams,
     ReferenceAlertPlan, ReferenceDeployment, ReferenceModelObservation, ReferencePolicyAction,
-    ReplayCx, VirtualCameraSpec, evaluate_unknown_presence, execute_mock_model, policy_decision_path,
-    run_reference_capture,
+    ReplayCx, VirtualCameraSpec, evaluate_unknown_presence, execute_mock_model,
+    policy_decision_path, run_reference_capture,
 };
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;

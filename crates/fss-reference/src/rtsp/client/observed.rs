@@ -52,7 +52,7 @@ pub fn observe_video_description(
         return Err(ClientError::Response);
     }
     // This is deliberately the live client's one semantic owner, not a parallel parser.
-    match description(config, response, codec, payload_type)?.0 {
+    match description(config, response, codec, payload_type, false, false)?.0 {
         NegotiatedMedia::H264(media) => Ok(ObservedVideoDescription::Avc(media)),
         NegotiatedMedia::H265(media) => Ok(ObservedVideoDescription::Hevc(media)),
         NegotiatedMedia::Jpeg(media) => Ok(ObservedVideoDescription::Jpeg(media)),

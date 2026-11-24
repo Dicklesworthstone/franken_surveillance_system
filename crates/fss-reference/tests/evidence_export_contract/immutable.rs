@@ -229,6 +229,7 @@ fn cancellation_before_open_or_final_revalidation_revokes_export_reads() -> Test
     Ok(())
 }
 
+#[allow(clippy::result_large_err)]
 fn finish_preview(owner: &ImmutableRetainedSource<'_>) -> Result<(), FileIngestError> {
     owner.revalidate_snapshot_metadata()?;
     owner.revalidate()

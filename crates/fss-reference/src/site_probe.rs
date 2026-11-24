@@ -242,7 +242,7 @@ pub fn measure_probe(
         return Err(SiteProbeError::SourceKind);
     }
     if selection.media_index > 63
-        || selection.rtp_channel % 2 != 0
+        || !selection.rtp_channel.is_multiple_of(2)
         || selection.rtp_channel.checked_add(1).is_none()
     {
         return Err(SiteProbeError::Selection);

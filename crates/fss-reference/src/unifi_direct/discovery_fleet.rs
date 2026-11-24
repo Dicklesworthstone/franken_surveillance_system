@@ -20,13 +20,14 @@ use asupersync::{
     types::Time,
 };
 use fss_core::{ContentDigest, DigestAlgorithm, OperationId};
+#[cfg(test)]
+use std::ops::Index;
 use std::{
     cell::{Cell, OnceCell, RefCell},
     fmt,
     future::{Future, poll_fn},
     marker::PhantomData,
     net::Ipv4Addr,
-    ops::Index,
     pin::Pin,
     rc::Rc,
     task::{Context, Poll},
@@ -150,15 +151,24 @@ impl fmt::Debug for Enrollment {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum State {
     /// One unconflicted claim matched the owner inventory in this window.
-    Ready { candidate: usize },
+    Ready {
+        /// Matched candidate index in the discovery report.
+        candidate: usize,
+    },
     /// This completed window did not observe the MAC; absence is not proven.
     NotObserved,
     /// The window contains ambiguous or incomplete claims for this MAC.
     Conflicted,
     /// An attempt was entered and may have been cancelled or interrupted.
-    InFlight { candidate: usize },
+    InFlight {
+        /// Candidate index currently being set up.
+        candidate: usize,
+    },
     /// The setup future returned; its outcome and trace remain caller-owned.
-    Finished { candidate: usize },
+    Finished {
+        /// Candidate index whose setup future completed.
+        candidate: usize,
+    },
 }
 
 /// Payload-free fleet planning or attempt refusal.
@@ -294,7 +304,7 @@ impl Record {
     fn operations(&self) -> impl Iterator<Item = &OperationId> {
         self.operations[..self.operation_count.get()]
             .iter()
-            .map(|slot| slot.get().expect("published setup operation"))
+            .filter_map(OnceCell::get)
     }
 
     fn reserve_operation(&self, operation: &OperationId) -> Result<(), Error> {
@@ -334,12 +344,13 @@ impl Records {
         self.len() == 0
     }
     fn get(&self, index: usize) -> Option<&Record> {
-        (index < self.len()).then(|| self.slots[index].get().expect("published record"))
+        self.slots
+            .get(index)
+            .filter(|_| index < self.len())
+            .and_then(OnceCell::get)
     }
-    fn iter(&self) -> impl ExactSizeIterator<Item = &Record> {
-        self.slots[..self.len()]
-            .iter()
-            .map(|slot| slot.get().expect("published record"))
+    fn iter(&self) -> impl Iterator<Item = &Record> {
+        self.slots[..self.len()].iter().filter_map(OnceCell::get)
     }
     fn push(&self, record: Record) -> Result<usize, Error> {
         let index = self.len();
@@ -350,6 +361,7 @@ impl Records {
     }
 }
 
+#[cfg(test)]
 impl Index<usize> for Records {
     type Output = Record;
     fn index(&self, index: usize) -> &Self::Output {
@@ -524,6 +536,7 @@ type AcceptFuture<'fleet, 'scope, 'task, 'policy> = Pin<
 
 /// One routed connection or one bounded, payload-free admission refusal.
 #[must_use = "handle or retire the routed socket or refusal"]
+#[allow(clippy::large_enum_variant)]
 pub enum RouterEvent<'scope, 'task, 'policy> {
     /// The caller owns this connection, including its active slot.
     Ready(controller_listener::Routed<'scope, 'task, 'policy>),
@@ -1500,22 +1513,24 @@ impl<'a> Fleet<'a> {
         } && result
             .as_ref()
             .is_ok_and(|outcome| trace.reported_video_matches(outcome));
-        self.records[index].reported_video.set(if route_ready {
-            trace
-                .preflight_video()
-                .and_then(|selection| selection.selected)
-        } else {
-            None
-        });
-        self.records[index].route_ready.set(route_ready);
-        let latest = self.latest.borrow();
-        self.records[index].route_source.set(if route_ready {
-            source_claim(&latest.report, entry.mac)
-        } else {
-            None
-        });
-        drop(latest);
-        self.records[index].changed.notify_waiters();
+        if let Some(record) = self.records.get(index) {
+            record.reported_video.set(if route_ready {
+                trace
+                    .preflight_video()
+                    .and_then(|selection| selection.selected)
+            } else {
+                None
+            });
+            record.route_ready.set(route_ready);
+            let latest = self.latest.borrow();
+            record.route_source.set(if route_ready {
+                source_claim(&latest.report, entry.mac)
+            } else {
+                None
+            });
+            drop(latest);
+            record.changed.notify_waiters();
+        }
         result.map_err(Error::Setup)
     }
 

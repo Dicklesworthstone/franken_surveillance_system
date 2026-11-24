@@ -194,16 +194,15 @@ impl ReviewDeliveryRecord {
         {
             return Err(ReviewDeliveryRecordError::Invalid);
         }
-        if let Some(c) = &self.completion {
-            if !valid_digest(c.started_record)
+        if let Some(c) = &self.completion
+            && (!valid_digest(c.started_record)
                 || c.modified.1 >= 1_000_000_000
                 || c.changed.1 >= 1_000_000_000
                 || c.now.earliest > c.now.latest
                 || c.now.earliest < self.started_at.earliest
-                || c.now.latest < self.started_at.latest
-            {
-                return Err(ReviewDeliveryRecordError::Invalid);
-            }
+                || c.now.latest < self.started_at.latest)
+        {
+            return Err(ReviewDeliveryRecordError::Invalid);
         }
         if delivery_identity(
             &self.site,

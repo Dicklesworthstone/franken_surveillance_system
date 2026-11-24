@@ -472,6 +472,7 @@ impl WorkBudget {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum Source {
     Xml(RetainedMetadata),
     Rtp(RetainedRtpMetadata),

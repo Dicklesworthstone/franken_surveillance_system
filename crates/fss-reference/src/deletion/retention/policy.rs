@@ -825,7 +825,7 @@ fn preview_affected(
         checkpoint(cx, STAGE_POLICY_READ)?;
         let mut omitted = vec![impact];
         omitted.extend(policy);
-        let receipt = universe.with_proposals_omitted(&omitted, &evaluate)?;
+        let receipt = universe.with_proposals_omitted(&omitted, evaluate)?;
         if receipt.record.affected_plan() == Some(impact)
             && policy.is_none_or(|digest| receipt.record.digest() == digest)
         {

@@ -18,6 +18,7 @@ use fss_reference::ingest::rgb_package::{
 use fss_reference::preprocess::ResizeFilter;
 use fss_tensor::{DType, Shape};
 use std::collections::BTreeMap;
+#[allow(clippy::duplicate_mod)]
 #[path = "../../../fss-codec-mjpeg/tests/rgb_support/mod.rs"]
 mod jpeg_support;
 pub type Test<T = ()> = Result<T, Box<dyn std::error::Error>>;

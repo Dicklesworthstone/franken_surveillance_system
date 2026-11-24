@@ -280,11 +280,14 @@ fn fixture<C: S3ReadClock>(
     reader.request_cancellation(&mut tree, DEADLINE).unwrap();
     reader.begin_drain(&mut tree, DEADLINE).unwrap();
     reader.finalize(&mut tree, DEADLINE).unwrap();
-    property.release_scope_reservation(&tree, &reader).unwrap();
+    property
+        .release_scope_reservation(&tree, &mut reader)
+        .unwrap();
     property.request_cancellation(&mut tree, DEADLINE).unwrap();
     property.begin_drain(&mut tree, DEADLINE).unwrap();
     property.finalize(&mut tree, DEADLINE).unwrap();
-    root.release_scope_reservation(&tree, &property).unwrap();
+    root.release_scope_reservation(&tree, &mut property)
+        .unwrap();
     root.request_cancellation(&mut tree, DEADLINE).unwrap();
     root.begin_drain(&mut tree, DEADLINE).unwrap();
     root.finalize(&mut tree, DEADLINE).unwrap();
@@ -436,7 +439,7 @@ fn cancellation_on_an_ancestor_refuses_before_clock_or_network() {
     let endpoint = endpoint(listener.local_addr().unwrap());
     let pin = pin(b"abc");
     let allowance = verification_budget(pin, limits()).unwrap();
-    let (mut root, _, mut reader, mut tree) = owners(&endpoint, pin, allowance, &READ_GRANTS);
+    let (root, _, mut reader, mut tree) = owners(&endpoint, pin, allowance, &READ_GRANTS);
     root.request_cancellation(&mut tree, NOW).unwrap();
     let result = verify_s3_object(
         &endpoint,

@@ -17,6 +17,7 @@ use crate::ingest::package_zones::{
 };
 use crate::retained_source::{ImmutableRetainedSource, RetainedSource};
 
+#[allow(clippy::result_large_err)]
 fn invalid<T>() -> Result<T, ReportCatalogError> {
     Err(ReportCatalogError::InvalidRecord)
 }
@@ -47,6 +48,7 @@ fn selected_declaration(
     })
 }
 
+#[allow(clippy::result_large_err)]
 pub(super) fn query(
     root: &Path,
     request: &ReportCatalogRequest,
@@ -166,6 +168,7 @@ pub(super) fn query(
     Ok(result)
 }
 
+#[allow(clippy::result_large_err)]
 fn manifest(
     source: &dyn RetainedSource,
     batch: &EvidenceDeltaBatch,
@@ -193,6 +196,7 @@ fn manifest(
     Ok(manifest)
 }
 
+#[allow(clippy::result_large_err)]
 fn check_identity(
     batch: &EvidenceDeltaBatch,
     delta: &EvidenceDelta,
@@ -211,6 +215,7 @@ fn check_identity(
     Ok(())
 }
 
+#[allow(clippy::result_large_err)]
 fn detection(
     source: &dyn RetainedSource,
     batch: &EvidenceDeltaBatch,
@@ -269,6 +274,7 @@ fn detection(
     })
 }
 
+#[allow(clippy::result_large_err)]
 fn zone(
     source: &dyn RetainedSource,
     batch: &EvidenceDeltaBatch,
@@ -328,6 +334,7 @@ fn zone(
     })
 }
 
+#[allow(clippy::result_large_err)]
 fn model_run(
     source: &dyn RetainedSource,
     batch: &EvidenceDeltaBatch,

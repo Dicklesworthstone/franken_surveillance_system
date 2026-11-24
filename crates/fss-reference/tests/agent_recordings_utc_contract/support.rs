@@ -29,6 +29,7 @@ pub type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 static NEXT_PATH: AtomicUsize = AtomicUsize::new(0);
 pub const ADMISSIONS: [u64; 3] = [40_000_000, 60_000_000, 80_000_000];
 
+#[allow(clippy::large_enum_variant)]
 pub enum NativeWindow {
     Avc(PreparedRecording),
     Hevc(PreparedHevcRecording),

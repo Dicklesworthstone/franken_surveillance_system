@@ -10,11 +10,10 @@ use std::path::PathBuf;
 
 use file_import_fault_support::{cx, fresh_dir, open, standard};
 use fss_core::{
-    AgentSessionParams, BudgetVector, CaptureInterval, Completeness, ContentDigest,
-    ContractBasis, ContractBasisRegistryBytes, HandleAvailability, HydrationArtifact,
-    HydrationError, HydrationLevel, HydrationPurpose, HydrationRequest, HydrationRequestSpec,
-    LaboratoryAccess, MissionId, PrincipalId, SemanticHandle, SemanticHandleSpec,
-    SessionId, TimestampNs,
+    AgentSessionParams, BudgetVector, CaptureInterval, Completeness, ContentDigest, ContractBasis,
+    ContractBasisRegistryBytes, HandleAvailability, HydrationArtifact, HydrationError,
+    HydrationLevel, HydrationPurpose, HydrationRequest, HydrationRequestSpec, LaboratoryAccess,
+    MissionId, PrincipalId, SemanticHandle, SemanticHandleSpec, SessionId, TimestampNs,
 };
 use fss_object::{FaultInjectingSpoolIo, HostSpoolIo, SpoolFaultPlan, SpoolIoCall};
 use fss_publication::SlotName;
@@ -28,8 +27,8 @@ use fss_reference::deletion::belief::hydration::{
     DeletionAwareSourceReader, DeploymentSourceLimits,
 };
 use fss_reference::{
-    ReferenceDeployment, ReferenceHydrationCatalog, ReferenceSessionStore,
-    SessionBindingRequest, SourceHydrationError,
+    ReferenceDeployment, ReferenceHydrationCatalog, ReferenceSessionStore, SessionBindingRequest,
+    SourceHydrationError,
 };
 
 type Value<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -59,12 +58,21 @@ fn setup(label: &str) -> Value<Fixture> {
         &context,
     )?;
     let levels = BTreeSet::from([
-        HydrationLevel::H0, HydrationLevel::H1, HydrationLevel::H2, HydrationLevel::H3,
+        HydrationLevel::H0,
+        HydrationLevel::H1,
+        HydrationLevel::H2,
+        HydrationLevel::H3,
     ]);
     let quote = BudgetVector::builder().bytes(1024).tokens(TOKENS).build()?;
     let handle = SemanticHandle::publish(SemanticHandleSpec {
         contract_basis: ContractBasis::from_registry_bytes(ContractBasisRegistryBytes::new(
-            b"s", b"o", b"v", b"c", b"e", b"cost", "deployment-disclosure:test",
+            b"s",
+            b"o",
+            b"v",
+            b"c",
+            b"e",
+            b"cost",
+            "deployment-disclosure:test",
         )),
         anchor: deployment.current_anchor().clone(),
         subject_id: "subject:source".to_owned(),
@@ -77,13 +85,19 @@ fn setup(label: &str) -> Value<Fixture> {
         applied_transform: None,
         availability: HandleAvailability::Available,
         retention_until: TimestampNs(100),
-        required_capabilities: levels.iter().map(|level| {
-            (*level, if *level == HydrationLevel::H3 {
-                BTreeSet::from(["capability:source".to_owned()])
-            } else {
-                BTreeSet::new()
+        required_capabilities: levels
+            .iter()
+            .map(|level| {
+                (
+                    *level,
+                    if *level == HydrationLevel::H3 {
+                        BTreeSet::from(["capability:source".to_owned()])
+                    } else {
+                        BTreeSet::new()
+                    },
+                )
             })
-        }).collect(),
+            .collect(),
         estimated_costs: levels.iter().map(|level| (*level, quote)).collect(),
         levels,
         laboratory_access: LaboratoryAccess::Unavailable,
@@ -97,27 +111,50 @@ fn setup(label: &str) -> Value<Fixture> {
         &handle.handle_id,
         handle.descriptor_digest,
         HydrationArtifact::publish(
-            HydrationLevel::H2, "text/plain", b"preview".to_vec(),
-            [handle.subject_digest], Completeness::Complete, None,
+            HydrationLevel::H2,
+            "text/plain",
+            b"preview".to_vec(),
+            [handle.subject_digest],
+            Completeness::Complete,
+            None,
         )?,
     )?;
     {
         let reader = DeletionAwareSourceReader::new(
-            &deployment, &HostSpoolIo, &slot, &handle.anchor,
-            DeploymentSourceLimits::default(), &|| false,
+            &deployment,
+            &HostSpoolIo,
+            &slot,
+            &handle.anchor,
+            DeploymentSourceLimits::default(),
+            &|| false,
         );
-        catalog.bind_deployment_source_object(&handle.handle_id, handle.descriptor_digest, &reader)?;
+        catalog.bind_deployment_source_object(
+            &handle.handle_id,
+            handle.descriptor_digest,
+            &reader,
+        )?;
     }
-    Ok(Fixture { deployment, directory, slot, root: staged.manifest.root(), handle, catalog })
+    Ok(Fixture {
+        deployment,
+        directory,
+        slot,
+        root: staged.manifest.root(),
+        handle,
+        catalog,
+    })
 }
 
 fn advance(f: &mut Fixture) -> Value {
     let context = cx("advance-unrelated-authority")?;
     let slot = SlotName::parse("unrelated")?;
-    let staged = f.deployment.stage_and_publish(&slot, &[b"unrelated new evidence"], &context)?;
+    let staged = f
+        .deployment
+        .stage_and_publish(&slot, &[b"unrelated new evidence"], &context)?;
     f.deployment.publish_and_commit(
-        &slot, &staged.manifest,
-        CaptureInterval::new(TimestampNs(3), TimestampNs(4))?, &context,
+        &slot,
+        &staged.manifest,
+        CaptureInterval::new(TimestampNs(3), TimestampNs(4))?,
+        &context,
     )?;
     assert_ne!(f.deployment.current_anchor(), &f.handle.anchor);
     Ok(())
@@ -181,10 +218,13 @@ fn no_io(io: &FaultInjectingSpoolIo) {
 }
 
 fn assert_anchor_error(error: SourceHydrationError) {
-    assert!(matches!(error,
-        SourceHydrationError::Deployment(ref error)
-            if matches!(error.as_ref(), DurableBeliefError::AuthorityChanged)
-    ), "{error:?}");
+    assert!(
+        matches!(error,
+            SourceHydrationError::Deployment(ref error)
+                if matches!(error.as_ref(), DurableBeliefError::AuthorityChanged)
+        ),
+        "{error:?}"
+    );
 }
 
 #[test]
@@ -193,16 +233,27 @@ fn trait_object_registration_cannot_bind_an_old_descriptor_to_a_new_authority_he
     advance(&mut f)?;
     let io = FaultInjectingSpoolIo::new(SpoolFaultPlan::new());
     let reader = DeletionAwareSourceReader::new(
-        &f.deployment, &io, &f.slot, f.deployment.current_anchor(),
-        DeploymentSourceLimits::default(), &|| false,
+        &f.deployment,
+        &io,
+        &f.slot,
+        f.deployment.current_anchor(),
+        DeploymentSourceLimits::default(),
+        &|| false,
     );
     let mut catalog = ReferenceHydrationCatalog::new();
     catalog.register_descriptor(f.handle.clone())?;
     let result = catalog.bind_source_object(
-        &f.handle.handle_id, f.handle.descriptor_digest, f.root, &reader,
+        &f.handle.handle_id,
+        f.handle.descriptor_digest,
+        f.root,
+        &reader,
     );
     assert_anchor_error(result.err().ok_or("old descriptor was admitted")?);
-    assert!(catalog.source_binding(&f.handle.handle_id, f.handle.descriptor_digest).is_none());
+    assert!(
+        catalog
+            .source_binding(&f.handle.handle_id, f.handle.descriptor_digest)
+            .is_none()
+    );
     assert!(!reader.attempted());
     no_io(&io);
     Ok(())
@@ -211,7 +262,9 @@ fn trait_object_registration_cannot_bind_an_old_descriptor_to_a_new_authority_he
 #[test]
 fn trait_object_delivery_preserves_cursor_and_refuses_scope_drift_without_fallback() -> Value {
     let mut f = setup("generic-delivery")?;
-    let preview = f.catalog.hydrate(&request(&f.handle, HydrationLevel::H2)?, TimestampNs(20))?;
+    let preview = f
+        .catalog
+        .hydrate(&request(&f.handle, HydrationLevel::H2)?, TimestampNs(20))?;
     let cursor = preview.receipt.continuation.ok_or("no H3 continuation")?;
     advance(&mut f)?;
     let io = FaultInjectingSpoolIo::new(SpoolFaultPlan::new());
@@ -222,13 +275,28 @@ fn trait_object_delivery_preserves_cursor_and_refuses_scope_drift_without_fallba
         req.continuation = continued.then(|| cursor.clone());
         reseal(&mut req);
         let reader = DeletionAwareSourceReader::new(
-            &f.deployment, &io, &f.slot, f.deployment.current_anchor(),
-            DeploymentSourceLimits::default(), &|| false,
+            &f.deployment,
+            &io,
+            &f.slot,
+            f.deployment.current_anchor(),
+            DeploymentSourceLimits::default(),
+            &|| false,
         );
-        let result = f.catalog.hydrate_from_source(&req, &reader, TimestampNs(30));
-        assert_anchor_error(result.err().ok_or("authority failure silently became delivery")?);
+        let result = f
+            .catalog
+            .hydrate_from_source(&req, &reader, TimestampNs(30));
+        assert_anchor_error(
+            result
+                .err()
+                .ok_or("authority failure silently became delivery")?,
+        );
         assert!(!reader.attempted());
-        assert!(!f.catalog.issued_cursor(&cursor.cursor_digest).ok_or("lost cursor")?.consumed);
+        assert!(
+            !f.catalog
+                .issued_cursor(&cursor.cursor_digest)
+                .ok_or("lost cursor")?
+                .consumed
+        );
     }
     no_io(&io);
     Ok(())
@@ -239,22 +307,45 @@ fn stored_session_projection_does_not_override_the_readers_current_authority() -
     let mut f = setup("session-generic")?;
     let input = params(&f.handle)?;
     let mut sessions = ReferenceSessionStore::default();
-    sessions.open(input.clone(), f.handle.contract_basis.clone(), TimestampNs(10))?;
-    let alias = sessions.bind(&input.principal_id, &binding(&f.handle)?, &f.catalog, TimestampNs(10))?;
+    sessions.open(
+        input.clone(),
+        f.handle.contract_basis.clone(),
+        TimestampNs(10),
+    )?;
+    let alias = sessions.bind(
+        &input.principal_id,
+        &binding(&f.handle)?,
+        &f.catalog,
+        TimestampNs(10),
+    )?;
     advance(&mut f)?;
     let io = FaultInjectingSpoolIo::new(SpoolFaultPlan::new());
     let reader = DeletionAwareSourceReader::new(
-        &f.deployment, &io, &f.slot, f.deployment.current_anchor(),
-        DeploymentSourceLimits::default(), &|| false,
+        &f.deployment,
+        &io,
+        &f.slot,
+        f.deployment.current_anchor(),
+        DeploymentSourceLimits::default(),
+        &|| false,
     );
     let result = sessions.hydrate_from_source(
-        &input.principal_id, &alias, &request(&f.handle, HydrationLevel::H3)?,
-        &mut f.catalog, &reader, TimestampNs(30),
+        &input.principal_id,
+        &alias,
+        &request(&f.handle, HydrationLevel::H3)?,
+        &mut f.catalog,
+        &reader,
+        TimestampNs(30),
     );
-    assert!(matches!(result, Err(SessionSourceHydrationError::Source(
-        SourceHydrationError::Deployment(_)
-    ))));
-    assert_eq!(sessions.remaining_token_budget(&input.principal_id, &input.session_id, TimestampNs(30))?, SESSION_TOKENS);
+    assert!(matches!(
+        result,
+        Err(SessionSourceHydrationError::Source(
+            SourceHydrationError::Deployment(_)
+        ))
+    ));
+    assert_eq!(
+        sessions.remaining_token_budget(&input.principal_id, &input.session_id, TimestampNs(30))?,
+        SESSION_TOKENS
+    );
     assert!(!reader.attempted());
     no_io(&io);
     Ok(())
@@ -265,13 +356,25 @@ fn durable_scope_refusal_survives_reopen_without_charge_or_cursor_consumption() 
     let mut f = setup("durable-generic")?;
     let input = params(&f.handle)?;
     let path = f.directory.join("disclosure.fssj");
-    let mut owner = DurableDisclosureStore::create(&path, DurableSessionLimits::default(), f.catalog.clone())?;
-    owner.open_session(input.clone(), f.handle.contract_basis.clone(), TimestampNs(10))?;
+    let mut owner =
+        DurableDisclosureStore::create(&path, DurableSessionLimits::default(), f.catalog.clone())?;
+    owner.open_session(
+        input.clone(),
+        f.handle.contract_basis.clone(),
+        TimestampNs(10),
+    )?;
     let alias = owner.bind(&input.principal_id, &binding(&f.handle)?, TimestampNs(10))?;
     let preview = owner.hydrate(
-        &input.principal_id, &alias, &request(&f.handle, HydrationLevel::H2)?, TimestampNs(20),
+        &input.principal_id,
+        &alias,
+        &request(&f.handle, HydrationLevel::H2)?,
+        TimestampNs(20),
     )?;
-    let cursor = preview.response.receipt.continuation.ok_or("no continuation")?;
+    let cursor = preview
+        .response
+        .receipt
+        .continuation
+        .ok_or("no continuation")?;
     let mut req = request(&f.handle, HydrationLevel::H3)?;
     req.issued_at = TimestampNs(21);
     req.continuation = Some(cursor.clone());
@@ -279,25 +382,56 @@ fn durable_scope_refusal_survives_reopen_without_charge_or_cursor_consumption() 
     advance(&mut f)?;
     let io = FaultInjectingSpoolIo::new(SpoolFaultPlan::new());
     let reader = DeletionAwareSourceReader::new(
-        &f.deployment, &io, &f.slot, f.deployment.current_anchor(),
-        DeploymentSourceLimits::default(), &|| false,
+        &f.deployment,
+        &io,
+        &f.slot,
+        f.deployment.current_anchor(),
+        DeploymentSourceLimits::default(),
+        &|| false,
     );
-    assert!(matches!(owner.hydrate_from_source(
-        &input.principal_id, &alias, &req, &reader, TimestampNs(30),
-    ), Err(DisclosureError::Source(SessionSourceHydrationError::Source(
-        SourceHydrationError::Deployment(_)
-    )))));
+    assert!(matches!(
+        owner.hydrate_from_source(&input.principal_id, &alias, &req, &reader, TimestampNs(30),),
+        Err(DisclosureError::Source(
+            SessionSourceHydrationError::Source(SourceHydrationError::Deployment(_))
+        ))
+    ));
     assert!(!reader.attempted());
     no_io(&io);
     let pin = owner.committed_root();
     drop(owner);
     let mut reopened = DurableDisclosureStore::open_existing(
-        &path, pin, DurableSessionLimits::default(), f.catalog.clone(),
+        &path,
+        pin,
+        DurableSessionLimits::default(),
+        f.catalog.clone(),
     )?;
-    assert_eq!(reopened.remaining_token_budget(&input.principal_id, &input.session_id, TimestampNs(30))?, SESSION_TOKENS - TOKENS);
-    assert!(!reopened.catalog().issued_cursor(&cursor.cursor_digest).ok_or("lost cursor")?.consumed);
-    assert!(reopened.admissions(&input.principal_id, &input.session_id, req.request_digest, 8, TimestampNs(30))?.is_empty());
-    assert!(!fs::read(path)?.windows(SOURCE.len()).any(|bytes| bytes == SOURCE));
+    assert_eq!(
+        reopened.remaining_token_budget(&input.principal_id, &input.session_id, TimestampNs(30))?,
+        SESSION_TOKENS - TOKENS
+    );
+    assert!(
+        !reopened
+            .catalog()
+            .issued_cursor(&cursor.cursor_digest)
+            .ok_or("lost cursor")?
+            .consumed
+    );
+    assert!(
+        reopened
+            .admissions(
+                &input.principal_id,
+                &input.session_id,
+                req.request_digest,
+                8,
+                TimestampNs(30)
+            )?
+            .is_empty()
+    );
+    assert!(
+        !fs::read(path)?
+            .windows(SOURCE.len())
+            .any(|bytes| bytes == SOURCE)
+    );
     Ok(())
 }
 
@@ -306,25 +440,40 @@ fn current_generic_source_still_delivers_exact_bytes_and_denials_precede_scope_c
     let mut f = setup("current-and-denied")?;
     let req = request(&f.handle, HydrationLevel::H3)?;
     let reader = DeletionAwareSourceReader::new(
-        &f.deployment, &HostSpoolIo, &f.slot, &f.handle.anchor,
-        DeploymentSourceLimits::default(), &|| false,
+        &f.deployment,
+        &HostSpoolIo,
+        &f.slot,
+        &f.handle.anchor,
+        DeploymentSourceLimits::default(),
+        &|| false,
     );
-    let response = f.catalog.hydrate_from_source(&req, &reader, TimestampNs(20))?;
-    f.catalog.source_binding(&f.handle.handle_id, f.handle.descriptor_digest)
-        .ok_or("no binding")?.validate_response(&req, &f.handle, &response)?;
+    let response = f
+        .catalog
+        .hydrate_from_source(&req, &reader, TimestampNs(20))?;
+    f.catalog
+        .source_binding(&f.handle.handle_id, f.handle.descriptor_digest)
+        .ok_or("no binding")?
+        .validate_response(&req, &f.handle, &response)?;
     assert_eq!(response.artifact.ok_or("no source")?.payload, SOURCE);
-    drop(reader);
+    let _ = reader;
     advance(&mut f)?;
     let mut denied = req;
     denied.available_capabilities.clear();
     reseal(&mut denied);
     let io = FaultInjectingSpoolIo::new(SpoolFaultPlan::new());
     let reader = DeletionAwareSourceReader::new(
-        &f.deployment, &io, &f.slot, f.deployment.current_anchor(),
-        DeploymentSourceLimits::default(), &|| false,
+        &f.deployment,
+        &io,
+        &f.slot,
+        f.deployment.current_anchor(),
+        DeploymentSourceLimits::default(),
+        &|| false,
     );
-    assert!(matches!(f.catalog.hydrate_from_source(&denied, &reader, TimestampNs(30)),
-        Err(SourceHydrationError::Hydration(_))));
+    assert!(matches!(
+        f.catalog
+            .hydrate_from_source(&denied, &reader, TimestampNs(30)),
+        Err(SourceHydrationError::Hydration(_))
+    ));
     assert!(!reader.attempted());
     no_io(&io);
     Ok(())
@@ -336,12 +485,23 @@ fn missing_descriptor_refuses_without_inspecting_deployment_custody() -> Value {
     let mut catalog = ReferenceHydrationCatalog::new();
     let io = FaultInjectingSpoolIo::new(SpoolFaultPlan::new());
     let reader = DeletionAwareSourceReader::new(
-        &f.deployment, &io, &f.slot, &f.handle.anchor,
-        DeploymentSourceLimits::default(), &|| false,
+        &f.deployment,
+        &io,
+        &f.slot,
+        &f.handle.anchor,
+        DeploymentSourceLimits::default(),
+        &|| false,
     );
-    assert!(matches!(catalog.bind_deployment_source_object(
-        &f.handle.handle_id, f.handle.descriptor_digest, &reader,
-    ), Err(SourceHydrationError::Hydration(HydrationError::DescriptorNotFound))));
+    assert!(matches!(
+        catalog.bind_deployment_source_object(
+            &f.handle.handle_id,
+            f.handle.descriptor_digest,
+            &reader,
+        ),
+        Err(SourceHydrationError::Hydration(
+            HydrationError::DescriptorNotFound
+        ))
+    ));
     assert!(!reader.attempted());
     no_io(&io);
     Ok(())

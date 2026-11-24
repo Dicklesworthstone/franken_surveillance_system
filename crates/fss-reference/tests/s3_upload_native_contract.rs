@@ -131,6 +131,7 @@ fn accept(listener: &TcpListener) -> TcpStream {
     loop {
         match listener.accept() {
             Ok((socket, _)) => {
+                socket.set_nonblocking(false).unwrap();
                 socket
                     .set_read_timeout(Some(Duration::from_secs(2)))
                     .unwrap();
@@ -740,8 +741,9 @@ mod durable {
         pub(super) fn new() -> Self {
             for _ in 0..16 {
                 let ordinal = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
-                let path = std::env::temp_dir()
-                    .join(format!("fss-native-s3-{}-{ordinal}", std::process::id()));
+                let base = std::fs::canonicalize(std::env::temp_dir())
+                    .unwrap_or_else(|_| std::env::temp_dir());
+                let path = base.join(format!("fss-native-s3-{}-{ordinal}", std::process::id()));
                 match std::fs::create_dir(&path) {
                     Ok(()) => return Self(path),
                     Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}

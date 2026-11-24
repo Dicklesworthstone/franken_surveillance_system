@@ -685,10 +685,12 @@ fn immutable_native_exact_allowances_include_both_passes_and_final_history() -> 
         &dir.cx()?,
     )?;
     let usage = measured.native.read_usage;
-    let mut exact = NativeOnvifReadLimits::default();
     // The final empty effects-journal probe still needs one byte of remaining allowance.
-    exact.max_deployment_read_bytes = usize::try_from(measured.deployment_read_bytes)? + 1;
-    exact.max_deployment_read_attempts = usize::try_from(measured.deployment_read_attempts)?;
+    let mut exact = NativeOnvifReadLimits {
+        max_deployment_read_bytes: usize::try_from(measured.deployment_read_bytes)? + 1,
+        max_deployment_read_attempts: usize::try_from(measured.deployment_read_attempts)?,
+        ..NativeOnvifReadLimits::default()
+    };
     exact.source.custody.max_read_bytes = usage.peak_reserved_read_bytes;
     exact.source.custody.max_io_calls = usage.io_calls;
     exact.source.custody.max_catalogue_entries = usage.completed_roots;

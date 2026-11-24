@@ -107,8 +107,12 @@ pub mod image_kernels;
 pub mod ingest;
 mod meaningful_delta;
 pub mod media_fixture;
+/// Non-destructive v1-to-v2 deployment upgrader, format detection, and equivalence receipts.
+pub mod migration;
 mod model;
 pub mod model_receipt;
+/// Production TLS 1.3 HMAC-signed webhooks, multi-channel relays (ntfy, Pushover, SMTP), and escalation policies.
+pub mod notify;
 /// Owner-scoped, read-only ONVIF Media1 negotiation into the native RTSP path.
 pub mod onvif;
 pub mod optimized_executor;

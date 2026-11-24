@@ -36,9 +36,13 @@ impl Preconditions {
 /// Payload-free binding refusal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
+    /// Supplied message is not a valid motion-control payload.
     WrongMessage,
+    /// Required motion-control preconditions are missing or malformed.
     Preconditions,
+    /// Motion request does not match the bound preconditions.
     Mismatch,
+    /// Canonical encoding of the motion intent failed.
     Encoding,
 }
 impl fmt::Display for Error {

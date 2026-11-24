@@ -33,6 +33,7 @@ use crate::rtsp::recording_catalog::CatalogScope;
 
 /// Complete original metadata request and its independently bounded protected read owner.
 #[derive(Clone, Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum RtspUtcQueryImportInput {
     /// Explicitly pinned independent captures of one exact sensor and stream.
     Sessions {
@@ -52,6 +53,7 @@ pub enum RtspUtcQueryImportInput {
 
 /// Original protected observation, preserving every conditional clock assumption and gap.
 #[derive(Clone, Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum RtspUtcQueryImportObservation {
     /// Original source-separated union in canonical session order.
     Sessions(DeploymentRecordingUtcSessionsQuery),

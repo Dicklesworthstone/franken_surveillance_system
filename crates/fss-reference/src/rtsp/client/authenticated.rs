@@ -280,28 +280,55 @@ fn challenge_response(wire: &[u8]) -> Result<(RtspResponse, ChallengeOffers<'_>)
         .windows(4)
         .position(|s| s == b"\r\n\r\n")
         .ok_or(AuthenticationError::Response)?;
-    let header = std::str::from_utf8(&wire[..end]).map_err(|_| AuthenticationError::Response)?;
     let mut challenges = ChallengeOffers::new();
     let mut offered = false;
     let mut length = None;
-    for line in header.split("\r\n").skip(1) {
-        let (name, value) = line.split_once(':').ok_or(AuthenticationError::Response)?;
-        if name.eq_ignore_ascii_case("WWW-Authenticate") {
-            challenges.push_header(value.trim())?;
-            offered = true;
-        }
-        if name.eq_ignore_ascii_case("Content-Length") {
-            if length.is_some() {
-                return Err(AuthenticationError::Response.into());
+    let header_bytes = &wire[..end];
+    let mut pos = 0usize;
+    let mut line_index = 0usize;
+    while pos <= header_bytes.len() {
+        let next_crlf = header_bytes[pos..]
+            .windows(2)
+            .position(|w| w == b"\r\n")
+            .map(|rel| pos + rel);
+        let line = match next_crlf {
+            Some(at) => &header_bytes[pos..at],
+            None => &header_bytes[pos..],
+        };
+        if line_index > 0 {
+            let colon = line
+                .iter()
+                .position(|&b| b == b':')
+                .ok_or(AuthenticationError::Response)?;
+            let name =
+                std::str::from_utf8(&line[..colon]).map_err(|_| AuthenticationError::Response)?;
+            let val_bytes = &line[colon + 1..];
+            if name.eq_ignore_ascii_case("WWW-Authenticate") {
+                let value =
+                    std::str::from_utf8(val_bytes).map_err(|_| AuthenticationError::Response)?;
+                challenges.push_header(value.trim())?;
+                offered = true;
             }
-            let parsed = decimal(value.trim())?;
-            if parsed > 65_536 {
-                return Err(AuthenticationError::Capacity.into());
+            if name.eq_ignore_ascii_case("Content-Length") {
+                if length.is_some() {
+                    return Err(AuthenticationError::Response.into());
+                }
+                let value =
+                    std::str::from_utf8(val_bytes).map_err(|_| AuthenticationError::Response)?;
+                let parsed = decimal(value.trim())?;
+                if parsed > 65_536 {
+                    return Err(AuthenticationError::Capacity.into());
+                }
+                length = Some(parsed as usize);
             }
-            length = Some(parsed as usize);
+            if name.eq_ignore_ascii_case("Proxy-Authenticate") {
+                return Err(AuthenticationError::Unsupported.into());
+            }
         }
-        if name.eq_ignore_ascii_case("Proxy-Authenticate") {
-            return Err(AuthenticationError::Unsupported.into());
+        line_index += 1;
+        match next_crlf {
+            Some(at) => pos = at + 2,
+            None => break,
         }
     }
     // Reject concatenated frames before parsing can allocate an event batch.
@@ -314,6 +341,7 @@ fn challenge_response(wire: &[u8]) -> Result<(RtspResponse, ChallengeOffers<'_>)
         max_body_bytes: 65_536,
         max_interleaved_bytes: 65_535,
     });
+    parser.set_lossy_nonframing_headers(true);
     let mut events = parser
         .feed(wire)
         .map_err(|_| AuthenticationError::Response)?;

@@ -55,11 +55,13 @@ fn optional_hex(hex: Option<&str>) -> TestResult<Option<ContentDigest>> {
 }
 
 fn hex_bytes(hex: &str) -> TestResult<Vec<u8>> {
-    if hex.len() % 2 != 0 || !hex.is_ascii() {
+    if !hex.len().is_multiple_of(2) || !hex.is_ascii() {
         return Err("invalid frozen v1 fixture hex".into());
     }
     hex.as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| Ok(u8::from_str_radix(std::str::from_utf8(pair)?, 16)?))
         .collect()
 }

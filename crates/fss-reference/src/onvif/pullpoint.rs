@@ -527,6 +527,7 @@ pub fn route_in_service_root(route: &HttpRoute, service_root: &str) -> bool {
 /// Cleanup uses reserved time, steps and exchanges, but never overrides cancellation,
 /// revocation or the absolute deadline. If cleanup cannot run, the report preserves
 /// Active/Indeterminate and an error rather than claiming that the camera stopped.
+#[allow(clippy::result_large_err)]
 pub fn capture(
     config: &PullPointConfig,
     cx: &impl OnvifContext,
@@ -553,6 +554,7 @@ pub fn capture(
 /// before the first poll; if it refuses, cleanup is still attempted under the
 /// original live authority. A cold intent without a response remains indeterminate
 /// and never authorizes another Create. Earlier returned receipts survive refusal.
+#[allow(clippy::result_large_err)]
 pub fn capture_with_control(
     config: &PullPointConfig,
     cx: &impl OnvifContext,
@@ -570,6 +572,7 @@ pub fn capture_with_control(
 /// Capture while preserving a durable receipt alongside any post-commit refusal.
 /// A storage-budget or storage-authority denial stops polling even when network
 /// authority still permits the separately bounded Unsubscribe obligation.
+#[allow(clippy::result_large_err)]
 pub fn capture_with_progress(
     config: &PullPointConfig,
     cx: &impl OnvifContext,
@@ -579,6 +582,7 @@ pub fn capture_with_progress(
     capture_inner(config, cx, |event| control(event).map(Some), sink)
 }
 
+#[allow(clippy::result_large_err)]
 fn capture_inner(
     config: &PullPointConfig,
     cx: &impl OnvifContext,
@@ -1134,6 +1138,7 @@ fn finish_cleanup(
 /// current cleanup intent before dispatch, returning a stop with the receipt for replayed
 /// or stale attempts. Complete responses reach custody before interpretation; a validated
 /// success also retains the existing terminal receipt when current authority permits it.
+#[allow(clippy::result_large_err)]
 pub fn unsubscribe_existing(
     config: &PullPointConfig,
     cx: &impl OnvifContext,
@@ -1200,17 +1205,16 @@ pub fn validate_config(config: &PullPointConfig) -> Result<(), PullPointError> {
     {
         return Err(PullPointError::Configuration);
     }
-    if let Some(auth) = &config.auth {
-        if auth.expected_realm.is_empty()
+    if let Some(auth) = &config.auth
+        && (auth.expected_realm.is_empty()
             || auth.expected_realm.len() > 512
             || !auth
                 .expected_realm
                 .bytes()
                 .all(|byte| (32..127).contains(&byte))
-            || auth.policy.allow_legacy_no_qop && !auth.policy.allow_legacy_md5
-        {
-            return Err(PullPointError::Configuration);
-        }
+            || auth.policy.allow_legacy_no_qop && !auth.policy.allow_legacy_md5)
+    {
+        return Err(PullPointError::Configuration);
     }
     Ok(())
 }

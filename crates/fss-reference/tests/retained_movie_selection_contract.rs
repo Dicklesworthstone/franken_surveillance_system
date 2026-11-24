@@ -79,6 +79,7 @@ impl Fixture {
         })
     }
 
+    #[allow(clippy::result_large_err)]
     fn select(&self, query: Range<u64>) -> Result<RetainedMovieSelection, FileIngestError> {
         self.retained.select_movie_interval(
             &self.deployment,

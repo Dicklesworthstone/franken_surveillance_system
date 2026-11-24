@@ -40,6 +40,7 @@ fn compile(spec: RectificationSpec) -> Test<RectificationPlan> {
         &mut WorkBudget::new(FEATURE_WORK),
     )?)
 }
+#[allow(clippy::result_large_err)]
 fn extract_owned(
     imported: &mut Imported,
     source: RecordedLocalizationSource,
@@ -602,9 +603,9 @@ fn rectified_avc_and_hevc_keep_selected_coding_identity_and_validate_the_complet
             }),
         )?;
         let selected = 1;
-        let source;
+
         let mut expected = None;
-        if hevc {
+        let source = if hevc {
             let request = RecordedH265Request {
                 import_identity: imported.identity,
                 first_segment: 0,
@@ -624,10 +625,10 @@ fn rectified_avc_and_hevc_keep_selected_coding_identity_and_validate_the_complet
                     ));
                 }
             }
-            source = RecordedLocalizationSource::H265 {
+            RecordedLocalizationSource::H265 {
                 request,
                 segment: selected,
-            };
+            }
         } else {
             let request = RecordedH264Request {
                 import_identity: imported.identity,
@@ -648,11 +649,11 @@ fn rectified_avc_and_hevc_keep_selected_coding_identity_and_validate_the_complet
                     ));
                 }
             }
-            source = RecordedLocalizationSource::H264 {
+            RecordedLocalizationSource::H264 {
                 request,
                 segment: selected,
-            };
-        }
+            }
+        };
         let ([width, height], luma, receipt) = expected.ok_or("selected video frame")?;
         let intrinsics = PinholeIntrinsics::new(
             width,

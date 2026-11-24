@@ -189,6 +189,7 @@ source_error!(fss_object::SpoolError);
 
 /// Retained owner configuration, distinct from replay execution authority.
 #[derive(Clone, Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum LongEventReplayRecipe {
     /// Whole-recording image-zone entry recipe. Codec/read safety ceilings were not all retained
     /// by this historical format; those are current caller bounds, explicitly marked by the type.
@@ -670,6 +671,7 @@ fn review_basis_error(error: crate::event_review::ReviewError) -> LongEventRepla
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn load_native_profile(
     deployment: &dyn RetainedSource,
     event: EventHypothesis,

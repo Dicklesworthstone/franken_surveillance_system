@@ -325,7 +325,7 @@ fn compile(sources: &Sources<'_>) -> Result<Blueprint, DeploymentSessionError> {
     ];
     let applicability_json = format!(
         "{{\"calibrationGenerations\":[],\"deployment\":{},\"deviceTuples\":[],\"exclusions\":{},\"modelGenerations\":[],\"preconditions\":{},\"timeConditions\":{}}}",
-        json_strings(&[sources.mission.site_lineage.clone()]),
+        json_strings(std::slice::from_ref(&sources.mission.site_lineage)),
         json_strings(&exclusions),
         json_strings(&preconditions),
         json_strings(&[format!(
@@ -458,6 +458,7 @@ fn compile(sources: &Sources<'_>) -> Result<Blueprint, DeploymentSessionError> {
 }
 
 /// Called while the feedback command still holds its admitted session journal lock.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn capture(
     root: &Path,
     request: &FeedbackRequest,
@@ -766,7 +767,9 @@ pub use inspect::{
 
 mod inventory;
 pub use inventory::MAX_CAPTURED_LEARNING;
-pub(super) use inventory::{CapturedLearningInventory, captured_inventory};
+pub(super) use inventory::{
+    CapturedLearningInventory, captured_inventory, preflight_publication_inventory,
+};
 
 mod recovery;
 pub(crate) use recovery::{decode_experience, verify_recovery_closure};

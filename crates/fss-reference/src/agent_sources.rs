@@ -95,6 +95,7 @@ pub struct SourcesQueryRequest {
 
 impl SourcesQueryRequest {
     /// Reject scalar and cursor errors before opening any deployment path.
+    #[allow(clippy::result_large_err)]
     pub fn validate(&self) -> Result<(), SourcesQueryError> {
         if !(1..=MAX_SOURCES_QUERY_ENTRIES).contains(&self.max_entries) {
             return Err(SourcesQueryError::InvalidRequest(
@@ -152,6 +153,7 @@ impl Default for SourcesQueryLimits {
 
 impl SourcesQueryLimits {
     /// Reject zero and widened bounds before filesystem access.
+    #[allow(clippy::result_large_err)]
     pub fn validate(&self) -> Result<(), SourcesQueryError> {
         let ceiling = Self::default();
         for (value, maximum) in [
@@ -192,6 +194,7 @@ impl SourcesQueryLimits {
     }
 
     /// Admitted bytes and read attempts; not a syscall, CPU or observed-latency claim.
+    #[allow(clippy::result_large_err)]
     pub fn allowance(&self) -> Result<BudgetVector, SourcesQueryError> {
         self.validate()?;
         Ok(BudgetVector::from_quantities(BudgetQuantitiesSpec {
@@ -356,6 +359,7 @@ impl std::error::Error for SourcesQueryError {}
 /// complete protected snapshot are verified before filters; failed verification refuses the
 /// entire page. Canonical transports admit AgentQuery, the exact limits and a live deadline
 /// before constructing the supplied replay context. The principal alone is an audit label.
+#[allow(clippy::result_large_err)]
 pub fn query_sources(
     root: &Path,
     request: &SourcesQueryRequest,

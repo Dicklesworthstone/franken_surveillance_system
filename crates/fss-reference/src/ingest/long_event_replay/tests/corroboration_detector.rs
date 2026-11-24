@@ -559,10 +559,12 @@ fn rehashed_ground_entry_and_following_class_reject_another_valid_same_camera_ca
 
 #[test]
 fn rehashed_global_allowance_and_head_work_understatements_cannot_verify() -> Test {
-    let mut limits = PackageDetectLimits::default();
     // Spend a nonzero head charge, then refuse the still-incomplete head. That spent work
     // remains bound across cameras and cannot disappear just because no result completed.
-    limits.detection_work_units = 1;
+    let limits = PackageDetectLimits {
+        detection_work_units: 1,
+        ..PackageDetectLimits::default()
+    };
     let (mut f, original) = trained_with_limits("trained-global-understatement", limits)?;
     for head in [false, true] {
         let mut edits = Vec::new();

@@ -75,6 +75,7 @@ pub enum StartPreflight {
 
 /// Stopped startup retains its remaining effect and archive owners.
 #[must_use = "retain or reconcile the returned effect and archive owners"]
+#[allow(clippy::large_enum_variant)]
 pub enum StartRefusal<'a> {
     /// No camera request was sent.
     Preflight {
@@ -121,6 +122,7 @@ fn valid_policy(retention: ContentDigest, policy: av_owned_sink::BootstrapPolicy
 /// `av_recovered_startup` verification before any camera request. Preflight is
 /// not a space reservation, retention grant, sender authentication, effect
 /// settlement, or guarantee against later failure.
+#[allow(clippy::too_many_arguments)]
 pub async fn start<'a, 'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
     task: &'scope TaskCx<'task>,
     cx: &'scope Cx,
@@ -147,6 +149,7 @@ pub async fn start<'a, 'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
 
 /// Start A/V capture with caller-owned custody of the untrusted response.
 /// A custody failure retains the permit and never authorizes a retry.
+#[allow(clippy::too_many_arguments)]
 pub async fn start_with_response<'a, 'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
     task: &'scope TaskCx<'task>,
     cx: &'scope Cx,
@@ -397,6 +400,7 @@ pub struct Retired {
 
 /// Refusal retains every owner at the stage where retirement stopped.
 #[must_use = "retain or reconcile all returned owners"]
+#[allow(clippy::large_enum_variant)]
 pub enum RetirementRefusal {
     /// Admission is still active, a worker is not idle, or bindings disagree.
     NotDrained(Parts),
@@ -433,6 +437,7 @@ impl Parts {
     /// Prepare the stopped pipeline tail and exact collector-source copies.
     /// No I/O occurs. The collector retains its originals; a prepared plan
     /// is not a publication receipt and does not assert gap-free capture.
+    #[allow(clippy::result_large_err)]
     pub fn prepare_tail_retirement(self) -> Result<Retired, RetirementRefusal> {
         if !self.halted
             || self.source_armed
@@ -695,6 +700,7 @@ impl Driver {
     }
 
     /// Recover every owner after source work has drained.
+    #[allow(clippy::result_large_err)]
     pub fn into_parts(self) -> Result<Parts, Self> {
         if self.parts.source.is_running() {
             Err(self)

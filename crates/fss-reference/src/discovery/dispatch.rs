@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! DeviceCandidate → adapter dispatch + owner-auth requirements (DISC-6,
 //! fss-yodhk.6).
 //!
@@ -6,11 +7,12 @@
 //! recommendation never grants effect authority (AGENTS.md); unsupported and
 //! blocked paths carry typed reasons, never null.
 //!
-//! Registry rows referenced: ADP-WYZE-V4-LAB-001 (TUTK NEW), ADP-AOSU-
-//! P1MAX-LAB-001 (Tuya/AOSU), ADP-RTSP-001 / ADP-ONVIF-T-001 (standards),
-//! ADP-UVC-001 (local USB), plus the import-only fallback.
+//! Registry rows referenced: native `unifi_direct::protect_live` (UniFi
+//! Protect), native Tapo local ONVIF/RTSP/DS-JSON, ADP-WYZE-V4-LAB-001 (TUTK
+//! NEW), ADP-AOSU-P1MAX-LAB-001 (Tuya/AOSU), ADP-RTSP-001 / ADP-ONVIF-T-001
+//! (standards), ADP-UVC-001 (local USB), plus the import-only fallback.
 
-use crate::discovery::fingerprint::{Brand, BrandConfidence, Confidence};
+use crate::discovery::fingerprint::{Brand, BrandConfidence, Confidence, Signal};
 
 /// One onboarding path recommendation with its requirements.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -28,6 +30,10 @@ pub struct AdapterDispatch {
 /// Adapter paths reachable from a fingerprinted brand.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AdapterPath {
+    /// Native pure-Rust UniFi Protect adapter (`unifi_direct::protect_live` + RTSP/RTSPS).
+    UniFiProtect,
+    /// Native pure-Rust TP-Link Tapo local camera adapter (ONVIF+RTSP / local DS-JSON).
+    Tapo,
     /// ADP-WYZE-V4-LAB-001: TUTK NEW protocol (Wyze-class).
     TutkNew,
     /// ADP-AOSU-P1MAX-LAB-001: Tuya/AOSU homebase path.
@@ -43,6 +49,10 @@ pub enum AdapterPath {
 /// The owner-auth ingredient each brand needs (exact, never vague).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AuthIngredient {
+    /// UniFi Protect: owner-authorized direct camera or Protect RTSP/RTSPS credentials.
+    UniFiProtectCredentials,
+    /// TP-Link Tapo: owner-authorized Tapo camera account credentials (ONVIF/RTSP or local HTTPS).
+    TapoLocalCredentials,
     /// Wyze: UID + ENR from the owner account inventory.
     WyzeUidEnr,
     /// AOSU: device local_key (via fresh app login capture or IPA toolchain).
@@ -64,6 +74,18 @@ pub enum Readiness {
     Unavailable,
 }
 
+fn has_rtsp_surface(signals: &[Signal]) -> bool {
+    signals.iter().any(|s| match s {
+        Signal::RtspBanner { .. } => true,
+        Signal::PortSignature(ports) => ports.contains(&554) || ports.contains(&8554),
+        _ => false,
+    })
+}
+
+fn has_tutk_listener(signals: &[Signal]) -> bool {
+    signals.iter().any(|s| matches!(s, Signal::TutkListener(_)))
+}
+
 /// Dispatches one fingerprinted candidate to its adapter path.
 ///
 /// Confidence gates the mapping: `Possible` (no supporting signal) never
@@ -73,12 +95,35 @@ pub enum Readiness {
 pub fn dispatch(brand: &BrandConfidence) -> AdapterDispatch {
     let strong = brand.confidence >= Confidence::Likely;
     match (&brand.brand, strong) {
-        (Brand::Tutk, true) => AdapterDispatch {
-            adapter: AdapterPath::TutkNew,
+        (Brand::UniFiProtect, true) => AdapterDispatch {
+            adapter: AdapterPath::UniFiProtect,
             readiness: Readiness::NeedsIngredient,
-            missing: Some(AuthIngredient::WyzeUidEnr),
+            missing: Some(AuthIngredient::UniFiProtectCredentials),
             blocked_reason: None,
         },
+        (Brand::Tapo, true) => AdapterDispatch {
+            adapter: AdapterPath::Tapo,
+            readiness: Readiness::NeedsIngredient,
+            missing: Some(AuthIngredient::TapoLocalCredentials),
+            blocked_reason: None,
+        },
+        (Brand::Tutk, true) => {
+            if has_rtsp_surface(&brand.signals) && !has_tutk_listener(&brand.signals) {
+                AdapterDispatch {
+                    adapter: AdapterPath::Standards,
+                    readiness: Readiness::NeedsIngredient,
+                    missing: Some(AuthIngredient::StandardsEndpointCredentials),
+                    blocked_reason: None,
+                }
+            } else {
+                AdapterDispatch {
+                    adapter: AdapterPath::TutkNew,
+                    readiness: Readiness::NeedsIngredient,
+                    missing: Some(AuthIngredient::WyzeUidEnr),
+                    blocked_reason: None,
+                }
+            }
+        }
         (Brand::Tuya, true) => AdapterDispatch {
             adapter: AdapterPath::TuyaAosu,
             readiness: Readiness::NeedsIngredient,
@@ -114,6 +159,22 @@ pub fn dispatch(brand: &BrandConfidence) -> AdapterDispatch {
             readiness: Readiness::Unavailable,
             missing: None,
             blocked_reason: Some("no supporting fingerprint signal; a guess never dispatches"),
+        },
+        (Brand::UniFiProtect, false) => AdapterDispatch {
+            adapter: AdapterPath::ImportOnly,
+            readiness: Readiness::Unavailable,
+            missing: Some(AuthIngredient::UniFiProtectCredentials),
+            blocked_reason: Some(
+                "OUI-only Ubiquiti host (Possible): verify UDP-10001 TLV / Protect ports before onboarding",
+            ),
+        },
+        (Brand::Tapo, false) => AdapterDispatch {
+            adapter: AdapterPath::ImportOnly,
+            readiness: Readiness::Unavailable,
+            missing: Some(AuthIngredient::TapoLocalCredentials),
+            blocked_reason: Some(
+                "OUI-only TP-Link host (Possible): verify Tapo camera ports (443+8800 / 2020 / 554) before onboarding",
+            ),
         },
         // Possible-confidence TUTK: the OUI suggests the family, but Wyze also
         // makes non-camera devices and credential-less corroboration is
@@ -151,6 +212,44 @@ mod tests {
     }
 
     #[test]
+    fn unifi_protect_dispatches_to_native_adapter_never_import_only() {
+        let c = confidence(
+            Brand::UniFiProtect,
+            Confidence::Confirmed,
+            vec![
+                Signal::OuiVendor("Ubiquiti Inc".into()),
+                Signal::UniFiDiscovery {
+                    model: Some("UVC G4 Instant".into()),
+                    firmware: Some("UVC.SAV530q.v4.72.38.67".into()),
+                },
+            ],
+        );
+        let d = dispatch(&c);
+        assert_eq!(d.adapter, AdapterPath::UniFiProtect);
+        assert_eq!(d.readiness, Readiness::NeedsIngredient);
+        assert_eq!(d.missing, Some(AuthIngredient::UniFiProtectCredentials));
+        assert_eq!(d.blocked_reason, None);
+    }
+
+    #[test]
+    fn tapo_dispatches_to_tapo_credentials_never_resideo() {
+        let c = confidence(
+            Brand::Tapo,
+            Confidence::Likely,
+            vec![
+                Signal::OuiVendor("TP-Link Systems Inc.".into()),
+                Signal::PortSignature(vec![443, 8800]),
+            ],
+        );
+        let d = dispatch(&c);
+        assert_eq!(d.adapter, AdapterPath::Tapo);
+        assert_eq!(d.readiness, Readiness::NeedsIngredient);
+        assert_eq!(d.missing, Some(AuthIngredient::TapoLocalCredentials));
+        assert_ne!(d.missing, Some(AuthIngredient::ResideoWebCredentials));
+        assert_eq!(d.blocked_reason, None);
+    }
+
+    #[test]
     fn wyze_dispatches_to_tutk_with_exact_ingredient() {
         let c = confidence(
             Brand::Tutk,
@@ -162,6 +261,25 @@ mod tests {
         assert_eq!(d.readiness, Readiness::NeedsIngredient);
         assert_eq!(d.missing, Some(AuthIngredient::WyzeUidEnr));
         assert_eq!(d.blocked_reason, None);
+    }
+
+    #[test]
+    fn wyze_with_open_rtsp_port_554_dispatches_to_standards_rtsp() {
+        let c = confidence(
+            Brand::Tutk,
+            Confidence::Likely,
+            vec![
+                Signal::OuiVendor("Wyze Labs Inc".into()),
+                Signal::PortSignature(vec![554]),
+            ],
+        );
+        let d = dispatch(&c);
+        assert_eq!(d.adapter, AdapterPath::Standards);
+        assert_eq!(d.readiness, Readiness::NeedsIngredient);
+        assert_eq!(
+            d.missing,
+            Some(AuthIngredient::StandardsEndpointCredentials)
+        );
     }
 
     #[test]

@@ -737,6 +737,7 @@ impl Owner<'_, '_, '_> {
     /// A caller-owned trace preserves the result across an interrupted accept.
     /// A previous-controller readback permits waiting for a connection, but
     /// the committed handoff remains unresolved and must be reconciled.
+    #[allow(clippy::too_many_arguments)]
     pub async fn setup_and_accept<'scope, 'task, 'policy, IO: AsyncRead + AsyncWrite + Unpin>(
         &mut self,
         listener: &mut controller_listener::Listener<'scope, 'task, 'policy>,

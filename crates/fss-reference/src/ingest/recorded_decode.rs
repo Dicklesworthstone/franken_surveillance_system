@@ -1235,7 +1235,7 @@ fn inband_parameter_sets(
     source: InbandBootstrapRead<'_>,
     entry: (usize, usize),
     codec: fss_container::demux::VideoCodec,
-    mut budget: Option<&mut video_budget::RecordedVideoDecodeBudget>,
+    budget: Option<&mut video_budget::RecordedVideoDecodeBudget>,
     cx: &ReplayCx,
 ) -> Result<
     (
@@ -1252,7 +1252,7 @@ fn inband_parameter_sets(
         cx,
         source.source_budget,
     )?;
-    if let Some(budget) = budget.as_deref_mut() {
+    if let Some(budget) = budget {
         // The new profile parses both byte sets at open, before feeding the bounded tuple to
         // the codec. Existing static imports retain their previous reservation behavior.
         budget.reserve(

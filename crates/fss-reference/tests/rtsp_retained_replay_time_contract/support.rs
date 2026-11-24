@@ -41,7 +41,7 @@ pub(super) fn content(seconds: u32, fraction: u32, flags: u8, cseq: u8) -> [u8; 
 }
 
 pub(super) fn raw_extension(wire: &mut Vec<u8>, profile: u16, bytes: &[u8]) -> TestResult {
-    if wire.len() < 12 || wire[0] & 0x10 != 0 || bytes.len() % 4 != 0 {
+    if wire.len() < 12 || wire[0] & 0x10 != 0 || !bytes.len().is_multiple_of(4) {
         return Err("fixture needs an unextended RTP packet and complete extension words".into());
     }
     let at = 12 + usize::from(wire[0] & 15) * 4;
@@ -138,6 +138,7 @@ fn drain_avc(
     Err("timestamp fixture native poll bound".into())
 }
 
+#[allow(clippy::large_enum_variant)]
 enum Original {
     Avc(PreparedRecording),
     Hevc(PreparedHevcRecording),

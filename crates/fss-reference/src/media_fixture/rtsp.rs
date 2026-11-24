@@ -533,8 +533,8 @@ pub fn generate_transcript_clean(
         bytes: format!(
             // ssrc is the server SSRC owner binding in the shipped client's grammar:
             // zero-padded 8-digit hex (client.rs transport_binding parses radix 16).
-            "RTSP/1.0 200 OK\r\nCSeq: 3\r\nSession: {sid};timeout=60\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1;ssrc={ssrc}\r\n\r\n",
-            ssrc = format!("{:08x}", params.ssrc)
+            "RTSP/1.0 200 OK\r\nCSeq: 3\r\nSession: {sid};timeout=60\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1;ssrc={:08x}\r\n\r\n",
+            params.ssrc
         )
         .into_bytes(),
     });
@@ -871,8 +871,8 @@ pub fn generate_transcript_rtcp_rsize(
         bytes: format!(
             // ssrc is the server SSRC owner binding in the shipped client's grammar:
             // zero-padded 8-digit hex (client.rs transport_binding parses radix 16).
-            "RTSP/1.0 200 OK\r\nCSeq: 3\r\nSession: {sid};timeout=60\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1;ssrc={ssrc}\r\n\r\n",
-            ssrc = format!("{:08x}", params.ssrc)
+            "RTSP/1.0 200 OK\r\nCSeq: 3\r\nSession: {sid};timeout=60\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1;ssrc={:08x}\r\n\r\n",
+            params.ssrc
         )
         .into_bytes(),
     });

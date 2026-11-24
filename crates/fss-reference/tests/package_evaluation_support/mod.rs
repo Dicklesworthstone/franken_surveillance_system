@@ -26,6 +26,7 @@ use fss_reference::ingest::{
 };
 use fss_reference::{DeploymentLimits, ReferenceDeployment, ReplayCx, ScalarExecCx};
 
+#[allow(clippy::duplicate_mod)]
 #[path = "../package_zone_support/mod.rs"]
 mod numeric;
 

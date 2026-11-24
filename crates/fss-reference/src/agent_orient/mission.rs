@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::agent_session::mission::{MissionPlanCriterion, MissionRevision, same_generations};
-use fss_core::{DigestAlgorithm, MissionLifecycleState};
+use fss_core::{AgentView, DigestAlgorithm, MissionLifecycleState};
 
 const CLAIM: &str = "claim:session:requested-mission";
 const COMPLETION_UNKNOWN: &str = "Mission success, failure, stop criteria and terminal proof have not been supplied; completion is unassessed.";
@@ -118,18 +118,33 @@ pub(super) fn project(
         valid_until: None,
         state_basis: None,
     })?;
+    let heartbeat = request.view == AgentView::Pulse;
     let mut projection = Projection {
         state: None,
         objective_id: Some(format!("objective:mission:{}", mission.record_digest)),
         cells: vec![retained],
         proof_roots: BTreeSet::from([mission.record_digest]),
-        // Workspace unknowns are conserved. This states the record format's permanent boundary,
-        // without inventing volatile success, progress, deadlines or terminal-state claims.
-        unknown: vec![COMPLETION_UNKNOWN.to_owned()],
-        protected_summary: Some(format!(
-            "Requested mission: {}\nRequested objective: {}",
-            mission.mission, mission.objective,
-        )),
+        // Workspace unknowns are conserved. In `Pulse` heartbeat mode keep the mandatory
+        // mission binding and unassessed-completion boundary inside `protected_summary` so
+        // `session.open`/`session.orient --view pulse` fits within its 300-token cap without
+        // paying a separate 150-byte hashed-item envelope; `Brief` and `EpistemicMap` keep
+        // the full literal prose and separate `unknown` item unchanged.
+        unknown: if heartbeat {
+            Vec::new()
+        } else {
+            vec![COMPLETION_UNKNOWN.to_owned()]
+        },
+        protected_summary: Some(if heartbeat {
+            format!(
+                "Mission: {}\nObjective: {}",
+                mission.mission, mission.objective,
+            )
+        } else {
+            format!(
+                "Requested mission: {}\nRequested objective: {}",
+                mission.mission, mission.objective,
+            )
+        }),
     };
     if let Some(progress) = &binding.mission_progress {
         projection.unknown = vec!["The original prose request has no executable success/failure/stop/proof predicates; completion is unassessed.".to_owned()];
@@ -150,7 +165,8 @@ pub(super) fn project(
             }
             if let Some(assessment) = revision.assessment() {
                 if assessment.anchor != snapshot.anchor
-                    || assessment.evidence_time != crate::deployment_session::evidence_now(snapshot)
+                    || assessment.evidence_time != revision.recorded_at()
+                    || assessment.evidence_time < crate::deployment_session::evidence_now(snapshot)
                     || assessment.effect_journal_present != snapshot.effect_journal_present
                     || assessment.effect_journal_root != snapshot.effect_journal_root
                     || assessment.effect_record_count

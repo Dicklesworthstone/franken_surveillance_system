@@ -414,16 +414,15 @@ fn validate_finish(plan: &CampaignPlan, ordinal: u32, finish: &CampaignFinish) -
             return Err(CampaignHistoryError::Metadata);
         }
     }
-    if let Some(pin) = bindings.source_pin {
-        if !sha(pin.scope) || !sha(pin.head)
+    if let Some(pin) = bindings.source_pin
+        && (!sha(pin.scope) || !sha(pin.head)
             || attempt.source.as_ref().is_none_or(|source| source.scope != pin.scope)
             || (pin.datagrams == 0 && (pin.head != pin.scope || pin.bytes != 0))
             // The native source owner retains malformed zero-byte datagrams too. A nonempty
             // observed prefix can therefore have zero payload bytes without being an empty pin.
-            || (pin.datagrams != 0 && pin.head == pin.scope)
-        {
-            return Err(CampaignHistoryError::Mismatch);
-        }
+            || (pin.datagrams != 0 && pin.head == pin.scope))
+    {
+        return Err(CampaignHistoryError::Mismatch);
     }
     let picture_valid = native.durable_pictures != 0
         && if plan.duration_limited {

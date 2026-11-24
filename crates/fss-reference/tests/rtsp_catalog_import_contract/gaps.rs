@@ -71,7 +71,7 @@ fn explicit_gap_profile_preserves_native_time_and_cold_decoder_boundaries() -> T
         );
         let receipt = run(&mut f, &request)?;
         assert_eq!(receipt.pages, if pages { 2 } else { 1 });
-        assert_eq!(receipt.decode_gaps, [14_400..21_600]);
+        assert_eq!(receipt.decode_gaps, vec![14_400..21_600]);
         assert_eq!(receipt.catalog.decode_interval, 0..36_000);
         assert_eq!(receipt.catalog.import.frames, 8);
         f.verify_fragment_remux(&receipt.catalog)?;
@@ -291,6 +291,6 @@ fn gap_pages_keep_exact_order_unique_pins_and_cumulative_limits() -> Test {
     }
     let receipt = run(&mut f, &RtspGappedCatalogImportRequest::Pages(original))?;
     assert_eq!(receipt.pages, 2);
-    assert_eq!(receipt.decode_gaps, [14_400..21_600]);
+    assert_eq!(receipt.decode_gaps, vec![14_400..21_600]);
     Ok(())
 }

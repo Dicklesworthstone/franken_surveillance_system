@@ -321,10 +321,15 @@ pub struct MotionRefusal {
 #[derive(Debug)]
 pub enum MotionWrite {
     /// Bytes were accepted locally; retain the effect for reconciliation.
-    Written { permit: CommittedEffect },
+    Written {
+        /// One-use committed effect permit retained for reconciliation.
+        permit: CommittedEffect,
+    },
     /// Some bytes may have been sent; the session was fenced.
     Indeterminate {
+        /// One-use committed effect permit retained for reconciliation.
         permit: CommittedEffect,
+        /// Session retirement witness from fencing the controller.
         controller: Retirement,
     },
 }
@@ -1182,16 +1187,15 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
         if !self.admission_current() {
             return Ok(self.stop(Stop::AdmissionRevoked));
         }
-        if let Some(inbox) = self.startup_events {
-            if self.capture_events {
-                if let Some(frame) = inbox.take() {
-                    return Ok(if frame.kind() == super::events::Kind::StartupRequest {
-                        Step::StartupRequest(frame)
-                    } else {
-                        Step::CameraEvent(frame)
-                    });
-                }
-            }
+        if let Some(inbox) = self.startup_events
+            && self.capture_events
+            && let Some(frame) = inbox.take()
+        {
+            return Ok(if frame.kind() == super::events::Kind::StartupRequest {
+                Step::StartupRequest(frame)
+            } else {
+                Step::CameraEvent(frame)
+            });
         }
         if self.controller.has_pending_event_reply() {
             return Ok(Step::EventReplyBackpressure);

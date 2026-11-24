@@ -105,13 +105,10 @@ fn literal_goal_is_critical_context_without_rendering_success_as_mission_success
     assert!(oriented.objective.stop_conditions.is_empty());
     assert!(oriented.objective.terminal_proof.is_empty());
     assert_eq!(oriented.objective.allowed_actions, vec!["session.orient"]);
-    assert!(
-        oriented
-            .objective
-            .hard_constraints
-            .iter()
-            .any(|line| line.starts_with("Read-only:"))
-    );
+    assert!(oriented.objective.hard_constraints.iter().any(|line| {
+        line == "Situation compilation does not create, write, or repair deployment files. \
+                 The enclosing session operation may hold a temporary journal lock."
+    }));
     let summary = oriented
         .publication
         .context_pack

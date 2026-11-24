@@ -543,8 +543,12 @@ fn owner_mismatch_and_cancellation_never_release_a_complete_report() -> Test {
             }
             false
         };
-        let late =
-            ImmutableRetainedSource::open_cancellable(root, read_limits(), &cx, &cancel_at_final_read)?;
+        let late = ImmutableRetainedSource::open_cancellable(
+            root,
+            read_limits(),
+            &cx,
+            &cancel_at_final_read,
+        )?;
         let opening = late.usage();
         armed.store(true, Ordering::SeqCst);
         assert!(matches!(

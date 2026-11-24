@@ -13,6 +13,7 @@ use fss_runtime::{
 use super::{archive, metered::MeteredClock, video_owned_sink, video_still};
 
 /// Original source retained while one still is produced.
+#[allow(clippy::large_enum_variant)]
 pub enum Source {
     /// Source and mappings were checked by an archive read.
     Recovered(archive::RecoveredUnknownTimeVideoClip),
@@ -28,6 +29,7 @@ impl Source {
         }
     }
     /// Return the original recovered clip or the unchanged alternate source.
+    #[allow(clippy::result_large_err)]
     pub fn into_recovered(self) -> Result<archive::RecoveredUnknownTimeVideoClip, Self> {
         match self {
             Self::Recovered(value) => Ok(value),
@@ -35,6 +37,7 @@ impl Source {
         }
     }
     /// Return the original publication or the unchanged alternate source.
+    #[allow(clippy::result_large_err)]
     pub fn into_published(self) -> Result<video_owned_sink::Published, Self> {
         match self {
             Self::Published(value) => Ok(value.into_publication()),
@@ -93,6 +96,7 @@ pub enum StartError {
 
 /// Semantic result after the blocking work drained.
 #[must_use]
+#[allow(clippy::large_enum_variant)]
 pub enum Outcome {
     /// Work was not started; source remains in the worker.
     NotStarted,
@@ -140,6 +144,7 @@ pub struct Worker {
 }
 impl Worker {
     /// Bind source and bounded policy without I/O; refusal returns all owners.
+    #[allow(clippy::result_large_err)]
     pub fn new(parts: Parts) -> Result<Self, Parts> {
         if parts.limits.validate().is_err()
             || !(1..=100).contains(&parts.quality)

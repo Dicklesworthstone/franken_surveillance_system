@@ -1,6 +1,10 @@
 #![forbid(unsafe_code)]
 //! Bounded RTSP wire -> negotiated RTP/RTCP -> loss-aware AVC picture integration.
 
+use super::client::inband::{
+    H264InbandError, H264InbandSync, H264SyncOutcome, InbandSyncLimits, ParameterSetOrigin,
+    RtspIntakeTelemetry,
+};
 use super::client::{
     ClientChannel, ClientCloseReceipt, ClientCommand, ClientConfig, ClientError, ClientProgress,
     ClientRequest, ClientState, RtspClientSession,
@@ -44,6 +48,9 @@ pub enum AvcClientError {
     StreamBinding,
     /// Server-initiated requests have no admitted handling contract.
     ServerRequest,
+    /// Bounded in-band parameter-set acquisition exhausted its packet, byte, or time budget
+    /// (or reached EOF) without observing a valid SPS + PPS + IDR sync point.
+    ParameterSetSyncTimeout,
     /// Admission is closed; reconnect needs a new connection and stream epoch.
     Closed,
 }
@@ -178,6 +185,11 @@ pub struct RtspAvcClient {
     parser: RtspParser,
     sender: SenderBinding,
     limits: AvcReceiveLimits,
+    inband_limits: InbandSyncLimits,
+    inband_sync: Option<H264InbandSync>,
+    parameter_set_origin: Option<ParameterSetOrigin>,
+    pre_sync_discarded: u64,
+    companion_packets_discarded: u64,
     video: Option<AvcReceiver>,
     events: std::vec::IntoIter<RtspEvent>,
     event_time_ns: u64,
@@ -210,16 +222,23 @@ impl RtspAvcClient {
             return Err(AvcClientError::StreamBinding);
         }
         limits.syntax.validate().map_err(AvcClientError::Syntax)?;
+        let mut parser = RtspParser::with_limits(RtspLimits {
+            max_line_bytes: 2_048,
+            max_headers: 32,
+            max_body_bytes: 65_536,
+            max_interleaved_bytes: 65_535,
+        });
+        parser.set_lossy_nonframing_headers(true);
         Ok(Self {
             session: RtspClientSession::new(config).map_err(AvcClientError::Session)?,
-            parser: RtspParser::with_limits(RtspLimits {
-                max_line_bytes: 2_048,
-                max_headers: 32,
-                max_body_bytes: 65_536,
-                max_interleaved_bytes: 65_535,
-            }),
+            parser,
             sender: SenderBinding::new(key, SsrcPolicy::Pinned),
             limits,
+            inband_limits: InbandSyncLimits::default(),
+            inband_sync: None,
+            parameter_set_origin: None,
+            pre_sync_discarded: 0,
+            companion_packets_discarded: 0,
             video: None,
             events: Vec::new().into_iter(),
             event_time_ns: 0,
@@ -230,6 +249,41 @@ impl RtspAvcClient {
             draining: false,
             closed: false,
         })
+    }
+    /// Opt in before DESCRIBE to acquire H.264 SPS/PPS in-band from RTP when SDP omits
+    /// `sprop-parameter-sets`. Default is strict SDP (`false`).
+    pub fn set_allow_inband_parameter_sets(&mut self, enabled: bool) -> Result<(), AvcClientError> {
+        self.session
+            .set_allow_inband_parameter_sets(enabled)
+            .map_err(AvcClientError::Session)
+    }
+    /// Override bounded pre-roll ceilings for in-band parameter-set acquisition before DESCRIBE.
+    pub fn set_inband_sync_limits(
+        &mut self,
+        limits: InbandSyncLimits,
+    ) -> Result<(), AvcClientError> {
+        if self.session.state() != ClientState::Idle || self.closed {
+            return Err(AvcClientError::Session(ClientError::State));
+        }
+        limits
+            .validate()
+            .map_err(|_| AvcClientError::Session(ClientError::Configuration))?;
+        self.inband_limits = limits;
+        Ok(())
+    }
+    /// Opt in before DESCRIBE to SETUP companion `m=audio` tracks and drain their interleaved packets.
+    pub fn set_setup_companion_tracks(&mut self, enabled: bool) -> Result<(), AvcClientError> {
+        self.session
+            .set_setup_companion_tracks(enabled)
+            .map_err(AvcClientError::Session)
+    }
+    /// Explicit provenance and pre-sync / companion-track discard counters.
+    pub fn intake_telemetry(&self) -> RtspIntakeTelemetry {
+        RtspIntakeTelemetry {
+            parameter_set_origin: self.parameter_set_origin,
+            pre_sync_discarded: self.pre_sync_discarded,
+            companion_packets_discarded: self.companion_packets_discarded,
+        }
     }
     /// Construct an untouched client with explicit pinned or learn-once sender policy.
     /// Automatic binding never changes the selected channel, payload, route or epoch.
@@ -372,6 +426,9 @@ impl RtspAvcClient {
         };
         for at in [
             self.partial_deadline_ns,
+            self.inband_sync
+                .as_ref()
+                .and_then(H264InbandSync::deadline_ns),
             self.video.as_ref().and_then(AvcReceiver::next_wake_ns),
         ] {
             wake = earlier(wake, at);
@@ -394,6 +451,9 @@ impl RtspAvcClient {
             }
             if self.partial_deadline_ns.is_some_and(|at| now >= at) {
                 return Ok(self.fault(AvcClientError::PartialTimeout, None));
+            }
+            if self.inband_sync.as_ref().is_some_and(|s| s.is_expired(now)) {
+                return Ok(self.fault(AvcClientError::ParameterSetSyncTimeout, None));
             }
         }
         if let Some(video) = &mut self.video {
@@ -420,9 +480,15 @@ impl RtspAvcClient {
                         Ok(progress) => {
                             if self.session.state() == ClientState::Ready
                                 && self.video.is_none()
+                                && self.inband_sync.is_none()
                                 && let Err(error) = self.configure_video()
                             {
                                 return Ok(self.fault(error, None));
+                            }
+                            if self.session.state() == ClientState::Playing
+                                && let Some(sync) = &mut self.inband_sync
+                            {
+                                sync.start(now);
                             }
                             if self.session.state() == ClientState::Closed {
                                 self.input_ended = true;
@@ -468,6 +534,9 @@ impl RtspAvcClient {
             if self.parser.buffered_bytes() != 0 {
                 return Ok(self.fault(AvcClientError::Truncated, None));
             }
+            if self.inband_sync.is_some() {
+                return Ok(self.fault(AvcClientError::ParameterSetSyncTimeout, None));
+            }
             self.draining = true;
             if let Some(video) = &mut self.video {
                 video.finish();
@@ -494,14 +563,31 @@ impl RtspAvcClient {
             .setup(self.session.server_ssrc())
             .map_err(|()| AvcClientError::StreamBinding)?;
         let media = self.session.media().ok_or(AvcClientError::StreamBinding)?;
-        let (sps, pps) = media.parameter_sets();
-        let sps = parse_sps(sps, self.limits.syntax).map_err(AvcClientError::Syntax)?;
-        let pps = parse_pps(pps, &sps, self.limits.syntax).map_err(AvcClientError::Syntax)?;
         let mode = if media.packetization_mode() == 0 {
             H264Mode::SingleNal
         } else {
             H264Mode::NonInterleaved
         };
+        if !media.has_parameter_sets() {
+            if !self.session.allow_inband_parameter_sets() {
+                return Err(AvcClientError::StreamBinding);
+            }
+            self.inband_sync = Some(
+                H264InbandSync::new(
+                    media.payload_type(),
+                    mode,
+                    self.limits.reorder.packet,
+                    self.limits.syntax,
+                    self.inband_limits,
+                )
+                .map_err(|_| AvcClientError::StreamBinding)?,
+            );
+            return Ok(());
+        }
+        let (sps, pps) = media.parameter_sets();
+        let sps = parse_sps(sps, self.limits.syntax).map_err(AvcClientError::Syntax)?;
+        let pps = parse_pps(pps, &sps, self.limits.syntax).map_err(AvcClientError::Syntax)?;
+        self.parameter_set_origin = Some(ParameterSetOrigin::SdpFmtp);
         // SDP syntax is still checked at SETUP. Without a sender assertion, only
         // the receiver's identity-dependent construction waits for selected RTP.
         let Some(key) = self.sender.key() else {
@@ -514,6 +600,17 @@ impl RtspAvcClient {
         Ok(())
     }
     fn frame(&mut self, source: InterleavedSource, now: u64) -> AvcClientPoll {
+        match self.session.is_companion_channel(source.channel, now) {
+            Ok(true) => {
+                self.companion_packets_discarded =
+                    self.companion_packets_discarded.saturating_add(1);
+                return AvcClientPoll::Pending {
+                    wake_at_ns: Some(now),
+                };
+            }
+            Ok(false) => {}
+            Err(error) => return self.fault(AvcClientError::Session(error), Some(source)),
+        }
         let channel = match self.session.admit_channel(source.channel, now) {
             Ok(channel) => channel,
             Err(error) => return self.fault(AvcClientError::Session(error), Some(source)),
@@ -528,6 +625,82 @@ impl RtspAvcClient {
             let validation = RtcpCompound::parse(&source.payload, self.limits.reorder.packet, mode)
                 .map(|c| c.packet_count());
             return AvcClientPoll::Rtcp { source, validation };
+        }
+        if self.inband_sync.is_some() {
+            let Some(media) = self.session.media() else {
+                return self.fault(AvcClientError::StreamBinding, Some(source));
+            };
+            let payload_type = media.payload_type();
+            let mode = if media.packetization_mode() == 0 {
+                H264Mode::SingleNal
+            } else {
+                H264Mode::NonInterleaved
+            };
+            if self.sender.key().is_none()
+                && self
+                    .sender
+                    .packet(&source.payload, payload_type, self.limits.reorder.packet)
+                    .is_err()
+            {
+                return self.fault(AvcClientError::StreamBinding, Some(source));
+            }
+            let Some(key) = self.sender.key() else {
+                return self.fault(AvcClientError::StreamBinding, Some(source));
+            };
+            let Some(mut sync) = self.inband_sync.take() else {
+                return self.fault(AvcClientError::StreamBinding, Some(source));
+            };
+            match sync.observe(
+                source.channel,
+                &source.payload,
+                source.received_ns,
+                now,
+                key.ssrc,
+            ) {
+                Ok(H264SyncOutcome::Awaiting) => {
+                    self.pre_sync_discarded = sync.pre_sync_discarded();
+                    self.inband_sync = Some(sync);
+                    return AvcClientPoll::Pending {
+                        wake_at_ns: Some(now),
+                    };
+                }
+                Ok(H264SyncOutcome::Synced { sps, pps, primer }) => {
+                    self.pre_sync_discarded = sync.pre_sync_discarded();
+                    self.parameter_set_origin = Some(ParameterSetOrigin::InbandRtp);
+                    let mut receiver = match AvcReceiver::new(
+                        key,
+                        payload_type,
+                        mode,
+                        self.limits,
+                        (*sps, *pps),
+                    ) {
+                        Ok(receiver) => receiver,
+                        Err(error) => {
+                            return self.fault(AvcClientError::Video(error), Some(source));
+                        }
+                    };
+                    if let Some(primer) = primer
+                        && let Err(error) =
+                            receiver.ingest_received(key, &primer.payload, primer.received_ns, now)
+                    {
+                        return self.fault(AvcClientError::Video(error), Some(source));
+                    }
+                    self.video = Some(receiver);
+                }
+                Err(error) => {
+                    self.pre_sync_discarded = sync.pre_sync_discarded();
+                    let reason = match error {
+                        H264InbandError::BudgetPackets
+                        | H264InbandError::BudgetBytes
+                        | H264InbandError::Timeout => AvcClientError::ParameterSetSyncTimeout,
+                        H264InbandError::Syntax(syntax) => AvcClientError::Syntax(syntax),
+                        H264InbandError::Limits
+                        | H264InbandError::MalformedRtp
+                        | H264InbandError::MalformedPacketization => AvcClientError::StreamBinding,
+                    };
+                    return self.fault(reason, Some(source));
+                }
+            }
         }
         if self.video.is_none() {
             let Some(media) = self.session.media() else {
@@ -601,6 +774,7 @@ impl RtspAvcClient {
         let partial_wire_bytes = self.parser.buffered_bytes();
         self.events = Vec::new().into_iter();
         self.retry = None;
+        self.inband_sync = None;
         self.parser.reset();
         self.partial_deadline_ns = None;
         self.closed = true;

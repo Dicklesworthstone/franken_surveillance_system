@@ -12,11 +12,7 @@ use fss_reference::reference_deployment::FAMILY_SENSOR_CAPSULE;
 /// Replace an already indexed envelope with a sparse payload beyond the format's ceiling.
 /// Keep its named digest intact so the specific caller limit, rather than a foreign filename,
 /// refuses it. No large test-side allocation or changed ledger authority is needed.
-fn oversized_payload(
-    f: &Fixture,
-    digest: ContentDigest,
-    maximum: usize,
-) -> TestResult<Vec<u8>> {
+fn oversized_payload(f: &Fixture, digest: ContentDigest, maximum: usize) -> TestResult<Vec<u8>> {
     let path = f.deployment.publisher().spool().object_path(digest);
     let original = fs::read(&path)?;
     assert!(original.len() >= SPOOL_OBJECT_HEADER_LEN);
@@ -32,7 +28,10 @@ fn oversized_payload(
 }
 
 fn restore(f: &Fixture, digest: ContentDigest, original: Vec<u8>) -> TestResult {
-    fs::write(f.deployment.publisher().spool().object_path(digest), original)?;
+    fs::write(
+        f.deployment.publisher().spool().object_path(digest),
+        original,
+    )?;
     Ok(())
 }
 

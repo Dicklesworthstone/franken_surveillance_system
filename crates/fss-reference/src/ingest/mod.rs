@@ -43,6 +43,7 @@ mod http_history_sources;
 pub mod http_history_watch;
 /// Exact frozen-model execution on retained decoded frames and durable model outputs.
 pub mod inference;
+pub mod live_corroborate;
 /// Whole-range MJPEG sampled dwell with bounded streaming perception and source-closed events.
 pub mod long_dwell;
 /// Source-backed native replay of committed whole-recording dwell events and screening.
@@ -56,10 +57,13 @@ pub mod long_watch;
 pub mod mjpeg;
 /// Offline source-preserving conversion of exact tensor weights into recorded models.
 pub mod model_import;
+pub mod model_pool;
 /// Finite native MPEG-TS import with original transport custody and exact reconstructed AVC/HEVC.
 pub mod mpeg_ts_import;
 /// Source-preserving offline ONNX import into verified RGB detector packages.
 pub mod onnx_package;
+/// Explicit OSD / static-overlay ignore masks and read-only corner-clock candidate proposals.
+pub mod osd_mask;
 /// Bounded, source-gap-aware pixel-change measurements over recorded frames.
 pub mod pixel_change;
 /// Owner-declared, approval-gated per-sensor privacy masks applied at retained decode.

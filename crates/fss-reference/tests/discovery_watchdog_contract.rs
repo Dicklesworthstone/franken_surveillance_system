@@ -166,7 +166,7 @@ fn silent_state_does_not_churn_but_counter_moves() {
         Some(WatchState::Silent { silent_for_ns }) => {
             assert_eq!(*silent_for_ns, 5 * MIN);
         }
-        other => assert!(false, "expected Silent, got {other:?}"),
+        other => panic!("expected Silent, got {other:?}"),
     }
 }
 

@@ -198,6 +198,7 @@ fn row_json(row: &ReportCatalogRow) -> String {
     )
 }
 
+#[allow(clippy::result_large_err)]
 pub(super) fn compile(
     snapshot: DeploymentSnapshot,
     request: &ReportCatalogRequest,

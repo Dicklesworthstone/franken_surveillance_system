@@ -143,10 +143,10 @@ impl Replay {
                                 OnvifMetadataStatus::FragmentPending => "fragment_pending",
                                 OnvifMetadataStatus::Complete => "complete",
                             });
-                            if let Some(document) = output.document {
-                                if let Some(stop) = self.document(document, source, config)? {
-                                    return Ok(Some(stop));
-                                }
+                            if let Some(document) = output.document
+                                && let Some(stop) = self.document(document, source, config)?
+                            {
+                                return Ok(Some(stop));
                             }
                         }
                         Err(failure) => {

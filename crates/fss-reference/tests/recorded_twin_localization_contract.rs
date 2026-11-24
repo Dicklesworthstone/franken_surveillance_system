@@ -619,10 +619,10 @@ fn avc_and_hevc_select_original_coding_segments_despite_display_reordering() -> 
         )?;
         let (twin, atlas, _) = setup([1; 32])?;
         let selected = 1;
-        let source;
+
         let mut order = Vec::new();
         let mut expected = None;
-        if hevc {
+        let source = if hevc {
             let request = RecordedH265Request {
                 import_identity: imported.identity,
                 first_segment: 0,
@@ -643,10 +643,10 @@ fn avc_and_hevc_select_original_coding_segments_despite_display_reordering() -> 
                     ));
                 }
             }
-            source = RecordedLocalizationSource::H265 {
+            RecordedLocalizationSource::H265 {
                 request,
                 segment: selected,
-            };
+            }
         } else {
             let request = RecordedH264Request {
                 import_identity: imported.identity,
@@ -668,11 +668,11 @@ fn avc_and_hevc_select_original_coding_segments_despite_display_reordering() -> 
                     ));
                 }
             }
-            source = RecordedLocalizationSource::H264 {
+            RecordedLocalizationSource::H264 {
                 request,
                 segment: selected,
-            };
-        }
+            }
+        };
         let mut sorted = order.clone();
         sorted.sort_unstable();
         assert_ne!(

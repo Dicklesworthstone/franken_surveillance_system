@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 //! Native retained report discovery, exact continuation and metadata-only custody boundaries.
 
+#[allow(clippy::duplicate_mod)]
 #[path = "package_evaluation_support/mod.rs"]
 mod package_support;
 mod qsr_observations_support;

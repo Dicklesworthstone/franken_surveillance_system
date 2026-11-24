@@ -41,6 +41,7 @@ use crate::{ReplayAdmission, ReplayCx};
 /// before returning. An incomplete journal tail, detected change, retraction or missing custody
 /// is refused; this inspection never repairs it or advances a `Committed` operation. These are
 /// bounded observations through JournalReadIo, not an exclusive or atomic filesystem snapshot.
+#[allow(clippy::result_large_err)]
 pub fn read_retained_webhook_evidence_from_root(
     root: &Path,
     operation_id: &OperationId,
@@ -63,6 +64,7 @@ pub fn read_retained_webhook_evidence_from_root(
 /// call consumes one storage operation. A deadline-bearing context
 /// additionally requires live `ReplayCx::with_admission` checks around cooperative I/O and
 /// before the final bounded verification pass, which does not call back into caller code.
+#[allow(clippy::result_large_err)]
 pub fn read_retained_webhook_evidence_from_root_with_io(
     io: &dyn JournalReadIo,
     root: &Path,
@@ -213,6 +215,7 @@ pub fn read_retained_webhook_evidence_from_root_with_io(
     Ok(Some(retained))
 }
 
+#[allow(clippy::result_large_err)]
 fn verify_linkage(
     ledger: &LedgerInspection,
     slot: &SlotName,
@@ -258,6 +261,7 @@ struct Reader<'a, G: ReplayAdmission> {
 }
 
 impl<G: ReplayAdmission> Reader<'_, G> {
+    #[allow(clippy::result_large_err)]
     fn admit_observation(&self) -> Result<(), WebhookRetentionError> {
         if self.final_verification {
             Ok(())
@@ -266,6 +270,7 @@ impl<G: ReplayAdmission> Reader<'_, G> {
         }
     }
 
+    #[allow(clippy::result_large_err)]
     fn charge_operation(&mut self) -> Result<(), WebhookRetentionError> {
         self.operations_left = self
             .operations_left
@@ -274,6 +279,7 @@ impl<G: ReplayAdmission> Reader<'_, G> {
         Ok(())
     }
 
+    #[allow(clippy::result_large_err)]
     fn metadata(
         &mut self,
         path: &Path,
@@ -289,6 +295,7 @@ impl<G: ReplayAdmission> Reader<'_, G> {
         }
     }
 
+    #[allow(clippy::result_large_err)]
     fn directory(&mut self, path: &Path) -> Result<(), WebhookRetentionError> {
         let metadata = self.metadata(path)?.ok_or(WebhookRetentionError::Custody)?;
         if metadata.is_file || metadata.is_symlink {
@@ -297,6 +304,7 @@ impl<G: ReplayAdmission> Reader<'_, G> {
         Ok(())
     }
 
+    #[allow(clippy::result_large_err)]
     fn scope(&mut self, path: &Path) -> Result<(), WebhookRetentionError> {
         // Refuse observed symlink ancestors in the exact layout-derived scope. JournalReadIo
         // owns the actual read capability; path metadata is not an atomic no-follow primitive.
@@ -317,6 +325,7 @@ impl<G: ReplayAdmission> Reader<'_, G> {
         Ok(())
     }
 
+    #[allow(clippy::result_large_err)]
     fn check_absent(&mut self, path: &Path) -> Result<(), WebhookRetentionError> {
         self.scope(path)?;
         if self.metadata(path)?.is_some() {
@@ -325,6 +334,7 @@ impl<G: ReplayAdmission> Reader<'_, G> {
         Ok(())
     }
 
+    #[allow(clippy::result_large_err)]
     fn absent(&mut self, path: &Path) -> Result<(), WebhookRetentionError> {
         self.check_absent(path)?;
         self.files.push(FileSnapshot {
@@ -336,6 +346,7 @@ impl<G: ReplayAdmission> Reader<'_, G> {
         Ok(())
     }
 
+    #[allow(clippy::result_large_err)]
     fn read(
         &mut self,
         path: &Path,
@@ -370,6 +381,7 @@ impl<G: ReplayAdmission> Reader<'_, G> {
         Ok(Some(bytes))
     }
 
+    #[allow(clippy::result_large_err)]
     fn optional(
         &mut self,
         path: &Path,
@@ -385,11 +397,13 @@ impl<G: ReplayAdmission> Reader<'_, G> {
         Ok(bytes)
     }
 
+    #[allow(clippy::result_large_err)]
     fn required(&mut self, path: &Path, maximum: usize) -> Result<Vec<u8>, WebhookRetentionError> {
         self.optional(path, maximum)?
             .ok_or(WebhookRetentionError::Custody)
     }
 
+    #[allow(clippy::result_large_err)]
     fn object(
         &mut self,
         publication: &Path,
@@ -426,6 +440,7 @@ impl<G: ReplayAdmission> Reader<'_, G> {
         Ok(decoded.payload().to_vec())
     }
 
+    #[allow(clippy::result_large_err)]
     fn revalidate(&mut self, files: &[FileSnapshot]) -> Result<(), WebhookRetentionError> {
         for file in files {
             if file.absence_only {
@@ -437,6 +452,7 @@ impl<G: ReplayAdmission> Reader<'_, G> {
         Ok(())
     }
 
+    #[allow(clippy::result_large_err)]
     fn finish(mut self) -> Result<(), WebhookRetentionError> {
         let files = std::mem::take(&mut self.files);
         self.revalidate(&files)?;

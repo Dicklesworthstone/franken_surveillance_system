@@ -896,6 +896,7 @@ pub struct RtspParser {
     discard_body_remaining: usize,
     poisoned: Option<PoisonCause>,
     recover_nonframing_utf8: bool,
+    lossy_nonframing_headers: bool,
 }
 
 impl Default for RtspParser {
@@ -919,6 +920,7 @@ impl RtspParser {
             discard_body_remaining: 0,
             poisoned: None,
             recover_nonframing_utf8: false,
+            lossy_nonframing_headers: false,
         }
     }
 
@@ -947,6 +949,18 @@ impl RtspParser {
     /// default is strict (poison on any non-UTF-8 header byte).
     pub fn set_recover_nonframing_utf8(&mut self, enabled: bool) {
         self.recover_nonframing_utf8 = enabled;
+    }
+
+    /// Tolerate non-UTF-8 (e.g., Latin-1) bytes in non-framing vendor header values
+    /// (such as `Server`, `User-Agent`, `Date`, or response reason phrases) by decoding
+    /// those values lossily instead of failing the RTSP message (fss-0i0ue).
+    ///
+    /// Framing, routing, URI, and security-critical headers (`Content-Length`, `CSeq`,
+    /// `Transport`, `Session`, `Authorization`, `Proxy-Authorization`, `Content-Base`,
+    /// `Content-Location`, `Location`, `RTP-Info`, `Range`, `Require`, `Content-Type`),
+    /// all header names, and request lines remain strictly UTF-8.
+    pub fn set_lossy_nonframing_headers(&mut self, enabled: bool) {
+        self.lossy_nonframing_headers = enabled;
     }
 
     fn declared_body_length(header_text: &str) -> DeclaredBody {
@@ -1076,8 +1090,7 @@ impl RtspParser {
         }
         let mut previous_header_name: Option<&[u8]> = None;
         let mut offset = 0usize;
-        let mut line_index = 0usize;
-        for raw_line in header_bytes.split(|&b| b == b'\n') {
+        for (line_index, raw_line) in header_bytes.split(|&b| b == b'\n').enumerate() {
             let line_end = offset.saturating_add(raw_line.len());
             let in_line = pos >= offset && pos < line_end;
             let line = Self::trim_trailing_cr(raw_line);
@@ -1105,7 +1118,6 @@ impl RtspParser {
                     previous_header_name = Some(Self::trim_ws(name));
                 }
             }
-            line_index += 1;
             offset = line_end.saturating_add(1);
         }
         false
@@ -1285,38 +1297,58 @@ impl RtspParser {
             };
 
             let header_bytes = &self.buffer[..header_boundary.start_of_body];
-            let header_text = match std::str::from_utf8(header_bytes) {
-                Ok(text) => text,
-                Err(utf8_err) => {
-                    let fault = Utf8Fault::from_utf8_error(&utf8_err);
-                    let err = RtspError::Utf8(fault);
-                    // Option (b) (fss-0i0ue): a non-UTF-8 byte in a non-framing header
-                    // VALUE is a typed recoverable per-message error — discard exactly
-                    // the declared message (or poison when no single valid length
-                    // exists); the session keeps framing. The default (strict) poisons.
-                    if self.recover_nonframing_utf8
-                        && Self::bad_byte_in_recoverable_value(header_bytes, fault.valid_up_to)
-                    {
+            let (start_line, headers, auth_scheme) = match std::str::from_utf8(header_bytes) {
+                Ok(header_text) => match self.parse_headers(header_text) {
+                    Ok((start_line_str, headers, auth_scheme)) => {
+                        (start_line_str.to_string(), headers, auth_scheme)
+                    }
+                    Err(err) => {
+                        let declared_body = Self::declared_body_length(header_text);
                         self.recover_from_header_error(
                             header_boundary.start_of_body,
-                            Self::declared_body_length_bytes(header_bytes),
+                            declared_body,
                         );
                         return self.fail(events, err);
                     }
-                    self.poison(PoisonCause::InvalidUtf8Headers);
-                    return self.fail(events, err);
+                },
+                Err(utf8_err) => {
+                    if self.lossy_nonframing_headers {
+                        match self.parse_headers_lossy(header_bytes) {
+                            Ok(parsed) => parsed,
+                            Err((err, true)) => {
+                                self.poison(PoisonCause::InvalidUtf8Headers);
+                                return self.fail(events, err);
+                            }
+                            Err((err, false)) => {
+                                let declared_body = Self::declared_body_length_bytes(header_bytes);
+                                self.recover_from_header_error(
+                                    header_boundary.start_of_body,
+                                    declared_body,
+                                );
+                                return self.fail(events, err);
+                            }
+                        }
+                    } else {
+                        let fault = Utf8Fault::from_utf8_error(&utf8_err);
+                        let err = RtspError::Utf8(fault);
+                        // Option (b) (fss-0i0ue): a non-UTF-8 byte in a non-framing header
+                        // VALUE is a typed recoverable per-message error — discard exactly
+                        // the declared message (or poison when no single valid length
+                        // exists); the session keeps framing. The default (strict) poisons.
+                        if self.recover_nonframing_utf8
+                            && Self::bad_byte_in_recoverable_value(header_bytes, fault.valid_up_to)
+                        {
+                            self.recover_from_header_error(
+                                header_boundary.start_of_body,
+                                Self::declared_body_length_bytes(header_bytes),
+                            );
+                            return self.fail(events, err);
+                        }
+                        self.poison(PoisonCause::InvalidUtf8Headers);
+                        return self.fail(events, err);
+                    }
                 }
             };
-
-            let (start_line_str, headers, auth_scheme) = match self.parse_headers(header_text) {
-                Ok(res) => res,
-                Err(err) => {
-                    let declared_body = Self::declared_body_length(header_text);
-                    self.recover_from_header_error(header_boundary.start_of_body, declared_body);
-                    return self.fail(events, err);
-                }
-            };
-            let start_line = start_line_str.to_string();
 
             // Determine body length from Content-Length header
             let content_len = match headers.content_length() {
@@ -1541,6 +1573,207 @@ impl RtspParser {
             }
 
             headers.insert(name, val);
+        }
+
+        Ok((start_line, headers, auth_scheme))
+    }
+
+    fn is_strict_utf8_header(name: &str) -> bool {
+        const STRICT: [&str; 13] = [
+            "content-length",
+            "cseq",
+            "transport",
+            "session",
+            "authorization",
+            "proxy-authorization",
+            "content-base",
+            "content-location",
+            "location",
+            "rtp-info",
+            "range",
+            "require",
+            "content-type",
+        ];
+        STRICT.iter().any(|h| name.eq_ignore_ascii_case(h))
+    }
+
+    /// Byte-oriented header parser used only when `lossy_nonframing_headers` is enabled and
+    /// the raw header block contains non-UTF-8 bytes (fss-0i0ue). Returns `(err, should_poison)`.
+    fn parse_headers_lossy(
+        &self,
+        header_bytes: &[u8],
+    ) -> Result<(String, RtspHeaders, Option<AuthScheme>), (RtspError, bool)> {
+        let mut lines = header_bytes.split(|&b| b == b'\n');
+        let raw_start_line = lines.next().unwrap_or(&[]);
+        let start_trimmed = Self::trim_ws(Self::trim_trailing_cr(raw_start_line));
+
+        if start_trimmed.is_empty() {
+            return Err((RtspError::MalformedStartLine(StartLineFault::Empty), false));
+        }
+        if start_trimmed.contains(&0) {
+            return Err((RtspError::NulByte(NulSite::StartLine), false));
+        }
+        if start_trimmed.len() > self.limits.max_line_bytes {
+            return Err((
+                RtspError::HeaderLimit(HeaderLimitFault::StartLineTooLong {
+                    len: start_trimmed.len(),
+                    limit: self.limits.max_line_bytes,
+                }),
+                false,
+            ));
+        }
+
+        let start_line = if start_trimmed.starts_with(b"RTSP/") {
+            // Status line: version and status code must be strict UTF-8; reason phrase is lossy.
+            let mut cursor = 0usize;
+            while cursor < start_trimmed.len() && !start_trimmed[cursor].is_ascii_whitespace() {
+                cursor += 1;
+            }
+            let version_bytes = &start_trimmed[..cursor];
+            let version = std::str::from_utf8(version_bytes)
+                .map_err(|e| (RtspError::Utf8(Utf8Fault::from_utf8_error(&e)), true))?;
+            while cursor < start_trimmed.len() && start_trimmed[cursor].is_ascii_whitespace() {
+                cursor += 1;
+            }
+            let code_start = cursor;
+            while cursor < start_trimmed.len() && !start_trimmed[cursor].is_ascii_whitespace() {
+                cursor += 1;
+            }
+            let code_bytes = &start_trimmed[code_start..cursor];
+            let code = std::str::from_utf8(code_bytes)
+                .map_err(|e| (RtspError::Utf8(Utf8Fault::from_utf8_error(&e)), true))?;
+            let rest = Self::trim_ws(&start_trimmed[cursor..]);
+            if code.is_empty() {
+                version.to_string()
+            } else if rest.is_empty() {
+                format!("{version} {code}")
+            } else {
+                let reason = String::from_utf8_lossy(rest);
+                format!("{version} {code} {reason}")
+            }
+        } else {
+            // Request lines carry URIs and methods and remain strictly UTF-8.
+            std::str::from_utf8(start_trimmed)
+                .map_err(|e| (RtspError::Utf8(Utf8Fault::from_utf8_error(&e)), true))?
+                .to_string()
+        };
+
+        let mut headers = RtspHeaders::new();
+        let mut seen_cseq = false;
+        let mut seen_content_length: Option<usize> = None;
+        let mut auth_scheme: Option<AuthScheme> = None;
+        let mut next_offset = raw_start_line.len() + 1;
+
+        for raw_line in lines {
+            let offset = next_offset;
+            next_offset = next_offset.saturating_add(raw_line.len() + 1);
+            let line = Self::trim_trailing_cr(raw_line);
+            if line.is_empty() {
+                continue;
+            }
+            if line.contains(&0) {
+                return Err((RtspError::NulByte(NulSite::HeaderLine { offset }), false));
+            }
+            if line.len() > self.limits.max_line_bytes {
+                return Err((
+                    RtspError::HeaderLimit(HeaderLimitFault::HeaderLineTooLong {
+                        offset,
+                        len: line.len(),
+                        limit: self.limits.max_line_bytes,
+                    }),
+                    false,
+                ));
+            }
+            if line.first().is_some_and(|b| *b == b' ' || *b == b'\t') {
+                return Err((RtspError::LineFoldingNotPermitted, false));
+            }
+            if headers.len() >= self.limits.max_headers {
+                return Err((
+                    RtspError::HeaderLimit(HeaderLimitFault::TooManyHeaders {
+                        offset,
+                        limit: self.limits.max_headers,
+                    }),
+                    false,
+                ));
+            }
+            let Some(colon) = line.iter().position(|&b| b == b':') else {
+                return Err((
+                    RtspError::MalformedStartLine(StartLineFault::HeaderMissingColon { offset }),
+                    false,
+                ));
+            };
+            let name_bytes = Self::trim_ws(&line[..colon]);
+            let val_bytes = Self::trim_ws(&line[colon + 1..]);
+            if name_bytes.is_empty() {
+                return Err((
+                    RtspError::MalformedStartLine(StartLineFault::HeaderMissingName { offset }),
+                    false,
+                ));
+            }
+            let name = std::str::from_utf8(name_bytes)
+                .map_err(|e| (RtspError::Utf8(Utf8Fault::from_utf8_error(&e)), true))?;
+
+            if Self::is_strict_utf8_header(name) {
+                let val = std::str::from_utf8(val_bytes)
+                    .map_err(|e| (RtspError::Utf8(Utf8Fault::from_utf8_error(&e)), true))?;
+                if name.eq_ignore_ascii_case("cseq") {
+                    if seen_cseq {
+                        return Err((RtspError::DuplicateCSeq(DuplicateHeader { offset }), false));
+                    }
+                    seen_cseq = true;
+                }
+                if name.eq_ignore_ascii_case("content-length") {
+                    let parsed_len = parse_content_length(val)
+                        .map_err(|e| (RtspError::BadContentLength(e), false))?;
+                    match seen_content_length {
+                        Some(prev_len) if prev_len != parsed_len => {
+                            return Err((
+                                RtspError::DuplicateContentLength(ContentLengthConflict {
+                                    first: prev_len,
+                                    second: parsed_len,
+                                    offset,
+                                }),
+                                false,
+                            ));
+                        }
+                        _ => seen_content_length = Some(parsed_len),
+                    }
+                }
+                if name.eq_ignore_ascii_case("authorization")
+                    || name.eq_ignore_ascii_case("proxy-authorization")
+                {
+                    headers.insert(name, REDACTED_CREDENTIAL);
+                    continue;
+                }
+                if let Some(site) = uri_header_site(name)
+                    && has_userinfo(val)
+                {
+                    return Err((RtspError::UserinfoNotPermitted(site), false));
+                }
+                if name.eq_ignore_ascii_case("rtp-info")
+                    && let Some(entry) = rtp_info_userinfo_entry(val)
+                {
+                    return Err((
+                        RtspError::UserinfoNotPermitted(UserinfoSite::RtpInfo { entry }),
+                        false,
+                    ));
+                }
+                headers.insert(name, val);
+                continue;
+            }
+
+            if name.eq_ignore_ascii_case("www-authenticate")
+                || name.eq_ignore_ascii_case("proxy-authenticate")
+            {
+                if auth_scheme.is_none() {
+                    let val_lossy = String::from_utf8_lossy(val_bytes);
+                    auth_scheme = extract_auth_scheme(&val_lossy);
+                }
+                continue;
+            }
+
+            let val_lossy = String::from_utf8_lossy(val_bytes);
+            headers.insert(name, val_lossy.into_owned());
         }
 
         Ok((start_line, headers, auth_scheme))

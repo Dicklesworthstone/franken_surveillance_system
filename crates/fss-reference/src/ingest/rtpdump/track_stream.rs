@@ -62,6 +62,7 @@ impl RtpTrackStreamRequest {
             max_records: 1_000_002,
         }
     }
+    #[allow(clippy::result_large_err)]
     fn validate(&self) -> Result<()> {
         if !(1..=256 * 1024 * 1024).contains(&self.max_stream_bytes)
             || !(1..=MAX_FRAME_BYTES).contains(&self.max_frame_bytes)
@@ -143,6 +144,7 @@ type Result<T> = std::result::Result<T, RtpTrackStreamError>;
 /// Export actual source-witnessed anonymous trajectories. No deployment state is changed.
 /// The caller owns file creation, path authority and durable synchronization. The native owner
 /// checks current custody before each frame; this is not a future retrievability promise.
+#[allow(clippy::result_large_err)]
 pub fn write_tracking_stream(
     retained: &RecoveredRtpImport,
     package: &RgbDetectorPackage,
@@ -240,6 +242,7 @@ pub fn write_tracking_stream(
 /// are NEVER parsed into authority or allocation sizes. Truncation, reordering, substitution,
 /// trailing bytes and a wrong independent digest refuse. This function writes no files.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::result_large_err)]
 pub fn verify_tracking_stream(
     retained: &RecoveredRtpImport,
     package: &RgbDetectorPackage,
@@ -292,6 +295,7 @@ fn terminal_allowed(stats: RtpTrackingStats, completion: RtpTrackStreamCompletio
         && stats.frames == stats.detection.native.frames
         && (stats.complete() || completion == RtpTrackStreamCompletion::SourceDiagnostics)
 }
+#[allow(clippy::result_large_err)]
 fn header(
     retained: &RecoveredRtpImport,
     package: &RgbDetectorPackage,
@@ -349,6 +353,7 @@ fn header(
     e.bool(false); // Effect authority.
     encoded(e)
 }
+#[allow(clippy::result_large_err)]
 fn progress(event: RetainedRtpEvent, effect: &RtpDecodeEffect) -> Result<Vec<u8>> {
     let mut e = CanonicalEncoder::new();
     e.u8(1);
@@ -409,6 +414,7 @@ fn progress(event: RetainedRtpEvent, effect: &RtpDecodeEffect) -> Result<Vec<u8>
     }
     encoded(e)
 }
+#[allow(clippy::result_large_err)]
 fn encode_frame(
     frame: &RtpTrackedFrame,
     maximum: usize,
@@ -583,10 +589,12 @@ fn optional_digest(e: &mut CanonicalEncoder, d: Option<ContentDigest>) {
         e.digest(d);
     }
 }
+#[allow(clippy::result_large_err)]
 fn encoded(e: CanonicalEncoder) -> Result<Vec<u8>> {
     e.finish_checked()
         .map_err(|_| RtpTrackStreamError::Encoding)
 }
+#[allow(clippy::result_large_err)]
 fn checkpoint(cx: &ReplayCx, scalar: &ScalarExecCx) -> Result<()> {
     if cx.checkpoint("rtp_track_stream:checkpoint").is_err()
         || scalar.checkpoint("rtp_track_stream:checkpoint").is_err()
@@ -618,12 +626,14 @@ impl<'a, W: Write> Output<'a, W> {
             max_records,
         }
     }
+    #[allow(clippy::result_large_err)]
     fn admit_record(&self) -> Result<()> {
         if self.records >= self.max_records || self.used >= self.maximum {
             return Err(RtpTrackStreamError::Limit);
         }
         Ok(())
     }
+    #[allow(clippy::result_large_err)]
     fn record(&mut self, bytes: &[u8], cx: &ReplayCx, scalar: &ScalarExecCx) -> Result<()> {
         self.admit_record()?;
         let mut prefix = CanonicalEncoder::new();
@@ -641,6 +651,7 @@ impl<'a, W: Write> Output<'a, W> {
         self.records += 1;
         Ok(())
     }
+    #[allow(clippy::result_large_err)]
     fn write(&mut self, mut bytes: &[u8], cx: &ReplayCx, scalar: &ScalarExecCx) -> Result<()> {
         let mut interruptions = 0;
         while !bytes.is_empty() {

@@ -299,6 +299,7 @@ impl<IO> fmt::Debug for Owner<'_, '_, '_, IO> {
 }
 impl<'scope, 'task, 'policy, IO: AsyncRead + AsyncWrite + Unpin> Owner<'scope, 'task, 'policy, IO> {
     /// Attach an owned stream. This does not authenticate the supplied peer.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         io: MeteredIo<'scope, 'task, IO>,
         task: &'scope TaskCx<'task>,
@@ -509,6 +510,7 @@ impl<'scope, 'task, 'policy, IO: AsyncRead + AsyncWrite + Unpin> Owner<'scope, '
 
     /// Dispatch one experimental serializer update under the camera-setting
     /// capability and a separately committed effect. No restoration is implied.
+    #[allow(clippy::too_many_arguments)]
     pub async fn dispatch_serializer(
         &mut self,
         plan: &http_stream::Plan,

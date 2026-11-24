@@ -239,13 +239,10 @@ impl Fixture {
     }
 }
 
-
 fn retain_liveness_metadata(fixture: &Fixture) -> Test<ContentDigest> {
     use fss_core::SensorId;
     use fss_reference::discovery::DiscoverReport;
-    use fss_reference::discovery::retained_liveness::{
-        DeviceEnrollment, retain_discovery_sweep,
-    };
+    use fss_reference::discovery::retained_liveness::{DeviceEnrollment, retain_discovery_sweep};
     use fss_reference::discovery::watchdog::DeviceClass;
 
     let enrollment = DeviceEnrollment::new(
@@ -284,11 +281,7 @@ fn hex(digest: ContentDigest) -> String {
 }
 
 fn files(root: &Path) -> Test<BTreeMap<PathBuf, (bool, Vec<u8>)>> {
-    fn visit(
-        root: &Path,
-        path: &Path,
-        out: &mut BTreeMap<PathBuf, (bool, Vec<u8>)>,
-    ) -> Test {
+    fn visit(root: &Path, path: &Path, out: &mut BTreeMap<PathBuf, (bool, Vec<u8>)>) -> Test {
         out.insert(path.strip_prefix(root)?.to_path_buf(), (true, Vec::new()));
         for entry in fs::read_dir(path)? {
             let entry = entry?;
@@ -296,8 +289,14 @@ fn files(root: &Path) -> Test<BTreeMap<PathBuf, (bool, Vec<u8>)>> {
             if entry.file_type()?.is_dir() {
                 visit(root, &path, out)?;
             } else {
-                assert!(entry.file_type()?.is_file(), "unexpected special fixture entry");
-                out.insert(path.strip_prefix(root)?.to_path_buf(), (false, fs::read(path)?));
+                assert!(
+                    entry.file_type()?.is_file(),
+                    "unexpected special fixture entry"
+                );
+                out.insert(
+                    path.strip_prefix(root)?.to_path_buf(),
+                    (false, fs::read(path)?),
+                );
             }
         }
         Ok(())
@@ -765,9 +764,7 @@ fn shared_lineage_verifier_refuses_empty_or_reordered_inputs_and_revalidates_met
     let cx = context(&fixture.root, limits, false)?;
     let owner = ImmutableRetainedSource::open(&fixture.root, limits.read, &cx)?;
     let opening_usage = owner.usage();
-    assert!(
-        verify_event_lineage(&owner, &[], limits.read.snapshot.max_object_bytes).is_err()
-    );
+    assert!(verify_event_lineage(&owner, &[], limits.read.snapshot.max_object_bytes).is_err());
     assert!(
         verify_event_lineage(
             &owner,
@@ -776,17 +773,28 @@ fn shared_lineage_verifier_refuses_empty_or_reordered_inputs_and_revalidates_met
         )
         .is_err()
     );
-    assert_eq!(owner.usage(), opening_usage, "invalid chains spend no payload I/O");
+    assert_eq!(
+        owner.usage(),
+        opening_usage,
+        "invalid chains spend no payload I/O"
+    );
 
     let publications = verify_event_lineage(
         &owner,
         &[fixture.from.clone(), fixture.to.clone()],
         limits.read.snapshot.max_object_bytes,
     )?;
-    assert_eq!(publications, vec![(fixture.roots[0], 1), (fixture.roots[1], 2)]);
+    assert_eq!(
+        publications,
+        vec![(fixture.roots[0], 1), (fixture.roots[1], 2)]
+    );
     assert!(owner.usage().read_objects > opening_usage.read_objects);
     owner.revalidate()?;
-    assert_eq!(files(&fixture.root)?, before, "metadata verification is read only");
+    assert_eq!(
+        files(&fixture.root)?,
+        before,
+        "metadata verification is read only"
+    );
 
     // Selected metadata remains registered even though source and model children were absent.
     let path = object(&fixture.root, fixture.payloads[0]);
@@ -794,7 +802,10 @@ fn shared_lineage_verifier_refuses_empty_or_reordered_inputs_and_revalidates_met
     changed.push(0);
     fs::write(&path, changed)?;
     let before_refusal = files(&fixture.root)?;
-    assert!(owner.revalidate().is_err(), "late metadata changes invalidate the result");
+    assert!(
+        owner.revalidate().is_err(),
+        "late metadata changes invalidate the result"
+    );
     assert_eq!(files(&fixture.root)?, before_refusal);
     drop(owner);
     cx.drain_and_finalize();
@@ -802,9 +813,14 @@ fn shared_lineage_verifier_refuses_empty_or_reordered_inputs_and_revalidates_met
 }
 
 #[test]
-fn snapshot_metadata_revalidation_detects_changed_non_event_liveness_without_new_authority() -> Test {
+fn snapshot_metadata_revalidation_detects_changed_non_event_liveness_without_new_authority() -> Test
+{
     for remove in [false, true] {
-        let fixture = Fixture::new(if remove { "missing-liveness" } else { "changed-liveness" })?;
+        let fixture = Fixture::new(if remove {
+            "missing-liveness"
+        } else {
+            "changed-liveness"
+        })?;
         let digest = retain_liveness_metadata(&fixture)?;
         let before = files(&fixture.root)?;
         let limits = EventChangesLimits::default();
@@ -861,7 +877,11 @@ fn finish_refuses_changed_non_event_liveness_after_complete_preparation() -> Tes
         assert_eq!(prepared.answer().report.to(), &fixture.to);
         let preview_usage = prepared.answer().read_usage;
         let observed_anchor = prepared.answer().snapshot.anchor.clone();
-        assert_eq!(files(&fixture.root)?, before_prepare, "prepare must be read only");
+        assert_eq!(
+            files(&fixture.root)?,
+            before_prepare,
+            "prepare must be read only"
+        );
 
         // This is protected non-event context, outside the selected event publication
         // lineage. Neither the committed authority head nor the event revisions change.
@@ -869,7 +889,10 @@ fn finish_refuses_changed_non_event_liveness_after_complete_preparation() -> Tes
         if remove {
             fs::remove_file(&path)?;
         } else {
-            fs::write(&path, b"liveness metadata changed after full comparison preparation")?;
+            fs::write(
+                &path,
+                b"liveness metadata changed after full comparison preparation",
+            )?;
         }
         let before_finish = files(&fixture.root)?;
         let error = prepared
@@ -884,7 +907,9 @@ fn finish_refuses_changed_non_event_liveness_after_complete_preparation() -> Tes
             "the failed non-event reread must be charged to the original allowance"
         );
         assert!(observation.read_usage.read_bytes <= u64::try_from(limits.read.max_read_bytes)?);
-        assert!(observation.read_usage.read_objects <= u64::try_from(limits.read.max_read_objects)?);
+        assert!(
+            observation.read_usage.read_objects <= u64::try_from(limits.read.max_read_objects)?
+        );
         assert_eq!(
             files(&fixture.root)?,
             before_finish,

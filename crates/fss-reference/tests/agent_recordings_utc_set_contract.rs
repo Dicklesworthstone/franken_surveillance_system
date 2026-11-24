@@ -436,8 +436,10 @@ fn all_pages_clock_and_final_revalidation_consume_one_nonrefillable_allowance() 
         let result = query_recordings_utc_set(&HostSpoolIo, &f.root, &r, limits, &|| false);
         assert!(result.is_err(), "shared budget mutation {mutation}");
     }
-    let mut exact = RecordingUtcSetQueryLimits::default();
-    exact.max_scanned_windows = baseline.scanned_windows;
+    let mut exact = RecordingUtcSetQueryLimits {
+        max_scanned_windows: baseline.scanned_windows,
+        ..RecordingUtcSetQueryLimits::default()
+    };
     exact.metadata.max_io_calls = baseline.read_usage.io_calls;
     exact.metadata.max_read_bytes = baseline.read_usage.peak_reserved_read_bytes;
     assert!(query_recordings_utc_set(&HostSpoolIo, &f.root, &r, exact, &|| false).is_ok());

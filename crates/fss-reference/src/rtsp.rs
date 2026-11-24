@@ -247,6 +247,7 @@ pub mod live_hevc {
     /// One bounded output; process transferred originals before polling again.
     #[must_use]
     #[derive(Debug)]
+    #[allow(clippy::large_enum_variant)]
     pub enum LiveHevcStep {
         /// Exact original TCP bytes accepted at their original admission time.
         /// Transfer does not establish durable custody; Debug omits their contents.

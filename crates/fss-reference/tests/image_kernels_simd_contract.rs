@@ -117,7 +117,9 @@ fn differential_bit_exact_parity_across_geometries_and_tails() -> TestResult {
         );
         norm_cases += 1;
     }
-    assert!(NORMALIZE_LUT_THRESHOLD == 256);
+    const {
+        assert!(NORMALIZE_LUT_THRESHOLD == 256);
+    }
 
     // 4. Metamorphic invariants: constant-image preservation & horizontal flip commutativity.
     let src_img = synthetic_bytes(23 * 13, 0x1234_5678);

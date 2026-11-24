@@ -210,6 +210,7 @@ impl SupervisedAvcRecording {
     /// Open one exact new-generation recording attempt, retaining the fixed template
     /// and complete native media profile. Scope and whole-run budget refusals happen
     /// before any socket opens; resource refusals do not consume an attempt ordinal.
+    #[allow(clippy::result_large_err)]
     pub fn connect(
         &mut self,
         config: LiveAvcConfig,
@@ -261,6 +262,7 @@ impl SupervisedAvcRecording {
 
     /// Drive original capture before network reads. A prepared window remains an
     /// unchanged caller-owned plan requiring the existing publication protocol.
+    #[allow(clippy::result_large_err)]
     pub fn poll(
         &mut self,
         readiness: SocketReadiness,
@@ -314,6 +316,7 @@ impl SupervisedAvcRecording {
 
     /// The timing request's exact key is mandatory. Late timing from an old
     /// generation cannot be applied to a new generation's held picture.
+    #[allow(clippy::result_large_err)]
     pub fn supply_timing(
         &mut self,
         key: StreamKey,
@@ -331,6 +334,7 @@ impl SupervisedAvcRecording {
 
     /// Seal only the requested active generation, without guessing timing or
     /// claiming publication. Poll for the unchanged prepared recording window.
+    #[allow(clippy::result_large_err)]
     pub fn seal(
         &mut self,
         key: StreamKey,
@@ -348,6 +352,7 @@ impl SupervisedAvcRecording {
     /// Owner assertion that original terminal work was retained or explicitly
     /// accounted for, not proof of durable publication or unused native capacity.
     /// Only this fresh clock observation starts backoff, after recording retirement.
+    #[allow(clippy::result_large_err)]
     pub fn acknowledge_retirement(
         &mut self,
         now: u64,
@@ -381,6 +386,7 @@ impl SupervisedAvcRecording {
         }
     }
 
+    #[allow(clippy::result_large_err)]
     fn admit(
         &mut self,
         now: u64,
@@ -400,6 +406,7 @@ impl SupervisedAvcRecording {
         Ok(())
     }
 
+    #[allow(clippy::result_large_err)]
     fn admit_generation(
         &mut self,
         key: StreamKey,
@@ -413,6 +420,7 @@ impl SupervisedAvcRecording {
         Ok(())
     }
 
+    #[allow(clippy::result_large_err)]
     fn settle<T>(
         &mut self,
         result: Result<T, LiveRecordingFailure>,

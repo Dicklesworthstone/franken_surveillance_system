@@ -180,6 +180,32 @@ impl DigestAvcClient {
     pub fn state(&self) -> ClientState {
         self.inner.state()
     }
+    /// Opt in before DESCRIBE to acquire H.264 SPS/PPS in-band from RTP when SDP omits
+    /// `sprop-parameter-sets`. Default is strict SDP (`false`).
+    pub fn set_allow_inband_parameter_sets(&mut self, enabled: bool) -> Result<(), DigestAvcError> {
+        self.inner
+            .set_allow_inband_parameter_sets(enabled)
+            .map_err(DigestAvcError::Client)
+    }
+    /// Override bounded pre-roll ceilings for in-band parameter-set acquisition before DESCRIBE.
+    pub fn set_inband_sync_limits(
+        &mut self,
+        limits: crate::rtsp::client::inband::InbandSyncLimits,
+    ) -> Result<(), DigestAvcError> {
+        self.inner
+            .set_inband_sync_limits(limits)
+            .map_err(DigestAvcError::Client)
+    }
+    /// Opt in before DESCRIBE to SETUP companion `m=audio` tracks and drain their interleaved packets.
+    pub fn set_setup_companion_tracks(&mut self, enabled: bool) -> Result<(), DigestAvcError> {
+        self.inner
+            .set_setup_companion_tracks(enabled)
+            .map_err(DigestAvcError::Client)
+    }
+    /// Explicit provenance and pre-sync / companion-track discard counters.
+    pub fn intake_telemetry(&self) -> crate::rtsp::client::inband::RtspIntakeTelemetry {
+        self.inner.intake_telemetry()
+    }
     /// Pinned or observed sender identity; None while learn-once selection is unresolved.
     pub fn bound_key(&self) -> Option<StreamKey> {
         self.inner.bound_key()
@@ -232,6 +258,31 @@ impl DigestAvcClient {
             .inner
             .session
             .request_digest(command, credentials, cnonce, now)
+        {
+            Ok(request) => {
+                self.pending_cseq = Some(request.cseq());
+                Ok(request)
+            }
+            Err(error) => Err(self.request_failure(error)),
+        }
+    }
+    /// Prepare a clean closing `TEARDOWN` request while in `Ready` or `Playing`, even when
+    /// trailing unread RTP bytes remain buffered in intake. Callers write this request once
+    /// before closing the socket; no remote acknowledgement is fabricated.
+    pub fn prepare_teardown(
+        &mut self,
+        credentials: &DigestCredentials<'_>,
+        cnonce: [u8; 16],
+        now: u64,
+    ) -> Result<ClientRequest, DigestAvcFailure> {
+        self.admit_operation(now)?;
+        if self.challenge.is_some() || self.pending_cseq.is_some() {
+            return Err(safe(DigestAvcError::Backpressure));
+        }
+        match self
+            .inner
+            .session
+            .request_digest(ClientCommand::Teardown, credentials, cnonce, now)
         {
             Ok(request) => {
                 self.pending_cseq = Some(request.cseq());
@@ -388,6 +439,11 @@ impl DigestAvcClient {
                 self.inner.events = vec![event].into_iter();
                 self.inner.event_time_ns = received_ns;
                 return match self.inner.poll(now) {
+                    Ok(AvcClientPoll::Pending { .. }) => {
+                        Ok(self.client_event(AvcClientPoll::Pending {
+                            wake_at_ns: Some(now),
+                        }))
+                    }
                     Ok(event) => Ok(self.client_event(event)),
                     Err(error) => Ok(self.fault(DigestAvcError::Client(error))),
                 };

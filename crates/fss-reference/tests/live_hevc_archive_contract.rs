@@ -351,6 +351,7 @@ impl<'a> Fixture<'a> {
         self.now += 1;
         self.now
     }
+    #[allow(clippy::result_large_err)]
     fn poll(&mut self, readiness: SocketReadiness) -> Result<Step, LiveHevcArchiveFailure> {
         let nonce = if self.driver.needs_credentials() {
             self.nonce += 1;
@@ -987,7 +988,11 @@ fn missing_ambiguous_wrong_payload_or_over_limit_sdp_refuses_before_setup() -> T
                 else {
                     return Err("payload refusal lost original protocol/transport".into());
                 };
-                let Event::Client { event, work: Some(work) } = event else {
+                let Event::Client {
+                    event,
+                    work: Some(work),
+                } = event
+                else {
                     return Err("payload refusal lost picture retirement".into());
                 };
                 let HevcClientPoll::Fault {

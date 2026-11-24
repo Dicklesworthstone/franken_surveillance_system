@@ -97,6 +97,7 @@ pub(super) struct Proof {
 impl Proof {
     /// Project the original packet stream from retained custody without fabricating source
     /// archive slots. Only the native codec owner may reconstruct each sealed recording.
+    #[allow(clippy::result_large_err)]
     pub(super) fn visit_originals(
         &self,
         deployment: &dyn RetainedSource,
@@ -647,7 +648,7 @@ fn selected_digest(
         .strip_prefix(GENERATION)
         .filter(|v| v.len() == 64)
         .ok_or_else(|| corrupt("replay adapter generation"))?;
-    Ok(Some(ContentDigest::parse(&format!("sha256:{value}"))?))
+    Ok(Some(ContentDigest::parse(format!("sha256:{value}"))?))
 }
 fn live(
     deployment: &dyn RetainedSource,

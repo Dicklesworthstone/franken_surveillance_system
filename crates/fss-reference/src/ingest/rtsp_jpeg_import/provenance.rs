@@ -308,7 +308,7 @@ fn proof(
         .strip_prefix(GENERATION)
         .filter(|s| s.len() == 64)
         .ok_or_else(|| corrupt("adapter generation"))?;
-    let digest = ContentDigest::parse(&format!("sha256:{hex}"))?;
+    let digest = ContentDigest::parse(format!("sha256:{hex}"))?;
     reserve(MAX_PROOF_BYTES as u64)?;
     deployment.check_object_available(digest)?;
     let bytes = deployment.read_object_bounded(digest, MAX_PROOF_BYTES)?;

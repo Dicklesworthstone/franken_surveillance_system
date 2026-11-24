@@ -508,6 +508,7 @@ impl Owner<'_, '_, '_> {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn permit(
         &mut self,
         operation: &OperationId,
@@ -746,6 +747,7 @@ impl Owner<'_, '_, '_> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn observe<IO: AsyncRead + AsyncWrite + Unpin>(
         &mut self,
         session: &mut Session<'_, '_, IO>,

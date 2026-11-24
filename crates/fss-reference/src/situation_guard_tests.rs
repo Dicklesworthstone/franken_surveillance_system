@@ -6464,7 +6464,7 @@ fn revalidation_refusal_before_the_anchor_moved_is_refused_typed_by_the_guard()
         &harness.authority,
         &harness.objects,
         crate::ReferenceProviderBehavior::Deliver,
-        AlertDispatchTimes::new(TimestampNs(50), TimestampNs(60)),
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
         &mut journal,
         &mut provider,
     );

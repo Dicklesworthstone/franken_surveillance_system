@@ -302,6 +302,89 @@ impl LiveAvcConnection {
             .as_ref()
             .map_or(ClientState::Closed, |a| a.protocol.state())
     }
+    /// Opt in before DESCRIBE to acquire H.264 SPS/PPS in-band from RTP when SDP omits
+    /// `sprop-parameter-sets`. Default is strict SDP (`false`).
+    pub fn set_allow_inband_parameter_sets(&mut self, enabled: bool) -> Result<(), LiveAvcError> {
+        self.active
+            .as_mut()
+            .ok_or(LiveAvcError::Closed)?
+            .protocol
+            .set_allow_inband_parameter_sets(enabled)
+            .map_err(LiveAvcError::Protocol)
+    }
+    /// Override bounded pre-roll ceilings for in-band parameter-set acquisition before DESCRIBE.
+    pub fn set_inband_sync_limits(
+        &mut self,
+        limits: crate::rtsp::client::inband::InbandSyncLimits,
+    ) -> Result<(), LiveAvcError> {
+        self.active
+            .as_mut()
+            .ok_or(LiveAvcError::Closed)?
+            .protocol
+            .set_inband_sync_limits(limits)
+            .map_err(LiveAvcError::Protocol)
+    }
+    /// Opt in before DESCRIBE to SETUP companion `m=audio` tracks and drain their interleaved packets.
+    pub fn set_setup_companion_tracks(&mut self, enabled: bool) -> Result<(), LiveAvcError> {
+        self.active
+            .as_mut()
+            .ok_or(LiveAvcError::Closed)?
+            .protocol
+            .set_setup_companion_tracks(enabled)
+            .map_err(LiveAvcError::Protocol)
+    }
+    /// Explicit provenance and pre-sync / companion-track discard counters.
+    pub fn intake_telemetry(&self) -> crate::rtsp::client::inband::RtspIntakeTelemetry {
+        self.active
+            .as_ref()
+            .map_or_else(Default::default, |a| a.protocol.intake_telemetry())
+    }
+    /// Best-effort bounded `TEARDOWN` write before closing the socket when in `Ready` or `Playing`.
+    /// Returns `Ok(true)` if the `TEARDOWN` wire bytes were completely written to the socket.
+    /// Does not wait for or fabricate a remote 200 OK acknowledgement.
+    pub fn send_teardown(
+        &mut self,
+        credentials: &DigestCredentials<'_>,
+        cnonce: [u8; 16],
+        now: u64,
+        authority: &dyn TcpAuthority,
+    ) -> Result<bool, LiveAvcFailure> {
+        let Some(active) = self.active.as_mut() else {
+            return Ok(false);
+        };
+        if active.eof
+            || !matches!(
+                active.protocol.state(),
+                ClientState::Ready | ClientState::Playing
+            )
+            || active.transport.has_pending_request()
+        {
+            return Ok(false);
+        }
+        self.admit(now, authority)?;
+        let active = self
+            .active
+            .as_mut()
+            .ok_or_else(|| safe(LiveAvcError::Closed))?;
+        let Ok(request) = active.protocol.prepare_teardown(credentials, cnonce, now) else {
+            return Ok(false);
+        };
+        if active
+            .transport
+            .queue_request(request, now, authority)
+            .is_err()
+        {
+            return Ok(false);
+        }
+        for _ in 0..16 {
+            match active.transport.write_step(now, authority) {
+                Ok(TcpWriteStep::Sent { .. }) => return Ok(true),
+                Ok(TcpWriteStep::Advanced { .. }) => continue,
+                Ok(TcpWriteStep::Idle | TcpWriteStep::Pending) | Err(_) => return Ok(false),
+            }
+        }
+        Ok(false)
+    }
     /// Source key pinned or observed within this exact connection; None while unbound.
     pub fn bound_key(&self) -> Option<fss_packet::StreamKey> {
         self.active.as_ref().and_then(|a| a.protocol.bound_key())

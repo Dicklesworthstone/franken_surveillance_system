@@ -132,6 +132,7 @@ impl<'a> Sink<'a> {
     /// Transfer one completed supervisor segment and independently supplied
     /// capture bounds. Refusal returns the exact source without modifying the
     /// earlier pending segment or muxer.
+    #[allow(clippy::result_large_err)]
     pub fn offer(
         &mut self,
         segment: recording::Segment,
@@ -163,6 +164,7 @@ impl<'a> Sink<'a> {
     /// retains the pending segment, including after an indeterminate effect;
     /// cold recovery still requires reconstruction of muxer and source state.
     /// An empty sink returns `None` without touching either store.
+    #[allow(clippy::result_large_err, clippy::too_many_arguments)]
     pub fn flush(
         &mut self,
         video_initialization: &InitializationSegment,
@@ -225,6 +227,7 @@ impl<'a> Sink<'a> {
 /// inside the guard until capture bounds and archive publication are resolved.
 #[must_use]
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum GuardStep {
     /// One completed source segment needs independent capture bounds.
     CaptureRequired,
@@ -249,6 +252,7 @@ pub enum CaptureError {
 
 /// Publication refusal at the guarded supervisor boundary.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum GuardFlushError {
     /// Independent capture bounds have not yet been supplied.
     CaptureRequired,
@@ -291,6 +295,7 @@ impl<'a, 'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'a, 'scope, 't
 
     /// Transfer a segment already returned before this guard was attached.
     /// On backpressure, the unchanged segment returns to its caller.
+    #[allow(clippy::result_large_err)]
     pub fn hold_segment(&mut self, segment: recording::Segment) -> Result<(), recording::Segment> {
         if self.awaiting_capture.is_some() || self.sink.has_pending() {
             return Err(segment);
@@ -474,6 +479,7 @@ impl<'a, 'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'a, 'scope, 't
 
     /// Resolve the pending archive attempt without releasing its source on an
     /// error. This uses synchronous reference I/O, not an async storage worker.
+    #[allow(clippy::result_large_err, clippy::too_many_arguments)]
     pub fn flush(
         &mut self,
         deployment: &mut ReferenceDeployment,

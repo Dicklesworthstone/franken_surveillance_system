@@ -43,6 +43,7 @@ impl Observation {
     }
 }
 
+#[allow(clippy::result_large_err)]
 pub(super) fn decode(bytes: &[u8]) -> Result<Observation, WebhookRetentionError> {
     if bytes.len() > MAX_WEBHOOK_OBSERVATION_BYTES {
         return Err(WebhookRetentionError::Budget);
@@ -79,10 +80,9 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Observation, WebhookRetentionError>
     }
     if let WebhookOutcome::ReceiverAccepted(status) | WebhookOutcome::ReceiverStatus(status) =
         outcome
+        && (sent != request.len() || wire::response(response) != Ok(Some(status)))
     {
-        if sent != request.len() || wire::response(response) != Ok(Some(status)) {
-            return Err(WebhookRetentionError::Invalid);
-        }
+        return Err(WebhookRetentionError::Invalid);
     }
     Ok(Observation {
         intent,
@@ -99,6 +99,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Observation, WebhookRetentionError>
     })
 }
 
+#[allow(clippy::result_large_err)]
 fn outcome(d: &mut CanonicalDecoder<'_>) -> Result<WebhookOutcome, WebhookRetentionError> {
     match d.u8()? {
         0 => {

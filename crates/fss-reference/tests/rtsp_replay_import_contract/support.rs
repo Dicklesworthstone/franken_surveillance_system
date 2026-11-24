@@ -105,6 +105,7 @@ fn archive_limits() -> LocalPublicationLimits {
     )
 }
 
+#[allow(clippy::large_enum_variant)]
 enum Original {
     Avc(PreparedRecording),
     Hevc(PreparedHevcRecording),

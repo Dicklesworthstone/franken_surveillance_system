@@ -70,6 +70,7 @@ impl OnvifContext for TokenContext {
     ) -> Result<DigestAuthorization, ClientError> {
         self.base.authorize(route, challenge)
     }
+    #[allow(clippy::unwrap_used)]
     fn username_token(
         &self,
         route: &HttpRoute,

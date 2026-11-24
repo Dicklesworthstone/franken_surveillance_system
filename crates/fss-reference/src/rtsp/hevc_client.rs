@@ -192,6 +192,7 @@ pub struct RtspHevcClient {
     reorder_limits: ReorderLimits,
     h265_limits: H265Limits,
     video: Option<H265Receiver>,
+    companion_packets_discarded: u64,
     challenge: Option<HeldFrame>,
     retry: Option<HeldFrame>,
     pending_cseq: Option<u32>,
@@ -285,6 +286,7 @@ impl RtspHevcClient {
             reorder_limits,
             h265_limits,
             video: None,
+            companion_packets_discarded: 0,
             challenge: None,
             retry: None,
             pending_cseq: None,
@@ -326,6 +328,18 @@ impl RtspHevcClient {
             .map_err(HevcClientError::Authentication)?;
         client.digest_enabled = true;
         Ok(client)
+    }
+
+    /// Opt in before DESCRIBE to SETUP companion `m=audio` tracks and drain their interleaved packets.
+    pub fn set_setup_companion_tracks(&mut self, enabled: bool) -> Result<(), HevcClientError> {
+        self.session
+            .set_setup_companion_tracks(enabled)
+            .map_err(HevcClientError::Session)
+    }
+
+    /// Explicit count of interleaved packets drained from negotiated companion tracks.
+    pub fn companion_packets_discarded(&self) -> u64 {
+        self.companion_packets_discarded
     }
 
     /// Shared protocol state only, not frame, source-custody or camera health truth.
@@ -657,6 +671,19 @@ impl RtspHevcClient {
                 }
             }
             RtspEvent::Interleaved { channel, span } => {
+                match self.session.is_companion_channel(*channel, now) {
+                    Ok(true) => {
+                        self.companion_packets_discarded =
+                            self.companion_packets_discarded.saturating_add(1);
+                        return HevcClientPoll::Pending {
+                            wake_at_ns: Some(now),
+                        };
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        return self.fault(HevcClientError::Session(error), Some(held.frame));
+                    }
+                }
                 let channel = match self.session.admit_channel(*channel, now) {
                     Ok(channel) => channel,
                     Err(error) => {

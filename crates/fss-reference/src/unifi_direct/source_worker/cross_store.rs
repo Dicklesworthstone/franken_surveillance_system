@@ -270,6 +270,7 @@ fn check_source(
     if matches { Ok(()) } else { Err(Error::Source) }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn verify(
     old: &mut Retirement,
     next: &mut Parts,
@@ -427,6 +428,7 @@ impl<'a> Staged<'a> {
 
     /// Revalidate, append once, retain and read back one switch record.
     /// Any failure after append may be indeterminate; never retry this stage.
+    #[allow(clippy::result_large_err)]
     pub fn commit(
         mut self,
         mut switch: PinRetainedEffectJournal,

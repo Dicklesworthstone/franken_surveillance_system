@@ -45,6 +45,7 @@ fn current<'a>(batches: &'a [EvidenceDeltaBatch], object: &str) -> Option<&'a Ev
 }
 
 /// Completion and the current generation must identify the same exact immutable import.
+#[allow(clippy::result_large_err)]
 fn completion(
     history: &DeploymentHistory,
     identity: ContentDigest,
@@ -111,6 +112,7 @@ fn completion(
 }
 
 /// Reuse the native root-reachability identities and claim shape at the exact consumer prefix.
+#[allow(clippy::result_large_err)]
 fn reachability(
     history: &DeploymentHistory,
     slot: &SlotName,
@@ -171,6 +173,7 @@ fn reachability(
     Ok(batch.new_anchor.commit_sequence)
 }
 
+#[allow(clippy::result_large_err)]
 fn verify_import(
     audit: &mut SourceAudit<'_>,
     identity: ContentDigest,
@@ -315,6 +318,7 @@ fn verify_import(
     Ok(())
 }
 
+#[allow(clippy::result_large_err)]
 pub(super) fn verify(
     audit: &mut SourceAudit<'_>,
     snapshot: &DeploymentSnapshot,

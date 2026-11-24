@@ -5,9 +5,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::net::{Ipv4Addr, SocketAddr};
 
 use super::{DeviceCandidate, DiscoverReport, DiscoveryError};
-use crate::discovery::census::{CensusPlan, CensusReport, HostObs, MAX_SUBNET_HOSTS};
+use crate::discovery::census::{
+    CensusPlan, CensusReport, HostObs, MAX_SUBNET_HOSTS, OUI_SNAPSHOT, OuiTable,
+};
 use crate::discovery::dispatch::dispatch;
-use crate::discovery::fingerprint::{CameraService, classify_host_with_services};
+use crate::discovery::fingerprint::{CameraService, classify_host_with_evidence};
+use crate::discovery::probes::{
+    MAX_RTSP_PEEK_ENDPOINTS, MAX_UNIFI_RESPONSES, RtspBannerObs, UniFiDiscoveryObs,
+};
 use crate::discovery::standards::{MdnsAnswer, MdnsObservation, SsdpResponse, WsdMatch};
 use crate::discovery::tuya_beacon::TuyaBeaconObs;
 
@@ -95,6 +100,22 @@ pub fn assemble_discovery(
     ssdp: &[SsdpResponse],
     wsd: &[WsdMatch],
 ) -> Result<DiscoverReport, DiscoveryError> {
+    assemble_discovery_with_probes(scope, census, beacons, mdns, ssdp, wsd, &[], &[])
+}
+
+/// Composes observations from one admitted sweep including pure-Rust UniFi
+/// UDP-10001 TLV responses and non-intrusive RTSP `OPTIONS *` banner peeks.
+#[allow(clippy::too_many_arguments)]
+pub fn assemble_discovery_with_probes(
+    scope: &CensusPlan,
+    census: CensusReport,
+    beacons: &[TuyaBeaconObs],
+    mdns: &[MdnsObservation],
+    ssdp: &[SsdpResponse],
+    wsd: &[WsdMatch],
+    unifi: &[UniFiDiscoveryObs],
+    rtsp_banners: &[RtspBannerObs],
+) -> Result<DiscoverReport, DiscoveryError> {
     // Bound raw input work as well as unique output. Repeated packets cannot
     // evade admission, and a malicious SRV/A cross product cannot grow reports.
     if scope.ping_targets.len() > MAX_SUBNET_HOSTS as usize
@@ -104,6 +125,8 @@ pub fn assemble_discovery(
         || mdns.len() > 256
         || ssdp.len() > 256
         || wsd.len() > 256
+        || unifi.len() > MAX_UNIFI_RESPONSES
+        || rtsp_banners.len() > MAX_RTSP_PEEK_ENDPOINTS
         || mdns
             .iter()
             .try_fold(0usize, |n, reply| n.checked_add(reply.answers.len()))
@@ -274,6 +297,68 @@ pub fn assemble_discovery(
             }
         }
     }
+    // Fold in-scope UniFi UDP-10001 TLV observations (deterministic, MAC-enriching
+    // when unambiguous; conflicting MACs remain cleared).
+    let mut unifi_retained = BTreeSet::new();
+    let mut unifi_by_ip = BTreeMap::<Ipv4Addr, &UniFiDiscoveryObs>::new();
+    let mut unifi_macs_by_ip = BTreeMap::<Ipv4Addr, BTreeSet<&str>>::new();
+    for obs in unifi {
+        if !scope.contains(obs.ip) {
+            continue;
+        }
+        ensure_host(&mut hosts, obs.ip);
+        responses.insert(DiscoveryResponse {
+            endpoint: obs.ip,
+            kind: DiscoverySighting::CensusResponse,
+        });
+        if let Some(mac) = obs.mac.as_deref() {
+            unifi_macs_by_ip.entry(obs.ip).or_default().insert(mac);
+        }
+        unifi_by_ip.entry(obs.ip).or_insert(obs);
+        unifi_retained.insert(obs.clone());
+    }
+    if !unifi_macs_by_ip.is_empty() {
+        let oui = OuiTable::parse_snapshot(OUI_SNAPSHOT);
+        for (ip, macs) in unifi_macs_by_ip {
+            if let Some(host) = hosts.get_mut(&ip) {
+                if macs.len() == 1
+                    && let Some(&mac) = macs.iter().next()
+                {
+                    if host.mac.is_empty() {
+                        host.mac = mac.to_owned();
+                        host.oui_vendor = oui.lookup(mac).map(str::to_owned);
+                    } else if host.mac != mac {
+                        host.mac.clear();
+                        host.oui_vendor = None;
+                    }
+                } else if macs.len() > 1 {
+                    host.mac.clear();
+                    host.oui_vendor = None;
+                }
+            }
+        }
+    }
+
+    // Fold in-scope non-intrusive RTSP OPTIONS banner peeks.
+    let mut rtsp_retained = BTreeSet::new();
+    let mut rtsp_by_ip = BTreeMap::<Ipv4Addr, Vec<&RtspBannerObs>>::new();
+    for banner in rtsp_banners {
+        if !scope.contains(banner.ip) {
+            continue;
+        }
+        ensure_host(&mut hosts, banner.ip);
+        responses.insert(DiscoveryResponse {
+            endpoint: banner.ip,
+            kind: DiscoverySighting::CensusResponse,
+        });
+        rtsp_by_ip.entry(banner.ip).or_default().push(banner);
+        rtsp_retained.insert(banner.clone());
+    }
+    for list in rtsp_by_ip.values_mut() {
+        list.sort();
+        list.dedup();
+    }
+
     let mut by_candidate = BTreeMap::<Ipv4Addr, BTreeSet<CameraService>>::new();
     for hint in &hints {
         by_candidate
@@ -290,7 +375,10 @@ pub fn assemble_discovery(
                 .into_iter()
                 .collect();
             let beacons = beacon_index.get(&host.ip).map_or(&[][..], Vec::as_slice);
-            let brand = classify_host_with_services(&host, beacons, &services);
+            let unifi_obs = unifi_by_ip.get(&host.ip).copied();
+            let banners = rtsp_by_ip.get(&host.ip).map_or(&[][..], Vec::as_slice);
+            let brand =
+                classify_host_with_evidence(&host, beacons, None, &services, unifi_obs, banners);
             let dispatch = dispatch(&brand);
             DeviceCandidate {
                 host,
@@ -308,6 +396,8 @@ pub fn assemble_discovery(
         wsd_matches: wsd_sources.len(),
         current_responses: responses.into_iter().collect(),
         advertised_services: hints.into_iter().collect(),
+        unifi_observations: unifi_retained.into_iter().collect(),
+        rtsp_banners: rtsp_retained.into_iter().collect(),
     })
 }
 

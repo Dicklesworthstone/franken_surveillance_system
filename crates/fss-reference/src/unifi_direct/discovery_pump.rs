@@ -137,6 +137,7 @@ mod work_set_tests {
     };
 
     struct Noop;
+    #[allow(clippy::manual_noop_waker)]
     impl Wake for Noop {
         fn wake(self: Arc<Self>) {}
     }
@@ -461,10 +462,8 @@ impl<'pump, 'fleet: 'pump, 'report: 'fleet, 'scope: 'fleet, 'task: 'fleet, D: Dr
             } else {
                 let mut pump = std::pin::pin!(self.next_with_retries(retries));
                 poll_fn(|cx| {
-                    if prefer_setup {
-                        if let Poll::Ready((index, result)) = setup.as_mut().poll(cx) {
-                            return Poll::Ready(Ok(Selected::Setup(index, result)));
-                        }
+                    if prefer_setup && let Poll::Ready((index, result)) = setup.as_mut().poll(cx) {
+                        return Poll::Ready(Ok(Selected::Setup(index, result)));
                     }
                     if let Poll::Ready(result) = pump.as_mut().poll(cx) {
                         return Poll::Ready(result.map(|progress| match progress {
@@ -472,10 +471,8 @@ impl<'pump, 'fleet: 'pump, 'report: 'fleet, 'scope: 'fleet, 'task: 'fleet, D: Dr
                             Progress::Work(event) => Selected::Retry(event),
                         }));
                     }
-                    if !prefer_setup {
-                        if let Poll::Ready((index, result)) = setup.as_mut().poll(cx) {
-                            return Poll::Ready(Ok(Selected::Setup(index, result)));
-                        }
+                    if !prefer_setup && let Poll::Ready((index, result)) = setup.as_mut().poll(cx) {
+                        return Poll::Ready(Ok(Selected::Setup(index, result)));
                     }
                     Poll::Pending
                 })
@@ -539,15 +536,15 @@ impl<'pump, 'fleet: 'pump, 'report: 'fleet, 'scope: 'fleet, 'task: 'fleet, D: Dr
         if self.scan.is_none() && self.start_scans {
             self.scan = Some(Box::pin(self.scanner.next()));
         }
-        if let Some(scan) = self.scan.as_mut() {
-            if let Poll::Ready(result) = scan.as_mut().poll(cx) {
-                self.scan = None;
-                if result.is_err() {
-                    self.start_scans = false;
-                }
-                self.prefer_scan = false;
-                return Poll::Ready(Event::Discovery(result));
+        if let Some(scan) = self.scan.as_mut()
+            && let Poll::Ready(result) = scan.as_mut().poll(cx)
+        {
+            self.scan = None;
+            if result.is_err() {
+                self.start_scans = false;
             }
+            self.prefer_scan = false;
+            return Poll::Ready(Event::Discovery(result));
         }
         Poll::Pending
     }

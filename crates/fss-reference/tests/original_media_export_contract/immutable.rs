@@ -190,6 +190,7 @@ fn immutable_media_uses_one_exact_allowance_through_final_validation() -> Test {
 }
 
 #[test]
+#[allow(clippy::result_large_err)]
 fn immutable_media_final_validation_refuses_late_source_and_metadata_damage() -> Test {
     let f = Fixture::new("immutable-damage")?;
     let retained = RetainedFileImport::open(

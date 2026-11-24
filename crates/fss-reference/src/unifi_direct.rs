@@ -106,6 +106,8 @@ pub mod motion;
 pub mod owner;
 /// Bounded task-owned TCP ingress to in-memory recording pipeline.
 pub mod pipeline;
+/// Native pure-Rust UniFi Protect live snapshot and stream acquisition adapter.
+pub mod protect_live;
 /// Bounded WebSocket-to-controller observation owner.
 pub mod receive;
 /// Bounded source-preserving FLV-to-MP4 segment owner.
@@ -955,10 +957,9 @@ impl Controller {
                     return Err(Error::TimeSyncLimit);
                 }
                 if continuing_exchange {
-                    let clock = self
-                        .continuing_clock
-                        .as_mut()
-                        .expect("continuing clock policy state");
+                    let Some(clock) = self.continuing_clock.as_mut() else {
+                        return Err(Error::UnexpectedMessage);
+                    };
                     if clock.request_ids[..clock.request_len].contains(&id) {
                         return Err(Error::UnexpectedMessage);
                     }
@@ -1429,11 +1430,11 @@ impl Controller {
                     }
                     MessageKind::TimeSyncReply => {
                         self.last_written_time_sync_reply = Some(id);
-                        if let Some(clock) = &mut self.continuing_clock {
-                            if clock.pending {
-                                clock.chain_replies += 1;
-                                clock.pending = false;
-                            }
+                        if let Some(clock) = &mut self.continuing_clock
+                            && clock.pending
+                        {
+                            clock.chain_replies += 1;
+                            clock.pending = false;
                         }
                         if self.time_sync_policy == TimeSyncPolicy::ExplicitCorrelatedRequests
                             || self.pending_pre_hello_sync

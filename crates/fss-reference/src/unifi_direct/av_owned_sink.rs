@@ -124,6 +124,7 @@ pub struct ConstructionRefusal {
 
 /// Failure preserves the pending segment and muxer for reconciliation.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum FlushError {
     /// The supplied or rebound AAC configuration was invalid.
     Audio,
@@ -226,6 +227,7 @@ pub struct UnknownTimeResumeRefusal {
 impl OwnedSink {
     /// Transfer an idle, unbound sink to unknown-time publication. A sink
     /// with a pending source, fence, or journal scope is returned unchanged.
+    #[allow(clippy::result_large_err)]
     pub fn into_unknown_time(self) -> Result<UnknownTimeOwnedSink, Self> {
         if self.pending.is_some()
             || self.inputs.muxer.pending_publication().is_some()
@@ -281,6 +283,7 @@ impl OwnedSink {
     /// derives an AAC sender-clock hypothesis under caller-supplied limits;
     /// it does not establish capture time, A/V synchronization, identity or
     /// retention authority. Failure returns all original inputs unchanged.
+    #[allow(clippy::result_large_err)]
     pub fn bootstrap(inputs: BootstrapInputs) -> Result<Bootstrap, BootstrapRefusal> {
         let built = (|| {
             let segment = &inputs.first_segment;
@@ -425,6 +428,7 @@ impl OwnedSink {
 
     /// Reconstruct video initialization from the exact owned source record.
     /// Publication later verifies it against the segment and A/V initialization.
+    #[allow(clippy::result_large_err)]
     pub fn new(inputs: Inputs) -> Result<Self, ConstructionRefusal> {
         let constructor = if inputs.av_initialization.inband_parameter_sets() {
             flv_avc::Muxer::new_inband
@@ -448,6 +452,7 @@ impl OwnedSink {
 
     /// Restore an in-process retirement, preserving its pending source even if
     /// video-initialization reconstruction is refused.
+    #[allow(clippy::result_large_err)]
     pub fn resume(retirement: Retirement) -> Result<Self, ResumeRefusal> {
         let constructor = if retirement.inputs.av_initialization.inband_parameter_sets() {
             flv_avc::Muxer::new_inband
@@ -477,6 +482,7 @@ impl OwnedSink {
     }
 
     /// Admit a single owned source segment; refusal returns it unchanged.
+    #[allow(clippy::result_large_err)]
     pub fn offer(
         &mut self,
         segment: recording::Segment,
@@ -508,6 +514,7 @@ impl OwnedSink {
     /// Publish exactly the pending segment. Synchronous storage must be run
     /// by an independently supervised worker, not on a latency-sensitive task.
     /// On every refusal the original source and muxer fence remain owned here.
+    #[allow(clippy::result_large_err, clippy::too_many_arguments)]
     pub fn flush(
         &mut self,
         deployment: &mut ReferenceDeployment,
@@ -604,6 +611,7 @@ impl UnknownTimeOwnedSink {
     }
 
     /// Resume in-process ownership without discarding a pending source or fence.
+    #[allow(clippy::result_large_err)]
     pub fn resume(retirement: UnknownTimeRetirement) -> Result<Self, UnknownTimeResumeRefusal> {
         let constructor = if retirement.inputs.av_initialization.inband_parameter_sets() {
             flv_avc::Muxer::new_inband
@@ -637,6 +645,7 @@ impl UnknownTimeOwnedSink {
 
     /// Admit one original source segment without inventing capture bounds.
     /// A refusal returns that exact segment and leaves existing state unchanged.
+    #[allow(clippy::result_large_err)]
     pub fn offer(&mut self, segment: recording::Segment) -> Result<(), UnknownTimeOfferRefusal> {
         let binding = segment.configuration();
         let source = &self.inputs.video_configuration;
@@ -660,6 +669,7 @@ impl UnknownTimeOwnedSink {
     /// Publish one pending source under an anchored unknown-time journal.
     /// This performs synchronous I/O and must run on a supervised worker.
     /// Failure retains the segment, muxer, and any unresolved publication fence.
+    #[allow(clippy::too_many_arguments)]
     pub fn flush(
         &mut self,
         deployment: &mut ReferenceDeployment,

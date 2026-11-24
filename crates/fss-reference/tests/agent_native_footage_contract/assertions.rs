@@ -62,10 +62,8 @@ pub fn object_path(root: &Path, digest: ContentDigest) -> Test<PathBuf> {
 pub fn mark_tombstone(root: &Path, digest: ContentDigest) -> Test {
     // Even an incomplete local marker must deny a read; it never proves completed deletion.
     fs::write(
-        root.join("objects/tombstones").join(format!(
-            "{}.tomb",
-            digest.to_text().replacen(':', "-", 1)
-        )),
+        root.join("objects/tombstones")
+            .join(format!("{}.tomb", digest.to_text().replacen(':', "-", 1))),
         b"interrupted native-origin deletion",
     )?;
     Ok(())
@@ -79,7 +77,11 @@ pub fn assert_metadata(
     let before = snapshot(root)?;
     let result = query(root)?;
     assert_eq!(result, query(root)?);
-    assert_eq!(snapshot(root)?, before, "discovery must not recover or write");
+    assert_eq!(
+        snapshot(root)?,
+        before,
+        "discovery must not recover or write"
+    );
     assert!(!result.snapshot.doctor_inspected);
     assert_eq!(result.other_adapter_imports, 0);
     let manifest = retained.manifest();
@@ -104,12 +106,14 @@ pub fn assert_metadata(
     }
     let epistemic = result.epistemic();
     assert!(epistemic.propositions.iter().any(|p| {
-        p.statement.contains("adapter_origin_verification=not_performed")
+        p.statement
+            .contains("adapter_origin_verification=not_performed")
             && p.statement.contains("source_payload_availability=unknown")
     }));
     assert!(epistemic.propositions.iter().any(|p| {
         p.state == fss_core::KnowledgeState::Unknown
-            && p.statement.contains("No source-media or adapter-origin proof bytes were read.")
+            && p.statement
+                .contains("No source-media or adapter-origin proof bytes were read.")
     }));
     Ok(result)
 }

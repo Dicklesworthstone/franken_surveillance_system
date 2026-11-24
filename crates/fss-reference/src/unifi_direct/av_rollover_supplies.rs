@@ -246,6 +246,7 @@ impl Worker {
     }
 
     /// Validate configuration without I/O or consuming inputs on refusal.
+    #[allow(clippy::result_large_err)]
     pub fn new(inputs: Inputs) -> Result<Self, Inputs> {
         let root = &inputs.root;
         let valid = root.is_absolute()

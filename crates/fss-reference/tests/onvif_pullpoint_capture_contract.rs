@@ -38,6 +38,7 @@ struct Server {
     thread: Option<JoinHandle<()>>,
 }
 impl Server {
+    #[allow(clippy::panic, clippy::unwrap_used)]
     fn start(replies: impl FnOnce(SocketAddr) -> Vec<String>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -116,11 +117,13 @@ impl Server {
             thread: Some(thread),
         }
     }
+    #[allow(clippy::unwrap_used)]
     fn requests(&self) -> Vec<String> {
         self.requests.lock().unwrap().clone()
     }
 }
 impl Drop for Server {
+    #[allow(clippy::unwrap_used)]
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
         if let Some(thread) = self.thread.take() {
@@ -128,6 +131,7 @@ impl Drop for Server {
         }
     }
 }
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 fn message_id(request: &str) -> String {
     let marker = ":MessageID>";
     let start = request.find(marker).expect("request has MessageID") + marker.len();
@@ -245,6 +249,7 @@ impl OnvifContext for Context {
     }
 }
 
+#[allow(clippy::unwrap_used)]
 fn config(peer: SocketAddr) -> PullPointConfig {
     PullPointConfig {
         events: HttpRoute::event_service(
@@ -363,6 +368,7 @@ fn digest_retries_reuse_logical_message_ids_and_sign_exact_query_targets() {
     }
 }
 
+#[allow(clippy::unwrap_used)]
 fn digest_retry_roundtrip(mixed: bool) {
     let challenge = |realm: &str| {
         if mixed {
@@ -400,7 +406,7 @@ fn digest_retry_roundtrip(mixed: bool) {
     assert_eq!(report.subscription_state, SubscriptionState::Unsubscribed);
     assert_eq!(cx.auth_calls.load(Ordering::SeqCst), 3);
     let requests = server.requests();
-    for pair in requests.chunks_exact(2) {
+    for pair in requests.as_chunks::<2>().0 {
         assert_eq!(message_id(&pair[0]), message_id(&pair[1]));
         assert!(!pair[0].contains("Authorization: Digest "));
         assert!(pair[1].contains("Authorization: Digest "));
@@ -1301,6 +1307,7 @@ fn cancellation_after_control_receipt_preserves_every_acknowledged_handle() {
     }
 }
 
+#[allow(clippy::panic)]
 fn acknowledged_control(event: PullPointControl<'_>) -> Result<RetainedProgress, MetadataError> {
     Ok(match event {
         PullPointControl::RenewIntent { .. } | PullPointControl::Renewed { .. } => {
@@ -1862,6 +1869,7 @@ fn cleanup_only_uses_retained_epr_and_fresh_id_without_create_or_poll() {
     );
 }
 
+#[allow(clippy::unwrap_used)]
 fn cleanup_fixture(peer: SocketAddr) -> fss_reference::onvif::wire::PullPointSubscription {
     let source = created(peer).replace("REQUEST_ID", "urn:fixture:retained-create");
     parse_pull_point_subscription(source.strip_prefix("SOAP:").unwrap().as_bytes()).unwrap()

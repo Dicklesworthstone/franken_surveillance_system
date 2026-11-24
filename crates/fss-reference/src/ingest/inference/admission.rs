@@ -16,13 +16,20 @@ use fss_object::{
     ModelPackageError, ModelPackageLimits, ModelUseProfile,
 };
 
+/// Refusal during model package, license, provenance, or execution admission.
 #[derive(Debug)]
 pub enum ModelAdmissionError {
+    /// Package archive verification or validation failed.
     Package(ModelPackageError),
+    /// Surveillance license policy check failed.
     License(ModelLicensePolicyError),
+    /// Supplied license policy does not target surveillance monitoring.
     WrongUseProfile,
+    /// Runtime model bytes are not listed as provenanced package artifacts.
     RuntimeModelNotProvenanced,
+    /// Model, manifest, or license decision identities did not match.
     IdentityMismatch,
+    /// Admitted scalar inference execution failed.
     Execution(ModelRunError),
 }
 impl std::fmt::Display for ModelAdmissionError {
@@ -73,6 +80,7 @@ pub struct AdmittedRecordedModel {
 }
 impl AdmittedRecordedModel {
     /// Verify a complete package under a verifier-selected surveillance policy.
+    #[allow(clippy::result_large_err)]
     pub fn admit(
         model: RecordedModel,
         package: &ModelPackage,
@@ -123,18 +131,22 @@ impl AdmittedRecordedModel {
             license_decision: decision,
         })
     }
+    /// Admitted runtime model bound to the verified package.
     #[must_use]
     pub const fn model(&self) -> &RecordedModel {
         &self.model
     }
+    /// Canonical digest of the verified model package manifest.
     #[must_use]
     pub const fn manifest_digest(&self) -> ContentDigest {
         self.manifest_digest
     }
+    /// Canonical digest of the complete verified model package archive.
     #[must_use]
     pub const fn package_digest(&self) -> ContentDigest {
         self.package_digest
     }
+    /// Verified surveillance license admission decision.
     #[must_use]
     pub const fn license_decision(&self) -> &ModelLicenseDecision {
         &self.license_decision
@@ -150,6 +162,8 @@ pub struct AdmittedRecordedInference {
     license_decision_digest: ContentDigest,
 }
 impl AdmittedRecordedInference {
+    /// Execute an admitted model on a retained source and publish the numeric inference result.
+    #[allow(clippy::result_large_err)]
     pub fn run_and_publish(
         deployment: &mut ReferenceDeployment,
         source: &RecordedDecodeRequest,
@@ -168,6 +182,8 @@ impl AdmittedRecordedInference {
         )?;
         Self::bind(run, admitted)
     }
+    /// Open a retained inference run and verify its binding to an admitted model.
+    #[allow(clippy::result_large_err)]
     pub fn open(
         deployment: &ReferenceDeployment,
         identity: ContentDigest,
@@ -178,6 +194,7 @@ impl AdmittedRecordedInference {
         let run = RecordedInference::open(deployment, identity, source, cx)?;
         Self::bind(run, admitted)
     }
+    #[allow(clippy::result_large_err)]
     fn bind(
         run: RecordedInference,
         admitted: &AdmittedRecordedModel,
@@ -194,22 +211,28 @@ impl AdmittedRecordedInference {
             license_decision_digest: admitted.license_decision().decision_digest(),
         })
     }
+    /// Underlying retained inference run.
     #[must_use]
     pub const fn run(&self) -> &RecordedInference {
         &self.run
     }
+    /// Canonical digest of the verified model package manifest.
     #[must_use]
     pub const fn manifest_digest(&self) -> ContentDigest {
         self.manifest_digest
     }
+    /// Canonical digest of the verified model package archive.
     #[must_use]
     pub const fn package_digest(&self) -> ContentDigest {
         self.package_digest
     }
+    /// Canonical digest of the surveillance license admission decision.
     #[must_use]
     pub const fn license_decision_digest(&self) -> ContentDigest {
         self.license_decision_digest
     }
+    /// Re-execute the admitted model on the retained source to confirm output equivalence.
+    #[allow(clippy::result_large_err)]
     pub fn verify_by_replay(
         &self,
         deployment: &ReferenceDeployment,
@@ -414,8 +437,10 @@ mod tests {
     fn package_byte_bounds_are_checked_before_admission() -> TestResult {
         let runtime = model(0.25)?;
         let package = package(&runtime, true, "Apache-2.0", vec![])?;
-        let mut limits = ModelPackageLimits::default();
-        limits.max_package_total_bytes = package.total_bytes()?.saturating_sub(1);
+        let limits = ModelPackageLimits {
+            max_package_total_bytes: package.total_bytes()?.saturating_sub(1),
+            ..ModelPackageLimits::default()
+        };
         assert!(matches!(
             AdmittedRecordedModel::admit(runtime, &package, &surveillance_policy(), &limits),
             Err(ModelAdmissionError::Package(_))

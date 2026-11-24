@@ -162,8 +162,10 @@ fn full_eight_session_eight_page_universe_fits_default_metadata_accounting() -> 
         assert_eq!(session.clock_windows, 64);
         assert_eq!(session.indexed_gaps, vec![0..1]);
     }
-    let mut limits = RecordingUtcSessionsLimits::default();
-    limits.max_scanned_windows = 511;
+    let limits = RecordingUtcSessionsLimits {
+        max_scanned_windows: 511,
+        ..RecordingUtcSessionsLimits::default()
+    };
     assert!(matches!(
         f.query_with(&HostSpoolIo, limits, &|| false),
         Err(E::Utc(U::Catalog(CatalogError::Limit)))
@@ -188,7 +190,7 @@ fn every_unknown_time_window_survives_and_consumes_the_shared_output_and_quote_b
         result
             .sessions
             .iter()
-            .all(|session| session.indexed_gaps == vec![0..1])
+            .all(|session| session.indexed_gaps.as_slice() == std::slice::from_ref(&(0..1)))
     );
     f.request.max_windows = 1;
     assert!(matches!(
@@ -270,8 +272,10 @@ fn shared_allowance_includes_every_session_and_the_final_revalidation() -> TestR
             "shared budget mutation {mutation}"
         );
     }
-    let mut exact = RecordingUtcSessionsLimits::default();
-    exact.max_scanned_windows = baseline.scanned_windows;
+    let mut exact = RecordingUtcSessionsLimits {
+        max_scanned_windows: baseline.scanned_windows,
+        ..RecordingUtcSessionsLimits::default()
+    };
     exact.metadata.max_catalogue_entries = baseline.read_usage.pinned_roots;
     exact.metadata.max_objects = baseline.read_usage.metadata_objects;
     exact.metadata.max_io_calls = baseline.read_usage.io_calls;
@@ -474,7 +478,7 @@ fn per_session_gaps_survive_other_sessions_and_union_edges_remain_conditional() 
         result
             .indexed_gaps
             .iter()
-            .all(|gap| gap.start >= first.latest_ns + 1)
+            .all(|gap| gap.start > first.latest_ns)
     );
     let first_digest = f.request.sessions[0].session_digest()?;
     f.request.interval = first.latest_ns..first.latest_ns + 1;

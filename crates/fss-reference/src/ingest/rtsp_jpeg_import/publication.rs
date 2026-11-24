@@ -13,6 +13,7 @@ use fss_core::{
 use fss_object::ObjectManifest;
 use std::collections::BTreeSet;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn publish(
     publisher: &LocalRootPublisher,
     prefix: &DatagramPrefix,
@@ -346,6 +347,7 @@ pub(super) fn publish(
     // Completion is already durable; do not hide it behind a late optional read/cancel check.
     Ok(receipt(false))
 }
+#[allow(clippy::too_many_arguments)]
 fn revalidate_source(
     publisher: &LocalRootPublisher,
     prefix: &DatagramPrefix,

@@ -520,6 +520,7 @@ impl SupervisedAvcConnection {
     /// Connect exactly once, never during backoff or while an old owner is active.
     /// All attempts share the original deadline and cannot change pinned media.
     /// Complete declared native allowances reserve before any connection effect.
+    #[allow(clippy::result_large_err)]
     pub fn connect(
         &mut self,
         config: LiveAvcConfig,
@@ -558,6 +559,7 @@ impl SupervisedAvcConnection {
     }
 
     /// Perform one original native step. No terminal source, tail or retirement is hidden.
+    #[allow(clippy::result_large_err)]
     pub fn poll(
         &mut self,
         readiness: SocketReadiness,
@@ -609,6 +611,7 @@ impl SupervisedAvcConnection {
     /// refund. Supply a fresh observation after the failed syscall/drain; it
     /// starts the backoff. The old generation must still be granted here; the new
     /// one is independently checked when connected. This performs no network I/O.
+    #[allow(clippy::result_large_err)]
     pub fn acknowledge_retirement(
         &mut self,
         now: u64,
@@ -642,6 +645,7 @@ impl SupervisedAvcConnection {
         }
     }
 
+    #[allow(clippy::result_large_err)]
     fn admit(
         &mut self,
         now: u64,

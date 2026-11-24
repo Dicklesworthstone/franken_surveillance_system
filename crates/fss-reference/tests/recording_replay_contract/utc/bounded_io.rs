@@ -66,6 +66,7 @@ impl SpoolIo for LargeReadProbe {
     fn open_read(&self, path: &Path) -> io::Result<File> {
         HostSpoolIo.open_read(path)
     }
+    #[allow(clippy::expect_used)]
     fn read_bounded(&self, file: &mut File, limit: u64) -> io::Result<Vec<u8>> {
         let selected = file.metadata()?.len() == LARGE_FILE_LENGTH;
         let bytes = HostSpoolIo.read_bounded(file, limit)?;

@@ -22,7 +22,9 @@ use fss_reference::agent_session::checkpoint::journal::DurableSessionLimits;
 use fss_reference::agent_session::checkpoint::journal::disclosure::{
     DurableDisclosureStore, JournaledSourceBinding,
 };
-use fss_reference::deletion::belief::hydration::{DeletionAwareSourceReader, DeploymentSourceLimits};
+use fss_reference::deletion::belief::hydration::{
+    DeletionAwareSourceReader, DeploymentSourceLimits,
+};
 use fss_reference::{
     PublishedSourceReader, ReferenceDeployment, ReferenceHydrationCatalog, SessionBindingRequest,
     SourceHydrationError,
@@ -46,12 +48,21 @@ struct Fixture {
 
 fn handle(deployment: &ReferenceDeployment, bytes: &[u8], name: &str) -> Value<SemanticHandle> {
     let levels = BTreeSet::from([
-        HydrationLevel::H0, HydrationLevel::H1, HydrationLevel::H2, HydrationLevel::H3,
+        HydrationLevel::H0,
+        HydrationLevel::H1,
+        HydrationLevel::H2,
+        HydrationLevel::H3,
     ]);
     let quote = BudgetVector::builder().bytes(1024).tokens(TOKENS).build()?;
     Ok(SemanticHandle::publish(SemanticHandleSpec {
         contract_basis: ContractBasis::from_registry_bytes(ContractBasisRegistryBytes::new(
-            b"s", b"o", b"v", b"c", b"e", b"cost", "source-registration:test",
+            b"s",
+            b"o",
+            b"v",
+            b"c",
+            b"e",
+            b"cost",
+            "source-registration:test",
         )),
         anchor: deployment.current_anchor().clone(),
         subject_id: format!("subject:{name}"),
@@ -64,9 +75,19 @@ fn handle(deployment: &ReferenceDeployment, bytes: &[u8], name: &str) -> Value<S
         applied_transform: None,
         availability: HandleAvailability::Available,
         retention_until: TimestampNs(100),
-        required_capabilities: levels.iter().map(|level| (*level, if *level == HydrationLevel::H3 {
-            BTreeSet::from(["capability:source".to_owned()])
-        } else { BTreeSet::new() })).collect(),
+        required_capabilities: levels
+            .iter()
+            .map(|level| {
+                (
+                    *level,
+                    if *level == HydrationLevel::H3 {
+                        BTreeSet::from(["capability:source".to_owned()])
+                    } else {
+                        BTreeSet::new()
+                    },
+                )
+            })
+            .collect(),
         estimated_costs: levels.iter().map(|level| (*level, quote)).collect(),
         levels,
         laboratory_access: LaboratoryAccess::Unavailable,
@@ -82,47 +103,101 @@ fn setup(label: &str) -> Value<Fixture> {
     let context = cx(label)?;
     let slot = SlotName::parse("source")?;
     let staged = deployment.stage_and_publish(&slot, &[SOURCE, OTHER, META], &context)?;
-    deployment.publish_and_commit(&slot, &staged.manifest,
-        CaptureInterval::new(TimestampNs(1), TimestampNs(2))?, &context)?;
+    deployment.publish_and_commit(
+        &slot,
+        &staged.manifest,
+        CaptureInterval::new(TimestampNs(1), TimestampNs(2))?,
+        &context,
+    )?;
     // Both slots exist before any descriptor is created: refusal below is not stale-anchor drift.
     let alias_slot = SlotName::parse("source-alias")?;
-    deployment.publish_and_commit(&alias_slot, &staged.manifest,
-        CaptureInterval::new(TimestampNs(1), TimestampNs(2))?, &context)?;
+    deployment.publish_and_commit(
+        &alias_slot,
+        &staged.manifest,
+        CaptureInterval::new(TimestampNs(1), TimestampNs(2))?,
+        &context,
+    )?;
     let handle = handle(&deployment, SOURCE, "original")?;
-    Ok(Fixture { deployment, directory, slot, alias_slot, manifest: staged.manifest, handle })
+    Ok(Fixture {
+        deployment,
+        directory,
+        slot,
+        alias_slot,
+        manifest: staged.manifest,
+        handle,
+    })
 }
 
 fn blueprint(handle: &SemanticHandle) -> Value<ReferenceHydrationCatalog> {
     let mut catalog = ReferenceHydrationCatalog::new();
     catalog.register_descriptor(handle.clone())?;
-    catalog.register_artifact(&handle.handle_id, handle.descriptor_digest,
-        HydrationArtifact::publish(HydrationLevel::H2, "text/plain", b"preview".to_vec(),
-            [handle.subject_digest], Completeness::Complete, None)?)?;
+    catalog.register_artifact(
+        &handle.handle_id,
+        handle.descriptor_digest,
+        HydrationArtifact::publish(
+            HydrationLevel::H2,
+            "text/plain",
+            b"preview".to_vec(),
+            [handle.subject_digest],
+            Completeness::Complete,
+            None,
+        )?,
+    )?;
     Ok(catalog)
 }
 
-fn register(f: &Fixture, owner: &mut DurableDisclosureStore, now: i128) -> Value<JournaledSourceBinding> {
-    let reader = DeletionAwareSourceReader::new(&f.deployment, &HostSpoolIo, &f.slot,
-        &f.handle.anchor, DeploymentSourceLimits::default(), &|| false);
-    let receipt = owner.bind_source_object_durable(&f.handle.handle_id, f.handle.descriptor_digest,
-        f.manifest.root(), &reader, TimestampNs(now))?;
+fn register(
+    f: &Fixture,
+    owner: &mut DurableDisclosureStore,
+    now: i128,
+) -> Value<JournaledSourceBinding> {
+    let reader = DeletionAwareSourceReader::new(
+        &f.deployment,
+        &HostSpoolIo,
+        &f.slot,
+        &f.handle.anchor,
+        DeploymentSourceLimits::default(),
+        &|| false,
+    );
+    let receipt = owner.bind_source_object_durable(
+        &f.handle.handle_id,
+        f.handle.descriptor_digest,
+        f.manifest.root(),
+        &reader,
+        TimestampNs(now),
+    )?;
     assert!(reader.attempted());
     Ok(receipt)
 }
 
-struct WeakReader { store: InMemoryObjectStore, reads: Cell<usize> }
+struct WeakReader {
+    store: InMemoryObjectStore,
+    reads: Cell<usize>,
+}
 impl PublishedSourceReader for WeakReader {
-    fn read_published_source(&self, root: ContentDigest, subject: ContentDigest, maximum: u64)
-        -> Result<Vec<u8>, SourceHydrationError> {
+    fn read_published_source(
+        &self,
+        root: ContentDigest,
+        subject: ContentDigest,
+        maximum: u64,
+    ) -> Result<Vec<u8>, SourceHydrationError> {
         self.reads.set(self.reads.get() + 1);
         self.store.read_published_source(root, subject, maximum)
     }
 }
 fn weak(f: &Fixture) -> Value<WeakReader> {
     let mut store = InMemoryObjectStore::new(ObjectLimits::default());
-    for bytes in [SOURCE, OTHER, META] { store.put_verified(bytes)?; }
-    assert_eq!(store.publish_manifest(f.manifest.clone())?.root, f.manifest.root());
-    Ok(WeakReader { store, reads: Cell::new(0) })
+    for bytes in [SOURCE, OTHER, META] {
+        store.put_verified(bytes)?;
+    }
+    assert_eq!(
+        store.publish_manifest(f.manifest.clone())?.root,
+        f.manifest.root()
+    );
+    Ok(WeakReader {
+        store,
+        reads: Cell::new(0),
+    })
 }
 fn no_source(path: &PathBuf) -> Value {
     let journal = fs::read(path)?;
@@ -146,22 +221,62 @@ fn durable_registration_fences_weaker_and_equal_content_aliases_before_any_discl
     let original_bytes = fs::read(&path)?;
     let memory = weak(&f)?;
     let mut weaker = blueprint(&f.handle)?;
-    weaker.bind_source_object(&f.handle.handle_id, f.handle.descriptor_digest, f.manifest.root(), &memory)?;
-    assert!(DurableDisclosureStore::open_existing(&path, registered.committed_root, limits, weaker).is_err());
+    weaker.bind_source_object(
+        &f.handle.handle_id,
+        f.handle.descriptor_digest,
+        f.manifest.root(),
+        &memory,
+    )?;
+    assert!(
+        DurableDisclosureStore::open_existing(&path, registered.committed_root, limits, weaker)
+            .is_err()
+    );
     assert_eq!(fs::read(&path)?, original_bytes);
     let mut owner = DurableDisclosureStore::open_existing(
-        &path, registered.committed_root, limits, ReferenceHydrationCatalog::new(),
+        &path,
+        registered.committed_root,
+        limits,
+        ReferenceHydrationCatalog::new(),
     )?;
-    assert_eq!(owner.catalog().source_binding_requirement(f.handle.descriptor_digest), Some(expected));
+    assert_eq!(
+        owner
+            .catalog()
+            .source_binding_requirement(f.handle.descriptor_digest),
+        Some(expected)
+    );
     owner.register_descriptor(f.handle.clone())?;
     let reads = memory.reads.get();
-    assert!(owner.bind_source_object_durable(&f.handle.handle_id, f.handle.descriptor_digest,
-        f.manifest.root(), &memory, TimestampNs(11)).is_err());
+    assert!(
+        owner
+            .bind_source_object_durable(
+                &f.handle.handle_id,
+                f.handle.descriptor_digest,
+                f.manifest.root(),
+                &memory,
+                TimestampNs(11)
+            )
+            .is_err()
+    );
     assert_eq!(memory.reads.get(), reads);
-    let alias = DeletionAwareSourceReader::new(&f.deployment, &HostSpoolIo, &f.alias_slot,
-        &f.handle.anchor, DeploymentSourceLimits::default(), &|| false);
-    assert!(owner.bind_source_object_durable(&f.handle.handle_id, f.handle.descriptor_digest,
-        f.manifest.root(), &alias, TimestampNs(11)).is_err());
+    let alias = DeletionAwareSourceReader::new(
+        &f.deployment,
+        &HostSpoolIo,
+        &f.alias_slot,
+        &f.handle.anchor,
+        DeploymentSourceLimits::default(),
+        &|| false,
+    );
+    assert!(
+        owner
+            .bind_source_object_durable(
+                &f.handle.handle_id,
+                f.handle.descriptor_digest,
+                f.manifest.root(),
+                &alias,
+                TimestampNs(11)
+            )
+            .is_err()
+    );
     assert!(!alias.attempted());
     assert_eq!(owner.committed_root(), registered.committed_root);
     let restored = register(&f, &mut owner, 11)?;
@@ -189,7 +304,8 @@ fn request(handle: &SemanticHandle, level: HydrationLevel) -> Value<HydrationReq
 }
 
 #[test]
-fn registration_and_charged_disclosures_interleave_without_resetting_cursors_or_balances() -> Value {
+fn registration_and_charged_disclosures_interleave_without_resetting_cursors_or_balances() -> Value
+{
     let f = setup("interleaved")?;
     let path = f.directory.join("sessions.journal");
     let limits = DurableSessionLimits::default();
@@ -210,24 +326,60 @@ fn registration_and_charged_disclosures_interleave_without_resetting_cursors_or_
         created_at_ns: 1,
         expires_at_ns: 1000,
     };
-    owner.open_session(params.clone(), f.handle.contract_basis.clone(), TimestampNs(11))?;
-    let alias = owner.bind(&params.principal_id, &SessionBindingRequest {
-        session_id: params.session_id.clone(), generation: 0,
-        handle_id: f.handle.handle_id.clone(), descriptor_digest: f.handle.descriptor_digest,
-    }, TimestampNs(11))?;
-    assert!(owner.admissions(&params.principal_id, &params.session_id,
-        source_request.request_digest, 8, TimestampNs(11))?.is_empty());
-    let preview = owner.hydrate(&params.principal_id, &alias,
-        &request(&f.handle, HydrationLevel::H2)?, TimestampNs(20))?;
-    let cursor = preview.response.receipt.continuation.ok_or("no source continuation")?;
+    owner.open_session(
+        params.clone(),
+        f.handle.contract_basis.clone(),
+        TimestampNs(11),
+    )?;
+    let alias = owner.bind(
+        &params.principal_id,
+        &SessionBindingRequest {
+            session_id: params.session_id.clone(),
+            generation: 0,
+            handle_id: f.handle.handle_id.clone(),
+            descriptor_digest: f.handle.descriptor_digest,
+        },
+        TimestampNs(11),
+    )?;
+    assert!(
+        owner
+            .admissions(
+                &params.principal_id,
+                &params.session_id,
+                source_request.request_digest,
+                8,
+                TimestampNs(11)
+            )?
+            .is_empty()
+    );
+    let preview = owner.hydrate(
+        &params.principal_id,
+        &alias,
+        &request(&f.handle, HydrationLevel::H2)?,
+        TimestampNs(20),
+    )?;
+    let cursor = preview
+        .response
+        .receipt
+        .continuation
+        .ok_or("no source continuation")?;
     register(&f, &mut owner, 21)?;
-    assert!(!owner.catalog().issued_cursor(&cursor.cursor_digest).ok_or("lost cursor")?.consumed);
-    assert_eq!(owner.remaining_token_budget(&params.principal_id, &params.session_id,
-        TimestampNs(21))?, SESSION_TOKENS - TOKENS);
+    assert!(
+        !owner
+            .catalog()
+            .issued_cursor(&cursor.cursor_digest)
+            .ok_or("lost cursor")?
+            .consumed
+    );
+    assert_eq!(
+        owner.remaining_token_budget(&params.principal_id, &params.session_id, TimestampNs(21))?,
+        SESSION_TOKENS - TOKENS
+    );
     let pin = owner.committed_root();
     drop(owner);
 
-    let mut owner = DurableDisclosureStore::open_existing(&path, pin, limits, blueprint(&f.handle)?)?;
+    let mut owner =
+        DurableDisclosureStore::open_existing(&path, pin, limits, blueprint(&f.handle)?)?;
     // Reconstruct absent source under its saved requirement. This retry is not a disclosure.
     register(&f, &mut owner, 22)?;
     let mut source_request = source_request;
@@ -235,30 +387,87 @@ fn registration_and_charged_disclosures_interleave_without_resetting_cursors_or_
     source_request.issued_at = TimestampNs(21);
     source_request.request_digest = source_request.computed_digest();
     source_request.request_id = format!("hydration-request:{}", source_request.request_digest);
-    let reader = DeletionAwareSourceReader::new(&f.deployment, &HostSpoolIo, &f.slot,
-        &f.handle.anchor, DeploymentSourceLimits::default(), &|| false);
-    let delivery = owner.hydrate_from_source(&params.principal_id, &alias,
-        &source_request, &reader, TimestampNs(23))?;
-    registered.binding.validate_response(&source_request, &f.handle, &delivery.response)?;
-    assert_eq!(delivery.response.artifact.as_ref().ok_or("no original bytes")?.payload, SOURCE);
+    let reader = DeletionAwareSourceReader::new(
+        &f.deployment,
+        &HostSpoolIo,
+        &f.slot,
+        &f.handle.anchor,
+        DeploymentSourceLimits::default(),
+        &|| false,
+    );
+    let delivery = owner.hydrate_from_source(
+        &params.principal_id,
+        &alias,
+        &source_request,
+        &reader,
+        TimestampNs(23),
+    )?;
+    registered
+        .binding
+        .validate_response(&source_request, &f.handle, &delivery.response)?;
+    assert_eq!(
+        delivery
+            .response
+            .artifact
+            .as_ref()
+            .ok_or("no original bytes")?
+            .payload,
+        SOURCE
+    );
     assert_eq!(delivery.admission.charged_tokens(), TOKENS);
     register(&f, &mut owner, 24)?;
-    assert!(owner.catalog().issued_cursor(&cursor.cursor_digest).ok_or("lost consumed cursor")?.consumed);
-    assert_eq!(owner.remaining_token_budget(&params.principal_id, &params.session_id,
-        TimestampNs(24))?, SESSION_TOKENS - 2 * TOKENS);
-    assert_eq!(owner.admissions(&params.principal_id, &params.session_id,
-        source_request.request_digest, 8, TimestampNs(24))?.len(), 1);
+    assert!(
+        owner
+            .catalog()
+            .issued_cursor(&cursor.cursor_digest)
+            .ok_or("lost consumed cursor")?
+            .consumed
+    );
+    assert_eq!(
+        owner.remaining_token_budget(&params.principal_id, &params.session_id, TimestampNs(24))?,
+        SESSION_TOKENS - 2 * TOKENS
+    );
+    assert_eq!(
+        owner
+            .admissions(
+                &params.principal_id,
+                &params.session_id,
+                source_request.request_digest,
+                8,
+                TimestampNs(24)
+            )?
+            .len(),
+        1
+    );
     let pin = owner.committed_root();
     drop(owner);
 
-    let mut owner = DurableDisclosureStore::open_existing(&path, pin, limits, blueprint(&f.handle)?)?;
-    let reader = DeletionAwareSourceReader::new(&f.deployment, &HostSpoolIo, &f.slot,
-        &f.handle.anchor, DeploymentSourceLimits::default(), &|| false);
-    assert!(owner.hydrate_from_source(&params.principal_id, &alias,
-        &source_request, &reader, TimestampNs(25)).is_err());
+    let mut owner =
+        DurableDisclosureStore::open_existing(&path, pin, limits, blueprint(&f.handle)?)?;
+    let reader = DeletionAwareSourceReader::new(
+        &f.deployment,
+        &HostSpoolIo,
+        &f.slot,
+        &f.handle.anchor,
+        DeploymentSourceLimits::default(),
+        &|| false,
+    );
+    assert!(
+        owner
+            .hydrate_from_source(
+                &params.principal_id,
+                &alias,
+                &source_request,
+                &reader,
+                TimestampNs(25)
+            )
+            .is_err()
+    );
     assert!(!reader.attempted());
-    assert_eq!(owner.remaining_token_budget(&params.principal_id, &params.session_id,
-        TimestampNs(25))?, SESSION_TOKENS - 2 * TOKENS);
+    assert_eq!(
+        owner.remaining_token_budget(&params.principal_id, &params.session_id, TimestampNs(25))?,
+        SESSION_TOKENS - 2 * TOKENS
+    );
     no_source(&path)
 }
 
@@ -268,20 +477,50 @@ fn registration_does_not_implicitly_pin_other_volatile_source_bindings() -> Valu
     let other = handle(&f.deployment, OTHER, "other")?;
     let mut catalog = blueprint(&f.handle)?;
     catalog.register_descriptor(other.clone())?;
-    let reader = DeletionAwareSourceReader::new(&f.deployment, &HostSpoolIo, &f.slot,
-        &other.anchor, DeploymentSourceLimits::default(), &|| false);
+    let reader = DeletionAwareSourceReader::new(
+        &f.deployment,
+        &HostSpoolIo,
+        &f.slot,
+        &other.anchor,
+        DeploymentSourceLimits::default(),
+        &|| false,
+    );
     catalog.bind_deployment_source_object(&other.handle_id, other.descriptor_digest, &reader)?;
     let path = f.directory.join("sessions.journal");
     let limits = DurableSessionLimits::default();
     let mut owner = DurableDisclosureStore::create(&path, limits, catalog)?;
     let registered = register(&f, &mut owner, 10)?;
-    assert!(owner.catalog().source_binding(&other.handle_id, other.descriptor_digest).is_some());
-    assert!(owner.catalog().source_binding_requirement(other.descriptor_digest).is_none());
+    assert!(
+        owner
+            .catalog()
+            .source_binding(&other.handle_id, other.descriptor_digest)
+            .is_some()
+    );
+    assert!(
+        owner
+            .catalog()
+            .source_binding_requirement(other.descriptor_digest)
+            .is_none()
+    );
     drop(owner);
-    let owner = DurableDisclosureStore::open_existing(&path, registered.committed_root,
-        limits, ReferenceHydrationCatalog::new())?;
-    assert!(owner.catalog().source_binding_requirement(f.handle.descriptor_digest).is_some());
-    assert!(owner.catalog().source_binding_requirement(other.descriptor_digest).is_none());
+    let owner = DurableDisclosureStore::open_existing(
+        &path,
+        registered.committed_root,
+        limits,
+        ReferenceHydrationCatalog::new(),
+    )?;
+    assert!(
+        owner
+            .catalog()
+            .source_binding_requirement(f.handle.descriptor_digest)
+            .is_some()
+    );
+    assert!(
+        owner
+            .catalog()
+            .source_binding_requirement(other.descriptor_digest)
+            .is_none()
+    );
     no_source(&path)
 }
 
@@ -293,20 +532,49 @@ fn cancelled_registration_has_no_requirement_or_successful_journal_record() -> V
     let mut owner = DurableDisclosureStore::create(&path, limits, blueprint(&f.handle)?)?;
     let initial = owner.committed_root();
     let original = fs::read(&path)?;
-    let reader = DeletionAwareSourceReader::new(&f.deployment, &HostSpoolIo, &f.slot,
-        &f.handle.anchor, DeploymentSourceLimits::default(), &|| true);
-    assert!(owner.bind_source_object_durable(&f.handle.handle_id, f.handle.descriptor_digest,
-        f.manifest.root(), &reader, TimestampNs(10)).is_err());
+    let reader = DeletionAwareSourceReader::new(
+        &f.deployment,
+        &HostSpoolIo,
+        &f.slot,
+        &f.handle.anchor,
+        DeploymentSourceLimits::default(),
+        &|| true,
+    );
+    assert!(
+        owner
+            .bind_source_object_durable(
+                &f.handle.handle_id,
+                f.handle.descriptor_digest,
+                f.manifest.root(),
+                &reader,
+                TimestampNs(10)
+            )
+            .is_err()
+    );
     assert!(reader.attempted());
     assert!(reader.custody_usage().is_none());
     assert_eq!(owner.committed_root(), initial);
     assert_eq!(fs::read(&path)?, original);
     assert!(!owner.needs_reconciliation());
-    assert!(owner.catalog().source_binding(&f.handle.handle_id, f.handle.descriptor_digest).is_none());
+    assert!(
+        owner
+            .catalog()
+            .source_binding(&f.handle.handle_id, f.handle.descriptor_digest)
+            .is_none()
+    );
     drop(owner);
-    let owner = DurableDisclosureStore::open_existing(&path, initial, limits,
-        ReferenceHydrationCatalog::new())?;
-    assert!(owner.catalog().source_binding_requirement(f.handle.descriptor_digest).is_none());
+    let owner = DurableDisclosureStore::open_existing(
+        &path,
+        initial,
+        limits,
+        ReferenceHydrationCatalog::new(),
+    )?;
+    assert!(
+        owner
+            .catalog()
+            .source_binding_requirement(f.handle.descriptor_digest)
+            .is_none()
+    );
     Ok(())
 }
 
@@ -314,10 +582,17 @@ fn cancelled_registration_has_no_requirement_or_successful_journal_record() -> V
 fn fresh_registration_rejects_corrupt_unused_metadata_and_never_repairs_it() -> Value {
     let f = setup("metadata")?;
     let path = f.directory.join("sessions.journal");
-    let mut owner = DurableDisclosureStore::create(&path, DurableSessionLimits::default(),
-        blueprint(&f.handle)?)?;
+    let mut owner = DurableDisclosureStore::create(
+        &path,
+        DurableSessionLimits::default(),
+        blueprint(&f.handle)?,
+    )?;
     let initial = owner.committed_root();
-    let object = f.deployment.publisher().spool().object_path(ContentDigest::sha256(META));
+    let object = f
+        .deployment
+        .publisher()
+        .spool()
+        .object_path(ContentDigest::sha256(META));
     let mut damaged = fs::read(&object)?;
     *damaged.last_mut().ok_or("empty metadata envelope")? ^= 1;
     fs::write(&object, &damaged)?;
@@ -325,7 +600,17 @@ fn fresh_registration_rejects_corrupt_unused_metadata_and_never_repairs_it() -> 
     assert_eq!(owner.committed_root(), initial);
     assert!(!owner.needs_reconciliation());
     assert_eq!(fs::read(&object)?, damaged);
-    assert!(owner.catalog().source_binding_requirement(f.handle.descriptor_digest).is_none());
-    assert!(owner.catalog().source_binding(&f.handle.handle_id, f.handle.descriptor_digest).is_none());
+    assert!(
+        owner
+            .catalog()
+            .source_binding_requirement(f.handle.descriptor_digest)
+            .is_none()
+    );
+    assert!(
+        owner
+            .catalog()
+            .source_binding(&f.handle.handle_id, f.handle.descriptor_digest)
+            .is_none()
+    );
     no_source(&path)
 }

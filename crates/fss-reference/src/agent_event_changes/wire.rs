@@ -31,6 +31,7 @@ fn invalid() -> EventChangesError {
 /// Split trusted, locally emitted canonical JSON at its top-level field boundaries. This is
 /// not an external JSON decoder. Exact integer/float lexemes and complete nested values stay
 /// untouched, including quoted brackets, commas, control escapes and non-ASCII prose.
+#[allow(clippy::result_large_err)]
 fn fields(json: &str) -> Result<BTreeMap<&'static str, &str>, EventChangesError> {
     let bytes = json.as_bytes();
     if bytes.first() != Some(&b'{') || bytes.last() != Some(&b'}') {
@@ -121,6 +122,7 @@ fn quote(value: &str) -> String {
     out
 }
 
+#[allow(clippy::result_large_err)]
 pub(super) fn build(
     from: &EventHypothesis,
     to: &EventHypothesis,

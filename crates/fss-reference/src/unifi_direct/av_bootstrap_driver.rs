@@ -72,6 +72,7 @@ pub struct Handoff<'scope, 'task, IO> {
 
 /// Failed handoff retaining all original source and controller custody.
 #[must_use]
+#[allow(clippy::large_enum_variant)]
 pub enum HandoffRefusal<'scope, 'task, IO> {
     /// The collector is incomplete, audio is pending, or reconciliation is required.
     NotReady(Driver<'scope, 'task, IO>),
@@ -102,6 +103,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Driver<'scope, 'task, IO
 
     /// Attach only to an active audio interpreter with no unmatched event.
     /// On refusal the supervisor and collector are returned unchanged.
+    #[allow(clippy::result_large_err)]
     pub fn attach(
         supervisor: supervisor::Supervisor<'scope, 'task, IO>,
         collector: av_bootstrap::Collector,
@@ -127,6 +129,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Driver<'scope, 'task, IO
     /// No I/O, capture-time inference or camera authorization is performed.
     /// An incomplete or fenced driver is returned intact; a validation refusal
     /// returns both the supervisor and every original bootstrap input.
+    #[allow(clippy::result_large_err)]
     pub fn bootstrap(
         self,
     ) -> Result<Handoff<'scope, 'task, IO>, HandoffRefusal<'scope, 'task, IO>> {

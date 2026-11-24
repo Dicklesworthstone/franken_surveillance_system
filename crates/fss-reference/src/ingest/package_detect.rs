@@ -83,10 +83,11 @@ pub struct PackageDetectLimits {
 }
 impl Default for PackageDetectLimits {
     fn default() -> Self {
+        let jpeg = RgbDecodeLimits::default();
         Self {
             read: RetainedReadLimits::default(),
-            jpeg: RgbDecodeLimits::default(),
-            jpeg_work_units: 1_000_000_000,
+            jpeg,
+            jpeg_work_units: jpeg.rgb_work_bound(),
             h264: DecoderLimits::default(),
             h265: H265DecoderLimits::default(),
             run: RgbRunLimits {
@@ -901,4 +902,90 @@ fn render(
     }
     s.push_str("],\"complete\":true,\"model_outputs\":\"uncalibrated\",\"quality_claim\":\"none\",\"absence_certifiable\":false,\"effects_authorized\":false}\n");
     Ok(s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fss_codec_mjpeg::DecodeError;
+
+    /// Minimal synthetic baseline 4:4:4 YCbCr JPEG encoder for testing default work bounds on
+    /// full 4MP UniFi G4 dimensions (2688x1512) without external crates.
+    fn synthetic_444_jpeg(width: u16, height: u16) -> Vec<u8> {
+        let mut out = vec![0xff, 0xd8];
+        let push_seg = |buf: &mut Vec<u8>, marker: u8, payload: &[u8]| {
+            buf.extend_from_slice(&[0xff, marker]);
+            buf.extend_from_slice(&((payload.len() + 2) as u16).to_be_bytes());
+            buf.extend_from_slice(payload);
+        };
+        let mut dqt = vec![8_u8; 65];
+        dqt[0] = 0;
+        push_seg(&mut out, 0xdb, &dqt);
+        // DC Huffman: 1 symbol of length 1 -> code 0 = category 0 (zero diff).
+        // AC Huffman: 1 symbol of length 1 -> code 0 = EOB (0x00).
+        let mut dht = vec![0_u8; 17];
+        dht[1] = 1;
+        dht.push(0);
+        let mut ac = vec![0_u8; 17];
+        ac[0] = 0x10;
+        ac[1] = 1;
+        ac.push(0);
+        dht.extend_from_slice(&ac);
+        push_seg(&mut out, 0xc4, &dht);
+        let mut sof = vec![8];
+        sof.extend_from_slice(&height.to_be_bytes());
+        sof.extend_from_slice(&width.to_be_bytes());
+        sof.push(3);
+        sof.extend_from_slice(&[1, 0x11, 0, 2, 0x11, 0, 3, 0x11, 0]);
+        push_seg(&mut out, 0xc0, &sof);
+        push_seg(&mut out, 0xda, &[3, 1, 0, 2, 0, 3, 0, 0, 63, 0]);
+        // Each block takes 2 zero bits (DC cat 0 + AC EOB), 3 blocks/MCU = 6 zero bits/MCU.
+        let mcus = usize::from(width).div_ceil(8) * usize::from(height).div_ceil(8);
+        let total_bits = mcus * 6;
+        let full_bytes = total_bits / 8;
+        let rem_bits = total_bits % 8;
+        out.resize(out.len() + full_bytes, 0);
+        if rem_bits != 0 {
+            // Pad remaining low bits with 1s per JPEG byte alignment rule.
+            out.push((1_u8 << (8 - rem_bits)) - 1);
+        }
+        out.extend_from_slice(&[0xff, 0xd9]);
+        out
+    }
+
+    #[test]
+    fn default_limits_admit_2688x1512_444_jpeg_without_budget_exhaustion() -> Result<(), DecodeError>
+    {
+        let limits = PackageDetectLimits::default();
+        assert!(limits.jpeg_work_units >= limits.jpeg.rgb_work_bound());
+        let bytes = synthetic_444_jpeg(2688, 1512);
+        let digest = ContentDigest::sha256(&bytes).bytes();
+        let mut budget = DecodeBudget::new(limits.jpeg_work_units);
+        let decoded = decode_rgb(
+            &bytes,
+            digest,
+            ComponentInterpretation::YCbCr,
+            limits.jpeg,
+            &mut budget,
+        )?;
+        assert_eq!(decoded.dimensions(), [2688, 1512]);
+        assert_eq!(decoded.receipt().mcus, 63_504);
+        assert_eq!(decoded.receipt().entropy_blocks, 190_512);
+        assert!(budget.used() > 1_480_000_000);
+        assert!(budget.used() <= limits.jpeg_work_units);
+
+        // Explicit tiny caller override still exhausts and fails closed.
+        let mut tiny = DecodeBudget::new(100_000);
+        assert!(matches!(
+            decode_rgb(
+                &bytes,
+                digest,
+                ComponentInterpretation::YCbCr,
+                limits.jpeg,
+                &mut tiny,
+            ),
+            Err(DecodeError::BudgetExhausted)
+        ));
+        Ok(())
+    }
 }

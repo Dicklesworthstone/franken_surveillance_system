@@ -152,6 +152,7 @@ impl std::error::Error for SupervisedHevcRecordingFailure {}
 /// A scheduling observation or one unchanged native HEVC recording output.
 #[must_use]
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum SupervisedHevcRecordingStep {
     /// No socket exists; absolute time, work limits and live authority still apply.
     Waiting {
@@ -371,6 +372,7 @@ impl SupervisedHevcRecording {
     /// Reserve one entire native allowance before opening a fresh connection.
     /// An early, stale, profile-changing or resource-refused call opens no socket
     /// and consumes no attempt ordinal. Ordinary scheduler work still consumes a step.
+    #[allow(clippy::result_large_err)]
     pub fn connect(
         &mut self,
         live: LiveHevcConfig,
@@ -430,6 +432,7 @@ impl SupervisedHevcRecording {
     /// One original recording step. Socket EOF does not skip timing, windows,
     /// trailing originals or capture failure. Retain every returned output before
     /// continuing; a prepared window is never silently published by this wrapper.
+    #[allow(clippy::result_large_err)]
     pub fn poll(
         &mut self,
         readiness: SocketReadiness,
@@ -497,6 +500,7 @@ impl SupervisedHevcRecording {
     /// reply from an earlier picture within that generation. Use `supply_timing_for`
     /// with `timing_ticket()` when timing can complete asynchronously or be retried.
     /// Success consumes any current ticket; safe value refusals preserve it.
+    #[allow(clippy::result_large_err)]
     pub fn supply_timing(
         &mut self,
         key: StreamKey,
@@ -513,6 +517,7 @@ impl SupervisedHevcRecording {
     /// the same session. Stale/cross-owner tickets leave native work unchanged.
     /// Safe timing-value refusals retain the ticket and original residence deadline.
     /// EOB may carry the final picture; success still does not bypass capture draining.
+    #[allow(clippy::result_large_err)]
     pub fn supply_timing_for(
         &mut self,
         ticket: &HevcTimingTicket,
@@ -533,6 +538,7 @@ impl SupervisedHevcRecording {
 
     // Both public paths have admitted the live supervisor exactly once. Only this
     // native call can consume a held picture or its timing ticket.
+    #[allow(clippy::result_large_err)]
     fn supply_held_timing(
         &mut self,
         timing: HevcRecordingTiming,
@@ -551,6 +557,7 @@ impl SupervisedHevcRecording {
 
     /// Seal only an actually completed prefix in the requested generation.
     /// No EOF, media timing, publication or new connection is manufactured.
+    #[allow(clippy::result_large_err)]
     pub fn seal(
         &mut self,
         key: StreamKey,
@@ -568,6 +575,7 @@ impl SupervisedHevcRecording {
     /// Caller assertion that the previous terminal originals were retained or
     /// explicitly accounted for. This is NOT a publication receipt or resource
     /// refund. A fresh owner time starts backoff only after the capture drain ended.
+    #[allow(clippy::result_large_err)]
     pub fn acknowledge_retirement(
         &mut self,
         now: u64,
@@ -626,6 +634,7 @@ impl SupervisedHevcRecording {
         }
     }
 
+    #[allow(clippy::result_large_err)]
     fn admit(
         &mut self,
         now: u64,
@@ -646,6 +655,7 @@ impl SupervisedHevcRecording {
         Ok(())
     }
 
+    #[allow(clippy::result_large_err)]
     fn admit_generation(
         &mut self,
         key: StreamKey,
@@ -659,6 +669,7 @@ impl SupervisedHevcRecording {
         Ok(())
     }
 
+    #[allow(clippy::result_large_err)]
     fn settle<T>(
         &mut self,
         result: Result<T, LiveHevcRecordingFailure>,

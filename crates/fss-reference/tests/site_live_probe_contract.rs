@@ -279,6 +279,7 @@ fn fixture_payload_type(codec: ProbeCodec) -> u8 {
     }
 }
 
+#[allow(clippy::expect_used)]
 fn sdp(codec: ProbeCodec) -> &'static [u8] {
     let response = match codec {
         ProbeCodec::Avc => AVC_DESCRIPTION,

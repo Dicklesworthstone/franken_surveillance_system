@@ -22,6 +22,7 @@ use crate::unifi_direct::{
 /// One source-preserving bootstrap result.
 #[must_use]
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum Step {
     /// A configuration or first segment is retained by the collector.
     Retained,
@@ -287,6 +288,7 @@ impl Driver {
 
     /// Enable in-band AAC tracking on an unconsumed connected stream.
     /// A supplied, unverified audio configuration is deliberately not inferred.
+    #[allow(clippy::result_large_err)]
     pub fn attach(
         connected: media::Connected,
         retention: ContentDigest,
@@ -298,6 +300,7 @@ impl Driver {
     /// Attach an optional caller-supplied AAC configuration without asserting
     /// its source, connection epoch, or suitability for the camera. A later
     /// in-band configuration remains a fence requiring reconciliation.
+    #[allow(clippy::result_large_err)]
     pub fn attach_with_unverified_audio(
         mut connected: media::Connected,
         retention: ContentDigest,
@@ -353,6 +356,7 @@ impl Driver {
     }
 
     /// Validate the complete inputs without polling or publishing media.
+    #[allow(clippy::result_large_err)]
     pub fn bootstrap(self) -> Result<Handoff, HandoffRefusal> {
         if !self.is_ready() {
             return Err(HandoffRefusal::NotReady(self));

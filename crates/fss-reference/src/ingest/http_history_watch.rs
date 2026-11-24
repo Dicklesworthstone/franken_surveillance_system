@@ -197,6 +197,7 @@ impl http_history_sources::Authority for Access<'_> {
 /// each generation. Whole-invocation history/import work and framing budgets are never reset.
 /// On error completed imports remain durable; rerun the same exact plan to verify and reuse them.
 /// Current privacy masks are applied by the native walker before any perception or screening.
+#[allow(clippy::too_many_arguments)]
 pub fn process_http_history<'cx>(
     archive: &LocalRootPublisher,
     destination: &mut ReferenceDeployment,

@@ -719,13 +719,12 @@ fn automatic_keepalive_waits_for_the_existing_due_event_and_acknowledgement() ->
                 event,
                 connection: None,
             } => {
-                if let HevcCapturePoll::Receiver(source) = *event {
-                    if matches!(source.as_ref(), Event::Client { event, work: None }
+                if let HevcCapturePoll::Receiver(source) = *event
+                    && matches!(source.as_ref(), Event::Client { event, work: None }
                         if matches!(event.as_ref(), HevcClientPoll::KeepAliveDue))
-                    {
-                        due_seen = true;
-                        break;
-                    }
+                {
+                    due_seen = true;
+                    break;
                 }
             }
             _ => return Err("unexpected automatic keepalive progress".into()),

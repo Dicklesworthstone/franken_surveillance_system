@@ -355,6 +355,7 @@ impl Managed {
 
     /// Bind one live driver to a finite caller-authorized generation plan.
     /// The caller must independently establish storage and pin custody.
+    #[allow(clippy::result_large_err)]
     pub fn new(
         driver: archive::Driver,
         plan: Plan,
@@ -495,6 +496,7 @@ impl Managed {
     }
 
     /// Drive one bounded decision without implicitly retrying failed effects.
+    #[allow(clippy::too_many_arguments)]
     pub async fn step<'scope, 'task>(
         &mut self,
         task: &'scope TaskCx<'task>,
@@ -574,19 +576,20 @@ impl Managed {
                 }
             }
         }
-        if !self.parts.creator_started && !self.parts.creator_refused {
-            if let Some(creator) = self.parts.creator.as_mut() {
-                return match creator.start(task, cx, clock, supply_cost) {
-                    Ok(()) => {
-                        self.parts.creator_started = true;
-                        Step::CreatorStarted
-                    }
-                    Err(error) => {
-                        self.parts.creator_refused = true;
-                        Step::CreatorStartRefused(error)
-                    }
-                };
-            }
+        if !self.parts.creator_started
+            && !self.parts.creator_refused
+            && let Some(creator) = self.parts.creator.as_mut()
+        {
+            return match creator.start(task, cx, clock, supply_cost) {
+                Ok(()) => {
+                    self.parts.creator_started = true;
+                    Step::CreatorStarted
+                }
+                Err(error) => {
+                    self.parts.creator_refused = true;
+                    Step::CreatorStartRefused(error)
+                }
+            };
         }
         if self.parts.creator_started && self.parts.creator_completion.is_none() {
             let done = poll_fn(|context| {
@@ -614,24 +617,21 @@ impl Managed {
             };
             let identity = self.parts.creator_identity.take();
             self.parts.creator_started = false;
-            if let Some(identity) = identity.as_ref() {
-                if completion.runtime.is_ok()
-                    && completion.outcome == av_rollover_supplies::Outcome::Ready
-                {
-                    if let Some(created) = retirement.take_supplies() {
-                        let matches = created.root == identity.journal_root
-                            && created.switch_custody.as_ref().is_some_and(|custody| {
-                                custody.root == identity.pin_root
-                                    && custody.scope == identity.pin_scope
-                            });
-                        self.parts.ready = Some((identity.clone(), created));
-                        if matches {
-                            return Step::CreatorReady;
-                        }
-                        self.parts.creator_binding_refused = true;
-                        return Step::CreatorBindingRefused;
-                    }
+            if let Some(identity) = identity.as_ref()
+                && completion.runtime.is_ok()
+                && completion.outcome == av_rollover_supplies::Outcome::Ready
+                && let Some(created) = retirement.take_supplies()
+            {
+                let matches = created.root == identity.journal_root
+                    && created.switch_custody.as_ref().is_some_and(|custody| {
+                        custody.root == identity.pin_root && custody.scope == identity.pin_scope
+                    });
+                self.parts.ready = Some((identity.clone(), created));
+                if matches {
+                    return Step::CreatorReady;
                 }
+                self.parts.creator_binding_refused = true;
+                return Step::CreatorBindingRefused;
             }
             self.parts.failure = Some(CreatorFailure {
                 identity,

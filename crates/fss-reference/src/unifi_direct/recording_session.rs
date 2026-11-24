@@ -130,6 +130,7 @@ impl AudioAllowancePolicy {
 /// Result of one policy-aware scheduling step. A renewal is reported before
 /// any subsequent source or archive work is started.
 #[must_use]
+#[allow(clippy::large_enum_variant)]
 pub enum AudioAllowanceStep {
     /// The normal session returned its complete result.
     Session(Step),
@@ -178,6 +179,7 @@ pub enum Stop<'scope, 'task, IO> {
 
 /// A refused fresh-session attachment retains every supplied owner.
 #[must_use = "recover the controller, source and archive owners"]
+#[allow(clippy::large_enum_variant)]
 pub enum BeginRefusal<'scope, 'task, IO> {
     /// Audio tracking could not be enabled before media processing.
     Audio {
@@ -221,6 +223,7 @@ pub struct SelectedRecording<'scope, 'task, IO> {
 
 /// A selected A/V attachment refusal returns all owners at the refusal stage.
 #[must_use = "recover and reconcile the returned owners"]
+#[allow(clippy::large_enum_variant)]
 pub enum SelectedRefusal<'scope, 'task, IO> {
     /// Invalid preconditions or a source/camera binding mismatch; no owner changed.
     Binding(SelectedRecording<'scope, 'task, IO>),
@@ -261,6 +264,7 @@ impl<IO: AsyncRead + AsyncWrite + Unpin> Control<'_, '_, '_, IO> {
         self.supervisor.prepare_event_reply(owner, frame, timestamp)
     }
     /// Prepare and journal a source-bound reply before dispatching it.
+    #[allow(clippy::result_large_err)]
     pub fn prepare_journaled_event_reply(
         &mut self,
         owner: &mut conversation::Owner<'_, '_, '_>,
@@ -375,6 +379,7 @@ impl<IO: AsyncRead + AsyncWrite + Unpin> Control<'_, '_, '_, IO> {
 impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, IO> {
     /// Attach a selected stream to matching source and A/V owners without I/O.
     /// This does not authenticate the camera or establish recording continuity.
+    #[allow(clippy::result_large_err)]
     pub fn begin_selected(
         selected: SelectedRecording<'scope, 'task, IO>,
     ) -> Result<Self, SelectedRefusal<'scope, 'task, IO>> {
@@ -404,6 +409,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
     /// coordinator and archive owners. This performs no I/O and grants no
     /// authority. Refusal returns every owner; it never restarts a pipeline
     /// that has already processed media or already enabled audio tracking.
+    #[allow(clippy::result_large_err)]
     pub fn begin(
         mut supervisor: supervisor::Supervisor<'scope, 'task, IO>,
         collector: av_bootstrap::Collector,
@@ -549,6 +555,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
     /// Apply a caller-bounded renewal policy before starting more work. Active
     /// archive tasks are driven normally so control traffic and cancellation
     /// can drain. No failed publication is automatically retried.
+    #[allow(clippy::too_many_arguments)]
     pub async fn step_with_audio_allowance(
         &mut self,
         policy: &mut AudioAllowancePolicy,
@@ -565,42 +572,31 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
             && owner.clock.matches(owner.task, owner.cx)
             && owner.clock.matches(task, cx)
             && clock.matches(task, cx);
-        if context_valid && self.coordinator.source_status() == source_worker::Status::Idle {
-            if let Some(Phase::Recording(guard)) = self.phase.as_mut() {
-                if guard.control_supervisor().matches_clock(&owner.clock)
-                    && guard.control_supervisor().matches_clock(&clock)
-                {
-                    match guard.remaining_audio_frames() {
-                        Ok(Some(before)) if before < policy.minimum => {
-                            if policy.remaining_budget < policy.minimum - before {
-                                let control =
-                                    Box::pin(guard.service_control(owner, operation, wait)).await;
-                                return AudioAllowanceStep::Exhausted {
-                                    remaining: before,
-                                    budget: policy.remaining_budget,
-                                    control,
-                                };
-                            }
-                            let additional = policy.chunk.min(policy.remaining_budget);
-                            match guard.extend_audio_limit(additional) {
-                                Ok(after) => {
-                                    policy.remaining_budget -= additional;
-                                    return AudioAllowanceStep::Renewed {
-                                        before,
-                                        after,
-                                        budget: policy.remaining_budget,
-                                    };
-                                }
-                                Err(error) => {
-                                    let control =
-                                        Box::pin(guard.service_control(owner, operation, wait))
-                                            .await;
-                                    return AudioAllowanceStep::Refused {
-                                        error: AudioAllowanceError::Worker(error),
-                                        control,
-                                    };
-                                }
-                            }
+        if context_valid
+            && self.coordinator.source_status() == source_worker::Status::Idle
+            && let Some(Phase::Recording(guard)) = self.phase.as_mut()
+            && guard.control_supervisor().matches_clock(&owner.clock)
+            && guard.control_supervisor().matches_clock(&clock)
+        {
+            match guard.remaining_audio_frames() {
+                Ok(Some(before)) if before < policy.minimum => {
+                    if policy.remaining_budget < policy.minimum - before {
+                        let control = Box::pin(guard.service_control(owner, operation, wait)).await;
+                        return AudioAllowanceStep::Exhausted {
+                            remaining: before,
+                            budget: policy.remaining_budget,
+                            control,
+                        };
+                    }
+                    let additional = policy.chunk.min(policy.remaining_budget);
+                    match guard.extend_audio_limit(additional) {
+                        Ok(after) => {
+                            policy.remaining_budget -= additional;
+                            return AudioAllowanceStep::Renewed {
+                                before,
+                                after,
+                                budget: policy.remaining_budget,
+                            };
                         }
                         Err(error) => {
                             let control =
@@ -610,9 +606,16 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
                                 control,
                             };
                         }
-                        Ok(Some(_)) | Ok(None) => (),
                     }
                 }
+                Err(error) => {
+                    let control = Box::pin(guard.service_control(owner, operation, wait)).await;
+                    return AudioAllowanceStep::Refused {
+                        error: AudioAllowanceError::Worker(error),
+                        control,
+                    };
+                }
+                Ok(Some(_)) | Ok(None) => (),
             }
         }
         AudioAllowanceStep::Session(
@@ -635,6 +638,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
     /// The phase remains in this owner across every await. Dropping a pending
     /// call therefore does not drop the driver or archive guard. A successful
     /// ready transition has no intervening await and does not poll more media.
+    #[allow(clippy::too_many_arguments)]
     pub async fn step(
         &mut self,
         owner: &mut conversation::Owner<'_, 'scope, 'task>,
@@ -646,11 +650,10 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
         av_archive: ArchiveAdmission<'_>,
         source_archive: ArchiveAdmission<'_>,
     ) -> Step {
-        match self
-            .phase
-            .as_mut()
-            .expect("session phase is always present")
-        {
+        let Some(phase) = self.phase.as_mut() else {
+            return Step::TransitionRefused;
+        };
+        match phase {
             Phase::Bootstrap { driver, .. } => {
                 let outcome = Box::pin(self.coordinator.bootstrap_step(
                     driver,
@@ -710,6 +713,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
     /// returned intact. No stop drains workers or authorizes a retry: the
     /// caller must resume, reconcile, or explicitly shut down the same owners.
     /// The observer must reserve operation identities across process restarts.
+    #[allow(clippy::too_many_arguments)]
     pub async fn run_slice(
         &mut self,
         owner: &mut conversation::Owner<'_, 'scope, 'task>,
@@ -786,10 +790,10 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
 
     /// Recover the exact current phase and separate-source owner.
     pub fn into_parts(self) -> (Coordinator, Phase<'scope, 'task, IO>) {
-        (
-            self.coordinator,
-            self.phase.expect("session phase is always present"),
-        )
+        let Some(phase) = self.phase else {
+            unreachable!("session phase is always present");
+        };
+        (self.coordinator, phase)
     }
 
     /// Stop new session work without requiring the caller to know its phase.
@@ -814,6 +818,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
 
     /// Stop admitting session work and cancel both active recording archives.
     /// Bootstrap and refused transitions are returned unchanged for recovery.
+    #[allow(clippy::result_large_err)]
     pub fn request_shutdown(self) -> Result<source_coordinator::Shutdown<'scope, 'task, IO>, Self> {
         if !matches!(self.phase, Some(Phase::Recording(_))) {
             return Err(self);
@@ -827,6 +832,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Session<'scope, 'task, I
 
     /// Stop bootstrap admission and request cancellation of its source worker.
     /// Other phases are returned unchanged for their own shutdown or recovery.
+    #[allow(clippy::result_large_err)]
     pub fn request_bootstrap_shutdown(
         self,
     ) -> Result<source_coordinator::BootstrapShutdown<'scope, 'task, IO>, Self> {

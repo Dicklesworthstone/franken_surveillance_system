@@ -198,19 +198,19 @@ impl DeploymentOnvifQuery {
                 frame.occurrence_start,
                 frame.occurrence_count
             );
-            if let OnvifAnalysisResult::Lifecycle { report, .. } = &native.analysis {
-                if let Some(lifecycle) = report.frames.get(frame.reference.ordinal) {
-                    let boundaries = lifecycle
-                        .barriers
-                        .iter()
-                        .map(|reason| reason.as_str())
-                        .collect::<Vec<_>>()
-                        .join(",");
-                    statement.push_str(&format!(
+            if let OnvifAnalysisResult::Lifecycle { report, .. } = &native.analysis
+                && let Some(lifecycle) = report.frames.get(frame.reference.ordinal)
+            {
+                let boundaries = lifecycle
+                    .barriers
+                    .iter()
+                    .map(|reason| reason.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                statement.push_str(&format!(
                         " Additive lifecycle frame: section_index={}, section_child_index={}, object_tree_child_index={}, operation_start={}, operation_count={}, behaviour_start={}, behaviour_count={}, lifecycle_barriers=[{boundaries}]. Known lifecycle declarations do not merge the frozen tracklets.",
                         lifecycle.section_index, lifecycle.section_child_index, ordinal(lifecycle.object_tree_child_index),
                         lifecycle.operation_start, lifecycle.operation_count, lifecycle.behaviour_start, lifecycle.behaviour_count));
-                }
             }
             push(
                 &mut rows,

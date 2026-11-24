@@ -17,6 +17,7 @@ use super::{av_owned_sink, pipeline, recording};
 /// A result either retained for bootstrap or returned with its observation.
 #[must_use]
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum Collected {
     /// One exact source record or the first segment was retained.
     Retained,
@@ -158,6 +159,7 @@ impl Collector {
     }
 
     /// Return the bounded inputs for validation, or the entire incomplete owner.
+    #[allow(clippy::result_large_err)]
     pub fn into_inputs(self) -> Result<av_owned_sink::BootstrapInputs, Incomplete> {
         if !self.ready() {
             return Err(Incomplete(self));

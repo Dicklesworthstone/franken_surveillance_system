@@ -162,23 +162,23 @@ impl<'pump, 'report: 'pump, 'scope: 'pump, 'task: 'pump, D: Driver<'scope, 'task
         if self.sweep.is_none() && self.start_windows {
             self.sweep = Some(Box::pin(self.runner.next(Some(self.fleet))));
         }
-        if let Some(active) = self.sweep.as_mut() {
-            if let Poll::Ready(result) = active.as_mut().poll(cx) {
-                self.sweep = None;
-                if matches!(
-                    &result,
-                    Err(_)
-                        | Ok(sweep::Step::Incomplete { .. })
-                        | Ok(sweep::Step::Finished {
-                            refresh: Some(Err(_)),
-                            ..
-                        })
-                ) {
-                    self.start_windows = false;
-                }
-                self.prefer_sweep = false;
-                return Poll::Ready(Event::Discovery(result));
+        if let Some(active) = self.sweep.as_mut()
+            && let Poll::Ready(result) = active.as_mut().poll(cx)
+        {
+            self.sweep = None;
+            if matches!(
+                &result,
+                Err(_)
+                    | Ok(sweep::Step::Incomplete { .. })
+                    | Ok(sweep::Step::Finished {
+                        refresh: Some(Err(_)),
+                        ..
+                    })
+            ) {
+                self.start_windows = false;
             }
+            self.prefer_sweep = false;
+            return Poll::Ready(Event::Discovery(result));
         }
         Poll::Pending
     }
@@ -290,10 +290,8 @@ impl<'pump, 'report: 'pump, 'scope: 'pump, 'task: 'pump, D: Driver<'scope, 'task
             } else {
                 let mut active = std::pin::pin!(self.next_with_retries(retries));
                 poll_fn(|cx| {
-                    if prefer_setup {
-                        if let Poll::Ready((index, value)) = setup.as_mut().poll(cx) {
-                            return Poll::Ready(Ok(Selected::Setup(index, value)));
-                        }
+                    if prefer_setup && let Poll::Ready((index, value)) = setup.as_mut().poll(cx) {
+                        return Poll::Ready(Ok(Selected::Setup(index, value)));
                     }
                     if let Poll::Ready(result) = active.as_mut().poll(cx) {
                         return Poll::Ready(result.map(|progress| match progress {
@@ -301,10 +299,8 @@ impl<'pump, 'report: 'pump, 'scope: 'pump, 'task: 'pump, D: Driver<'scope, 'task
                             Progress::Work(event) => Selected::Retry(event),
                         }));
                     }
-                    if !prefer_setup {
-                        if let Poll::Ready((index, value)) = setup.as_mut().poll(cx) {
-                            return Poll::Ready(Ok(Selected::Setup(index, value)));
-                        }
+                    if !prefer_setup && let Poll::Ready((index, value)) = setup.as_mut().poll(cx) {
+                        return Poll::Ready(Ok(Selected::Setup(index, value)));
                     }
                     Poll::Pending
                 })

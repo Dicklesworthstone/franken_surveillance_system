@@ -724,7 +724,7 @@ impl SiteProbeReceipt {
         digest(self.manifest_digest)?;
         digest(self.sdp_digest)?;
         if self.media_index > 63
-            || self.rtp_channel % 2 != 0
+            || !self.rtp_channel.is_multiple_of(2)
             || self.rtp_channel.checked_add(1) != Some(self.rtcp_channel)
         {
             return Err(SiteError::InvalidField("media_selection"));

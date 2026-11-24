@@ -39,6 +39,7 @@ fn inspect(
     )?)
 }
 
+#[allow(clippy::result_large_err)]
 fn finish(source: &ImmutableRetainedSource<'_>) -> Result<(), FileIngestError> {
     source.revalidate_snapshot_metadata()?;
     source.revalidate()

@@ -827,9 +827,68 @@ fn read_bounded(path: &Path, max: usize) -> Result<Option<Vec<u8>>, io::Error> {
     Ok(Some(bytes))
 }
 
+/// Admits a deployment root while canonicalizing OS-level ancestor symlinks (such as macOS
+/// `/tmp` -> `/private/tmp` and `/var` -> `/private/var`), while strictly refusing symlinks
+/// at the deployment root itself or anywhere beneath it.
+fn admit_deployment_root(root: &Path) -> Result<PathBuf, DeploymentSessionError> {
+    for component in root.components() {
+        if matches!(component, Component::ParentDir | Component::Prefix(_)) {
+            return Err(DeploymentSessionError::StoreInvalid(
+                "agent writer paths require ordinary directory ancestors".into(),
+            ));
+        }
+    }
+    let absolute = if root.is_absolute() {
+        root.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| io_failure("agent writer directory", &error))?
+            .join(root)
+    };
+    let leaf_meta = fs::symlink_metadata(&absolute)
+        .map_err(|error| io_failure("agent writer directory", &error))?;
+    if !leaf_meta.is_dir() || leaf_meta.file_type().is_symlink() {
+        return Err(DeploymentSessionError::StoreInvalid(
+            "deployment root cannot be a symlink or non-directory".into(),
+        ));
+    }
+    let canonical = match (absolute.parent(), absolute.file_name()) {
+        (Some(parent), Some(name)) if !parent.as_os_str().is_empty() => fs::canonicalize(parent)
+            .map_err(|error| io_failure("agent writer directory", &error))?
+            .join(name),
+        _ => absolute,
+    };
+    let resolved_meta = fs::symlink_metadata(&canonical)
+        .map_err(|error| io_failure("agent writer directory", &error))?;
+    if !resolved_meta.is_dir() || resolved_meta.file_type().is_symlink() {
+        return Err(DeploymentSessionError::StoreInvalid(
+            "deployment root cannot be a symlink or non-directory".into(),
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if (leaf_meta.dev(), leaf_meta.ino()) != (resolved_meta.dev(), resolved_meta.ino()) {
+            return Err(DeploymentSessionError::StoreInvalid(
+                "deployment root changed during admission".into(),
+            ));
+        }
+    }
+    admit_agent_directory(&canonical, false)?;
+    Ok(canonical)
+}
+
 /// Existing writer ancestors must be ordinary directories. A live deployment cannot alias
 /// a restored copy's independent agent writer through a symlink below its own unfenced ledger.
 fn admit_agent_directory(path: &Path, allow_missing: bool) -> Result<(), DeploymentSessionError> {
+    admit_agent_directory_labeled(path, allow_missing, None)
+}
+
+fn admit_agent_directory_labeled(
+    path: &Path,
+    allow_missing: bool,
+    relative_label: Option<&str>,
+) -> Result<(), DeploymentSessionError> {
     let mut current = PathBuf::new();
     for component in path.components() {
         match component {
@@ -844,9 +903,15 @@ fn admit_agent_directory(path: &Path, allow_missing: bool) -> Result<(), Deploym
         match fs::symlink_metadata(&current) {
             Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
             Ok(_) => {
-                return Err(DeploymentSessionError::StoreInvalid(
-                    "agent writer paths cannot traverse linked or non-directory state".into(),
-                ));
+                let message = match relative_label {
+                    Some(relative) => format!(
+                        "agent writer path `{relative}` cannot traverse linked or non-directory state"
+                    ),
+                    None => {
+                        "agent writer paths cannot traverse linked or non-directory state".into()
+                    }
+                };
+                return Err(DeploymentSessionError::StoreInvalid(message));
             }
             Err(error) if allow_missing && error.kind() == io::ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(io_failure("agent writer directory", &error)),
@@ -856,14 +921,7 @@ fn admit_agent_directory(path: &Path, allow_missing: bool) -> Result<(), Deploym
 }
 
 fn admit_agent_writer_paths(root: &Path) -> Result<PathBuf, DeploymentSessionError> {
-    let root = if root.is_absolute() {
-        root.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .map_err(|error| io_failure("agent writer directory", &error))?
-            .join(root)
-    };
-    admit_agent_directory(&root, false)?;
+    let root = admit_deployment_root(root)?;
     for relative in [
         "agent",
         SESSIONS_RELPATH,
@@ -875,7 +933,7 @@ fn admit_agent_writer_paths(root: &Path) -> Result<PathBuf, DeploymentSessionErr
         "agent/publications/spool/staging",
         "agent/publications/spool/verified",
     ] {
-        admit_agent_directory(&root.join(relative), true)?;
+        admit_agent_directory_labeled(&root.join(relative), true, Some(relative))?;
     }
     for relative in [
         "agent/sessions/LOCK",
@@ -891,17 +949,17 @@ fn admit_agent_writer_paths(root: &Path) -> Result<PathBuf, DeploymentSessionErr
             Err(error) => return Err(io_failure("agent writer file", &error)),
         };
         if !metadata.is_file() || metadata.file_type().is_symlink() {
-            return Err(DeploymentSessionError::StoreInvalid(
-                "agent writer files cannot alias another deployment".into(),
-            ));
+            return Err(DeploymentSessionError::StoreInvalid(format!(
+                "agent writer file `{relative}` cannot alias another deployment"
+            )));
         }
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
             if metadata.nlink() != 1 {
-                return Err(DeploymentSessionError::StoreInvalid(
-                    "agent writer files cannot share a hardlinked journal or pin".into(),
-                ));
+                return Err(DeploymentSessionError::StoreInvalid(format!(
+                    "agent writer file `{relative}` cannot share a hardlinked journal or pin"
+                )));
             }
         }
     }
@@ -1929,8 +1987,8 @@ pub fn open_session(
             Err(error) if error.kind() == io::ErrorKind::NotFound => None,
             Err(error) => return Err(io_failure("session journal lookup", &error)),
         };
-    if let Some(journal) = existing_journal.as_mut() {
-        if let Some(opened) = opening_retry::resume_if_present(
+    if let Some(journal) = existing_journal.as_mut()
+        && let Some(opened) = opening_retry::resume_if_present(
             root,
             journal,
             &snapshot,
@@ -1939,11 +1997,12 @@ pub fn open_session(
             request_digest,
             &limits,
             now,
-        )? {
-            return Ok(opened);
-        }
+        )?
+    {
+        return Ok(opened);
     }
     let mission_digest = mission.digest();
+    ensure_agent_writable(root)?;
     let orientation = orient_bound(
         Some((root, &snapshot)),
         &snapshot,
@@ -1958,6 +2017,9 @@ pub fn open_session(
         },
         &mission,
     )?;
+    // Validate existing agent/publications health before creating agent/sessions or staging
+    // mission custody so a refused open leaves disk byte-for-byte unchanged.
+    learning::preflight_publication_inventory(root, existing_journal.is_some())?;
     let mut journal = match existing_journal {
         Some(journal) => journal,
         None => SessionJournal::open(root)?,

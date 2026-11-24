@@ -130,6 +130,7 @@ impl<IO> fmt::Debug for Owner<'_, '_, '_, IO> {
 }
 impl<'scope, 'task, 'policy, IO: AsyncRead + AsyncWrite + Unpin> Owner<'scope, 'task, 'policy, IO> {
     /// Attach an owned stream; this does not connect or authenticate its peer.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         io: MeteredIo<'scope, 'task, IO>,
         task: &'scope TaskCx<'task>,

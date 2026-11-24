@@ -40,6 +40,7 @@ pub struct QsrQueryRequest {
 
 impl QsrQueryRequest {
     /// Validate complete request shape without opening the deployment.
+    #[allow(clippy::result_large_err)]
     pub fn validate(&self) -> Result<(), QsrQueryError> {
         if self.report_digest.algorithm() != DigestAlgorithm::Sha256
             || self.report_digest.bytes() == [0; 32]
@@ -73,6 +74,7 @@ impl Default for QsrQueryLimits {
 
 impl QsrQueryLimits {
     /// Refuse invalid or widened native bounds before filesystem access.
+    #[allow(clippy::result_large_err)]
     pub fn validate(&self) -> Result<(), QsrQueryError> {
         let ceiling = OrientLimits::default();
         if self.read.max_read_bytes == 0
@@ -108,6 +110,7 @@ impl QsrQueryLimits {
     }
 
     /// Payload-byte and read-attempt accounting, not filesystem syscall or CPU accounting.
+    #[allow(clippy::result_large_err)]
     pub fn allowance(&self) -> Result<BudgetVector, QsrQueryError> {
         self.validate()?;
         Ok(BudgetVector::from_quantities(BudgetQuantitiesSpec {
@@ -162,6 +165,7 @@ impl std::fmt::Display for QsrQueryError {
 }
 impl std::error::Error for QsrQueryError {}
 
+#[allow(clippy::result_large_err)]
 fn input_digest(
     request: &QsrQueryRequest,
     limits: QsrQueryLimits,
@@ -216,6 +220,7 @@ pub struct QsrSourceReadPermit<'a> {
 
 impl<'a> QsrSourceReadPermit<'a> {
     /// Pure grant admission. The authority universe is the exact retained report, generation 1.
+    #[allow(clippy::result_large_err)]
     pub fn authorize(
         authority: &'a ContextAuthority,
         root: &Path,
@@ -264,6 +269,7 @@ impl<'a> QsrSourceReadPermit<'a> {
         self.digest
     }
 
+    #[allow(clippy::result_large_err)]
     fn check_current(&self) -> Result<(), QsrQueryError> {
         if self.authority.cancellation_reason.is_some()
             || self.cx.is_cancelled()
@@ -314,6 +320,7 @@ pub struct DeploymentQsrQuery {
 }
 
 /// Read one exact screened QSR report with no writable deployment, recovery, model or effect.
+#[allow(clippy::result_large_err)]
 pub fn query_qsr_in_deployment(
     root: &Path,
     request: &QsrQueryRequest,

@@ -545,9 +545,11 @@ fn independent_pin_and_narrower_reader_limits_are_enforced_before_disclosure() -
     ] {
         assert!(f.inspect(wrong).is_err());
     }
-    let mut smaller = CampaignHistoryLimits::default();
-    smaller.maximum_records = 3;
-    smaller.maximum_metadata_bytes = 1024 * 1024;
+    let smaller = CampaignHistoryLimits {
+        maximum_records: 3,
+        maximum_metadata_bytes: 1024 * 1024,
+        ..CampaignHistoryLimits::default()
+    };
     let verified = VerifiedCampaignHistory::inspect(
         &f.root,
         pin,
@@ -740,8 +742,10 @@ fn whole_inspection_scan_uses_the_same_byte_and_cancellation_allowance_as_hydrat
     }
     f.close();
     let before = tree(&f.root)?;
-    let mut limits = CampaignHistoryLimits::default();
-    limits.maximum_metadata_bytes = 512 * 1024;
+    let limits = CampaignHistoryLimits {
+        maximum_metadata_bytes: 512 * 1024,
+        ..CampaignHistoryLimits::default()
+    };
     assert!(matches!(
         VerifiedCampaignHistory::inspect(
             &f.root,

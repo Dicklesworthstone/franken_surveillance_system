@@ -84,6 +84,7 @@ fn state(section: &str, value: &Value) -> KnowledgeState {
     }
 }
 
+#[allow(clippy::result_large_err)]
 pub(super) fn epistemic(report: &QsrObservationReport) -> Result<EnvelopeEpistemic, QsrQueryError> {
     let native = report.to_json().map_err(QsrQueryError::Observation)?;
     let companion = report.lane_traversals().to_json();

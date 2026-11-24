@@ -171,7 +171,8 @@ fn run() -> Result<(), Box<dyn Error>> {
                     recorder.require_dimensions([width, height])?;
                 }
                 let mut pipeline = listener.accept(framer, recorder, 32 * 1024, MAX_INPUT, Duration::from_secs(30)).await?;
-                let result: Result<Result<(fss_codec_h264::Picture, usize), Box<dyn Error>>, _> = timeout(cx.now(), Duration::from_secs(60), async {
+                type StillProbeOutcome = Result<(fss_codec_h264::Picture, usize), Box<dyn Error>>;
+                let result: Result<StillProbeOutcome, _> = timeout(cx.now(), Duration::from_secs(60), async {
                     for _ in 0..65_536 {
                         match pipeline.step(task, cx, clock.now()?).await? {
                             pipeline::Step::Recording(recording::Push::Source { .. })

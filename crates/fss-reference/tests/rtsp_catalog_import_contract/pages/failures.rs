@@ -10,6 +10,7 @@ use fss_reference::rtsp::recording::MAX_RECORDING_BYTES;
 use fss_reference::rtsp::recording_catalog::MAX_CATALOG_BYTES;
 use std::sync::Arc;
 
+#[allow(clippy::expect_used)]
 fn attempt(
     fixture: &mut PagesFixture,
     work: &mut WorkBudget<'_>,

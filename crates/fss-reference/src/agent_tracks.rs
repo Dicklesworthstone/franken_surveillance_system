@@ -61,6 +61,7 @@ pub struct TrackQueryRequest {
 
 impl TrackQueryRequest {
     /// Validate scalar bounds before opening the deployment or reconstructing a track.
+    #[allow(clippy::result_large_err)]
     pub fn validate(&self) -> Result<(), TrackQueryError> {
         if self.report_digest.algorithm() != DigestAlgorithm::Sha256
             || self.report_digest.bytes() == [0; 32]
@@ -108,6 +109,7 @@ impl Default for TrackQueryLimits {
 
 impl TrackQueryLimits {
     /// Refuse invalid or widened native limits before filesystem access.
+    #[allow(clippy::result_large_err)]
     pub fn validate(&self) -> Result<(), TrackQueryError> {
         let ceiling = OrientLimits::default();
         if self.read.max_read_bytes == 0
@@ -143,6 +145,7 @@ impl TrackQueryLimits {
     }
 
     /// Payload-byte/read-attempt allowance, not measured CPU time or filesystem syscalls.
+    #[allow(clippy::result_large_err)]
     pub fn allowance(&self) -> Result<BudgetVector, TrackQueryError> {
         self.validate()?;
         Ok(BudgetVector::from_quantities(BudgetQuantitiesSpec {
@@ -207,6 +210,7 @@ impl From<ContinuationError> for TrackQueryError {
 
 // Page-independent inputs. Anchor preconditions are checked separately against the actual
 // full current anchor; continuation tokens select a page without changing the stream.
+#[allow(clippy::result_large_err)]
 fn selection_input_digest(
     request: &TrackQueryRequest,
     limits: TrackQueryLimits,
@@ -236,6 +240,7 @@ fn selection_input_digest(
     Ok(ContentDigest::sha256(&e.finish()))
 }
 
+#[allow(clippy::result_large_err)]
 fn input_digest(
     request: &TrackQueryRequest,
     limits: TrackQueryLimits,
@@ -266,6 +271,7 @@ pub struct TrackSourceReadPermit<'a> {
 
 impl<'a> TrackSourceReadPermit<'a> {
     /// Pure admission with the retained report as authority universe, generation 1.
+    #[allow(clippy::result_large_err)]
     pub fn authorize(
         authority: &'a ContextAuthority,
         root: &Path,
@@ -320,6 +326,7 @@ impl<'a> TrackSourceReadPermit<'a> {
         self.digest
     }
 
+    #[allow(clippy::result_large_err)]
     fn check_current(&self) -> Result<(), TrackQueryError> {
         if self.authority.cancellation_reason.is_some()
             || self.cx.is_cancelled()
@@ -445,6 +452,7 @@ impl DeploymentTrackQuery {
 }
 
 /// Query exact retained detector tracks without a writable deployment or new model execution.
+#[allow(clippy::result_large_err)]
 pub fn query_tracks_in_deployment(
     root: &Path,
     request: &TrackQueryRequest,

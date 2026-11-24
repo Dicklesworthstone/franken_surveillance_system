@@ -29,6 +29,7 @@ pub struct EffectCustody {
 
 /// Refusal retains the listener, effect, and all source owners.
 #[must_use = "retain the original owners and reconcile the effect"]
+#[allow(clippy::large_enum_variant)]
 pub enum CreateRefusal<'scope, 'task, 'policy> {
     /// The old pipeline has not stopped or the listener binding differs.
     NotStoppedOrBound {
@@ -105,6 +106,7 @@ impl<'scope, 'task, 'policy> Reaccept<'scope, 'task, 'policy> {
     /// Retire the stopped source and retain the original effect. Matching a
     /// listener address and task is not proof that the new peer is the same
     /// physical camera. A prior error's returned record remains caller-owned.
+    #[allow(clippy::result_large_err)]
     pub fn new(
         listener: listener::Listener<'scope, 'task, 'policy>,
         connected: media::Connected,
@@ -179,6 +181,7 @@ impl<'scope, 'task, 'policy> Reaccept<'scope, 'task, 'policy> {
     }
 
     /// Reserve a bounded accept; admission is rechecked by the listener.
+    #[allow(clippy::result_large_err)]
     pub fn accept_next(
         &mut self,
         inputs: media_reconnect::Inputs,
@@ -207,17 +210,23 @@ impl<'scope, 'task, 'policy> Reaccept<'scope, 'task, 'policy> {
 
     /// Transfer an accepted pipeline into the HTTP media owner. The old
     /// readback remains historical; fresh peer and media checks still apply.
+    #[allow(clippy::result_large_err)]
     pub fn finish(self) -> Result<Connected<'scope, 'task, 'policy>, Self> {
-        if !self.inner.has_active() {
-            return Err(self);
-        }
         let Self {
             inner,
             effect,
             listener_addr,
         } = self;
-        let parts = inner.into_parts();
-        let pipeline = parts.active.expect("active pipeline checked above");
+        let (pipeline, parts) = match inner.take_active_parts() {
+            Ok(extracted) => extracted,
+            Err(inner) => {
+                return Err(Self {
+                    inner,
+                    effect,
+                    listener_addr,
+                });
+            }
+        };
         let connected = media::Connected::from_reaccept(
             media::Detached {
                 camera_claim: effect.camera_claim,

@@ -22,6 +22,7 @@ use super::{
 
 /// The original event context, including any unrelated archive completion.
 #[must_use]
+#[allow(clippy::large_enum_variant)]
 pub enum Origin {
     /// Source result yielded by the supervisor.
     Source,
@@ -106,6 +107,7 @@ pub fn offer_bootstrap(
 /// One control step while a separately owned source publication is running.
 /// Every completion and control result remains owned by the caller.
 #[must_use]
+#[allow(clippy::large_enum_variant)]
 pub enum Drive {
     /// No source publication is running; the supplied control future was not polled.
     NotRunning,

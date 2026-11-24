@@ -135,10 +135,13 @@ impl RtpSampledTrackingStats {
 
 /// One original source fact, one joint sampled position, or explicit terminal accounting.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum RtpSampledTrackingStep {
     /// Unmodified source/decode progress; intentional sampling never suppresses these facts.
     Progress {
+        /// Retained RTP source event.
         event: RetainedRtpEvent,
+        /// Exact decoder effect produced by the event.
         effect: RtpDecodeEffect,
     },
     /// Selected association or explicit skip with original receipts and chained identity.
@@ -159,6 +162,7 @@ pub struct RtpSampledTracker<'a> {
 }
 impl<'a> RtpSampledTracker<'a> {
     /// Validate class and association ceilings before opening the native cascade.
+    #[allow(clippy::result_large_err)]
     pub fn new(
         retained: &'a RecoveredRtpImport,
         package: &'a RgbDetectorPackage,
@@ -210,6 +214,7 @@ impl<'a> RtpSampledTracker<'a> {
         self.stats
     }
     /// Any refusal terminates the entire owner and drops queued media and numerical state.
+    #[allow(clippy::result_large_err)]
     pub fn step(
         &mut self,
         deployment: &ReferenceDeployment,
@@ -239,6 +244,7 @@ impl<'a> RtpSampledTracker<'a> {
             other => other,
         }
     }
+    #[allow(clippy::result_large_err)]
     fn advance(
         &mut self,
         deployment: &ReferenceDeployment,
@@ -346,6 +352,7 @@ impl<'a> RtpSampledTracker<'a> {
     }
 }
 
+#[allow(clippy::result_large_err)]
 fn retire_on_skip(core: &mut TrackCore) -> Result<usize> {
     let retired = core.active;
     core.tracker = MultiObjectTracker::new(core.config.clone())
@@ -358,6 +365,7 @@ fn retire_on_skip(core: &mut TrackCore) -> Result<usize> {
 mod tests {
     use super::*;
     type Test = std::result::Result<(), Box<dyn std::error::Error>>;
+    #[allow(clippy::result_large_err)]
     fn core(limits: RtpTrackingLimits) -> Result<TrackCore> {
         TrackCore::new(
             TrackerConfig {

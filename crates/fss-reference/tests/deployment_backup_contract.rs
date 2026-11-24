@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 #![cfg(all(
-    target_os = "linux",
+    any(target_os = "linux", target_os = "macos"),
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
 //! Exact local recovery through real journals, held/deleted originals and root-last custody.
@@ -1077,6 +1077,86 @@ fn valid_spool_and_ledger_cannot_hide_an_invalid_hold_transition() -> Test {
     ));
     assert!(!bundle.exists());
     assert_eq!(bytes_under(&f.source)?, before);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn ancestor_symlink_root_roundtrips_while_inside_symlinks_still_refuse() -> Test {
+    use fss_core::{AgentView, PrincipalId};
+    use fss_reference::deployment_session::{OpenSessionRequest, open_session};
+    use std::os::unix::fs::symlink;
+
+    let f = Fixture::new("ancestor-symlink")?;
+    let ancestor_alias = f.directory.0.join("tmp-like-ancestor");
+    symlink(&f.directory.0, &ancestor_alias)?;
+    // Access the source, bundle, and restore paths through an OS-like ancestor symlink
+    // (mirroring macOS `/tmp -> /private/tmp` and `/var -> /private/var`).
+    let aliased_source = ancestor_alias.join("source");
+    let aliased_bundle = ancestor_alias.join("aliased-bundle");
+    let aliased_restored = ancestor_alias.join("aliased-restored");
+
+    // Agent session writer must admit the deployment via the ancestor symlink.
+    let _opened = open_session(
+        &aliased_source,
+        &OpenSessionRequest {
+            mission: "Verify ancestor-symlink admission".into(),
+            objective: "Keep internal symlink refusal airtight".into(),
+            principal: PrincipalId::parse(PRINCIPAL)?,
+            view: AgentView::Brief,
+            token_budget: 100_000,
+        },
+    )?;
+
+    let manifest = prepare_backup(
+        &aliased_source,
+        f.limits,
+        BackupLimits::default(),
+        &Grant,
+        &f.cx()?,
+    )?;
+    create_backup(
+        &aliased_source,
+        &aliased_bundle,
+        manifest.digest(),
+        f.limits,
+        BackupLimits::default(),
+        &Grant,
+        &f.cx()?,
+    )?;
+    let inspected = inspect_backup(
+        &aliased_bundle,
+        manifest.digest(),
+        BackupLimits::default(),
+        &Grant,
+        &f.cx()?,
+    )?;
+    assert_eq!(inspected, manifest);
+    let receipt = restore_backup(
+        &aliased_bundle,
+        &aliased_restored,
+        manifest.digest(),
+        BackupLimits::default(),
+        &Grant,
+        &f.cx()?,
+    )?;
+    assert_eq!(receipt.manifest(), &manifest);
+    assert!(!aliased_restored.join(RESTORE_INCOMPLETE_FILENAME).exists());
+
+    // Planting a symlink INSIDE the deployment root (`objects/evil`) must still refuse!
+    let evil_target = f.directory.0.join("evil-target");
+    fs::write(&evil_target, b"evil")?;
+    symlink(&evil_target, f.source.join("objects/evil"))?;
+    assert!(
+        prepare_backup(
+            &aliased_source,
+            f.limits,
+            BackupLimits::default(),
+            &Grant,
+            &f.cx()?,
+        )
+        .is_err()
+    );
     Ok(())
 }
 

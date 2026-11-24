@@ -89,6 +89,7 @@ fn exact_byte_budget_still_checks_empty_and_absent_payloads() -> TestResult {
         bytes_read: 0,
         budget: Some(budget.clone()),
         cancelled: None,
+        pack_catalog: None,
     };
     assert_eq!(
         reader.read_file(&root.join("payload"), 4096)?,
@@ -120,6 +121,7 @@ fn exhausted_byte_budget_never_admits_another_payload_byte() -> TestResult {
         bytes_read: 0,
         budget: Some(budget.clone()),
         cancelled: None,
+        pack_catalog: None,
     };
     assert_eq!(
         reader.read_file(&root.join("payload"), 1)?,
@@ -144,6 +146,7 @@ fn cancelled_or_failed_reads_cannot_spend_zero_byte_allowances() -> TestResult {
         bytes_read: 0,
         budget: Some(budget.clone()),
         cancelled: Some(&cancelled),
+        pack_catalog: None,
     };
     // Cancellation precedes even the stat of this deliberately uncreated path.
     assert!(
@@ -1030,8 +1033,8 @@ fn orient_succeeds_after_retaining_many_coverage_witnesses_across_five_sensors()
         ("sensor:porch", 19_u64),
         ("sensor:entry", 27_u64),
     ];
-    let mut committed_sequence = 10_u64;
-    for (sensor, witness_count) in counts {
+    for (seq_offset, (sensor, witness_count)) in counts.into_iter().enumerate() {
+        let committed_sequence = 11_u64 + seq_offset as u64;
         let mut witnesses = Vec::new();
         let mut uncovered = Vec::new();
         for idx in 0..witness_count {
@@ -1098,7 +1101,6 @@ fn orient_succeeds_after_retaining_many_coverage_witnesses_across_five_sensors()
             pose_uncertainty: None,
             sensor_health: None,
         };
-        committed_sequence += 1;
         snapshot.coverage.push(RetainedCoverage {
             payload_digest: ContentDigest::sha256(format!("cov-rec:{sensor}").as_bytes()),
             record,
@@ -1334,6 +1336,7 @@ fn reader_discards_a_payload_when_cancellation_arrives_at_any_read_checkpoint() 
         bytes_read: 0,
         budget: None,
         cancelled: Some(&count),
+        pack_catalog: None,
     };
     assert_eq!(
         baseline.read_file(&path, 64)?,
@@ -1351,6 +1354,7 @@ fn reader_discards_a_payload_when_cancellation_arrives_at_any_read_checkpoint() 
             bytes_read: 0,
             budget: Some(budget.clone()),
             cancelled: Some(&cancel),
+            pack_catalog: None,
         };
         assert!(reader.read_file(&path, 64).is_err(), "cut {cut}");
         assert!(budget.ensure_valid().is_err(), "cut {cut}");
@@ -1378,6 +1382,379 @@ fn ordinary_ledger_adapter_discards_bytes_when_cancelled_during_read() -> TestRe
     assert!(journal.read_bounded(&path, 64).is_err());
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     assert_eq!(fs::read(&path)?, b"ledger bytes");
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn pulse_stays_within_300_token_cap_across_2_10_and_50_cameras_without_omitting_critical_items()
+-> TestResult {
+    let limits = OrientLimits::default();
+    for camera_count in [2_usize, 10, 50] {
+        let tag = format!("pulse-scale-{camera_count}");
+        let (root, mut snapshot) = synthetic_catalogue(&tag, camera_count.min(8))?;
+        snapshot.completed_imports = (0..camera_count * 4)
+            .map(|idx| ContentDigest::sha256(format!("import:{camera_count}:{idx}").as_bytes()))
+            .collect();
+        snapshot.import_ledger_root = Some(ContentDigest::sha256(b"import-ledger-root"));
+        let anchor = snapshot.anchor.clone();
+        let interval = CaptureInterval::new(source_seconds(0)?, source_seconds(SOURCE_TICKS)?)?;
+        for cam in 0..camera_count {
+            let sensor = format!("cam-{cam:03}");
+            let domain = format!("domain-{cam:03}");
+            let delivered = cam % 3 != 0;
+            let record = source_record(&anchor, &[(&sensor, &domain, delivered)])?;
+            let verdict = if delivered {
+                Ok(RetainedAbsence {
+                    record_digest: record.digest(),
+                    record_sequence: (cam as u64) + 1,
+                    witness_digest: record.witness.witness_digest(),
+                    witness_object: record.witness_object(),
+                    basis_sequence: anchor.commit_sequence,
+                    interval,
+                    domains: record.witness.authorized_domain.clone(),
+                    analysis: None,
+                })
+            } else {
+                Err(RetainedCoverageRefusal::WitnessDoesNotCertify)
+            };
+            snapshot
+                .source_coverage
+                .push(retained_source(record, (cam as u64) + 1, verdict));
+        }
+
+        let orientation = orient_deployment(&snapshot, &request(AgentView::Pulse)?, &limits)?;
+        orientation.publication.verify()?;
+        orientation.capsule().validate()?;
+        assert!(
+            orientation.consumed.tokens <= u64::from(AgentView::Pulse.maximum_tokens()),
+            "cameras={camera_count}: pulse consumed {} tokens > {}",
+            orientation.consumed.tokens,
+            AgentView::Pulse.maximum_tokens()
+        );
+        let receipt = &orientation.publication.compression_receipt;
+        assert_eq!(
+            receipt.critical_preservation.omitted_critical_items, 0,
+            "cameras={camera_count}: pulse omitted critical items"
+        );
+        let zone_cell = orientation
+            .capsule()
+            .frame
+            .knowledge_cells
+            .iter()
+            .find(|cell| cell.claim_id() == CLAIM_COVERAGE)
+            .ok_or("expected rolled-up claim:coverage:site in multi-camera pulse")?;
+        assert_eq!(
+            zone_cell.knowledge_state(),
+            KnowledgeState::NotObservable,
+            "worst-case epistemic state must be preserved across rolled-up zones"
+        );
+        let expected_zones = camera_count + 1; // camera_count source domains + "door" event zone
+        assert!(
+            zone_cell
+                .statement()
+                .contains(&format!("{expected_zones} zones:")),
+            "expected multi-zone rollup counts in pulse coverage cell: {}",
+            zone_cell.statement()
+        );
+        assert!(
+            receipt.omitted_classes.contains("zone_coverage_detail"),
+            "expected zone_coverage_detail compression omission in pulse receipt"
+        );
+        for affordance in &orientation.capsule().affordances {
+            assert!(
+                !affordance.rationale.contains("  "),
+                "duplicate-space typo in {}: {:?}",
+                affordance.affordance_id,
+                affordance.rationale
+            );
+        }
+        fs::remove_dir_all(root)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn dynamic_orient_plan_affordance_tracks_corroboration_contradiction_and_tamper() -> TestResult {
+    let root = empty_deployment("dynamic-plan-affordance")?;
+    let limits = OrientLimits::default();
+    let base_snapshot = read_deployment(&root, &limits)?;
+
+    let make_evidence = |tag: &[u8], domain: &str, relation: EvidenceEdgeRelation| EventEvidence {
+        digest: ContentDigest::sha256(tag),
+        class: EvidenceClass::Derived,
+        failure_domain: domain.to_owned(),
+        supports: matches!(relation, EvidenceEdgeRelation::Supports),
+        relation,
+        capsule_digest: None,
+        identity_digest: None,
+    };
+
+    let make_retained = |id: &str,
+                         state: EventState,
+                         evidence: Vec<EventEvidence>,
+                         tamper: SensorTamperStatus|
+     -> Result<RetainedEvent, Box<dyn Error>> {
+        let event = EventHypothesis {
+            schema: EventHypothesis::SCHEMA.to_owned(),
+            event_id: EventId::parse(id)?,
+            revision: 1,
+            supersedes: None,
+            state,
+            kind: EventKind::PerimeterBreach,
+            interval: CaptureInterval::new(TimestampNs(1_000), TimestampNs(2_000))?,
+            uncertainty_reason: if state == EventState::Indeterminate {
+                Some("single sensor only".to_owned())
+            } else {
+                None
+            },
+            zone_ids: vec!["zone:front-door".to_owned()],
+            track_ids: vec!["track:1".to_owned()],
+            probability: ProbabilityInterval::new(0.8, 0.95)?,
+            evidence,
+            model_receipts: Vec::new(),
+            decision_path: DecisionPath {
+                policy_generation: ContentDigest::sha256(b"policy:dynamic-plan"),
+                fingerprint: ContentDigest::sha256(id.as_bytes()),
+                abstained: state != EventState::Corroborated,
+                abstention_reason: if state == EventState::Corroborated {
+                    None
+                } else {
+                    Some("requires corroboration".to_owned())
+                },
+            },
+        };
+        let rev = event.revision_digest();
+        Ok(RetainedEvent {
+            event_root: ContentDigest::sha256(format!("root:{id}").as_bytes()),
+            revision_digest: rev,
+            committed_sequence: 1,
+            tamper,
+            object_bytes: 256,
+            object_reads: 2,
+            revisions: vec![event.clone()],
+            event,
+        })
+    };
+
+    // 1. Single-camera / uncorroborated event -> Blocked (never exposed as executable in next).
+    let mut single_snap = base_snapshot.clone();
+    single_snap.events = vec![make_retained(
+        "event:single-cam-1",
+        EventState::Indeterminate,
+        vec![make_evidence(
+            b"cam-a",
+            "sensor:cam-a",
+            EvidenceEdgeRelation::Supports,
+        )],
+        SensorTamperStatus::default(),
+    )?];
+    let single_orient = orient_deployment(&single_snap, &request(AgentView::Brief)?, &limits)?;
+    single_orient.capsule().validate()?;
+    let single_plan = single_orient
+        .capsule()
+        .affordances
+        .iter()
+        .find(|a| a.affordance_id == AFFORDANCE_PLAN)
+        .ok_or("missing plan affordance for single-camera")?;
+    assert_eq!(single_plan.class, AffordanceClass::Blocked);
+    assert!(
+        !single_orient
+            .capsule()
+            .frame
+            .next
+            .contains(&AFFORDANCE_PLAN.to_owned())
+    );
+    assert!(single_plan.rationale.contains("corroboration"));
+    assert!(!single_plan.rationale.contains("  "));
+
+    // 2. Clean 2-camera independent corroborated event -> Robust & actionable in frame.next.
+    let mut corr_snap = base_snapshot.clone();
+    corr_snap.events = vec![make_retained(
+        "event:corr-clean-1",
+        EventState::Corroborated,
+        vec![
+            make_evidence(b"cam-a-1", "domain:cam-a", EvidenceEdgeRelation::Supports),
+            make_evidence(b"cam-b-1", "domain:cam-b", EvidenceEdgeRelation::Supports),
+        ],
+        SensorTamperStatus::default(),
+    )?];
+    let corr_orient = orient_deployment(&corr_snap, &request(AgentView::Brief)?, &limits)?;
+    corr_orient.capsule().validate()?;
+    let corr_plan = corr_orient
+        .capsule()
+        .affordances
+        .iter()
+        .find(|a| a.affordance_id == AFFORDANCE_PLAN)
+        .ok_or("missing plan affordance for corroborated")?;
+    assert_eq!(corr_plan.class, AffordanceClass::Robust);
+    assert_eq!(corr_plan.target, "fss://event/event:corr-clean-1");
+    assert!(
+        corr_orient
+            .capsule()
+            .frame
+            .next
+            .contains(&AFFORDANCE_PLAN.to_owned())
+    );
+    assert!(corr_plan.rationale.contains("event:corr-clean-1"));
+    assert!(
+        corr_plan
+            .rationale
+            .contains("never grants effect authority")
+    );
+    assert!(!corr_plan.rationale.contains("  "));
+
+    // 3. Corroborated event with open contradiction -> Conditional with branch predicate & unsafe worlds.
+    let mut cond_snap = base_snapshot.clone();
+    cond_snap.events = vec![make_retained(
+        "event:corr-cond-1",
+        EventState::Corroborated,
+        vec![
+            make_evidence(b"cam-a-2", "domain:cam-a", EvidenceEdgeRelation::Supports),
+            make_evidence(b"cam-b-2", "domain:cam-b", EvidenceEdgeRelation::Supports),
+            make_evidence(
+                b"cam-c-contra",
+                "domain:cam-c",
+                EvidenceEdgeRelation::Contradicts,
+            ),
+        ],
+        SensorTamperStatus::default(),
+    )?];
+    let cond_orient = orient_deployment(&cond_snap, &request(AgentView::Brief)?, &limits)?;
+    cond_orient.capsule().validate()?;
+    let cond_plan = cond_orient
+        .capsule()
+        .affordances
+        .iter()
+        .find(|a| a.affordance_id == AFFORDANCE_PLAN)
+        .ok_or("missing plan affordance for conditional")?;
+    assert_eq!(cond_plan.class, AffordanceClass::Conditional);
+    assert!(cond_plan.branch_predicate.is_some());
+    assert!(!cond_plan.unsafe_worlds.is_empty());
+    assert!(
+        cond_orient
+            .capsule()
+            .frame
+            .next
+            .contains(&AFFORDANCE_PLAN.to_owned())
+    );
+    assert!(!cond_plan.rationale.contains("  "));
+
+    // 4. Corroborated event with open sensor tamper -> Blocked.
+    let mut tamper_snap = base_snapshot;
+    let open_tamper = SensorTamperStatus {
+        open_tamper_roots: vec![ContentDigest::sha256(b"tamper-root")],
+        ..SensorTamperStatus::default()
+    };
+    tamper_snap.events = vec![make_retained(
+        "event:corr-tamper-1",
+        EventState::Corroborated,
+        vec![
+            make_evidence(b"cam-a-3", "domain:cam-a", EvidenceEdgeRelation::Supports),
+            make_evidence(b"cam-b-3", "domain:cam-b", EvidenceEdgeRelation::Supports),
+        ],
+        open_tamper,
+    )?];
+    let tamper_orient = orient_deployment(&tamper_snap, &request(AgentView::Brief)?, &limits)?;
+    tamper_orient.capsule().validate()?;
+    let tamper_plan = tamper_orient
+        .capsule()
+        .affordances
+        .iter()
+        .find(|a| a.affordance_id == AFFORDANCE_PLAN)
+        .ok_or("missing plan affordance for tamper")?;
+    assert_eq!(tamper_plan.class, AffordanceClass::Blocked);
+    assert!(
+        !tamper_orient
+            .capsule()
+            .frame
+            .next
+            .contains(&AFFORDANCE_PLAN.to_owned())
+    );
+    assert!(tamper_plan.rationale.contains("tamper"));
+    assert!(!tamper_plan.rationale.contains("  "));
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn privacy_mask_unbounded_horizon_does_not_poison_latest_evidence_time() -> TestResult {
+    let root = empty_deployment("mask-horizon")?;
+    let spec = RootAuthoritySpec {
+        trace_id: "trace:mask-horizon".to_string(),
+        operation_id: OperationId::parse("operation:mask-horizon")?,
+        principal: "operator:mask-horizon".to_string(),
+        capabilities: vec![ADP_REPLAY_ROW_ID.to_string()],
+        deadline: None,
+        priority: 10,
+        budgets: BudgetVector::default(),
+        privacy_scope: "privacy:internal".to_string(),
+        retention_scope: "retention:ephemeral".to_string(),
+        anchor_universe: ContentDigest::sha256(b"mask-horizon"),
+        generation: 1,
+    };
+    let authority = ContextAuthority::new_root(spec)?;
+    let scratch =
+        std::env::temp_dir().join(format!("fss-agent-orient-mask-cx-{}", std::process::id()));
+    let cx = ReplayCx::new(ReplayIoAuthority::from_context_authority(
+        &authority, scratch,
+    )?);
+    let mut dep = ReferenceDeployment::open(&root, "site:orient-unit", &cx)?;
+    let real_t = TimestampNs(1_700_000_000_000_000_000);
+
+    // 1. Commit a policy delta carrying the unbounded-horizon sentinel [0, i64::MAX] (as emitted by
+    //    privacy mask declarations).
+    let mask_digest = dep
+        .publisher_mut()
+        .stage_object(b"privacy-mask-policy-sentinel")?;
+    let _ = dep.append_batch(
+        fss_core::BatchId::parse("batch:mask-horizon:1")?,
+        vec![fss_core::EvidenceDelta {
+            delta_id: "delta:mask-horizon:1".to_owned(),
+            object_id: fss_core::ObjectId::parse("object:policy-horizon:cam1")?,
+            family: "operator_policy".to_owned(),
+            prior_generation: None,
+            new_generation: 1,
+            payload_digest: mask_digest,
+            witness_digest: None,
+            validity: CaptureInterval::new(TimestampNs(0), TimestampNs(i128::from(i64::MAX)))?,
+            plane: fss_core::Plane::Authority,
+            operation_id: None,
+        }],
+        vec![mask_digest],
+        &cx,
+    )?;
+
+    // 2. Commit a normal evidence delta at real_t.
+    let ev_digest = dep.publisher_mut().stage_object(b"real-evidence-at-t0")?;
+    let _ = dep.append_batch(
+        fss_core::BatchId::parse("batch:mask-horizon:2")?,
+        vec![fss_core::EvidenceDelta {
+            delta_id: "delta:mask-horizon:2".to_owned(),
+            object_id: fss_core::ObjectId::parse("object:note:cam1")?,
+            family: "operator_note".to_owned(),
+            prior_generation: None,
+            new_generation: 1,
+            payload_digest: ev_digest,
+            witness_digest: None,
+            validity: CaptureInterval::new(real_t, real_t)?,
+            plane: fss_core::Plane::Authority,
+            operation_id: None,
+        }],
+        vec![ev_digest],
+        &cx,
+    )?;
+    drop(dep);
+
+    let snap = read_deployment(&root, &OrientLimits::default())?;
+    assert_eq!(
+        snap.latest_evidence_time, real_t,
+        "unbounded privacy-mask validity [0, i64::MAX] must NOT poison latest_evidence_time"
+    );
+    let orient = orient_deployment(&snap, &request(AgentView::Brief)?, &OrientLimits::default())?;
+    assert_eq!(orient.capsule().created_at, real_t);
+
     fs::remove_dir_all(root)?;
     Ok(())
 }

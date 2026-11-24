@@ -202,6 +202,14 @@ fn model_free_corroboration_report_is_byte_identical_to_the_pre_cascade_tree() -
     assert!(json.contains("\"candidate_count\":1"), "{json}");
     let observed = digest(&json);
     println!("golden corroboration digest: {observed}");
+    // Verify the only delta relative to the b31b988 pre-dependency pin is the
+    // `,"dependencies":{...}` object added in 58c1ab2e0 (fss-x4a.16.10).
+    let (before_deps, after_deps) = json
+        .split_once(",\"dependencies\":")
+        .ok_or("expected dependencies field added in 58c1ab2e0")?;
+    assert!(after_deps.ends_with('}'), "{json}");
+    let legacy_json = format!("{before_deps}}}");
+    assert_eq!(digest(&legacy_json), GOLDEN_CORROBORATION_PRE_58C1AB2E0);
     assert_eq!(observed, GOLDEN_CORROBORATION);
     Ok(())
 }
@@ -219,6 +227,11 @@ const GOLDEN_WATCH: [&str; 3] = [
     "sha256:ffece0f940ef3e11dc75706ceb7c0dd6ecf0e145b2022bee29341181adad043e",
     "sha256:93b85cbe6548a18f7c007ab847c9876fc0c2c090c98d7d0665f02f64b03c7102",
 ];
-/// Two mirrored square MJPEG recordings (produced at 2c0cc07).
-const GOLDEN_CORROBORATION: &str =
+/// Two mirrored square MJPEG recordings at b31b988 (before 58c1ab2e0 appended `dependencies`).
+const GOLDEN_CORROBORATION_PRE_58C1AB2E0: &str =
     "sha256:726106ca2e20a0922e944ff2b4f398dd0f33a2efd41d8863c346a881399bd2b4";
+/// Re-pinned after 58c1ab2e0 (`feat(events): constrain corroboration by shared failure domains`,
+/// fss-x4a.16.10) appended `,"dependencies":{...}` to `CorroborationReport::to_json_with_coverage`.
+/// Every field prior to `,"dependencies":` remains byte-identical to `GOLDEN_CORROBORATION_PRE_58C1AB2E0`.
+const GOLDEN_CORROBORATION: &str =
+    "sha256:335fb3910b32acb08971805651b2bff802f83971f62bf62c90af09761229c396";

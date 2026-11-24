@@ -1186,6 +1186,7 @@ impl DurableSessionStore {
     ///
     /// Native analysis and inventory completeness are the caller's responsibility. This structural
     /// journal owner never elevates the presentation bytes or caller's receipt to source truth.
+    #[allow(clippy::too_many_arguments)]
     pub fn publish_supervision(
         &mut self,
         principal: &PrincipalId,
@@ -1213,6 +1214,7 @@ impl DurableSessionStore {
     /// Event and native inventories cannot be mixed. Native inventory completeness and current
     /// verification remain the evaluator's responsibility. Empty native inventory preserves the
     /// original command bytes, delivery receipt and state identity.
+    #[allow(clippy::too_many_arguments)]
     pub fn publish_supervision_with_detections(
         &mut self,
         principal: &PrincipalId,

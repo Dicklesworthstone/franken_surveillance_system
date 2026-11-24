@@ -236,6 +236,7 @@ impl SupervisionSessionHead {
 
 /// One complete result. Inspection, acknowledgement and discard never return a successor.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum SupervisionSessionOutcome {
     /// Existing subscription descriptors only; no historical report bytes or source assertion.
     Inspected,
@@ -703,13 +704,12 @@ fn execute(
             {
                 return Err(SupervisionSessionError::ChangedAuthority);
             }
-            if let SupervisionAction::Acknowledge(receipt) = action {
-                if pending
+            if let SupervisionAction::Acknowledge(receipt) = action
+                && pending
                     .as_ref()
                     .is_none_or(|pending| pending.receipt() != receipt)
-                {
-                    return Err(SupervisionSessionError::InvalidRequest);
-                }
+            {
+                return Err(SupervisionSessionError::InvalidRequest);
             }
             admit(control, &binding, SupervisionSessionBoundary::ReserveRead)?;
             state = journal

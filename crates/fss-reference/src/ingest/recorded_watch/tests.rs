@@ -454,3 +454,234 @@ fn hevc_recording_with_motion_yields_one_candidate_deterministically() -> TestRe
     );
     Ok(())
 }
+
+/// Static background with a simulated ticking top-right corner clock (inside `[72, 2, 20, 12]`)
+/// and optional adjacent real motion moving horizontally below the clock (`y = 20..36`).
+fn osd_clock_scene(include_adjacent_motion: bool) -> TestResult<Vec<u8>> {
+    let config = JpegConfig {
+        quality: 95,
+        subsampling: Subsampling::Grayscale,
+        restart_interval: 0,
+        custom_markers: Vec::new(),
+    };
+    let mut stream = Vec::new();
+    for index in 0..FRAMES {
+        let mut pixels = vec![40_u8; (WIDTH * HEIGHT) as usize];
+        // Ticking corner clock glyph block in top-right corner: static during initial 3-frame
+        // warm-up, then cycles on (2-3 frames per tick) and off like a 1Hz clock sampled at ~3fps,
+        // producing both consecutive foreground detections (>= 3 hits) and >= 5 pixel transitions.
+        let clock_on = matches!(index, 3 | 4 | 5 | 7 | 8 | 10 | 11 | 13);
+        let clock_luma = if clock_on { 235_u8 } else { 40_u8 };
+        for y in 4..12 {
+            for x in 76..88 {
+                pixels[y * WIDTH as usize + x] = clock_luma;
+            }
+        }
+        // Adjacent real moving object starting immediately below the ignore rect (`y = 18..34`).
+        if include_adjacent_motion && index >= 3 {
+            let left = (index - 3) * 8;
+            for y in 18..34 {
+                for x in left..left + 16 {
+                    pixels[y * WIDTH as usize + x] = 220;
+                }
+            }
+        }
+        stream.extend(encode_jpeg(WIDTH, HEIGHT, &pixels, &config)?);
+    }
+    Ok(stream)
+}
+
+#[test]
+fn osd_ignore_rect_suppresses_ticking_clock_while_preserving_adjacent_motion_and_source_custody()
+-> TestResult {
+    use crate::ingest::osd_mask::{
+        OsdDetectConfig, OsdDetectLimits, OsdDetectRequest, detect_osd_candidates,
+    };
+
+    // 1. Static scene with only a ticking top-right clock inside the watched zone.
+    let clock_only = fixture("osd-clock-only", &osd_clock_scene(false)?)?;
+    let whole_right = WatchZone {
+        zone_id: "entry".to_owned(),
+        x: 64,
+        y: 0,
+        width: 32,
+        height: 48,
+    };
+    let clock_plan = plan(clock_only.identity, whole_right.clone());
+    let limits = WatchLimits::default();
+
+    // Without ignore rects, the ticking corner clock triggers foreground boxes and a false candidate.
+    let unmasked =
+        WatchReport::analyze(&clock_only.deployment, &clock_plan, &limits, &clock_only.cx)?;
+    assert!(
+        !unmasked.candidates().is_empty(),
+        "ticking clock should trigger a false-positive candidate without --ignore-rect"
+    );
+    assert!(
+        unmasked
+            .frames()
+            .iter()
+            .any(|frame| !frame.boxes.is_empty())
+    );
+
+    // Propose OSD candidates read-only and confirm the detector locates the top-right clock.
+    let before_detect = clock_only.deployment.current_anchor().clone();
+    let proposal = detect_osd_candidates(
+        &clock_only.deployment,
+        &OsdDetectRequest {
+            import_identity: clock_only.identity,
+            interpretation: ComponentInterpretation::Grayscale,
+            first_segment: 0,
+            segment_count: FRAMES,
+            config: OsdDetectConfig::default(),
+        },
+        &OsdDetectLimits::default(),
+        &clock_only.cx,
+    )?;
+    assert_eq!(*clock_only.deployment.current_anchor(), before_detect);
+    assert_eq!(proposal.candidates.len(), 1);
+    let proposed_rect = proposal.candidates[0].rect;
+    assert!(
+        proposed_rect.x <= 76
+            && proposed_rect.y <= 4
+            && proposed_rect.x + proposed_rect.width >= 88
+            && proposed_rect.y + proposed_rect.height >= 12,
+        "proposed rect {proposed_rect:?} should cover the ticking clock [76..88, 4..12]"
+    );
+
+    // Adopting the proposed ignore rect explicitly suppresses ALL false-positive boxes & candidates,
+    // while keeping every decoded source frame's luma_digest completely untouched (distinct from
+    // privacy masks!).
+    let suppressed = WatchReport::analyze_with_ignore_regions(
+        &clock_only.deployment,
+        &clock_plan,
+        &limits,
+        None,
+        WatchOptions::default(),
+        None,
+        &[proposed_rect],
+        &clock_only.cx,
+    )?;
+    assert_eq!(suppressed.candidates().len(), 0);
+    assert!(
+        suppressed
+            .frames()
+            .iter()
+            .all(|frame| frame.boxes.is_empty())
+    );
+    assert_eq!(suppressed.ignore_regions(), &[proposed_rect]);
+    assert_ne!(suppressed.plan_digest(), unmasked.plan_digest());
+    assert_ne!(suppressed.analysis_digest(), unmasked.analysis_digest());
+    assert_eq!(
+        suppressed
+            .frames()
+            .iter()
+            .map(|f| f.luma_digest)
+            .collect::<Vec<_>>(),
+        unmasked
+            .frames()
+            .iter()
+            .map(|f| f.luma_digest)
+            .collect::<Vec<_>>(),
+        "OSD ignore regions must leave source luma_digest completely untouched in custody"
+    );
+    let suppressed_json = suppressed.to_json(0, None);
+    assert!(suppressed_json.contains("\"ignore_regions\":["));
+    assert!(suppressed_json.contains("\"ignore_regions_digest\":\"sha256:"));
+
+    // 2. Real motion immediately adjacent outside the ignore rect is STILL detected!
+    let mut adjacent = fixture("osd-clock-plus-motion", &osd_clock_scene(true)?)?;
+    let adjacent_plan = plan(adjacent.identity, whole_right);
+    let mut with_motion = WatchReport::analyze_with_ignore_regions(
+        &adjacent.deployment,
+        &adjacent_plan,
+        &limits,
+        None,
+        WatchOptions::default(),
+        None,
+        &[proposed_rect],
+        &adjacent.cx,
+    )?;
+    assert_eq!(
+        with_motion.candidates().len(),
+        1,
+        "real motion immediately below the ignore rect must still produce 1 candidate"
+    );
+    assert_eq!(with_motion.candidates()[0].zone_id, "entry");
+    // Candidate provenance retains the ignore-region assertion as RequiredBy (non-supporting).
+    let expected_ignore_digest = ignore_regions_digest(&[proposed_rect]);
+    assert!(
+        with_motion.candidates()[0]
+            .event()
+            .evidence
+            .iter()
+            .any(|ev| {
+                ev.digest == expected_ignore_digest
+                    && ev.class == EvidenceClass::Assertion
+                    && ev.relation == EvidenceEdgeRelation::RequiredBy
+                    && !ev.supports
+            })
+    );
+    // Publishing succeeds cleanly and stores the ignore-region object in spool custody.
+    let approval = with_motion.candidates()[0].proposal_digest();
+    assert_eq!(
+        with_motion.publish(
+            &mut adjacent.deployment,
+            &BTreeSet::from([approval]),
+            &adjacent.cx
+        )?,
+        1
+    );
+    assert!(
+        adjacent
+            .deployment
+            .publisher()
+            .spool()
+            .read(expected_ignore_digest)
+            .is_ok()
+    );
+
+    // 3. Permuted ignore rects yield identical plan/analysis/proposal digests, and out-of-bounds
+    // ignore rects are refused cleanly.
+    let rect_a = ImageRect::new(0, 0, 8, 8).map_err(|e| e.to_string())?;
+    let rect_b = proposed_rect;
+    let ab = WatchReport::analyze_with_ignore_regions(
+        &clock_only.deployment,
+        &clock_plan,
+        &limits,
+        None,
+        WatchOptions::default(),
+        None,
+        &[rect_a, rect_b],
+        &clock_only.cx,
+    )?;
+    let ba = WatchReport::analyze_with_ignore_regions(
+        &clock_only.deployment,
+        &clock_plan,
+        &limits,
+        None,
+        WatchOptions::default(),
+        None,
+        &[rect_b, rect_a],
+        &clock_only.cx,
+    )?;
+    assert_eq!(ab.plan_digest(), ba.plan_digest());
+    assert_eq!(ab.analysis_digest(), ba.analysis_digest());
+    assert_eq!(ab.to_json(0, None), ba.to_json(0, None));
+
+    let out_of_bounds = ImageRect::new(WIDTH - 4, 0, 8, 8).map_err(|e| e.to_string())?;
+    assert!(matches!(
+        WatchReport::analyze_with_ignore_regions(
+            &clock_only.deployment,
+            &clock_plan,
+            &limits,
+            None,
+            WatchOptions::default(),
+            None,
+            &[out_of_bounds],
+            &clock_only.cx,
+        ),
+        Err(WatchError::InvalidPlan(_))
+    ));
+    Ok(())
+}

@@ -525,7 +525,9 @@ pub(crate) fn verify_event_alert_eligibility(
 ) -> Result<(), ReferenceError> {
     if action != ReferencePolicyAction::PrepareAlert || state != fss_core::EventState::Corroborated
     {
-        return Err(ReferenceError::InvalidSpec("alert_not_eligible"));
+        return Err(ReferenceError::AlertNotEligible(
+            "requires corroborated multi-sensor event and PrepareAlert policy action",
+        ));
     }
     if evidence
         .iter()
@@ -1484,7 +1486,9 @@ pub fn prepare_reference_alert(
     // operation and pending obligation by changing only that enum.
     let committed_action = committed_policy_action(&params.decision.event);
     if params.decision.action != committed_action {
-        return Err(ReferenceError::InvalidSpec("alert_not_eligible"));
+        return Err(ReferenceError::AlertNotEligible(
+            "committed policy action does not authorize alert preparation",
+        ));
     }
     // The receipt and the witness are cross-checks only: eligibility is re-derived from the event's
     // lineage as the authority ledger holds it, with the check dispatch runs (fss-2uftm).

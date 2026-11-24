@@ -115,6 +115,7 @@ pub enum RolloverPreflightReason {
 
 /// Result of the first rollover stage; all owners remain explicit.
 #[must_use]
+#[allow(clippy::large_enum_variant)]
 pub enum RolloverPreflightResult {
     /// The predecessor was verified and the successor worker is ready.
     Ready(Rollover),
@@ -279,6 +280,7 @@ impl RolloverPreflight {
         }
     }
     /// Recover the unchanged recording and stores if no check was admitted.
+    #[allow(clippy::result_large_err)]
     pub fn into_unstarted(self) -> Result<(Driver, av_rollover_worker::Supplies), Self> {
         if self.completion.is_some() || self.worker.is_running() {
             return Err(self);
@@ -316,6 +318,7 @@ impl RolloverPreflight {
         }
     }
     /// Convert a drained proof into a successor worker, or retain all failures.
+    #[allow(clippy::result_large_err)]
     pub fn finish(self) -> Result<RolloverPreflightResult, Self> {
         Self::finish_boxed(Box::new(self))
             .map(|result| *result)
@@ -427,6 +430,7 @@ struct BoxedSwitchRetirement {
 
 /// Exact outcome of the successor transition.
 #[must_use]
+#[allow(clippy::large_enum_variant)]
 pub enum RolloverResult {
     /// The matching successor owns the pending media; the caller may resume.
     Resumed {
@@ -457,6 +461,7 @@ pub enum RolloverResult {
 
 /// Recovery of a successor transition that never started.
 #[must_use]
+#[allow(clippy::large_enum_variant)]
 pub enum RolloverUnstarted {
     /// The exact predecessor and unused successor stores were recovered.
     Restored {
@@ -519,6 +524,7 @@ impl Rollover {
         }
     }
     /// Restore the predecessor if the successor worker was never admitted.
+    #[allow(clippy::result_large_err)]
     pub fn into_unstarted(self) -> Result<RolloverUnstarted, Self> {
         if self.completion.is_some() {
             return Err(self);
@@ -559,6 +565,7 @@ impl Rollover {
         })
     }
     /// Reattach only a fully replayed, unfenced successor.
+    #[allow(clippy::result_large_err)]
     pub fn finish(self) -> Result<RolloverResult, Self> {
         Self::finish_boxed(Box::new(self))
             .map(|result| *result)
@@ -600,24 +607,25 @@ impl Rollover {
             retired,
         } = *stage;
         let retired = *retired;
-        if completion.runtime.is_ok() && !retired.fenced && retired.inputs.is_none() {
-            if let av_rollover_worker::Outcome::Prepared {
+        if completion.runtime.is_ok()
+            && !retired.fenced
+            && retired.inputs.is_none()
+            && let av_rollover_worker::Outcome::Prepared {
                 attachment,
                 receipt,
             } = completion.outcome
-            {
-                return Box::new(match retired.resources.attach_prepared(attachment) {
-                    Ok(av) => RolloverResult::Resumed {
-                        driver: paused.resume(av, ArchiveState::Armed, None),
-                        receipt,
-                    },
-                    Err(refusal) => RolloverResult::AttachRefused {
-                        paused,
-                        refusal,
-                        receipt,
-                    },
-                });
-            }
+        {
+            return Box::new(match retired.resources.attach_prepared(attachment) {
+                Ok(av) => RolloverResult::Resumed {
+                    driver: paused.resume(av, ArchiveState::Armed, None),
+                    receipt,
+                },
+                Err(refusal) => RolloverResult::AttachRefused {
+                    paused,
+                    refusal,
+                    receipt,
+                },
+            });
         }
         Box::new(RolloverResult::Unresolved {
             paused,
@@ -752,6 +760,7 @@ pub struct Retired {
 
 /// A retirement refusal preserves the exact owners at the failed stage.
 #[must_use = "retain or reconcile all returned owners"]
+#[allow(clippy::large_enum_variant)]
 pub enum RetirementRefusal {
     /// The source has not stopped or its archive workers are not ready.
     NotDrained(Parts),
@@ -777,6 +786,7 @@ impl Parts {
     /// Prepare archival of bytes retained after a stopped HTTP stream.
     /// This performs no I/O, does not finalize the unfinished GOP, and does
     /// not settle the camera effect or establish physical capture time.
+    #[allow(clippy::result_large_err)]
     pub fn prepare_retirement(self) -> Result<Retired, RetirementRefusal> {
         if !self.halted
             || !self.prefix_sealed
@@ -933,6 +943,7 @@ impl Step {
 
 /// One recording decision under an explicit finite AAC renewal allowance.
 #[must_use]
+#[allow(clippy::large_enum_variant)]
 pub enum AllowanceStep {
     /// The normal driver decision, including any retained media or worker result.
     Recording(Step),
@@ -1006,6 +1017,7 @@ impl Driver {
     /// Renew the existing AAC epoch only while both archive workers are idle
     /// and under a caller-supplied finite allowance. A renewal never retries a
     /// failed publication, changes codec configuration, or reads media.
+    #[allow(clippy::too_many_arguments)]
     pub async fn step_with_audio_allowance<'scope, 'task>(
         &mut self,
         policy: &mut crate::unifi_direct::recording_session::AudioAllowancePolicy,
@@ -1174,6 +1186,7 @@ impl Driver {
     }
 
     /// Recover all owners only once running attempts have been joined.
+    #[allow(clippy::result_large_err)]
     pub fn into_parts(self) -> Result<Parts, Self> {
         if self.parts.source.is_running() || self.parts.av_state == ArchiveState::Running {
             Err(self)

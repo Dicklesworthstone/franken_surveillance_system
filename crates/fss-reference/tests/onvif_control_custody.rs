@@ -656,10 +656,7 @@ fn root_durable_intent_interruption_requires_exact_storage_retry() -> Test {
             .as_str()
             .strip_prefix("onvif-create-intent-")
             .ok_or("slot")?;
-        (
-            ContentDigest::parse(&format!("sha256:{hex}"))?,
-            visible.root,
-        )
+        (ContentDigest::parse(format!("sha256:{hex}"))?, visible.root)
     };
     let mut deployment = ReferenceDeployment::reopen(&dir.0, SITE, &cx)?;
     assert!(RetainedCreateIntent::open(&deployment, identity, Some(root), &cx).is_err());

@@ -90,7 +90,7 @@ pub(super) fn resume_if_present(
             "the retained opening mission is not canonical".to_owned(),
         )
     })?;
-    if &mission != &*expected_mission {
+    if mission != *expected_mission {
         return Err(DeploymentSessionError::SessionStale(
             "the requested opening differs from the immutable retained mission".to_owned(),
         ));

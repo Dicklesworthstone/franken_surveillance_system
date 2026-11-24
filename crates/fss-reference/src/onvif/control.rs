@@ -490,6 +490,7 @@ fn admit_write<G: ReplayAdmission>(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn publish<G: ReplayAdmission>(
     deployment: &mut ReferenceDeployment,
     identity: ContentDigest,

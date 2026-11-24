@@ -112,6 +112,7 @@ impl Fixture {
             limits: RtpTrackingLimits::default(),
         }))
     }
+    #[allow(clippy::result_large_err)]
     fn write(
         &self,
         r: &RecoveredRtpImport,
@@ -128,6 +129,7 @@ impl Fixture {
             &self.scalar,
         )
     }
+    #[allow(clippy::result_large_err)]
     fn verify(
         &self,
         r: &RecoveredRtpImport,

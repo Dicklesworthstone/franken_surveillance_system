@@ -349,6 +349,7 @@ fn matroska_cancellation_and_invalid_query_refusals_are_atomic_and_typed() -> Te
 }
 
 #[test]
+#[allow(clippy::result_large_err)]
 fn immutable_writer_held_selection_and_final_validation_share_one_allowance() -> TestResult {
     let f = Fixture::new("matroska-movie-immutable", "hevc_av.mkv")?;
     let expected = f.select(NARROW)?;

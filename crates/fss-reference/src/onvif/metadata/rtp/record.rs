@@ -202,90 +202,6 @@ fn option_text(e: &mut CanonicalEncoder, value: Option<&str>) {
     }
 }
 
-#[cfg(test)]
-mod native_compatibility {
-    use super::*;
-
-    fn recipe() -> Result<Recipe, MetadataError> {
-        Ok(Recipe {
-            site: "site:recipe-compat".into(),
-            binding: SourceBinding {
-                sensor_id: SensorId::parse("sensor:front")?,
-                device_generation: ContentDigest::sha256(b"device-1"),
-                profile_generation: ContentDigest::sha256(b"profile-1"),
-                profile_token: "main".into(),
-                receive_interval: CaptureInterval::new(TimestampNs(100), TimestampNs(110))?,
-            },
-            config: RtpMetadataConfig {
-                stream: StreamKey {
-                    ingress: 17,
-                    generation: 3,
-                    ssrc: 42,
-                },
-                payload_type: 107,
-                limits: RtpMetadataImportLimits {
-                    max_input_bytes: 8_388_608,
-                    max_records: 16_384,
-                    max_documents: 64,
-                },
-                reorder: ReorderLimits {
-                    packet: PacketLimits {
-                        max_packet_bytes: 65_535,
-                        max_extension_bytes: 16_384,
-                        max_rtcp_packets: 64,
-                    },
-                    max_packets: 128,
-                    max_bytes: 8_388_608,
-                    max_delay_ns: 100_000_000,
-                },
-                metadata: OnvifMetadataLimits {
-                    max_document_bytes: 262_144,
-                    max_fragment_packets: 4096,
-                    max_pending_age_ns: 2_000_000_000,
-                },
-            },
-            source: ContentDigest::sha256(b"original-packets"),
-            source_bytes: 123,
-            report: ContentDigest::sha256(b"replay-report"),
-            native_source: None,
-        })
-    }
-
-    #[test]
-    fn existing_file_recipe_keeps_its_exact_pre_native_identity() -> Result<(), MetadataError> {
-        let original = recipe()?;
-        let bytes = encode(&original)?;
-        // Frozen from the committed v1 field order, before introducing native acquisition.
-        // An absent optional native source must not add even a one-byte discriminator.
-        assert_eq!(bytes.len(), 644);
-        assert_eq!(
-            ContentDigest::sha256(&bytes).to_text(),
-            "sha256:f3c7116f5c4dbebfaeee57c7c08652acce06d527cf67d38a484b331a8600d18f"
-        );
-        assert!(decode(&bytes)? == original);
-        Ok(())
-    }
-
-    #[test]
-    fn native_recipe_has_its_own_domain_and_mandatory_original_source_link()
-    -> Result<(), MetadataError> {
-        let mut native = recipe()?;
-        let file = encode(&native)?;
-        native.native_source = Some((ContentDigest::sha256(b"native-source"), 512));
-        let bytes = encode(&native)?;
-        assert_ne!(ContentDigest::sha256(&bytes), ContentDigest::sha256(&file));
-        assert_eq!(CanonicalDecoder::new(&bytes).text()?, NATIVE_RECIPE_DOMAIN);
-        assert!(decode(&bytes)? == native);
-        assert!(decode(&bytes[..bytes.len() - 41]).is_err());
-        let mut contaminated_file = file;
-        contaminated_file.extend_from_slice(&bytes[bytes.len() - 41..]);
-        assert!(decode(&contaminated_file).is_err());
-        native.native_source = Some((ContentDigest::sha256(b"native-source"), 0));
-        assert!(encode(&native).is_err());
-        Ok(())
-    }
-}
-
 /// Cold readers rederive this complete report from original source, never deserialize a claimed
 /// projection as authority. Source framing, errors and every fragment mapping are compared bytes.
 pub(super) fn report(
@@ -370,4 +286,88 @@ pub(super) fn report(
         return Err(MetadataError::Limit);
     }
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod native_compatibility {
+    use super::*;
+
+    fn recipe() -> Result<Recipe, MetadataError> {
+        Ok(Recipe {
+            site: "site:recipe-compat".into(),
+            binding: SourceBinding {
+                sensor_id: SensorId::parse("sensor:front")?,
+                device_generation: ContentDigest::sha256(b"device-1"),
+                profile_generation: ContentDigest::sha256(b"profile-1"),
+                profile_token: "main".into(),
+                receive_interval: CaptureInterval::new(TimestampNs(100), TimestampNs(110))?,
+            },
+            config: RtpMetadataConfig {
+                stream: StreamKey {
+                    ingress: 17,
+                    generation: 3,
+                    ssrc: 42,
+                },
+                payload_type: 107,
+                limits: RtpMetadataImportLimits {
+                    max_input_bytes: 8_388_608,
+                    max_records: 16_384,
+                    max_documents: 64,
+                },
+                reorder: ReorderLimits {
+                    packet: PacketLimits {
+                        max_packet_bytes: 65_535,
+                        max_extension_bytes: 16_384,
+                        max_rtcp_packets: 64,
+                    },
+                    max_packets: 128,
+                    max_bytes: 8_388_608,
+                    max_delay_ns: 100_000_000,
+                },
+                metadata: OnvifMetadataLimits {
+                    max_document_bytes: 262_144,
+                    max_fragment_packets: 4096,
+                    max_pending_age_ns: 2_000_000_000,
+                },
+            },
+            source: ContentDigest::sha256(b"original-packets"),
+            source_bytes: 123,
+            report: ContentDigest::sha256(b"replay-report"),
+            native_source: None,
+        })
+    }
+
+    #[test]
+    fn existing_file_recipe_keeps_its_exact_pre_native_identity() -> Result<(), MetadataError> {
+        let original = recipe()?;
+        let bytes = encode(&original)?;
+        // Frozen from the committed v1 field order, before introducing native acquisition.
+        // An absent optional native source must not add even a one-byte discriminator.
+        assert_eq!(bytes.len(), 644);
+        assert_eq!(
+            ContentDigest::sha256(&bytes).to_text(),
+            "sha256:f3c7116f5c4dbebfaeee57c7c08652acce06d527cf67d38a484b331a8600d18f"
+        );
+        assert!(decode(&bytes)? == original);
+        Ok(())
+    }
+
+    #[test]
+    fn native_recipe_has_its_own_domain_and_mandatory_original_source_link()
+    -> Result<(), MetadataError> {
+        let mut native = recipe()?;
+        let file = encode(&native)?;
+        native.native_source = Some((ContentDigest::sha256(b"native-source"), 512));
+        let bytes = encode(&native)?;
+        assert_ne!(ContentDigest::sha256(&bytes), ContentDigest::sha256(&file));
+        assert_eq!(CanonicalDecoder::new(&bytes).text()?, NATIVE_RECIPE_DOMAIN);
+        assert!(decode(&bytes)? == native);
+        assert!(decode(&bytes[..bytes.len() - 41]).is_err());
+        let mut contaminated_file = file;
+        contaminated_file.extend_from_slice(&bytes[bytes.len() - 41..]);
+        assert!(decode(&contaminated_file).is_err());
+        native.native_source = Some((ContentDigest::sha256(b"native-source"), 0));
+        assert!(encode(&native).is_err());
+        Ok(())
+    }
 }

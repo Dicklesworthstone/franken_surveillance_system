@@ -14,6 +14,7 @@ use crate::ingest::package_event::{PackageAnalysisReport, types::sample_confirme
 const MAX_STATEMENT_BYTES: usize = 16_384;
 const MAX_PROJECTION_ROWS: usize = 256;
 
+#[allow(clippy::result_large_err)]
 pub(super) fn observations(
     report: &PackageAnalysisReport,
 ) -> Result<Vec<TrackObservationRow>, TrackQueryError> {
@@ -187,6 +188,7 @@ fn observation_json(row: &TrackObservationRow) -> String {
     )
 }
 
+#[allow(clippy::result_large_err)]
 pub(super) fn epistemic(
     report: &PackageAnalysisReport,
     rows: &[TrackObservationRow],

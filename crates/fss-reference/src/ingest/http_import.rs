@@ -440,6 +440,7 @@ pub fn import_http<'cx>(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn publish(
     destination: &mut ReferenceDeployment,
     request: &HttpImportRequest,

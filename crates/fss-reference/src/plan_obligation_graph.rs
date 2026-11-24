@@ -49,7 +49,7 @@ impl PlanObligationProjection {
             plan.world_envelope_digest,
             plan.hypothesis_workspace_digest.clone(),
             plan.capability_projection.clone(),
-            plan.budget.clone(),
+            plan.budget,
             plan.steps.clone(),
             plan.edges.clone(),
             plan.entry_steps.clone(),

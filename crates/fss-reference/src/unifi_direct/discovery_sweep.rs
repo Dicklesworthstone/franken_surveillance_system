@@ -421,12 +421,13 @@ impl<'scope, 'task> Runner<'scope, 'task> {
         self.phase.set(Phase::Waiting);
         let _lease = Lease(&self.phase);
         self.admitted_time()?;
-        if self.page.get() == 0 && self.window.get() == 0 {
-            if let Some(due) = self.next_due.get() {
-                while self.cx.now() < due {
-                    self.admitted_time()?;
-                    sleep_until((self.cx.now() + CANCEL_POLL).min(due)).await;
-                }
+        if self.page.get() == 0
+            && self.window.get() == 0
+            && let Some(due) = self.next_due.get()
+        {
+            while self.cx.now() < due {
+                self.admitted_time()?;
+                sleep_until((self.cx.now() + CANCEL_POLL).min(due)).await;
             }
         }
         let now = self.admitted_time()?;
@@ -445,10 +446,7 @@ impl<'scope, 'task> Runner<'scope, 'task> {
                 (None, Some(identity)) => *bound = Some(CycleFleet::Bound(identity)),
                 (Some(CycleFleet::None), None) => (),
                 (Some(CycleFleet::Bound(previous)), Some(identity))
-                    if Rc::ptr_eq(previous, &identity) =>
-                {
-                    ()
-                }
+                    if Rc::ptr_eq(previous, &identity) => {}
                 _ => return Err(Error::WrongFleet),
             }
         }

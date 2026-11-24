@@ -231,6 +231,7 @@ impl std::error::Error for ProbeChargeFailure {}
 /// one native session writer, checks full bounded history before and after the charge, and never
 /// acknowledges, discards, advances, re-evaluates or replaces a pending report. An uncertain
 /// append may retain a charge without output; recovery never refunds it or redelivers itself.
+#[allow(clippy::result_large_err)]
 pub fn charge_probe_delivery(
     root: impl super::SessionRoot,
     request: &ProbeRequest,

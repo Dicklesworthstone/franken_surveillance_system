@@ -12,9 +12,7 @@ mod support;
 use std::cell::Cell;
 use std::fs;
 
-use fss_container::demux::{
-    AvcMp4, DemuxLimits, MovieGapKind, MovieSelectionLimits, VideoCodec,
-};
+use fss_container::demux::{AvcMp4, DemuxLimits, MovieGapKind, MovieSelectionLimits, VideoCodec};
 use fss_core::{ContentDigest, TimestampNs};
 use fss_geometry::WorkBudget;
 use fss_reference::ReferenceDeployment;
@@ -369,9 +367,11 @@ fn recorder_gaps_need_explicit_consent_and_remain_decoder_and_movie_boundaries()
     // Every fixture picture is an IDR, so a continuous run can have several
     // independently bootstrapped spans. None may cross the recorder gap.
     assert!(
-        movie.selection.decode_spans.iter().all(|span| {
-            span.first_sample >= 3 || span.first_sample + span.sample_count <= 3
-        })
+        movie
+            .selection
+            .decode_spans
+            .iter()
+            .all(|span| { span.first_sample >= 3 || span.first_sample + span.sample_count <= 3 })
     );
     assert_eq!(
         movie

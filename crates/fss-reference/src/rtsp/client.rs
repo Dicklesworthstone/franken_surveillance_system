@@ -8,6 +8,9 @@ pub mod authenticated;
 /// Bounded RFC 7798 negotiation without a decoder or codec fallback.
 #[path = "client/hevc.rs"]
 pub mod hevc;
+/// Bounded in-band H.264/H.265 parameter-set acquisition for SDP-minimal RTSP sources.
+#[path = "client/inband.rs"]
+pub mod inband;
 /// RFC 2435 JPEG transport on the shared session and exact payload selection.
 #[path = "client/jpeg.rs"]
 pub mod jpeg;
@@ -243,6 +246,7 @@ pub struct ClientMedia {
     sps: Vec<u8>,
     pps: Vec<u8>,
     reduced_rtcp: bool,
+    parameter_set_origin: Option<inband::ParameterSetOrigin>,
 }
 impl ClientMedia {
     /// Selected payload mapping.
@@ -254,8 +258,17 @@ impl ClientMedia {
         self.packetization_mode
     }
     /// Exact decoded SDP parameter-set bytes, including the NAL header.
+    /// Empty only when opt-in in-band RTP parameter-set acquisition was explicitly enabled.
     pub fn parameter_sets(&self) -> (&[u8], &[u8]) {
         (&self.sps, &self.pps)
+    }
+    /// Whether SDP supplied complete out-of-band SPS and PPS parameter sets.
+    pub fn has_parameter_sets(&self) -> bool {
+        !self.sps.is_empty() && !self.pps.is_empty()
+    }
+    /// Provenance of SDP parameter sets, or `None` when awaiting in-band RTP acquisition.
+    pub fn parameter_set_origin(&self) -> Option<inband::ParameterSetOrigin> {
+        self.parameter_set_origin
     }
     /// Explicit reduced-size RTCP negotiation; never inferred from malformed compounds.
     pub fn reduced_rtcp(&self) -> bool {
@@ -314,6 +327,12 @@ struct Pending {
     deadline_ns: u64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CompanionTrack {
+    track_uri: String,
+    channels: (u8, u8),
+}
+
 /// Deterministic, one-request-at-a-time session around the existing wire/SDP parsers.
 /// Retain raw input independently. All time comes from one owner monotonic clock.
 /// On a matching malformed response, timeout, or connection loss, reconnect rather
@@ -327,6 +346,11 @@ pub struct RtspClientSession {
     codec: ClientCodec,
     media: Option<NegotiatedMedia>,
     selected_payload_type: Option<u8>,
+    allow_inband_parameter_sets: bool,
+    setup_companion_tracks: bool,
+    video_setup_done: bool,
+    companion_tracks: Vec<CompanionTrack>,
+    companion_setup_index: usize,
     track_uri: String,
     aggregate_uri: String,
     session_id: Option<String>,
@@ -392,6 +416,11 @@ impl RtspClientSession {
             codec,
             media: None,
             selected_payload_type: None,
+            allow_inband_parameter_sets: false,
+            setup_companion_tracks: false,
+            video_setup_done: false,
+            companion_tracks: Vec::new(),
+            companion_setup_index: 0,
             track_uri: String::new(),
             aggregate_uri: String::new(),
             session_id: None,
@@ -476,6 +505,48 @@ impl RtspClientSession {
     pub fn codec(&self) -> ClientCodec {
         self.codec
     }
+    /// Opt in before DESCRIBE to admit an H.264 SDP offer that omits `sprop-parameter-sets`,
+    /// deferring parameter-set lock to bounded in-band RTP acquisition. Default is strict (`false`).
+    pub fn set_allow_inband_parameter_sets(&mut self, enabled: bool) -> Result<(), ClientError> {
+        if self.state != ClientState::Idle || self.pending.is_some() {
+            return Err(ClientError::State);
+        }
+        self.allow_inband_parameter_sets = enabled;
+        Ok(())
+    }
+    /// Whether in-band parameter-set acquisition is enabled for this session.
+    pub fn allow_inband_parameter_sets(&self) -> bool {
+        self.allow_inband_parameter_sets
+    }
+    /// Opt in before DESCRIBE to negotiate companion `m=audio` tracks on distinct TCP
+    /// interleaved channel pairs alongside the selected video track before `PLAY`.
+    /// Audio bytes are never recorded or decoded (GOAL-009); companion channels are drained.
+    pub fn set_setup_companion_tracks(&mut self, enabled: bool) -> Result<(), ClientError> {
+        if self.state != ClientState::Idle || self.pending.is_some() {
+            return Err(ClientError::State);
+        }
+        self.setup_companion_tracks = enabled;
+        Ok(())
+    }
+    /// Whether companion audio track SETUP is enabled for this session.
+    pub fn setup_companion_tracks(&self) -> bool {
+        self.setup_companion_tracks
+    }
+    /// Negotiated companion interleaved channel pairs (empty unless companion tracks were found).
+    pub fn companion_channels(&self) -> Vec<(u8, u8)> {
+        self.companion_tracks.iter().map(|t| t.channels).collect()
+    }
+    /// Whether `channel` belongs to a negotiated companion (e.g., audio) track while `Playing`.
+    /// Companion packets must be explicitly counted and drained without entering the video path.
+    pub fn is_companion_channel(&mut self, channel: u8, now_ns: u64) -> Result<bool, ClientError> {
+        self.tick(now_ns)?;
+        if self.state != ClientState::Playing {
+            return Ok(false);
+        }
+        Ok(self.companion_tracks[..self.companion_setup_index]
+            .iter()
+            .any(|track| channel == track.channels.0 || channel == track.channels.1))
+    }
     /// Negotiated channel pair from the owner offer.
     pub fn channels(&self) -> (u8, u8) {
         self.config.channels
@@ -554,7 +625,15 @@ impl RtspClientSession {
     fn request_target(&self, command: ClientCommand) -> (&'static str, &str) {
         let uri = match command {
             ClientCommand::Options | ClientCommand::Describe => &self.config.presentation_uri,
-            ClientCommand::Setup | ClientCommand::SetupReplay => &self.track_uri,
+            ClientCommand::Setup | ClientCommand::SetupReplay => {
+                if self.video_setup_done
+                    && let Some(companion) = self.companion_tracks.get(self.companion_setup_index)
+                {
+                    &companion.track_uri
+                } else {
+                    &self.track_uri
+                }
+            }
             ClientCommand::Play
             | ClientCommand::PlayReplay(_)
             | ClientCommand::KeepAlive
@@ -562,6 +641,15 @@ impl RtspClientSession {
             | ClientCommand::Teardown => &self.aggregate_uri,
         };
         (command.wire_method(), uri)
+    }
+    fn active_setup_channels(&self) -> (u8, u8) {
+        if self.video_setup_done
+            && let Some(companion) = self.companion_tracks.get(self.companion_setup_index)
+        {
+            companion.channels
+        } else {
+            self.config.channels
+        }
     }
     fn unsigned_request(
         &mut self,
@@ -577,6 +665,7 @@ impl RtspClientSession {
             ClientCommand::Setup => self.state == ClientState::Described,
             ClientCommand::SetupReplay => {
                 self.state == ClientState::Described
+                    && !self.video_setup_done
                     && matches!(self.codec, ClientCodec::H264 | ClientCodec::H265)
             }
             ClientCommand::Play => self.state == ClientState::Ready && !self.replay_setup,
@@ -595,6 +684,7 @@ impl RtspClientSession {
         let deadline = now_ns
             .checked_add(self.config.response_timeout_ns)
             .ok_or(ClientError::Exhausted)?;
+        let setup_channels = self.active_setup_channels();
         let (method, uri) = self.request_target(command);
         // Upper bounds include URI, session token, and every fixed header and number.
         let mut bytes = String::new();
@@ -614,7 +704,7 @@ impl RtspClientSession {
             write!(
                 &mut bytes,
                 "Transport: RTP/AVP/TCP;unicast;interleaved={}-{}\r\n",
-                self.config.channels.0, self.config.channels.1
+                setup_channels.0, setup_channels.1
             )
             .map_err(|_| ClientError::Exhausted)?;
         }
@@ -722,27 +812,57 @@ impl RtspClientSession {
             None
         };
         if p.command == ClientCommand::Describe {
-            let (media, track, aggregate) = description(
+            let (media, track, aggregate, companions) = description(
                 &self.config,
                 response,
                 self.codec,
                 self.selected_payload_type,
+                self.allow_inband_parameter_sets,
+                self.setup_companion_tracks,
             )?;
             self.media = Some(media);
             self.track_uri = track;
             self.aggregate_uri = aggregate;
+            self.companion_tracks = companions;
+            self.video_setup_done = false;
+            self.companion_setup_index = 0;
             self.state = ClientState::Described;
         } else if p.command.is_setup() {
             let value = singleton(&response.headers, "Session")?.ok_or(ClientError::Session)?;
             let (id, timeout) = session(value, self.timeout_ns)?;
             let transport =
                 singleton(&response.headers, "Transport")?.ok_or(ClientError::Transport)?;
-            let ssrc = transport_binding(transport, self.config.channels)?;
-            self.renew(p.sent_ns, now, timeout)?;
-            self.session_id = Some(id.to_string());
-            self.ssrc = ssrc;
-            self.replay_setup = p.command == ClientCommand::SetupReplay;
-            self.state = ClientState::Ready;
+            if !self.video_setup_done {
+                let ssrc = transport_binding(transport, self.config.channels)?;
+                self.renew(p.sent_ns, now, timeout)?;
+                self.session_id = Some(id.to_string());
+                self.ssrc = ssrc;
+                self.replay_setup = p.command == ClientCommand::SetupReplay;
+                self.video_setup_done = true;
+                self.state = if self.companion_setup_index < self.companion_tracks.len() {
+                    ClientState::Described
+                } else {
+                    ClientState::Ready
+                };
+            } else {
+                if self.session_id.as_deref() != Some(id) {
+                    return Err(ClientError::Session);
+                }
+                let expected_channels = self
+                    .companion_tracks
+                    .get(self.companion_setup_index)
+                    .ok_or(ClientError::State)?
+                    .channels;
+                // Companion audio SSRC never overwrites the video track's SSRC binding.
+                let _companion_ssrc = transport_binding(transport, expected_channels)?;
+                self.renew(p.sent_ns, now, timeout)?;
+                self.companion_setup_index += 1;
+                self.state = if self.companion_setup_index < self.companion_tracks.len() {
+                    ClientState::Described
+                } else {
+                    ClientState::Ready
+                };
+            }
         } else if p.command.is_keepalive()
             || p.command.is_play()
             || p.command == ClientCommand::Teardown
@@ -1036,12 +1156,16 @@ mod transport_metadata_tests {
     }
 }
 
+const MAX_COMPANION_TRACKS: usize = 4;
+
 fn description(
     config: &ClientConfig,
     r: &RtspResponse,
     codec: ClientCodec,
     payload_type: Option<u8>,
-) -> Result<(NegotiatedMedia, String, String), ClientError> {
+    allow_inband: bool,
+    collect_companions: bool,
+) -> Result<(NegotiatedMedia, String, String, Vec<CompanionTrack>), ClientError> {
     let content_type = singleton(&r.headers, "Content-Type")?.ok_or(ClientError::Description)?;
     if !content_type
         .split(';')
@@ -1086,7 +1210,7 @@ fn description(
         .get(config.media_index)
         .ok_or(ClientError::Description)?;
     let media = match codec {
-        ClientCodec::H264 => NegotiatedMedia::H264(h264_media(m)?),
+        ClientCodec::H264 => NegotiatedMedia::H264(h264_media(m, allow_inband)?),
         ClientCodec::H265 => NegotiatedMedia::H265(hevc::negotiate(
             hevc_text.as_deref().ok_or(ClientError::Description)?,
             config.media_index,
@@ -1110,22 +1234,110 @@ fn description(
         &base,
         m.control.as_deref().ok_or(ClientError::Description)?,
     )?;
+    let mut companions = Vec::new();
+    if collect_companions {
+        let mut next_channel = config.channels.1.checked_add(1);
+        for (index, other) in sdp.media.iter().enumerate() {
+            if index == config.media_index
+                || other.media_type != "audio"
+                || !matches!(other.proto.as_str(), "RTP/AVP" | "RTP/AVP/TCP")
+            {
+                continue;
+            }
+            let Some(control) = other.control.as_deref() else {
+                continue;
+            };
+            if companions.len() >= MAX_COMPANION_TRACKS {
+                return Err(ClientError::Description);
+            }
+            let track_uri = resolve(config, &base, control)?;
+            // Allocate disjoint consecutive TCP interleaved channels (e.g., 2-3 after 0-1).
+            let channels =
+                allocate_companion_channels(config.channels, &companions, &mut next_channel)?;
+            companions.push(CompanionTrack {
+                track_uri,
+                channels,
+            });
+        }
+    }
     let aggregate = match sdp.session_control.as_deref() {
         Some("*") => base,
         Some(control) => resolve(config, &base, control)?,
-        None => track.clone(),
+        None => {
+            if companions.is_empty() {
+                track.clone()
+            } else {
+                base
+            }
+        }
     };
-    Ok((media, track, aggregate))
+    Ok((media, track, aggregate, companions))
 }
 
-fn h264_media(m: &super::SdpMedia) -> Result<ClientMedia, ClientError> {
+fn allocate_companion_channels(
+    primary: (u8, u8),
+    existing: &[CompanionTrack],
+    cursor: &mut Option<u8>,
+) -> Result<(u8, u8), ClientError> {
+    let collides = |pair: (u8, u8)| {
+        pair.0 == primary.0
+            || pair.0 == primary.1
+            || pair.1 == primary.0
+            || pair.1 == primary.1
+            || existing.iter().any(|track| {
+                pair.0 == track.channels.0
+                    || pair.0 == track.channels.1
+                    || pair.1 == track.channels.0
+                    || pair.1 == track.channels.1
+            })
+    };
+    if let Some(start) = *cursor
+        && let Some(end) = start.checked_add(1)
+        && !collides((start, end))
+    {
+        *cursor = end.checked_add(1);
+        return Ok((start, end));
+    }
+    for candidate in (0u8..=254u8).step_by(2) {
+        let pair = (candidate, candidate + 1);
+        if !collides(pair) {
+            *cursor = pair.1.checked_add(1);
+            return Ok(pair);
+        }
+    }
+    Err(ClientError::Exhausted)
+}
+
+fn h264_media(m: &super::SdpMedia, allow_inband: bool) -> Result<ClientMedia, ClientError> {
     if m.media_type != "video"
         || !matches!(m.proto.as_str(), "RTP/AVP" | "RTP/AVP/TCP")
         || m.encoding_name.as_deref() != Some("H264")
         || m.clock_rate != Some(90_000)
         || m.packetization_mode.unwrap_or(0) > 1
-        || m.sprop_parameter_sets.len() != 2
     {
+        return Err(ClientError::Description);
+    }
+    if allow_inband && m.sprop_parameter_sets.is_empty() {
+        if m.sps.is_some() || m.pps.is_some() {
+            return Err(ClientError::Description);
+        }
+        if let Some(profile) = &m.profile_level_id
+            && (profile.len() != 6 || !profile.bytes().all(|b| b.is_ascii_hexdigit()))
+        {
+            return Err(ClientError::Description);
+        }
+        return Ok(ClientMedia {
+            payload_type: m.payload_type,
+            // When SDP omits a=fmtp in in-band mode, default to non-interleaved (mode 1)
+            // so Single NAL, STAP-A, and FU-A payloads are admitted; honor explicit 0 or 1.
+            packetization_mode: m.packetization_mode.unwrap_or(1),
+            sps: Vec::new(),
+            pps: Vec::new(),
+            reduced_rtcp: m.rtcp_reduced_size,
+            parameter_set_origin: None,
+        });
+    }
+    if m.sprop_parameter_sets.len() != 2 {
         return Err(ClientError::Description);
     }
     let sps = m.sps.as_ref().ok_or(ClientError::Description)?;
@@ -1159,6 +1371,7 @@ fn h264_media(m: &super::SdpMedia) -> Result<ClientMedia, ClientError> {
         sps: sps.clone(),
         pps: pps.clone(),
         reduced_rtcp: m.rtcp_reduced_size,
+        parameter_set_origin: Some(inband::ParameterSetOrigin::SdpFmtp),
     })
 }
 
@@ -1380,5 +1593,188 @@ mod hevc_selection_tests {
             assert!(session.hevc_media().is_none());
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod inband_and_companion_tests {
+    use super::*;
+    use crate::rtsp::{RtspEvent, RtspParser};
+
+    fn config() -> ClientConfig {
+        ClientConfig {
+            presentation_uri: "rtsp://camera/stream1".into(),
+            control_root_uri: "rtsp://camera/".into(),
+            media_index: 0,
+            channels: (0, 1),
+            response_timeout_ns: 5 * SECOND,
+            default_session_timeout_seconds: 60,
+        }
+    }
+
+    fn feed_response(
+        session: &mut RtspClientSession,
+        wire: &[u8],
+        now: u64,
+    ) -> Result<ClientProgress, ClientError> {
+        let mut parser = RtspParser::new();
+        parser.set_lossy_nonframing_headers(true);
+        for event in parser.feed(wire).map_err(|_| ClientError::Response)? {
+            if let RtspEvent::Response(response) = event {
+                return session.accept(&response, now);
+            }
+        }
+        Err(ClientError::Response)
+    }
+
+    const WYZE_SDP: &str = concat!(
+        "v=0\r\n",
+        "o=- 1 1 IN IP4 192.168.4.39\r\n",
+        "s=WyzeCam\r\n",
+        "t=0 0\r\n",
+        "a=control:*\r\n",
+        "m=video 0 RTP/AVP 96\r\n",
+        "a=rtpmap:96 H264/90000\r\n",
+        "a=control:track1\r\n",
+        "m=audio 0 RTP/AVP 0\r\n",
+        "a=rtpmap:0 PCMU/8000\r\n",
+        "a=control:track2\r\n",
+    );
+
+    #[test]
+    fn strict_mode_rejects_sdp_without_sprop_and_inband_mode_admits_it() -> Result<(), ClientError>
+    {
+        let describe_resp = format!(
+            "RTSP/1.0 200 OK\r\nCSeq: 1\r\nContent-Type: application/sdp\r\nContent-Length: {}\r\n\r\n{WYZE_SDP}",
+            WYZE_SDP.len()
+        );
+        let mut strict = RtspClientSession::new(config())?;
+        let _ = strict.request(ClientCommand::Describe, 1)?;
+        assert_eq!(
+            feed_response(&mut strict, describe_resp.as_bytes(), 2),
+            Err(ClientError::Description)
+        );
+
+        let mut inband = RtspClientSession::new(config())?;
+        inband.set_allow_inband_parameter_sets(true)?;
+        let _ = inband.request(ClientCommand::Describe, 1)?;
+        assert_eq!(
+            feed_response(&mut inband, describe_resp.as_bytes(), 2)?,
+            ClientProgress::Accepted(ClientState::Described)
+        );
+        let media = inband.media().ok_or(ClientError::Description)?;
+        assert!(!media.has_parameter_sets());
+        assert_eq!(media.parameter_set_origin(), None);
+        assert_eq!(media.packetization_mode(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn companion_audio_setup_uses_distinct_channels_and_enforces_scope() -> Result<(), ClientError>
+    {
+        let describe_resp = format!(
+            "RTSP/1.0 200 OK\r\nCSeq: 1\r\nContent-Type: application/sdp\r\nContent-Length: {}\r\n\r\n{WYZE_SDP}",
+            WYZE_SDP.len()
+        );
+        let mut session = RtspClientSession::new(config())?;
+        session.set_allow_inband_parameter_sets(true)?;
+        session.set_setup_companion_tracks(true)?;
+        let _ = session.request(ClientCommand::Describe, 1)?;
+        assert_eq!(
+            feed_response(&mut session, describe_resp.as_bytes(), 2)?,
+            ClientProgress::Accepted(ClientState::Described)
+        );
+        assert_eq!(session.companion_channels(), vec![(2, 3)]);
+
+        // First SETUP targets video track1 on 0-1; stays Described until companion SETUP finishes.
+        let setup_video = session.request(ClientCommand::Setup, 3)?;
+        let video_req =
+            std::str::from_utf8(setup_video.bytes()).map_err(|_| ClientError::Response)?;
+        assert!(video_req.starts_with("SETUP rtsp://camera/track1 RTSP/1.0\r\n"));
+        assert!(video_req.contains("interleaved=0-1\r\n"));
+        let resp_video = b"RTSP/1.0 200 OK\r\nCSeq: 2\r\nSession: wyze42;timeout=60\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1;ssrc=00000007\r\n\r\n";
+        assert_eq!(
+            feed_response(&mut session, resp_video, 4)?,
+            ClientProgress::Accepted(ClientState::Described)
+        );
+        assert_eq!(session.server_ssrc(), Some(7));
+
+        // Second SETUP targets companion audio track2 on 2-3 with Session header.
+        let setup_audio = session.request(ClientCommand::Setup, 5)?;
+        let audio_req =
+            std::str::from_utf8(setup_audio.bytes()).map_err(|_| ClientError::Response)?;
+        assert!(audio_req.starts_with("SETUP rtsp://camera/track2 RTSP/1.0\r\n"));
+        assert!(audio_req.contains("Session: wyze42\r\n"));
+        assert!(audio_req.contains("interleaved=2-3\r\n"));
+        let resp_audio = b"RTSP/1.0 200 OK\r\nCSeq: 3\r\nSession: wyze42;timeout=60\r\nTransport: RTP/AVP/TCP;unicast;interleaved=2-3;ssrc=DEADBEEF\r\n\r\n";
+        assert_eq!(
+            feed_response(&mut session, resp_audio, 6)?,
+            ClientProgress::Accepted(ClientState::Ready)
+        );
+        // Video SSRC must never be overwritten by companion audio SSRC!
+        assert_eq!(session.server_ssrc(), Some(7));
+
+        let _ = session.request(ClientCommand::Play, 7)?;
+        let resp_play = b"RTSP/1.0 200 OK\r\nCSeq: 4\r\nSession: wyze42\r\n\r\n";
+        assert_eq!(
+            feed_response(&mut session, resp_play, 8)?,
+            ClientProgress::Accepted(ClientState::Playing)
+        );
+        assert!(session.is_companion_channel(2, 9)?);
+        assert!(session.is_companion_channel(3, 9)?);
+        assert!(!session.is_companion_channel(0, 9)?);
+        assert!(!session.is_companion_channel(4, 9)?);
+
+        // Out-of-scope companion audio URI is refused.
+        let bad_sdp = WYZE_SDP.replace("a=control:track2", "a=control:rtsp://evil/track2");
+        let bad_resp = format!(
+            "RTSP/1.0 200 OK\r\nCSeq: 1\r\nContent-Type: application/sdp\r\nContent-Length: {}\r\n\r\n{bad_sdp}",
+            bad_sdp.len()
+        );
+        let mut scoped_session = RtspClientSession::new(config())?;
+        scoped_session.set_allow_inband_parameter_sets(true)?;
+        scoped_session.set_setup_companion_tracks(true)?;
+        let _ = scoped_session.request(ClientCommand::Describe, 1)?;
+        assert_eq!(
+            feed_response(&mut scoped_session, bad_resp.as_bytes(), 2),
+            Err(ClientError::UriScope)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn lossy_parser_tolerates_latin1_vendor_server_header_and_keeps_framing_strict() {
+        let mut wire = Vec::new();
+        wire.extend_from_slice(b"RTSP/1.0 200 OK\r\nCSeq: 1\r\nServer: Cam");
+        wire.push(0xe9); // Latin-1 'é'
+        wire.extend_from_slice(b"ra/1.0\r\nContent-Length: 0\r\n\r\n");
+
+        // Default strict parser still fails and poisons.
+        let mut strict = RtspParser::new();
+        assert!(strict.feed(&wire).is_err());
+        assert!(strict.poisoned().is_some());
+
+        // Lossy non-framing mode decodes Server lossily and succeeds cleanly.
+        let mut lossy = RtspParser::new();
+        lossy.set_lossy_nonframing_headers(true);
+        let events = lossy.feed(&wire).expect("lossy parse should succeed");
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            RtspEvent::Response(resp) => {
+                assert_eq!(resp.status_code, 200);
+                assert_eq!(resp.headers.get("Server"), Some("Cam\u{FFFD}ra/1.0"));
+            }
+            _ => panic!("expected response"),
+        }
+
+        // Non-UTF-8 in a framing header (CSeq) still fails and poisons even in lossy mode.
+        let mut bad_cseq = Vec::new();
+        bad_cseq.extend_from_slice(b"RTSP/1.0 200 OK\r\nCSeq: 1");
+        bad_cseq.push(0xff);
+        bad_cseq.extend_from_slice(b"\r\n\r\n");
+        let mut lossy_strict_check = RtspParser::new();
+        lossy_strict_check.set_lossy_nonframing_headers(true);
+        assert!(lossy_strict_check.feed(&bad_cseq).is_err());
+        assert!(lossy_strict_check.poisoned().is_some());
     }
 }

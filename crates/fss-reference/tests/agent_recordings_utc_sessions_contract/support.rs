@@ -34,6 +34,7 @@ use crate::{clock_support, collector_support, hevc_recording_support};
 pub type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 static NEXT_PATH: AtomicUsize = AtomicUsize::new(0);
 
+#[allow(clippy::large_enum_variant)]
 pub enum NativeWindow {
     Avc(PreparedRecording),
     Hevc(PreparedHevcRecording),

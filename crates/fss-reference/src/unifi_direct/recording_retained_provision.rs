@@ -15,6 +15,7 @@ include!("retained_provision_shared.rs");
 
 /// Refusal to bind a selected A/V stream preserves its original owners.
 #[must_use = "retain or reconcile all returned recording and bootstrap owners"]
+#[allow(clippy::large_enum_variant)]
 pub enum SelectedRefusal<'scope, 'task, IO> {
     /// The bootstrap was not unstarted; selection was not attempted.
     Bootstrap {
@@ -46,6 +47,7 @@ pub enum SelectedRefusal<'scope, 'task, IO> {
 impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> RetainedSession<'scope, 'task, IO> {
     /// Bind a selected A/V stream to retained generation provisioning without
     /// I/O. Every refusal returns the selected or managed owner and bootstrap.
+    #[allow(clippy::result_large_err)]
     pub fn begin_selected(
         selected: super::recording_session::SelectedRecording<'scope, 'task, IO>,
         audio: super::recording_session::AudioAllowancePolicy,

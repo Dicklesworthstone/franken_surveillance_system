@@ -1115,7 +1115,10 @@ fn pinned_mission_follow_preserves_objective_and_replays_effect_progress_before_
     };
     let baseline = follow(&request)?;
     assert_eq!(baseline.since_anchor, baseline.result_anchor);
-    assert_eq!(baseline.follow.result.active_plans, [plan.plan_id.clone()]);
+    assert_eq!(
+        baseline.follow.result.active_plans,
+        std::slice::from_ref(&plan.plan_id)
+    );
     assert_eq!(
         baseline.follow.result.objective,
         assessed.orientation.objective
@@ -1153,7 +1156,10 @@ fn pinned_mission_follow_preserves_objective_and_replays_effect_progress_before_
             delivered.follow.page.next_cursor.is_none(),
             "small fixture fits one page"
         );
-        assert_eq!(delivered.follow.result.active_plans, [plan.plan_id.clone()]);
+        assert_eq!(
+            delivered.follow.result.active_plans,
+            std::slice::from_ref(&plan.plan_id)
+        );
         assert_eq!(
             delivered.follow.result.objective.source_request_digest,
             assessed.orientation.objective.source_request_digest

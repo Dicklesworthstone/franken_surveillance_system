@@ -87,6 +87,7 @@ pub(crate) struct ReplayedLocalization {
 fn sha(bytes: [u8; 32]) -> ContentDigest {
     ContentDigest::new(DigestAlgorithm::Sha256, bytes)
 }
+#[allow(clippy::result_large_err)]
 fn slot(identity: ContentDigest) -> Result<SlotName> {
     if identity.algorithm() != DigestAlgorithm::Sha256 || identity.bytes() == [0; 32] {
         return Err(RecordedLocalizationError::RetainedPackage);
@@ -97,6 +98,7 @@ fn slot(identity: ContentDigest) -> Result<SlotName> {
     ))
     .map_err(|_| RecordedLocalizationError::RetainedPackage)
 }
+#[allow(clippy::result_large_err)]
 fn manifest(identity: ContentDigest, recipe: &Recipe) -> Result<ObjectManifest> {
     let mut children = vec![
         recipe.import_root,
@@ -115,6 +117,7 @@ fn manifest(identity: ContentDigest, recipe: &Recipe) -> Result<ObjectManifest> 
         .map_err(Into::into)
 }
 
+#[allow(clippy::result_large_err)]
 fn read(
     deployment: &dyn RetainedSource,
     digest: ContentDigest,
@@ -132,6 +135,7 @@ fn read(
         .map_err(Into::into)
 }
 
+#[allow(clippy::result_large_err)]
 fn source_binding(
     deployment: &dyn RetainedSource,
     recipe: &Recipe,
@@ -156,6 +160,7 @@ fn source_binding(
     Ok(capsule)
 }
 
+#[allow(clippy::result_large_err)]
 fn admit_source(
     deployment: &dyn RetainedSource,
     source: &RecordedLocalizationSource,
@@ -183,6 +188,7 @@ fn admit_source(
     Ok(retained)
 }
 
+#[allow(clippy::result_large_err)]
 fn check_publication(
     deployment: &dyn RetainedSource,
     slot: &SlotName,
@@ -240,6 +246,7 @@ impl RetainedLocalization {
     /// Immutable callers share one aggregate allowance through final snapshot/owner
     /// revalidation before releasing this material. The independent geometry budget retains
     /// its original conservative per-payload reservations; it is not a replacement I/O budget.
+    #[allow(clippy::result_large_err)]
     pub fn open(
         deployment: &dyn RetainedSource,
         identity: ContentDigest,
@@ -302,6 +309,7 @@ impl RetainedLocalization {
     /// cached luma exists. Every codec consumes the original recipe's limits; caller work
     /// allowances are cumulative execution ceilings, not a substitute recipe. Nothing is
     /// staged, published, activated or appended, including on divergence or cancellation.
+    #[allow(clippy::result_large_err)]
     pub fn verify_by_replay(
         &self,
         deployment: &mut ReferenceDeployment,
@@ -324,6 +332,7 @@ impl RetainedLocalization {
     }
 
     /// Reproduce the existing receipt before exposing its exact maps and query features.
+    #[allow(clippy::result_large_err)]
     pub(crate) fn replay_context(
         &self,
         deployment: &mut ReferenceDeployment,
@@ -410,6 +419,7 @@ impl RetainedLocalization {
 /// callers keep their previous behavior. Repeating this exact request revalidates any already
 /// published package and resumes root-to-ledger interruption without a second publication.
 /// The ordinary JPEG derivative may have been published before a later localization refusal.
+#[allow(clippy::result_large_err)]
 pub fn localize_and_retain(
     deployment: &mut ReferenceDeployment,
     source: &RecordedLocalizationSource,

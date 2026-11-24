@@ -408,7 +408,8 @@ fn interrupted_plan_and_completion_staging_preserve_exact_retries() -> TestResul
 }
 
 #[test]
-fn canonical_unowned_forged_proposals_stay_counted_and_cannot_mask_their_own_digest() -> TestResult {
+fn canonical_unowned_forged_proposals_stay_counted_and_cannot_mask_their_own_digest() -> TestResult
+{
     for policy in [false, true] {
         let mut harness = Harness::new(&format!("forged-proposal-{policy}"))?;
         let baseline = harness.plan()?;
@@ -430,8 +431,16 @@ fn canonical_unowned_forged_proposals_stay_counted_and_cannot_mask_their_own_dig
         let before = snapshot(&harness.root)?;
         let current = harness.plan()?;
         assert_eq!(current.scanned_objects, baseline.scanned_objects + 1);
-        assert_eq!(current.scanned_bytes, baseline.scanned_bytes + bytes.len() as u64);
-        assert!(current.deletable.iter().any(|object| object.digest == digest));
+        assert_eq!(
+            current.scanned_bytes,
+            baseline.scanned_bytes + bytes.len() as u64
+        );
+        assert!(
+            current
+                .deletable
+                .iter()
+                .any(|object| object.digest == digest)
+        );
         assert_ne!(current.digest()?, baseline.digest()?);
         assert!(matches!(
             commit_deletion(
@@ -460,10 +469,12 @@ fn canonical_unowned_forged_proposals_stay_counted_and_cannot_mask_their_own_dig
         harness.commit(&current)?;
         assert!(!harness.deployment.publisher().object_name_present(digest));
         let harness = harness.reopen()?;
-        assert!(DeletionIndex::read(&harness.deployment)?
-            .entries()
-            .iter()
-            .all(|entry| entry.is_complete()));
+        assert!(
+            DeletionIndex::read(&harness.deployment)?
+                .entries()
+                .iter()
+                .all(|entry| entry.is_complete())
+        );
     }
     Ok(())
 }
@@ -481,10 +492,18 @@ fn an_exact_current_basis_proposal_for_another_scope_remains_in_accounting() -> 
     let before = snapshot(&harness.root)?;
     let current = harness.plan()?;
     assert_eq!(current.scanned_objects, baseline.scanned_objects + 1);
-    assert_eq!(current.scanned_bytes, baseline.scanned_bytes + bytes.len() as u64);
+    assert_eq!(
+        current.scanned_bytes,
+        baseline.scanned_bytes + bytes.len() as u64
+    );
     assert_ne!(current.digest()?, baseline.digest()?);
-    assert!(current.deletable.iter().any(|object| object.digest == digest)
-        || current.unattributed.objects > baseline.unattributed.objects);
+    assert!(
+        current
+            .deletable
+            .iter()
+            .any(|object| object.digest == digest)
+            || current.unattributed.objects > baseline.unattributed.objects
+    );
     assert_eq!(
         plan_deletion(&harness.deployment, second, &harness.context)?,
         other,
@@ -520,7 +539,8 @@ fn audit_retry_metadata_capacity_refuses_unowned_candidates_but_never_source_own
             candidates.push(digest);
         }
         if source_owned {
-            let manifest = ObjectManifest::new("ordinary-canonical-content", candidates.clone(), None)?;
+            let manifest =
+                ObjectManifest::new("ordinary-canonical-content", candidates.clone(), None)?;
             harness.attach(&manifest.try_canonical_bytes()?, 2, "owned-proposals")?;
         }
         let before = snapshot(&harness.root)?;
@@ -533,7 +553,9 @@ fn audit_retry_metadata_capacity_refuses_unowned_candidates_but_never_source_own
         } else {
             assert!(matches!(
                 plan_deletion(&harness.deployment, harness.import, &harness.context),
-                Err(DeletionError::Bound { limit: "audit_retry_metadata_records" })
+                Err(DeletionError::Bound {
+                    limit: "audit_retry_metadata_records"
+                })
             ));
         }
         assert_eq!(snapshot(&harness.root)?, before);
@@ -556,7 +578,9 @@ fn cancellation_after_staged_plan_rederivation_returns_no_plan_and_preserves_exa
     stop.set_cancel_at_checkpoint_occurrence(STAGE_DELETION_SCAN, scanned + 3);
     assert!(matches!(
         plan_deletion(&harness.deployment, harness.import, &stop),
-        Err(DeletionError::Cancelled { stage: STAGE_DELETION_SCAN })
+        Err(DeletionError::Cancelled {
+            stage: STAGE_DELETION_SCAN
+        })
     ));
     assert!(stop.is_drain_completed());
     assert_eq!(snapshot(&harness.root)?, before);

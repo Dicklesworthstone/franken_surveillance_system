@@ -260,6 +260,7 @@ pub struct ReconnectingRecovery {
 }
 
 #[inline(never)]
+#[allow(clippy::too_many_arguments)]
 fn recording_step<'a, 'scope: 'a, 'task: 'scope>(
     manager: &'a mut managed::Managed,
     task: &'scope TaskCx<'task>,
@@ -313,6 +314,7 @@ fn startup_step<'a, 'scope: 'a, 'task: 'scope>(
 impl<'scope, 'task, 'policy> Supervisor<'scope, 'task, 'policy> {
     /// Bind a live managed recorder to its original listener and clock.
     /// On refusal both original owners are returned unchanged.
+    #[allow(clippy::result_large_err)]
     pub fn new(
         manager: Box<managed::Managed>,
         listener: listener::Listener<'scope, 'task, 'policy>,
@@ -486,6 +488,7 @@ impl<'scope, 'task, 'policy> Supervisor<'scope, 'task, 'policy> {
     }
 
     /// Drive one bounded decision. Every returned event must be retained.
+    #[allow(clippy::too_many_arguments)]
     pub async fn step(
         &mut self,
         task: &'scope TaskCx<'task>,

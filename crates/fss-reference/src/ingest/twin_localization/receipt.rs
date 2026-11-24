@@ -154,6 +154,7 @@ pub(super) fn geometry_reason(error: GeometryError) -> &'static str {
     }
 }
 
+#[allow(clippy::result_large_err)]
 pub(super) fn encode(
     b: &RecordedLocalizationBinding,
     native_receipt: &[u8],

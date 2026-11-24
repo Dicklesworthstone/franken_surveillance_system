@@ -358,7 +358,7 @@ fn require_workspace(
         .iter()
         .filter(|revision| revision.capsule().session_id == *session);
     let first = own.next().ok_or(MissionError::ScopeMismatch)?;
-    let last = own.last().unwrap_or(first);
+    let last = own.next_back().unwrap_or(first);
     let expected = mission_record_digest.to_text();
     if first.capsule().revision != 0
         || first.capsule().objective_digest != expected

@@ -124,6 +124,7 @@ impl RtpSamplingDecision {
     pub fn digest(&self) -> ContentDigest {
         self.digest
     }
+    #[allow(clippy::result_large_err)]
     fn seal(&mut self) -> Result<()> {
         let mut e = CanonicalEncoder::new();
         e.text("fss.rtp_activity_sampling_decision.v1");
@@ -153,6 +154,7 @@ impl RtpSamplingDecision {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 enum FrameResult {
     Inferred(RtpDetectedFrame),
     Skipped(RetainedRtpFrameReceipt),
@@ -243,6 +245,7 @@ impl RtpCascadeStats {
 
 /// Source progress is never filtered by the activity policy.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum RtpCascadeStep {
     /// Existing receiver/decoder facts and consequences, including every gap or refusal.
     Progress {
@@ -285,6 +288,7 @@ pub struct RtpDetectionCascade<'a> {
 }
 impl<'a> RtpDetectionCascade<'a> {
     /// Explicit native/source/model admission; validates the sampling request before source I/O.
+    #[allow(clippy::result_large_err)]
     pub fn new(
         retained: &'a RecoveredRtpImport,
         package: &'a RgbDetectorPackage,
@@ -385,6 +389,7 @@ impl<'a> RtpDetectionCascade<'a> {
         }
     }
     /// One bounded progress/result. Any error retires decoder and comparison state permanently.
+    #[allow(clippy::result_large_err)]
     pub fn step(
         &mut self,
         deployment: &ReferenceDeployment,
@@ -401,6 +406,7 @@ impl<'a> RtpDetectionCascade<'a> {
         }
         result
     }
+    #[allow(clippy::result_large_err)]
     fn advance(
         &mut self,
         deployment: &ReferenceDeployment,
@@ -482,6 +488,7 @@ impl<'a> RtpDetectionCascade<'a> {
             }
         }
     }
+    #[allow(clippy::result_large_err)]
     fn decide(
         &mut self,
         frame: &RetainedRtpH264Frame,

@@ -77,7 +77,7 @@ impl FootageQueryFilter {
     /// Literal, reviewable interpretation of the typed predicates.
     pub fn description(&self) -> String {
         format!(
-            "Completed file and native HTTP/RTSP import capsule metadata; sensor={}; stream={}; closed source-native overlap [{},{}]; adapter-origin reconstruction, clock conversion and physical absence are not established",
+            "Completed file and native HTTP/RTSP/TUTK import capsule metadata; sensor={}; stream={}; closed source-native overlap [{},{}]; adapter-origin reconstruction, clock conversion and physical absence are not established",
             self.sensor.as_ref().map_or("any", |id| id.as_str()),
             self.stream.as_ref().map_or("any", |id| id.as_str()),
             self.from_ns
@@ -242,6 +242,27 @@ pub struct FootageQueryRow {
     pub committed_sequence: u64,
 }
 impl FootageQueryRow {
+    /// Canonical adapter family tag derived from [`Self::adapter_id`].
+    #[must_use]
+    pub fn adapter_family(&self) -> &'static str {
+        use crate::ingest::{
+            ADP_FILE_ROW_ID, http_import, mpeg_ts_import, rtsp_import, rtsp_jpeg_import, tutk,
+        };
+        match self.adapter_id.as_str() {
+            ADP_FILE_ROW_ID => "file",
+            http_import::ADAPTER => "http_mjpeg",
+            mpeg_ts_import::ADAPTER => "mpeg_ts",
+            rtsp_jpeg_import::ADAPTER => "rtsp_jpeg",
+            rtsp_import::ADAPTER
+            | rtsp_import::catalog::ADAPTER
+            | rtsp_import::pages::ADAPTER
+            | rtsp_import::gaps::ADAPTER
+            | rtsp_import::replay::ADAPTER => "rtsp",
+            tutk::ADAPTER => tutk::ADAPTER_FAMILY,
+            _ => "other",
+        }
+    }
+
     /// Canonical result identity also binds import membership and source range.
     pub fn row_digest(&self) -> ContentDigest {
         let mut e = CanonicalEncoder::new();

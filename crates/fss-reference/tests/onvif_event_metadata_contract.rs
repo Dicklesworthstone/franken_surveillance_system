@@ -2,6 +2,11 @@
 #![allow(clippy::panic)]
 //! FSS-046: hostile, bounded vendor-event metadata remains cognition only.
 
+#[allow(
+    dead_code,
+    unused_imports,
+    reason = "Standalone test includes full ONVIF wire module via #[path]"
+)]
 #[path = "../src/onvif/wire.rs"]
 mod wire;
 

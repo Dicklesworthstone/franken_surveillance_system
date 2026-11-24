@@ -1,3 +1,7 @@
+#![allow(
+    dead_code,
+    reason = "Shared test fixture included across multiple integration test targets"
+)]
 //! Shared deployment and synthetic-scene helpers for the detector-cascade contracts.
 //! Only APIs that existed before the cascade are used here, so the no-detector golden test can
 //! run unchanged against the pre-cascade tree.

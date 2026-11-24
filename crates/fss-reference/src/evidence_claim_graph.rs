@@ -45,7 +45,12 @@ pub enum RetainedEvidenceClaimError {
     /// Deployment root or committed history could not be read.
     Read(DeploymentReadError),
     /// Caller requested a different site lineage.
-    SiteMismatch { expected: String, actual: String },
+    SiteMismatch {
+        /// Requested site lineage.
+        expected: String,
+        /// Site lineage recorded in the deployment snapshot.
+        actual: String,
+    },
     /// Exact requested current event is absent at this snapshot.
     EventNotFound(EventId),
     /// Projection or registered algorithm refused.
@@ -257,7 +262,7 @@ mod tests {
         )?;
         let anchor = LedgerAnchor::genesis("site:retained-evidence");
         let b_rev = b.revision_digest();
-        let records = vec![retained(a.clone(), vec![a]), retained(b.clone(), vec![b])];
+        let records = [retained(a.clone(), vec![a]), retained(b.clone(), vec![b])];
         let report = analyze_retained(
             "site:retained-evidence",
             &anchor,
@@ -286,7 +291,7 @@ mod tests {
             1,
             vec![edge(old.revision_digest(), EvidenceEdgeRelation::Supports)],
         )?;
-        let records = vec![
+        let records = [
             retained(current.clone(), vec![old.clone(), current]),
             retained(dependent.clone(), vec![dependent]),
         ];
@@ -310,7 +315,7 @@ mod tests {
     #[test]
     fn compiler_limits_refuse_whole_retained_selection_without_partial_answer() -> TestResult {
         let a = event("event:a", 1, vec![])?;
-        let records = vec![retained(a.clone(), vec![a])];
+        let records = [retained(a.clone(), vec![a])];
         let limits = EvidenceProjectionLimits {
             max_events: 0,
             ..EvidenceProjectionLimits::default()

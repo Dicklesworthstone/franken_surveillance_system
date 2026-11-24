@@ -132,6 +132,7 @@ fn runtime_case_deadline_is_rechecked_after_native_work_before_exact_linkage() -
     native_case_link("runtime-case-deadline", true)
 }
 
+#[allow(clippy::expect_used)]
 fn native_case_link(tag: &str, expire_before_link: bool) -> TestResult {
     let clock = Clock::at(START);
     let fixture = runtime_fixture(tag, &clock)?;

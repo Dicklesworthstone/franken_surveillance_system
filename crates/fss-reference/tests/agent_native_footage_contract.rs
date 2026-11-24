@@ -2,15 +2,13 @@
 //! Offline native recorder imports remain discoverable through the canonical metadata owner.
 //! Synthetic native packets qualify metadata/custody boundaries, not camera interoperability.
 
-#[allow(dead_code)]
+#[path = "agent_native_footage_contract/assertions.rs"]
+mod assertions;
 mod hevc_recording_support;
-#[allow(dead_code)]
 mod recording_support;
 #[allow(dead_code)]
 #[path = "rtsp_replay_import_contract/support.rs"]
 mod support;
-#[path = "agent_native_footage_contract/assertions.rs"]
-mod assertions;
 
 use std::fs;
 
@@ -22,7 +20,8 @@ use assertions::{assert_metadata, mark_tombstone, object_path, query, request, s
 use support::{Fixture, SITE, Test};
 
 #[test]
-fn whole_avc_and_hevc_replays_are_discoverable_after_archive_removal_without_source_reads() -> Test {
+fn whole_avc_and_hevc_replays_are_discoverable_after_archive_removal_without_source_reads() -> Test
+{
     for codec in [RtspImportCodec::Avc, RtspImportCodec::Hevc] {
         let mut f = Fixture::new("footage-offline", codec, 0, true)?;
         let receipt = f.run()?;
@@ -88,12 +87,9 @@ fn native_capsule_corruption_refuses_even_when_source_filter_matches_nothing() -
     let mut request = request()?;
     request.filter.sensor = Some(fss_core::SensorId::parse("sensor:no-such-camera")?);
     assert!(matches!(
-        query_footage(
-            &root,
-            &request,
-            &FootageQueryLimits::default(),
-            &mut |_| true,
-        ),
+        query_footage(&root, &request, &FootageQueryLimits::default(), &mut |_| {
+            true
+        },),
         Err(FootageQueryError::InvalidRecord)
     ));
     Ok(())

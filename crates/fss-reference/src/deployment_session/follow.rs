@@ -249,6 +249,7 @@ impl fmt::Display for FollowSessionFailure {
 
 impl std::error::Error for FollowSessionFailure {}
 
+#[allow(clippy::result_large_err)]
 fn observe_head(history: &DeploymentHistory) -> Result<FollowSessionHead, FollowSessionError> {
     let position = history.head();
     let (anchor, _, _) = history
@@ -343,6 +344,7 @@ impl SessionProjection for SessionReplayScope<'_> {
 }
 
 impl SessionReplayScope<'_> {
+    #[allow(clippy::result_large_err)]
     fn project(
         &self,
         snapshot: &DeploymentSnapshot,
@@ -383,6 +385,7 @@ impl SessionReplayScope<'_> {
     }
 }
 
+#[allow(clippy::result_large_err)]
 fn reconstruct(
     history: &DeploymentHistory,
     state: &FollowSubscription,
@@ -442,6 +445,7 @@ struct SemanticHistory {
     populated: bool,
 }
 
+#[allow(clippy::result_large_err)]
 fn semantic_history(
     root: &Path,
     journal: &mut SessionJournal,
@@ -518,6 +522,7 @@ fn semantic_history(
 }
 
 #[allow(clippy::too_many_arguments)] // clock authority, native state and delivery policy stay explicit
+#[allow(clippy::result_large_err)]
 fn revalidate<C: FollowSessionControl, P: DeliveryPolicy<C>>(
     context: super::SessionContext<'_>,
     binding: &FollowSessionBinding<'_>,
@@ -607,14 +612,17 @@ fn initial_progress() -> FollowSessionFailure {
 // A wait can defer only a new, certified quiet comparison at the already acknowledged head.
 // The ordinary policy is inert, preserving existing request, publication and journal bytes.
 trait DeliveryPolicy<C: FollowSessionControl> {
+    #[allow(clippy::result_large_err)]
     fn before_history(&mut self, _control: &mut C) -> Result<(), FollowSessionError> {
         Ok(())
     }
 
+    #[allow(clippy::result_large_err)]
     fn compared(&mut self, _step: &ReplayStep) -> Result<(), FollowSessionError> {
         Ok(())
     }
 
+    #[allow(clippy::result_large_err)]
     fn defer(
         &mut self,
         _history: &DeploymentHistory,
@@ -624,6 +632,7 @@ trait DeliveryPolicy<C: FollowSessionControl> {
         Ok(false)
     }
 
+    #[allow(clippy::result_large_err)]
     fn before_release(&mut self, _control: &mut C) -> Result<(), FollowSessionError> {
         Ok(())
     }
@@ -635,6 +644,7 @@ impl<C: FollowSessionControl> DeliveryPolicy<C> for Immediate {}
 // None is reserved for an unpublished quiet probe; immediate callers never receive it.
 type Attempt = Option<FollowSessionDelivery>;
 
+#[allow(clippy::result_large_err)]
 fn execute<C: FollowSessionControl, P: DeliveryPolicy<C>>(
     context: super::SessionContext<'_>,
     principal: &PrincipalId,

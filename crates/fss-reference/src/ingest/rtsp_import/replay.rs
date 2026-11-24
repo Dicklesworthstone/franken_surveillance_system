@@ -588,7 +588,7 @@ pub fn import_rtsp_replay(
         .map(|source| source.digest())
         .transpose()
         .map_err(source_error)?;
-    drop(access);
+    let _ = access;
     let import = publish_import(
         destination,
         cx,

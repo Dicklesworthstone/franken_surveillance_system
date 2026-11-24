@@ -169,8 +169,10 @@ impl Source {
                 .upload_chunks(
                     &tree,
                     || NOW,
-                    |chunk| {
-                        bytes[chunk.offset as usize..(chunk.offset + chunk.len) as usize].to_vec()
+                    |index| {
+                        let start = (index * MIN_PART_SIZE) as usize;
+                        let end = (start + MIN_PART_SIZE as usize).min(bytes.len());
+                        bytes[start..end].to_vec()
                     },
                 )
                 .unwrap();

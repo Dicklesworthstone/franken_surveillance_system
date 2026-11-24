@@ -246,6 +246,7 @@ impl DurableSessionStore {
     /// This never reopens a session, replaces its opening digest, rewrites a workspace or resets
     /// any symbol, lease or disclosure budget. It is crate-private because distinguishing true
     /// absence is needed only while the native owner validates its own exact opening request.
+    #[allow(clippy::type_complexity)]
     pub(crate) fn opening_workspace_for_retry(
         &mut self,
         principal: &PrincipalId,

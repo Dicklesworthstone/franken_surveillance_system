@@ -89,7 +89,7 @@ fn post_reconstruction_policy_layout_and_committed_head_changes_withhold_the_res
         let cx = ReplayCx::from_context_authority_read_only(&authority, root.clone())?;
         let result = inspect(&root, &authority, limits, &cx, &|| false, |source| {
             let records = retained_policy_records(source, &cx)?;
-            assert_eq!(records, [record.clone()]);
+            assert_eq!(records.as_slice(), std::slice::from_ref(&record));
             match change {
                 "policy" => fs::write(&payload, b"changed after native reconstruction")
                     .map_err(FileIngestError::from)?,

@@ -35,7 +35,9 @@ fss-graph-algorithms = { path = "../fss-graph-algorithms" }
 fss-ledger = { path = "../fss-ledger" }
 fss-model-ir = { path = "../fss-model-ir" }
 fss-object = { path = "../fss-object" }
+fss-pack = { path = "../fss-pack" }
 fss-packet = { path = "../fss-packet" }
+fss-projection-store = { path = "../fss-projection-store" }
 fss-provision = { path = "../fss-provision" }
 fss-publication = { path = "../fss-publication" }
 fss-runtime = { path = "../fss-runtime" }
@@ -43,7 +45,8 @@ fss-tensor = { path = "../fss-tensor" }
 fss-tutk = { path = "../fss-tutk" }
 fss-tuya = { path = "../fss-tuya" }
 fss-twin = { path = "../fss-twin" }
-zeroize = "=1.9.1"
+fss-vault = { path = "../fss-vault" }
+zeroize = { version = "=1.9.1", default-features = false }
 
 [dev-dependencies]
 fss-core = { path = "../fss-core", features = ["test-support"] }

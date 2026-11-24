@@ -10,6 +10,7 @@ use crate::agent_follow::snapshot_anchor_token;
 use crate::deployment_status::{StatusError, StatusLimits, inventory_from_snapshot};
 use crate::retained_source::{ImmutableRetainedSource, RetainedSource};
 
+#[allow(clippy::result_large_err)]
 pub(super) fn query(
     root: &Path,
     request: &SourcesQueryRequest,

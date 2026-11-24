@@ -15,7 +15,7 @@ use fss_reference::discovery::{
     tuya_beacon::listen,
 };
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let subnet = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "192.168.4.0/22".to_owned());
@@ -28,7 +28,7 @@ fn main() {
     let cancel = AtomicBool::new(false);
 
     println!("== census ==");
-    let report = run_census(&cfg, &oui, &cancel).expect("census");
+    let report = run_census(&cfg, &oui, &cancel)?;
     println!(
         "{} hosts from {} ping targets",
         report.hosts.len(),
@@ -47,7 +47,7 @@ fn main() {
         );
         beacon_ips
             .entry(ip)
-            .or_insert_with(|| vec![])
+            .or_insert_with(Vec::new)
             .push(b.clone());
     }
 
@@ -83,4 +83,5 @@ fn main() {
     let _ = tutk;
     let _ = AdapterPath::ImportOnly;
     let _ = Readiness::Unavailable;
+    Ok(())
 }

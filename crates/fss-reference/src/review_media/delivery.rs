@@ -412,6 +412,7 @@ fn append(
 /// recipient, expiry and destination checks. The callback is the output owner's protected
 /// pathname/inode check and runs before readback and immediately before the guarded append.
 /// A completed retry repeats verification and never grants authority to emit media again.
+#[allow(clippy::too_many_arguments)]
 pub fn verify_review_delivery(
     d: &mut ReferenceDeployment,
     identity: ContentDigest,

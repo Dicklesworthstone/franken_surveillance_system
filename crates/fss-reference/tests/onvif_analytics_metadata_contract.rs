@@ -1,6 +1,11 @@
 #![forbid(unsafe_code)]
 //! Bounded vendor scene descriptions and frozen v1 event-parser compatibility.
 
+#[allow(
+    dead_code,
+    unused_imports,
+    reason = "Standalone test includes full ONVIF wire module via #[path]"
+)]
 #[path = "../src/onvif/wire.rs"]
 mod wire;
 

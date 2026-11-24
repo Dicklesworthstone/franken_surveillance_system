@@ -397,6 +397,7 @@ impl Resumed {
     /// Publish the exact boundary root-last into the A/V deployment's canonical ledger.
     /// An error after publication begins may be indeterminate; retain the same
     /// candidate and inspect it rather than inventing a new boundary.
+    #[allow(clippy::too_many_arguments)]
     pub fn publish_boundary<'a, 'task>(
         &mut self,
         plan: &Prepared,
@@ -466,6 +467,7 @@ impl Resumed {
     /// Verify the exact root, contents, canonical ledger claim and current
     /// authority before releasing the new session owners. A refusal preserves
     /// the owners; the caller retains the same candidate for reconciliation.
+    #[allow(clippy::result_large_err, clippy::too_many_arguments)]
     pub fn into_owners<'a, 'task>(
         mut self,
         plan: &Prepared,
@@ -512,6 +514,7 @@ impl Resumed {
 /// Reverify an exact selected boundary against an existing deployment. The
 /// candidate and any independently retained pin remain caller obligations;
 /// this is not a latest-head, authentication, or automatic-resume proof.
+#[allow(clippy::too_many_arguments)]
 pub fn verify_retained<'a, 'task>(
     deployment: &mut ReferenceDeployment,
     replay: &ReplayCx,

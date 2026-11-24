@@ -2,18 +2,16 @@
 //! Exact native recorder-time queries under a held writer lock and hostile local changes.
 
 mod hevc_recording_support;
-mod recording_support;
 #[path = "rtsp_replay_time_pinned_contract/io.rs"]
 mod read_io;
+mod recording_support;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use fss_core::ContentDigest;
 use fss_object::SpoolLimits;
-use fss_publication::{
-    LocalPublicationLimits, LocalRootPublisher, NeverCancel, SlotName,
-};
+use fss_publication::{LocalPublicationLimits, LocalRootPublisher, NeverCancel, SlotName};
 use fss_reference::rtsp::client::replay::{ReplayAcceptance, ReplayWindow};
 use fss_reference::rtsp::recording::PreparedRecording;
 use fss_reference::rtsp::recording::local::{RecordingProgress, RecordingPublication};
@@ -104,18 +102,18 @@ mod native {
 
     use super::*;
     use fixtures::*;
-    use read_io::{ReadOnlyIo, Rewrite};
     use fss_publication::{
         LOCAL_ROOTS_DIR, LOCAL_TOMBSTONES_DIR, ROOT_RECORD_SUFFIX, ROOT_TEMP_SUFFIX,
         TOMBSTONE_RECORD_SUFFIX,
     };
     use fss_reference::rtsp::recording::MAX_RECORDING_BYTES;
-    use fss_reference::rtsp::recording_replay::time::{
-        ReplayTimeQuery, ReplayTimeReport, query_replay_time,
-    };
     use fss_reference::rtsp::recording_replay::time::pinned::{
         ReplayTimeReadLimits, ReplayTimeReadReport, query_replay_time_read_only,
     };
+    use fss_reference::rtsp::recording_replay::time::{
+        ReplayTimeQuery, ReplayTimeReport, query_replay_time,
+    };
+    use read_io::{ReadOnlyIo, Rewrite};
 
     fn stamped_avc() -> Result<recording_support::Fixture, Error> {
         rebuild_avc(fixture(941, true)?, |index, wire| {
@@ -132,18 +130,30 @@ mod native {
         query: &ReplayTimeQuery,
         limits: ReplayTimeReadLimits,
     ) -> Result<ReplayTimeReadReport, Error> {
-        Ok(query_replay_time_read_only(io, &sealed.root, query, limits, &|| false)?)
+        Ok(query_replay_time_read_only(
+            io,
+            &sealed.root,
+            query,
+            limits,
+            &|| false,
+        )?)
     }
 
     fn assert_same(expected: &ReplayTimeReport, actual: &ReplayTimeReport) {
         assert_eq!(actual.digest, expected.digest);
         assert_eq!(actual.index_digest, expected.index_digest);
-        assert_eq!(actual.receipt.metadata_bytes(), expected.receipt.metadata_bytes());
+        assert_eq!(
+            actual.receipt.metadata_bytes(),
+            expected.receipt.metadata_bytes()
+        );
         assert_eq!(actual.matches, expected.matches);
         assert_eq!(actual.unknown, expected.unknown);
         assert_eq!(actual.source_only, expected.source_only);
         // Cover the complete report, including every count, scope and source-proof field.
-        assert_eq!(format!("{actual:?}").as_bytes(), format!("{expected:?}").as_bytes());
+        assert_eq!(
+            format!("{actual:?}").as_bytes(),
+            format!("{expected:?}").as_bytes()
+        );
     }
 
     fn assert_metered(io: &ReadOnlyIo, result: &ReplayTimeReadReport) {
@@ -170,12 +180,21 @@ mod native {
         let sealed = seal_avc("readonly-avc", &stamped_avc()?, 2, 7)?;
         let publisher = sealed.open()?;
         let expected = query_replay_time(&publisher, &sealed.query(), &NeverCancel)?;
-        let unrelated = sealed.root.join(LOCAL_ROOTS_DIR).join(format!(
-            "unrelated{ROOT_RECORD_SUFFIX}{ROOT_TEMP_SUFFIX}"
-        ));
-        std::fs::write(&unrelated, b"unrelated pending publication must remain untouched")?;
+        let unrelated = sealed
+            .root
+            .join(LOCAL_ROOTS_DIR)
+            .join(format!("unrelated{ROOT_RECORD_SUFFIX}{ROOT_TEMP_SUFFIX}"));
+        std::fs::write(
+            &unrelated,
+            b"unrelated pending publication must remain untouched",
+        )?;
         let io = ReadOnlyIo::default();
-        let result = observe(&sealed, &io, &sealed.query(), ReplayTimeReadLimits::default())?;
+        let result = observe(
+            &sealed,
+            &io,
+            &sealed.query(),
+            ReplayTimeReadLimits::default(),
+        )?;
         assert_same(&expected, &result.report);
         assert_eq!(result.report.matches.len(), 2);
         assert_eq!(result.metadata_usage.pinned_roots, 3);
@@ -205,7 +224,12 @@ mod native {
         let publisher = sealed.open()?;
         let expected = query_replay_time(&publisher, &sealed.query(), &NeverCancel)?;
         let io = ReadOnlyIo::default();
-        let actual = observe(&sealed, &io, &sealed.query(), ReplayTimeReadLimits::default())?;
+        let actual = observe(
+            &sealed,
+            &io,
+            &sealed.query(),
+            ReplayTimeReadLimits::default(),
+        )?;
         assert_same(&expected, &actual.report);
         assert_eq!(actual.report.matches.len(), 2);
         assert_eq!(actual.report.source_only.len(), 1);
@@ -231,7 +255,10 @@ mod native {
             let publisher = sealed.open()?;
             let expected = query_replay_time(&publisher, &sealed.query(), &NeverCancel)?;
             let result = observe(
-                &sealed, &ReadOnlyIo::default(), &sealed.query(), ReplayTimeReadLimits::default(),
+                &sealed,
+                &ReadOnlyIo::default(),
+                &sealed.query(),
+                ReplayTimeReadLimits::default(),
             )?;
             assert_same(&expected, &result.report);
             reports.push(result.report);
@@ -240,8 +267,14 @@ mod native {
         let b = &reports[1];
         assert_eq!(a.matches[0].evidence.header, b.matches[0].evidence.header);
         assert_eq!(a.matches[0].evidence.utc, b.matches[0].evidence.utc);
-        assert_ne!(a.matches[0].evidence.packet_set_digest, b.matches[0].evidence.packet_set_digest);
-        assert_ne!(a.matches[0].evidence.proof_digest, b.matches[0].evidence.proof_digest);
+        assert_ne!(
+            a.matches[0].evidence.packet_set_digest,
+            b.matches[0].evidence.packet_set_digest
+        );
+        assert_ne!(
+            a.matches[0].evidence.proof_digest,
+            b.matches[0].evidence.proof_digest
+        );
         assert_ne!(a.index_digest, b.index_digest);
         assert_ne!(a.digest, b.digest);
         Ok(())
@@ -251,9 +284,13 @@ mod native {
     fn receipt_pins_and_declared_counts_are_checked_before_any_original_read() -> TestResult {
         let sealed = seal_avc("readonly-receipt-admission", &stamped_avc()?, 2, 7)?;
         let publisher = sealed.open()?;
-        let original_paths: Vec<_> = sealed.receipt.windows().iter().flat_map(|window| {
-            std::iter::once(window.root()).chain(window.original_leaf_digests())
-        }).map(|digest| publisher.spool().object_path(digest)).collect();
+        let original_paths: Vec<_> = sealed
+            .receipt
+            .windows()
+            .iter()
+            .flat_map(|window| std::iter::once(window.root()).chain(window.original_leaf_digests()))
+            .map(|digest| publisher.spool().object_path(digest))
+            .collect();
         for case in 0..7 {
             let mut query = sealed.query();
             match case {
@@ -266,17 +303,40 @@ mod native {
                 _ => query.limits.max_source_bytes = MAX_RECORDING_BYTES as u64,
             }
             let io = ReadOnlyIo::default();
-            assert!(query_replay_time_read_only(
-                &io, &sealed.root, &query, ReplayTimeReadLimits::default(), &|| false,
-            ).is_err(), "case {case}");
-            assert!(original_paths.iter().all(|path| io.opened_count(path) == 0), "case {case}");
+            assert!(
+                query_replay_time_read_only(
+                    &io,
+                    &sealed.root,
+                    &query,
+                    ReplayTimeReadLimits::default(),
+                    &|| false,
+                )
+                .is_err(),
+                "case {case}"
+            );
+            assert!(
+                original_paths.iter().all(|path| io.opened_count(path) == 0),
+                "case {case}"
+            );
             assert_eq!(io.forbidden.load(Ordering::SeqCst), 0);
         }
-        let metadata = sealed.receipt.manifest().metadata_digest().ok_or("receipt metadata")?;
+        let metadata = sealed
+            .receipt
+            .manifest()
+            .metadata_digest()
+            .ok_or("receipt metadata")?;
         let metadata_path = publisher.spool().object_path(metadata);
         std::fs::write(&metadata_path, changed_envelope(&metadata_path)?)?;
         let io = ReadOnlyIo::default();
-        assert!(observe(&sealed, &io, &sealed.query(), ReplayTimeReadLimits::default()).is_err());
+        assert!(
+            observe(
+                &sealed,
+                &io,
+                &sealed.query(),
+                ReplayTimeReadLimits::default()
+            )
+            .is_err()
+        );
         assert!(original_paths.iter().all(|path| io.opened_count(path) == 0));
         Ok(())
     }
@@ -291,8 +351,14 @@ mod native {
             std::fs::write(&target, changed_envelope(&target)?)?;
             let io = ReadOnlyIo::default();
             let error = query_replay_time_read_only(
-                &io, &sealed.root, &sealed.query(), ReplayTimeReadLimits::default(), &|| false,
-            ).err().ok_or("corrupt original cannot yield a report")?;
+                &io,
+                &sealed.root,
+                &sealed.query(),
+                ReplayTimeReadLimits::default(),
+                &|| false,
+            )
+            .err()
+            .ok_or("corrupt original cannot yield a report")?;
             assert_eq!(error.code(), "ERR-REPLAY-TIME-CUSTODY-001", "role {role}");
             assert_eq!(io.forbidden.load(Ordering::SeqCst), 0);
         }
@@ -308,14 +374,17 @@ mod native {
             let second = &sealed.receipt.windows()[1];
             let (target, bytes) = match case {
                 0 => {
-                    let target = publisher.spool().object_path(first.original_leaf_digests()[3]);
+                    let target = publisher
+                        .spool()
+                        .object_path(first.original_leaf_digests()[3]);
                     let bytes = changed_envelope(&target)?;
                     (target, bytes)
                 }
                 1 => (
-                    sealed.root.join(LOCAL_ROOTS_DIR).join(format!(
-                        "{}{ROOT_RECORD_SUFFIX}", first.slot().as_str()
-                    )),
+                    sealed
+                        .root
+                        .join(LOCAL_ROOTS_DIR)
+                        .join(format!("{}{ROOT_RECORD_SUFFIX}", first.slot().as_str())),
                     b"changed exact root binding".to_vec(),
                 ),
                 2 => {
@@ -330,7 +399,11 @@ mod native {
                     )
                 }
                 _ => {
-                    let digest = sealed.receipt.manifest().metadata_digest().ok_or("receipt metadata")?;
+                    let digest = sealed
+                        .receipt
+                        .manifest()
+                        .metadata_digest()
+                        .ok_or("receipt metadata")?;
                     let target = publisher.spool().object_path(digest);
                     let bytes = changed_envelope(&target)?;
                     (target, bytes)
@@ -348,8 +421,14 @@ mod native {
                 ..ReadOnlyIo::default()
             };
             let error = query_replay_time_read_only(
-                &io, &sealed.root, &sealed.query(), ReplayTimeReadLimits::default(), &|| false,
-            ).err().ok_or("changed whole-query custody cannot yield a report")?;
+                &io,
+                &sealed.root,
+                &sealed.query(),
+                ReplayTimeReadLimits::default(),
+                &|| false,
+            )
+            .err()
+            .ok_or("changed whole-query custody cannot yield a report")?;
             assert!(io.rewritten.load(Ordering::SeqCst), "case {case}");
             assert_eq!(error.code(), "ERR-REPLAY-TIME-CUSTODY-001", "case {case}");
             assert_eq!(io.forbidden.load(Ordering::SeqCst), 0);
@@ -363,7 +442,10 @@ mod native {
         let one = seal_avc("readonly-budget-one", &source, 1, 7)?;
         let two = seal_avc("readonly-budget-two", &source, 2, 7)?;
         let one_result = observe(
-            &one, &ReadOnlyIo::default(), &one.query(), ReplayTimeReadLimits::default(),
+            &one,
+            &ReadOnlyIo::default(),
+            &one.query(),
+            ReplayTimeReadLimits::default(),
         )?;
         for case in 0..9 {
             let mut limits = ReplayTimeReadLimits::default();
@@ -375,22 +457,30 @@ mod native {
                 4 => limits.originals.max_catalogue_entries = 1,
                 5 => limits.originals.max_objects = 5,
                 6 => limits.originals.max_edges = 4,
-                7 => limits.originals.max_read_bytes = one_result.original_usage.peak_reserved_read_bytes,
+                7 => {
+                    limits.originals.max_read_bytes =
+                        one_result.original_usage.peak_reserved_read_bytes
+                }
                 _ => limits.originals.max_io_calls = one_result.original_usage.io_calls,
             }
             let io = ReadOnlyIo::default();
-            let error = query_replay_time_read_only(
-                &io, &two.root, &two.query(), limits, &|| false,
-            ).err().ok_or("one-window allowance cannot fund a complete two-window query")?;
-            assert_eq!(error.code(), "ERR-REPLAY-TIME-LIMIT-001", "case {case}: {error:?}");
+            let error =
+                query_replay_time_read_only(&io, &two.root, &two.query(), limits, &|| false)
+                    .err()
+                    .ok_or("one-window allowance cannot fund a complete two-window query")?;
+            assert_eq!(
+                error.code(),
+                "ERR-REPLAY-TIME-LIMIT-001",
+                "case {case}: {error:?}"
+            );
             assert_eq!(io.forbidden.load(Ordering::SeqCst), 0);
         }
         let io = ReadOnlyIo::default();
         let mut invalid = ReplayTimeReadLimits::default();
         invalid.metadata.max_object_bytes = 2 * 1024 * 1024 + 1;
-        assert!(query_replay_time_read_only(
-            &io, &two.root, &two.query(), invalid, &|| false,
-        ).is_err());
+        assert!(
+            query_replay_time_read_only(&io, &two.root, &two.query(), invalid, &|| false,).is_err()
+        );
         assert_eq!(io.calls.load(Ordering::SeqCst), 0);
         Ok(())
     }
@@ -401,18 +491,29 @@ mod native {
         let publisher = sealed.open()?;
         let io = ReadOnlyIo::default();
         let error = query_replay_time_read_only(
-            &io, &sealed.root, &sealed.query(), ReplayTimeReadLimits::default(), &|| true,
-        ).err().ok_or("cancelled observation")?;
+            &io,
+            &sealed.root,
+            &sealed.query(),
+            ReplayTimeReadLimits::default(),
+            &|| true,
+        )
+        .err()
+        .ok_or("cancelled observation")?;
         assert_eq!(error.code(), "ERR-REPLAY-TIME-CANCELLED-001");
         assert_eq!(io.calls.load(Ordering::SeqCst), 0);
-        let source = publisher.spool().object_path(
-            sealed.receipt.windows()[0].original_leaf_digests()[0],
-        );
+        let source = publisher
+            .spool()
+            .object_path(sealed.receipt.windows()[0].original_leaf_digests()[0]);
         let io = ReadOnlyIo::default();
         let error = query_replay_time_read_only(
-            &io, &sealed.root, &sealed.query(), ReplayTimeReadLimits::default(),
+            &io,
+            &sealed.root,
+            &sealed.query(),
+            ReplayTimeReadLimits::default(),
             &|| io.opened_count(&source) != 0,
-        ).err().ok_or("revoked during original retrieval")?;
+        )
+        .err()
+        .ok_or("revoked during original retrieval")?;
         assert_eq!(error.code(), "ERR-REPLAY-TIME-CANCELLED-001");
         assert_eq!(io.opened_count(&source), 1);
         assert_eq!(io.forbidden.load(Ordering::SeqCst), 0);
@@ -425,9 +526,16 @@ mod native {
         let missing = path("readonly-missing");
         assert!(!missing.exists());
         let io = ReadOnlyIo::default();
-        assert!(query_replay_time_read_only(
-            &io, &missing, &sealed.query(), ReplayTimeReadLimits::default(), &|| false,
-        ).is_err());
+        assert!(
+            query_replay_time_read_only(
+                &io,
+                &missing,
+                &sealed.query(),
+                ReplayTimeReadLimits::default(),
+                &|| false,
+            )
+            .is_err()
+        );
         assert!(!missing.exists());
         assert_eq!(io.forbidden.load(Ordering::SeqCst), 0);
         Ok(())

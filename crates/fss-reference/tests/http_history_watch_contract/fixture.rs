@@ -360,7 +360,7 @@ impl Fixture {
                 Ok(HttpHistoryWatchBinding {
                     generation: u64::from(generation),
                     sensor: SensorId::parse("sensor:http-history-watch")?,
-                    stream: StreamId::parse(&format!("stream:http-history-watch-{generation}"))?,
+                    stream: StreamId::parse(format!("stream:http-history-watch-{generation}"))?,
                     receive_time: TimestampNs(1_000_000_000_000),
                     capture_hint: CaptureHint::new(
                         TimestampNs(i128::from(generation) * 100_000_000_000),
@@ -406,6 +406,10 @@ impl Fixture {
             limits,
         })
     }
+    #[allow(
+        dead_code,
+        reason = "Shared test fixture helper used selectively across test modules"
+    )]
     pub fn run(&mut self) -> Test<HttpHistoryWatchReport> {
         Ok(process_http_history(
             &self.source,

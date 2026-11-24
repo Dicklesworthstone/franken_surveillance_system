@@ -2,11 +2,11 @@
 //! Historical sources query invariants: native inventory parity, bounded exact continuation,
 //! incomplete/deleted accounting, immutable metadata-only reads and shared final read budgets.
 
-#[path = "cascade_support/mod.rs"]
-mod support;
-mod qsr_observations_support;
 #[path = "agent_sources_contract/health.rs"]
 mod health;
+mod qsr_observations_support;
+#[path = "cascade_support/mod.rs"]
+mod support;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -20,6 +20,7 @@ use fss_core::{
 };
 use fss_object::SPOOL_OBJECTS_DIR;
 use fss_publication::LOCAL_SPOOL_DIR;
+use fss_reference::ReplayCx;
 use fss_reference::agent_follow::AnchorToken;
 use fss_reference::agent_sources::{
     SourcesQueryError, SourcesQueryFilter, SourcesQueryLimits, SourcesQueryRequest,
@@ -32,8 +33,7 @@ use fss_reference::deployment_status::{
 use fss_reference::ingest::FileFormatHint;
 use fss_reference::reference_deployment::{FAMILY_FILE_IMPORT, FAMILY_SENSOR_CAPSULE};
 use fss_reference::retained_source::ImmutableRetainedSource;
-use fss_reference::ReplayCx;
-use support::{Fixture, TestResult, SITE};
+use support::{Fixture, SITE, TestResult};
 
 const PRINCIPAL: &str = "principal:cascade";
 
@@ -78,19 +78,26 @@ fn context_for_site(
         generation: 1,
     })?;
     assert!(!authority.has_capability(RuntimeGrant::ReadMedia.as_str()));
-    Ok(ReplayCx::from_context_authority_read_only(&authority, root)?)
+    Ok(ReplayCx::from_context_authority_read_only(
+        &authority, root,
+    )?)
 }
 
 fn object_path(root: &Path, digest: ContentDigest) -> PathBuf {
-    root.join("objects").join(LOCAL_SPOOL_DIR).join(SPOOL_OBJECTS_DIR).join(
-        digest.bytes().iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
-    )
+    root.join("objects")
+        .join(LOCAL_SPOOL_DIR)
+        .join(SPOOL_OBJECTS_DIR)
+        .join(
+            digest
+                .bytes()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>(),
+        )
 }
 
 fn files(root: &Path) -> TestResult<BTreeMap<PathBuf, Vec<u8>>> {
-    fn visit(root: &Path, path: &Path, result: &mut BTreeMap<PathBuf, Vec<u8>>)
-        -> TestResult
-    {
+    fn visit(root: &Path, path: &Path, result: &mut BTreeMap<PathBuf, Vec<u8>>) -> TestResult {
         for entry in fs::read_dir(path)? {
             let entry = entry?;
             let path = entry.path();
@@ -107,9 +114,12 @@ fn files(root: &Path) -> TestResult<BTreeMap<PathBuf, Vec<u8>>> {
     Ok(result)
 }
 
-fn capsule(label: &str, sensor: &str, stream: &str, clock: ClockBasis)
-    -> TestResult<SensorCapsule>
-{
+fn capsule(
+    label: &str,
+    sensor: &str,
+    stream: &str,
+    clock: ClockBasis,
+) -> TestResult<SensorCapsule> {
     Ok(SensorCapsule {
         capsule_id: CapsuleId::parse(format!("capsule:sources:{label}"))?,
         sensor_id: SensorId::parse(sensor)?,
@@ -125,10 +135,14 @@ fn capsule(label: &str, sensor: &str, stream: &str, clock: ClockBasis)
     })
 }
 
-fn retain_capsule(fixture: &mut Fixture, label: &str, capsule: &SensorCapsule)
-    -> TestResult<ContentDigest>
-{
-    let digest = fixture.deployment.stage_payload(&capsule.canonical_bytes())?;
+fn retain_capsule(
+    fixture: &mut Fixture,
+    label: &str,
+    capsule: &SensorCapsule,
+) -> TestResult<ContentDigest> {
+    let digest = fixture
+        .deployment
+        .stage_payload(&capsule.canonical_bytes())?;
     fixture.deployment.append_batch(
         BatchId::parse(format!("batch:sources:{label}"))?,
         vec![EvidenceDelta {
@@ -153,8 +167,18 @@ fn populated(label: &str) -> TestResult<Fixture> {
     let mut fixture = Fixture::new(label)?;
     for (name, sensor, stream, basis) in [
         ("a1", "sensor:a", "stream:shared", ClockBasis::Estimated),
-        ("a2", "sensor:a", "stream:shared", ClockBasis::DeviceMonotonic),
-        ("a3", "sensor:a", "stream:second", ClockBasis::DeviceMonotonic),
+        (
+            "a2",
+            "sensor:a",
+            "stream:shared",
+            ClockBasis::DeviceMonotonic,
+        ),
+        (
+            "a3",
+            "sensor:a",
+            "stream:second",
+            ClockBasis::DeviceMonotonic,
+        ),
         ("b1", "sensor:b", "stream:shared", ClockBasis::Estimated),
     ] {
         let mut value = capsule(name, sensor, stream, basis)?;
@@ -168,7 +192,10 @@ fn populated(label: &str) -> TestResult<Fixture> {
 fn source_rows_match_native_status_and_never_require_media_or_a_writer_reopen() -> TestResult {
     let fixture = populated("sources-native-parity")?;
     let root = fixture.deployment.root();
-    fs::write(root.join("LAYOUT.tmp.sources-preserve"), b"read must not recover me")?;
+    fs::write(
+        root.join("LAYOUT.tmp.sources-preserve"),
+        b"read must not recover me",
+    )?;
     let before = files(root)?;
     let request = request()?;
     let limits = SourcesQueryLimits::default();
@@ -177,7 +204,11 @@ fn source_rows_match_native_status_and_never_require_media_or_a_writer_reopen() 
     let query = query_sources(root, &request, limits, &cx, &|| false)?;
     let native = inspect_deployment_status(root, &StatusLimits::default())?;
     assert_eq!(
-        query.rows.iter().map(|row| row.stream.clone()).collect::<Vec<_>>(),
+        query
+            .rows
+            .iter()
+            .map(|row| row.stream.clone())
+            .collect::<Vec<_>>(),
         native.sources.streams,
     );
     assert_eq!(query.summary, SourcesQuerySummary::from(&native.sources));
@@ -187,12 +218,21 @@ fn source_rows_match_native_status_and_never_require_media_or_a_writer_reopen() 
     assert_eq!(query.rows[0].stream.stream_id, "stream:second");
     let mixed = &query.rows[1];
     assert_eq!(mixed.stream.continuity, StreamContinuity::Degraded);
-    assert_eq!(mixed.stream.continuity_reason, ContinuityReason::MixedEstimatedClock);
+    assert_eq!(
+        mixed.stream.continuity_reason,
+        ContinuityReason::MixedEstimatedClock
+    );
     assert_eq!(mixed.stream.recorded_gaps, 1);
-    assert_eq!(query.rows[2].stream.continuity, StreamContinuity::NotObservableFileSource);
-    assert!(query.rows.iter().all(|row| {
-        !row.capsule_metadata.is_empty() && row.capsule_metadata.len() <= 2
-    }));
+    assert_eq!(
+        query.rows[2].stream.continuity,
+        StreamContinuity::NotObservableFileSource
+    );
+    assert!(
+        query
+            .rows
+            .iter()
+            .all(|row| { !row.capsule_metadata.is_empty() && row.capsule_metadata.len() <= 2 })
+    );
     assert!(query.epistemic().propositions.iter().any(|claim| {
         claim.state == KnowledgeState::Unknown && claim.statement.contains("Current source health")
     }));
@@ -200,7 +240,9 @@ fn source_rows_match_native_status_and_never_require_media_or_a_writer_reopen() 
         let value = fss_core::json_input::parse(&row_json(row))?;
         let fields = value.object().ok_or("source row object")?;
         assert_eq!(
-            fields.get("current_health").and_then(fss_core::json_input::Value::text),
+            fields
+                .get("current_health")
+                .and_then(fss_core::json_input::Value::text),
             Some("unknown"),
         );
     }
@@ -224,7 +266,13 @@ fn exact_sensor_and_stream_filters_preserve_full_inventory_and_native_pagination
     let first = query_sources(root, &request, limits, &cx, &|| false)?;
     assert_eq!(first.rows.len(), 1);
     assert_eq!(first.remaining_streams(), 2);
-    let token = first.page.next_cursor.as_ref().ok_or("next cursor")?.token().to_owned();
+    let token = first
+        .page
+        .next_cursor
+        .as_ref()
+        .ok_or("next cursor")?
+        .token()
+        .to_owned();
     request.continuation = Some(token);
     request.expected_anchor = Some(AnchorToken::parse(&first.anchor_token).ok_or("anchor")?);
     let second = query_sources(root, &request, limits, &cx, &|| false)?;
@@ -272,7 +320,10 @@ fn exact_sensor_and_stream_filters_preserve_full_inventory_and_native_pagination
     let empty = query_sources(root, &request, limits, &cx, &|| false)?;
     assert!(empty.rows.is_empty());
     assert_eq!(empty.summary, first.summary);
-    assert_eq!(empty.snapshot.historical_health, first.snapshot.historical_health);
+    assert_eq!(
+        empty.snapshot.historical_health,
+        first.snapshot.historical_health
+    );
     cx.drain_and_finalize();
     Ok(())
 }
@@ -285,7 +336,10 @@ fn unmatched_corrupt_metadata_and_duplicate_capsule_identity_refuse_the_whole_pa
     let limits = SourcesQueryLimits::default();
     let cx = context(&root, &request, limits)?;
     let full = query_sources(&root, &request, limits, &cx, &|| false)?;
-    let other = full.rows.iter().find(|row| row.stream.sensor_id == "sensor:b")
+    let other = full
+        .rows
+        .iter()
+        .find(|row| row.stream.sensor_id == "sensor:b")
         .ok_or("other sensor")?;
     let path = object_path(&root, other.capsule_metadata[0]);
     let bytes = fs::read(&path)?;
@@ -296,7 +350,9 @@ fn unmatched_corrupt_metadata_and_duplicate_capsule_identity_refuse_the_whole_pa
 
     let mut duplicate = capsule("a1", "sensor:a", "stream:shared", ClockBasis::Estimated)?;
     duplicate.sequence = 2;
-    let digest = fixture.deployment.stage_payload(&duplicate.canonical_bytes())?;
+    let digest = fixture
+        .deployment
+        .stage_payload(&duplicate.canonical_bytes())?;
     fixture.deployment.append_batch(
         BatchId::parse("batch:sources:duplicate-identity")?,
         vec![EvidenceDelta {
@@ -323,13 +379,20 @@ fn unmatched_corrupt_metadata_and_duplicate_capsule_identity_refuse_the_whole_pa
 }
 
 #[test]
-fn incomplete_imports_are_reported_without_hydrating_or_promoting_their_capsules()
-    -> TestResult
-{
+fn incomplete_imports_are_reported_without_hydrating_or_promoting_their_capsules() -> TestResult {
     let mut fixture = populated("sources-incomplete")?;
-    let pending = capsule("pending", "sensor:pending", "stream:pending", ClockBasis::Estimated)?;
-    let digest = fixture.deployment.stage_payload(&pending.canonical_bytes())?;
-    let marker = fixture.deployment.stage_payload(b"incomplete-import-marker")?;
+    let pending = capsule(
+        "pending",
+        "sensor:pending",
+        "stream:pending",
+        ClockBasis::Estimated,
+    )?;
+    let digest = fixture
+        .deployment
+        .stage_payload(&pending.canonical_bytes())?;
+    let marker = fixture
+        .deployment
+        .stage_payload(b"incomplete-import-marker")?;
     fixture.deployment.append_batch(
         BatchId::parse("batch:file-import:incomplete:c0")?,
         vec![
@@ -373,21 +436,25 @@ fn incomplete_imports_are_reported_without_hydrating_or_promoting_their_capsules
     assert_eq!(query.summary.retained_capsules, 4);
     assert_eq!(query.summary.capsule_objects, 5);
     assert_eq!(query.summary.incomplete_import_capsules, 1);
-    assert_eq!(query.summary.incomplete_imports, ["object:file-import:pending"]);
+    assert_eq!(
+        query.summary.incomplete_imports,
+        ["object:file-import:pending"]
+    );
     assert_eq!(files(root)?, before);
     cx.drain_and_finalize();
     Ok(())
 }
 
 #[test]
-fn native_completed_deletion_remains_visible_in_summary_without_source_hydration()
-    -> TestResult
-{
+fn native_completed_deletion_remains_visible_in_summary_without_source_hydration() -> TestResult {
     let mut fixture = Fixture::new("sources-deleted-import")?;
-    let media = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/media/h264/clean.264");
+    let media =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/media/h264/clean.264");
     let identity = fixture.ingest(
-        "sensor:deleted-source", &fs::read(media)?, FileFormatHint::AnnexB, Some(1_000_000),
+        "sensor:deleted-source",
+        &fs::read(media)?,
+        FileFormatHint::AnnexB,
+        Some(1_000_000),
     )?;
     let root = fixture.deployment.root().to_path_buf();
     let request = request()?;
@@ -410,9 +477,15 @@ fn native_completed_deletion_remains_visible_in_summary_without_source_hydration
     let after = query_sources(&root, &request, limits, &cx, &|| false)?;
     assert!(after.rows.is_empty());
     assert_eq!(after.summary.retained_capsules, 0);
-    assert_eq!(after.summary.deleted_capsules, before.summary.retained_capsules);
+    assert_eq!(
+        after.summary.deleted_capsules,
+        before.summary.retained_capsules
+    );
     assert_eq!(after.summary.deleted_imports, 1);
-    assert_eq!(after.summary.capsule_objects, before.summary.capsule_objects);
+    assert_eq!(
+        after.summary.capsule_objects,
+        before.summary.capsule_objects
+    );
     assert!(after.snapshot.deletions_committed > 0);
     assert_ne!(after.selection_witness, before.selection_witness);
     assert_eq!(files(&root)?, deleted);
@@ -461,9 +534,7 @@ fn all_inventory_and_final_reread_work_shares_one_nonrenewing_budget() -> TestRe
 }
 
 #[test]
-fn invalid_inputs_root_binding_and_cancellation_leave_no_partial_result_or_repair()
-    -> TestResult
-{
+fn invalid_inputs_root_binding_and_cancellation_leave_no_partial_result_or_repair() -> TestResult {
     let fixture = Fixture::new("sources-validation")?;
     let root = fixture.deployment.root();
     let request = request()?;
@@ -526,14 +597,17 @@ fn final_native_checkpoint_and_last_live_admission_can_each_refuse_the_page() ->
     calls.store(0, Ordering::SeqCst);
     let fired = AtomicBool::new(false);
     let before = files(root)?;
-    assert!(query_sources(root, &request, limits, &cx, &|| {
-        if calls.fetch_add(1, Ordering::SeqCst) + 1 == last {
-            fired.store(true, Ordering::SeqCst);
-            true
-        } else {
-            false
-        }
-    }).is_err());
+    assert!(
+        query_sources(root, &request, limits, &cx, &|| {
+            if calls.fetch_add(1, Ordering::SeqCst) + 1 == last {
+                fired.store(true, Ordering::SeqCst);
+                true
+            } else {
+                false
+            }
+        })
+        .is_err()
+    );
     assert!(fired.load(Ordering::SeqCst));
     assert_eq!(files(root)?, before);
     cx.drain_and_finalize();
@@ -558,7 +632,15 @@ fn authority_append_changes_the_exact_anchor_and_invalidates_old_continuations()
     let cx = context(&root, &request, limits)?;
     let first = query_sources(&root, &request, limits, &cx, &|| false)?;
     request.expected_anchor = Some(AnchorToken::parse(&first.anchor_token).ok_or("anchor")?);
-    request.continuation = Some(first.page.next_cursor.as_ref().ok_or("next")?.token().to_owned());
+    request.continuation = Some(
+        first
+            .page
+            .next_cursor
+            .as_ref()
+            .ok_or("next")?
+            .token()
+            .to_owned(),
+    );
     retain_capsule(
         &mut fixture,
         "new",

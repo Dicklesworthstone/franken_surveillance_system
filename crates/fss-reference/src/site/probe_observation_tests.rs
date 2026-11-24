@@ -500,7 +500,7 @@ fn jpeg_counts_complete_reconstruction_and_accepts_exact_dynamic_selection() -> 
         for (index, mut packet) in packets(ProbeCodec::Jpeg)?.into_iter().enumerate() {
             packet[1] = (packet[1] & 0x80) | payload_type;
             observer.observe_rtp(0, &packet)?;
-            assert_eq!(observer.confirmed_pictures(), (index as u32 + 1) / 2);
+            assert_eq!(observer.confirmed_pictures(), (index as u32).div_ceil(2));
         }
         assert_eq!(observer.freeze_prefix()?, ProbeTail::default());
         let receipt = observer.finish_prefix()?;

@@ -59,6 +59,7 @@ impl Default for RetainedRecordingReplayLimits {
 
 impl RetainedRecordingReplayLimits {
     /// Pure admission before opening a path. Limits may narrow but never exceed hard ceilings.
+    #[allow(clippy::result_large_err)]
     pub fn validate(&self) -> Result<(), RecordingReplayContextError> {
         let maximum = OrientLimits::default();
         if self.read.max_read_bytes == 0
@@ -100,6 +101,7 @@ impl RetainedRecordingReplayLimits {
     }
 
     /// This allowance is shared across the complete read, never refilled for a window or retry.
+    #[allow(clippy::result_large_err)]
     pub fn allowance(&self) -> Result<BudgetVector, RecordingReplayContextError> {
         self.validate()?;
         Ok(BudgetVector::from_quantities(BudgetQuantitiesSpec {
@@ -132,6 +134,7 @@ impl RetainedRecordingReplayLimits {
     }
 }
 
+#[allow(clippy::result_large_err)]
 fn input_digest(
     request: &RetainedRecordingReplayRequest,
     limits: RetainedRecordingReplayLimits,
@@ -174,6 +177,7 @@ pub struct RetainedReplaySourceReadPermit<'a> {
 
 impl<'a> RetainedReplaySourceReadPermit<'a> {
     /// Pure admission and context construction. Missing deployment paths are never created.
+    #[allow(clippy::result_large_err)]
     pub fn authorize(
         authority: &'a ContextAuthority,
         root: &Path,
@@ -228,6 +232,7 @@ impl<'a> RetainedReplaySourceReadPermit<'a> {
         self.digest
     }
 
+    #[allow(clippy::result_large_err)]
     fn check_current(&self) -> Result<(), RecordingReplayContextError> {
         if self.authority.cancellation_reason.is_some()
             || self.cx.is_cancelled()
@@ -294,6 +299,7 @@ impl PublishCancellation for Cancellation<'_> {
 /// All source reads use a single immutable owner. Final revalidation checks every observed
 /// publication/deletion marker and current authority without recovery, locks or writes. The
 /// resulting observation is not an atomic filesystem snapshot or future availability lease.
+#[allow(clippy::result_large_err)]
 pub fn query_retained_recordings_replay_in_deployment(
     root: &Path,
     request: &RetainedRecordingReplayRequest,

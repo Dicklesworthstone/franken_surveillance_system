@@ -115,6 +115,7 @@ fn valid_limits(limits: EffectJournalLimits) -> bool {
 
 impl Plan {
     /// Validate a series without starting work or consuming an invalid config.
+    #[allow(clippy::result_large_err)]
     pub fn new(config: Configuration) -> Result<Self, Configuration> {
         let name = config.namespace.as_bytes();
         let valid = (1..=32).contains(&name.len())

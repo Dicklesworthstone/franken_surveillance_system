@@ -60,6 +60,7 @@ impl fmt::Debug for LiveMetadataConfig {
 
 /// Payload-free outer refusal. Existing owners retain their typed failure categories.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum LiveMetadataError {
     /// Invalid limits or a protocol authority not identical to the bound native route.
     Configuration,
@@ -156,6 +157,7 @@ pub struct LiveMetadataWait {
 /// One bounded output; process transferred originals before polling again.
 #[must_use]
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum LiveMetadataStep {
     /// Exact original TCP bytes accepted at their original admission time.
     /// Transfer does not establish durable custody; Debug omits their contents.
@@ -203,6 +205,7 @@ impl fmt::Debug for LiveMetadataConnection {
 }
 impl LiveMetadataConnection {
     /// Validate both semantic owners and exact route equality before a single connect.
+    #[allow(clippy::result_large_err)]
     pub fn connect(
         config: LiveMetadataConfig,
         now: u64,
@@ -285,6 +288,7 @@ impl LiveMetadataConnection {
     }
     /// Prepare one command under live authority. Credentials are borrowed, not retained.
     /// Supply fresh owner-generated cnonce entropy for every admitted preparation.
+    #[allow(clippy::result_large_err)]
     pub fn request(
         &mut self,
         command: ClientCommand,
@@ -312,6 +316,7 @@ impl LiveMetadataConnection {
     }
     /// Answer only the internally held matching challenge. Return its exact original wire
     /// even if transport queue admission fails after the protocol has prepared the answer.
+    #[allow(clippy::result_large_err)]
     pub fn respond(
         &mut self,
         credentials: &DigestCredentials<'_>,
@@ -338,6 +343,7 @@ impl LiveMetadataConnection {
     }
     /// Run timers and queued semantic work before attempting one ready socket operation.
     /// A refused read remains intact in transport retirement; it is never fed a second time.
+    #[allow(clippy::result_large_err)]
     pub fn poll(
         &mut self,
         readiness: SocketReadiness,
@@ -451,6 +457,7 @@ impl LiveMetadataConnection {
     pub fn cancel(&mut self) -> Option<LiveMetadataRetirement> {
         self.retire(None, None, None)
     }
+    #[allow(clippy::result_large_err)]
     fn admit(&mut self, now: u64, authority: &dyn TcpAuthority) -> Result<(), LiveMetadataFailure> {
         if self.active.is_none() {
             return Err(safe(LiveMetadataError::Closed));
@@ -485,6 +492,7 @@ impl LiveMetadataConnection {
         };
         allowed.map_err(|e| self.fail(LiveMetadataError::Transport(e), None, None, None))
     }
+    #[allow(clippy::result_large_err)]
     fn queue(
         &mut self,
         request: ClientRequest,

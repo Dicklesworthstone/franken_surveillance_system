@@ -1321,7 +1321,6 @@ fn test_formerly_unsupported_opcodes_execute_and_unknown_gelu_mode_is_refused()
     // Every listed op gets a VALID graph: a validation failure fails the test (never silently
     // skips), execution must succeed, and the output must equal a hand-computed golden
     // (exact for data movement, kernel-primitive-exact for activations). [fss-aj72f]
-    #[allow(clippy::abs_diff_eq)]
     fn ulp_diff(a: f32, b: f32) -> u32 {
         let key = |v: u32| {
             if v & 0x8000_0000 != 0 {
@@ -1369,7 +1368,7 @@ fn test_formerly_unsupported_opcodes_execute_and_unknown_gelu_mode_is_refused()
             .add_node(node)
             .build_and_validate()
             .map_err(|e| format!("{op:?} graph must validate, got {e:?}"))?;
-        let feed: Vec<(&str, Tensor)> = inputs.into_iter().map(|(n, t)| (n, t)).collect();
+        let feed: Vec<(&str, Tensor)> = inputs.into_iter().collect();
         let cx = ScalarExecCx::new();
         let out = ScalarExecutor::run(&graph, &feed, ExecBudget::unlimited(), &cx)
             .map_err(|e| format!("{op:?} graph must execute, got {e:?}"))?;

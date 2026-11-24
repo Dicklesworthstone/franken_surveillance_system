@@ -2753,9 +2753,9 @@ fn forged_predicate_on_ineligible_revision(
         assert!(
             matches!(
                 res,
-                Err(DurableEffectError::Reference(ReferenceError::InvalidSpec(
-                    "alert_not_eligible"
-                )))
+                Err(DurableEffectError::Reference(
+                    ReferenceError::AlertNotEligible(_)
+                ))
             ),
             "{tag}: {res:?}"
         );
@@ -2781,7 +2781,7 @@ fn forged_predicate_on_ineligible_revision(
             &mut provider,
         );
         assert!(
-            matches!(res, Err(ReferenceError::InvalidSpec("alert_not_eligible"))),
+            matches!(res, Err(ReferenceError::AlertNotEligible(_))),
             "{tag}: {res:?}"
         );
         assert_eq!(provider.message_count(), 0, "{tag}: alert delivered");
@@ -4479,10 +4479,7 @@ fn assert_prepare_policy_action_mismatch(
     let effects_before = fs::read(&journal_path)?;
     let memory_result = prepare(&supplied, &receipt, &authority, &mut memory);
     assert!(
-        matches!(
-            memory_result,
-            Err(ReferenceError::InvalidSpec("alert_not_eligible"))
-        ),
+        matches!(memory_result, Err(ReferenceError::AlertNotEligible(_))),
         "{label}: {memory_result:?}"
     );
     assert_eq!(memory.operations().count(), 0);
@@ -4494,9 +4491,9 @@ fn assert_prepare_policy_action_mismatch(
     assert!(
         matches!(
             durable_result,
-            Err(DurableEffectError::Reference(ReferenceError::InvalidSpec(
-                "alert_not_eligible"
-            )))
+            Err(DurableEffectError::Reference(
+                ReferenceError::AlertNotEligible(_)
+            ))
         ),
         "{label}: {durable_result:?}"
     );
@@ -4585,4 +4582,22 @@ fn prepare_policy_action_exact_commitment_is_admitted_and_replays() -> Result<()
     fs::remove_file(ledger_path)?;
     fs::remove_file(journal_path)?;
     Ok(())
+}
+
+#[test]
+fn alert_not_eligible_display_names_alert_policy_never_virtual_camera() {
+    let error = ReferenceError::AlertNotEligible("single_sensor_uncorroborated");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("event is not eligible for alert preparation"),
+        "unexpected display: {rendered}"
+    );
+    assert!(
+        rendered.contains("single_sensor_uncorroborated"),
+        "missing detail reason: {rendered}"
+    );
+    assert!(
+        !rendered.to_ascii_lowercase().contains("virtual-camera"),
+        "misleading virtual-camera wording leaked into alert refusal: {rendered}"
+    );
 }

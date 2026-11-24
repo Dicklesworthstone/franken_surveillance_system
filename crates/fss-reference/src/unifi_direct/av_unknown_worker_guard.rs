@@ -136,6 +136,7 @@ pub enum QueueError {
 
 /// One bounded supervisor or source-transfer result.
 #[must_use]
+#[allow(clippy::large_enum_variant)]
 pub enum Step {
     /// A held original segment entered the worker; publication is pending.
     SourceQueued,
@@ -162,6 +163,7 @@ pub enum StartError {
 
 /// One scheduling decision while archive work is active.
 #[must_use]
+#[allow(clippy::large_enum_variant)]
 pub enum Drive {
     /// No archive attempt is running.
     NotRunning,
@@ -178,6 +180,7 @@ pub enum Drive {
 
 /// One bounded decision by the session's archive scheduler.
 #[must_use]
+#[allow(clippy::large_enum_variant)]
 pub enum Advance {
     /// The scheduling task, owner, or clock do not describe the same session.
     Context,
@@ -222,6 +225,7 @@ pub enum SourceAdvance {
 
 /// A source, control, archive, or audio observation transferred to the session owner.
 #[must_use]
+#[allow(clippy::large_enum_variant)]
 pub enum SessionEvent {
     /// A complete bounded scheduler result.
     Advance(Advance),
@@ -245,6 +249,7 @@ pub trait SessionObserver {
     /// Return an operation ID suitable for the next control step, or stop.
     fn next_operation(&mut self) -> Option<OperationId>;
     /// Accept an event, or return it intact when it cannot be accepted.
+    #[allow(clippy::result_large_err)]
     fn observe(&mut self, event: SessionEvent) -> Result<SessionDecision, SessionEvent>;
 }
 
@@ -401,6 +406,7 @@ pub struct DeferredPauseRetirement {
 impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> DeferredPauseUnresolved<'scope, 'task, IO> {
     /// Restore only when work never started or cancellation was observed; the
     /// original guard remains caller-owned and is not implicitly restarted.
+    #[allow(clippy::result_large_err)]
     pub fn restore(self) -> Result<Guard<'scope, 'task, IO>, Self> {
         if self.fenced
             || !matches!(
@@ -461,6 +467,7 @@ pub struct BackgroundRefusal<'scope, 'task, IO> {
 
 /// One bounded control or worker-completion decision during rollover.
 #[must_use]
+#[allow(clippy::large_enum_variant)]
 pub enum BackgroundDrive {
     /// No operation is running or completed.
     NotRunning,
@@ -477,6 +484,7 @@ pub enum BackgroundDrive {
 
 /// A fully drained background transition.
 #[must_use = "retain the resumed guard or reconcile the unresolved transition"]
+#[allow(clippy::large_enum_variant)]
 pub enum BackgroundFinish<'scope, 'task, IO> {
     /// Exact matching successor replayed and attached.
     Resumed {
@@ -526,6 +534,7 @@ pub struct BackgroundRetirement {
 impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> BackgroundUnresolved<'scope, 'task, IO> {
     /// Recover the paused owner only when the worker state was not fenced.
     /// The caller must still inspect the outcome before any further operation.
+    #[allow(clippy::result_large_err)]
     pub fn into_paused(
         self,
     ) -> Result<
@@ -594,6 +603,7 @@ pub struct PausedRestoreRefusal<'scope, 'task, IO> {
 impl<'scope, 'task, IO> PausedRollover<'scope, 'task, IO> {
     /// Transfer a matching predecessor and fresh stores to a single bounded
     /// rollover worker; no storage operation starts until `start` is called.
+    #[allow(clippy::result_large_err)]
     pub fn into_background(
         self,
         inputs: av_rollover_worker::Inputs,
@@ -670,6 +680,7 @@ impl<'scope, 'task, IO> PausedRollover<'scope, 'task, IO> {
     /// Resume with an already replayed successor. A matching capacity request
     /// is cleared only after attachment succeeds; other retry latches remain.
     /// No archive operation starts until the scheduler is advanced again.
+    #[allow(clippy::result_large_err)]
     pub fn attach(
         self,
         active: archive::journal::rollover::Active,
@@ -711,6 +722,7 @@ impl<'scope, 'task, IO> PausedRollover<'scope, 'task, IO> {
     }
 
     /// Finalize a successor whose custody was checked by the blocking worker.
+    #[allow(clippy::result_large_err)]
     fn attach_prepared(
         self,
         attachment: av_worker::PreparedUnknownTimeAttachment,
@@ -752,6 +764,7 @@ impl<'scope, 'task, IO> PausedRollover<'scope, 'task, IO> {
     }
 
     /// Restore the unchanged predecessor after abandoning an uncommitted stage.
+    #[allow(clippy::result_large_err)]
     pub fn restore(
         self,
         previous: archive::journal::rollover::Previous,
@@ -828,6 +841,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> BackgroundRollover<'scop
         self.worker.start(task, cx, clock, resource, cost)
     }
     /// Recover the original paused guard and inputs after a pre-start refusal.
+    #[allow(clippy::result_large_err)]
     pub fn into_unstarted(
         self,
     ) -> Result<
@@ -937,6 +951,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> BackgroundRollover<'scop
     }
     /// Attach only a matching, successfully replayed transition. All other
     /// outcomes retain the controller, pending segment and transition state.
+    #[allow(clippy::result_large_err)]
     pub fn finish(self) -> Result<BackgroundFinish<'scope, 'task, IO>, Self> {
         if self.completion.is_none() {
             return Err(self);
@@ -1121,6 +1136,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> DeferredPause<'scope, 't
         }
     }
     /// Recover the untouched guard when admission never succeeded.
+    #[allow(clippy::result_large_err)]
     pub fn into_unstarted(self) -> Result<Guard<'scope, 'task, IO>, Self> {
         if self.worker.is_running() || self.completion.is_some() {
             return Err(self);
@@ -1168,6 +1184,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> DeferredPause<'scope, 't
         }
     }
     /// Complete the preflight and detach only after the exact verified proof.
+    #[allow(clippy::result_large_err)]
     pub fn finish(self) -> Result<DeferredPauseFinish<'scope, 'task, IO>, Self> {
         if self.completion.is_none() {
             return Err(self);
@@ -1293,6 +1310,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
     /// Transfer the drained archive to a region-owned preflight worker without
     /// reading storage on the camera-control task. The returned owner must be
     /// started, driven, and drained before the guard can resume.
+    #[allow(clippy::result_large_err)]
     pub fn defer_rollover_pause(self) -> Result<DeferredPause<'scope, 'task, IO>, Self> {
         if matches!(self.archive, ArchiveState::Running | ArchiveState::Recovery) {
             return Err(self);
@@ -1333,6 +1351,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
     /// indeterminate archive operations are refused with the guard intact.
     /// Later generations may synchronously revalidate retained switch custody.
     /// This does not stop or restart the camera.
+    #[allow(clippy::result_large_err)]
     pub fn pause_rollover(
         self,
     ) -> Result<
@@ -1398,6 +1417,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
 
     /// Build from a completed bootstrap without performing I/O or inventing
     /// capture bounds. All source and storage owners return on refusal.
+    #[allow(clippy::result_large_err)]
     pub fn from_bootstrap(
         handoff: av_bootstrap_driver::Handoff<'scope, 'task, IO>,
         resources: BootstrapResources,
@@ -1411,6 +1431,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
 
     /// Convert a bootstrap sink, returning all owners intact on refusal.
     #[inline(never)]
+    #[allow(clippy::boxed_local)]
     pub fn prepare_bootstrap(
         handoff: Box<av_bootstrap_driver::Handoff<'scope, 'task, IO>>,
         resources: Box<BootstrapResources>,
@@ -1469,6 +1490,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
 
     /// Construct a worker from a previously converted bootstrap.
     #[inline(never)]
+    #[allow(clippy::boxed_local)]
     pub fn finish_bootstrap(
         prepared: Box<PreparedBootstrap<'scope, 'task, IO>>,
     ) -> Result<Box<BootstrapStarted<'scope, 'task, IO>>, Box<BootstrapRefusal<'scope, 'task, IO>>>
@@ -1520,6 +1542,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
     }
 
     /// Attach only an idle worker; refusal returns both original owners.
+    #[allow(clippy::result_large_err)]
     pub fn new(
         supervisor: supervisor::Supervisor<'scope, 'task, IO>,
         worker: av_worker::UnknownTimeWorker,
@@ -1564,6 +1587,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
     }
 
     /// Hold a segment without consuming it when another source is outstanding.
+    #[allow(clippy::result_large_err)]
     pub fn hold_segment(&mut self, segment: recording::Segment) -> Result<(), recording::Segment> {
         if self.held.is_some() || self.archive != ArchiveState::Idle {
             return Err(segment);
@@ -1782,6 +1806,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
     /// Schedule one source, archive, or control step. This method does not
     /// create a detached task, reconnect a camera, or infer capture time.
     /// Failure remains latched until an explicit retry or reconciliation.
+    #[allow(clippy::too_many_arguments)]
     pub async fn advance<'a, 'b>(
         &mut self,
         owner: &mut conversation::Owner<'_, 'a, 'b>,
@@ -1807,10 +1832,10 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
                 None
             });
         }
-        if self.archive == ArchiveState::Pending {
-            if let Some(need) = self.rollover_need {
-                return Advance::RolloverRequired(need);
-            }
+        if self.archive == ArchiveState::Pending
+            && let Some(need) = self.rollover_need
+        {
+            return Advance::RolloverRequired(need);
         }
         match self.archive {
             ArchiveState::Idle => {
@@ -1838,6 +1863,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
     /// method never silently retries publication. On cancellation, it drains
     /// the separate worker and returns its exact completion, while leaving the
     /// guard and any A/V archive for the caller to drain separately.
+    #[allow(clippy::too_many_arguments)]
     pub async fn advance_with_source<'a, 'b>(
         &mut self,
         worker: &mut source_worker::Worker,
@@ -1879,6 +1905,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
     /// Events, including original source records, are transferred to the
     /// observer. A yielded slice retains any live worker in this guard; callers
     /// must resume or explicitly cancel and join it before retirement.
+    #[allow(clippy::too_many_arguments)]
     pub async fn run_slice<'a, 'b>(
         &mut self,
         owner: &mut conversation::Owner<'_, 'a, 'b>,
@@ -2116,6 +2143,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Guard<'scope, 'task, IO>
     }
 
     /// Return every owner only after an active archive attempt has drained.
+    #[allow(clippy::result_large_err)]
     pub fn retire(self) -> Result<Retirement, Self> {
         let Self {
             supervisor,

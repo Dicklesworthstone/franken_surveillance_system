@@ -75,6 +75,7 @@ pub struct SelectedRefusal<'scope, 'task, IO> {
 
 /// One camera, storage admission, or completed-creation outcome.
 #[must_use = "account for the complete control and storage outcomes"]
+#[allow(clippy::large_enum_variant)]
 pub enum Step {
     /// The wait bound is invalid; no camera or provisioning work was polled.
     Configuration,
@@ -186,6 +187,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> ProvisioningSession<'sco
     /// Bind a selected A/V stream and caller-authorized generation plan.
     /// This performs no I/O or device authentication; all owners are returned
     /// unchanged at the stage where selected-stream admission refuses.
+    #[allow(clippy::result_large_err)]
     pub fn begin_selected(
         selected: recording_session::SelectedRecording<'scope, 'task, IO>,
         audio: recording_session::AudioAllowancePolicy,
@@ -256,6 +258,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> ProvisioningSession<'sco
 
     /// Install one bounded caller-authorized generation plan without I/O.
     /// An existing plan is never replaced or silently restarted.
+    #[allow(clippy::result_large_err)]
     pub fn set_plan(
         &mut self,
         plan: av_rollover_generation::Plan,
@@ -360,6 +363,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> ProvisioningSession<'sco
     /// Advance one bounded step, polling creation without waiting before
     /// allowing the managed camera session to run. Completion and control
     /// outcomes are returned on separate calls and never discarded.
+    #[allow(clippy::too_many_arguments)]
     pub async fn step(
         &mut self,
         owner: &mut conversation::Owner<'_, 'scope, 'task>,
@@ -389,22 +393,21 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> ProvisioningSession<'sco
             && self.ready.is_none()
             && self.failed.is_none()
             && self.custody.is_none()
+            && let Some(plan) = self.plan.as_mut()
         {
-            if let Some(plan) = self.plan.as_mut() {
-                match plan.next_worker() {
-                    Ok(Some((identity, worker))) => {
-                        self.worker = Some(worker);
-                        self.start_refused = false;
-                        return Step::SupplyPlanned(identity);
-                    }
-                    Ok(None) => {
-                        self.plan_stopped = true;
-                        return Step::PlanExhausted;
-                    }
-                    Err(error) => {
-                        self.plan_stopped = true;
-                        return Step::PlanRefused(error);
-                    }
+            match plan.next_worker() {
+                Ok(Some((identity, worker))) => {
+                    self.worker = Some(worker);
+                    self.start_refused = false;
+                    return Step::SupplyPlanned(identity);
+                }
+                Ok(None) => {
+                    self.plan_stopped = true;
+                    return Step::PlanExhausted;
+                }
+                Err(error) => {
+                    self.plan_stopped = true;
+                    return Step::PlanRefused(error);
                 }
             }
         }
@@ -428,10 +431,10 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> ProvisioningSession<'sco
                 }
             }
         }
-        if owner.cx.checkpoint().is_err() {
-            if let Some(worker) = &self.worker {
-                worker.abort();
-            }
+        if owner.cx.checkpoint().is_err()
+            && let Some(worker) = &self.worker
+        {
+            worker.abort();
         }
         if self.started && self.completion.is_none() {
             self.poll_supply_once().await;

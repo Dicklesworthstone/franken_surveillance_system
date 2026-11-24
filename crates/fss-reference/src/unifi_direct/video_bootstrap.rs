@@ -62,6 +62,7 @@ pub struct Parts<'scope, 'task, IO> {
 
 /// One bootstrap result, including all control and source custody outcomes.
 #[must_use]
+#[allow(clippy::large_enum_variant)]
 pub enum Step {
     /// A supervisor result which does not contain a separately returned source.
     Supervisor(supervisor::Step),
@@ -142,6 +143,7 @@ pub struct SelectedRecording<'scope, 'task, IO> {
 
 /// Refusal retains every input or the exact post-construction bootstrap parts.
 #[must_use = "recover and reconcile the returned owners"]
+#[allow(clippy::large_enum_variant)]
 pub enum SelectedRefusal<'scope, 'task, IO> {
     /// Camera or source binding did not match, or preconditions were invalid.
     Binding(SelectedRecording<'scope, 'task, IO>),
@@ -152,6 +154,7 @@ pub enum SelectedRefusal<'scope, 'task, IO> {
 /// Attach an already selected stream to its exact archive owners without
 /// reading from the camera or starting a publication. A successful handoff
 /// does not establish physical identity, continuity, or recording durability.
+#[allow(clippy::result_large_err)]
 pub fn begin_selected<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
     selected: SelectedRecording<'scope, 'task, IO>,
 ) -> Result<Bootstrap<'scope, 'task, IO>, SelectedRefusal<'scope, 'task, IO>> {
@@ -196,6 +199,7 @@ pub enum ManagedRecordingOwner<'scope, 'task, IO> {
 
 /// One complete bootstrap, transition, or managed-recording outcome.
 #[must_use = "account for the returned control and publication outcomes"]
+#[allow(clippy::large_enum_variant)]
 pub enum ManagedRecordingStep {
     /// The original bootstrap event, including its source completions.
     Bootstrap(Step),
@@ -244,6 +248,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> ManagedRecording<'scope,
     /// or when the generation bootstrap is not admissible, both original
     /// owners are returned unchanged.
     /// This starts no work and does not establish storage independence or retention.
+    #[allow(clippy::result_large_err)]
     pub fn into_retained_provisioning(
         mut self,
         bootstrap: super::av_rollover_generation::BootstrapWorker,
@@ -283,6 +288,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> ManagedRecording<'scope,
 
     /// Offer one caller-prepared rollover supply after recording starts.
     /// A refusal returns the original supplies unchanged.
+    #[allow(clippy::result_large_err)]
     pub fn provide(
         &mut self,
         supplies: super::av_rollover_worker::Supplies,
@@ -345,6 +351,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> ManagedRecording<'scope,
 
     /// Advance one bounded phase decision. Ready is reported before the
     /// subsequent call changes phase; all underlying events remain visible.
+    #[allow(clippy::too_many_arguments)]
     pub async fn step(
         &mut self,
         owner: &mut conversation::Owner<'_, 'scope, 'task>,
@@ -436,14 +443,16 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> ManagedRecording<'scope,
 
     /// Return the exact current owner, including any unfinished worker state.
     pub fn into_owner(mut self) -> ManagedRecordingOwner<'scope, 'task, IO> {
-        self.owner
-            .take()
-            .expect("owner retained between public calls")
+        let Some(owner) = self.owner.take() else {
+            unreachable!("owner retained between public calls");
+        };
+        owner
     }
 }
 
 impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Bootstrap<'scope, 'task, IO> {
     /// Bind idle owners before reading media; refusal returns all of them.
+    #[allow(clippy::result_large_err)]
     pub fn begin(
         supervisor: supervisor::Supervisor<'scope, 'task, IO>,
         source: source_worker::Worker,
@@ -452,6 +461,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Bootstrap<'scope, 'task,
         camera_claim: ContentDigest,
         policy: Policy,
     ) -> Result<Self, Parts<'scope, 'task, IO>> {
+        let work_limit = resources.work_limit;
         let parts = Parts {
             supervisor,
             source,
@@ -469,8 +479,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Bootstrap<'scope, 'task,
             || key.connection == 0
             || key.generation == 0
             || parts.source.status() != source_worker::Status::Idle
-            || !(1..=100_000_000_000)
-                .contains(&parts.resources.as_ref().expect("present").work_limit)
+            || !(1..=100_000_000_000).contains(&work_limit)
         {
             return Err(parts);
         }
@@ -509,6 +518,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Bootstrap<'scope, 'task,
     }
 
     /// Recover every remaining owner after the source attempt drains.
+    #[allow(clippy::result_large_err)]
     pub fn into_parts(self) -> Result<Parts<'scope, 'task, IO>, Self> {
         if self.parts.source.is_running() {
             Err(self)
@@ -518,6 +528,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Bootstrap<'scope, 'task,
     }
 
     /// Transfer a ready bootstrap to the video-only session.
+    #[allow(clippy::result_large_err)]
     pub fn into_session(
         self,
     ) -> Result<video_session::Session<'scope, 'task, IO>, HandoffRefusal<'scope, 'task, IO>> {
@@ -545,6 +556,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Bootstrap<'scope, 'task,
     }
 
     /// Process one bounded control, source or bootstrap decision.
+    #[allow(clippy::too_many_arguments)]
     pub async fn step(
         &mut self,
         owner: &mut conversation::Owner<'_, 'scope, 'task>,
@@ -648,6 +660,10 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Bootstrap<'scope, 'task,
                             return Step::ConfigurationRefused(refusal);
                         }
                     };
+                    let Some(resources) = self.parts.resources.take() else {
+                        self.parts.halted = true;
+                        return Step::Halted;
+                    };
                     let BootstrapResources {
                         deployment,
                         journal,
@@ -657,11 +673,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Bootstrap<'scope, 'task,
                         limits,
                         work_limit,
                         rollover_custody,
-                    } = *self
-                        .parts
-                        .resources
-                        .take()
-                        .expect("resources precede configuration");
+                    } = *resources;
                     let parts = video_worker::Parts {
                         sink,
                         deployment,

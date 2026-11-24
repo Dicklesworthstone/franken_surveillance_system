@@ -360,6 +360,20 @@ pub struct MissionAssessmentFacts {
 }
 
 impl MissionAssessmentFacts {
+    /// Whether two assessments observe identical ledger, effect, event, episode, and closure facts,
+    /// independent of the runtime admission-clock observation time.
+    pub(crate) fn same_evidence_facts(&self, other: &Self) -> bool {
+        self.anchor == other.anchor
+            && self.effect_journal_present == other.effect_journal_present
+            && self.effect_journal_root == other.effect_journal_root
+            && self.effect_record_count == other.effect_record_count
+            && self.event_revision == other.event_revision
+            && self.operation == other.operation
+            && self.obligation == other.obligation
+            && self.episode == other.episode
+            && self.closure == other.closure
+    }
+
     /// Validate complete bounded native facts against the immutable execution target.
     pub fn validate(&self, criterion: &MissionPlanCriterion) -> Result<()> {
         if !valid_anchor(&self.anchor)
@@ -804,16 +818,18 @@ impl ReferenceMissionStore {
         }
         facts.validate(&head.criterion)?;
         if let Some(existing) = history.iter().find(|revision| {
-            revision.assessment.as_ref() == Some(&facts)
-                && (revision.parent == Some(expected_head) || revision.digest == expected_head)
+            revision.assessment.as_ref().is_some_and(|prior| {
+                prior.same_evidence_facts(&facts)
+                    && revision.deadline_reached() == (now >= revision.criterion.decision_deadline)
+            }) && (revision.parent == Some(expected_head) || revision.digest == expected_head)
         }) {
             return Ok(existing.clone());
         }
         // A source prefix already observed by this owner is an independent custody pin. A
         // shorter or replaced valid journal cannot masquerade as fresh missing evidence.
         // Exact retained retries above still return their immutable historical result.
-        if let Some(previous) = &head.assessment {
-            if facts.anchor.site_lineage != previous.anchor.site_lineage
+        if let Some(previous) = &head.assessment
+            && (facts.anchor.site_lineage != previous.anchor.site_lineage
                 || facts.anchor.ledger_epoch != previous.anchor.ledger_epoch
                 || facts.anchor.commit_sequence < previous.anchor.commit_sequence
                 || (facts.anchor.commit_sequence == previous.anchor.commit_sequence
@@ -821,10 +837,9 @@ impl ReferenceMissionStore {
                 || (previous.effect_journal_present && !facts.effect_journal_present)
                 || facts.effect_record_count < previous.effect_record_count
                 || (facts.effect_record_count == previous.effect_record_count
-                    && facts.effect_journal_root != previous.effect_journal_root)
-            {
-                return Err(MissionError::ScopeMismatch);
-            }
+                    && facts.effect_journal_root != previous.effect_journal_root))
+        {
+            return Err(MissionError::ScopeMismatch);
         }
         if head.digest != expected_head {
             return Err(MissionError::Conflict);

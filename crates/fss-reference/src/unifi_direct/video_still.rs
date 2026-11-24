@@ -346,6 +346,7 @@ pub fn from_published_with_policy_and_probe(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn from_media(
     media: &[u8],
     samples: usize,
@@ -390,10 +391,10 @@ fn from_media(
         if cancelled() {
             return Err(Error::Cancelled);
         }
-        if let Some(frame) = decoder.decode_nal(nal).map_err(|_| Error::Decode)? {
-            if picture.replace(frame).is_some() {
-                return Err(Error::PictureCount);
-            }
+        if let Some(frame) = decoder.decode_nal(nal).map_err(|_| Error::Decode)?
+            && picture.replace(frame).is_some()
+        {
+            return Err(Error::PictureCount);
         }
         while let Some(frame) = decoder.next_output() {
             if picture.replace(frame).is_some() {
@@ -476,6 +477,7 @@ pub fn from_picture_signal(
 /// `pixel_work_limit` bounds conversion pixels separately from `encode_work_limit`.
 /// Cancellation is checked during hashing, once per converted row, and by the
 /// encoder. A matching source digest binds the supplied picture bytes only.
+#[allow(clippy::too_many_arguments)]
 pub fn from_picture(
     picture: &Picture,
     expected_i420_sha256: [u8; 32],
@@ -499,6 +501,7 @@ pub fn from_picture(
 }
 
 /// Like [`from_picture`], with an owner-supplied cancellation probe.
+#[allow(clippy::too_many_arguments)]
 pub fn from_picture_with_probe(
     picture: &Picture,
     expected_i420_sha256: [u8; 32],

@@ -43,7 +43,10 @@ impl ReadOnlyIo {
 
     fn refuse(&self) -> io::Error {
         self.forbidden.fetch_add(1, Ordering::SeqCst);
-        io::Error::new(io::ErrorKind::PermissionDenied, "query attempted a write, lock or scan")
+        io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "query attempted a write, lock or scan",
+        )
     }
 }
 
@@ -112,7 +115,8 @@ impl SpoolIo for ReadOnlyIo {
     fn read_bounded(&self, file: &mut File, limit: u64) -> io::Result<Vec<u8>> {
         self.call();
         let bytes = HostSpoolIo.read_bounded(file, limit)?;
-        self.read_bytes.fetch_add(bytes.len() as u64, Ordering::SeqCst);
+        self.read_bytes
+            .fetch_add(bytes.len() as u64, Ordering::SeqCst);
         Ok(bytes)
     }
     fn rename(&self, _: &Path, _: &Path) -> io::Result<()> {

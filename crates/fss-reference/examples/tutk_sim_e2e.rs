@@ -28,7 +28,8 @@ fn lab_root() -> PathBuf {
     std::env::var("FSS_INTEROP_LAB")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
-            PathBuf::from(std::env::var("HOME").unwrap()).join("projects/fss-interop-lab")
+            PathBuf::from(std::env::var("HOME").unwrap_or_default())
+                .join("projects/fss-interop-lab")
         })
 }
 
@@ -40,7 +41,7 @@ impl Drop for SimGuard {
     }
 }
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let lab = lab_root();
     let py = lab.join("venv/bin/python3");
     let sim = lab.join("wyze_newproto/sim/sim_camera.py");
@@ -61,7 +62,7 @@ fn main() {
             std::process::exit(2);
         });
         let soak_secs = std::env::args().nth(3).and_then(|v| v.parse::<u64>().ok());
-        live_lane(&cfg_path, soak_secs);
+        live_lane(&cfg_path, soak_secs)?;
     }
 
     let mode = std::env::args()
@@ -95,15 +96,13 @@ fn main() {
         .arg(&fixture)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn simulator");
+        .spawn()?;
     let _guard = SimGuard(child);
     std::thread::sleep(Duration::from_millis(900));
 
-    let sock = UdpSocket::bind("127.0.0.1:0").expect("bind client socket");
-    sock.connect(("127.0.0.1", port)).expect("connect");
-    sock.set_read_timeout(Some(Duration::from_millis(20)))
-        .unwrap();
+    let sock = UdpSocket::bind("127.0.0.1:0")?;
+    sock.connect(("127.0.0.1", port))?;
+    sock.set_read_timeout(Some(Duration::from_millis(20)))?;
 
     // drift lane: empty allowlist — the unknown tuple itself must quarantine
     let sim_tuples: Vec<(String, String)> = if mode == "drift" {
@@ -122,31 +121,29 @@ fn main() {
             entropy: None,
             known_tuples: sim_tuples.clone(),
         },
-        sensor_id: SensorId::parse("sensor:tutk:sim:01").unwrap(),
-        stream_id: StreamId::parse("stream:tutk:sim:e2e:01").unwrap(),
+        sensor_id: SensorId::parse("sensor:tutk:sim:01")?,
+        stream_id: StreamId::parse("stream:tutk:sim:e2e:01")?,
         site_lineage: "site:lab:tutk:e2e".to_string(),
         audio: AudioPolicy::Disabled,
         limits: TutkIngestLimits::default(),
         known_tuples: sim_tuples,
     };
 
-    let mut ing = TutkIngest::new(cfg).expect("construct ingest");
+    let mut ing = TutkIngest::new(cfg)?;
 
     let t0 = Instant::now();
-    let mut now_ns: u64 = 0;
     let mut last_phase = ing.session_phase();
     let mut frames_seen = 0u64;
     let mut aus: Vec<Vec<u8>> = Vec::new();
     println!("e2e: pumping (deadline 45s)");
     let mut buf = [0u8; 65535];
     while t0.elapsed() < Duration::from_secs(45) {
-        now_ns = t0.elapsed().as_nanos() as u64; // session clock = driver clock
+        let now_ns = t0.elapsed().as_nanos() as u64; // session clock = driver clock
         while let Some(d) = ing.poll_send() {
             let _ = sock.send(&d);
         }
-        match sock.recv(&mut buf) {
-            Ok(n) => ing.feed_datagram(&buf[..n], now_ns),
-            Err(_) => {}
+        if let Ok(n) = sock.recv(&mut buf) {
+            ing.feed_datagram(&buf[..n], now_ns);
         }
         ing.advance(now_ns);
         let phase = ing.session_phase();
@@ -190,14 +187,14 @@ fn main() {
     for batch in ing.ledger().batches() {
         for delta in &batch.deltas {
             if let Some(au_digest) = delta.witness_digest {
-                let au = ing.custody(&au_digest).expect("au in custody");
+                let au = ing.custody(&au_digest).ok_or("au missing in custody")?;
                 aus.push(au.to_vec());
                 au_concat.extend_from_slice(au);
             }
         }
     }
 
-    let fixture_bytes = std::fs::read(&fixture).expect("read fixture");
+    let fixture_bytes = std::fs::read(&fixture)?;
     let state = format!("{:?}", ing.state());
     let stats = ing.stats();
     let sess = ing.session_stats();
@@ -336,12 +333,14 @@ fn cfg_field(json: &str, key: &str) -> Option<String> {
 /// Simulator-vs-live differential: run the adapter against a real
 /// owner-authorized camera over the LAN. Secrets stay in the cfg file; only
 /// state/counters/tuple are printed.
-fn live_lane(cfg_path: &str, soak_secs: Option<u64>) -> ! {
-    let raw = std::fs::read_to_string(cfg_path).expect("read cfg");
-    let get = |k: &str| cfg_field(&raw, k).unwrap_or_else(|| panic!("cfg missing {k}"));
-    let (uid, enr, mac) = (get("uid"), get("enr"), get("mac"));
-    let cam_ip = get("camera_ip");
-    let cam_port: u16 = get("camera_port").parse().unwrap();
+fn live_lane(cfg_path: &str, soak_secs: Option<u64>) -> Result<(), Box<dyn std::error::Error>> {
+    let raw = std::fs::read_to_string(cfg_path)?;
+    let get = |k: &str| -> Result<String, Box<dyn std::error::Error>> {
+        cfg_field(&raw, k).ok_or_else(|| format!("cfg missing {k}").into())
+    };
+    let (uid, enr, mac) = (get("uid")?, get("enr")?, get("mac")?);
+    let cam_ip = get("camera_ip")?;
+    let cam_port: u16 = get("camera_port")?.parse()?;
     let bind_ip = cfg_field(&raw, "bind_ip").unwrap_or_else(|| "0.0.0.0".into());
     let audio = cfg_field(&raw, "audio").is_some_and(|v| v == "true" || v == "1");
     let psk_truncated = cfg_field(&raw, "psk_truncated").is_some_and(|v| v == "true" || v == "1")
@@ -351,10 +350,9 @@ fn live_lane(cfg_path: &str, soak_secs: Option<u64>) -> ! {
     // Unconnected socket + send_to/recv_from: live cameras answer discovery
     // from a DIFFERENT source port and the session must adopt it (live-proven
     // 2026-10-07: responses arrived from 44650, not 32761).
-    let sock = UdpSocket::bind((bind_ip.as_str(), 0u16)).expect("bind");
-    sock.set_read_timeout(Some(Duration::from_millis(20)))
-        .unwrap();
-    let mut peer: std::net::SocketAddr = format!("{cam_ip}:{cam_port}").parse().unwrap();
+    let sock = UdpSocket::bind((bind_ip.as_str(), 0u16))?;
+    sock.set_read_timeout(Some(Duration::from_millis(20)))?;
+    let mut peer: std::net::SocketAddr = format!("{cam_ip}:{cam_port}").parse()?;
 
     let cfg = TutkIngestConfig {
         session: SessionConfig {
@@ -367,8 +365,8 @@ fn live_lane(cfg_path: &str, soak_secs: Option<u64>) -> ! {
             entropy: None,
             known_tuples: vec![("HL_CAM4".to_string(), "4.52.17.26".to_string())],
         },
-        sensor_id: SensorId::parse("sensor:tutk:live:01").unwrap(),
-        stream_id: StreamId::parse("stream:tutk:live:01").unwrap(),
+        sensor_id: SensorId::parse("sensor:tutk:live:01")?,
+        stream_id: StreamId::parse("stream:tutk:live:01")?,
         site_lineage: "site:lab:tutk:live".to_string(),
         audio: if audio {
             AudioPolicy::Enabled
@@ -378,7 +376,7 @@ fn live_lane(cfg_path: &str, soak_secs: Option<u64>) -> ! {
         limits: TutkIngestLimits::default(),
         known_tuples: vec![("HL_CAM4".to_string(), "4.52.17.26".to_string())],
     };
-    let mut ing = TutkIngest::new(cfg).expect("construct ingest");
+    let mut ing = TutkIngest::new(cfg)?;
 
     let t0 = Instant::now();
     let mut last_phase = ing.session_phase();

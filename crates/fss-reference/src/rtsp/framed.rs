@@ -239,6 +239,7 @@ impl RtspWireIntake {
             max_body_bytes: MAX_WIRE_BODY,
             max_interleaved_bytes: 65_535,
         });
+        parser.set_lossy_nonframing_headers(true);
         let mut events = match parser.feed(&self.buffer[..length]) {
             Ok(events) => events,
             Err(error) => return self.fail(WireIntakeError::Protocol(error)),
@@ -335,26 +336,52 @@ fn frame_length(bytes: &[u8]) -> Result<Option<usize>, WireIntakeError> {
     let Some(end) = end else {
         return Ok(None);
     };
-    let header = std::str::from_utf8(&bytes[..end - 4]).map_err(|_| WireIntakeError::Framing)?;
+    let header_block = &bytes[..end - 4];
     let mut length = None;
-    for (i, line) in header.split("\r\n").enumerate().skip(1) {
-        if i > 32 {
-            return Err(WireIntakeError::Limit);
-        }
-        if line.starts_with([' ', '\t']) {
-            return Err(WireIntakeError::Framing);
-        }
-        let (name, value) = line.split_once(':').ok_or(WireIntakeError::Framing)?;
-        if name.trim().eq_ignore_ascii_case("Content-Length") {
-            let value = value.trim();
-            if length.is_some() || value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
-                return Err(WireIntakeError::Framing);
-            }
-            let size = value.parse::<usize>().map_err(|_| WireIntakeError::Limit)?;
-            if size > MAX_WIRE_BODY {
+    let mut pos = 0usize;
+    let mut line_index = 0usize;
+    while pos <= header_block.len() {
+        let next_crlf = header_block[pos..]
+            .windows(2)
+            .position(|w| w == b"\r\n")
+            .map(|rel| pos + rel);
+        let line = match next_crlf {
+            Some(at) => &header_block[pos..at],
+            None => &header_block[pos..],
+        };
+        if line_index > 0 {
+            if line_index > 32 {
                 return Err(WireIntakeError::Limit);
             }
-            length = Some(size);
+            if line.first().is_some_and(|b| *b == b' ' || *b == b'\t') {
+                return Err(WireIntakeError::Framing);
+            }
+            let colon = line
+                .iter()
+                .position(|&b| b == b':')
+                .ok_or(WireIntakeError::Framing)?;
+            let name = std::str::from_utf8(&line[..colon]).map_err(|_| WireIntakeError::Framing)?;
+            if name.trim().eq_ignore_ascii_case("Content-Length") {
+                let value = std::str::from_utf8(&line[colon + 1..])
+                    .map_err(|_| WireIntakeError::Framing)?
+                    .trim();
+                if length.is_some()
+                    || value.is_empty()
+                    || !value.bytes().all(|b| b.is_ascii_digit())
+                {
+                    return Err(WireIntakeError::Framing);
+                }
+                let size = value.parse::<usize>().map_err(|_| WireIntakeError::Limit)?;
+                if size > MAX_WIRE_BODY {
+                    return Err(WireIntakeError::Limit);
+                }
+                length = Some(size);
+            }
+        }
+        line_index += 1;
+        match next_crlf {
+            Some(at) => pos = at + 2,
+            None => break,
         }
     }
     Ok(Some(end + length.unwrap_or(0)))

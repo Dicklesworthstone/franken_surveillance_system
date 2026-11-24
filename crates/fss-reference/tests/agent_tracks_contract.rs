@@ -2,6 +2,7 @@
 //! Canonical track queries exercise actual retained imports and first-party package inference.
 //! Numeric fixture coefficients establish native parity and boundaries, not detection quality.
 
+#[allow(clippy::duplicate_mod)]
 #[path = "../../fss-codec-mjpeg/tests/rgb_support/mod.rs"]
 mod jpeg_support;
 mod package_evaluation_support;

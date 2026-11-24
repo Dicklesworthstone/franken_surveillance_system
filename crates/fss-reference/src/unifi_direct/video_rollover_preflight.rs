@@ -81,6 +81,7 @@ pub struct Retirement {
 
 impl Retirement {
     /// Consume a successful verification without another storage read.
+    #[allow(clippy::result_large_err)]
     pub fn into_rollover(
         self,
         proof: video_worker::VerifiedRolloverPause,

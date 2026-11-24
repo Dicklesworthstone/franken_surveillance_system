@@ -37,6 +37,7 @@ struct Server {
 }
 
 impl Server {
+    #[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
     fn start(replies: impl FnOnce(SocketAddr) -> Vec<String>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("fixture bind");
         listener.set_nonblocking(true).unwrap();
@@ -109,12 +110,14 @@ impl Server {
         }
     }
 
+    #[allow(clippy::unwrap_used)]
     fn requests(&self) -> Vec<String> {
         self.requests.lock().unwrap().clone()
     }
 }
 
 impl Drop for Server {
+    #[allow(clippy::unwrap_used)]
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
         if let Some(thread) = self.thread.take() {
@@ -203,6 +206,7 @@ impl OnvifContext for Context {
     }
 }
 
+#[allow(clippy::unwrap_used)]
 fn config(peer: SocketAddr) -> ClientConfig {
     ClientConfig {
         media_version: MediaVersion::Media1,

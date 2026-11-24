@@ -273,17 +273,17 @@ fn decode_head(input: &mut BytesMut, limits: S3Limits) -> Result<Option<Reply>, 
     {
         return Err(S3Error::Protocol);
     }
-    if let Some(length) = response.optional_header("content-length")? {
-        if length.is_empty()
+    if let Some(length) = response.optional_header("content-length")?
+        && (length.is_empty()
             || !length.bytes().all(|byte| byte.is_ascii_digit())
-            || length.parse::<u64>().is_err()
-        {
-            return Err(S3Error::Protocol);
-        }
+            || length.parse::<u64>().is_err())
+    {
+        return Err(S3Error::Protocol);
     }
     Ok(Some(response))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn exchange<C: S3Clock>(
     endpoint: &S3Endpoint,
     limits: S3Limits,

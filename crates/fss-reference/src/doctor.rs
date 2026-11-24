@@ -52,6 +52,7 @@ use crate::reference_deployment::{
 use crate::situation_guard::EFFECT_RECONCILE_AFFORDANCE;
 
 mod cancellation;
+mod v2;
 pub use cancellation::{inspect_deployment_cancellable, inspect_deployment_with_cancellation};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -666,6 +667,9 @@ pub fn inspect_deployment_with(
 
     let (layout, layout_digest) = match read_layout(io, root, limits) {
         LayoutOutcome::Parsed(layout, digest) => (layout, digest),
+        LayoutOutcome::ParsedV2(layout_v2, digest) => {
+            return v2::inspect_v2_deployment(io, root, &layout_v2, digest, limits);
+        }
         LayoutOutcome::Early(verdict, check) => {
             return DoctorReport::early(root, limits, verdict, check);
         }
@@ -911,6 +915,7 @@ fn unreadable(root: &Path, limits: DoctorLimits, reason: &str) -> DoctorReport {
 
 enum LayoutOutcome {
     Parsed(DeploymentLayout, ContentDigest),
+    ParsedV2(crate::migration::DeploymentLayoutV2, ContentDigest),
     Early(DoctorVerdict, DoctorCheck),
 }
 
@@ -991,6 +996,10 @@ fn read_layout(io: DoctorIo<'_>, root: &Path, limits: DoctorLimits) -> LayoutOut
         );
         return LayoutOutcome::Early(DoctorVerdict::AttentionRequired, check);
     };
+    if let Ok(layout_v2) = crate::migration::DeploymentLayoutV2::parse_canonical_text(&layout_text)
+    {
+        return LayoutOutcome::ParsedV2(layout_v2, digest);
+    }
     match DeploymentLayout::parse_canonical_text(&layout_text) {
         Ok(layout) => LayoutOutcome::Parsed(layout, digest),
         Err(ReferenceError::InvalidSpec(reason)) if UNKNOWN_LAYOUT_ERRORS.contains(&reason) => {

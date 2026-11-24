@@ -160,6 +160,7 @@ impl<'scope, 'task, 'policy> Parts<'scope, 'task, 'policy> {
 impl<'scope, 'task, 'policy> Reaccept<'scope, 'task, 'policy> {
     /// Adopt a bound listener and optionally its caller-retained predecessor.
     /// The supplied predecessor and its key are claims, not durability proof.
+    #[allow(clippy::result_large_err)]
     pub fn new(
         listener: listener::Listener<'scope, 'task, 'policy>,
         previous: Option<Retired>,
@@ -260,6 +261,7 @@ impl<'scope, 'task, 'policy> Reaccept<'scope, 'task, 'policy> {
     /// A dropped wait fences this owner until acknowledged; the attempted key
     /// and budget remain consumed. Previously transferred records are still
     /// the caller's responsibility. New connections do not establish continuity.
+    #[allow(clippy::result_large_err)]
     pub fn accept_next(
         &mut self,
         inputs: Inputs,
@@ -312,6 +314,17 @@ impl<'scope, 'task, 'policy> Reaccept<'scope, 'task, 'policy> {
                 Err(reason) => Err(Error::Listener(reason)),
             }
         })
+    }
+
+    /// Take the accepted pipeline and remaining parts, returning `self` unchanged if none is active.
+    #[allow(clippy::result_large_err)]
+    pub(crate) fn take_active_parts(
+        mut self,
+    ) -> Result<(pipeline::Pipeline, Parts<'scope, 'task, 'policy>), Self> {
+        let Some(pipeline) = self.active.take() else {
+            return Err(self);
+        };
+        Ok((pipeline, self.into_parts()))
     }
 
     /// Stop this owner without implicitly discarding a pipeline or source tail.

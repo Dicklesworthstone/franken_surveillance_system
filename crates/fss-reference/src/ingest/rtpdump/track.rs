@@ -204,10 +204,13 @@ impl RtpTrackingStats {
 
 /// Source progress remains separate from tracking evidence and terminal completeness.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum RtpTrackingStep {
     /// Original payload-free event and exact decoder consequence.
     Progress {
+        /// Retained RTP source event.
         event: RetainedRtpEvent,
+        /// Exact decoder effect produced by the event.
         effect: RtpDecodeEffect,
     },
     /// Full original detector result plus its actual anonymous track observations.
@@ -236,6 +239,7 @@ struct TrackCore {
     gap: bool,
 }
 impl TrackCore {
+    #[allow(clippy::result_large_err)]
     fn new(config: TrackerConfig, limits: RtpTrackingLimits) -> Result<Self> {
         if !(1..=1024).contains(&limits.max_frames)
             || !(1..=MAX_CHECKED_TRACKS).contains(&limits.step.max_tracks)
@@ -259,6 +263,7 @@ impl TrackCore {
             gap: false,
         })
     }
+    #[allow(clippy::result_large_err)]
     fn advance(
         &mut self,
         order: FrameOrder,
@@ -343,6 +348,7 @@ pub struct RtpPackageTracker<'a> {
 }
 impl<'a> RtpPackageTracker<'a> {
     /// Validate all tracking admission before opening the current-custody detector.
+    #[allow(clippy::result_large_err)]
     pub fn new(
         retained: &'a RecoveredRtpImport,
         package: &'a RgbDetectorPackage,
@@ -382,6 +388,7 @@ impl<'a> RtpPackageTracker<'a> {
         self.stats
     }
     /// A refusal is terminal, drops queued numerical results and exposes no partial frame.
+    #[allow(clippy::result_large_err)]
     pub fn step(
         &mut self,
         deployment: &ReferenceDeployment,
@@ -402,6 +409,7 @@ impl<'a> RtpPackageTracker<'a> {
         }
         result
     }
+    #[allow(clippy::result_large_err)]
     fn advance(
         &mut self,
         deployment: &ReferenceDeployment,
@@ -481,6 +489,7 @@ impl<'a> RtpPackageTracker<'a> {
 }
 // Shared by the exhaustive owner and the explicitly sampled owner. Neither accepts
 // arbitrary caller boxes: input is the privately constructed native detector result.
+#[allow(clippy::result_large_err)]
 fn associate(
     core: &mut TrackCore,
     detected: &RtpDetectedFrame,
@@ -554,6 +563,7 @@ fn associate(
     Ok((assigned, reset, observations))
 }
 
+#[allow(clippy::result_large_err)]
 fn tracking_recipe(
     detector_recipe: ContentDigest,
     class_index: usize,
@@ -598,6 +608,7 @@ fn tracking_recipe(
     digest(e)
 }
 
+#[allow(clippy::result_large_err)]
 fn encode_observations(
     e: &mut CanonicalEncoder,
     observations: &[RtpTrackObservation],
@@ -617,11 +628,13 @@ fn encode_observations(
     Ok(())
 }
 
+#[allow(clippy::result_large_err)]
 fn digest(e: CanonicalEncoder) -> Result<ContentDigest> {
     Ok(ContentDigest::sha256(
         &e.finish_checked().map_err(|_| RtpTrackingError::Encoding)?,
     ))
 }
+#[allow(clippy::result_large_err)]
 fn checkpoint(cx: &ReplayCx, scalar: &ScalarExecCx, stage: &'static str) -> Result<()> {
     if cx.checkpoint(stage).is_err() || scalar.checkpoint(stage).is_err() {
         cx.drain_and_finalize();

@@ -42,7 +42,7 @@ pub fn retained_replay_receipt(
         .adapter_generation
         .strip_prefix(GENERATION)
         .ok_or_else(|| corrupt("replay inspection generation"))?;
-    let digest = ContentDigest::parse(&format!("sha256:{suffix}"))?;
+    let digest = ContentDigest::parse(format!("sha256:{suffix}"))?;
     let proof = provenance::proof(deployment, digest, cx, &mut |_| Ok(()))?;
     proof.verify_companion(deployment, cx, &mut |_| Ok(()))?;
     let receipt = proof.receipt()?;

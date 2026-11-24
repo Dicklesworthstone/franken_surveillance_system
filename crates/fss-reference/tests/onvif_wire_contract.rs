@@ -2,6 +2,11 @@
 //! Exact-source tests of the no-I/O ONVIF wire boundary, runnable without the
 //! larger reference runtime to keep parser qualification independently bounded.
 
+#[allow(
+    dead_code,
+    unused_imports,
+    reason = "Standalone test includes full ONVIF wire module via #[path]"
+)]
 #[path = "../src/onvif/wire.rs"]
 mod wire;
 

@@ -2191,7 +2191,7 @@ fn unary_erf(x: f32) -> f32 {
             term = term * square / f64::from(n);
             integral += term / f64::from(2 * n + 1);
         }
-        1.1283791670955126 * integral
+        std::f64::consts::FRAC_2_SQRT_PI * integral
     } else {
         1.0 - 2.0 * activation_normal_tail(a * std::f64::consts::SQRT_2)
     };

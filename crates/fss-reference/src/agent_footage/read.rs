@@ -18,18 +18,25 @@ use fss_publication::{
 use std::collections::{BTreeMap, BTreeSet};
 
 /// This allowlist admits declared capsule metadata, not an adapter's original-source proof.
-/// Keep laboratory profiles outside the canonical query, even if their manifest is decodable.
+/// Unregistered adapters remain outside the canonical query, even if their manifest is decodable.
 enum ImportProfile {
     File,
+    TutkLive,
     Native(ContentDigest),
     OutsideScope,
 }
 
 fn import_profile(metadata: &FileImportManifest) -> Result<ImportProfile, FootageQueryError> {
-    use crate::ingest::{http_import, mpeg_ts_import, rtsp_import, rtsp_jpeg_import};
+    use crate::ingest::{http_import, mpeg_ts_import, rtsp_import, rtsp_jpeg_import, tutk};
 
     let prefix = match metadata.adapter_id.as_str() {
         ADP_FILE_ROW_ID => return Ok(ImportProfile::File),
+        tutk::ADAPTER => {
+            if metadata.adapter_generation.trim().is_empty() {
+                return invalid();
+            }
+            return Ok(ImportProfile::TutkLive);
+        }
         http_import::ADAPTER => http_import::GENERATION,
         mpeg_ts_import::ADAPTER => mpeg_ts_import::GENERATION,
         rtsp_jpeg_import::ADAPTER => rtsp_jpeg_import::GENERATION,
@@ -160,13 +167,24 @@ impl ReadAuthority<'_> {
         root: ContentDigest,
         count: usize,
     ) -> Result<(), FootageQueryError> {
+        let expected =
+            root_record_bytes(slot, root, count).map_err(|_| FootageQueryError::InvalidRecord)?;
+        self.budget
+            .ensure_valid()
+            .map_err(|_| FootageQueryError::InvalidRecord)?;
+        let (consumed_bytes, consumed_objects) = self.budget.consumed();
+        if consumed_objects >= self.limits.max_metadata_objects as u64
+            || consumed_bytes
+                .checked_add(expected.len() as u64)
+                .is_none_or(|total| total > self.limits.max_metadata_bytes as u64)
+        {
+            return Err(FootageQueryError::OverBudget);
+        }
         let bytes = self
             .history
             .wait_read_publication(slot, fss_publication::MAX_ROOT_RECORD_BYTES as usize)
             .map_err(history_error)?;
-        if root_record_bytes(slot, root, count).map_err(|_| FootageQueryError::InvalidRecord)?
-            != bytes
-        {
+        if expected != bytes {
             return invalid();
         }
         Ok(())
@@ -240,13 +258,11 @@ impl<'a> Index<'a> {
                 .as_str()
                 .strip_prefix("batch:file-import:")
                 .and_then(|v| v.split_once(':'))
-            {
-                if suffix
+                && suffix
                     .strip_prefix('c')
                     .is_some_and(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
-                {
-                    result.capsules.entry(identity).or_default().push(batch);
-                }
+            {
+                result.capsules.entry(identity).or_default().push(batch);
             }
             for delta in &batch.deltas {
                 if !result.latest.contains_key(delta.object_id.as_str())
@@ -479,7 +495,7 @@ fn import_rows(
     )
     .map_err(|_| FootageQueryError::InvalidRecord)?;
     let declared_origin_digest = match import_profile(&metadata)? {
-        ImportProfile::File => None,
+        ImportProfile::File | ImportProfile::TutkLive => None,
         ImportProfile::Native(digest) => Some(digest),
         ImportProfile::OutsideScope => return Ok(true),
     };
@@ -523,16 +539,15 @@ fn import_rows(
                     return invalid();
                 }
                 initial = true;
-            } else if delta.family == "sensor_capsule" {
-                if delta.plane != Plane::Authority
+            } else if delta.family == "sensor_capsule"
+                && (delta.plane != Plane::Authority
                     || delta.prior_generation.is_some()
                     || delta.new_generation != 1
                     || !batch.children.contains(&delta.payload_digest)
                     || !held.contains(&delta.payload_digest)
-                    || capsules.insert(delta.object_id.as_str(), delta).is_some()
-                {
-                    return invalid();
-                }
+                    || capsules.insert(delta.object_id.as_str(), delta).is_some())
+            {
+                return invalid();
             }
         }
     }

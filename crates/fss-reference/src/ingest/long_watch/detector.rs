@@ -254,6 +254,7 @@ impl AnalysisBudget {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn run(
     deployment: &dyn RetainedSource,
     plan: &WatchPlan,

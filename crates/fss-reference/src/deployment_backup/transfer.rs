@@ -12,7 +12,7 @@ use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
 use fss_object::SpoolIo;
 use fss_publication::{AuthorityPublisher, LocalRootPublisher};
 
-use super::io::{PinnedSpoolIo, ReadIo, WriteTree, directory, fresh_path, source_locks};
+use super::io::{PinnedSpoolIo, ReadIo, WriteTree, admit_root_directory, fresh_path, source_locks};
 use super::manifest::{BackupManifest, RestoreFence};
 use super::snapshot::{DIRECTORIES, PAYLOAD_GUARD, SnapshotKind, snapshot, snapshot_with_agent};
 use super::{
@@ -39,7 +39,7 @@ pub fn prepare_backup(
     limits.validate()?;
     let gate = || authorize(authority, BackupAccess::ReadDeployment { source }, cx);
     gate()?;
-    let root = directory(source)?;
+    let root = admit_root_directory(source)?;
     let (_locks, with_agent) = source_locks(&root, cx, &gate)?;
     let io = ReadIo::new(cx, &gate, limits);
     snapshot(
@@ -63,7 +63,7 @@ pub fn inspect_agent_state(
     limits.validate()?;
     let gate = || authorize(authority, BackupAccess::ReadDeployment { source }, cx);
     gate()?;
-    let root = directory(source)?;
+    let root = admit_root_directory(source)?;
     let (_locks, with_agent) = source_locks(&root, cx, &gate)?;
     let io = ReadIo::new(cx, &gate, limits);
     let (_, agent) = snapshot_with_agent(
@@ -93,6 +93,7 @@ fn create_tree(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn copy_files(
     source: &Path,
     destination: &Path,
@@ -149,7 +150,7 @@ pub fn create_backup(
         )
     };
     gate()?;
-    let source_root = directory(source)?;
+    let source_root = admit_root_directory(source)?;
     let bundle_root = fresh_path(bundle, &[&source_root])?;
     let (_locks, with_agent) = source_locks(&source_root, cx, &gate)?;
     let io = ReadIo::new(cx, &gate, limits);
@@ -242,8 +243,8 @@ fn read_bundle_inner(
     limits: BackupLimits,
     io: &ReadIo<'_>,
 ) -> Result<BackupManifest> {
-    directory(bundle)?;
-    let mut entries = SpoolIo::read_dir(io, bundle)?;
+    let bundle = admit_root_directory(bundle)?;
+    let mut entries = SpoolIo::read_dir(io, &bundle)?;
     let mut count = 0;
     while let Some(entry) = SpoolIo::next_dir_entry(io, &mut entries) {
         io.check()?;
@@ -382,7 +383,7 @@ fn append_fence(
         Err(fs::TryLockError::Error(error)) => return Err(error.into()),
     }
     let mut ledger = DurableReferenceLedger::open(
-        writer.held_file_path(&journal_pin)?,
+        writer.held_file_path_for(&journal_pin, &destination.join("ledger/journal.fssj"))?,
         manifest.site(),
         IncompleteTailPolicy::Reject,
     )
@@ -458,7 +459,7 @@ fn append_fence(
     let anchor = owner
         .append(batch)
         .map_err(|_| BackupError::RecoveryRequired("restore_fence_append"))?;
-    drop(owner);
+    let _ = owner;
     writer.check()?;
     let root = ledger.journal_root();
     Ok((publisher, ledger, anchor, root, journal_pin))
@@ -496,7 +497,7 @@ pub fn restore_backup(
         )
     };
     gate()?;
-    let bundle_root = directory(bundle)?;
+    let bundle_root = admit_root_directory(bundle)?;
     let destination_root = fresh_path(destination, &[&bundle_root])?;
     let io = ReadIo::new(cx, &gate, limits);
     let manifest = read_bundle(&bundle_root, expected_manifest, limits, &io)?;

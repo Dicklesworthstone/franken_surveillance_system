@@ -50,6 +50,7 @@ pub enum Step {
 
 /// One bootstrap, source-transfer, or archive decision.
 #[must_use]
+#[allow(clippy::large_enum_variant)]
 pub enum BootstrapStep {
     /// An unrelated bootstrap result is returned intact.
     Driver(av_bootstrap_driver::Step),
@@ -96,6 +97,7 @@ pub trait Observer {
     /// Return an unused operation identity, or stop the slice.
     fn next_operation(&mut self) -> Option<OperationId>;
     /// Accept an event, or return it intact if it cannot be accepted.
+    #[allow(clippy::result_large_err)]
     fn observe(&mut self, event: Step) -> Result<Decision, Step>;
 }
 
@@ -125,6 +127,7 @@ pub trait BootstrapObserver {
     /// Return an unused operation identity, or stop the bootstrap slice.
     fn next_operation(&mut self) -> Option<OperationId>;
     /// Accept an outcome, or return it intact if it cannot be accepted.
+    #[allow(clippy::result_large_err)]
     fn observe(&mut self, event: BootstrapStep) -> Result<Decision, BootstrapStep>;
 }
 
@@ -227,6 +230,7 @@ impl<'coordinator, 'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>
 {
     /// Construct the A/V guard, preserving every owner on refusal.
     #[inline(never)]
+    #[allow(clippy::type_complexity)]
     pub fn finish(
         self,
     ) -> Result<
@@ -313,6 +317,8 @@ impl<'scope, 'task, IO> BootstrapShutdown<'scope, 'task, IO> {
     /// Recover all owners after the source attempt is no longer running.
     /// Pending or indeterminate source custody remains with the coordinator;
     /// this does not establish successful publication or camera quiescence.
+    #[allow(clippy::type_complexity)]
+    #[allow(clippy::result_large_err)]
     pub fn finish(
         self,
     ) -> Result<
@@ -361,6 +367,8 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Shutdown<'scope, 'task, 
     ///
     /// Returned owners may retain pending or indeterminate work and are not a
     /// quiescence or successful-publication receipt.
+    #[allow(clippy::type_complexity)]
+    #[allow(clippy::result_large_err)]
     pub fn finish(self) -> Result<(Coordinator, Box<Guard<'scope, 'task, IO>>), Self> {
         if self.coordinator.worker.is_running()
             || self.guard.archive_state() == super::av_worker_guard::ArchiveState::Running
@@ -493,6 +501,7 @@ impl Coordinator {
     /// A held source blocks further media; only controller traffic is serviced
     /// while it is being archived. The driver remains caller-owned on every
     /// outcome, including cancellation or an unhandled result.
+    #[allow(clippy::too_many_arguments)]
     pub async fn bootstrap_step<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
         &mut self,
         driver: &mut av_bootstrap_driver::Driver<'scope, 'task, IO>,
@@ -556,6 +565,7 @@ impl Coordinator {
     /// A ready driver is returned as a halted outcome. On any stop, the caller
     /// retains this coordinator and the driver and must drain any active source
     /// worker before retiring either owner.
+    #[allow(clippy::too_many_arguments)]
     pub async fn run_bootstrap_slice<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
         &mut self,
         driver: &mut av_bootstrap_driver::Driver<'scope, 'task, IO>,
@@ -600,6 +610,7 @@ impl Coordinator {
     }
 
     /// Advance one session or source-archive operation within the owning task.
+    #[allow(clippy::too_many_arguments)]
     pub async fn step<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
         &mut self,
         guard: &mut Guard<'scope, 'task, IO>,
@@ -660,6 +671,7 @@ impl Coordinator {
     /// failed source. On any stop or cancellation the caller still owns this
     /// coordinator and the guard, and must explicitly drain both workers
     /// before retirement; no completion is silently consumed during shutdown.
+    #[allow(clippy::too_many_arguments)]
     pub async fn run_slice<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
         &mut self,
         guard: &mut Guard<'scope, 'task, IO>,
@@ -714,6 +726,7 @@ impl Coordinator {
 }
 
 #[inline(never)]
+#[allow(clippy::boxed_local)]
 fn prepare_transition<'coordinator, 'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin>(
     coordinator: &'coordinator Coordinator,
     driver: Box<av_bootstrap_driver::Driver<'scope, 'task, IO>>,

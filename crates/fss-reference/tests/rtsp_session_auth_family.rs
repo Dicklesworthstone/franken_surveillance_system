@@ -7,8 +7,7 @@
 //! property emits one JSONL verdict line citing the family id.
 
 use fss_reference::rtsp::client::{
-    ClientCodec, ClientCommand, ClientConfig, ClientError, ClientProgress, ClientState,
-    RtspClientSession,
+    ClientCommand, ClientConfig, ClientError, ClientState, RtspClientSession,
 };
 use fss_reference::{RtspEvent, RtspLimits, RtspParser};
 
@@ -101,9 +100,8 @@ fn session_in(state: ClientState) -> Result<RtspClientSession, ClientError> {
             play(&mut session, 4)?;
         }
         other => {
-            return Err(ClientError::State).map_err(|e| {
+            return Err(ClientError::State).inspect_err(|_e| {
                 let _ = other;
-                e
             });
         }
     }

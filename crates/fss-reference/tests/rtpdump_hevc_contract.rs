@@ -83,11 +83,11 @@ fn clean(bytes: &[u8], expected_header_bytes: usize) -> Result<Seen, Error> {
                 admission: HevcDumpAdmission::Rtp(receipt),
             } => {
                 assert_eq!(source.packet(), &bytes[source.packet_span()]);
-                if let Some(sequence) = receipt.transport.sequence.extended_sequence {
-                    if let Some(retained) = replay.source_record(sequence) {
-                        let first = first_sources.entry(sequence).or_insert(source.index());
-                        assert_eq!(retained.index(), *first);
-                    }
+                if let Some(sequence) = receipt.transport.sequence.extended_sequence
+                    && let Some(retained) = replay.source_record(sequence)
+                {
+                    let first = first_sources.entry(sequence).or_insert(source.index());
+                    assert_eq!(retained.index(), *first);
                 }
                 seen.records += 1;
                 seen.reversed += usize::from(offset_reversed);

@@ -180,6 +180,7 @@ pub enum RtpDecodeEffect {
 
 /// One bounded original/receiver event or one complete display-order picture.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum RtpDecodeStep<'a> {
     /// The original adapter event is unchanged, including refusals and cancellation receipts.
     Replay {

@@ -249,6 +249,7 @@ impl RetainedWebhookEvidence {
     }
 }
 
+#[allow(clippy::result_large_err)]
 fn checkpoint(
     cx: &ReplayCx<impl ReplayAdmission>,
     stage: &'static str,
@@ -264,6 +265,7 @@ fn checkpoint(
 /// exact opened committed length plus one growth-probe byte. A conservative 4 KiB allowance
 /// covers the intervening framed Committed transition. Reserve this separately from the
 /// exported custody byte envelope; it is never an unlimited or zero-budget fallback.
+#[allow(clippy::result_large_err)]
 pub fn webhook_retention_history_bytes(
     deployment: &ReferenceDeployment,
 ) -> Result<u64, WebhookRetentionError> {
@@ -281,6 +283,7 @@ pub fn webhook_retention_history_bytes(
         .ok_or(WebhookRetentionError::Budget)
 }
 
+#[allow(clippy::result_large_err)]
 fn authorize(
     deployment: &ReferenceDeployment,
     authority: &ContextAuthority,
@@ -327,6 +330,7 @@ fn authorize(
     checkpoint(cx, STAGE_HISTORY)
 }
 
+#[allow(clippy::result_large_err)]
 fn prepared(
     deployment: &ReferenceDeployment,
     operation_id: &OperationId,
@@ -348,6 +352,7 @@ fn prepared(
     Ok(prepared)
 }
 
+#[allow(clippy::result_large_err)]
 fn slot(site: &str, prepared: &PreparedEffect) -> Result<SlotName, WebhookRetentionError> {
     let mut e = CanonicalEncoder::new();
     e.text(WEBHOOK_RETENTION_SLOT_DOMAIN);
@@ -359,6 +364,7 @@ fn slot(site: &str, prepared: &PreparedEffect) -> Result<SlotName, WebhookRetent
         .map_err(|_| WebhookRetentionError::Invalid)
 }
 
+#[allow(clippy::result_large_err)]
 fn verify_commitment(
     deployment: &ReferenceDeployment,
     prepared: &PreparedEffect,
@@ -376,6 +382,7 @@ fn verify_commitment(
     verify_history_binding(report.records(), prepared, observation)
 }
 
+#[allow(clippy::result_large_err)]
 fn verify_history_binding(
     records: &[fss_ledger::JournalRecord],
     prepared: &PreparedEffect,
@@ -412,19 +419,18 @@ fn verify_history_binding(
             result_digest,
             ..
         } = EffectJournalTransition::from_canonical_bytes(record.payload())?
+            && operation_id == prepared.intent.operation_id
+            && next == expected
+            && result_digest == Some(digest)
+            && now >= TimestampNs(i128::from(observation.last_admission_ns))
         {
-            if operation_id == prepared.intent.operation_id
-                && next == expected
-                && result_digest == Some(digest)
-                && now >= TimestampNs(i128::from(observation.last_admission_ns))
-            {
-                return Ok(true);
-            }
+            return Ok(true);
         }
     }
     Ok(false)
 }
 
+#[allow(clippy::result_large_err)]
 fn current_claim(
     deployment: &ReferenceDeployment,
     slot: &SlotName,
@@ -442,6 +448,7 @@ fn current_claim(
     Ok(Some(revision.payload_digest))
 }
 
+#[allow(clippy::result_large_err)]
 fn read_custody(
     deployment: &ReferenceDeployment,
     slot: &SlotName,
@@ -488,6 +495,7 @@ fn read_custody(
     Ok((manifest, observation))
 }
 
+#[allow(clippy::result_large_err)]
 fn verify_linkage(
     deployment: &ReferenceDeployment,
     slot: &SlotName,
@@ -516,6 +524,7 @@ fn verify_linkage(
     Ok(())
 }
 
+#[allow(clippy::result_large_err)]
 fn inspect(
     deployment: &ReferenceDeployment,
     prepared: &PreparedEffect,
@@ -552,6 +561,7 @@ fn inspect(
 
 /// Read verified local wire custody without modifying either journal or publication.
 /// This never opens a socket, changes effect state, or creates recording authority.
+#[allow(clippy::result_large_err)]
 pub fn read_retained_webhook_evidence(
     deployment: &ReferenceDeployment,
     operation_id: &OperationId,
@@ -570,6 +580,7 @@ pub fn read_retained_webhook_evidence(
 /// creating a slot or changing either journal. Reserve webhook_retention_history_bytes plus
 /// WEBHOOK_CUSTODY_BYTES before calling. Later retention still needs the original owner's
 /// current clock, cancellation and explicit local cleanup grant; preflight cannot freeze them.
+#[allow(clippy::result_large_err)]
 pub fn check_webhook_retention(
     deployment: &ReferenceDeployment,
     operation_id: &OperationId,
@@ -636,6 +647,7 @@ pub fn check_webhook_retention(
 /// before network commitment. Finite deadlines require with_admission with the original owner.
 /// Exact retries re-read custody without appending; different observations cannot reuse the
 /// slot. Failure leaves the effect journal untouched and never permits another network attempt.
+#[allow(clippy::result_large_err)]
 pub fn retain_webhook_evidence(
     deployment: &mut ReferenceDeployment,
     evidence: &WebhookEvidence,

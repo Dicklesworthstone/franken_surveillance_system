@@ -49,10 +49,12 @@ fn mapper() -> TuyaEventMapper {
     })
 }
 
+#[allow(clippy::expect_used)]
 fn interval(ns: i128) -> CaptureInterval {
     CaptureInterval::new(TimestampNs(ns), TimestampNs(ns)).expect("interval")
 }
 
+#[allow(clippy::expect_used)]
 /// Negotiate a client↔sim session and return both ends.
 fn session() -> (TuyaClient, HomebaseSim) {
     let mut client = TuyaClient::new(KEY, Proto::V35);

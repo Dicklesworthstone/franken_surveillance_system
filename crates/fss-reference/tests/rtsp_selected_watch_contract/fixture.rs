@@ -304,6 +304,7 @@ impl Fixture {
             original,
         })
     }
+    #[allow(clippy::expect_used)]
     pub fn target(&self) -> &ReferenceDeployment {
         self.target.as_ref().expect("fixture target")
     }

@@ -1,11 +1,14 @@
 #![forbid(unsafe_code)]
 //! Native reference activity from completed recorded imports, never caller-supplied pixels.
 //!
-//! The caller explicitly selects two JPEG segments, the sensor/stream, immutable package pin,
-//! policy, job and original execution allowance. The retained import owner proves source custody
-//! and current deletion status before either native decode. The complete six source roles are
-//! published before the existing result/receipt retention owner runs. Their manifest names the
-//! original import manifest as metadata, preserving the canonical deletion walk's ancestry.
+//! The caller explicitly selects two segments from a retained MJPEG, H.264, or H.265 import, the
+//! sensor/stream, immutable package pin, policy, job and original execution allowance. The
+//! retained import owner proves source custody and current deletion status before native decode.
+//! JPEG frames decode through the native RGB codec; H.264/H.265 ranges decode from the nearest
+//! preceding IDR/IRAP and convert decoded 4:2:0 planes through the declared BT.601 limited-range
+//! transform ([`super::recorded_decode::video_rgb`]). The complete six source roles are published
+//! before the existing result/receipt retention owner runs. Their manifest names the original
+//! import manifest as metadata, preserving the canonical deletion walk's ancestry.
 //!
 //! This v1 computation has no privacy-mask binding. A sensor with any current retained mask
 //! policy is therefore refused before source reads, never decoded around its policy. The result
@@ -13,7 +16,7 @@
 
 use std::fmt;
 
-use fss_codec_mjpeg::color::{RgbDecodeLimits, decode_rgb};
+use fss_codec_mjpeg::color::{RgbDecodeLimits, RgbDecodeReceipt, decode_rgb};
 use fss_codec_mjpeg::{DecodeBudget, DecodeError};
 use fss_core::{
     CanonicalEncode, CaptureInterval, ContentDigest, ContractError, DigestAlgorithm, LedgerAnchor,
@@ -22,6 +25,16 @@ use fss_object::{ObjectError, ObjectManifest, SpoolError};
 use fss_publication::{LocalPublicationState, SlotName};
 
 use super::privacy_mask::{MaskBinding, PrivacyMaskError, current_mask};
+use super::recorded_decode::h264::{
+    DecoderLimits as H264DecoderLimits, MAX_H264_RANGE_SEGMENTS, RecordedH264Range,
+    RecordedH264Request,
+};
+use super::recorded_decode::h265::{
+    DecoderLimits as H265DecoderLimits, MAX_H265_RANGE_SEGMENTS, RecordedH265Range,
+    RecordedH265Request,
+};
+use super::recorded_decode::video_budget::RecordedVideoDecodeBudget;
+use super::recorded_decode::video_rgb::video_rgb_receipt;
 use super::recorded_decode::{
     RecordedDecodeError, source_capsule, validate_limits, verify_custody,
 };
@@ -80,11 +93,12 @@ pub struct RecordedActivityLimits {
 
 impl Default for RecordedActivityLimits {
     fn default() -> Self {
+        let decode = ActivityReplayLimits::default().decode;
         Self {
             read: RetainedReadLimits::default(),
-            decode: ActivityReplayLimits::default().decode,
+            decode,
             max_source_read_bytes: 128 * 1024 * 1024,
-            max_decode_work: 20_000_000,
+            max_decode_work: decode.baseline_rgb_work_bound().saturating_mul(2),
             max_staged_bytes: 64 * 1024 * 1024,
             max_history_batches: 256,
             max_history_entries: 16_384,
@@ -105,6 +119,8 @@ pub struct RecordedActivityReceipt {
     pub import_identity: ContentDigest,
     /// Original import's root, not the later role publication.
     pub import_root: ContentDigest,
+    /// Retained media format (`mjpeg`, `annexb`, `mp4avc`, `mkvavc`, `flvavc`, `hevc`, `mp4hevc`, `mkvhevc`).
+    pub media_format: String,
     /// Earlier original segment.
     pub reference_segment: usize,
     /// Evaluated original segment.
@@ -187,7 +203,7 @@ impl fmt::Display for RecordedActivityError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Selection(field) => write!(f, "invalid recorded activity selection: {field}"),
-            Self::UnsupportedMedia => f.write_str("recorded activity requires an exact completed JPEG/MJPEG import"),
+            Self::UnsupportedMedia => f.write_str("recorded activity requires a completed MJPEG, H.264, or H.265 import"),
             Self::PackagePin => f.write_str("recorded activity package differs from the independent archive pin"),
             Self::Limit(field) => write!(f, "recorded activity {field} allowance exhausted"),
             Self::SourceChanged => f.write_str("recorded activity original source or publication changed; no substitute is permitted"),
@@ -315,7 +331,226 @@ fn slot(
     SlotName::parse(&format!("xi-{hex}")).map_err(|_| Error::Selection("source slot"))
 }
 
-/// Produce and retain one actual native computation from two exact imported JPEG segments.
+struct DecodedActivityPair {
+    frame_rgb: Vec<u8>,
+    frame_receipt: RgbDecodeReceipt,
+    reference_rgb: Vec<u8>,
+    reference_receipt: RgbDecodeReceipt,
+    decode_work: u64,
+}
+
+fn decode_h264_activity_pair(
+    deployment: &ReferenceDeployment,
+    retained: &RetainedFileImport,
+    request: &RecordedActivityRequest,
+    limits: RecordedActivityLimits,
+    source_budget: &SourceReadBudget,
+    cx: &ReplayCx,
+) -> Result<DecodedActivityPair> {
+    let frame_limits = limits.decode.frame;
+    let defaults = H264DecoderLimits::default();
+    let max_macroblocks = u32::try_from(frame_limits.maximum_pixels / 256)
+        .ok()
+        .filter(|n| *n > 0)
+        .ok_or(Error::Limit("h264 macroblock ceiling"))?;
+    let max_slices = u32::try_from(frame_limits.maximum_markers)
+        .map_err(|_| Error::Limit("h264 slice ceiling"))?
+        .min(defaults.max_slices_per_picture);
+    let spans = &retained.manifest().segment_spans;
+    let mut video_budget = RecordedVideoDecodeBudget::new(limits.max_decode_work);
+    let mut candidate = request.reference_segment;
+    let mut range = loop {
+        let range_count = request
+            .segment
+            .checked_sub(candidate)
+            .and_then(|d| d.checked_add(1))
+            .ok_or(Error::Selection("segment range overflow"))?;
+        if range_count > MAX_H264_RANGE_SEGMENTS {
+            return Err(Error::Limit("h264 decode range segments"));
+        }
+        let decoder_limits = H264DecoderLimits {
+            max_width: frame_limits.maximum_dimension,
+            max_height: frame_limits.maximum_dimension,
+            max_macroblocks,
+            max_pictures: range_count as u64,
+            max_nal_bytes: frame_limits.maximum_bytes.min(16 * 1024 * 1024),
+            max_slices_per_picture: max_slices,
+            ..defaults
+        };
+        let open_req = RecordedH264Request {
+            import_identity: request.import_identity,
+            first_segment: candidate,
+            segment_count: range_count,
+            interpretation: request.plan.interpretation,
+            read_limits: limits.read,
+            decoder_limits,
+        };
+        match RecordedH264Range::open_with_budgets(
+            deployment,
+            open_req,
+            source_budget,
+            &mut video_budget,
+            cx,
+        ) {
+            Ok(range) => break range,
+            Err(RecordedDecodeError::H264RangeNotIdr { .. })
+                if candidate > 0 && !spans[candidate].gap_before =>
+            {
+                candidate -= 1;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    };
+    let mut frame_pair: Option<(Vec<u8>, RgbDecodeReceipt)> = None;
+    let mut reference_pair: Option<(Vec<u8>, RgbDecodeReceipt)> = None;
+    while let Some(picture) = range.next_frame_with_budget(deployment, &mut video_budget, cx)? {
+        let segment = usize::try_from(picture.segment_index())
+            .map_err(|_| Error::Selection("video segment index"))?;
+        if segment != request.segment && segment != request.reference_segment {
+            continue;
+        }
+        let dims = picture.dimensions();
+        let pixel_count = (dims[0] as usize)
+            .checked_mul(dims[1] as usize)
+            .ok_or(Error::Limit("video frame dimensions"))?;
+        if pixel_count == 0 || pixel_count > frame_limits.maximum_pixels {
+            return Err(Error::Limit("video frame pixels"));
+        }
+        let rgb = picture.to_rgb()?;
+        if rgb.len() > limits.decode.maximum_output_bytes {
+            return Err(Error::Limit("video RGB output bytes"));
+        }
+        let r = picture.receipt();
+        let receipt = video_rgb_receipt(
+            r.capsule().source_digest.bytes(),
+            r.digest(),
+            r.i420_sha256(),
+            dims,
+            &rgb,
+        );
+        if segment == request.segment {
+            frame_pair = Some((rgb, receipt));
+        } else if segment == request.reference_segment {
+            reference_pair = Some((rgb, receipt));
+        }
+    }
+    let (frame_rgb, frame_receipt) = frame_pair.ok_or(RecordedDecodeError::Unavailable)?;
+    let (reference_rgb, reference_receipt) =
+        reference_pair.ok_or(RecordedDecodeError::Unavailable)?;
+    Ok(DecodedActivityPair {
+        frame_rgb,
+        frame_receipt,
+        reference_rgb,
+        reference_receipt,
+        decode_work: video_budget.used(),
+    })
+}
+
+fn decode_h265_activity_pair(
+    deployment: &ReferenceDeployment,
+    retained: &RetainedFileImport,
+    request: &RecordedActivityRequest,
+    limits: RecordedActivityLimits,
+    source_budget: &SourceReadBudget,
+    cx: &ReplayCx,
+) -> Result<DecodedActivityPair> {
+    let frame_limits = limits.decode.frame;
+    let defaults = H265DecoderLimits::default();
+    let max_slices = u32::try_from(frame_limits.maximum_markers)
+        .map_err(|_| Error::Limit("h265 slice ceiling"))?
+        .min(defaults.max_slices_per_picture);
+    let spans = &retained.manifest().segment_spans;
+    let mut video_budget = RecordedVideoDecodeBudget::new(limits.max_decode_work);
+    let mut candidate = request.reference_segment;
+    let mut range = loop {
+        let range_count = request
+            .segment
+            .checked_sub(candidate)
+            .and_then(|d| d.checked_add(1))
+            .ok_or(Error::Selection("segment range overflow"))?;
+        if range_count > MAX_H265_RANGE_SEGMENTS {
+            return Err(Error::Limit("h265 decode range segments"));
+        }
+        let decoder_limits = H265DecoderLimits {
+            max_width: frame_limits.maximum_dimension,
+            max_height: frame_limits.maximum_dimension,
+            max_luma_samples: frame_limits.maximum_pixels as u64,
+            max_pictures: range_count as u64,
+            max_nal_bytes: frame_limits.maximum_bytes.min(16 * 1024 * 1024),
+            max_slices_per_picture: max_slices,
+            ..defaults
+        };
+        let open_req = RecordedH265Request {
+            import_identity: request.import_identity,
+            first_segment: candidate,
+            segment_count: range_count,
+            interpretation: request.plan.interpretation,
+            read_limits: limits.read,
+            decoder_limits,
+        };
+        match RecordedH265Range::open_with_budgets(
+            deployment,
+            open_req,
+            source_budget,
+            &mut video_budget,
+            cx,
+        ) {
+            Ok(range) => break range,
+            Err(RecordedDecodeError::H265RangeNotIrap { .. })
+                if candidate > 0 && !spans[candidate].gap_before =>
+            {
+                candidate -= 1;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    };
+    let mut frame_pair: Option<(Vec<u8>, RgbDecodeReceipt)> = None;
+    let mut reference_pair: Option<(Vec<u8>, RgbDecodeReceipt)> = None;
+    while let Some(picture) = range.next_frame_with_budget(deployment, &mut video_budget, cx)? {
+        let segment = usize::try_from(picture.segment_index())
+            .map_err(|_| Error::Selection("video segment index"))?;
+        if segment != request.segment && segment != request.reference_segment {
+            continue;
+        }
+        let dims = picture.dimensions();
+        let pixel_count = (dims[0] as usize)
+            .checked_mul(dims[1] as usize)
+            .ok_or(Error::Limit("video frame dimensions"))?;
+        if pixel_count == 0 || pixel_count > frame_limits.maximum_pixels {
+            return Err(Error::Limit("video frame pixels"));
+        }
+        let rgb = picture.to_rgb()?;
+        if rgb.len() > limits.decode.maximum_output_bytes {
+            return Err(Error::Limit("video RGB output bytes"));
+        }
+        let r = picture.receipt();
+        let receipt = video_rgb_receipt(
+            r.capsule().source_digest.bytes(),
+            r.digest(),
+            r.i420_sha256(),
+            dims,
+            &rgb,
+        );
+        if segment == request.segment {
+            frame_pair = Some((rgb, receipt));
+        } else if segment == request.reference_segment {
+            reference_pair = Some((rgb, receipt));
+        }
+    }
+    let (frame_rgb, frame_receipt) = frame_pair.ok_or(RecordedDecodeError::Unavailable)?;
+    let (reference_rgb, reference_receipt) =
+        reference_pair.ok_or(RecordedDecodeError::Unavailable)?;
+    Ok(DecodedActivityPair {
+        frame_rgb,
+        frame_receipt,
+        reference_rgb,
+        reference_receipt,
+        decode_work: video_budget.used(),
+    })
+}
+
+/// Produce and retain one actual native computation from two exact imported MJPEG, H.264, or
+/// H.265 segments.
 ///
 /// Requested admission, source, decode and compute allowances are checked before staging. Storage
 /// I/O or capacity failure can still occur during publication. Source roles are committed
@@ -338,7 +573,11 @@ pub fn produce_recorded_activity(
         return Err(Error::PackagePin);
     }
     let retained = RetainedFileImport::open(deployment, request.import_identity, limits.read, cx)?;
-    if retained.manifest().format != "mjpeg" {
+    let media_format = retained.manifest().format.clone();
+    if !matches!(
+        media_format.as_str(),
+        "mjpeg" | "annexb" | "mp4avc" | "mkvavc" | "flvavc" | "hevc" | "mp4hevc" | "mkvhevc"
+    ) {
         return Err(Error::UnsupportedMedia);
     }
     let (frame_capsule, frame_digest) = source_capsule(deployment, &retained, request.segment)?;
@@ -372,34 +611,52 @@ pub fn produce_recorded_activity(
     verify_custody(&reference_capsule, &reference_source)?;
     drop(chunks);
     checkpoint(cx, scalar, "recorded_activity:decode")?;
-    let mut decode = DecodeBudget::new(limits.max_decode_work);
-    let frame = decode_rgb(
-        &frame_source,
-        frame_capsule.source_digest.bytes(),
-        request.plan.interpretation,
-        limits.decode,
-        &mut decode,
-    )?;
-    checkpoint(cx, scalar, "recorded_activity:reference")?;
-    let reference = decode_rgb(
-        &reference_source,
-        reference_capsule.source_digest.bytes(),
-        request.plan.interpretation,
-        limits.decode,
-        &mut decode,
-    )?;
+    let decoded = match media_format.as_str() {
+        "mjpeg" => {
+            let mut decode = DecodeBudget::new(limits.max_decode_work);
+            let frame = decode_rgb(
+                &frame_source,
+                frame_capsule.source_digest.bytes(),
+                request.plan.interpretation,
+                limits.decode,
+                &mut decode,
+            )?;
+            checkpoint(cx, scalar, "recorded_activity:reference")?;
+            let reference = decode_rgb(
+                &reference_source,
+                reference_capsule.source_digest.bytes(),
+                request.plan.interpretation,
+                limits.decode,
+                &mut decode,
+            )?;
+            DecodedActivityPair {
+                frame_rgb: frame.pixels().to_vec(),
+                frame_receipt: frame.receipt(),
+                reference_rgb: reference.pixels().to_vec(),
+                reference_receipt: reference.receipt(),
+                decode_work: decode.used(),
+            }
+        }
+        "annexb" | "mp4avc" | "mkvavc" | "flvavc" => {
+            decode_h264_activity_pair(deployment, &retained, &request, limits, &source_budget, cx)?
+        }
+        "hevc" | "mp4hevc" | "mkvhevc" => {
+            decode_h265_activity_pair(deployment, &retained, &request, limits, &source_budget, cx)?
+        }
+        _ => return Err(Error::UnsupportedMedia),
+    };
     checkpoint(cx, scalar, "recorded_activity:invoke")?;
     let (result, invocation) = model.invoke(
         &request.plan.sensor_id,
         ActivityFrameBinding {
-            pixels: frame.pixels(),
-            receipt: frame.receipt(),
+            pixels: &decoded.frame_rgb,
+            receipt: decoded.frame_receipt,
             source_digest: frame_capsule.source_digest,
             capsule: &frame_capsule,
         },
         ActivityFrameBinding {
-            pixels: reference.pixels(),
-            receipt: reference.receipt(),
+            pixels: &decoded.reference_rgb,
+            receipt: decoded.reference_receipt,
             source_digest: reference_capsule.source_digest,
             capsule: &reference_capsule,
         },
@@ -409,16 +666,16 @@ pub fn produce_recorded_activity(
         scalar,
     )?;
     checkpoint(cx, scalar, "recorded_activity:revalidate")?;
+    let decode_work = decoded.decode_work;
     let source_objects = [
         frame_source,
         reference_source,
         frame_capsule.try_canonical_bytes()?,
         reference_capsule.try_canonical_bytes()?,
-        rgb_decode_receipt_bytes(&frame.receipt()),
-        rgb_decode_receipt_bytes(&reference.receipt()),
+        rgb_decode_receipt_bytes(&decoded.frame_receipt),
+        rgb_decode_receipt_bytes(&decoded.reference_receipt),
     ];
-    drop(frame);
-    drop(reference);
+    drop(decoded);
     if ContentDigest::sha256(&source_objects[2]) != frame_digest
         || ContentDigest::sha256(&source_objects[3]) != reference_digest
     {
@@ -537,6 +794,7 @@ pub fn produce_recorded_activity(
         source_root: manifest.root(),
         import_identity: retained.import_identity(),
         import_root: retained.import_root(),
+        media_format,
         reference_segment: request.reference_segment,
         segment: request.segment,
         reference_capsule: reference_digest,
@@ -545,8 +803,12 @@ pub fn produce_recorded_activity(
         package_sha256: model.package().archive_digest(),
         package_root: model.package().manifest_digest(),
         source_read_bytes: source_budget.used(),
-        decode_work: decode.used(),
+        decode_work,
         staged_input_bytes,
         final_anchor: deployment.current_anchor().clone(),
     })
 }
+
+#[cfg(test)]
+#[path = "recorded_activity_tests.rs"]
+mod tests;

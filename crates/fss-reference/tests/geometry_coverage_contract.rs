@@ -993,7 +993,7 @@ fn canonical_digest_and_basis_stability() -> TestResult {
     let cam_a = down_camera()?;
     let cam_b = east_camera()?;
     let (pkg_a, mesh_a, src_a) = build_twin_package(Some(52.0))?;
-    let (pkg_b, mesh_b, _) = build_twin_package(Some(92.0))?;
+    let (_pkg_b, mesh_b, _) = build_twin_package(Some(92.0))?;
     let twin_a = import_scene_mesh(&pkg_a, mesh_a, src_a)?;
     let scene_a = SceneMesh {
         mesh: twin_a.mesh(),

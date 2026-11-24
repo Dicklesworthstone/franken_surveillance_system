@@ -250,6 +250,7 @@ impl RtpDetectedFrame {
 
 /// Source progress, one complete neural result, or terminal stage accounting.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum RtpDetectionStep {
     /// Original receiver facts and decode consequences, including gaps and recovery.
     Progress {
@@ -277,6 +278,7 @@ pub struct RtpPackageDetector<'a> {
 }
 impl<'a> RtpPackageDetector<'a> {
     /// Open an independently authorized completed root and already verified package.
+    #[allow(clippy::result_large_err)]
     pub fn new(
         retained: &'a RecoveredRtpImport,
         package: &'a RgbDetectorPackage,
@@ -335,6 +337,7 @@ impl<'a> RtpPackageDetector<'a> {
         self.recipe
     }
     /// Any error is terminal, drops queued pixels, and cannot be retried with fresh allowances.
+    #[allow(clippy::result_large_err)]
     pub fn step(
         &mut self,
         deployment: &ReferenceDeployment,
@@ -348,6 +351,7 @@ impl<'a> RtpPackageDetector<'a> {
         self.finish_step(result, cx, scalar)
     }
     // Both exhaustive and explicitly sampled inference use this one failure/cancellation owner.
+    #[allow(clippy::result_large_err)]
     fn finish_step<T>(
         &mut self,
         mut result: Result<T>,
@@ -369,6 +373,7 @@ impl<'a> RtpPackageDetector<'a> {
         result
     }
     // The same current-custody decoder supplies every sampling position, including skips.
+    #[allow(clippy::result_large_err)]
     fn next_native(
         &mut self,
         deployment: &ReferenceDeployment,
@@ -386,6 +391,7 @@ impl<'a> RtpPackageDetector<'a> {
         self.stats.receipt_bytes = decoder.receipt_bytes();
         result.map_err(RtpDetectionError::Source)
     }
+    #[allow(clippy::result_large_err)]
     fn advance(
         &mut self,
         deployment: &ReferenceDeployment,
@@ -413,6 +419,7 @@ impl<'a> RtpPackageDetector<'a> {
             }
         }
     }
+    #[allow(clippy::result_large_err)]
     fn reserve(&mut self, pixels: u64) -> Result<()> {
         let add = |used: u64, count: u64, limit: u64, label| {
             used.checked_add(count)
@@ -453,6 +460,7 @@ impl<'a> RtpPackageDetector<'a> {
         self.stats.tensor_bytes = bytes;
         Ok(())
     }
+    #[allow(clippy::result_large_err)]
     fn infer(
         &mut self,
         frame: RetainedRtpH264Frame,
@@ -584,6 +592,7 @@ fn nonzero(digest: ContentDigest) -> u64 {
     let b = digest.bytes();
     u64::from_be_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]).max(1)
 }
+#[allow(clippy::result_large_err)]
 fn checkpoint(cx: &ReplayCx, scalar: &ScalarExecCx, stage: &'static str) -> Result<()> {
     if cx.checkpoint(stage).is_err() || scalar.checkpoint(stage).is_err() {
         cx.drain_and_finalize();
@@ -593,6 +602,7 @@ fn checkpoint(cx: &ReplayCx, scalar: &ScalarExecCx, stage: &'static str) -> Resu
     }
     Ok(())
 }
+#[allow(clippy::result_large_err)]
 fn recipe(
     package: &RgbDetectorPackage,
     contract: &RgbDetectionContract,

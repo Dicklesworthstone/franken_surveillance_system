@@ -980,6 +980,7 @@ impl Session {
     /// Once dispatch begins, a dropped or interrupted future leaves the session
     /// fenced. Dropping it before its first poll sends nothing and drops the permit.
     /// A successful write is local evidence only; its effect remains open.
+    #[allow(clippy::too_many_arguments)]
     pub async fn dispatch_handoff<IO: AsyncWrite + Unpin>(
         &mut self,
         cx: &Cx,
@@ -1100,6 +1101,7 @@ impl Session {
     /// Dispatch an experimental local serializer change. A complete write is
     /// not evidence that the camera applied it or that restoration is possible.
     /// The same refusal and indeterminate-write semantics as handoff apply.
+    #[allow(clippy::too_many_arguments)]
     pub async fn dispatch_serializer<IO: AsyncWrite + Unpin>(
         &mut self,
         cx: &Cx,

@@ -70,9 +70,11 @@ fn authorize(fields: &[&str], policy: DigestPolicy) -> Result<Vec<u8>, Box<dyn s
     assert_eq!(signed.cseq(), 2);
     assert_eq!(signed.command(), C::Describe);
     assert_eq!(client.next_wake_ns(), Some(100));
-    assert!(signed.bytes().starts_with(
-        b"DESCRIBE rtsp://camera.local/live/?profile=main RTSP/1.0\r\nCSeq: 2\r\n",
-    ));
+    assert!(
+        signed.bytes().starts_with(
+            b"DESCRIBE rtsp://camera.local/live/?profile=main RTSP/1.0\r\nCSeq: 2\r\n",
+        )
+    );
     for secret in [
         "private-password",
         "sha-nonce",
@@ -120,7 +122,8 @@ fn combined_offers_preserve_quoted_commas_escapes_and_qop_lists() -> TestResult 
 }
 
 #[test]
-fn strongest_allowed_algorithm_is_independent_of_server_order_and_legacy_permission() -> TestResult {
+fn strongest_allowed_algorithm_is_independent_of_server_order_and_legacy_permission() -> TestResult
+{
     for policy in [DigestPolicy::default(), LEGACY] {
         for fields in [
             [MD5, SHA, SHA_SESSION],
@@ -165,7 +168,8 @@ fn qop_and_userhash_are_preserved_when_selecting_between_allowed_offers() -> Tes
 }
 
 #[test]
-fn ambiguous_best_offer_and_malformed_or_wrong_realm_digest_are_nonconsuming_refusals() -> TestResult {
+fn ambiguous_best_offer_and_malformed_or_wrong_realm_digest_are_nonconsuming_refusals() -> TestResult
+{
     let different_nonce = SHA.replace("sha-nonce", "different-nonce");
     let malformed = SHA.replace("qop=\"auth\"", "qop=auth,auth-int");
     let duplicated_field = format!("{SHA}, NONCE=\"second\"");
@@ -289,25 +293,23 @@ fn fragmented_avc_wire_selects_digest_even_when_public_first_scheme_is_basic() -
         let creds = credentials()?;
         client.request(C::Describe, &creds, [1; 16], 0)?;
         let joined = format!("{BASIC}, {SHA}");
-        let fields: Vec<&str> = if combined { vec![&joined] } else { vec![BASIC, SHA] };
+        let fields: Vec<&str> = if combined {
+            vec![&joined]
+        } else {
+            vec![BASIC, SHA]
+        };
         let wire = response(1, &fields);
         let mut challenged = false;
         for chunk in wire.chunks(7) {
             client.ingest(chunk, 1)?;
-            for _ in 0..16 {
-                match client.poll(1)? {
-                    DigestAvcPoll::AuthenticationRequired { cseq: 1, .. } => {
-                        challenged = true;
-                        break;
-                    }
-                    DigestAvcPoll::Client { event, .. }
-                        if matches!(*event, AvcClientPoll::Pending { .. }) =>
-                    {
-                        break;
-                    }
-                    other => {
-                        return Err(format!("unexpected AVC negotiation event: {other:?}").into());
-                    }
+            match client.poll(1)? {
+                DigestAvcPoll::AuthenticationRequired { cseq: 1, .. } => {
+                    challenged = true;
+                }
+                DigestAvcPoll::Client { event, .. }
+                    if matches!(*event, AvcClientPoll::Pending { .. }) => {}
+                other => {
+                    return Err(format!("unexpected AVC negotiation event: {other:?}").into());
                 }
             }
         }
@@ -334,21 +336,22 @@ fn fragmented_hevc_wire_selects_digest_and_retains_the_exact_original_challenge(
         let creds = credentials()?;
         client.request_digest(C::Describe, &creds, [1; 16], 0)?;
         let joined = format!("{BASIC}, {SHA}");
-        let fields: Vec<&str> = if combined { vec![&joined] } else { vec![BASIC, SHA] };
+        let fields: Vec<&str> = if combined {
+            vec![&joined]
+        } else {
+            vec![BASIC, SHA]
+        };
         let wire = response(1, &fields);
         let mut challenged = false;
         for chunk in wire.chunks(7) {
             client.ingest(chunk, 1)?;
-            for _ in 0..16 {
-                match client.poll(1)? {
-                    HevcClientPoll::AuthenticationRequired { cseq: 1, .. } => {
-                        challenged = true;
-                        break;
-                    }
-                    HevcClientPoll::Pending { .. } => break,
-                    other => {
-                        return Err(format!("unexpected HEVC negotiation event: {other:?}").into());
-                    }
+            match client.poll(1)? {
+                HevcClientPoll::AuthenticationRequired { cseq: 1, .. } => {
+                    challenged = true;
+                }
+                HevcClientPoll::Pending { .. } => {}
+                other => {
+                    return Err(format!("unexpected HEVC negotiation event: {other:?}").into());
                 }
             }
         }

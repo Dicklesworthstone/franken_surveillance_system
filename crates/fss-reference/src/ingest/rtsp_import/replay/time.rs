@@ -68,6 +68,7 @@ impl PublishCancellation for Access<'_> {
     }
 }
 impl Access<'_> {
+    #[allow(clippy::result_large_err)]
     fn check(&self) -> Result<(), RetainedReplayTimeError> {
         if self.cancel_requested(PublishCutPoint::AfterChildrenVerified) {
             return Err(ReplayReceiptError::Storage(RecordingIoError::Cancelled).into());
@@ -98,6 +99,7 @@ impl Access<'_> {
 /// [`ImmutableRetainedSource::revalidate`]: crate::retained_source::ImmutableRetainedSource::revalidate
 ///
 /// [`query_replay_time`]: crate::rtsp::recording_replay::time::query_replay_time
+#[allow(clippy::result_large_err)]
 pub fn query_retained_replay_time(
     deployment: &dyn RetainedSource,
     import_identity: ContentDigest,
@@ -122,7 +124,7 @@ pub fn query_retained_replay_time(
         .strip_prefix(GENERATION)
         .ok_or_else(|| corrupt("retained replay query origin generation"))?;
     let proof_digest =
-        ContentDigest::parse(&format!("sha256:{suffix}")).map_err(FileIngestError::from)?;
+        ContentDigest::parse(format!("sha256:{suffix}")).map_err(FileIngestError::from)?;
     let mut remaining = query
         .limits
         .max_source_bytes

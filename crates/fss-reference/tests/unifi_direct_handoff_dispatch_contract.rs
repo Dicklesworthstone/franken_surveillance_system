@@ -441,6 +441,7 @@ fn port_bound_handoff_refuses_a_newer_incompatible_status_without_writing() -> T
     Ok(())
 }
 
+#[allow(clippy::expect_used)]
 fn exercise_framing(framing: Framing) -> Test {
     let Harness {
         _temp,
@@ -925,6 +926,7 @@ fn http_request(socket: &mut std::net::TcpStream) -> std::io::Result<Vec<u8>> {
     socket.read_exact(&mut head[end - len..])?;
     Ok(head)
 }
+#[allow(clippy::too_many_arguments)]
 fn http_fixture(
     address: SocketAddr,
     cancel_reply: bool,
@@ -1002,8 +1004,15 @@ fn http_fixture(
         }
         if index == handoff_index && !observe {
             let expected = if management_v12 {
-                let port = reported_port.as_ref().ok_or_else(|| std::io::Error::other("missing port"))?.0.load(std::sync::atomic::Ordering::Acquire);
-                format!("{{\"mgmt\":{{\"protocol\":\"wss\",\"hosts\":[\"{destination}:{port}\"],\"token\":\"{}\"}}}}", "11".repeat(32))
+                let port = reported_port
+                    .as_ref()
+                    .ok_or_else(|| std::io::Error::other("missing port"))?
+                    .0
+                    .load(std::sync::atomic::Ordering::Acquire);
+                format!(
+                    "{{\"mgmt\":{{\"protocol\":\"wss\",\"hosts\":[\"{destination}:{port}\"],\"token\":\"{}\"}}}}",
+                    "11".repeat(32)
+                )
             } else {
                 target_body.clone()
             };
@@ -1073,10 +1082,11 @@ fn http_fixture(
         } else {
             ""
         };
-        if index == 3 && double_read {
-            if let Some(policy) = &revoke {
-                policy.store(false, std::sync::atomic::Ordering::Release);
-            }
+        if index == 3
+            && double_read
+            && let Some(policy) = &revoke
+        {
+            policy.store(false, std::sync::atomic::Ordering::Release);
         }
         let header = format!(
             "HTTP/1.1 200 OK\r\n{cookie}Content-Length: {}\r\nConnection: keep-alive\r\n\r\n",
@@ -1138,6 +1148,7 @@ fn http_fixture(
     }
     Ok(())
 }
+#[allow(clippy::expect_used, clippy::panic)]
 fn owned_http_handoff(cancel_reply: bool, framing: Framing) -> Test {
     let suffix = if cancel_reply {
         "http-cancel"
@@ -1458,16 +1469,25 @@ impl fss_reference::unifi_direct::listener::Admission for ReadyPolicy {
     fn peer(&self, _: std::net::SocketAddrV4, _: std::net::SocketAddrV4) -> bool {
         self.live.load(std::sync::atomic::Ordering::Acquire)
     }
-    fn controller_camera(&self, _: std::net::SocketAddrV4, listener_resource: &str,
-        camera_resource: &str, claimed_peer: Ipv4Addr) -> bool {
+    fn controller_camera(
+        &self,
+        _: std::net::SocketAddrV4,
+        listener_resource: &str,
+        camera_resource: &str,
+        claimed_peer: Ipv4Addr,
+    ) -> bool {
         self.shared.load(std::sync::atomic::Ordering::Acquire)
             && self.live.load(std::sync::atomic::Ordering::Acquire)
             && listener_resource == "fixture:shared-controller"
-            && self.shared_cameras.iter().any(|(resource, peer)|
-                resource == camera_resource && *peer == claimed_peer)
+            && self
+                .shared_cameras
+                .iter()
+                .any(|(resource, peer)| resource == camera_resource && *peer == claimed_peer)
     }
 }
 
+#[allow(clippy::expect_used, clippy::panic)]
+#[allow(clippy::too_many_arguments)]
 fn run_discovered_setup_with_listener(
     cancel_reply: bool,
     already: bool,
@@ -2227,7 +2247,7 @@ fn run_discovered_setup_with_listener(
                                 socket.bind(SocketAddr::V4(std::net::SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)))?;
                                 let client = timeout(cx.now(), Duration::from_secs(5),
                                     socket.connect(SocketAddr::V4(control.local_addr()))).await??;
-                                assert!(matches!(fleet.accept_next(&mut control, 4096, Duration::from_secs(5)).await,
+                                assert!(matches!(fleet.accept_next(&control, 4096, Duration::from_secs(5)).await,
                                     Err(discovery::fleet::RouteError::UnknownPeer)));
                                 drop(client);
                             }
@@ -2564,9 +2584,15 @@ fn run_discovered_setup_with_listener(
     })?;
     let journal_entry = effects.journal().operation(&operation);
     if matches!(integrated_mode, 13..=17) {
-        assert_eq!(journal_entry.ok_or("missing cancelled setup")?.state, fss_core::EffectState::Cancelled);
+        assert_eq!(
+            journal_entry.ok_or("missing cancelled setup")?.state,
+            fss_core::EffectState::Cancelled
+        );
     } else if integrated_mode == 18 {
-        assert_eq!(journal_entry.ok_or("missing prepared setup")?.state, fss_core::EffectState::Prepared);
+        assert_eq!(
+            journal_entry.ok_or("missing prepared setup")?.state,
+            fss_core::EffectState::Prepared
+        );
     } else if already || observe || changed || revoked || (port_mode != 0 && port_mode != 5) {
         assert!(journal_entry.is_none());
     } else {
@@ -2596,12 +2622,34 @@ fn expired_setup_preparation_cancels_without_handoff() -> Test {
 
 #[test]
 fn expired_setup_retains_deadline_evidence_before_cancellation() -> Test {
-    run_discovered_setup_with_listener(false, false, false, Framing::ContentLength, false, false, None, 0, false, 14)
+    run_discovered_setup_with_listener(
+        false,
+        false,
+        false,
+        Framing::ContentLength,
+        false,
+        false,
+        None,
+        0,
+        false,
+        14,
+    )
 }
 
 #[test]
 fn failed_deadline_evidence_storage_does_not_cancel_setup() -> Test {
-    run_discovered_setup_with_listener(false, false, false, Framing::ContentLength, false, false, None, 0, false, 15)
+    run_discovered_setup_with_listener(
+        false,
+        false,
+        false,
+        Framing::ContentLength,
+        false,
+        false,
+        None,
+        0,
+        false,
+        15,
+    )
 }
 
 /// Uses an isolated private interface for a synthetic camera and controller.
@@ -2612,7 +2660,18 @@ fn fleet_retries_only_after_retained_deadline_cancellation() -> Test {
     if !(ip.is_private() || ip.is_link_local()) || ip == Ipv4Addr::new(192, 168, 1, 10) {
         return Err("test controller interface is not suitable".into());
     }
-    run_discovered_setup_with_listener(false, false, false, Framing::ContentLength, false, false, Some((ip, false)), 0, false, 16)
+    run_discovered_setup_with_listener(
+        false,
+        false,
+        false,
+        Framing::ContentLength,
+        false,
+        false,
+        Some((ip, false)),
+        0,
+        false,
+        16,
+    )
 }
 
 /// Exercises automatic settlement and pump scheduling without a real camera.
@@ -2624,7 +2683,18 @@ fn fleet_setup_automatically_settles_and_schedules_deadline_retry() -> Test {
         return Err("test controller interface is not suitable".into());
     }
     for mode in [17, 18] {
-        run_discovered_setup_with_listener(false, false, false, Framing::ContentLength, false, false, Some((ip, false)), 0, false, mode)?;
+        run_discovered_setup_with_listener(
+            false,
+            false,
+            false,
+            Framing::ContentLength,
+            false,
+            false,
+            Some((ip, false)),
+            0,
+            false,
+            mode,
+        )?;
     }
     Ok(())
 }
@@ -2744,7 +2814,18 @@ fn management_v12_setup_links_dispatch_accept_and_hello_claim() -> Test {
     {
         return Err("test controller interface is not suitable".into());
     }
-    run_discovered_setup_with_listener(false, false, false, Framing::ContentLength, false, false, Some((ip, false)), 5, false, 6)
+    run_discovered_setup_with_listener(
+        false,
+        false,
+        false,
+        Framing::ContentLength,
+        false,
+        false,
+        Some((ip, false)),
+        5,
+        false,
+        6,
+    )
 }
 
 /// Exercises the full setup-to-accept boundary on an isolated worker.
@@ -2785,8 +2866,16 @@ fn fleet_setup_dispatches_and_preserves_cancelled_effects() -> Test {
     }
     for mode in [10, 11, 12] {
         run_discovered_setup_with_listener(
-            mode == 11, false, false, Framing::ContentLength,
-            false, false, Some((ip, mode == 12)), 0, false, mode,
+            mode == 11,
+            false,
+            false,
+            Framing::ContentLength,
+            false,
+            false,
+            Some((ip, mode == 12)),
+            0,
+            false,
+            mode,
         )?;
     }
     Ok(())
@@ -2801,8 +2890,16 @@ fn sweep_pump_retries_a_real_pre_effect_setup_failure() -> Test {
         return Err("test controller interface is not suitable".into());
     }
     run_discovered_setup_with_listener(
-        false, false, false, Framing::ContentLength,
-        false, false, Some((ip, true)), 0, false, 19,
+        false,
+        false,
+        false,
+        Framing::ContentLength,
+        false,
+        false,
+        Some((ip, true)),
+        0,
+        false,
+        19,
     )
 }
 
@@ -2810,37 +2907,63 @@ fn sweep_pump_retries_a_real_pre_effect_setup_failure() -> Test {
 #[test]
 #[ignore = "requires FSS_TEST_CONTROLLER_BIND_IP on the test worker"]
 fn two_discovered_cameras_share_one_controller_listener() -> Test {
-    use fss_reference::unifi_direct::{controller_listener, discovery, setup};
-    use discovery::fleet::{AcceptedRoute, Enrollment, Fleet, RouteError, Router, RouterEvent, State};
     use asupersync::io::{AsyncReadExt, AsyncWriteExt};
+    use discovery::fleet::{
+        AcceptedRoute, Enrollment, Fleet, RouteError, Router, RouterEvent, State,
+    };
+    use fss_reference::unifi_direct::{controller_listener, discovery, setup};
     use std::net::SocketAddrV4;
-    let stale_pending = std::env::var_os("FSS_TEST_STALE_PENDING").as_deref()
-        == Some(std::ffi::OsStr::new("1"));
+    let stale_pending =
+        std::env::var_os("FSS_TEST_STALE_PENDING").as_deref() == Some(std::ffi::OsStr::new("1"));
 
-    struct PausedRead<IO> { inner: IO, allowed: Rc<Cell<bool>> }
+    struct PausedRead<IO> {
+        inner: IO,
+        allowed: Rc<Cell<bool>>,
+    }
     impl<IO: asupersync::io::AsyncRead + Unpin> asupersync::io::AsyncRead for PausedRead<IO> {
-        fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buffer: &mut asupersync::io::ReadBuf<'_>) -> Poll<std::io::Result<()>> {
-            if !self.allowed.get() { return Poll::Pending; }
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buffer: &mut asupersync::io::ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            if !self.allowed.get() {
+                return Poll::Pending;
+            }
             Pin::new(&mut self.inner).poll_read(cx, buffer)
         }
     }
     impl<IO: AsyncWrite + Unpin> AsyncWrite for PausedRead<IO> {
-        fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, bytes: &[u8]) -> Poll<std::io::Result<usize>> {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            bytes: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
             Pin::new(&mut self.inner).poll_write(cx, bytes)
         }
         fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
             Pin::new(&mut self.inner).poll_flush(cx)
         }
-        fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        fn poll_shutdown(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
             Pin::new(&mut self.inner).poll_shutdown(cx)
         }
     }
 
-    async fn connect_from(cx: &asupersync::Cx, source: Ipv4Addr, destination: SocketAddrV4)
-        -> Result<asupersync::net::TcpStream, Box<dyn Error>> {
+    async fn connect_from(
+        cx: &asupersync::Cx,
+        source: Ipv4Addr,
+        destination: SocketAddrV4,
+    ) -> Result<asupersync::net::TcpStream, Box<dyn Error>> {
         let socket = asupersync::net::TcpSocket::new_v4()?;
         socket.bind(SocketAddr::V4(SocketAddrV4::new(source, 0)))?;
-        Ok(timeout(cx.now(), Duration::from_secs(5), socket.connect(SocketAddr::V4(destination))).await??)
+        Ok(timeout(
+            cx.now(),
+            Duration::from_secs(5),
+            socket.connect(SocketAddr::V4(destination)),
+        )
+        .await??)
     }
 
     let destination: Ipv4Addr = std::env::var("FSS_TEST_CONTROLLER_BIND_IP")?.parse()?;
@@ -2853,7 +2976,11 @@ fn two_discovered_cameras_share_one_controller_listener() -> Test {
         .join(format!("fss-unifi-fleet-pair-{}", std::process::id()));
     std::fs::create_dir(&path)?;
     let _temp = Temp(path.clone());
-    let store = FileEffectJournal::create(path.join("journal"), EffectJournalLimits::default(), Arc::new(HostSpoolIo))?;
+    let store = FileEffectJournal::create(
+        path.join("journal"),
+        EffectJournalLimits::default(),
+        Arc::new(HostSpoolIo),
+    )?;
     let mut effects = EffectCoordinator::with_journal(Box::new(store))?;
     let mut budget = BudgetVector::ZERO;
     budget.network_bytes = 4_000_000;
@@ -2863,35 +2990,84 @@ fn two_discovered_cameras_share_one_controller_listener() -> Test {
             trace_id: "trace:fleet-pair".into(),
             operation_id: OperationId::parse("operation:fleet-pair-owner")?,
             principal: "principal:fixture".into(),
-            capabilities: [RuntimeGrant::AdapterNet, RuntimeGrant::AdapterAuth,
-                RuntimeGrant::ObserveStatus, RuntimeGrant::CameraManagementPrepare,
-                RuntimeGrant::CameraManagementCommit].iter().map(|grant| grant.as_str().into()).collect(),
-            deadline: Some(TimestampNs(600_000_000_000)), priority: 1, budgets: budget,
-            privacy_scope: "privacy:test".into(), retention_scope: "retention:test".into(),
-            anchor_universe: ContentDigest::sha256(b"fleet pair fixture"), generation: 1,
+            capabilities: [
+                RuntimeGrant::AdapterNet,
+                RuntimeGrant::AdapterAuth,
+                RuntimeGrant::ObserveStatus,
+                RuntimeGrant::CameraManagementPrepare,
+                RuntimeGrant::CameraManagementCommit,
+            ]
+            .iter()
+            .map(|grant| grant.as_str().into())
+            .collect(),
+            deadline: Some(TimestampNs(600_000_000_000)),
+            priority: 1,
+            budgets: budget,
+            privacy_scope: "privacy:test".into(),
+            retention_scope: "retention:test".into(),
+            anchor_universe: ContentDigest::sha256(b"fleet pair fixture"),
+            generation: 1,
         },
-        RegionId::new("region:fleet-pair")?, RegionKind::Process, budget, TimestampNs(1),
+        RegionId::new("region:fleet-pair")?,
+        RegionKind::Process,
+        budget,
+        TimestampNs(1),
     )?;
-    let cameras = [ContentDigest::sha256(b"pair camera one"), ContentDigest::sha256(b"pair camera two")];
-    let admissions = [ContentDigest::sha256(b"pair admission one"), ContentDigest::sha256(b"pair admission two")];
-    let certificates = [ContentDigest::sha256(b"pair certificate one"), ContentDigest::sha256(b"pair certificate two")];
-    let handles = [ContentDigest::sha256(b"pair secret handle one"), ContentDigest::sha256(b"pair secret handle two")];
+    let cameras = [
+        ContentDigest::sha256(b"pair camera one"),
+        ContentDigest::sha256(b"pair camera two"),
+    ];
+    let admissions = [
+        ContentDigest::sha256(b"pair admission one"),
+        ContentDigest::sha256(b"pair admission two"),
+    ];
+    let certificates = [
+        ContentDigest::sha256(b"pair certificate one"),
+        ContentDigest::sha256(b"pair certificate two"),
+    ];
+    let handles = [
+        ContentDigest::sha256(b"pair secret handle one"),
+        ContentDigest::sha256(b"pair secret handle two"),
+    ];
     let macs = [[0x10, 2, 3, 4, 5, 6], [0x10, 2, 3, 4, 5, 8]];
     let peers = [Ipv4Addr::LOCALHOST, Ipv4Addr::new(127, 0, 0, 2)];
-    let operations = [OperationId::parse("operation:fleet-pair-one")?, OperationId::parse("operation:fleet-pair-two")?];
+    let operations = [
+        OperationId::parse("operation:fleet-pair-one")?,
+        OperationId::parse("operation:fleet-pair-two")?,
+    ];
     let resources = cameras.map(|camera| format!("camera:{}", camera.to_text()));
     let mut leases = LeaseRegistry::new();
     let fences = [
-        leases.acquire(&resources[0], authority.region().as_str(), None, TimestampNs(2))?.fence,
-        leases.acquire(&resources[1], authority.region().as_str(), None, TimestampNs(2))?.fence,
+        leases
+            .acquire(
+                &resources[0],
+                authority.region().as_str(),
+                None,
+                TimestampNs(2),
+            )?
+            .fence,
+        leases
+            .acquire(
+                &resources[1],
+                authority.region().as_str(),
+                None,
+                TimestampNs(2),
+            )?
+            .fence,
     ];
     let leases = RefCell::new(leases);
     let runtime = RuntimeBuilder::current_thread().build()?;
     runtime.block_on(async {
         let cx = asupersync::Cx::current().ok_or("runtime context")?;
-        let run = run_owned_async(&mut authority, &mut tree,
-            TaskSpec { task_id: TaskId::new("task:fleet-pair")?, started_at: TimestampNs(3) },
-            &cx, async |task, cx| {
+        let run = run_owned_async(
+            &mut authority,
+            &mut tree,
+            TaskSpec {
+                task_id: TaskId::new("task:fleet-pair")?,
+                started_at: TimestampNs(3),
+            },
+            &cx,
+            async |task, cx| {
                 let output: Test = async {
                     let first = std::net::UdpSocket::bind((peers[0], 0))?;
                     let port = first.local_addr()?.port();
@@ -2902,48 +3078,95 @@ fn two_discovered_cameras_share_one_controller_listener() -> Test {
                         senders.push(std::thread::spawn(move || -> std::io::Result<()> {
                             let mut input = [0u8; 32];
                             let (_, peer) = socket.recv_from(&mut input)?;
-                            socket.send_to(&discovery_packet_for(macs[index], peers[index]), peer)?;
+                            socket
+                                .send_to(&discovery_packet_for(macs[index], peers[index]), peer)?;
                             Ok(())
                         }));
                     }
                     let clock = MeteredClock::new(task, cx, TimestampNs(4))?;
                     let discovery_cfg = discovery::Config::new_many(
-                        peers[0], 8, &[SocketAddrV4::new(peers[0], port), SocketAddrV4::new(peers[1], port)],
-                        "fixture:fleet-discovery", Duration::from_millis(300), 8,
+                        peers[0],
+                        8,
+                        &[
+                            SocketAddrV4::new(peers[0], port),
+                            SocketAddrV4::new(peers[1], port),
+                        ],
+                        "fixture:fleet-discovery",
+                        Duration::from_millis(300),
+                        8,
                     )?;
-                    let report = discovery::discover(task, cx, clock.now()?, &discovery_cfg).await?;
-                    for sender in senders { sender.join().map_err(|_| "discovery thread panic")??; }
+                    let report =
+                        discovery::discover(task, cx, clock.now()?, &discovery_cfg).await?;
+                    for sender in senders {
+                        sender.join().map_err(|_| "discovery thread panic")??;
+                    }
                     let inventory = [
-                        Enrollment::new(macs[0], cameras[0], admissions[0], certificates[0], handles[0], 1)?,
-                        Enrollment::new(macs[1], cameras[1], admissions[1], certificates[1], handles[1], 1)?,
+                        Enrollment::new(
+                            macs[0],
+                            cameras[0],
+                            admissions[0],
+                            certificates[0],
+                            handles[0],
+                            1,
+                        )?,
+                        Enrollment::new(
+                            macs[1],
+                            cameras[1],
+                            admissions[1],
+                            certificates[1],
+                            handles[1],
+                            1,
+                        )?,
                     ];
                     let fleet = Fleet::new(&report, &inventory)?;
                     assert!(fleet.unknown_claims().is_empty());
                     let live = Arc::new(std::sync::atomic::AtomicBool::new(true));
                     let shared = Arc::new(std::sync::atomic::AtomicBool::new(true));
                     let policy = ReadyPolicy {
-                        live: Arc::clone(&live), shared: Arc::clone(&shared),
-                        shared_cameras: vec![(resources[0].clone(), peers[0]), (resources[1].clone(), peers[1]),
-                            (resources[0].clone(), Ipv4Addr::new(127, 0, 0, 3))],
+                        live: Arc::clone(&live),
+                        shared: Arc::clone(&shared),
+                        shared_cameras: vec![
+                            (resources[0].clone(), peers[0]),
+                            (resources[1].clone(), peers[1]),
+                            (resources[0].clone(), Ipv4Addr::new(127, 0, 0, 3)),
+                        ],
                     };
                     let control = controller_listener::Listener::bind(
-                        task, cx, clock, &policy, SocketAddrV4::new(destination, 0),
-                        "fixture:shared-controller", Duration::from_secs(5),
-                    ).await?;
-                    let mut pending_accept = Box::pin(control.accept_next(4096, Duration::from_secs(5)));
-                    poll_fn(|task_context| match pending_accept.as_mut().poll(task_context) {
-                        Poll::Pending => Poll::Ready(()),
-                        Poll::Ready(_) => panic!("empty accept unexpectedly completed"),
-                    }).await;
-                    assert!(matches!(control.accept_next(4096, Duration::from_secs(5)).await,
-                        Err(fss_reference::unifi_direct::listener::Error::Busy)));
+                        task,
+                        cx,
+                        clock,
+                        &policy,
+                        SocketAddrV4::new(destination, 0),
+                        "fixture:shared-controller",
+                        Duration::from_secs(5),
+                    )
+                    .await?;
+                    let mut pending_accept =
+                        Box::pin(control.accept_next(4096, Duration::from_secs(5)));
+                    poll_fn(
+                        |task_context| match pending_accept.as_mut().poll(task_context) {
+                            Poll::Pending => Poll::Ready(()),
+                            Poll::Ready(_) => panic!("empty accept unexpectedly completed"),
+                        },
+                    )
+                    .await;
+                    assert!(matches!(
+                        control.accept_next(4096, Duration::from_secs(5)).await,
+                        Err(fss_reference::unifi_direct::listener::Error::Busy)
+                    ));
                     drop(pending_accept);
-                    let controller_port = Arc::new(std::sync::atomic::AtomicU16::new(control.local_addr().port()));
+                    let controller_port = Arc::new(std::sync::atomic::AtomicU16::new(
+                        control.local_addr().port(),
+                    ));
                     // Two independently owned setup attempts can be in flight;
                     // a one-slot router must refuse the second early socket.
                     {
                         let parallel_fleet = Fleet::new(&report, &inventory)?;
-                        let store = FileEffectJournal::create(path.join("parallel-journal"), EffectJournalLimits::default(), Arc::new(HostSpoolIo))?;
+                        let store = FileEffectJournal::create(
+                            path.join("parallel-journal"),
+                            EffectJournalLimits::default(),
+                            Arc::new(HostSpoolIo),
+                        )?;
                         let mut other_effects = EffectCoordinator::with_journal(Box::new(store))?;
                         let mut sockets = Vec::new();
                         let mut http_peers = Vec::new();
@@ -2951,63 +3174,180 @@ fn two_discovered_cameras_share_one_controller_listener() -> Test {
                             let http_listener = TcpListener::bind("127.0.0.1:0").await?;
                             let address = http_listener.local_addr()?;
                             http_peers.push(std::thread::spawn(move || -> std::io::Result<()> {
-                                let mut socket = std::net::TcpStream::connect_timeout(&address, Duration::from_secs(5))?;
+                                let mut socket = std::net::TcpStream::connect_timeout(
+                                    &address,
+                                    Duration::from_secs(5),
+                                )?;
                                 socket.set_read_timeout(Some(Duration::from_secs(5)))?;
                                 let mut input = [0u8; 2048];
-                                loop { if socket.read(&mut input)? == 0 { return Ok(()); } }
+                                loop {
+                                    if socket.read(&mut input)? == 0 {
+                                        return Ok(());
+                                    }
+                                }
                             }));
-                            let (socket, _) = timeout(cx.now(), Duration::from_secs(5), http_listener.accept()).await??;
+                            let (socket, _) =
+                                timeout(cx.now(), Duration::from_secs(5), http_listener.accept())
+                                    .await??;
                             sockets.push(socket);
                         }
                         let socket1 = sockets.pop().ok_or("missing second fixture socket")?;
                         let socket0 = sockets.pop().ok_or("missing first fixture socket")?;
-                        let io0 = MeteredIo::with_clock(PausedRead { inner: socket0, allowed: Rc::new(Cell::new(false)) }, clock, &resources[0], 4096)?;
-                        let io1 = MeteredIo::with_clock(PausedRead { inner: socket1, allowed: Rc::new(Cell::new(false)) }, clock, &resources[1], 4096)?;
-                        let mut http0 = camera_http::Owner::new(io0, task, cx, clock, &SetupHttpAccess, peers[0], 1, &resources[0])?;
-                        let mut http1 = camera_http::Owner::new(io1, task, cx, clock, &SetupHttpAccess, peers[1], 1, &resources[1])?;
-                        let admission0 = SetupAdmission { allowed: Cell::new(true), camera: cameras[0], admission: admissions[0], fence: fences[0] };
-                        let admission1 = SetupAdmission { allowed: Cell::new(true), camera: cameras[1], admission: admissions[1], fence: fences[1] };
-                        let mut owner0 = setup::Owner { cx, task, clock, effects: &mut effects, leases: &leases,
-                            approval: &SetupApproval, admission: &admission0, handoff_authority: &Guard(true) };
-                        let mut owner1 = setup::Owner { cx, task, clock, effects: &mut other_effects, leases: &leases,
-                            approval: &SetupApproval, admission: &admission1, handoff_authority: &Guard(true) };
+                        let io0 = MeteredIo::with_clock(
+                            PausedRead {
+                                inner: socket0,
+                                allowed: Rc::new(Cell::new(false)),
+                            },
+                            clock,
+                            &resources[0],
+                            4096,
+                        )?;
+                        let io1 = MeteredIo::with_clock(
+                            PausedRead {
+                                inner: socket1,
+                                allowed: Rc::new(Cell::new(false)),
+                            },
+                            clock,
+                            &resources[1],
+                            4096,
+                        )?;
+                        let mut http0 = camera_http::Owner::new(
+                            io0,
+                            task,
+                            cx,
+                            clock,
+                            &SetupHttpAccess,
+                            peers[0],
+                            1,
+                            &resources[0],
+                        )?;
+                        let mut http1 = camera_http::Owner::new(
+                            io1,
+                            task,
+                            cx,
+                            clock,
+                            &SetupHttpAccess,
+                            peers[1],
+                            1,
+                            &resources[1],
+                        )?;
+                        let admission0 = SetupAdmission {
+                            allowed: Cell::new(true),
+                            camera: cameras[0],
+                            admission: admissions[0],
+                            fence: fences[0],
+                        };
+                        let admission1 = SetupAdmission {
+                            allowed: Cell::new(true),
+                            camera: cameras[1],
+                            admission: admissions[1],
+                            fence: fences[1],
+                        };
+                        let mut owner0 = setup::Owner {
+                            cx,
+                            task,
+                            clock,
+                            effects: &mut effects,
+                            leases: &leases,
+                            approval: &SetupApproval,
+                            admission: &admission0,
+                            handoff_authority: &Guard(true),
+                        };
+                        let mut owner1 = setup::Owner {
+                            cx,
+                            task,
+                            clock,
+                            effects: &mut other_effects,
+                            leases: &leases,
+                            approval: &SetupApproval,
+                            admission: &admission1,
+                            handoff_authority: &Guard(true),
+                        };
                         let mut trace0 = setup::Trace::default();
                         let mut trace1 = setup::Trace::default();
                         let op0 = OperationId::parse("operation:fleet-capacity-0")?;
                         let op1 = OperationId::parse("operation:fleet-capacity-1")?;
-                        let mut first = Box::pin(parallel_fleet.setup_one(0, &mut owner0, &control, control.local_addr().port(),
-                            &mut http0, certificates[0], handles[0], br#"{"username":"fixture","password":"synthetic"}"#,
-                            fences[0], destination, &op0, Framing::ContentLength, Duration::from_secs(5), &mut trace0));
-                        let mut second = Box::pin(parallel_fleet.setup_one(1, &mut owner1, &control, control.local_addr().port(),
-                            &mut http1, certificates[1], handles[1], br#"{"username":"fixture","password":"synthetic"}"#,
-                            fences[1], destination, &op1, Framing::ContentLength, Duration::from_secs(5), &mut trace1));
+                        let mut first = Box::pin(parallel_fleet.setup_one(
+                            0,
+                            &mut owner0,
+                            &control,
+                            control.local_addr().port(),
+                            &mut http0,
+                            certificates[0],
+                            handles[0],
+                            br#"{"username":"fixture","password":"synthetic"}"#,
+                            fences[0],
+                            destination,
+                            &op0,
+                            Framing::ContentLength,
+                            Duration::from_secs(5),
+                            &mut trace0,
+                        ));
+                        let mut second = Box::pin(parallel_fleet.setup_one(
+                            1,
+                            &mut owner1,
+                            &control,
+                            control.local_addr().port(),
+                            &mut http1,
+                            certificates[1],
+                            handles[1],
+                            br#"{"username":"fixture","password":"synthetic"}"#,
+                            fences[1],
+                            destination,
+                            &op1,
+                            Framing::ContentLength,
+                            Duration::from_secs(5),
+                            &mut trace1,
+                        ));
                         poll_fn(|task_context| {
                             assert!(matches!(first.as_mut().poll(task_context), Poll::Pending));
                             assert!(matches!(second.as_mut().poll(task_context), Poll::Pending));
                             Poll::Ready(())
-                        }).await;
-                        let mut router = Router::new(&parallel_fleet, &control, 1, 4096, Duration::from_secs(5))?;
+                        })
+                        .await;
+                        let mut router = Router::new(
+                            &parallel_fleet,
+                            &control,
+                            1,
+                            4096,
+                            Duration::from_secs(5),
+                        )?;
                         let client0 = connect_from(cx, peers[0], control.local_addr()).await?;
                         let mut next = Box::pin(router.next());
                         poll_fn(|task_context| match next.as_mut().poll(task_context) {
                             Poll::Pending if parallel_fleet.route_pending(0) => Poll::Ready(()),
                             Poll::Pending => Poll::Pending,
-                            Poll::Ready(_) => panic!("first capacity connection unexpectedly completed"),
-                        }).await;
+                            Poll::Ready(_) => {
+                                panic!("first capacity connection unexpectedly completed")
+                            }
+                        })
+                        .await;
                         drop(next);
                         assert_eq!(router.pending_len(), 1);
                         let client1 = connect_from(cx, peers[1], control.local_addr()).await?;
-                        assert!(matches!(router.next().await, RouterEvent::Refused {
-                            index: Some(1), reason: RouteError::PendingCapacity
-                        }));
+                        assert!(matches!(
+                            router.next().await,
+                            RouterEvent::Refused {
+                                index: Some(1),
+                                reason: RouteError::PendingCapacity
+                            }
+                        ));
                         assert!(!parallel_fleet.route_pending(1));
                         drop(router);
                         assert!(!parallel_fleet.route_pending(0));
                         drop((client0, client1, first, second));
-                        assert!(matches!(parallel_fleet.state(0), Some(State::InFlight { .. })));
-                        assert!(matches!(parallel_fleet.state(1), Some(State::InFlight { .. })));
+                        assert!(matches!(
+                            parallel_fleet.state(0),
+                            Some(State::InFlight { .. })
+                        ));
+                        assert!(matches!(
+                            parallel_fleet.state(1),
+                            Some(State::InFlight { .. })
+                        ));
                         drop((http0, http1));
-                        for peer in http_peers { peer.join().map_err(|_| "capacity fixture panic")??; }
+                        for peer in http_peers {
+                            peer.join().map_err(|_| "capacity fixture panic")??;
+                        }
                     }
                     for index in 0..2 {
                         assert_eq!(fleet.next_ready(), Some(index));
@@ -3018,41 +3358,105 @@ fn two_discovered_cameras_share_one_controller_listener() -> Test {
                             let http_listener = TcpListener::bind("127.0.0.1:0").await?;
                             let address = http_listener.local_addr()?;
                             let peer = std::thread::spawn(move || -> std::io::Result<()> {
-                                let mut socket = std::net::TcpStream::connect_timeout(&address, Duration::from_secs(5))?;
+                                let mut socket = std::net::TcpStream::connect_timeout(
+                                    &address,
+                                    Duration::from_secs(5),
+                                )?;
                                 socket.set_read_timeout(Some(Duration::from_secs(5)))?;
                                 let mut input = [0u8; 2048];
-                                loop { if socket.read(&mut input)? == 0 { return Ok(()); } }
+                                loop {
+                                    if socket.read(&mut input)? == 0 {
+                                        return Ok(());
+                                    }
+                                }
                             });
-                            let (socket, _) = timeout(cx.now(), Duration::from_secs(5), http_listener.accept()).await??;
-                            let io = MeteredIo::with_clock(PausedRead { inner: socket, allowed: Rc::new(Cell::new(false)) }, clock, &resources[1], 4096)?;
-                            let mut http = camera_http::Owner::new(io, task, cx, clock, &SetupHttpAccess,
-                                peers[1], 1, &resources[1])?;
-                            let admission = SetupAdmission { allowed: Cell::new(true), camera: cameras[1],
-                                admission: admissions[1], fence: fences[1] };
-                            let mut owner = setup::Owner { cx, task, clock, effects: &mut effects,
-                                leases: &leases, approval: &SetupApproval, admission: &admission,
-                                handoff_authority: &Guard(true) };
+                            let (socket, _) =
+                                timeout(cx.now(), Duration::from_secs(5), http_listener.accept())
+                                    .await??;
+                            let io = MeteredIo::with_clock(
+                                PausedRead {
+                                    inner: socket,
+                                    allowed: Rc::new(Cell::new(false)),
+                                },
+                                clock,
+                                &resources[1],
+                                4096,
+                            )?;
+                            let mut http = camera_http::Owner::new(
+                                io,
+                                task,
+                                cx,
+                                clock,
+                                &SetupHttpAccess,
+                                peers[1],
+                                1,
+                                &resources[1],
+                            )?;
+                            let admission = SetupAdmission {
+                                allowed: Cell::new(true),
+                                camera: cameras[1],
+                                admission: admissions[1],
+                                fence: fences[1],
+                            };
+                            let mut owner = setup::Owner {
+                                cx,
+                                task,
+                                clock,
+                                effects: &mut effects,
+                                leases: &leases,
+                                approval: &SetupApproval,
+                                admission: &admission,
+                                handoff_authority: &Guard(true),
+                            };
                             let mut trace = setup::Trace::default();
                             let operation = OperationId::parse("operation:fleet-pair-interrupted")?;
-                            let mut setup = Box::pin(cancelled_fleet.setup_one(0, &mut owner, &control,
-                                control.local_addr().port(), &mut http, certificates[1], handles[1],
-                                br#"{"username":"fixture","password":"synthetic"}"#, fences[1], destination,
-                                &operation, Framing::ContentLength, Duration::from_secs(5), &mut trace));
+                            let mut setup = Box::pin(cancelled_fleet.setup_one(
+                                0,
+                                &mut owner,
+                                &control,
+                                control.local_addr().port(),
+                                &mut http,
+                                certificates[1],
+                                handles[1],
+                                br#"{"username":"fixture","password":"synthetic"}"#,
+                                fences[1],
+                                destination,
+                                &operation,
+                                Framing::ContentLength,
+                                Duration::from_secs(5),
+                                &mut trace,
+                            ));
                             poll_fn(|task_context| match setup.as_mut().poll(task_context) {
                                 Poll::Pending => Poll::Ready(()),
-                                Poll::Ready(_) => panic!("cancel fixture setup unexpectedly completed"),
-                            }).await;
-                            let early_client = connect_from(cx, peers[1], control.local_addr()).await?;
-                            let mut early = Box::pin(cancelled_fleet.accept_next(&control, 4096, Duration::from_secs(5)));
+                                Poll::Ready(_) => {
+                                    panic!("cancel fixture setup unexpectedly completed")
+                                }
+                            })
+                            .await;
+                            let early_client =
+                                connect_from(cx, peers[1], control.local_addr()).await?;
+                            let mut early = Box::pin(cancelled_fleet.accept_next(
+                                &control,
+                                4096,
+                                Duration::from_secs(5),
+                            ));
                             poll_fn(|task_context| match early.as_mut().poll(task_context) {
-                                Poll::Pending if cancelled_fleet.route_pending(0) => Poll::Ready(()),
+                                Poll::Pending if cancelled_fleet.route_pending(0) => {
+                                    Poll::Ready(())
+                                }
                                 Poll::Pending => Poll::Pending,
-                                Poll::Ready(_) => panic!("cancel fixture connection unexpectedly completed"),
-                            }).await;
+                                Poll::Ready(_) => {
+                                    panic!("cancel fixture connection unexpectedly completed")
+                                }
+                            })
+                            .await;
                             drop(setup);
                             assert!(matches!(early.await, Err(RouteError::SetupInterrupted)));
                             assert!(!cancelled_fleet.route_pending(0));
-                            assert!(matches!(cancelled_fleet.state(0), Some(State::InFlight { .. })));
+                            assert!(matches!(
+                                cancelled_fleet.state(0),
+                                Some(State::InFlight { .. })
+                            ));
                             drop(early_client);
                             drop(http);
                             peer.join().map_err(|_| "cancel fixture panic")??;
@@ -3062,58 +3466,144 @@ fn two_discovered_cameras_share_one_controller_listener() -> Test {
                             let http_listener = TcpListener::bind("127.0.0.1:0").await?;
                             let address = http_listener.local_addr()?;
                             let port_claim = Arc::clone(&controller_port);
-                            let peer = std::thread::spawn(move || http_fixture(
-                                address, false, false, false, Framing::ContentLength, false, false,
-                                true, destination, None, Some((port_claim, 0)), false, 0, false,
-                            ));
-                            let (socket, _) = timeout(cx.now(), Duration::from_secs(5), http_listener.accept()).await??;
+                            let peer = std::thread::spawn(move || {
+                                http_fixture(
+                                    address,
+                                    false,
+                                    false,
+                                    false,
+                                    Framing::ContentLength,
+                                    false,
+                                    false,
+                                    true,
+                                    destination,
+                                    None,
+                                    Some((port_claim, 0)),
+                                    false,
+                                    0,
+                                    false,
+                                )
+                            });
+                            let (socket, _) =
+                                timeout(cx.now(), Duration::from_secs(5), http_listener.accept())
+                                    .await??;
                             let allowed = Rc::new(Cell::new(false));
-                            let io = MeteredIo::with_clock(PausedRead { inner: socket, allowed: Rc::clone(&allowed) }, clock, &resources[1], 4096)?;
-                            let mut http = camera_http::Owner::new(io, task, cx, clock, &SetupHttpAccess,
-                                peers[1], 1, &resources[1])?;
-                            let admission = SetupAdmission { allowed: Cell::new(true), camera: cameras[1],
-                                admission: admissions[1], fence: fences[1] };
-                            let mut owner = setup::Owner { cx, task, clock, effects: &mut effects,
-                                leases: &leases, approval: &SetupApproval, admission: &admission,
-                                handoff_authority: &Guard(true) };
+                            let io = MeteredIo::with_clock(
+                                PausedRead {
+                                    inner: socket,
+                                    allowed: Rc::clone(&allowed),
+                                },
+                                clock,
+                                &resources[1],
+                                4096,
+                            )?;
+                            let mut http = camera_http::Owner::new(
+                                io,
+                                task,
+                                cx,
+                                clock,
+                                &SetupHttpAccess,
+                                peers[1],
+                                1,
+                                &resources[1],
+                            )?;
+                            let admission = SetupAdmission {
+                                allowed: Cell::new(true),
+                                camera: cameras[1],
+                                admission: admissions[1],
+                                fence: fences[1],
+                            };
+                            let mut owner = setup::Owner {
+                                cx,
+                                task,
+                                clock,
+                                effects: &mut effects,
+                                leases: &leases,
+                                approval: &SetupApproval,
+                                admission: &admission,
+                                handoff_authority: &Guard(true),
+                            };
                             let mut trace = setup::Trace::default();
                             let operation = OperationId::parse("operation:fleet-pair-rejected")?;
-                            let mut setup = Box::pin(rejected_fleet.setup_one(0, &mut owner, &control,
-                                control.local_addr().port(), &mut http, certificates[1], handles[1],
-                                br#"{"username":"fixture","password":"synthetic"}"#, fences[1], destination,
-                                &operation, Framing::ContentLength, Duration::from_secs(5), &mut trace));
+                            let mut setup = Box::pin(rejected_fleet.setup_one(
+                                0,
+                                &mut owner,
+                                &control,
+                                control.local_addr().port(),
+                                &mut http,
+                                certificates[1],
+                                handles[1],
+                                br#"{"username":"fixture","password":"synthetic"}"#,
+                                fences[1],
+                                destination,
+                                &operation,
+                                Framing::ContentLength,
+                                Duration::from_secs(5),
+                                &mut trace,
+                            ));
                             poll_fn(|task_context| match setup.as_mut().poll(task_context) {
                                 Poll::Pending => Poll::Ready(()),
-                                Poll::Ready(_) => panic!("rejection fixture setup unexpectedly completed"),
-                            }).await;
-                            let mut abandoned_client = connect_from(cx, peers[1], control.local_addr()).await?;
-                            let mut abandoned_router = Router::new(&rejected_fleet, &control, 1, 4096, Duration::from_secs(5))?;
+                                Poll::Ready(_) => {
+                                    panic!("rejection fixture setup unexpectedly completed")
+                                }
+                            })
+                            .await;
+                            let mut abandoned_client =
+                                connect_from(cx, peers[1], control.local_addr()).await?;
+                            let mut abandoned_router = Router::new(
+                                &rejected_fleet,
+                                &control,
+                                1,
+                                4096,
+                                Duration::from_secs(5),
+                            )?;
                             let mut next = Box::pin(abandoned_router.next());
                             poll_fn(|task_context| match next.as_mut().poll(task_context) {
                                 Poll::Pending if rejected_fleet.route_pending(0) => Poll::Ready(()),
                                 Poll::Pending => Poll::Pending,
                                 Poll::Ready(_) => panic!("router unexpectedly completed"),
-                            }).await;
+                            })
+                            .await;
                             drop(next);
                             assert_eq!(abandoned_router.pending_len(), 1);
                             drop(abandoned_router);
                             assert!(!rejected_fleet.route_pending(0));
                             let mut byte = [0u8; 1];
-                            let closed = timeout(cx.now(), Duration::from_secs(5), abandoned_client.read(&mut byte)).await?;
+                            let closed = timeout(
+                                cx.now(),
+                                Duration::from_secs(5),
+                                abandoned_client.read(&mut byte),
+                            )
+                            .await?;
                             assert!(matches!(closed, Ok(0)));
                             drop(abandoned_client);
-                            let early_client = connect_from(cx, peers[1], control.local_addr()).await?;
-                            let mut early = Box::pin(rejected_fleet.accept_next(&control, 4096, Duration::from_secs(5)));
+                            let early_client =
+                                connect_from(cx, peers[1], control.local_addr()).await?;
+                            let mut early = Box::pin(rejected_fleet.accept_next(
+                                &control,
+                                4096,
+                                Duration::from_secs(5),
+                            ));
                             poll_fn(|task_context| match early.as_mut().poll(task_context) {
                                 Poll::Pending if rejected_fleet.route_pending(0) => Poll::Ready(()),
                                 Poll::Pending => Poll::Pending,
-                                Poll::Ready(_) => panic!("rejection fixture connection unexpectedly completed"),
-                            }).await;
+                                Poll::Ready(_) => {
+                                    panic!("rejection fixture connection unexpectedly completed")
+                                }
+                            })
+                            .await;
                             allowed.set(true);
                             let rejected_outcome = setup.await?;
-                            assert!(matches!(rejected_outcome, setup::Outcome::Observed {
-                                response: HandoffResponseObservation::Object { success: Some(false), .. }, ..
-                            }));
+                            assert!(matches!(
+                                rejected_outcome,
+                                setup::Outcome::Observed {
+                                    response: HandoffResponseObservation::Object {
+                                        success: Some(false),
+                                        ..
+                                    },
+                                    ..
+                                }
+                            ));
                             assert!(matches!(early.await, Err(RouteError::SetupRejected)));
                             assert!(!rejected_fleet.route_pending(0));
                             drop(early_client);
@@ -3123,65 +3613,148 @@ fn two_discovered_cameras_share_one_controller_listener() -> Test {
                         let http_listener = TcpListener::bind("127.0.0.1:0").await?;
                         let addr = http_listener.local_addr()?;
                         let port_claim = Arc::clone(&controller_port);
-                        let peer = std::thread::spawn(move || http_fixture(
-                            addr, false, false, false, Framing::ContentLength, false, false,
-                            true, destination, None, Some((port_claim, 0)), true, 0, false,
-                        ));
-                        let (socket, _) = timeout(cx.now(), Duration::from_secs(5), http_listener.accept()).await??;
+                        let peer = std::thread::spawn(move || {
+                            http_fixture(
+                                addr,
+                                false,
+                                false,
+                                false,
+                                Framing::ContentLength,
+                                false,
+                                false,
+                                true,
+                                destination,
+                                None,
+                                Some((port_claim, 0)),
+                                true,
+                                0,
+                                false,
+                            )
+                        });
+                        let (socket, _) =
+                            timeout(cx.now(), Duration::from_secs(5), http_listener.accept())
+                                .await??;
                         let allowed = Rc::new(Cell::new(index == 0));
-                        let io = MeteredIo::with_clock(PausedRead { inner: socket, allowed: Rc::clone(&allowed) }, clock, &resources[index], 4096)?;
-                        let mut http = camera_http::Owner::new(io, task, cx, clock, &SetupHttpAccess,
-                            peers[index], 1, &resources[index])?;
-                        let admission = SetupAdmission { allowed: Cell::new(true), camera: cameras[index],
-                            admission: admissions[index], fence: fences[index] };
-                        let mut owner = setup::Owner { cx, task, clock, effects: &mut effects,
-                            leases: &leases, approval: &SetupApproval, admission: &admission,
-                            handoff_authority: &Guard(true) };
+                        let io = MeteredIo::with_clock(
+                            PausedRead {
+                                inner: socket,
+                                allowed: Rc::clone(&allowed),
+                            },
+                            clock,
+                            &resources[index],
+                            4096,
+                        )?;
+                        let mut http = camera_http::Owner::new(
+                            io,
+                            task,
+                            cx,
+                            clock,
+                            &SetupHttpAccess,
+                            peers[index],
+                            1,
+                            &resources[index],
+                        )?;
+                        let admission = SetupAdmission {
+                            allowed: Cell::new(true),
+                            camera: cameras[index],
+                            admission: admissions[index],
+                            fence: fences[index],
+                        };
+                        let mut owner = setup::Owner {
+                            cx,
+                            task,
+                            clock,
+                            effects: &mut effects,
+                            leases: &leases,
+                            approval: &SetupApproval,
+                            admission: &admission,
+                            handoff_authority: &Guard(true),
+                        };
                         let mut trace = setup::Trace::default();
-                        let setup = fleet.setup_available(&mut owner, &control, control.local_addr().port(),
-                            &mut http, certificates[index], handles[index], br#"{"username":"fixture","password":"synthetic"}"#,
-                            fences[index], destination, &operations[index], Framing::ContentLength,
-                            Duration::from_secs(5), &mut trace);
+                        let setup = fleet.setup_available(
+                            &mut owner,
+                            &control,
+                            control.local_addr().port(),
+                            &mut http,
+                            certificates[index],
+                            handles[index],
+                            br#"{"username":"fixture","password":"synthetic"}"#,
+                            fences[index],
+                            destination,
+                            &operations[index],
+                            Framing::ContentLength,
+                            Duration::from_secs(5),
+                            &mut trace,
+                        );
                         let mut setup = Box::pin(setup);
                         let mut held = None;
                         if index == 1 {
                             poll_fn(|task_context| match setup.as_mut().poll(task_context) {
                                 Poll::Pending => Poll::Ready(()),
                                 Poll::Ready(_) => panic!("paused setup unexpectedly completed"),
-                            }).await;
+                            })
+                            .await;
                             assert!(matches!(fleet.state(1), Some(State::InFlight { .. })));
-                            let timed_client = connect_from(cx, peers[1], control.local_addr()).await?;
-                            assert!(matches!(fleet.accept_next(&control, 4096, Duration::from_millis(50)).await,
-                                Err(RouteError::SetupDeadline)));
+                            let timed_client =
+                                connect_from(cx, peers[1], control.local_addr()).await?;
+                            assert!(matches!(
+                                fleet
+                                    .accept_next(&control, 4096, Duration::from_millis(50))
+                                    .await,
+                                Err(RouteError::SetupDeadline)
+                            ));
                             assert!(!fleet.route_pending(1));
                             drop(timed_client);
-                            let lazy_client = connect_from(cx, peers[1], control.local_addr()).await?;
-                            let lazy = match fleet.accept_one(&control, 4096, Duration::from_millis(50)).await? {
+                            let lazy_client =
+                                connect_from(cx, peers[1], control.local_addr()).await?;
+                            let lazy = match fleet
+                                .accept_one(&control, 4096, Duration::from_millis(50))
+                                .await?
+                            {
                                 AcceptedRoute::Waiting(route) => route,
-                                AcceptedRoute::Ready(_) => return Err("early connection routed before setup".into()),
+                                AcceptedRoute::Ready(_) => {
+                                    return Err("early connection routed before setup".into());
+                                }
                             };
-                            assert!(timeout(cx.now(), Duration::from_millis(80), std::future::pending::<()>()).await.is_err());
-                            assert!(matches!(lazy.resolve().await, Err(RouteError::SetupDeadline)));
+                            assert!(
+                                timeout(
+                                    cx.now(),
+                                    Duration::from_millis(80),
+                                    std::future::pending::<()>()
+                                )
+                                .await
+                                .is_err()
+                            );
+                            assert!(matches!(
+                                lazy.resolve().await,
+                                Err(RouteError::SetupDeadline)
+                            ));
                             assert!(!fleet.route_pending(1));
                             drop(lazy_client);
-                            let abandoned_client = connect_from(cx, peers[1], control.local_addr()).await?;
-                            let mut abandoned = Box::pin(fleet.accept_next(&control, 4096, Duration::from_secs(5)));
+                            let abandoned_client =
+                                connect_from(cx, peers[1], control.local_addr()).await?;
+                            let mut abandoned =
+                                Box::pin(fleet.accept_next(&control, 4096, Duration::from_secs(5)));
                             poll_fn(|task_context| match abandoned.as_mut().poll(task_context) {
                                 Poll::Pending if fleet.route_pending(1) => Poll::Ready(()),
                                 Poll::Pending => Poll::Pending,
                                 Poll::Ready(_) => panic!("early connection unexpectedly completed"),
-                            }).await;
+                            })
+                            .await;
                             drop(abandoned);
                             assert!(!fleet.route_pending(1));
                             drop(abandoned_client);
-                            let early_client = connect_from(cx, peers[1], control.local_addr()).await?;
-                            let mut router = Router::new(&fleet, &control, 1, 4096, Duration::from_secs(5))?;
+                            let early_client =
+                                connect_from(cx, peers[1], control.local_addr()).await?;
+                            let mut router =
+                                Router::new(&fleet, &control, 1, 4096, Duration::from_secs(5))?;
                             let mut next = Box::pin(router.next());
                             poll_fn(|task_context| match next.as_mut().poll(task_context) {
                                 Poll::Pending if fleet.route_pending(1) => Poll::Ready(()),
                                 Poll::Pending => Poll::Pending,
                                 Poll::Ready(_) => panic!("early connection unexpectedly completed"),
-                            }).await;
+                            })
+                            .await;
                             // Refresh while setup and the router's pending next
                             // future both still own the early socket. Report
                             // order changes must not reassign that connection.
@@ -3191,14 +3764,23 @@ fn two_discovered_cameras_share_one_controller_listener() -> Test {
                             assert!(fleet.route_pending(1));
                             drop(next);
                             assert_eq!(router.pending_len(), 1);
-                            let duplicate = connect_from(cx, peers[1], control.local_addr()).await?;
-                            assert!(matches!(router.next().await,
-                                RouterEvent::Refused { reason: RouteError::AlreadyPending, .. }));
+                            let duplicate =
+                                connect_from(cx, peers[1], control.local_addr()).await?;
+                            assert!(matches!(
+                                router.next().await,
+                                RouterEvent::Refused {
+                                    reason: RouteError::AlreadyPending,
+                                    ..
+                                }
+                            ));
                             drop(duplicate);
-                            let mut client = connect_from(cx, peers[0], control.local_addr()).await?;
+                            let mut client =
+                                connect_from(cx, peers[0], control.local_addr()).await?;
                             let mut routed = match router.next().await {
                                 RouterEvent::Ready(route) => route,
-                                RouterEvent::Refused { reason, .. } => return Err(format!("ready route refused: {reason:?}").into()),
+                                RouterEvent::Refused { reason, .. } => {
+                                    return Err(format!("ready route refused: {reason:?}").into());
+                                }
                             };
                             assert_eq!(routed.enrollment_index(), 0);
                             client.write_all(b"live").await?;
@@ -3209,7 +3791,9 @@ fn two_discovered_cameras_share_one_controller_listener() -> Test {
                             drop(client);
                             if stale_pending {
                                 let mut changed = report.clone();
-                                changed.cameras.retain(|candidate| candidate.mac() != Some(macs[1]));
+                                changed
+                                    .cameras
+                                    .retain(|candidate| candidate.mac() != Some(macs[1]));
                                 fleet.refresh(changed)?;
                             }
                             allowed.set(true);
@@ -3219,7 +3803,9 @@ fn two_discovered_cameras_share_one_controller_listener() -> Test {
                         assert_eq!(selected, index);
                         if let Some((mut router, mut client)) = held {
                             let later = connect_from(cx, peers[1], control.local_addr()).await?;
-                            let later_result = fleet.accept_next(&control, 4096, Duration::from_secs(5)).await;
+                            let later_result = fleet
+                                .accept_next(&control, 4096, Duration::from_secs(5))
+                                .await;
                             if stale_pending {
                                 assert!(matches!(later_result, Err(RouteError::UnknownPeer)));
                             } else {
@@ -3227,40 +3813,56 @@ fn two_discovered_cameras_share_one_controller_listener() -> Test {
                             }
                             drop(later);
                             if stale_pending {
-                                assert!(matches!(router.next().await, RouterEvent::Refused {
-                                    index: Some(1), reason: RouteError::ClaimChanged
-                                }));
+                                assert!(matches!(
+                                    router.next().await,
+                                    RouterEvent::Refused {
+                                        index: Some(1),
+                                        reason: RouteError::ClaimChanged
+                                    }
+                                ));
                                 assert_eq!(router.pending_len(), 0);
                                 assert!(!fleet.route_pending(1));
                                 drop(client);
                                 fleet.refresh(report.clone())?;
-                                let mut restored = connect_from(cx, peers[1], control.local_addr()).await?;
-                                let mut routed = fleet.accept_next(&control, 4096, Duration::from_secs(5)).await?;
+                                let mut restored =
+                                    connect_from(cx, peers[1], control.local_addr()).await?;
+                                let mut routed = fleet
+                                    .accept_next(&control, 4096, Duration::from_secs(5))
+                                    .await?;
                                 assert_eq!(routed.enrollment_index(), 1);
                                 restored.write_all(b"early").await?;
                                 let mut received = [0u8; 5];
                                 routed.read_exact(&mut received).await?;
                                 assert_eq!(&received, b"early");
                             } else {
-                            let mut routed = match router.next().await {
-                                RouterEvent::Ready(route) => route,
-                                RouterEvent::Refused { reason, .. } => return Err(format!("early route refused: {reason:?}").into()),
-                            };
-                            assert_eq!(router.pending_len(), 0);
-                            assert_eq!(routed.enrollment_index(), 1);
-                            assert!(!fleet.route_pending(1));
-                            client.write_all(b"early").await?;
-                            let mut received = [0u8; 5];
-                            routed.read_exact(&mut received).await?;
-                            assert_eq!(&received, b"early");
+                                let mut routed = match router.next().await {
+                                    RouterEvent::Ready(route) => route,
+                                    RouterEvent::Refused { reason, .. } => {
+                                        return Err(
+                                            format!("early route refused: {reason:?}").into()
+                                        );
+                                    }
+                                };
+                                assert_eq!(router.pending_len(), 0);
+                                assert_eq!(routed.enrollment_index(), 1);
+                                assert!(!fleet.route_pending(1));
+                                client.write_all(b"early").await?;
+                                let mut received = [0u8; 5];
+                                routed.read_exact(&mut received).await?;
+                                assert_eq!(&received, b"early");
                             }
                         }
                         assert!(matches!(fleet.state(index), Some(State::Finished { .. })));
                         assert!(fleet.route_ready(index));
                         match outcome {
-                            setup::Outcome::Observed { permit, readback, .. } => {
+                            setup::Outcome::Observed {
+                                permit, readback, ..
+                            } => {
                                 assert_eq!(permit.operation(), &operations[index]);
-                                assert_eq!(readback, fss_reference::unifi_direct::handoff::Readback::Requested);
+                                assert_eq!(
+                                    readback,
+                                    fss_reference::unifi_direct::handoff::Readback::Requested
+                                );
                             }
                             _ => return Err("fleet pair lost setup outcome".into()),
                         }
@@ -3274,11 +3876,19 @@ fn two_discovered_cameras_share_one_controller_listener() -> Test {
                     rediscovery.cameras.reverse();
                     fleet.refresh(rediscovery)?;
                     assert!(fleet.next_ready().is_none());
-                    assert!(matches!(fleet.accept_next(&control, 4096, Duration::from_millis(50)).await,
-                        Err(RouteError::Listener(fss_reference::unifi_direct::listener::Error::Deadline))));
+                    assert!(matches!(
+                        fleet
+                            .accept_next(&control, 4096, Duration::from_millis(50))
+                            .await,
+                        Err(RouteError::Listener(
+                            fss_reference::unifi_direct::listener::Error::Deadline
+                        ))
+                    ));
                     let endpoint = control.local_addr();
                     let mut client_two = connect_from(cx, peers[1], endpoint).await?;
-                    let mut route_two = fleet.accept_next(&control, 4096, Duration::from_secs(5)).await?;
+                    let mut route_two = fleet
+                        .accept_next(&control, 4096, Duration::from_secs(5))
+                        .await?;
                     assert_eq!(route_two.enrollment_index(), 1);
                     assert_eq!(*route_two.gate().source().ip(), peers[1]);
                     client_two.write_all(b"two").await?;
@@ -3286,29 +3896,56 @@ fn two_discovered_cameras_share_one_controller_listener() -> Test {
                     route_two.read_exact(&mut received).await?;
                     assert_eq!(&received, b"two");
                     let mut client_one = connect_from(cx, peers[0], endpoint).await?;
-                    let mut route_one = fleet.accept_next(&control, 4096, Duration::from_secs(5)).await?;
+                    let mut route_one = fleet
+                        .accept_next(&control, 4096, Duration::from_secs(5))
+                        .await?;
                     assert_eq!(route_one.enrollment_index(), 0);
                     client_one.write_all(b"one").await?;
                     route_one.read_exact(&mut received).await?;
                     assert_eq!(&received, b"one");
                     let duplicate = connect_from(cx, peers[0], endpoint).await?;
-                    assert!(matches!(fleet.accept_next(&control, 4096, Duration::from_secs(5)).await,
-                        Err(RouteError::AlreadyActive)));
+                    assert!(matches!(
+                        fleet
+                            .accept_next(&control, 4096, Duration::from_secs(5))
+                            .await,
+                        Err(RouteError::AlreadyActive)
+                    ));
                     drop(duplicate);
                     let unknown = connect_from(cx, Ipv4Addr::new(127, 0, 0, 3), endpoint).await?;
-                    assert!(matches!(fleet.accept_next(&control, 4096, Duration::from_secs(5)).await,
-                        Err(RouteError::UnknownPeer)));
+                    assert!(matches!(
+                        fleet
+                            .accept_next(&control, 4096, Duration::from_secs(5))
+                            .await,
+                        Err(RouteError::UnknownPeer)
+                    ));
                     drop(unknown);
                     shared.store(false, std::sync::atomic::Ordering::Release);
-                    assert_eq!(route_one.read(&mut received).await.unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
-                    assert_eq!(route_two.read(&mut received).await.unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
+                    assert_eq!(
+                        route_one.read(&mut received).await.unwrap_err().kind(),
+                        std::io::ErrorKind::PermissionDenied
+                    );
+                    assert_eq!(
+                        route_two.read(&mut received).await.unwrap_err().kind(),
+                        std::io::ErrorKind::PermissionDenied
+                    );
                     shared.store(true, std::sync::atomic::Ordering::Release);
-                    assert!(route_one.gate().check().is_err(), "revoked route must stay fenced");
+                    assert!(
+                        route_one.gate().check().is_err(),
+                        "revoked route must stay fenced"
+                    );
                     drop(route_one);
                     let replacement = connect_from(cx, peers[0], endpoint).await?;
-                    let replacement_route = fleet.accept_next(&control, 4096, Duration::from_secs(5)).await?;
+                    let replacement_route = fleet
+                        .accept_next(&control, 4096, Duration::from_secs(5))
+                        .await?;
                     assert_eq!(replacement_route.enrollment_index(), 0);
-                    drop((route_two, replacement_route, client_one, client_two, replacement));
+                    drop((
+                        route_two,
+                        replacement_route,
+                        client_one,
+                        client_two,
+                        replacement,
+                    ));
 
                     // A later scoped discovery finds the first camera at a new
                     // source address. No setup operation is replayed, and the
@@ -3323,18 +3960,33 @@ fn two_discovered_cameras_share_one_controller_listener() -> Test {
                         socket.send_to(&discovery_packet_for(macs[0], moved), peer)?;
                         Ok(())
                     });
-                    let moved_cfg = discovery::Config::new(peers[0], 8, SocketAddrV4::new(moved, port),
-                        "fixture:fleet-discovery", Duration::from_millis(300), 8)?;
-                    let moved_window = discovery::discover(task, cx, clock.now()?, &moved_cfg).await?;
-                    responder.join().map_err(|_| "moved discovery thread panic")??;
+                    let moved_cfg = discovery::Config::new(
+                        peers[0],
+                        8,
+                        SocketAddrV4::new(moved, port),
+                        "fixture:fleet-discovery",
+                        Duration::from_millis(300),
+                        8,
+                    )?;
+                    let moved_window =
+                        discovery::discover(task, cx, clock.now()?, &moved_cfg).await?;
+                    responder
+                        .join()
+                        .map_err(|_| "moved discovery thread panic")??;
                     fleet.refresh(moved_window)?;
                     assert_eq!(fleet.operation(0), Some(&operations[0]));
                     let stale = connect_from(cx, peers[0], endpoint).await?;
-                    assert!(matches!(fleet.accept_next(&control, 4096, Duration::from_secs(5)).await,
-                        Err(RouteError::UnknownPeer)));
+                    assert!(matches!(
+                        fleet
+                            .accept_next(&control, 4096, Duration::from_secs(5))
+                            .await,
+                        Err(RouteError::UnknownPeer)
+                    ));
                     drop(stale);
                     let mut moved_client = connect_from(cx, moved, endpoint).await?;
-                    let mut moved_route = fleet.accept_next(&control, 4096, Duration::from_secs(5)).await?;
+                    let mut moved_route = fleet
+                        .accept_next(&control, 4096, Duration::from_secs(5))
+                        .await?;
                     assert_eq!(moved_route.enrollment_index(), 0);
                     assert_eq!(*moved_route.gate().source().ip(), moved);
                     moved_client.write_all(b"move").await?;
@@ -3343,17 +3995,33 @@ fn two_discovered_cameras_share_one_controller_listener() -> Test {
                     assert_eq!(&moved_bytes, b"move");
                     drop((moved_route, moved_client));
                     Ok(())
-                }.await;
-                let outcome = if output.is_ok() { TaskOutcome::Indeterminate("two handoffs require reconciliation".into()) }
-                    else { TaskOutcome::Failed("fleet pair fixture failed".into()) };
-                TaskCompletion { output, outcome, completed_at: TimestampNs(599_000_000_000) }
-            }).await?;
+                }
+                .await;
+                let outcome = if output.is_ok() {
+                    TaskOutcome::Indeterminate("two handoffs require reconciliation".into())
+                } else {
+                    TaskOutcome::Failed("fleet pair fixture failed".into())
+                };
+                TaskCompletion {
+                    output,
+                    outcome,
+                    completed_at: TimestampNs(599_000_000_000),
+                }
+            },
+        )
+        .await?;
         run.receipt?;
         run.output
     })?;
     for operation in &operations {
-        assert_eq!(effects.journal().operation(operation).ok_or("missing pair effect")?.state,
-            fss_core::EffectState::Committed);
+        assert_eq!(
+            effects
+                .journal()
+                .operation(operation)
+                .ok_or("missing pair effect")?
+                .state,
+            fss_core::EffectState::Committed
+        );
     }
     Ok(())
 }

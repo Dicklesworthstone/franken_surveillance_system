@@ -517,10 +517,8 @@ fn unrelated_or_forged_policy_pairs_cannot_remove_proposals_from_the_impact_scan
             // Its independent request/approval still cannot exempt it for this operation.
             target.reason.push_str("; a different policy decision");
         }
-        let proposal = RetentionPolicyRecord::from_bytes(
-            &record_bytes,
-            ContentDigest::sha256(&record_bytes),
-        )?;
+        let proposal =
+            RetentionPolicyRecord::from_bytes(&record_bytes, ContentDigest::sha256(&record_bytes))?;
         assert_eq!(proposal.basis(), f.deployment.current_anchor());
         f.deployment.stage_payload(&impact_bytes)?;
         f.deployment.stage_payload(&record_bytes)?;
@@ -531,20 +529,17 @@ fn unrelated_or_forged_policy_pairs_cannot_remove_proposals_from_the_impact_scan
             .as_ref()
             .and_then(|affected| affected.deletion.as_ref())
             .ok_or("accounted impact")?;
-        assert_eq!(current_plan.scanned_objects, original_plan.scanned_objects + 2);
+        assert_eq!(
+            current_plan.scanned_objects,
+            original_plan.scanned_objects + 2
+        );
         assert_eq!(
             current_plan.scanned_bytes,
             original_plan.scanned_bytes + impact_bytes.len() as u64 + record_bytes.len() as u64
         );
         for approval in [preview.record.approval(), proposal.approval()] {
             assert!(matches!(
-                commit_policy_change(
-                    &mut f.deployment,
-                    &target,
-                    approval,
-                    &f.authority,
-                    &f.cx,
-                ),
+                commit_policy_change(&mut f.deployment, &target, approval, &f.authority, &f.cx,),
                 Err(PolicyError::StaleApproval)
             ));
         }

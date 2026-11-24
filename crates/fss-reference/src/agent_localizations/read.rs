@@ -16,6 +16,7 @@ const OBJECT_PREFIX: &str = "object:local-root:recorded-localization-";
 const BATCH_PREFIX: &str = "batch:local-root:recorded-localization-";
 const DELTA_PREFIX: &str = "delta:local-root:recorded-localization-";
 
+#[allow(clippy::result_large_err)]
 fn identity(text: &str) -> Result<ContentDigest, LocalizationsQueryError> {
     let hex = text
         .strip_prefix(OBJECT_PREFIX)
@@ -27,7 +28,7 @@ fn identity(text: &str) -> Result<ContentDigest, LocalizationsQueryError> {
     {
         return Err(LocalizationsQueryError::InvalidRecord);
     }
-    let digest = ContentDigest::parse(&format!("sha256:{hex}"))
+    let digest = ContentDigest::parse(format!("sha256:{hex}"))
         .map_err(|_| LocalizationsQueryError::InvalidRecord)?;
     if digest.bytes() == [0; 32] {
         return Err(LocalizationsQueryError::InvalidRecord);
@@ -35,6 +36,7 @@ fn identity(text: &str) -> Result<ContentDigest, LocalizationsQueryError> {
     Ok(digest)
 }
 
+#[allow(clippy::result_large_err)]
 pub(super) fn query(
     root: &Path,
     request: &LocalizationsQueryRequest,

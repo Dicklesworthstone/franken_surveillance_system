@@ -306,6 +306,7 @@ fn checkpoint(cx: &ReplayCx, stage: &'static str) -> Result<(), DeletionError> {
 }
 
 /// Framing and canonical decoding identify candidates, never their custody role.
+#[allow(clippy::large_enum_variant)]
 enum UnheldAudit {
     Plan(DeletionPlan),
     Completion,

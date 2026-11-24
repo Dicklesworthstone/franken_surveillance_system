@@ -114,6 +114,7 @@ pub struct Parked<'scope, 'task> {
 impl<'scope, 'task> Parked<'scope, 'task> {
     /// Reattach to the same fleet without resetting the next due time.
     /// A refusal returns the unchanged token for reconciliation or retry.
+    #[allow(clippy::result_large_err)]
     pub fn resume<'fleet, 'report>(
         self,
         fleet: &'fleet fleet::Fleet<'report>,

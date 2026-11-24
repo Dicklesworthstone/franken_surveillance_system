@@ -26,11 +26,15 @@ use fss_ledger::{
     DurableLedgerLimits, DurableReferenceLedger, HostJournalReadIo, IncompleteTailPolicy,
     JournalFileMetadata, JournalReadIo,
 };
+#[cfg(not(target_os = "linux"))]
+use fss_object::SpoolIoCall;
 use fss_object::{HostSpoolIo, ObjectManifest, RecordingSpoolIo, SPOOL_LOCK_FILE, SpoolLimits};
+#[cfg(target_os = "linux")]
+use fss_publication::decode_st_dev;
 use fss_publication::{
     HostLockTableSource, LOCAL_LOCK_FILE, LOCAL_ROOTS_DIR, LOCAL_SPOOL_DIR, LocalPublicationLimits,
     LocalRootPublisher, LockTableSource, ROOT_RECORD_SUFFIX, ROOT_TEMP_SUFFIX, SlotName,
-    StringLockTableSource, decode_st_dev,
+    StringLockTableSource,
 };
 use fss_reference::doctor::{
     DoctorAffordance, DoctorIo, DoctorLimits, DoctorReport, DoctorVerdict, inspect_deployment,
@@ -466,20 +470,22 @@ fn layout_clean(dep: &Path) -> Res<String> {
 }
 
 fn writer_clean() -> String {
-    check(
-        "deployment.writer",
-        "clean",
-        "ok",
-        &[
-            ("possibly_stale", "false".to_owned()),
-            ("probe_method", s("proc_locks")),
-            ("probe_scope", s("this_host_this_pid_namespace")),
-            ("writer_state", s("not_observed")),
-            ("writer_state_after", s("not_observed")),
-        ],
-        &[],
-        None,
-    )
+    #[cfg(target_os = "linux")]
+    let fields = [
+        ("possibly_stale", "false".to_owned()),
+        ("probe_method", s("proc_locks")),
+        ("probe_scope", s("this_host_this_pid_namespace")),
+        ("writer_state", s("not_observed")),
+        ("writer_state_after", s("not_observed")),
+    ];
+    #[cfg(not(target_os = "linux"))]
+    let fields = [
+        ("possibly_stale", "false".to_owned()),
+        ("probe_method", s("shared_try_lock")),
+        ("writer_state", s("not_held")),
+        ("writer_state_after", s("not_held")),
+    ];
+    check("deployment.writer", "clean", "ok", &fields, &[], None)
 }
 
 fn obligations_counts(total: u64, pending: u64, indeterminate: u64, ops: u64) -> String {
@@ -747,30 +753,43 @@ impl JournalReadIo for RecordingJournalIo {
     }
 }
 
-/// Wraps the host lock table; on every read it records each `FLOCK` entry owned by this process
-/// on one of the deployment's lock files. The doctor holds no lock, so the record stays empty.
+/// Wraps the host lock table; on Linux it records each `FLOCK` entry owned by this process
+/// on one of the deployment's lock files, proving the doctor holds no lock. On non-Linux hosts
+/// without `/proc/locks`, it delegates the read-only shared try-lock fallback to `HostLockTableSource`.
 #[derive(Debug)]
 struct SpyLockTable {
+    #[cfg(target_os = "linux")]
     targets: Vec<(u32, u32, u64)>,
+    #[cfg(target_os = "linux")]
     reads: Mutex<usize>,
+    #[cfg(target_os = "linux")]
     own_locks: Mutex<Vec<String>>,
 }
 
 impl SpyLockTable {
     fn new(lock_files: &[PathBuf]) -> Res<Self> {
-        let mut targets = Vec::new();
-        for path in lock_files {
-            let meta = fs::metadata(path)?;
-            let (major, minor) = decode_st_dev(meta.dev());
-            targets.push((major, minor, meta.ino()));
+        #[cfg(target_os = "linux")]
+        {
+            let mut targets = Vec::new();
+            for path in lock_files {
+                let meta = fs::metadata(path)?;
+                let (major, minor) = decode_st_dev(meta.dev());
+                targets.push((major, minor, meta.ino()));
+            }
+            Ok(Self {
+                targets,
+                reads: Mutex::new(0),
+                own_locks: Mutex::new(Vec::new()),
+            })
         }
-        Ok(Self {
-            targets,
-            reads: Mutex::new(0),
-            own_locks: Mutex::new(Vec::new()),
-        })
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = lock_files;
+            Ok(Self {})
+        }
     }
 
+    #[cfg(target_os = "linux")]
     fn owns_target_lock(&self, line: &str) -> bool {
         let tokens: Vec<&str> = line.split_whitespace().filter(|t| *t != "->").collect();
         let (Some(pid), Some(dev_ino)) = (tokens.get(4), tokens.get(5)) else {
@@ -793,14 +812,17 @@ impl SpyLockTable {
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn reads(&self) -> usize {
         self.reads.lock().map(|r| *r).unwrap_or(0)
     }
 
+    #[cfg(target_os = "linux")]
     fn own_locks(&self) -> Vec<String> {
         self.own_locks.lock().map(|l| l.clone()).unwrap_or_default()
     }
 
+    #[cfg(target_os = "linux")]
     fn clear(&self) {
         if let Ok(mut locks) = self.own_locks.lock() {
             locks.clear();
@@ -814,17 +836,25 @@ impl SpyLockTable {
 impl LockTableSource for SpyLockTable {
     fn read_lock_table(&self, max_bytes: usize) -> io::Result<String> {
         let table = HostLockTableSource.read_lock_table(max_bytes)?;
-        for line in table.lines() {
-            if self.owns_target_lock(line)
-                && let Ok(mut locks) = self.own_locks.lock()
-            {
-                locks.push(line.to_owned());
+        #[cfg(target_os = "linux")]
+        {
+            for line in table.lines() {
+                if self.owns_target_lock(line)
+                    && let Ok(mut locks) = self.own_locks.lock()
+                {
+                    locks.push(line.to_owned());
+                }
+            }
+            if let Ok(mut reads) = self.reads.lock() {
+                *reads += 1;
             }
         }
-        if let Ok(mut reads) = self.reads.lock() {
-            *reads += 1;
-        }
         Ok(table)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn supports_shared_probe_fallback(&self) -> bool {
+        HostLockTableSource.supports_shared_probe_fallback()
     }
 }
 
@@ -853,19 +883,24 @@ fn clean_reference_deployment_is_healthy_exact_json() -> TestResult {
 #[test]
 fn inspection_takes_no_lock_and_makes_no_mutating_call() -> TestResult {
     let dep = init("no_lock")?;
-    let spy = SpyLockTable::new(&lock_files(&dep))?;
+    let locks = lock_files(&dep);
+    let spy = SpyLockTable::new(&locks)?;
 
-    // The spy must see a lock this process holds on a target, or its empty record proves nothing.
-    let holder = fs::File::open(dep.join(RELATIVE_PATH_OBJECTS).join(LOCAL_LOCK_FILE))?;
-    holder.try_lock()?;
-    let _ = spy.read_lock_table(1 << 20)?;
-    assert_eq!(
-        spy.own_locks().len(),
-        1,
-        "spy failed to see a held target lock"
-    );
-    drop(holder);
-    spy.clear();
+    // On Linux, the spy must see a lock this process holds on a target via /proc/locks,
+    // or its empty record proves nothing.
+    #[cfg(target_os = "linux")]
+    {
+        let holder = fs::File::open(dep.join(RELATIVE_PATH_OBJECTS).join(LOCAL_LOCK_FILE))?;
+        holder.try_lock()?;
+        let _ = spy.read_lock_table(1 << 20)?;
+        assert_eq!(
+            spy.own_locks().len(),
+            1,
+            "spy failed to see a held target lock"
+        );
+        drop(holder);
+        spy.clear();
+    }
 
     let recording = RecordingSpoolIo::new(Arc::new(HostSpoolIo));
     let files = RecordingJournalIo::default();
@@ -878,13 +913,35 @@ fn inspection_takes_no_lock_and_makes_no_mutating_call() -> TestResult {
     let report = inspect_deployment_with(&dep, io, DoctorLimits::default());
     assert_eq!(tree_digest(&dep)?, before);
 
-    assert_eq!(recording.mutating_calls(), Vec::new());
-    assert!(recording.is_read_only());
-    assert!(
-        spy.reads() >= 2,
-        "the writer must be observed before and after the journals"
-    );
-    assert_eq!(spy.own_locks(), Vec::<String>::new());
+    #[cfg(target_os = "linux")]
+    {
+        assert_eq!(recording.mutating_calls(), Vec::new());
+        assert!(recording.is_read_only());
+        assert!(
+            spy.reads() >= 2,
+            "the writer must be observed before and after the journals"
+        );
+        assert_eq!(spy.own_locks(), Vec::<String>::new());
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        // Platforms without /proc/locks (macOS/BSD) fall back to non-mutating shared try-lock
+        // probes that never acquire exclusive locks or alter the filesystem.
+        let unexpected: Vec<SpoolIoCall> = recording
+            .mutating_calls()
+            .into_iter()
+            .filter(|call| *call != SpoolIoCall::TryLockShared)
+            .collect();
+        assert_eq!(unexpected, Vec::new());
+        // Before journals, `detect_writers` probes every existing deployment lock file (4);
+        // after journals, `inspect_with_ledger_journal` re-probes publication + ledger locks (3).
+        let existing_locks = locks.iter().filter(|path| path.is_file()).count();
+        assert!(existing_locks >= 3, "deployment must have its lock files");
+        assert!(
+            recording.call_count(SpoolIoCall::TryLockShared) > existing_locks,
+            "the writer must be observed before and after the journals"
+        );
+    }
     let largest = files
         .largest_request
         .lock()
@@ -1150,19 +1207,28 @@ fn live_reference_deployment_writer_is_held_and_tail_is_in_flight() -> TestResul
     let aff = rerun(&dep);
     let mut expected = Expect::clean(&dep)?;
     expected.possibly_stale = true;
+    #[cfg(target_os = "linux")]
+    let writer_held_fields = [
+        ("pid_hint", std::process::id().to_string()),
+        ("possibly_stale", "true".to_owned()),
+        ("probe_method", s("proc_locks")),
+        ("writer_state", s("held")),
+        ("writer_state_after", s("held")),
+    ];
+    #[cfg(not(target_os = "linux"))]
+    let writer_held_fields = [
+        ("possibly_stale", "true".to_owned()),
+        ("probe_method", s("shared_try_lock")),
+        ("writer_state", s("held")),
+        ("writer_state_after", s("held")),
+    ];
     expected.set(
         "deployment.writer",
         check(
             "deployment.writer",
             "concurrent_writer",
             "info",
-            &[
-                ("pid_hint", std::process::id().to_string()),
-                ("possibly_stale", "true".to_owned()),
-                ("probe_method", s("proc_locks")),
-                ("writer_state", s("held")),
-                ("writer_state_after", s("held")),
-            ],
+            &writer_held_fields,
             &[finding("concurrent_writer", "info", None, Some(&aff))],
             Some(&aff),
         ),

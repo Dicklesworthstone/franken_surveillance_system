@@ -2,6 +2,7 @@
 #![allow(dead_code)]
 //! Actual AVC pages and HEVC catalogs in independent archives, with native durable history.
 
+#[allow(clippy::duplicate_mod)]
 #[path = "../hevc_recording_support/mod.rs"]
 mod hevc;
 #[path = "../rtsp_selected_watch_contract/fixture.rs"]
@@ -440,9 +441,11 @@ impl Fixture {
             writer,
         })
     }
+    #[allow(clippy::expect_used)]
     pub fn target(&self) -> &ReferenceDeployment {
         self.destination.as_ref().expect("fixture target")
     }
+    #[allow(clippy::expect_used)]
     pub fn run(&mut self) -> Result<RtspCampaignWatchReport, RtspCampaignWatchError> {
         let sources: Vec<_> = self.archives.iter().map(Option::as_ref).collect();
         process_rtsp_campaign(

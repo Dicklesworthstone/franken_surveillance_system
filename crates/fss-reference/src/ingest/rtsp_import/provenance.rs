@@ -446,7 +446,7 @@ fn proof(
         .strip_prefix(GENERATION)
         .filter(|h| h.len() == 64)
         .ok_or_else(|| corrupt("adapter generation"))?;
-    let digest = ContentDigest::parse(&format!("sha256:{hex}"))?;
+    let digest = ContentDigest::parse(format!("sha256:{hex}"))?;
     deployment.check_object_available(digest)?;
     let bytes = deployment.read_object_bounded(digest, MAX_PROOF_BYTES)?;
     if bytes.len() > MAX_PROOF_BYTES || ContentDigest::sha256(&bytes) != digest {

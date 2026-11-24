@@ -102,7 +102,8 @@ fn pending_probe_resumes_and_preserves_source_while_mismatch_stops() -> Test {
         TimestampNs(1),
     )?;
     let runtime = RuntimeBuilder::current_thread().build()?;
-    let run = runtime.block_on(async {
+
+    runtime.block_on(async {
         let cx = asupersync::Cx::current().ok_or("missing runtime")?;
         let run = run_owned_async(
             &mut authority,
@@ -449,6 +450,5 @@ fn pending_probe_resumes_and_preserves_source_while_mismatch_stops() -> Test {
         .await?;
         run.receipt?;
         run.output
-    });
-    run
+    })
 }

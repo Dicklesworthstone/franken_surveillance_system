@@ -265,7 +265,7 @@ fn proof(
         .strip_prefix(GENERATION)
         .filter(|s| s.len() == 64)
         .ok_or_else(|| corrupt("adapter generation"))?;
-    let digest = ContentDigest::parse(&format!("sha256:{hex}"))?;
+    let digest = ContentDigest::parse(format!("sha256:{hex}"))?;
     let bytes = deployment.read_object_bounded(digest, MAX_PROOF_BYTES)?;
     if bytes.len() > MAX_PROOF_BYTES || ContentDigest::sha256(&bytes) != digest {
         return Err(corrupt("proof digest"));
@@ -293,11 +293,11 @@ fn originals(
         let metadata = manifest
             .metadata_digest()
             .ok_or_else(|| corrupt("wire metadata"))?;
-        if let Some(held) = held {
-            if !held.contains(&origin.root) || manifest.children().iter().any(|d| !held.contains(d))
-            {
-                return Err(corrupt("original outside import closure"));
-            }
+        if let Some(held) = held
+            && (!held.contains(&origin.root)
+                || manifest.children().iter().any(|d| !held.contains(d)))
+        {
+            return Err(corrupt("original outside import closure"));
         }
         let (next, wire) = super::super::http_archive::detached_read(
             proof.source,
@@ -307,12 +307,11 @@ fn originals(
             &origin.metadata,
         )
         .map_err(|_| corrupt("wire chain"))?;
-        if verify_objects {
-            if deployment.read_object(origin.root)? != origin.manifest
-                || deployment.read_object(metadata)? != origin.metadata
-            {
-                return Err(corrupt("original metadata copies"));
-            }
+        if verify_objects
+            && (deployment.read_object(origin.root)? != origin.manifest
+                || deployment.read_object(metadata)? != origin.metadata)
+        {
+            return Err(corrupt("original metadata copies"));
         }
         if records
             .last()

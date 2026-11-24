@@ -824,7 +824,10 @@ fn canonical_footage_discovers_partitioned_jpeg_metadata_and_refuses_corrupt_par
     assert_eq!(observed.rows, baseline.rows);
     assert_eq!(observed.selection_witness, baseline.selection_witness);
     let part = retained.manifest().part_roots[0];
-    fs::write(object_path(&root, part)?, b"invalid published part manifest")?;
+    fs::write(
+        object_path(&root, part)?,
+        b"invalid published part manifest",
+    )?;
     let before = snapshot(&root)?;
     assert!(query(&root).is_err());
     assert_eq!(snapshot(&root)?, before);

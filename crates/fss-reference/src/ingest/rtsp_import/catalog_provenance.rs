@@ -791,7 +791,7 @@ fn selected_digest(
         .strip_prefix(prefix)
         .filter(|h| h.len() == 64)
         .ok_or_else(|| corrupt("catalog adapter generation"))?;
-    Ok(Some(ContentDigest::parse(&format!("sha256:{hex}"))?))
+    Ok(Some(ContentDigest::parse(format!("sha256:{hex}"))?))
 }
 fn live(
     deployment: &dyn RetainedSource,

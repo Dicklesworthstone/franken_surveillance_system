@@ -121,6 +121,8 @@ pub enum ReferenceError {
     },
     /// Event authority in the ledger is stale or has moved since the alert plan was prepared.
     StaleEventAuthority,
+    /// Event does not satisfy policy/corroboration eligibility gates for alert preparation.
+    AlertNotEligible(&'static str),
     /// Native source health findings or unavailable diagnostic metadata refuse an alert.
     /// This does not supersede the event or automatically cancel a prepared operation.
     AlertSourceHealth(&'static str),
@@ -368,6 +370,10 @@ impl fmt::Display for ReferenceError {
                     "invalid clock estimator configuration: {parameter} = {value} ({requirement})"
                 )
             }
+            Self::AlertNotEligible(reason) => write!(
+                formatter,
+                "event is not eligible for alert preparation: {reason}"
+            ),
             Self::AlertSourceHealth(reason) => write!(
                 formatter,
                 "alert source historical-health admission refused: {reason}"
@@ -585,6 +591,7 @@ impl Error for ReferenceError {
             | Self::ClockRecalibrationRequired { .. }
             | Self::InvalidEstimatorConfig { .. }
             | Self::StaleEventAuthority
+            | Self::AlertNotEligible(_)
             | Self::AlertSourceHealth(_)
             | Self::RestoredDeploymentEffectsFenced { .. }
             | Self::UnverifiableCancellationEvidence { .. }

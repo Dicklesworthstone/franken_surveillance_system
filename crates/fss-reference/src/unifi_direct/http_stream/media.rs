@@ -216,6 +216,7 @@ pub struct Detached {
 /// Send one already committed start and attach one admitted connection. The
 /// listener and HTTP owner remain borrowed by the caller; no retry, restore,
 /// effect settlement, storage publication or media validation occurs here.
+#[allow(clippy::result_large_err)]
 pub async fn start<IO: AsyncRead + AsyncWrite + Unpin>(
     http: &mut camera_http::Owner<'_, '_, '_, IO>,
     listener: &mut listener::Listener<'_, '_, '_>,
@@ -237,6 +238,7 @@ pub async fn start<IO: AsyncRead + AsyncWrite + Unpin>(
 /// Start with caller-owned response custody, before reading settings or media.
 /// A custody refusal retains the exact permit and redacted response shape;
 /// it never triggers an automatic retry or restore.
+#[allow(clippy::result_large_err)]
 pub async fn start_with_response<IO: AsyncRead + AsyncWrite + Unpin>(
     http: &mut camera_http::Owner<'_, '_, '_, IO>,
     listener: &mut listener::Listener<'_, '_, '_>,

@@ -112,6 +112,7 @@ impl RetainedRtpFrameReceipt {
 
 /// One native progress event, one jointly delivered masked frame/receipt, or final accounting.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum ReceiptedRtpDecodeStep {
     /// Original bounded progress and native consequences, with no packet bytes.
     Progress {

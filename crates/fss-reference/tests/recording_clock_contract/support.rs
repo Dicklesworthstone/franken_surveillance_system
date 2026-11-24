@@ -1,4 +1,9 @@
 #![forbid(unsafe_code)]
+#![allow(
+    dead_code,
+    unused_imports,
+    reason = "Shared test support module across multiple integration test targets"
+)]
 //! Real AVC source custody and an explicitly unauthenticated local clock fixture.
 
 pub use crate::collector_support::{Error, TestResult};

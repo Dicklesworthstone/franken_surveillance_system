@@ -312,6 +312,7 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Supervisor<'scope, 'task
     /// The caller owns the event, operation reservation and returned trace.
     /// Failure after preparing the intent leaves it available for explicit
     /// abandonment and requires journal inspection; no retry is implied.
+    #[allow(clippy::result_large_err)]
     pub fn prepare_journaled_event_reply(
         &mut self,
         owner: &mut conversation::Owner<'_, '_, '_>,
@@ -711,22 +712,19 @@ impl<'scope, 'task, IO: AsyncRead + AsyncWrite + Unpin> Supervisor<'scope, 'task
             Ok(Ready::Controller(Ok(receive::Step::Observation(
                 Observation::TimeSyncRequested,
             )))) => {
-                self.pending_time_sync = Some(conversation::TimeSyncTrace::default());
+                let pending_trace = self
+                    .pending_time_sync
+                    .insert(conversation::TimeSyncTrace::default());
                 let result = owner
                     .answer_time_sync_tracked(
                         &mut self.session,
                         operation,
                         self.management,
                         self.time_sync_reply_wait.unwrap_or(wait),
-                        self.pending_time_sync
-                            .as_mut()
-                            .expect("time-sync trace installed"),
+                        pending_trace,
                     )
                     .await;
-                let trace = self
-                    .pending_time_sync
-                    .take()
-                    .expect("time-sync trace retained");
+                let trace = self.pending_time_sync.take().unwrap_or_default();
                 match result {
                     Ok(()) => Step::TimeSyncWritten { trace },
                     Err(error) => {

@@ -272,6 +272,7 @@ fn encode_diagnostics(snapshot: &DeploymentSnapshot, encoder: &mut CanonicalEnco
     encoder.bool(snapshot.coverage_evidence_unattributed);
 }
 
+#[allow(clippy::result_large_err)]
 pub(super) fn compile(
     snapshot: DeploymentSnapshot,
     request: &SourcesQueryRequest,

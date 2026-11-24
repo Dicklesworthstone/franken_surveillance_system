@@ -221,6 +221,7 @@ pub struct LiveAvcArchive<'a> {
     // An acquisition failure is not an archive-completion cause. Keep its exact
     // terminal ownership until preservation finishes or storage itself fails.
     interrupted: Option<interruption::InterruptedCapture>,
+    last_telemetry: crate::rtsp::client::inband::RtspIntakeTelemetry,
     finished: bool,
 }
 impl fmt::Debug for LiveAvcArchive<'_> {
@@ -243,6 +244,61 @@ impl<'a> LiveAvcArchive<'a> {
             .as_mut()
             .ok_or(CaptureError::Closed)?
             .enable_timing_lookahead()
+    }
+    /// Opt in before DESCRIBE to acquire H.264 SPS/PPS in-band from RTP when SDP omits
+    /// `sprop-parameter-sets`.
+    pub fn set_allow_inband_parameter_sets(
+        &mut self,
+        enabled: bool,
+    ) -> Result<(), LiveArchiveError> {
+        self.recording
+            .as_mut()
+            .ok_or(LiveArchiveError::Closed)?
+            .set_allow_inband_parameter_sets(enabled)
+            .map_err(|e| LiveArchiveError::Recording(Box::new(e)))
+    }
+    /// Override bounded pre-roll ceilings for in-band parameter-set acquisition before DESCRIBE.
+    pub fn set_inband_sync_limits(
+        &mut self,
+        limits: crate::rtsp::client::inband::InbandSyncLimits,
+    ) -> Result<(), LiveArchiveError> {
+        self.recording
+            .as_mut()
+            .ok_or(LiveArchiveError::Closed)?
+            .set_inband_sync_limits(limits)
+            .map_err(|e| LiveArchiveError::Recording(Box::new(e)))
+    }
+    /// Opt in before DESCRIBE to SETUP companion `m=audio` tracks and drain their interleaved packets.
+    pub fn set_setup_companion_tracks(&mut self, enabled: bool) -> Result<(), LiveArchiveError> {
+        self.recording
+            .as_mut()
+            .ok_or(LiveArchiveError::Closed)?
+            .set_setup_companion_tracks(enabled)
+            .map_err(|e| LiveArchiveError::Recording(Box::new(e)))
+    }
+    /// Explicit provenance and pre-sync / companion-track discard counters.
+    pub fn intake_telemetry(&self) -> crate::rtsp::client::inband::RtspIntakeTelemetry {
+        self.recording
+            .as_ref()
+            .map_or(self.last_telemetry, LiveAvcRecording::intake_telemetry)
+    }
+    /// Best-effort bounded `TEARDOWN` write before closing the socket.
+    pub fn send_teardown(
+        &mut self,
+        credentials: &DigestCredentials<'_>,
+        cnonce: [u8; 16],
+        now: u64,
+        authority: &dyn TcpAuthority,
+    ) -> Result<bool, LiveArchiveFailure> {
+        if self.completion.is_some() || self.interrupted.is_some() {
+            return Ok(false);
+        }
+        let Some(recording) = self.recording.as_mut() else {
+            return Ok(false);
+        };
+        let result = recording.send_teardown(credentials, cnonce, now, authority);
+        self.last_telemetry = recording.intake_telemetry();
+        result.map_err(|e| self.capture_failure(e))
     }
 
     /// Metadata for the next held picture, not proof of continuity or time.
@@ -314,6 +370,7 @@ impl<'a> LiveAvcArchive<'a> {
             ready: false,
             completion: None,
             interrupted: None,
+            last_telemetry: Default::default(),
             finished: false,
         })
     }
@@ -446,6 +503,9 @@ impl<'a> LiveAvcArchive<'a> {
         self.admit(now, authority)?;
         if self.completion.is_some() || self.interrupted.is_some() {
             return Err(safe(LiveArchiveError::Closed));
+        }
+        if let Some(recording) = &self.recording {
+            self.last_telemetry = recording.intake_telemetry();
         }
         let retired = self.recording.take().and_then(|mut r| r.cancel());
         self.completion = Some(LiveArchiveCompletion::OwnerStopped);
@@ -646,6 +706,9 @@ impl<'a> LiveAvcArchive<'a> {
         recording: Option<LiveRecordingRetirement>,
         window: Option<PreparedRecording>,
     ) -> LiveArchiveRetirement {
+        if let Some(recording) = &self.recording {
+            self.last_telemetry = recording.intake_telemetry();
+        }
         let owned = self.recording.take().and_then(|mut r| r.cancel());
         let interrupted = self.interrupted.take();
         let interruption = interrupted

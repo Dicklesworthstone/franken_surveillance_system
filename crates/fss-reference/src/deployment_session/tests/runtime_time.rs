@@ -159,6 +159,23 @@ fn later_open_retries_retain_the_original_lease_workspace_mission_and_narrowed_g
     let clock = Clock::new(&fixture.root, START);
     let request = open_request()?;
     let opened = open_session(clock.context(), &request)?;
+    let before_retry = retained(&fixture.root)?;
+    clock.set(START + 25_000);
+    let retry = open_session(clock.context(), &request)?;
+    assert_eq!(retry.session, opened.session);
+    assert_eq!(retry.mission, opened.mission);
+    assert_eq!(retry.mission_root, opened.mission_root);
+    assert_eq!(retry.revision, opened.revision);
+    assert_eq!(retry.session.created_at_ns, START);
+    assert_eq!(retry.session.expires_at_ns, opened.session.expires_at_ns);
+    let after_retry = retained(&fixture.root)?;
+    assert_eq!(after_retry.opening_digest, before_retry.opening_digest);
+    assert_eq!(after_retry.spent_tokens, before_retry.spent_tokens);
+    assert_eq!(after_retry.last_observed_at, TimestampNs(START + 25_000));
+
+    // Narrowing session grants below revision 0's capability projection must refuse
+    // fail-closed rather than reopening or disclosing the wider opening workspace,
+    // while retaining the narrowed grants and advancing the durable clock watermark.
     let mut capabilities = opened.session.capabilities.clone();
     assert!(capabilities.remove("CAP-AGENT-FEEDBACK-001"));
     let mut journal = SessionJournal::open(&fixture.root)?;
@@ -171,22 +188,20 @@ fn later_open_retries_retain_the_original_lease_workspace_mission_and_narrowed_g
             capabilities,
             privacy_scope: opened.session.privacy_scope.clone(),
         },
-        TimestampNs(START),
+        TimestampNs(START + 25_000),
     )?;
     journal.commit_pin()?;
     drop(journal);
-    let before = retained(&fixture.root)?;
+    let before_narrowed = retained(&fixture.root)?;
     clock.set(START + 50_000);
-    let retry = open_session(clock.context(), &request)?;
-    assert_eq!(retry.session, narrowed);
-    assert_eq!(retry.mission, opened.mission);
-    assert_eq!(retry.mission_root, opened.mission_root);
-    assert_eq!(retry.revision, opened.revision);
-    assert_eq!(retry.session.created_at_ns, START);
-    assert_eq!(retry.session.expires_at_ns, opened.session.expires_at_ns);
+    assert!(matches!(
+        open_session(clock.context(), &request),
+        Err(DeploymentSessionError::SessionStale(_))
+    ));
     let after = retained(&fixture.root)?;
-    assert_eq!(after.opening_digest, before.opening_digest);
-    assert_eq!(after.spent_tokens, before.spent_tokens);
+    assert_eq!(after.session, narrowed);
+    assert_eq!(after.opening_digest, before_narrowed.opening_digest);
+    assert_eq!(after.spent_tokens, before_narrowed.spent_tokens);
     assert_eq!(after.last_observed_at, TimestampNs(START + 50_000));
     relative_opening_retries_keep_deadlines_and_progress()?;
     Ok(())

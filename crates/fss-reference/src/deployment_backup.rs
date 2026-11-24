@@ -63,22 +63,33 @@ pub const STAGE_RESTORE_ACTIVATE: &str = "deployment_backup:restore_activate";
 #[derive(Clone, Copy, Debug)]
 pub enum BackupAccess<'a> {
     /// Inspect every original in this selected core deployment.
-    ReadDeployment { source: &'a Path },
+    ReadDeployment {
+        /// Source deployment root directory.
+        source: &'a Path,
+    },
     /// Retain this exact approved deployment snapshot in a new bundle.
     WriteBundle {
+        /// Source deployment root directory.
         source: &'a Path,
+        /// Destination recovery bundle directory.
         bundle: &'a Path,
+        /// Approved backup manifest digest.
         manifest: ContentDigest,
     },
     /// Read the exact independently pinned recovery bundle.
     ReadBundle {
+        /// Recovery bundle directory to inspect.
         bundle: &'a Path,
+        /// Expected backup manifest digest.
         manifest: ContentDigest,
     },
     /// Retain that exact bundle as a fenced deployment at a new destination.
     RestoreDeployment {
+        /// Verified recovery bundle directory.
         bundle: &'a Path,
+        /// Target deployment destination directory.
         destination: &'a Path,
+        /// Approved backup manifest digest.
         manifest: ContentDigest,
     },
 }

@@ -165,7 +165,7 @@ fn cold_temporal_continuation_classifies_once_and_publishes_the_existing_replay_
     );
     let replay_pin = inspection.pins();
     let after = deployment.current_anchor().clone();
-    drop(detector);
+    let _ = detector;
     drop(package);
     scalar.drain_and_finalize();
     drop(actual);

@@ -150,6 +150,7 @@ struct Fixture {
 }
 
 impl Fixture {
+    #[allow(clippy::panic)]
     fn source(&self, camera: u64) -> &FileIngestReceipt {
         match camera {
             EAST => &self.east,
