@@ -108,6 +108,21 @@ impl Scale {
         })
     }
 
+    /// Apply this validated size ratio to another spatial axis. Resize-18
+    /// rounds the output extent half up, but samples at the original ratio.
+    pub(super) fn rounded_for(self, input: usize) -> CoordinateResult<Self> {
+        let scaled = (input as u128)
+            .checked_mul(self.numerator)
+            .and_then(|value| value.checked_add(self.denominator / 2))
+            .ok_or(CoordinateError::Limit)?;
+        let output =
+            usize::try_from(scaled / self.denominator).map_err(|_| CoordinateError::Limit)?;
+        if output == 0 {
+            return Err(CoordinateError::Unsupported);
+        }
+        Ok(Self { output, ..self })
+    }
+
     pub(super) fn integer_factor(self) -> Option<usize> {
         if self.numerator.is_multiple_of(self.denominator) {
             usize::try_from(self.numerator / self.denominator).ok()

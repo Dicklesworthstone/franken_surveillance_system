@@ -327,6 +327,60 @@ fn resample(
     Ok(())
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AspectPolicy {
+    Stretch,
+    NotLarger,
+    NotSmaller,
+}
+
+fn size_scales(
+    dims: [usize; 4],
+    requested: [usize; 4],
+    axes: &[i64],
+    policy: AspectPolicy,
+) -> Result<[Scale; 2]> {
+    if policy == AspectPolicy::Stretch {
+        if requested[..2] != dims[..2] {
+            return Err(OnnxError::Unsupported);
+        }
+        return Ok([
+            Scale::from_size(requested[2], dims[2])?,
+            Scale::from_size(requested[3], dims[3])?,
+        ]);
+    }
+    // A single rational scale governs the selected spatial axes. The
+    // cross products compare exact ratios; INT64 sizes times admitted
+    // tensor extents fit in u128. Unselected axes remain identity.
+    if axes.is_empty() || axes.iter().any(|&axis| axis < 2) {
+        return Err(OnnxError::Unsupported);
+    }
+    let mut bound = axes[0] as usize;
+    for &axis in axes {
+        let axis = axis as usize;
+        if requested[axis] == 0 {
+            return Err(OnnxError::Unsupported);
+        }
+        let candidate = requested[axis] as u128 * dims[bound] as u128;
+        let current = requested[bound] as u128 * dims[axis] as u128;
+        if (policy == AspectPolicy::NotLarger && candidate < current)
+            || (policy == AspectPolicy::NotSmaller && candidate > current)
+        {
+            bound = axis;
+        }
+    }
+    let uniform = Scale::from_size(requested[bound], dims[bound])?;
+    let mut scales = [
+        Scale::from_size(dims[2], dims[2])?,
+        Scale::from_size(dims[3], dims[3])?,
+    ];
+    for &axis in axes {
+        let axis = axis as usize;
+        scales[axis - 2] = uniform.rounded_for(dims[axis])?;
+    }
+    Ok(scales)
+}
+
 pub(super) fn lower(
     mut source: SourceNode<'_>,
     lowering: &mut Lowering<'_, '_>,
@@ -346,6 +400,16 @@ pub(super) fn lower(
         }
     } else {
         None
+    };
+    let aspect = if version == 18 {
+        match text_attribute(&mut source.attrs, "keep_aspect_ratio_policy", "stretch")?.as_str() {
+            "stretch" => AspectPolicy::Stretch,
+            "not_larger" => AspectPolicy::NotLarger,
+            "not_smaller" => AspectPolicy::NotSmaller,
+            _ => return Err(OnnxError::Unsupported),
+        }
+    } else {
+        AspectPolicy::Stretch
     };
     let interpolation = attributes(&mut source.attrs)?;
     let input = lowering
@@ -373,6 +437,9 @@ pub(super) fn lower(
     };
     // Empty optional constant tensors, emitted by several ONNX exporters, are
     // control values only. They must never become zero-sized runtime tensors.
+    if aspect != AspectPolicy::Stretch && !scales.is_empty() {
+        return Err(OnnxError::Unsupported);
+    }
     if scales.is_empty() == sizes.is_empty() {
         return Err(OnnxError::Graph);
     }
@@ -404,15 +471,10 @@ pub(super) fn lower(
         }
         let mut requested = dims;
         for (&axis, value) in selected.iter().zip(sizes) {
-            requested[axis as usize] = usize::try_from(value).map_err(|_| OnnxError::Unsupported)?;
+            requested[axis as usize] =
+                usize::try_from(value).map_err(|_| OnnxError::Unsupported)?;
         }
-        if requested[..2] != dims[..2] {
-            return Err(OnnxError::Unsupported);
-        }
-        [
-            Scale::from_size(requested[2], dims[2])?,
-            Scale::from_size(requested[3], dims[3])?,
-        ]
+        size_scales(dims, requested, selected, aspect)?
     };
     let output_shape = [dims[0], dims[1], scales[0].output, scales[1].output];
     let bytes = output_shape.iter().try_fold(4_usize, |bytes, &dim| {

@@ -832,7 +832,9 @@ fn resize18_selected_sizes_and_scales_execute_with_ordered_axes() -> Test {
     );
     assert_eq!(
         roundtrip(&source, &image)?["output"],
-        [1., 1., 2., 3., 1., 1., 2., 3., 4., 4., 5., 6., 4., 4., 5., 6.]
+        [
+            1., 1., 2., 3., 1., 1., 2., 3., 4., 4., 5., 6., 4., 4., 5., 6.
+        ]
     );
     assert_eq!(
         export(&import(&source)?)?.graph_bytes(),
@@ -872,5 +874,152 @@ fn resize18_selected_sizes_and_scales_execute_with_ordered_axes() -> Test {
         refusal(&model_at(&scale_graph(&[0, 1], &[1.5, 2.0]), 18)),
         Some(OnnxError::Unsupported)
     );
+    Ok(())
+}
+
+fn aspect_model(
+    policy: &str,
+    axes: Option<&[i64]>,
+    sizes: &[i64],
+    mode: &str,
+    coordinates: &str,
+    output: &[usize],
+) -> Vec<u8> {
+    let attrs = [
+        string_attr("keep_aspect_ratio_policy", policy),
+        axes.map_or_else(Vec::new, |axes| ints_attr("axes", axes)),
+        string_attr("mode", mode),
+        string_attr("coordinate_transformation_mode", coordinates),
+        if mode == "nearest" && coordinates == "asymmetric" {
+            string_attr("nearest_mode", "floor")
+        } else {
+            Vec::new()
+        },
+    ]
+    .concat();
+    model_at(
+        &[
+            node("Resize", &["input", "", "", "size"], &["output"], &attrs),
+            int_weight("size", &[sizes.len()], sizes),
+            bytes(11, &info("input", &[1, 1, 2, 3], 1)),
+            bytes(12, &info("output", output, 1)),
+        ]
+        .concat(),
+        18,
+    )
+}
+
+#[test]
+fn resize18_aspect_policies_keep_the_common_sampling_ratio_after_half_up_rounding() -> Test {
+    let image = [("input", data(&[1, 1, 2, 3], &[0., 6., 12., 12., 18., 24.])?)];
+    // In width-first order, min(8/3,3/2) and max(4/3,3/2) both give 3/2.
+    // The resulting width is round_half_up(4.5)=5. The ONNX reference
+    // samples with scale 3/2; substituting 5/3 changes interior pixels.
+    for (policy, sizes) in [("not_larger", [8, 3]), ("not_smaller", [4, 3])] {
+        for (mode, coord, row, offsets) in [
+            (
+                "nearest",
+                "asymmetric",
+                [0., 0., 6., 12., 12.],
+                [0., 0., 12.],
+            ),
+            (
+                "nearest",
+                "half_pixel",
+                [0., 0., 6., 12., 12.],
+                [0., 0., 12.],
+            ),
+            (
+                "linear",
+                "asymmetric",
+                [0., 4., 8., 12., 12.],
+                [0., 8., 12.],
+            ),
+            (
+                "linear",
+                "half_pixel",
+                [0., 3., 7., 11., 12.],
+                [0., 6., 12.],
+            ),
+            (
+                "linear",
+                "pytorch_half_pixel",
+                [0., 3., 7., 11., 12.],
+                [0., 6., 12.],
+            ),
+            (
+                "linear",
+                "align_corners",
+                [0., 3., 6., 9., 12.],
+                [0., 6., 12.],
+            ),
+        ] {
+            let source = aspect_model(policy, Some(&[-1, -2]), &sizes, mode, coord, &[1, 1, 3, 5]);
+            let outputs = roundtrip(&source, &image)?;
+            let values = &outputs["output"];
+            assert_eq!(values.len(), 15);
+            for (y, offset) in offsets.into_iter().enumerate() {
+                for (x, sample) in row.into_iter().enumerate() {
+                    assert!(
+                        (values[y * 5 + x] - (sample + offset)).abs() < 0.00001,
+                        "{policy} {mode} {coord} at ({y}, {x})"
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn resize18_aspect_policies_enforce_axes_extents_and_expansion_limits() -> Test {
+    let nearest = |policy, axes: Option<&[i64]>, sizes: &[i64], shape: &[usize]| {
+        aspect_model(policy, axes, sizes, "nearest", "asymmetric", shape)
+    };
+    // Single-axis aspect and stretch are identical, including graph encoding.
+    let source = nearest("not_larger", Some(&[3]), &[2], &[1, 1, 2, 2]);
+    let stretch = nearest("stretch", Some(&[3]), &[2], &[1, 1, 2, 2]);
+    assert_eq!(
+        export(&import(&source)?)?.graph_bytes(),
+        export(&import(&stretch)?)?.graph_bytes()
+    );
+    for source in [
+        nearest("not_larger", None, &[1, 1, 3, 5], &[1, 1, 3, 5]),
+        nearest("not_smaller", Some(&[1, 3]), &[1, 4], &[1, 1, 2, 4]),
+        nearest("not_larger", Some(&[2, 3]), &[0, 3], &[1, 1, 1, 3]),
+        nearest("not_smaller", Some(&[2]), &[129], &[1, 1, 129, 3]),
+    ] {
+        assert_eq!(refusal(&source), Some(OnnxError::Unsupported));
+    }
+    let source = nearest("not_smaller", Some(&[2, 3]), &[3, 4], &[1, 1, 3, 5]);
+    let imported = import(&source)?;
+    let digest = ContentDigest::sha256(&source);
+    let exact = OnnxLimits {
+        work_units: imported.work_units(),
+        ..OnnxLimits::default()
+    };
+    import_onnx(&source, digest, GENERATION, exact, &|| false)?;
+    for (limits, error) in [
+        (
+            OnnxLimits {
+                work_units: exact.work_units - 1,
+                ..exact
+            },
+            OnnxError::WorkBudget,
+        ),
+        (
+            OnnxLimits {
+                tensor_bytes: 59,
+                ..exact
+            },
+            OnnxError::Limit,
+        ),
+        (OnnxLimits { nodes: 1, ..exact }, OnnxError::Limit),
+    ] {
+        assert_eq!(
+            import_onnx(&source, digest, GENERATION, limits, &|| false).err(),
+            Some(error)
+        );
+    }
     Ok(())
 }

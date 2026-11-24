@@ -172,11 +172,11 @@ optimized executors, canonical graph/Safetensors reload, an independent grouped
 convolution oracle, pooling boundaries, compatibility, limits and cancellation.
 Current execution evidence is recorded in `IMPLEMENTATION_STATUS.md`.
 
-## Opset 18 reductions and partitions
+## Opset 18 reductions, partitions, padding and resizing
 
 The explicit opset-18 profile uses the same closed operator allowlist and static
-F32 runtime. It implements the changed Mean/L2 and Split schemas; Pad and Resize
-admit only source forms equivalent to their existing supported numerical subset.
+F32 runtime. It supports the changed Mean/L2 and Split forms, axis-selective Pad,
+and spatial Resize with static axis and aspect-ratio controls.
 Unchanged operators retain their existing attribute, shape, dtype and budget checks.
 ONNX IR remains limited to versions 7–9. Selecting opset 18 does not admit a new
 operator, runtime integer/Boolean computation, dynamic shapes or model activation.
@@ -187,7 +187,7 @@ operator, runtime integer/Boolean computation, dynamic shapes or model activatio
 | [ReduceL2-18](https://onnx.ai/onnx/operators/onnx__ReduceL2.html#reducel2-18) | The same input-axis controls, retaining separate F32 square, reduction and square root | Empty-axis no-op skips only the reduction; square and square root still execute. |
 | [Split-18](https://onnx.ai/onnx/operators/onnx__Split.html#split-18) | Static positive split lengths **or** `num_outputs` equal to the declared one-to-eight output count | Exactly one form is required; zero-sized outputs and dynamic partitions refuse. |
 | [Pad-18](https://onnx.ai/onnx/operators/onnx__Pad.html#pad-18) | Optional static INT64 axes select the dimensions for constant, edge or reflect padding and cropping. Negative axes and source axis order are honored. | Axes must be unique and in range. Pads contain one beginning and one ending value per selected axis. Ranks one through four are supported. |
-| [Resize-18](https://onnx.ai/onnx/operators/onnx__Resize.html#resize-18) | Existing nearest/linear spatial modes with ordered subset axes, static sizes or original F32 scales, `antialias=0` and `keep_aspect_ratio_policy="stretch"` | Batch and channel extents stay fixed. Duplicate or out-of-range axes, enabled antialiasing and other aspect policies refuse. |
+| [Resize-18](https://onnx.ai/onnx/operators/onnx__Resize.html#resize-18) | Existing nearest/linear spatial modes with ordered subset axes, static sizes or original F32 scales and `antialias=0`. Static sizes with explicit spatial axes also support `not_larger` (smallest requested ratio) and `not_smaller` (largest). Output extents round half up and sampling retains the common ratio. | Batch and channel extents stay fixed. Non-stretch policies require sizes and explicit height and/or width axes. Zero-sized results, duplicate or out-of-range axes and enabled antialiasing refuse. |
 
 Mean/L2 axes can come from an initializer, Constant or the existing bounded static
 shape program. Omitted or empty axes reduce all dimensions by default. With
@@ -212,7 +212,8 @@ The `opset18` cases in `onnx_attention_execution` exercise rank-zero-through-eig
 reductions against independent ordered arithmetic, exact legacy graph bytes,
 empty-axis bit/overflow behavior, even/uneven partitions, a pooled feature head
 through Split and MatMul, existing LayerNormalization/Where/Resize/Pad compatibility,
-schema refusals, resource boundaries and cancellation. Execution results are recorded
+ordered Pad/Resize axes, aspect-ratio rounding and sampling, schema refusals,
+resource boundaries and cancellation. Execution results are recorded
 in `IMPLEMENTATION_STATUS.md`; these bounded contracts do not qualify arbitrary
 models or trained detector accuracy.
 
@@ -878,9 +879,10 @@ Large reflection expansions can exceed the existing graph limits and refuse.
 Signed pad magnitude and shape overflow produce typed refusals. No frozen
 operator ID, runtime dependency, Model IR version or package format changes.
 
-Dynamic pads or fill, wrap mode, scalar data, ranks above four, non-F32 data,
-later-schema explicit axes inputs and zero-sized retained axes remain outside
-this profile. Malformed control rank/type/length, conflicting declared shapes
+Opset 18 additionally accepts a fourth static INT64 axes input. Each half of the
+pads vector follows the selected axes in declaration order. Opsets 13 and 17
+require all-axis pads. Dynamic controls, wrap mode, scalar data, ranks above four,
+non-F32 data and zero-sized retained axes remain outside this profile. Malformed control rank/type/length, conflicting declared shapes
 and unsupported attributes also refuse conversion.
 
 The `onnx_pad_execution` target exercises both production scalar and optimized
@@ -1287,7 +1289,8 @@ fixtures establish conversion and execution behavior, not trained detector quali
 The importer admits static [Resize-13](https://onnx.ai/onnx/operators/onnx__Resize.html#resize-13)
 for NCHW rank-four tensors, preserving batch/channel sizes while enlarging or shrinking
 the spatial axes. Exactly one nonempty embedded F32 `scales` vector or INT64 `sizes`
-vector supplies four values. Spatial scales must be finite and positive, at most 64,
+vector supplies four values in the all-axis form. Resize-18 with explicit axes
+takes one value per selected axis in source order. Spatial scales must be finite and positive, at most 64,
 and produce positive output dimensions; sizes must be positive and enlarge neither
 axis by more than 64. Fractional factors, downsampling and opposite resize directions
 on the two axes are supported. An omitted ROI or empty F32 ROI is accepted; nonempty
@@ -1298,7 +1301,11 @@ Two precise coordinate profiles are admitted: `asymmetric` with nearest mode `fl
 and `half_pixel` with `round_prefer_floor` (the opset-13 defaults). The source F32 scale
 is retained exactly: output length is `floor(input_length * scale)`, and coordinates
 use that original scale, not a ratio reconstructed from the rounded output length.
-For a sizes control, coordinates instead use the exact ratio `output_length / input_length`.
+For a stretch sizes control, coordinates use the exact ratio `output_length / input_length`.
+Resize-18 spatial aspect policies retain the selected common ratio when rounding each
+output extent. For example, scaling width three by 3/2 gives width five and uses
+3/2 for asymmetric and half-pixel coordinates. Align-corners interpolation uses the
+rounded output extent for its endpoint mapping.
 Checked integer rational arithmetic applies the coordinate transform and nearest
 rounding without losing ties. `asymmetric/floor` selects `floor(x / scale)`;
 `half_pixel/round_prefer_floor` rounds `(x + 0.5) / scale - 0.5` to the nearest integer,
@@ -1438,9 +1445,10 @@ all source names, including later source values.
 value must still be one of the four Resize-13 enum values and have the proper type.
 Finite `cubic_coeff_a` and `extrapolation_value` attributes are validated but unused.
 Cubic interpolation, nonempty ROI, `exclude_outside=1`, crop/extrapolation modes,
-`tf_half_pixel_for_nn`, enabled antialiasing, subset axes and unknown attributes
-remain explicit refusals. Opsets 13/17 also reject the later antialias/axes/aspect
-attributes; opset 18 admits only the equivalent defaults specified above.
+`tf_half_pixel_for_nn`, enabled antialiasing and unknown attributes remain explicit
+refusals. Opsets 13 and 17 also reject the later antialias, axes and aspect
+attributes. Opset 18 accepts ordered subset axes and the bounded spatial size
+policies specified in the opset table above.
 No native operator ID, canonical graph version, production
 runtime dependency or model-activation authority changes. The new lowering/planner
 sources participate in the source-bound importer identity; original ONNX bytes remain

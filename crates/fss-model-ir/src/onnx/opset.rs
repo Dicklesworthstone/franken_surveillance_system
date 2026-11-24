@@ -10,8 +10,7 @@
 //! bounded metadata slice. LayerNormalization first exists at opset 17.
 //! The ONNX operator_sets.h version-18 registration changes only ReduceMean,
 //! ReduceL2, Split, Pad and Resize within this closed list. The reduction and
-//! partition lowerers receive the original source version. Pad/Resize retain
-//! only their earlier numerical subset, including explicit equivalent defaults.
+//! partition, Pad and Resize lowerers receive the original source version.
 
 use super::{OnnxError, Result, SourceNode};
 use crate::AttrValue;
@@ -42,12 +41,6 @@ pub(super) fn admit(version: u64, source: &mut SourceNode<'_>) -> Result<()> {
     }
     if version == 18 && source.op == "Resize" {
         default_mode(source, "antialias")?;
-        match source.attrs.remove("keep_aspect_ratio_policy") {
-            None => {}
-            Some(AttrValue::String(value)) if value == "stretch" => {}
-            Some(AttrValue::String(_)) => return Err(OnnxError::Unsupported),
-            Some(_) => return Err(OnnxError::Graph),
-        }
     }
     match source.op.as_str() {
         "Reshape" => default_mode(source, "allowzero"),
