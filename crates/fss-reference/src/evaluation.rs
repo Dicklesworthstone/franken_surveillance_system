@@ -983,6 +983,30 @@ impl ClipState {
     }
 }
 
+/// Indices in canonical match order and the latest event end in each inclusive prefix.
+#[derive(Default)]
+struct TruthWindows {
+    indices: Vec<usize>,
+    prefix_end: Vec<u64>,
+}
+
+impl TruthWindows {
+    fn candidates_at<'a>(
+        &'a self,
+        events: &[&TruthEvent],
+        instant: u64,
+        policy: &EvaluationPolicy,
+    ) -> &'a [usize] {
+        let earliest_end = instant.saturating_sub(policy.late_tolerance_ns);
+        let latest_start = instant.saturating_add(policy.early_tolerance_ns);
+        let stop = self
+            .indices
+            .partition_point(|&i| events[i].interval.start_ns <= latest_start);
+        let first = self.prefix_end[..stop].partition_point(|&end| end < earliest_end);
+        &self.indices[first..stop]
+    }
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum MatchKind {
     TruePositive(usize),
@@ -1195,20 +1219,29 @@ pub fn evaluate_cancellable(
 
     // ---- matching -------------------------------------------------------------------------
     // (clip, class) -> truth indices ordered by (start_ns, event_id).
-    let mut truth_index: BTreeMap<(&str, &str), Vec<usize>> = BTreeMap::new();
+    let mut truth_index: BTreeMap<(&str, &str), TruthWindows> = BTreeMap::new();
     for (index, event) in events.iter().enumerate() {
         checkpoint()?;
         truth_index
             .entry((event.clip_id.as_str(), event.class.as_str()))
             .or_default()
+            .indices
             .push(index);
     }
-    for indices in truth_index.values_mut() {
+    for windows in truth_index.values_mut() {
         checkpoint()?;
-        indices.sort_unstable_by(|&a, &b| {
+        windows.indices.sort_unstable_by(|&a, &b| {
             (events[a].interval.start_ns, &events[a].event_id)
                 .cmp(&(events[b].interval.start_ns, &events[b].event_id))
         });
+        // Ends need not be sorted: an early, long-running event can cover many later events.
+        let mut latest = 0;
+        windows.prefix_end.reserve(windows.indices.len());
+        for &index in &windows.indices {
+            checkpoint()?;
+            latest = latest.max(events[index].interval.end_ns);
+            windows.prefix_end.push(latest);
+        }
     }
 
     let mut scoring_order: Vec<usize> = (0..by_id.len())
@@ -1238,10 +1271,10 @@ pub fn evaluate_cancellable(
             let candidate = by_id[candidate_index];
             let mut observable_choice = None;
             let mut neutral_choice = None;
-            if let Some(indices) =
+            if let Some(windows) =
                 truth_index.get(&(candidate.clip_id.as_str(), candidate.class.as_str()))
             {
-                for &truth in indices {
+                for &truth in windows.candidates_at(&events, candidate.detect_ns, policy) {
                     checkpoint()?;
                     let event = events[truth];
                     let eligible = truth_match[truth].is_none()

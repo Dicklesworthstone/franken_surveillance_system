@@ -204,3 +204,72 @@ fn many_merged_gaps_keep_closed_endpoint_and_observed_duration_semantics()
     assert_eq!(report.durations.observed_ns, 768);
     Ok(())
 }
+
+#[test]
+fn disjoint_truth_windows_skip_irrelevant_matching_cells() -> Result<(), EvaluationError> {
+    let (mut labels, mut candidates) = fixture();
+    let n = 1024_u32;
+    labels.clips[0].duration_ns = u64::from(n) * 10;
+    labels.clips[0].not_observable.clear();
+    labels.events.clear();
+    candidates.candidates.clear();
+    for i in 0..n {
+        let at = u64::from(i) * 10;
+        labels.events.push(TruthEvent {
+            event_id: format!("truth-{i}"),
+            clip_id: "clip".into(),
+            class: "person".into(),
+            zone: None,
+            interval: ClosedIntervalNs::new(at, at + 1),
+        });
+        candidates
+            .candidates
+            .push(candidate(&format!("hit-{i}"), at + 1, i));
+        candidates
+            .candidates
+            .push(candidate(&format!("miss-{i}"), at + 2, i));
+    }
+    // Every visited matching cell is a cancellation checkpoint. The former
+    // scan visited over a million cells for this same bounded input.
+    let visits = Cell::new(0);
+    let report = evaluate_cancellable(
+        &identity(),
+        &policy(),
+        &labels,
+        &candidates,
+        usize::MAX,
+        &|| {
+            visits.set(visits.get() + 1);
+            false
+        },
+    )?;
+    assert_eq!(report.counts.true_positives, u64::from(n));
+    assert_eq!(report.counts.false_positives, u64::from(n));
+    assert!(visits.get() < 40 * n);
+    Ok(())
+}
+
+#[test]
+fn nested_truth_intervals_preserve_long_event_and_closed_tolerance_endpoints()
+-> Result<(), EvaluationError> {
+    let (mut labels, _) = fixture();
+    labels.clips[0].not_observable.clear();
+    labels.events[0].interval = ClosedIntervalNs::new(10, 900);
+    labels.events[1].interval = ClosedIntervalNs::new(20, 29);
+    labels.events[2].interval = ClosedIntervalNs::new(30, 39);
+    let candidates = CandidateSet {
+        candidates: vec![
+            candidate("long", 902, 3),
+            candidate("short", 19, 2),
+            candidate("outside", 42, 1),
+        ],
+    };
+    let mut policy = policy();
+    policy.early_tolerance_ns = 1;
+    policy.late_tolerance_ns = 2;
+    let result = evaluate(&identity(), &policy, &labels, &candidates)?;
+    assert_eq!(result.counts.true_positives, 2);
+    assert_eq!(result.counts.false_positives, 1);
+    assert_eq!(result.counts.false_negatives, 1);
+    Ok(())
+}
