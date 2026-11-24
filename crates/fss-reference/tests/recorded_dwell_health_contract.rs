@@ -79,7 +79,7 @@ fn scene(kind: Scene) -> TestResult<Vec<u8>> {
             .map(|pixel| {
                 let x = pixel % WIDTH;
                 let y = pixel / WIDTH;
-                if (x / 4 + y / 4) % 2 == 0 {
+                if (x / 4 + y / 4).is_multiple_of(2) {
                     40 + offset
                 } else {
                     88 + offset

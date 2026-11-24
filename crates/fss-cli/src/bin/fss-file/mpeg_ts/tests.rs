@@ -611,7 +611,9 @@ fn dvb204_import_reports_custody_and_unverified_parity() -> Test {
     let input = directory.0.join("recording.ts");
     let (transport, elementary) = recording(VideoCodec::Avc);
     let source: Vec<_> = transport
-        .chunks_exact(188)
+        .as_chunks::<188>()
+        .0
+        .iter()
         .flat_map(|packet| packet.iter().copied().chain([0x47; 16]))
         .collect();
     fs::write(&input, &source)?;

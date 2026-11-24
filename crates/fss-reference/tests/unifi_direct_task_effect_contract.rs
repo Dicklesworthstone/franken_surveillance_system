@@ -795,10 +795,7 @@ fn clock_reply_deadline_scenario(
                         assert!(trace.take_pending_permit().is_none());
                         match trace.take_written() {
                             Some(ManagementWrite::Written { permit })
-                                if permit.journal_backed() =>
-                            {
-                                ()
-                            }
+                                if permit.journal_backed() => {}
                             _ => return Err("written clock permit lost".into()),
                         }
                         assert!(trace.take_refusal().is_none());
@@ -1521,10 +1518,7 @@ fn event_reply_requires_separate_disclosure_authority_and_journal() -> Test {
                                 if matches!(
                                     error.kind(),
                                     io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                                ) =>
-                            {
-                                ()
-                            }
+                                ) => {}
                             _ => return Err(io::Error::other("denied reply reached peer")),
                         };
                         quiet_tx.send(()).map_err(io::Error::other)?;
@@ -8992,10 +8986,7 @@ async fn drive_video_only_session<
                         && matches!(
                             error.kind(),
                             io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
-                        ) =>
-                {
-                    ()
-                }
+                        ) => {}
                 Err(error) => return Err(error),
             }
             if closed {
@@ -9606,10 +9597,7 @@ async fn lean_owned_session_task<'scope, 'task>(
                     && matches!(
                         error.kind(),
                         io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
-                    ) =>
-            {
-                ()
-            }
+                    ) => {}
             Err(error) => return Err(error),
         }
         if closed {
@@ -10969,10 +10957,7 @@ async fn lean_owned_session_task<'scope, 'task>(
                     && matches!(
                         error.kind(),
                         io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
-                    ) =>
-            {
-                ()
-            }
+                    ) => {}
             Err(error) => return Err(error),
         }
         if closed {
