@@ -128,17 +128,16 @@ fn dwell_fusion_cannot_publish_retain_or_replace_the_requested_temporal_owner() 
     }
     // A complete dwell scan now has its own fusion scope. It cannot enter the entry owner
     // or publish an incremental checkpoint in a read-only advice invocation.
-    for (flag, reason) in [
-        (
-            "--stream-watch",
-            "--stream-watch cannot be combined with --stream-dwell or dwell options",
-        ),
-    ] {
-        let mut values = with_profile(args(DWELL));
-        values.push(OsString::from(flag));
-        let error = parse(&values).err().ok_or("streaming must not drop requested dwell semantics")?;
-        assert!(error.contains(reason), "{error}");
-    }
+    let (flag, reason) = (
+        "--stream-watch",
+        "--stream-watch cannot be combined with --stream-dwell or dwell options",
+    );
+    let mut values = with_profile(args(DWELL));
+    values.push(OsString::from(flag));
+    let error = parse(&values)
+        .err()
+        .ok_or("streaming must not drop requested dwell semantics")?;
+    assert!(error.contains(reason), "{error}");
     let mut whole = with_profile(args(DWELL));
     whole.push(OsString::from("--stream-dwell"));
     assert!(parse(&whole)?.stream_dwell.is_some());

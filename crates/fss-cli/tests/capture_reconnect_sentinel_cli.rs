@@ -403,7 +403,7 @@ fn archive_bytes(root: &Path) -> Test<BTreeMap<PathBuf, ContentDigest>> {
     visit(root, &mut files)?;
     Ok(files)
 }
-fn history<'a>(rows: &'a [Value]) -> Test<&'a Value> {
+fn history(rows: &[Value]) -> Test<&Value> {
     let ready = row(rows, FORMAT, "history_ready")?;
     let pin = field(ready, &["detail", "history_pin"])?;
     ContentDigest::parse(text(pin, &["session"])?)?;

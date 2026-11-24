@@ -10,43 +10,82 @@ const START: &str = "20261101T120000Z";
 const END: &str = "20261101T120100Z";
 
 fn recorder_envelope(body: &str) -> String {
-    format!("<s:Envelope xmlns:s=\"http://www.w3.org/2003/05/soap-envelope\" xmlns:d=\"http://www.onvif.org/ver10/device/wsdl\" xmlns:r=\"http://www.onvif.org/ver10/recording/wsdl\" xmlns:q=\"http://www.onvif.org/ver10/search/wsdl\" xmlns:p=\"http://www.onvif.org/ver10/replay/wsdl\" xmlns:t=\"http://www.onvif.org/ver10/schema\"><s:Body>{body}</s:Body></s:Envelope>")
+    format!(
+        "<s:Envelope xmlns:s=\"http://www.w3.org/2003/05/soap-envelope\" xmlns:d=\"http://www.onvif.org/ver10/device/wsdl\" xmlns:r=\"http://www.onvif.org/ver10/recording/wsdl\" xmlns:q=\"http://www.onvif.org/ver10/search/wsdl\" xmlns:p=\"http://www.onvif.org/ver10/replay/wsdl\" xmlns:t=\"http://www.onvif.org/ver10/schema\"><s:Body>{body}</s:Body></s:Envelope>"
+    )
 }
 
 fn services(address: SocketAddr) -> String {
     let entries: String = ["recording", "search", "replay"].into_iter().map(|kind| {
         format!("<d:Service><d:Namespace>http://www.onvif.org/ver10/{kind}/wsdl</d:Namespace><d:XAddr>http://{address}/onvif/{kind}_service</d:XAddr><d:Version><t:Major>2</t:Major><t:Minor>0</t:Minor></d:Version></d:Service>")
     }).collect();
-    recorder_envelope(&format!("<d:GetServicesResponse>{entries}</d:GetServicesResponse>"))
+    recorder_envelope(&format!(
+        "<d:GetServicesResponse>{entries}</d:GetServicesResponse>"
+    ))
 }
 
 fn source() -> String {
-    format!("<t:Source><t:SourceId>urn:private:{SOURCE}</t:SourceId><t:Name>{SOURCE}</t:Name><t:Location>owner-site</t:Location><t:Description>Private recorder source</t:Description><t:Address>rtsp://untrusted-source.invalid/private</t:Address></t:Source>")
+    format!(
+        "<t:Source><t:SourceId>urn:private:{SOURCE}</t:SourceId><t:Name>{SOURCE}</t:Name><t:Location>owner-site</t:Location><t:Description>Private recorder source</t:Description><t:Address>rtsp://untrusted-source.invalid/private</t:Address></t:Source>"
+    )
 }
 
 fn inventory() -> String {
-    recorder_envelope(&format!("<r:GetRecordingsResponse><r:RecordingItem><t:RecordingToken>{TOKEN}</t:RecordingToken><t:Configuration>{}<t:Content>Private recording</t:Content><t:MaximumRetentionTime>PT86400S</t:MaximumRetentionTime></t:Configuration><t:Tracks><t:Track><t:TrackToken>video-0</t:TrackToken><t:Configuration><t:TrackType>Video</t:TrackType><t:Description>video</t:Description></t:Configuration></t:Track><t:Track><t:TrackToken>audio-0</t:TrackToken><t:Configuration><t:TrackType>Audio</t:TrackType><t:Description>audio</t:Description></t:Configuration></t:Track></t:Tracks></r:RecordingItem></r:GetRecordingsResponse>", source()))
+    recorder_envelope(&format!(
+        "<r:GetRecordingsResponse><r:RecordingItem><t:RecordingToken>{TOKEN}</t:RecordingToken><t:Configuration>{}<t:Content>Private recording</t:Content><t:MaximumRetentionTime>PT86400S</t:MaximumRetentionTime></t:Configuration><t:Tracks><t:Track><t:TrackToken>video-0</t:TrackToken><t:Configuration><t:TrackType>Video</t:TrackType><t:Description>video</t:Description></t:Configuration></t:Track><t:Track><t:TrackToken>audio-0</t:TrackToken><t:Configuration><t:TrackType>Audio</t:TrackType><t:Description>audio</t:Description></t:Configuration></t:Track></t:Tracks></r:RecordingItem></r:GetRecordingsResponse>",
+        source()
+    ))
 }
 
 fn information(known_bounds: bool) -> String {
-    let recording_bounds = if known_bounds { "<t:EarliestRecording>2026-11-01T11:00:00Z</t:EarliestRecording><t:LatestRecording>2026-11-01T13:00:00Z</t:LatestRecording>" } else { "" };
-    let track_bounds = if known_bounds { "<t:DataFrom>2026-11-01T11:00:00Z</t:DataFrom><t:DataTo>2026-11-01T13:00:00Z</t:DataTo>" } else { "" };
-    recorder_envelope(&format!("<q:GetRecordingInformationResponse><q:RecordingInformation><t:RecordingToken>{TOKEN}</t:RecordingToken>{}<t:Content>Private recording</t:Content>{recording_bounds}<t:Track><t:TrackToken>video-0</t:TrackToken><t:TrackType>Video</t:TrackType><t:Description>video</t:Description>{track_bounds}</t:Track><t:RecordingStatus>Stopped</t:RecordingStatus></q:RecordingInformation></q:GetRecordingInformationResponse>", source()))
+    let recording_bounds = if known_bounds {
+        "<t:EarliestRecording>2026-11-01T11:00:00Z</t:EarliestRecording><t:LatestRecording>2026-11-01T13:00:00Z</t:LatestRecording>"
+    } else {
+        ""
+    };
+    let track_bounds = if known_bounds {
+        "<t:DataFrom>2026-11-01T11:00:00Z</t:DataFrom><t:DataTo>2026-11-01T13:00:00Z</t:DataTo>"
+    } else {
+        ""
+    };
+    recorder_envelope(&format!(
+        "<q:GetRecordingInformationResponse><q:RecordingInformation><t:RecordingToken>{TOKEN}</t:RecordingToken>{}<t:Content>Private recording</t:Content>{recording_bounds}<t:Track><t:TrackToken>video-0</t:TrackToken><t:TrackType>Video</t:TrackType><t:Description>video</t:Description>{track_bounds}</t:Track><t:RecordingStatus>Stopped</t:RecordingStatus></q:RecordingInformation></q:GetRecordingInformationResponse>",
+        source()
+    ))
 }
 
 fn replay_uri(address: SocketAddr) -> String {
-    recorder_envelope(&format!("<p:GetReplayUriResponse><p:Uri>rtsp://{address}/camera?cap={QUERY}</p:Uri></p:GetReplayUriResponse>"))
+    recorder_envelope(&format!(
+        "<p:GetReplayUriResponse><p:Uri>rtsp://{address}/camera?cap={QUERY}</p:Uri></p:GetReplayUriResponse>"
+    ))
 }
 
-fn options(directory: &Directory, http: SocketAddr, rtsp: Option<SocketAddr>, authenticated: bool) -> Test<Vec<OsString>> {
-    let mut args = vec![OsString::from(if rtsp.is_some() { "replay" } else { "recordings" })];
+fn options(
+    directory: &Directory,
+    http: SocketAddr,
+    rtsp: Option<SocketAddr>,
+    authenticated: bool,
+) -> Test<Vec<OsString>> {
+    let mut args = vec![OsString::from(if rtsp.is_some() {
+        "replay"
+    } else {
+        "recordings"
+    })];
     args.extend(onvif_args(directory, http, None, authenticated)?);
     if let Some(rtsp) = rtsp {
         args.extend([
-            "--recording-token".into(), TOKEN.into(), "--codec".into(), "avc".into(),
-            "--replay-start".into(), START.into(), "--replay-end".into(), END.into(),
-            "--rtsp-peer".into(), rtsp.to_string().into(),
-            "--rtsp-authority".into(), rtsp.to_string().into(),
+            "--recording-token".into(),
+            TOKEN.into(),
+            "--codec".into(),
+            "avc".into(),
+            "--replay-start".into(),
+            START.into(),
+            "--replay-end".into(),
+            END.into(),
+            "--rtsp-peer".into(),
+            rtsp.to_string().into(),
+            "--rtsp-authority".into(),
+            rtsp.to_string().into(),
         ]);
     }
     Ok(args)
@@ -54,7 +93,12 @@ fn options(directory: &Directory, http: SocketAddr, rtsp: Option<SocketAddr>, au
 
 fn private_output(output: &Output) {
     secret_free(output);
-    for value in [TOKEN, SOURCE, "Private recording", "untrusted-source.invalid"] {
+    for value in [
+        TOKEN,
+        SOURCE,
+        "Private recording",
+        "untrusted-source.invalid",
+    ] {
         assert!(!String::from_utf8_lossy(&output.stdout).contains(value));
         assert!(!String::from_utf8_lossy(&output.stderr).contains(value));
     }
@@ -91,12 +135,22 @@ fn serve(http: TcpListener, responses: Vec<Exchange>, authenticated: bool) -> Te
     Ok(count * if authenticated { 2 } else { 1 })
 }
 
-fn execute(http: TcpListener, responses: Vec<Exchange>, args: &[OsString], authenticated: bool) -> Test<Output> {
+fn execute(
+    http: TcpListener,
+    responses: Vec<Exchange>,
+    args: &[OsString],
+    authenticated: bool,
+) -> Test<Output> {
     thread::scope(|scope| -> Test<Output> {
         let expected = responses.len() * if authenticated { 2 } else { 1 };
         let server = scope.spawn(move || serve(http, responses, authenticated));
         let output = run("onvif", args)?;
-        assert_eq!(server.join().map_err(|_| "recording SOAP fixture panicked")??, expected);
+        assert_eq!(
+            server
+                .join()
+                .map_err(|_| "recording SOAP fixture panicked")??,
+            expected
+        );
         private_output(&output);
         Ok(output)
     })
@@ -107,8 +161,18 @@ fn recorder_discovery_preview_and_wrong_approval_have_no_effects() -> Test {
     let directory = Directory::new("recording-pure")?;
     let http = listener()?;
     let rtsp = listener()?;
-    let mut args = options(&directory, http.local_addr()?, Some(rtsp.local_addr()?), false)?;
-    args.extend(["--credential-file".into(), directory.0.join("absent-secret").into_os_string(), "--auth-realm".into(), REALM.into()]);
+    let mut args = options(
+        &directory,
+        http.local_addr()?,
+        Some(rtsp.local_addr()?),
+        false,
+    )?;
+    args.extend([
+        "--credential-file".into(),
+        directory.0.join("absent-secret").into_os_string(),
+        "--auth-realm".into(),
+        REALM.into(),
+    ]);
     let preview = run("onvif", &args)?;
     private_output(&preview);
     let preview = parse(&good(preview)?)?;
@@ -133,10 +197,15 @@ fn recorder_inventory_is_private_complete_and_never_starts_playback() -> Test {
         let rtsp = listener()?;
         let address = http.local_addr()?;
         let args = approved_onvif(&options(&directory, address, None, authenticated)?)?;
-        let output = execute(http, vec![
-            ("/onvif/device_service", "GetServices", services(address)),
-            ("/onvif/recording_service", "GetRecordings", inventory()),
-        ], &args, authenticated)?;
+        let output = execute(
+            http,
+            vec![
+                ("/onvif/device_service", "GetServices", services(address)),
+                ("/onvif/recording_service", "GetRecordings", inventory()),
+            ],
+            &args,
+            authenticated,
+        )?;
         let result = parse(&good(output)?)?;
         assert_eq!(integer(&result, "recordings")?, 1);
         assert_eq!(integer(&result, "tracks")?, 2);
@@ -144,7 +213,10 @@ fn recorder_inventory_is_private_complete_and_never_starts_playback() -> Test {
         let path = directory.0.join("onvif.json");
         assert_eq!(fs::metadata(&path)?.permissions().mode() & 0o777, 0o600);
         let bytes = fs::read(&path)?;
-        assert_eq!(ContentDigest::sha256(&bytes).to_text(), text(&result, "output_digest")?);
+        assert_eq!(
+            ContentDigest::sha256(&bytes).to_text(),
+            text(&result, "output_digest")?
+        );
         let private = std::str::from_utf8(&bytes)?;
         assert!(private.contains(TOKEN) && private.contains(SOURCE));
         let parsed = parse(private)?;
@@ -170,14 +242,30 @@ fn selected_recording_creates_exact_private_avc_or_hevc_handoff_without_capture(
         let rtsp = listener()?;
         let address = http.local_addr()?;
         let mut args = options(&directory, address, Some(rtsp.local_addr()?), true)?;
-        let codec_index = args.iter().position(|arg| arg == "--codec").ok_or("missing codec")?;
+        let codec_index = args
+            .iter()
+            .position(|arg| arg == "--codec")
+            .ok_or("missing codec")?;
         args[codec_index + 1] = codec.into();
         let args = approved_onvif(&args)?;
-        let output = execute(http, vec![
-            ("/onvif/device_service", "GetServices", services(address)),
-            ("/onvif/search_service", "GetRecordingInformation", information(known)),
-            ("/onvif/replay_service", "GetReplayUri", replay_uri(rtsp.local_addr()?)),
-        ], &args, true)?;
+        let output = execute(
+            http,
+            vec![
+                ("/onvif/device_service", "GetServices", services(address)),
+                (
+                    "/onvif/search_service",
+                    "GetRecordingInformation",
+                    information(known),
+                ),
+                (
+                    "/onvif/replay_service",
+                    "GetReplayUri",
+                    replay_uri(rtsp.local_addr()?),
+                ),
+            ],
+            &args,
+            true,
+        )?;
         let result = parse(&good(output)?)?;
         assert_eq!(integer(&result, "http_exchanges")?, 6);
         assert!(boolean(&result, "handoff_ready")?);
@@ -185,12 +273,25 @@ fn selected_recording_creates_exact_private_avc_or_hevc_handoff_without_capture(
         let path = directory.0.join("onvif.json");
         assert_eq!(fs::metadata(&path)?.permissions().mode() & 0o777, 0o600);
         let bytes = fs::read(&path)?;
-        assert_eq!(ContentDigest::sha256(&bytes).to_text(), text(&result, "output_digest")?);
+        assert_eq!(
+            ContentDigest::sha256(&bytes).to_text(),
+            text(&result, "output_digest")?
+        );
         let handoff = ReplayHandoff::parse(&bytes)?;
         assert_eq!(handoff.codec().as_str(), codec);
         assert_eq!(handoff.window().to_string(), format!("clock={START}-{END}"));
-        assert_eq!(handoff.recording_token_digest(), ContentDigest::sha256(TOKEN.as_bytes()));
-        assert_eq!(handoff.range_assessment()?, if known { "within_advertised_bounds" } else { "unknown" });
+        assert_eq!(
+            handoff.recording_token_digest(),
+            ContentDigest::sha256(TOKEN.as_bytes())
+        );
+        assert_eq!(
+            handoff.range_assessment()?,
+            if known {
+                "within_advertised_bounds"
+            } else {
+                "unknown"
+            }
+        );
         assert_eq!(handoff.render()?.as_bytes(), bytes);
         let private = parse(std::str::from_utf8(&bytes)?)?;
         assert_eq!(text(&private, "uri_lifetime_basis")?, "unknown");
@@ -203,20 +304,52 @@ fn selected_recording_creates_exact_private_avc_or_hevc_handoff_without_capture(
 #[test]
 fn recording_selection_refuses_missing_video_and_known_range_violations_before_uri() -> Test {
     let cases = [
-        (information(true).replace("<t:TrackType>Video</t:TrackType>", "<t:TrackType>Audio</t:TrackType>"), "ERR-ONVIF-RECORDING-VIDEO-001"),
-        (information(false).replace("<t:Content>", "<t:LatestRecording>2026-11-01T12:00:30Z</t:LatestRecording><t:Content>"), "ERR-ONVIF-RECORDING-RANGE-001"),
-        (information(true).replace("<t:RecordingStatus>Stopped</t:RecordingStatus>", "<t:RecordingStatus>Removed</t:RecordingStatus>"), "ERR-ONVIF-RECORDING-STATE-001"),
+        (
+            information(true).replace(
+                "<t:TrackType>Video</t:TrackType>",
+                "<t:TrackType>Audio</t:TrackType>",
+            ),
+            "ERR-ONVIF-RECORDING-VIDEO-001",
+        ),
+        (
+            information(false).replace(
+                "<t:Content>",
+                "<t:LatestRecording>2026-11-01T12:00:30Z</t:LatestRecording><t:Content>",
+            ),
+            "ERR-ONVIF-RECORDING-RANGE-001",
+        ),
+        (
+            information(true).replace(
+                "<t:RecordingStatus>Stopped</t:RecordingStatus>",
+                "<t:RecordingStatus>Removed</t:RecordingStatus>",
+            ),
+            "ERR-ONVIF-RECORDING-STATE-001",
+        ),
     ];
     for (information, expected) in cases {
         let directory = Directory::new("recording-refused")?;
         let http = listener()?;
         let rtsp = listener()?;
         let address = http.local_addr()?;
-        let args = approved_onvif(&options(&directory, address, Some(rtsp.local_addr()?), false)?)?;
-        let refused = execute(http, vec![
-            ("/onvif/device_service", "GetServices", services(address)),
-            ("/onvif/search_service", "GetRecordingInformation", information),
-        ], &args, false)?;
+        let args = approved_onvif(&options(
+            &directory,
+            address,
+            Some(rtsp.local_addr()?),
+            false,
+        )?)?;
+        let refused = execute(
+            http,
+            vec![
+                ("/onvif/device_service", "GetServices", services(address)),
+                (
+                    "/onvif/search_service",
+                    "GetRecordingInformation",
+                    information,
+                ),
+            ],
+            &args,
+            false,
+        )?;
         assert!(!refused.status.success());
         assert!(String::from_utf8_lossy(&refused.stderr).contains(expected));
         assert!(!directory.0.join("onvif.json").exists());
@@ -233,14 +366,31 @@ fn foreign_recording_service_and_replay_uri_never_expand_owner_scope() -> Test {
         let rtsp = listener()?;
         let foreign = listener()?;
         let address = http.local_addr()?;
-        let args = approved_onvif(&options(&directory, address, Some(rtsp.local_addr()?), true)?)?;
+        let args = approved_onvif(&options(
+            &directory,
+            address,
+            Some(rtsp.local_addr()?),
+            true,
+        )?)?;
         let responses = if foreign_service {
-            vec![("/onvif/device_service", "GetServices", services(foreign.local_addr()?))]
+            vec![(
+                "/onvif/device_service",
+                "GetServices",
+                services(foreign.local_addr()?),
+            )]
         } else {
             vec![
                 ("/onvif/device_service", "GetServices", services(address)),
-                ("/onvif/search_service", "GetRecordingInformation", information(true)),
-                ("/onvif/replay_service", "GetReplayUri", replay_uri(foreign.local_addr()?)),
+                (
+                    "/onvif/search_service",
+                    "GetRecordingInformation",
+                    information(true),
+                ),
+                (
+                    "/onvif/replay_service",
+                    "GetReplayUri",
+                    replay_uri(foreign.local_addr()?),
+                ),
             ]
         };
         let refused = execute(http, responses, &args, true)?;

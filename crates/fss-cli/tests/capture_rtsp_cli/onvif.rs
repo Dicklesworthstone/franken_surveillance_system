@@ -32,8 +32,8 @@ fn accept(listener: &TcpListener) -> Test<TcpStream> {
         match listener.accept() {
             Ok((peer, _)) => {
                 // macOS inherits O_NONBLOCK from a non-blocking listener onto the accepted peer.
-    peer.set_nonblocking(false)?;
-    peer.set_read_timeout(Some(Duration::from_secs(5)))?;
+                peer.set_nonblocking(false)?;
+                peer.set_read_timeout(Some(Duration::from_secs(5)))?;
                 peer.set_write_timeout(Some(Duration::from_secs(5)))?;
                 return Ok(peer);
             }
@@ -42,7 +42,7 @@ fn accept(listener: &TcpListener) -> Test<TcpStream> {
                 thread::sleep(Duration::from_millis(1))
             }
             Err(error) => {
-                return Err(format!("fixture accepted no connection in 10s: {error}").into())
+                return Err(format!("fixture accepted no connection in 10s: {error}").into());
             }
         }
     }

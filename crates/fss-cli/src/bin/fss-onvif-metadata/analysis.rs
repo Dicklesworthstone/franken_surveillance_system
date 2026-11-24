@@ -90,7 +90,7 @@ fn parse(args: &[OsString]) -> Result<Options, &'static str> {
     let mut common_args = vec![OsString::from("tracks")];
     let mut values = BTreeMap::new();
     let mut explicit_work = false;
-    for pair in args[1..].chunks_exact(2) {
+    for pair in args[1..].as_chunks::<2>().0 {
         let key = pair[0].to_str().ok_or(ARGUMENT_ERROR)?;
         if matches!(key, "--max-analysis-work" | "--max-analysis-bytes") {
             if values.insert(key.to_owned(), pair[1].clone()).is_some() {

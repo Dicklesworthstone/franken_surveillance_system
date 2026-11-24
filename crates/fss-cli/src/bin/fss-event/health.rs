@@ -542,12 +542,8 @@ fn read_only(options: Options) -> Run<String> {
     let started = Instant::now();
     let cancelled = || started.elapsed() >= super::retained_read::DEADLINE;
     let result = (|| -> Run<String> {
-        let deployment = ImmutableRetainedSource::open_cancellable(
-            &root,
-            options.read_limits,
-            &cx,
-            &cancelled,
-        )?;
+        let deployment =
+            ImmutableRetainedSource::open_cancellable(&root, options.read_limits, &cx, &cancelled)?;
         if deployment.site_lineage() != options.site {
             return Err("retained deployment site lineage mismatch".into());
         }

@@ -8,10 +8,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-#[path = "decoded_media_cli_contract/range.rs"]
-mod range;
 #[path = "decoded_media_cli_contract/movie_export.rs"]
 mod movie_export;
+#[path = "decoded_media_cli_contract/range.rs"]
+mod range;
 #[path = "decoded_media_cli_contract/rtsp_movie_export.rs"]
 mod rtsp_movie_export;
 
@@ -73,20 +73,22 @@ fn imported_with_timing(name: &str, timed: bool) -> TestResult<(OwnedDirectory, 
     let input = directory.0.join("recording.mjpeg");
     fs::write(&input, [JPEG, JPEG].concat())?;
     let mut import = command(&root, "import");
-    import.arg("--input")
-        .arg(&input)
-        .args([
-            "--sensor",
-            "sensor:media-cli",
-            "--stream",
-            "stream:media-cli",
-            "--receive-time-ns",
-            "1000000000",
-        ]);
+    import.arg("--input").arg(&input).args([
+        "--sensor",
+        "sensor:media-cli",
+        "--stream",
+        "stream:media-cli",
+        "--receive-time-ns",
+        "1000000000",
+    ]);
     if timed {
         import.args([
-            "--capture-start-ns", "100000000", "--capture-uncertainty-ns", "1000",
-            "--assumed-fps", "10",
+            "--capture-start-ns",
+            "100000000",
+            "--capture-uncertainty-ns",
+            "1000",
+            "--assumed-fps",
+            "10",
         ]);
     }
     let output = import.output()?;
@@ -116,14 +118,26 @@ fn retained_jpeg_decode_read_and_replay_apply_the_same_source_time_window() -> T
     for action in ["decode", "read-decoded", "verify-decoded"] {
         let path = directory.0.join(format!("{action}.pgm"));
         let output = frame_command(&root, action, &id)
-            .arg("--output").arg(&path)
-            .args(["--output-window-ns", "150000000:250000000", "--output-clock-basis", "estimated"])
+            .arg("--output")
+            .arg(&path)
+            .args([
+                "--output-window-ns",
+                "150000000:250000000",
+                "--output-clock-basis",
+                "estimated",
+            ])
             .output()?;
         success(&output);
         assert_eq!(field(&output, "output_window_complete")?, "true");
         assert_eq!(field(&output, "output_window_selected_frames")?, "1");
-        assert_eq!(field(&output, "output_window_selected_earliest_ns")?, "199999000");
-        assert_eq!(field(&output, "output_window_selected_latest_ns")?, "200001000");
+        assert_eq!(
+            field(&output, "output_window_selected_earliest_ns")?,
+            "199999000"
+        );
+        assert_eq!(
+            field(&output, "output_window_selected_latest_ns")?,
+            "200001000"
+        );
         let bytes = fs::read(path)?;
         let selection = field(&output, "output_window_selection_digest")?;
         if let Some(first) = &first_bytes {
@@ -142,9 +156,18 @@ fn retained_jpeg_decode_read_and_replay_apply_the_same_source_time_window() -> T
         let path = directory.0.join(format!("{name}.jpg"));
         let receipt = directory.0.join(format!("{name}.receipt"));
         let output = frame_command(&root, "read-decoded", &id)
-            .arg("--output").arg(&path)
-            .arg("--receipt-out").arg(&receipt)
-            .args(["--output-format", "mjpeg", "--output-window-ns", interval, "--output-clock-basis", basis])
+            .arg("--output")
+            .arg(&path)
+            .arg("--receipt-out")
+            .arg(&receipt)
+            .args([
+                "--output-format",
+                "mjpeg",
+                "--output-window-ns",
+                interval,
+                "--output-clock-basis",
+                basis,
+            ])
             .output()?;
         assert!(!output.status.success());
         assert!(!path.exists());
@@ -233,10 +256,15 @@ fn decode_reopen_export_and_verify_run_in_separate_processes() -> TestResult {
 
 #[test]
 fn retained_jpeg_decode_reopen_and_replay_export_identical_bounded_mjpeg() -> TestResult {
-    use fss_codec_jpeg_encode::{EncodeBudget, EncodeConfig, EncodeLimits, PixelFormat, encode_jpeg};
+    use fss_codec_jpeg_encode::{
+        EncodeBudget, EncodeConfig, EncodeLimits, PixelFormat, encode_jpeg,
+    };
     let (directory, root, id) = imported("mjpeg")?;
     let pgm_path = directory.0.join("screened.pgm");
-    let decoded = frame_command(&root, "decode", &id).arg("--output").arg(&pgm_path).output()?;
+    let decoded = frame_command(&root, "decode", &id)
+        .arg("--output")
+        .arg(&pgm_path)
+        .output()?;
     success(&decoded);
     let width = field(&decoded, "width")?.parse::<u32>()?;
     let height = field(&decoded, "height")?.parse::<u32>()?;
@@ -245,32 +273,68 @@ fn retained_jpeg_decode_reopen_and_replay_export_identical_bounded_mjpeg() -> Te
     assert!(pgm.starts_with(header.as_bytes()));
     let luma = &pgm[header.len()..];
     let mut budget = EncodeBudget::new(100_000_000);
-    let expected = encode_jpeg(width, height, luma,
+    let expected = encode_jpeg(
+        width,
+        height,
+        luma,
         ContentDigest::parse(field(&decoded, "luma_sha256")?)?.bytes(),
-        EncodeConfig { quality: 85, format: PixelFormat::Grayscale },
-        &EncodeLimits::default(), &mut budget)?;
+        EncodeConfig {
+            quality: 85,
+            format: PixelFormat::Grayscale,
+        },
+        &EncodeLimits::default(),
+        &mut budget,
+    )?;
     let mut lineage = None;
     for command in ["decode", "read-decoded", "verify-decoded"] {
         let path = directory.0.join(format!("{command}.mjpeg"));
-        let output = frame_command(&root, command, &id).arg("--output").arg(&path)
-            .args(["--output-format", "mjpeg", "--jpeg-quality", "85", "--encode-work-units", &budget.used().to_string(),
-                "--max-output-bytes", &expected.bytes().len().to_string()]).output()?;
+        let output = frame_command(&root, command, &id)
+            .arg("--output")
+            .arg(&path)
+            .args([
+                "--output-format",
+                "mjpeg",
+                "--jpeg-quality",
+                "85",
+                "--encode-work-units",
+                &budget.used().to_string(),
+                "--max-output-bytes",
+                &expected.bytes().len().to_string(),
+            ])
+            .output()?;
         success(&output);
         assert_eq!(fs::read(&path)?, expected.bytes());
-        assert_eq!(field(&output, "mjpeg_sha256")?, ContentDigest::sha256(expected.bytes()).to_text());
+        assert_eq!(
+            field(&output, "mjpeg_sha256")?,
+            ContentDigest::sha256(expected.bytes()).to_text()
+        );
         assert_eq!(field(&output, "mjpeg_frames")?, "1");
         assert_eq!(field(&output, "remaining_encode_work_units")?, "0");
         assert_eq!(field(&output, "mjpeg_export_complete")?, "true");
-        assert_eq!(field(&output, "decode_root")?, field(&decoded, "decode_root")?);
-        assert_eq!(field(&output, "decode_receipt_digest")?, field(&decoded, "decode_receipt_digest")?);
-        assert_eq!(field(&output, "privacy_mask_binding")?, field(&decoded, "privacy_mask_binding")?);
+        assert_eq!(
+            field(&output, "decode_root")?,
+            field(&decoded, "decode_root")?
+        );
+        assert_eq!(
+            field(&output, "decode_receipt_digest")?,
+            field(&decoded, "decode_receipt_digest")?
+        );
+        assert_eq!(
+            field(&output, "privacy_mask_binding")?,
+            field(&decoded, "privacy_mask_binding")?
+        );
         let this_lineage = field(&output, "mjpeg_frame_receipts_sha256")?;
-        if let Some(previous) = &lineage { assert_eq!(previous, &this_lineage); }
+        if let Some(previous) = &lineage {
+            assert_eq!(previous, &this_lineage);
+        }
         lineage = Some(this_lineage);
     }
     let path = directory.0.join("zero.mjpeg");
-    let refused = frame_command(&root, "read-decoded", &id).arg("--output").arg(&path)
-        .args(["--output-format", "mjpeg", "--encode-work-units", "0"]).output()?;
+    let refused = frame_command(&root, "read-decoded", &id)
+        .arg("--output")
+        .arg(&path)
+        .args(["--output-format", "mjpeg", "--encode-work-units", "0"])
+        .output()?;
     assert!(!refused.status.success());
     assert_eq!(field(&refused, "mjpeg_export_complete")?, "false");
     assert!(!String::from_utf8_lossy(&refused.stdout).contains("mjpeg_sha256="));
@@ -304,7 +368,10 @@ fn retained_jpeg_lossless_matroska_preserves_pixels_roots_and_selected_lineage()
         &fs::read(&receipt_path)?,
         ContentDigest::parse(field(&decoded, "decode_receipt_digest")?)?,
     )?;
-    assert_eq!(receipt.identity().to_text(), field(&decoded, "decode_identity")?);
+    assert_eq!(
+        receipt.identity().to_text(),
+        field(&decoded, "decode_identity")?
+    );
     let width = field(&decoded, "width")?.parse::<u32>()?;
     let height = field(&decoded, "height")?.parse::<u32>()?;
     assert_eq!(receipt.dimensions(), [width, height]);
@@ -312,7 +379,10 @@ fn retained_jpeg_lossless_matroska_preserves_pixels_roots_and_selected_lineage()
     let header = format!("P5\n{width} {height}\n255\n");
     assert!(pgm.starts_with(header.as_bytes()));
     let luma = &pgm[header.len()..];
-    assert_eq!(ContentDigest::sha256(luma).to_text(), field(&decoded, "luma_sha256")?);
+    assert_eq!(
+        ContentDigest::sha256(luma).to_text(),
+        field(&decoded, "luma_sha256")?
+    );
 
     // Playback starts at zero at the explicitly requested cadence. The source
     // remains segment 1 with its estimated capture interval near 200 ms.
@@ -354,8 +424,14 @@ fn retained_jpeg_lossless_matroska_preserves_pixels_roots_and_selected_lineage()
         assert_eq!(field(&output, "gray_mkv_pixel_format")?, "grayscale_luma");
         assert_eq!(field(&output, "gray_mkv_lossy")?, "false");
         assert_eq!(field(&output, "gray_mkv_exact_luma_preserved")?, "true");
-        assert_eq!(field(&output, "gray_mkv_timing")?, "operator_requested_uniform_rate");
-        assert_eq!(field(&output, "gray_mkv_source_capture_timing_preserved")?, "false");
+        assert_eq!(
+            field(&output, "gray_mkv_timing")?,
+            "operator_requested_uniform_rate"
+        );
+        assert_eq!(
+            field(&output, "gray_mkv_source_capture_timing_preserved")?,
+            "false"
+        );
         assert_eq!(field(&output, "gray_mkv_export_complete")?, "true");
         assert_eq!(field(&output, "decode_complete")?, "true");
         for name in [
@@ -374,15 +450,25 @@ fn retained_jpeg_lossless_matroska_preserves_pixels_roots_and_selected_lineage()
             "applied_redaction_transform",
             "output_window_selection_digest",
         ] {
-            assert_eq!(field(&output, name)?, field(&decoded, name)?, "{action}: {name}");
+            assert_eq!(
+                field(&output, name)?,
+                field(&decoded, name)?,
+                "{action}: {name}"
+            );
         }
         assert_eq!(field(&output, "clock_basis")?, "estimated");
         assert_eq!(field(&output, "capture_earliest_ns")?, "199999000");
         assert_eq!(field(&output, "capture_latest_ns")?, "200001000");
         assert_eq!(field(&output, "output_window_complete")?, "true");
         assert_eq!(field(&output, "output_window_selected_frames")?, "1");
-        assert_eq!(field(&output, "output_window_selected_earliest_ns")?, "199999000");
-        assert_eq!(field(&output, "output_window_selected_latest_ns")?, "200001000");
+        assert_eq!(
+            field(&output, "output_window_selected_earliest_ns")?,
+            "199999000"
+        );
+        assert_eq!(
+            field(&output, "output_window_selected_latest_ns")?,
+            "200001000"
+        );
         let this_lineage = field(&output, "gray_mkv_frame_receipts_sha256")?;
         if let Some(previous) = &lineage {
             assert_eq!(previous, &this_lineage);
@@ -391,7 +477,10 @@ fn retained_jpeg_lossless_matroska_preserves_pixels_roots_and_selected_lineage()
         if action == "read-decoded" {
             assert_eq!(field(&output, "this_request_decode_work_units")?, "0");
         }
-        assert_eq!(field(&output, "replay_verified")?, (action == "verify-decoded").to_string());
+        assert_eq!(
+            field(&output, "replay_verified")?,
+            (action == "verify-decoded").to_string()
+        );
     }
 
     // The cap includes the initialization, Cluster/BlockGroup framing and luma.
@@ -430,8 +519,14 @@ fn retained_jpeg_lossless_matroska_preserves_pixels_roots_and_selected_lineage()
     }
     let retained = frame_command(&root, "read-decoded", &id).output()?;
     success(&retained);
-    assert_eq!(field(&retained, "decode_root")?, field(&decoded, "decode_root")?);
-    assert_eq!(field(&retained, "privacy_mask_binding_digest")?, field(&decoded, "privacy_mask_binding_digest")?);
+    assert_eq!(
+        field(&retained, "decode_root")?,
+        field(&decoded, "decode_root")?
+    );
+    assert_eq!(
+        field(&retained, "privacy_mask_binding_digest")?,
+        field(&decoded, "privacy_mask_binding_digest")?
+    );
     Ok(())
 }
 

@@ -65,11 +65,15 @@ pub mod json_output;
 pub mod lab_cmd;
 /// Canonical bounded discovery of retained recorded-localization metadata.
 pub mod localizations_query_cmd;
+/// Non-destructive `fss migrate` v1-to-v2 deployment upgrader command.
+pub mod migrate_cmd;
 /// Explicit, proof-backed plan-outcome mission contracts under AOP-007.
 pub mod mission_cmd;
 /// Explicitly owned bounded local-daemon synchronization for native source clocks.
 pub mod native_clock;
 pub mod negative_evidence_cmd;
+/// `fss notify <preview|dispatch>`: pure-Rust TLS 1.3 webhook & multi-channel relay CLI.
+pub mod notify_cmd;
 /// Pure native ONVIF handoff selection and unchanged outer capture approval.
 pub mod onvif_plan;
 /// Exact retained ONVIF analysis through the canonical read-only query operation.
@@ -78,6 +82,8 @@ pub mod onvif_query_cmd;
 pub mod onvif_replay_plan;
 /// Read-only `orient` (AOP-003) and `explain` (AOP-011) over a deployment root.
 pub mod orient_cmd;
+/// `fss archive <seal|verify|upload|restore|crypto-erase>`: AEAD pack encryption, S3 archive & erasure.
+pub mod pack_archive_cmd;
 /// AOP-006 bounded retained-source probes over existing owned subscriptions.
 pub mod probe_cmd;
 /// Canonical source-verified sampled QSR reads shared by CLI and MCP.
@@ -123,6 +129,10 @@ pub mod token;
 pub mod tracks_query_cmd;
 /// Pure native UniFi selection, private argument composition and outer approval.
 pub mod unifi_plan;
+/// Cohesive unified `fss <domain> <verb>` operational grammar, flag normalizer, and ergonomics linter.
+pub mod unified;
+/// `fss vault <init|set|list|revoke|doctor>`: zero-plaintext encrypted secret vault CLI.
+pub mod vault_cmd;
 
 pub use crosswalk::{
     CrosswalkValidationError, OperationCrosswalkEntry, REGISTERED_EXIT_IDENTITIES,
@@ -160,6 +170,7 @@ pub use lab_cmd::{
     VALID_SCENARIOS as VALID_LAB_SCENARIOS, help_text as lab_help_text, lab_recover_diagnostic,
     parse_lab_args, parse_lab_tokens,
 };
+pub use migrate_cmd::{MigrateArgs, execute_migrate, parse_migrate_args};
 pub use negative_evidence_cmd::{
     NEGATIVE_EVIDENCE_REPORT_SCHEMA, NegativeEvidenceAction, execute_negative_evidence,
     help_text as negative_evidence_help_text, parse_negative_evidence_tokens,
@@ -178,9 +189,21 @@ pub use session_cmd::{
     ERR_AGENT_SESSION_STALE, ERR_AGENT_SESSION_STORE_INVALID, ERR_AGENT_SESSION_STORE_LOCKED,
     SessionCommand, SessionHandoffArgs, SessionOpenArgs, SessionResumeArgs, execute_session,
 };
+pub use site_cmd::{
+    SiteCommand, SiteRunArgs, SiteStatusArgs, SiteStopArgs, execute_site, parse_site_args,
+};
 pub use status_cmd::{
     ERR_STATUS_CANCELLED, ERR_STATUS_CHANGED, ERR_STATUS_CORRUPT, ERR_STATUS_OVER_BUDGET,
     ERR_STATUS_UNREADABLE, MAX_STATUS_OUTPUT_BYTES, STATUS_SCHEMA, StatusArgs, execute_status,
     execute_status_with, parse_status_args,
 };
 pub use token::{ArgToken, MAX_ARG_TOKEN_BYTES, is_option_shaped, tokenize_os_args};
+pub use unified::{
+    CanonicalIdKind, DomainSpec, FlagSpec, FlagTranslationMode, LintFinding, LintReport,
+    TOP_LEVEL_HELP_SPECS, TopLevelHelpSpec, TranslatedCompanionCall, UNIFIED_DOMAINS,
+    UnifiedBackend, UnifiedCommand, UnifiedParseOutcome, VerbSpec, decode_hold_id_from_storage,
+    detect_subcommand_help, encode_hold_id_for_storage, execute_unified_with_control, find_domain,
+    find_verb, is_routed_unified_domain, lint_unified_cli_surface, normalize_preview_json,
+    parse_unified_tokens, render_domain_help, render_top_level_help, render_verb_help,
+    resolve_sibling_binary, translate_companion_args, validate_canonical_id,
+};

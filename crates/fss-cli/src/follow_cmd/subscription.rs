@@ -227,6 +227,7 @@ impl FollowWaitControl for LocalControl<'_, '_> {
     }
 }
 
+#[allow(clippy::result_large_err)]
 pub(super) fn execute(
     args: &FollowArgs,
     clock: crate::session_time::Clock<'_>,
@@ -718,11 +719,13 @@ mod tests {
                 acknowledge: Some(ack),
             }),
         };
-        let mut progress = FollowWaitProgress::default();
-        progress.admitted_reads = 4;
-        progress.completed_comparisons = 2;
-        progress.completed_parks = 1;
-        progress.elapsed_ms = 500;
+        let mut progress = FollowWaitProgress {
+            admitted_reads: 4,
+            completed_comparisons: 2,
+            completed_parks: 1,
+            elapsed_ms: 500,
+            ..FollowWaitProgress::default()
+        };
         progress.consumed.bytes = 42;
         progress.source_reserved_bytes = 71;
         for (failure_error, outcome, error) in [

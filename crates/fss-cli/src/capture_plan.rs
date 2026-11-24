@@ -11,7 +11,7 @@ use fss_core::ContentDigest;
 
 // Share only the credential-reference planner, never the credential or entropy
 // owners. The public surface returns values, not an executor or I/O capability.
-#[allow(dead_code)]
+#[allow(dead_code, clippy::duplicate_mod)]
 #[path = "bin/fss-capture-rtsp/authentication_plan.rs"]
 mod authentication;
 #[allow(dead_code)]
@@ -36,7 +36,12 @@ pub struct PreparedRtspPlan {
 /// effective limits come directly from the existing native capture owner. Error
 /// strings are static and never interpolate untrusted arguments or private paths.
 pub fn prepare_rtsp(args: &[OsString]) -> Result<PreparedRtspPlan, &'static str> {
-    if args.chunks_exact(2).any(|pair| pair[0] == "--approve") {
+    if args
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .any(|pair| pair[0] == "--approve")
+    {
         return Err("approval is not accepted by the pure planning adapter");
     }
     let native = plan::Options::parse(args)?;
@@ -56,7 +61,12 @@ pub fn prepare_jpeg(args: &[OsString]) -> Result<PreparedRtspPlan, &'static str>
     if args.first().is_some_and(|arg| arg == "replay") {
         return Err("cold replay is not accepted by the pure capture planning adapter");
     }
-    if args.chunks_exact(2).any(|pair| pair[0] == "--approve") {
+    if args
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .any(|pair| pair[0] == "--approve")
+    {
         return Err("approval is not accepted by the pure planning adapter");
     }
     let native = jpeg::Options::parse(args)?;

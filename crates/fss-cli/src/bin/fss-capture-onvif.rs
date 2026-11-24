@@ -20,9 +20,7 @@ use fss_reference::ingest::{
     FileFormatHint, FileIngestAdapter, FileIngestRequest, RetainedFileImport, RetainedReadLimits,
 };
 use fss_reference::onvif::client::{ClientError, OnvifContext};
-use fss_reference::onvif::http::{
-    HttpAuthority, HttpDenial, HttpLimits, HttpOperation, HttpRoute,
-};
+use fss_reference::onvif::http::{HttpAuthority, HttpDenial, HttpLimits, HttpOperation, HttpRoute};
 use fss_reference::onvif::snapshot::{self, Snapshot, SnapshotPlan};
 use fss_reference::rtsp::authentication::{DigestAuthorization, DigestChallenge};
 use fss_reference::{ADP_REPLAY_ROW_ID, ReferenceDeployment, ReplayCx};
@@ -241,9 +239,8 @@ fn run(options: &Options) -> Result<String, &'static str> {
     // Reserve all three bounded requests, both SOAP responses and the snapshot wire ceiling.
     let soap_limits = HttpLimits::default();
     let snapshot_wire = ((options.max_source_bytes as u64) * 2).max(65_536);
-    let network_reservation = snapshot_wire
-        + 2 * soap_limits.wire_bytes as u64
-        + 3 * soap_limits.request_bytes as u64;
+    let network_reservation =
+        snapshot_wire + 2 * soap_limits.wire_bytes as u64 + 3 * soap_limits.request_bytes as u64;
     let snapshot = runtime::run(
         runtime::Request {
             approval: options.approval()?,

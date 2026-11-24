@@ -252,6 +252,21 @@ fn assert_same_selected_content(
                 actual_fields, expected_fields,
                 "retained {id} metadata changed"
             );
+        } else if id == "unknown:read-cost" {
+            // Live clock admission advances the session journal root cited in evidence[0],
+            // while the epistemic statement, state, and provenance remain identical.
+            for key in ["id", "provenance", "state", "statement"] {
+                assert_eq!(
+                    field(actual, &[key])?,
+                    field(expected, &[key])?,
+                    "retained {id} field {key} changed"
+                );
+            }
+            let ev = field(actual, &["evidence"])?
+                .array()
+                .ok_or("read-cost evidence")?;
+            assert_eq!(ev.len(), 1);
+            ContentDigest::parse(ev[0].text().ok_or("read-cost digest")?)?;
         } else {
             assert_eq!(actual, expected, "retained {id} changed");
         }

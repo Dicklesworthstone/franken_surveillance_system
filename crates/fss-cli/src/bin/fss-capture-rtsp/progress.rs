@@ -331,7 +331,7 @@ mod tests {
         assert!(Supervision::new(1, approval).is_ok());
         assert!(Supervision::new(600_000_000_000, approval).is_ok());
         let zero =
-            ContentDigest::parse(&format!("sha256:{}", "0".repeat(64))).expect("digest syntax");
+            ContentDigest::parse(format!("sha256:{}", "0".repeat(64))).expect("digest syntax");
         assert!(Supervision::new(100, zero).is_err());
         assert!(Supervision::with_limits(None, Some(100), zero).is_err());
     }

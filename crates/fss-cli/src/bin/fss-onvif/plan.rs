@@ -152,8 +152,22 @@ impl OnvifAuthPlan {
                     "credential_file",
                     string(&credential_file.to_string_lossy()),
                 ),
-                ("credential_backend", string("linux_private_regular_file")),
-                ("entropy_backend", string("linux_urandom")),
+                (
+                    "credential_backend",
+                    string(if cfg!(target_os = "linux") {
+                        "linux_private_regular_file"
+                    } else {
+                        "posix_private_regular_file"
+                    }),
+                ),
+                (
+                    "entropy_backend",
+                    string(if cfg!(target_os = "linux") {
+                        "linux_urandom"
+                    } else {
+                        "posix_urandom"
+                    }),
+                ),
                 ("nonce_bytes_per_request", "16".into()),
                 ("clock_bootstrap", string("unsigned-GetSystemDateAndTime")),
                 (
@@ -197,7 +211,11 @@ impl Plan {
             Some(command @ ("recordings" | "replay")) => (Some(command), &args[1..]),
             _ => (None, args),
         };
-        let limit = if command.is_some() { MAX_ARGUMENTS - 1 } else { MAX_LIVE_ARGUMENTS };
+        let limit = if command.is_some() {
+            MAX_ARGUMENTS - 1
+        } else {
+            MAX_LIVE_ARGUMENTS
+        };
         if args.len() > limit
             || !args.len().is_multiple_of(2)
             || args.iter().any(|arg| arg.as_encoded_bytes().len() > 4096)
@@ -356,7 +374,11 @@ impl Plan {
         encoded.text(self.schema());
         encoded.text(self.policy());
         if self.uses_username_token() {
-            encoded.text(if self.recording.is_some() { "recording" } else { self.media_version_name() });
+            encoded.text(if self.recording.is_some() {
+                "recording"
+            } else {
+                self.media_version_name()
+            });
         }
         if let Some(recording) = &self.recording {
             recording.encode(&mut encoded);
@@ -506,7 +528,10 @@ impl Plan {
 
     pub(super) fn max_http_exchanges(&self) -> u64 {
         let selected = self.profile.is_some()
-            || self.recording.as_ref().is_some_and(RecorderRequest::is_replay);
+            || self
+                .recording
+                .as_ref()
+                .is_some_and(RecorderRequest::is_replay);
         match (self.uses_username_token(), selected) {
             (true, false) => 3,
             (true, true) => 4,
@@ -516,7 +541,9 @@ impl Plan {
     }
 
     pub(super) fn schema(&self) -> &'static str {
-        if self.recording.is_some() { return "fss.onvif_recording_operator_plan.v1"; }
+        if self.recording.is_some() {
+            return "fss.onvif_recording_operator_plan.v1";
+        }
         if self.uses_username_token() {
             return "fss.onvif_operator_plan.v3";
         }
@@ -528,7 +555,11 @@ impl Plan {
 
     pub(super) fn policy(&self) -> &'static str {
         if self.recording.is_some() {
-            return if self.uses_username_token() { super::recorder::USERNAME_TOKEN_POLICY } else { super::recorder::HTTP_POLICY };
+            return if self.uses_username_token() {
+                super::recorder::USERNAME_TOKEN_POLICY
+            } else {
+                super::recorder::HTTP_POLICY
+            };
         }
         match (self.uses_username_token(), self.media_version) {
             (false, MediaVersion::Media1) => MEDIA1_POLICY,

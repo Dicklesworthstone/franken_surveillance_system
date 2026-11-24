@@ -43,7 +43,7 @@ impl Drop for Fixture {
     }
 }
 
-fn files<'a>(media: &'a [u8]) -> [(&'static str, &'a [u8]); 4] {
+fn files(media: &[u8]) -> [(&'static str, &[u8]); 4] {
     [
         ("source.mp4", media),
         ("record.canonical", b"record"),

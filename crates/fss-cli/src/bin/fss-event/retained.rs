@@ -147,6 +147,9 @@ pub(super) fn run(mut options: Options, destination: &mut impl Write) -> RunResu
             Action::Read(id) if id.as_str().starts_with("event:package:") => {
                 read_package_event(&options, &deployment, id, &cx, out, &mut exports)?;
             }
+            Action::Read(id) if is_watch_family_event(id) => {
+                read_watch_family_event(&options, &deployment, id, &cx, out, &mut exports)?;
+            }
             Action::Read(id) => {
                 let record =
                     RecordedEvent::open(&deployment, id, &options.limits, &mut budget, &cx)?;
@@ -386,4 +389,181 @@ fn read_package_event(
     )?;
     print_package_event(record.event(), "read_verified", out)?;
     familiarity::append(options, deployment, record.event(), cx, out)
+}
+
+fn is_watch_family_event(id: &EventId) -> bool {
+    let raw = id.as_str();
+    raw.starts_with("event:watch:")
+        || raw.starts_with("event:dwell:")
+        || raw.starts_with("event:corroborated:")
+}
+
+/// Reads and cryptographically verifies a short-window `event:watch:`, `event:dwell:`, or
+/// `event:corroborated:` event directly from immutable retained custody without requiring a
+/// `recorded-luma` `AnalysisReport`. Explicitly distinguishes a later privacy-mask generation
+/// update (`historical_mask_generation_changed=true`) from event/history corruption.
+fn read_watch_family_event(
+    options: &Options,
+    deployment: &dyn RetainedSource,
+    id: &EventId,
+    cx: &ReplayCx,
+    out: &mut impl Write,
+    exports: &mut Vec<(PathBuf, Vec<u8>)>,
+) -> RunResult<()> {
+    use fss_core::{CanonicalDecode, EventHypothesis, ObjectId};
+    use fss_object::ObjectManifest;
+    use fss_reference::reference_deployment::{FAMILY_EVENT_REVISION, FAMILY_PRIVACY_MASK_POLICY};
+
+    cx.checkpoint("watch_event:read_start")?;
+    let object_id = ObjectId::parse(format!("object:event:{}", id.as_str()))?;
+    let current = deployment
+        .ledger()
+        .current()
+        .objects
+        .get(&object_id)
+        .ok_or_else(|| {
+            io::Error::other(format!("event not found in deployment: {}", id.as_str()))
+        })?;
+    let mut committed_sequence = None;
+    let mut expected_revision_digest = None;
+    for batch in deployment.ledger().batches() {
+        for delta in &batch.deltas {
+            if delta.object_id == object_id
+                && delta.family == FAMILY_EVENT_REVISION
+                && delta.new_generation == current.generation
+                && delta.payload_digest == current.payload_digest
+            {
+                committed_sequence = Some(batch.new_anchor.commit_sequence);
+                expected_revision_digest = delta.witness_digest;
+            }
+        }
+    }
+    let committed_sequence = committed_sequence.ok_or_else(|| {
+        io::Error::other(format!(
+            "committed event_revision delta missing for {}",
+            id.as_str()
+        ))
+    })?;
+
+    let event_root = current.payload_digest;
+    let root_bytes = deployment.read_object(event_root)?;
+    if ContentDigest::sha256(&root_bytes) != event_root {
+        return Err(io::Error::other("event root digest mismatch").into());
+    }
+    let manifest = ObjectManifest::from_canonical_bytes(&root_bytes)?;
+    let event_payload_digest = manifest
+        .metadata_digest()
+        .or_else(|| manifest.children().first().copied())
+        .ok_or_else(|| io::Error::other("event manifest carries no revision payload"))?;
+    let event_bytes = deployment.read_object(event_payload_digest)?;
+    if ContentDigest::sha256(&event_bytes) != event_payload_digest {
+        return Err(io::Error::other("event revision payload digest mismatch").into());
+    }
+    let event = EventHypothesis::from_canonical_bytes(&event_bytes)?;
+    event.verify()?;
+    if event.event_id != *id {
+        return Err(io::Error::other("event identity mismatch in committed payload").into());
+    }
+    let actual_revision_digest = event.revision_digest();
+    if let Some(expected) = expected_revision_digest
+        && expected != actual_revision_digest
+    {
+        return Err(
+            io::Error::other("event revision digest mismatch against ledger witness").into(),
+        );
+    }
+
+    // Verify retained provenance root and child metadata integrity.
+    let provenance_root = event.decision_path.fingerprint;
+    let provenance_bytes = deployment.read_object(provenance_root)?;
+    if ContentDigest::sha256(&provenance_bytes) != provenance_root {
+        return Err(io::Error::other("event provenance manifest digest mismatch").into());
+    }
+    let provenance_manifest = ObjectManifest::from_canonical_bytes(&provenance_bytes)?;
+    if let Some(meta_digest) = provenance_manifest.metadata_digest() {
+        let meta_bytes = deployment.read_object(meta_digest)?;
+        if ContentDigest::sha256(&meta_bytes) != meta_digest {
+            return Err(io::Error::other("event provenance metadata digest mismatch").into());
+        }
+    }
+    let mut verified_evidence_objects = 0_usize;
+    for evidence in &event.evidence {
+        cx.checkpoint("watch_event:verify_evidence")?;
+        let bytes = deployment.read_object(evidence.digest)?;
+        if ContentDigest::sha256(&bytes) != evidence.digest {
+            return Err(io::Error::other(format!(
+                "evidence object digest mismatch: {}",
+                evidence.digest
+            ))
+            .into());
+        }
+        verified_evidence_objects += 1;
+    }
+
+    // Explicitly check whether any privacy-mask policy for the event's sensors changed AFTER
+    // this event was committed, distinguishing mask evolution from history corruption.
+    let event_sensors: BTreeSet<&str> = event
+        .evidence
+        .iter()
+        .map(|item| item.failure_domain.as_str())
+        .filter(|domain| !domain.is_empty())
+        .collect();
+    let event_mask_object_ids: BTreeSet<String> = event_sensors
+        .iter()
+        .flat_map(|domain| {
+            let mut ids = Vec::new();
+            if let Some(sensor_hex) = domain.strip_prefix("recorded-sensor:") {
+                ids.push(format!("object:privacy-mask:{sensor_hex}"));
+            }
+            if let Ok(sensor) = fss_core::SensorId::parse(*domain)
+                && let Ok(mask_id) = fss_reference::ingest::privacy_mask::mask_object_id(&sensor)
+            {
+                ids.push(mask_id.as_str().to_owned());
+            }
+            ids
+        })
+        .collect();
+    let mut historical_mask_generation_changed = false;
+    for batch in deployment.ledger().batches() {
+        if batch.new_anchor.commit_sequence <= committed_sequence {
+            continue;
+        }
+        for delta in &batch.deltas {
+            if delta.family == FAMILY_PRIVACY_MASK_POLICY {
+                let target = delta.object_id.as_str();
+                if event_sensors.is_empty()
+                    || event_mask_object_ids.contains(target)
+                    || event_sensors.iter().any(|sensor| target.contains(sensor))
+                {
+                    historical_mask_generation_changed = true;
+                }
+            }
+        }
+    }
+
+    if let Some(path) = &options.event_out {
+        exports.push((path.clone(), event.to_canonical_json().into_bytes()));
+    }
+    writeln!(
+        out,
+        "event_root={}\nauthority_sequence={}\noperation=read_verified\nevent_id={}\nrevision={}\nevent_revision_digest={}\nprovenance_root={}",
+        event_root,
+        committed_sequence,
+        event.event_id,
+        event.revision,
+        actual_revision_digest,
+        provenance_root
+    )?;
+    writeln!(
+        out,
+        "event_state={}\nevent_kind={}\nmodel_receipts={}\nevidence_items={}\nverified_evidence_objects={}\nhistorical_mask_generation_changed={}",
+        event.state.as_str(),
+        event.kind.as_str(),
+        event.model_receipts.len(),
+        event.evidence.len(),
+        verified_evidence_objects,
+        historical_mask_generation_changed
+    )?;
+    writeln!(out, "absence_certifiable=false\neffects_authorized=false")?;
+    familiarity::append(options, deployment, &event, cx, out)
 }

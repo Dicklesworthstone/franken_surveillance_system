@@ -77,12 +77,16 @@ impl CaptureReplay {
         if self.acceptance.is_none() || self.pending.is_some() {
             return Err(Failure::State);
         }
-        if proof.codec() != self.request.codec() { return Err(Failure::State); }
+        if proof.codec() != self.request.codec() {
+            return Err(Failure::State);
+        }
         if self.windows.len() >= MAX_REPLAY_WINDOWS {
             return Err(Failure::WorkBudget);
         }
         // Reserve before retaining another descriptor. Original media is not copied.
-        self.windows.try_reserve(1).map_err(|_| Failure::WorkBudget)?;
+        self.windows
+            .try_reserve(1)
+            .map_err(|_| Failure::WorkBudget)?;
         self.pending = Some(proof);
         Ok(())
     }
@@ -104,8 +108,14 @@ impl CaptureReplay {
         object(&[
             ("state", string("playing")),
             ("play_cseq", acceptance.cseq().to_string()),
-            ("requested_range", string(&acceptance.requested().to_string())),
-            ("acknowledged_range", string(&acceptance.acknowledged().to_string())),
+            (
+                "requested_range",
+                string(&acceptance.requested().to_string()),
+            ),
+            (
+                "acknowledged_range",
+                string(&acceptance.acknowledged().to_string()),
+            ),
             ("time_basis", string("recorder_assertion")),
             ("rate_control", string("no")),
             ("historical_frame_time", string("unknown")),
@@ -118,7 +128,10 @@ impl CaptureReplay {
             ("source", string("recorder_replay")),
             ("codec", string(self.request.codec().as_str())),
             ("request_identity", string(&self.request.digest().to_text())),
-            ("requested_range", string(&self.request.window().to_string())),
+            (
+                "requested_range",
+                string(&self.request.window().to_string()),
+            ),
             ("acknowledgement", self.acknowledgement_json()),
             ("durable_windows", self.durable_windows.to_string()),
             (
@@ -148,7 +161,10 @@ impl CaptureReplay {
             ("automatic_live_fallback", "false".into()),
         ];
         if let Some(source) = self.request.onvif_source() {
-            fields.push(("onvif_source", fss_cli::onvif_replay_plan::source_json(source)));
+            fields.push((
+                "onvif_source",
+                fss_cli::onvif_replay_plan::source_json(source),
+            ));
         }
         object(&fields)
     }
@@ -209,8 +225,14 @@ impl CaptureReplay {
                 ("slot", string(published.slot.as_str())),
                 ("root", string(&published.root.to_text())),
                 ("request_identity", string(&self.request.digest().to_text())),
-                ("requested_range", string(&acceptance.requested().to_string())),
-                ("acknowledged_range", string(&acceptance.acknowledged().to_string())),
+                (
+                    "requested_range",
+                    string(&acceptance.requested().to_string()),
+                ),
+                (
+                    "acknowledged_range",
+                    string(&acceptance.acknowledged().to_string()),
+                ),
                 ("play_cseq", acceptance.cseq().to_string()),
                 ("windows", self.durable_windows.to_string()),
                 ("publication_complete", publication_complete.to_string()),

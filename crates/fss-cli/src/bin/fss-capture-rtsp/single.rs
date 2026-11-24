@@ -68,13 +68,15 @@ impl SinglePlan {
         let mut recover = false;
         let mut index_catalogs = false;
         let mut recovery_timeout_ns = None;
-        for pair in args.chunks_exact(2) {
+        for pair in args.as_chunks::<2>().0 {
             if pair[0] == "--minimum-pin-anchors" {
                 if minimum_pins.is_some() {
                     return Err("duplicate minimum pin anchors");
                 }
                 minimum_pins = Some(MinimumPins::parse(
-                    pair[1].to_str().ok_or("UTF-8 minimum pin anchors required")?,
+                    pair[1]
+                        .to_str()
+                        .ok_or("UTF-8 minimum pin anchors required")?,
                 )?);
                 continue;
             }
@@ -133,7 +135,9 @@ impl SinglePlan {
         let recovery_timeout_ns = recover.then_some(recovery_timeout_ns.unwrap_or(30_000_000_000));
         let capture = Options::parse(&native)?;
         if recover && capture.replay.is_some() {
-            return Err("replay receipts currently require a completed single attempt; automatic replay recovery is unsupported");
+            return Err(
+                "replay receipts currently require a completed single attempt; automatic replay recovery is unsupported",
+            );
         }
         if let Some(minimum) = &minimum_pins {
             minimum.validate(std::slice::from_ref(&capture))?;

@@ -58,6 +58,7 @@ impl Drop for Directory {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 enum Original {
     Avc(PreparedRecording),
     Hevc(PreparedHevcRecording),

@@ -18,13 +18,13 @@ const MALFORMED: i32 = 2;
 const RUNTIME: i32 = 1;
 
 /// Every required option, so a test can drop exactly the ones it means to leave out.
-const REQUIRED: [&str; 2] = [
-    "--journal-resource",
-    "archive:resource:test",
-];
+const REQUIRED: [&str; 2] = ["--journal-resource", "archive:resource:test"];
 const REST: [(&str, &str); 7] = [
     ("--minimum-sequence", "0"),
-    ("--minimum-root", "sha256:0000000000000000000000000000000000000000000000000000000000000000"),
+    (
+        "--minimum-root",
+        "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    ),
     ("--attested-now-ns", "0"),
     ("--max-journal-bytes", "65536"),
     ("--max-records", "16"),

@@ -393,9 +393,7 @@ fn empty_failed_attempt_reports_no_samples_without_an_absence_claim() -> Test {
     Ok(())
 }
 
-fn archive_snapshot(
-    root: &Path,
-) -> Test<std::collections::BTreeMap<PathBuf, Option<Vec<u8>>>> {
+fn archive_snapshot(root: &Path) -> Test<std::collections::BTreeMap<PathBuf, Option<Vec<u8>>>> {
     fn visit(
         root: &Path,
         directory: &Path,

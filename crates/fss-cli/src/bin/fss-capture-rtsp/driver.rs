@@ -954,6 +954,37 @@ fn archive_progress<C: ArchiveCodec, W: Write>(
     Ok(())
 }
 
+fn send_teardown_if_active(
+    options: &Options,
+    capture: &mut JournaledLiveAvcArchive<'_, '_>,
+    owner: &Owner<'_, '_>,
+    entropy: Option<&mut Entropy>,
+    stats: &mut Statistics,
+    unsigned: &DigestCredentials<'_>,
+) {
+    if !options.setup_companion_tracks
+        || owner.drain_deadline.get().is_some()
+        || !matches!(capture.state(), ClientState::Ready | ClientState::Playing)
+    {
+        return;
+    }
+    let Ok(now) = owner.now() else {
+        return;
+    };
+    let authenticated = if stats.authentication_responses != 0 {
+        entropy.and_then(|entropy| owner.authentication(entropy).ok())
+    } else {
+        None
+    };
+    let (credentials, nonce) = authenticated
+        .as_ref()
+        .map_or((unsigned, [0; 16]), |(credentials, nonce)| {
+            (credentials, *nonce)
+        });
+    let _ = capture.send_teardown(credentials, nonce, now, owner);
+    stats.observe(capture);
+}
+
 fn begin_archive_drain(
     capture: &mut JournaledLiveAvcArchive<'_, '_>,
     owner: &Owner<'_, '_>,
@@ -1156,6 +1187,14 @@ fn drive<W: Write>(
             if stats.durable_pictures != stats.collected_pictures {
                 return Err(Failure::State);
             }
+            send_teardown_if_active(
+                options,
+                capture,
+                owner,
+                entropy.as_deref_mut(),
+                stats,
+                &unsigned,
+            );
             begin_archive_drain(capture, owner, stats)?;
             draining = true;
             ready = false;
@@ -1317,6 +1356,14 @@ fn drive<W: Write>(
                     // This is the final explicitly sealed window, not an earlier IDR cut.
                     // Close the socket before preparing its first checkpoint, so publication
                     // can use the drain allowance even when the live deadline is near.
+                    send_teardown_if_active(
+                        options,
+                        capture,
+                        owner,
+                        entropy.as_deref_mut(),
+                        stats,
+                        &unsigned,
+                    );
                     begin_archive_drain(capture, owner, stats)?;
                     draining = true;
                 }
@@ -1664,15 +1711,41 @@ fn run_owned<W: Write>(
                 }
             })?;
             stats.connection_attempted = true;
-            let result = drive(
-                options,
-                &mut source,
-                &mut capture,
-                &owner,
-                entropy.as_mut(),
-                stats,
-                log,
-            );
+            let configure = (|| -> Result<(), Failure> {
+                if options.allow_inband_parameter_sets {
+                    capture
+                        .set_allow_inband_parameter_sets(true)
+                        .map_err(|_| Failure::Configuration)?;
+                }
+                if options.setup_companion_tracks {
+                    capture
+                        .set_setup_companion_tracks(true)
+                        .map_err(|_| Failure::Configuration)?;
+                }
+                Ok(())
+            })();
+            let result = match configure {
+                Ok(()) => drive(
+                    options,
+                    &mut source,
+                    &mut capture,
+                    &owner,
+                    entropy.as_mut(),
+                    stats,
+                    log,
+                ),
+                Err(error) => Err(error),
+            };
+            if let Ok(unsigned) = DigestCredentials::new("unused", "") {
+                send_teardown_if_active(
+                    options,
+                    &mut capture,
+                    &owner,
+                    entropy.as_mut(),
+                    stats,
+                    &unsigned,
+                );
+            }
             stats.observe(&capture);
             // Close the socket and transfer all remaining ownership BEFORE terminal sink output.
             // No retry, deletion, publication, or synthetic EOF occurs in cancellation.

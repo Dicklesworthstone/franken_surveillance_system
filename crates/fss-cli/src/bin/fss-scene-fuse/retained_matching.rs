@@ -154,7 +154,7 @@ fn options_profile(
         return Ok(None);
     }
     if args.len() > 24
-        || args.len() % 2 != 0
+        || !args.len().is_multiple_of(2)
         || args.iter().any(|a| a.as_encoded_bytes().len() > 4096)
     {
         return Err(input_error(

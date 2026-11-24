@@ -63,6 +63,7 @@ impl Codec {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 enum Native {
     Avc(PreparedRecording),
     Hevc(PreparedHevcRecording),
@@ -312,6 +313,7 @@ impl Imported {
         ))
     }
 
+    #[allow(clippy::type_complexity)]
     fn retained_objects(&self) -> TestResult<(Vec<(PathBuf, Vec<u8>)>, Vec<(PathBuf, Vec<u8>)>)> {
         let cx = context(&self.root)?;
         let deployment = ReferenceDeployment::open(&self.root, SITE, &cx)?;

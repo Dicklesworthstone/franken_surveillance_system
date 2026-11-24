@@ -123,7 +123,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<Option<Options>, &'static str> 
         return Err(ARGUMENT_ERROR);
     }
     let mut values = BTreeMap::new();
-    for pair in args[1..].chunks_exact(2) {
+    for pair in args[1..].as_chunks::<2>().0 {
         let key = pair[0].to_str().ok_or(ARGUMENT_ERROR)?;
         if !matches!(
             key,
@@ -575,7 +575,7 @@ mod tests {
         let args = arguments();
         let first = parse(&args)?.ok_or("missing plan")?;
         let mut reordered = vec![args[0].clone()];
-        for pair in args[1..].chunks_exact(2).rev() {
+        for pair in args[1..].as_chunks::<2>().0.iter().rev() {
             reordered.extend_from_slice(pair);
         }
         assert_eq!(

@@ -150,7 +150,7 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, &'static str> {
         return Err(ARGUMENT_ERROR);
     }
     let mut values = BTreeMap::new();
-    for pair in args[1..].chunks_exact(2) {
+    for pair in args[1..].as_chunks::<2>().0 {
         let key = pair[0].to_str().ok_or(ARGUMENT_ERROR)?;
         let common = matches!(
             key,

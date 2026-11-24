@@ -22,12 +22,17 @@ pub const MAX_INPUT_BYTES: usize = 1024 * 1024;
 /// Maximum complete standalone or embedded replay response, including final newline.
 pub const MAX_REPORT_BYTES: usize = 8 * 1024 * 1024;
 
+/// Structured clock-alignment refusal carrying a stable error identity and detail message.
 #[derive(Debug)]
 pub struct Failure {
+    /// Stable error identity for this refusal.
     pub code: &'static str,
+    /// Human-readable explanation without sensitive payloads.
     pub detail: String,
 }
+/// Result alias for strict clock-alignment query admission and replay.
 pub type Result<T> = std::result::Result<T, Failure>;
+/// Construct a structured clock-alignment [`Failure`] from a short category code.
 pub fn failure(code: &'static str, detail: impl Into<String>) -> Failure {
     let code = match code {
         "input" => "ERR-CLOCK-ALIGNMENT-INPUT-001",
@@ -48,6 +53,7 @@ pub fn failure(code: &'static str, detail: impl Into<String>) -> Failure {
 fn analyze(bytes: &[u8], expected: ContentDigest, work_limit: u64) -> Result<(String, bool)> {
     analyze_with_probe(bytes, expected, work_limit, &|| false)
 }
+/// Validate and execute a digest-pinned clock-alignment query with cooperative cancellation.
 pub fn analyze_with_probe(
     bytes: &[u8],
     expected: ContentDigest,

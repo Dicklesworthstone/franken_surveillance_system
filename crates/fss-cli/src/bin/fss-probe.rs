@@ -473,7 +473,7 @@ mod tests {
                 invoke(&["--parameters", "--units", "1"], bytes).0,
                 EXIT_LIMIT
             );
-            let mut input = &bytes[..];
+            let mut input = bytes;
             let mut out = Vec::new();
             assert_eq!(
                 run(

@@ -475,10 +475,10 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         port_tx.send(port).unwrap();
-        for stream in listener.incoming() {
+        if let Some(stream) = listener.incoming().next() {
             let mut s = match stream {
                 Ok(s) => s,
-                Err(_) => break,
+                Err(_) => return,
             };
             s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
             let mut req = [0u8; 4096];
@@ -490,7 +490,6 @@ mod tests {
             let _ = s.write_all(resp.as_bytes());
             let _ = s.write_all(&body);
             let _ = s.flush();
-            break;
         }
     }
 

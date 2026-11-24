@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
+use fss_codec_mjpeg::color::RgbDecodeLimits;
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{BudgetVector, ContentDigest, OperationId, PrincipalId};
 use fss_reference::ingest::package_detect::sentinel::{
@@ -33,7 +34,8 @@ mod immutable;
 const HELP: &str = "fss-infer package-detect [options]\n\
   --root DIR --site SITE --import-id sha256:HEX --first-segment N --frames N (1..64)\n\
   --package FILE --package-digest sha256:HEX --interpretation gray|ycbcr\n\
-  [--minimum-score-ppm N] [--max-macs N] [--max-tensor-bytes N] [--report-out FILE] [--principal ID]\n\
+  [--minimum-score-ppm N] [--max-macs N] [--max-tensor-bytes N] [--jpeg-work-units N]\n\
+  [--report-out FILE] [--principal ID]\n\
   [--retain yes] [--max-output-bytes N (1..16777216; default 16777216)]\n\
   [--max-read-bytes N --max-read-objects N (unretained previews only)]\n\
   [--sentinel-every-frames N --sentinel-max-inferences M [--sentinel-burst-frames K]]\n\
@@ -137,6 +139,7 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
         "--max-macs",
         "--max-tensor-bytes",
         "--max-output-bytes",
+        "--jpeg-work-units",
         "--report-out",
         "--retain",
         "--max-read-bytes",
@@ -227,6 +230,26 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
         }
     };
     let mut limits = PackageDetectLimits::default();
+    let max_jpeg_work = RgbDecodeLimits::default()
+        .rgb_work_bound()
+        .saturating_mul(MAX_PACKAGE_DETECT_FRAMES as u64);
+    let default_jpeg_work = if stream_sentinel {
+        // Whole-recording sentinel recipes must remain replayable under native default ceilings.
+        limits.jpeg_work_units
+    } else {
+        let admitted_frames = sentinel.map_or(frames, |config| config.max_inferences);
+        limits
+            .jpeg
+            .rgb_work_bound()
+            .saturating_mul(admitted_frames as u64)
+    };
+    let jpeg_work_units: u64 = number(&values, "--jpeg-work-units", Some(default_jpeg_work))?;
+    if jpeg_work_units == 0 || jpeg_work_units > max_jpeg_work {
+        return Err(format!(
+            "JPEG work ceiling must be 1..{max_jpeg_work} work units"
+        ));
+    }
+    limits.jpeg_work_units = jpeg_work_units;
     let max_bytes: usize = number(
         &values,
         "--max-tensor-bytes",
@@ -972,6 +995,46 @@ mod tests {
             } else {
                 assert_eq!(limits.digest(), original.digest());
             }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn jpeg_work_units_defaults_from_rgb_work_bound_and_respects_explicit_override()
+    -> Result<(), String> {
+        let bound = RgbDecodeLimits::default().rgb_work_bound();
+        // Default 4MP RGB bound must cover 2688x1512 4:4:4 (~1.484B work) comfortably.
+        assert!(bound > 1_500_000_000);
+
+        // Ordinary mode (2 frames in fixture args): default scales by frame count.
+        let ordinary = parse(&args())?.ok_or("ordinary request")?;
+        assert_eq!(ordinary.limits.jpeg_work_units, bound.saturating_mul(2));
+
+        // Explicit narrow override (e.g., for BudgetExhausted tests) is honored verbatim.
+        let mut narrow = args();
+        narrow.extend(["--jpeg-work-units", "1024"].map(OsString::from));
+        let parsed_narrow = parse(&narrow)?.ok_or("narrow request")?;
+        assert_eq!(parsed_narrow.limits.jpeg_work_units, 1024);
+
+        // Explicit wide override up to 64 * rgb_work_bound() is admitted.
+        let max_work = bound.saturating_mul(MAX_PACKAGE_DETECT_FRAMES as u64);
+        let mut wide = args();
+        wide.extend([
+            OsString::from("--jpeg-work-units"),
+            OsString::from(max_work.to_string()),
+        ]);
+        let parsed_wide = parse(&wide)?.ok_or("wide request")?;
+        assert_eq!(parsed_wide.limits.jpeg_work_units, max_work);
+
+        // Zero, overflow, and duplicate --jpeg-work-units are refused.
+        for bad in [
+            vec!["--jpeg-work-units", "0"],
+            vec!["--jpeg-work-units", "18446744073709551615"],
+            vec!["--jpeg-work-units", "100", "--jpeg-work-units", "200"],
+        ] {
+            let mut input = args();
+            input.extend(bad.into_iter().map(OsString::from));
+            assert!(parse(&input).is_err());
         }
         Ok(())
     }

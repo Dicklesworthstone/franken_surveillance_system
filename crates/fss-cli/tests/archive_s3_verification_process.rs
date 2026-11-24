@@ -1,9 +1,9 @@
 #![forbid(unsafe_code)]
+//! Real process verification with private immutable custody and no upload journal.
 #![cfg(all(
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
-//! Real process verification with private immutable custody and no upload journal.
 
 use std::fs;
 use std::io::{Read, Write};

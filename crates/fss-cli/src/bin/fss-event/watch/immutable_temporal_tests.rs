@@ -65,14 +65,20 @@ fn invoke(args: &[OsString], output: &mut Vec<u8>) -> Test {
 }
 
 #[test]
-fn active_writer_temporal_previews_preserve_native_reports_and_cross_the_old_frame_boundary() -> Test {
+fn active_writer_temporal_previews_preserve_native_reports_and_cross_the_old_frame_boundary() -> Test
+{
     let mut fixture = Fixture::new("immutable-temporal-native")?;
     let short = fixture.ingest(
-        "sensor:temporal-short", &scene()?, FileFormatHint::JpegStream, Some(0),
+        "sensor:temporal-short",
+        &scene()?,
+        FileFormatHint::JpegStream,
+        Some(0),
     )?;
     let long = fixture.ingest(
-        "sensor:temporal-long", &temporal_scene(150, Some(126))?,
-        FileFormatHint::JpegStream, Some(0),
+        "sensor:temporal-long",
+        &temporal_scene(150, Some(126))?,
+        FileFormatHint::JpegStream,
+        Some(0),
     )?;
     let avc = fixture.ingest("sensor:temporal-avc", AVC, FileFormatHint::AnnexB, Some(0))?;
     let hevc = fixture.ingest("sensor:temporal-hevc", HEVC, FileFormatHint::Hevc, Some(0))?;
@@ -92,7 +98,11 @@ fn active_writer_temporal_previews_preserve_native_reports_and_cross_the_old_fra
         assert!(action.is_immutable_preview());
         let mut native = Vec::new();
         crate::watch::run(
-            &action, &mut fixture.deployment, &root, &fixture.cx, &mut native,
+            &action,
+            &mut fixture.deployment,
+            &root,
+            &fixture.cx,
+            &mut native,
         )?;
         let mut preview = Vec::new();
         invoke(&args, &mut preview)?;
@@ -100,13 +110,18 @@ fn active_writer_temporal_previews_preserve_native_reports_and_cross_the_old_fra
         if import == long {
             let text = std::str::from_utf8(&preview)?;
             assert!(text.contains("\"frames_decoded\":150"));
-            assert!(!text.contains("\"candidate_count\":0"), "{mode:?} lost the late event");
+            assert!(
+                !text.contains("\"candidate_count\":0"),
+                "{mode:?} lost the late event"
+            );
         }
         assert_eq!(tree(&root)?, before);
         let mut approved = args;
         approved.extend([
             "--approve".into(),
-            ContentDigest::sha256(b"explicit temporal approval").to_text().into(),
+            ContentDigest::sha256(b"explicit temporal approval")
+                .to_text()
+                .into(),
         ]);
         let mut output = Vec::new();
         let error = invoke(&approved, &mut output).expect_err("approval bypassed active publisher");
@@ -134,8 +149,10 @@ fn active_writer_temporal_previews_preserve_native_reports_and_cross_the_old_fra
 fn degraded_whole_recording_diagnostics_remain_readable_without_publication() -> Test {
     let mut fixture = Fixture::new("immutable-temporal-health")?;
     let import = fixture.ingest(
-        "sensor:temporal-dark", &temporal_scene(14, None)?,
-        FileFormatHint::JpegStream, Some(0),
+        "sensor:temporal-dark",
+        &temporal_scene(14, None)?,
+        FileFormatHint::JpegStream,
+        Some(0),
     )?;
     let root = fixture.deployment.root().to_path_buf();
     let before = tree(&root)?;
@@ -145,13 +162,20 @@ fn degraded_whole_recording_diagnostics_remain_readable_without_publication() ->
         let action = crate::watch::parse(&args)?;
         let mut native = Vec::new();
         crate::watch::run(
-            &action, &mut fixture.deployment, &root, &fixture.cx, &mut native,
+            &action,
+            &mut fixture.deployment,
+            &root,
+            &fixture.cx,
+            &mut native,
         )?;
         let mut preview = Vec::new();
         invoke(&args, &mut preview)?;
         assert_eq!(preview, native, "{mode:?}");
         let text = std::str::from_utf8(&preview)?;
-        assert!(text.contains("\"publication_blocked\":true"), "health fixture was not degraded");
+        assert!(
+            text.contains("\"publication_blocked\":true"),
+            "health fixture was not degraded"
+        );
         assert!(text.contains("\"candidate_count\":0"));
         assert!(text.contains("historical_health"));
         assert_eq!(tree(&root)?, before);
@@ -164,8 +188,10 @@ fn degraded_whole_recording_diagnostics_remain_readable_without_publication() ->
 fn quiet_temporal_reports_share_exact_final_read_limits_and_cancel_without_output() -> Test {
     let mut fixture = Fixture::new("immutable-temporal-allowance")?;
     let import = fixture.ingest(
-        "sensor:temporal-quiet", &temporal_scene(14, None)?,
-        FileFormatHint::JpegStream, Some(0),
+        "sensor:temporal-quiet",
+        &temporal_scene(14, None)?,
+        FileFormatHint::JpegStream,
+        Some(0),
     )?;
     let root = fixture.deployment.root();
     let before = tree(root)?;
@@ -189,7 +215,8 @@ fn quiet_temporal_reports_share_exact_final_read_limits_and_cancel_without_outpu
         let exact = action.read_limits;
         let mut output = Vec::new();
         assert_eq!(
-            run_with(&action, root, &cx, &scalar, &|| false, &mut output)?, total,
+            run_with(&action, root, &cx, &scalar, &|| false, &mut output)?,
+            total,
         );
         assert_eq!(output, expected);
         let report = fixture.directory.0.join(format!("refused-{mode:?}.json"));
@@ -227,21 +254,34 @@ fn quiet_temporal_reports_share_exact_final_read_limits_and_cancel_without_outpu
 fn quiet_whole_recording_final_validation_detects_late_capsule_and_source_damage() -> Test {
     for mode in [Mode::LongWatch, Mode::LongDwell] {
         for capsule in [true, false] {
-            let mut fixture = Fixture::new(&format!("immutable-temporal-damage-{mode:?}-{capsule}"))?;
+            let mut fixture =
+                Fixture::new(&format!("immutable-temporal-damage-{mode:?}-{capsule}"))?;
             let import = fixture.ingest(
-                "sensor:temporal-damage", &temporal_scene(14, None)?,
-                FileFormatHint::JpegStream, Some(0),
+                "sensor:temporal-damage",
+                &temporal_scene(14, None)?,
+                FileFormatHint::JpegStream,
+                Some(0),
             )?;
             let root = fixture.deployment.root();
             let args = temporal_args(root, import, "gray", "door:64,0,32,32", mode);
             let mut action = crate::watch::parse(&args)?;
             action.options.tolerate_decode_refusals = !capsule;
             let retained = RetainedFileImport::open(
-                &fixture.deployment, import, action.limits.read_limits, &fixture.cx,
+                &fixture.deployment,
+                import,
+                action.limits.read_limits,
+                &fixture.cx,
             )?;
             let digest = if capsule {
-                let object = format!("object:capsule:{}", retained.manifest().capsule_ids[0].as_str());
-                fixture.deployment.ledger().batches().iter()
+                let object = format!(
+                    "object:capsule:{}",
+                    retained.manifest().capsule_ids[0].as_str()
+                );
+                fixture
+                    .deployment
+                    .ledger()
+                    .batches()
+                    .iter()
                     .flat_map(|batch| &batch.deltas)
                     .find(|delta| delta.object_id.as_str() == object)
                     .ok_or("missing quiet capsule")?
@@ -264,7 +304,17 @@ fn quiet_whole_recording_final_validation_detects_late_capsule_and_source_damage
                 calls.fetch_add(1, Ordering::SeqCst);
                 false
             };
-            assert!(run_with(&action, root, &calibration, &scalar, &count, &mut Vec::new()).is_err());
+            assert!(
+                run_with(
+                    &action,
+                    root,
+                    &calibration,
+                    &scalar,
+                    &count,
+                    &mut Vec::new()
+                )
+                .is_err()
+            );
             let before_delivery = calls.load(Ordering::SeqCst);
             calibration.drain_and_finalize();
             calls.store(0, Ordering::SeqCst);

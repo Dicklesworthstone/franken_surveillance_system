@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 //! Two-camera corroboration remains available without acquiring the active capture publisher.
 
+#[allow(clippy::duplicate_mod)]
 #[path = "../../../../../fss-reference/tests/cascade_support/mod.rs"]
 mod support;
 

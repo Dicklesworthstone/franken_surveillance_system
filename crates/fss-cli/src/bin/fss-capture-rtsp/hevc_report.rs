@@ -29,6 +29,7 @@ impl Statistics {
         if let Some(snapshot) = capture.snapshot() {
             self.snapshot(snapshot);
         }
+        self.observe_telemetry(capture.intake_telemetry());
         self.journal_anchor = Some(capture.journal_anchor());
         self.pins = capture.pin_state().clone();
     }

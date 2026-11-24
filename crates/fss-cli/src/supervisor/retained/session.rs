@@ -47,6 +47,7 @@ pub enum NativeSupervisionRequest {
 }
 
 impl NativeSupervisionRequest {
+    /// Underlying retained supervisor plan template.
     pub fn template(&self) -> &RetainedSupervisorPlan {
         match self {
             Self::Event(request) => request.template(),
@@ -54,6 +55,7 @@ impl NativeSupervisionRequest {
         }
     }
 
+    /// Canonical digest of this native supervision request.
     pub fn digest(&self) -> ContentDigest {
         match self {
             Self::Event(request) => request.digest(),
@@ -61,6 +63,7 @@ impl NativeSupervisionRequest {
         }
     }
 
+    /// Rebind this request to an explicit expected authority root digest.
     pub fn for_authority(
         &self,
         authority: ContentDigest,
@@ -71,6 +74,7 @@ impl NativeSupervisionRequest {
         }
     }
 
+    /// Restrict this request to the first `count` windows of its retained plan.
     pub fn for_window_prefix(
         &self,
         count: usize,
@@ -81,6 +85,7 @@ impl NativeSupervisionRequest {
         }
     }
 
+    /// Registered report schema name emitted by this request dialect.
     pub const fn report_schema(&self) -> &'static str {
         match self {
             Self::Event(_) => RETAINED_DISCOVERY_REPORT_SCHEMA,
@@ -88,6 +93,7 @@ impl NativeSupervisionRequest {
         }
     }
 
+    /// JSON field name carrying the authority root in reports of this dialect.
     pub const fn report_authority_field(&self) -> &'static str {
         match self {
             Self::Event(_) => "expected_authority_root",
@@ -187,6 +193,7 @@ impl SupervisionRecoveryControl for RecoveryControl<'_> {
     }
 }
 
+/// Scope an original native supervision request to an authority root and optional window count.
 pub fn scoped_request(
     original: &NativeSupervisionRequest,
     authority: ContentDigest,
@@ -495,6 +502,7 @@ pub fn recover_native_supervision(
 /// Run exactly one registered action through the shared session and source owners.
 /// `existing_only` is mandatory for recovered callers: an absent subscription never re-registers.
 /// All stored bounds, the recipe bytes and native profile are compared before native work.
+#[allow(clippy::result_large_err)]
 pub fn execute_native_supervision(
     root: impl fss_reference::deployment_session::SessionRoot,
     principal: &PrincipalId,
@@ -527,6 +535,7 @@ pub fn execute_native_supervision(
 
 /// Existing native work with an explicit pre-work state, enforced under the journal lock.
 /// The sealed result lets a later case citation prove that the guard was actually consumed.
+#[allow(clippy::result_large_err)]
 pub fn execute_native_supervision_at(
     root: impl fss_reference::deployment_session::SessionRoot,
     principal: &PrincipalId,
@@ -559,6 +568,7 @@ pub fn execute_native_supervision_at(
     .map_err(|failure| *failure)
 }
 
+#[allow(clippy::result_large_err)]
 fn native_session_limits(
     command: &SupervisionSessionRequest,
     request: &NativeSupervisionRequest,

@@ -179,7 +179,9 @@ fn timeout_bounds_and_argument_order_use_one_shared_policy() {
         let approval = original.digest().expect("digest");
         set(&mut input, "--approve", &approval.to_text());
         let reverse: Vec<_> = input
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .rev()
             .flat_map(|pair| pair.iter().cloned())
             .collect();

@@ -11,7 +11,9 @@ use std::time::{Duration, Instant};
 
 use fss_cli::agent_json::{array, evidence_anchor, object, string, strings};
 use fss_cli::{ERR_CLI_MALFORMED_VALUE, ERR_CLI_RUNTIME_FAILURE, ExitIdentity};
-use fss_core::{ContentDigest, DigestAlgorithm, EventHypothesis, GraphAlgorithmWitness, LedgerAnchor};
+use fss_core::{
+    ContentDigest, DigestAlgorithm, EventHypothesis, GraphAlgorithmWitness, LedgerAnchor,
+};
 use fss_graph_algorithms::certified::Budget;
 use fss_graph_algorithms::evidence::{
     EvidenceClaimAnalysis, EvidenceClaimProjection, EvidenceProjectionError,
@@ -19,10 +21,10 @@ use fss_graph_algorithms::evidence::{
 };
 use fss_reference::agent_orient::{OrientLimits, read_deployment};
 
-#[path = "fss-evidence/history.rs"]
-mod history;
 #[path = "fss-evidence/activity.rs"]
 mod activity;
+#[path = "fss-evidence/history.rs"]
+mod history;
 
 const FORMAT: &str = "fss.evidence_support_analysis.v1";
 const MAX_ARGS: usize = 17;
@@ -110,18 +112,25 @@ fn number(value: &OsStr, low: u64, high: u64) -> Result<u64, CommandError> {
 // Parse everything before opening a deployment. Root paths keep native OS bytes.
 fn parse(args: &[OsString]) -> Result<Option<Request>, CommandError> {
     if args.len() > MAX_ARGS
-        || args.iter().any(|v| v.as_encoded_bytes().len() > MAX_ARG_BYTES)
+        || args
+            .iter()
+            .any(|v| v.as_encoded_bytes().len() > MAX_ARG_BYTES)
     {
-        return Err(CommandError::Usage("argument count or length exceeds its bound"));
+        return Err(CommandError::Usage(
+            "argument count or length exceeds its bound",
+        ));
     }
     if (args.len() == 1 && matches!(args[0].to_str(), Some("help" | "--help" | "-h")))
-        || (args.len() == 2 && args[0] == "analyze"
+        || (args.len() == 2
+            && args[0] == "analyze"
             && matches!(args[1].to_str(), Some("--help" | "-h")))
     {
         return Ok(None);
     }
     if args.first().and_then(|v| v.to_str()) != Some("analyze") || args.len() % 2 != 1 {
-        return Err(CommandError::Usage("expected analyze and separate option/value pairs"));
+        return Err(CommandError::Usage(
+            "expected analyze and separate option/value pairs",
+        ));
     }
     let mut root = None;
     let mut site = None;
@@ -192,7 +201,11 @@ struct ReadFacts {
 }
 
 fn stopped(check: &impl Fn() -> bool) -> Result<(), CommandError> {
-    if check() { Err(CommandError::Stopped) } else { Ok(()) }
+    if check() {
+        Err(CommandError::Stopped)
+    } else {
+        Ok(())
+    }
 }
 
 fn execute(request: &Request, check: &impl Fn() -> bool) -> Result<String, CommandError> {
@@ -239,10 +252,14 @@ fn report_for_records(
     let projection = EvidenceClaimProjection::build(events, EvidenceProjectionLimits::default())
         .map_err(CommandError::Projection)?;
     stopped(check)?;
-    let analysis = projection.analyze(facts.anchor.clone(), request.budget)
+    let analysis = projection
+        .analyze(facts.anchor.clone(), request.budget)
         .map_err(CommandError::Projection)?;
     stopped(check)?;
-    if request.expected.is_some_and(|pin| pin != analysis.witness.digest()) {
+    if request
+        .expected
+        .is_some_and(|pin| pin != analysis.witness.digest())
+    {
         return Err(CommandError::StaleWitness);
     }
     let report = render(request, facts, &projection, &analysis)?;
@@ -251,8 +268,10 @@ fn report_for_records(
 }
 
 fn counts(values: &std::collections::BTreeMap<String, u64>) -> String {
-    let fields: Vec<String> = values.iter()
-        .map(|(name, n)| format!("{}:{n}", string(name))).collect();
+    let fields: Vec<String> = values
+        .iter()
+        .map(|(name, n)| format!("{}:{n}", string(name)))
+        .collect();
     format!("{{{}}}", fields.join(","))
 }
 
@@ -267,27 +286,43 @@ fn witness(value: &GraphAlgorithmWitness) -> String {
         ("edgeCount", value.edge_count().to_string()),
         ("inputDigest", string(&value.input_digest().to_text())),
         ("policyId", string(value.policy_id())),
-        ("dominantOperationCounts", counts(value.dominant_operation_counts())),
+        (
+            "dominantOperationCounts",
+            counts(value.dominant_operation_counts()),
+        ),
         ("peakWorkingBytes", value.peak_working_bytes().to_string()),
         ("budgetConsumed", counts(value.budget_consumed())),
         ("exactness", string(value.exactness())),
         ("errorBound", "null".to_owned()),
         ("stopReason", string(value.stop_reason())),
-        ("decisionPathDigest", string(&value.decision_path_digest().to_text())),
+        (
+            "decisionPathDigest",
+            string(&value.decision_path_digest().to_text()),
+        ),
         ("outputDigest", string(&value.output_digest().to_text())),
     ])
 }
 
 // Charge rows before retaining them. A whole final report is checked again before stdout.
 fn bounded_array(rows: impl Iterator<Item = String>, limit: usize) -> Result<String, CommandError> {
-    if limit < 2 { return Err(CommandError::OutputBound); }
+    if limit < 2 {
+        return Err(CommandError::OutputBound);
+    }
     let mut out = String::from("[");
     for row in rows {
         let separator = usize::from(out.len() > 1);
-        if out.len().saturating_add(separator).saturating_add(row.len()).saturating_add(1) > limit {
+        if out
+            .len()
+            .saturating_add(separator)
+            .saturating_add(row.len())
+            .saturating_add(1)
+            > limit
+        {
             return Err(CommandError::OutputBound);
         }
-        if separator != 0 { out.push(','); }
+        if separator != 0 {
+            out.push(',');
+        }
         out.push_str(&row);
     }
     out.push(']');
@@ -302,59 +337,150 @@ fn render(
 ) -> Result<String, CommandError> {
     // No hand-written alternate event serialization: preserve every field through the
     // canonical core renderer, including all typed edges and explicit uncertainty.
-    let records = bounded_array(projection.events().iter().zip(&analysis.claims).map(|(event, claim)| {
-        object(&[
-            ("revision_digest", string(&claim.revision.to_text())),
-            ("graph_node", string(&object_node(claim.revision))),
-            ("record", event.to_canonical_json()),
-            ("supports", claim.supports.to_string()),
-            ("contradictions", claim.contradictions.to_string()),
-            ("other_relations", claim.neutral.to_string()),
-            ("support_reachability", string(claim.reachability.as_str())),
-            ("immediate_dominator", claim.immediate_dominator.as_deref()
-                .map_or_else(|| "null".to_owned(), string)),
-        ])
-    }), request.report_limit)?;
-    let idoms = bounded_array(analysis.run.output.immediate_dominators.iter().map(|(node, parent)| {
-        array(&[string(node), string(parent)])
-    }), request.report_limit)?;
-    let dominance = bounded_array(analysis.run.output.dominance.iter().map(|(node, count)| {
-        array(&[string(node), count.to_string()])
-    }), request.report_limit)?;
+    let records = bounded_array(
+        projection
+            .events()
+            .iter()
+            .zip(&analysis.claims)
+            .map(|(event, claim)| {
+                object(&[
+                    ("revision_digest", string(&claim.revision.to_text())),
+                    ("graph_node", string(&object_node(claim.revision))),
+                    ("record", event.to_canonical_json()),
+                    ("supports", claim.supports.to_string()),
+                    ("contradictions", claim.contradictions.to_string()),
+                    ("other_relations", claim.neutral.to_string()),
+                    ("support_reachability", string(claim.reachability.as_str())),
+                    (
+                        "immediate_dominator",
+                        claim
+                            .immediate_dominator
+                            .as_deref()
+                            .map_or_else(|| "null".to_owned(), string),
+                    ),
+                ])
+            }),
+        request.report_limit,
+    )?;
+    let idoms = bounded_array(
+        analysis
+            .run
+            .output
+            .immediate_dominators
+            .iter()
+            .map(|(node, parent)| array(&[string(node), string(parent)])),
+        request.report_limit,
+    )?;
+    let dominance = bounded_array(
+        analysis
+            .run
+            .output
+            .dominance
+            .iter()
+            .map(|(node, count)| array(&[string(node), count.to_string()])),
+        request.report_limit,
+    )?;
     let digests = |values: &[ContentDigest]| {
-        bounded_array(values.iter().map(|d| string(&d.to_text())), request.report_limit)
+        bounded_array(
+            values.iter().map(|d| string(&d.to_text())),
+            request.report_limit,
+        )
     };
     let report = object(&[
         ("format", string(FORMAT)),
         ("site", string(&facts.site)),
         ("anchor", evidence_anchor(&facts.anchor)),
         ("ledger_root", string(&facts.ledger_root.to_text())),
-        ("ledger_tail_uncommitted", facts.ledger_tail_uncommitted.to_string()),
-        ("effect_tail_uncommitted", facts.effect_tail_uncommitted.to_string()),
-        ("selection", string("latest_retained_revision_of_every_event; no filtering")),
-        ("projection_digest", string(&projection.graph().digest().to_text())),
+        (
+            "ledger_tail_uncommitted",
+            facts.ledger_tail_uncommitted.to_string(),
+        ),
+        (
+            "effect_tail_uncommitted",
+            facts.effect_tail_uncommitted.to_string(),
+        ),
+        (
+            "selection",
+            string("latest_retained_revision_of_every_event; no filtering"),
+        ),
+        (
+            "projection_digest",
+            string(&projection.graph().digest().to_text()),
+        ),
         ("records", records),
-        ("unexpanded_support_references", digests(projection.unexpanded_support())?),
-        ("unexpanded_evidence_references", digests(projection.unexpanded_evidence())?),
+        (
+            "unexpanded_support_references",
+            digests(projection.unexpanded_support())?,
+        ),
+        (
+            "unexpanded_evidence_references",
+            digests(projection.unexpanded_evidence())?,
+        ),
         ("dominator_root", string(&analysis.run.output.root)),
         ("immediate_dominators", idoms),
-        ("unreachable_nodes", strings(&analysis.run.output.unreachable)),
+        (
+            "unreachable_nodes",
+            strings(&analysis.run.output.unreachable),
+        ),
         ("dominated_node_counts", dominance),
         ("witness", witness(&analysis.witness)),
-        ("witness_digest", string(&analysis.witness.digest().to_text())),
+        (
+            "witness_digest",
+            string(&analysis.witness.digest().to_text()),
+        ),
         ("source_files_read", facts.files_read.to_string()),
         ("source_bytes_read", facts.bytes_read.to_string()),
-        ("canonical_event_bytes", projection.canonical_bytes().to_string()),
-        ("evidence_edges_inspected", projection.evidence_edges().to_string()),
-        ("graph_operation_limit", request.budget.max_operations.to_string()),
-        ("algorithm_output_entry_limit", request.budget.max_output_entries.to_string()),
-        ("budget_scope", string("algorithm witness excludes separately bounded snapshot IO, compiler and JSON rendering")),
-        ("node_key", string("object:<digest>; support:<revision-digest>:<zero-based-edge-index, minimum four decimal digits>")),
+        (
+            "canonical_event_bytes",
+            projection.canonical_bytes().to_string(),
+        ),
+        (
+            "evidence_edges_inspected",
+            projection.evidence_edges().to_string(),
+        ),
+        (
+            "graph_operation_limit",
+            request.budget.max_operations.to_string(),
+        ),
+        (
+            "algorithm_output_entry_limit",
+            request.budget.max_output_entries.to_string(),
+        ),
+        (
+            "budget_scope",
+            string(
+                "algorithm witness excludes separately bounded snapshot IO, compiler and JSON rendering",
+            ),
+        ),
+        (
+            "node_key",
+            string(
+                "object:<digest>; support:<revision-digest>:<zero-based-edge-index, minimum four decimal digits>",
+            ),
+        ),
         ("authority", string("derived_cognition_no_effect_authority")),
-        ("privacy", string("operator_local_metadata; no redaction transform; not an approved evidence export")),
-        ("interpretation", string("declared support-path structure only; not custody, independent corroboration, truth, absence, AND/OR proof satisfaction or effect authority")),
-        ("unexpanded_reference_semantics", string("referenced objects were not hydrated; historical revisions are not redirected to successors")),
-        ("qualification", string("authored_unvalidated_reference_candidate")),
+        (
+            "privacy",
+            string(
+                "operator_local_metadata; no redaction transform; not an approved evidence export",
+            ),
+        ),
+        (
+            "interpretation",
+            string(
+                "declared support-path structure only; not custody, independent corroboration, truth, absence, AND/OR proof satisfaction or effect authority",
+            ),
+        ),
+        (
+            "unexpanded_reference_semantics",
+            string(
+                "referenced objects were not hydrated; historical revisions are not redirected to successors",
+            ),
+        ),
+        (
+            "qualification",
+            string("authored_unvalidated_reference_candidate"),
+        ),
     ]);
     if report.len().saturating_add(1) > request.report_limit {
         return Err(CommandError::OutputBound);
@@ -368,9 +494,14 @@ fn emit(writer: &mut impl Write, mut bytes: &[u8]) -> io::Result<()> {
         let chunk = &bytes[..bytes.len().min(64 * 1024)];
         match writer.write(chunk) {
             Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
-            Ok(n) if n <= chunk.len() => { bytes = &bytes[n..]; interruptions = 0; }
+            Ok(n) if n <= chunk.len() => {
+                bytes = &bytes[n..];
+                interruptions = 0;
+            }
             Ok(_) => return Err(io::ErrorKind::InvalidData.into()),
-            Err(e) if e.kind() == io::ErrorKind::Interrupted && interruptions < 7 => interruptions += 1,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted && interruptions < 7 => {
+                interruptions += 1
+            }
             Err(e) => return Err(e),
         }
     }
@@ -378,10 +509,16 @@ fn emit(writer: &mut impl Write, mut bytes: &[u8]) -> io::Result<()> {
 }
 
 fn main() -> ExitCode {
-    let args: Vec<_> = std::env::args_os().skip(1).take(activity::MAX_ARGS + 1).collect();
+    let args: Vec<_> = std::env::args_os()
+        .skip(1)
+        .take(activity::MAX_ARGS + 1)
+        .collect();
     let result = if args.first().and_then(|arg| arg.to_str()) == Some("verify-activity") {
         activity::run(&args)
-    } else if matches!(args.first().and_then(|arg| arg.to_str()), Some("analyze-history" | "impact")) {
+    } else if matches!(
+        args.first().and_then(|arg| arg.to_str()),
+        Some("analyze-history" | "impact")
+    ) {
         history::run(&args)
     } else {
         match parse(&args) {
@@ -407,16 +544,30 @@ fn main() -> ExitCode {
             };
             let explanation = match &error {
                 CommandError::Usage(reason) => *reason,
-                CommandError::Source => "retained deployment is unreadable, corrupt, or beyond its read bounds",
-                CommandError::SiteMismatch => "deployment site differs from the explicitly requested site",
-                CommandError::StaleWitness => "witness differs from --expected-witness; refresh the read",
-                CommandError::Projection(_) => "graph input, budget or registered bound refused; no partial answer",
+                CommandError::Source => {
+                    "retained deployment is unreadable, corrupt, or beyond its read bounds"
+                }
+                CommandError::SiteMismatch => {
+                    "deployment site differs from the explicitly requested site"
+                }
+                CommandError::StaleWitness => {
+                    "witness differs from --expected-witness; refresh the read"
+                }
+                CommandError::Projection(_) => {
+                    "graph input, budget or registered bound refused; no partial answer"
+                }
                 CommandError::Stopped => "deadline or cancellation reached; no report emitted",
-                CommandError::OutputBound => "complete report exceeds its byte budget; nothing was truncated",
+                CommandError::OutputBound => {
+                    "complete report exceeds its byte budget; nothing was truncated"
+                }
                 CommandError::Activity(reason) => reason.as_str(),
             };
             eprintln!("{code}: {explanation}. No effect was authorized. Use fss-evidence --help.");
-            ExitCode::from(if usage { ExitIdentity::MALFORMED_VALUE.code } else { ExitIdentity::RUNTIME_FAILURE.code })
+            ExitCode::from(if usage {
+                ExitIdentity::MALFORMED_VALUE.code
+            } else {
+                ExitIdentity::RUNTIME_FAILURE.code
+            })
         }
     }
 }

@@ -17,6 +17,10 @@ use fss_reference::ingest::CaptureHint;
 use fss_reference::ingest::http_archive::{HttpWirePin, HttpWireScope};
 use fss_reference::ingest::http_import::{HttpImportRequest, MAX_BYTES, MAX_FRAMES};
 
+#[allow(
+    dead_code,
+    reason = "Shared plan module is also included by reconnect binaries that only use Options"
+)]
 pub(super) const FORMAT: &str = "fss.http_mjpeg_import_operator.v1";
 
 pub(super) struct Options {
@@ -219,6 +223,10 @@ impl Options {
         e.u64(self.timeout_ms);
         Ok(ContentDigest::sha256(&e.finish()))
     }
+    #[allow(
+        dead_code,
+        reason = "Shared plan module is also included by reconnect binaries"
+    )]
     pub fn preview(&self) -> Result<String, &'static str> {
         Ok(object(&[
             ("format", string(FORMAT)),

@@ -1,9 +1,9 @@
 #![forbid(unsafe_code)]
+//! Real process export of retained footage behind a native long-watch event. The `rtsp` target
 #![cfg(all(
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
-//! Real process export of retained footage behind a native long-watch event. The `rtsp` target
 //! name keeps this original-media boundary in the existing native capture regression lane.
 
 use std::collections::BTreeSet;

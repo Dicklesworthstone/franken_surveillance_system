@@ -23,7 +23,10 @@ const DEFAULT_READS: u64 = 1_000_000;
 const MAX_READS: u64 = 4_000_000;
 
 pub(super) fn is_command(command: &str) -> bool {
-    matches!(command, "inspect" | "verify" | "extract" | "select-movie" | "select-matroska")
+    matches!(
+        command,
+        "inspect" | "verify" | "extract" | "select-movie" | "select-matroska"
+    )
 }
 
 pub(super) fn parse_limits(values: &Values) -> ParseResult<ImmutableRetainedReadLimits> {

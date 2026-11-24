@@ -7,7 +7,8 @@ fn d(label: &str) -> ContentDigest {
     ContentDigest::sha256(label.as_bytes())
 }
 fn request() -> Value {
-    parse(r#"{
+    parse(
+        r#"{
       "schema":"fss.event_class_fusion_counts.v1",
       "class_index":0,"prior":[-500,-500],"looks":1,"now_ns":9007199254740993,
       "policy":{"generation":"policy:test","alert_threshold":1000,
@@ -21,13 +22,18 @@ fn request() -> Value {
           "generation":"camera-mode-v1","bins":[
             {"lo_ppm":0,"true_positives":100,"false_positives":9900},
             {"lo_ppm":500000,"true_positives":9900,"false_positives":100}]}}]
-    }"#).unwrap()
+    }"#,
+    )
+    .unwrap()
 }
 fn build(request: &Value) -> Result<EventFusionProfile> {
     let json = encode(request)?;
     EventFusionProfile::from_counts_json(
-        json.as_bytes(), ContentDigest::sha256(json.as_bytes()),
-        d("plan"), d("cascade"), &BTreeSet::from([d("coverage")]),
+        json.as_bytes(),
+        ContentDigest::sha256(json.as_bytes()),
+        d("plan"),
+        d("cascade"),
+        &BTreeSet::from([d("coverage")]),
     )
 }
 fn root(value: &mut Value) -> &mut Object {
@@ -38,7 +44,9 @@ fn root(value: &mut Value) -> &mut Object {
 }
 fn table(value: &mut Value) -> &mut Object {
     let bindings = root(value).get_mut("calibrations").unwrap();
-    let Value::Array(bindings) = bindings else { panic!("array fixture") };
+    let Value::Array(bindings) = bindings else {
+        panic!("array fixture")
+    };
     root(root(&mut bindings[0]).get_mut("calibration").unwrap())
 }
 
@@ -46,19 +54,26 @@ fn table(value: &mut Value) -> &mut Object {
 fn authoring_reconstructs_native_counts_and_roundtrips_complete_profile() -> Test {
     let profile = build(&request())?;
     let expected = ScoreCalibration::from_counts(
-        "camera-mode-v1", &[0, 500_000], &[(100, 9900), (9900, 100)],
+        "camera-mode-v1",
+        &[0, 500_000],
+        &[(100, 9900), (9900, 100)],
     )?;
-    assert_eq!(profile.spec().calibrations[0].calibration.digest, expected.digest);
+    assert_eq!(
+        profile.spec().calibrations[0].calibration.digest,
+        expected.digest
+    );
     let output = profile.to_json()?;
-    let restored = EventFusionProfile::from_json(
-        output.as_bytes(), ContentDigest::sha256(output.as_bytes()),
-    )?;
+    let restored =
+        EventFusionProfile::from_json(output.as_bytes(), ContentDigest::sha256(output.as_bytes()))?;
     assert_eq!(restored.digest(), profile.digest());
     assert_eq!(restored.to_json()?, output);
     assert_eq!(restored.spec().now_ns, 9_007_199_254_740_993);
     assert_eq!(restored.spec().plan_digest, d("plan"));
     assert_eq!(restored.spec().cascade_digest, d("cascade"));
-    assert_eq!(restored.spec().coverage_digests, BTreeSet::from([d("coverage")]));
+    assert_eq!(
+        restored.spec().coverage_digests,
+        BTreeSet::from([d("coverage")])
+    );
     assert!(output.contains("wilson_z2_per_bin_not_simultaneous"));
     assert!(output.contains("llr_millibans"));
     assert!(output.contains("shared:weather"));
@@ -67,12 +82,22 @@ fn authoring_reconstructs_native_counts_and_roundtrips_complete_profile() -> Tes
 
 #[test]
 fn request_cannot_override_scope_or_inject_derived_values() {
-    for key in ["plan_digest", "cascade_digest", "coverage_digests", "effect_authority"] {
+    for key in [
+        "plan_digest",
+        "cascade_digest",
+        "coverage_digests",
+        "effect_authority",
+    ] {
         let mut value = request();
         root(&mut value).insert(key.to_owned(), text_value(d("foreign")));
         assert!(build(&value).is_err(), "{key}");
     }
-    for key in ["digest", "prior_log_odds_millibans", "probability", "interval"] {
+    for key in [
+        "digest",
+        "prior_log_odds_millibans",
+        "probability",
+        "interval",
+    ] {
         let mut value = request();
         table(&mut value).insert(key.to_owned(), text_value("untrusted"));
         assert!(build(&value).is_err(), "{key}");
@@ -81,7 +106,14 @@ fn request_cannot_override_scope_or_inject_derived_values() {
 
 #[test]
 fn no_policy_prior_clock_or_consequence_default_is_invented() {
-    for key in ["prior", "policy", "severity", "looks", "now_ns", "class_index"] {
+    for key in [
+        "prior",
+        "policy",
+        "severity",
+        "looks",
+        "now_ns",
+        "class_index",
+    ] {
         let mut value = request();
         root(&mut value).remove(key);
         assert!(build(&value).is_err(), "{key}");
@@ -133,20 +165,32 @@ fn native_validation_refuses_duplicate_sensors_domains_and_invalid_bins() {
 #[test]
 fn raw_digest_duplicate_json_keys_and_input_bound_are_enforced() {
     let bytes = encode(&request()).unwrap();
-    assert!(EventFusionProfile::from_counts_json(
-        bytes.as_bytes(), d("wrong bytes"), d("plan"), d("cascade"),
-        &BTreeSet::from([d("coverage")]),
-    ).is_err());
+    assert!(
+        EventFusionProfile::from_counts_json(
+            bytes.as_bytes(),
+            d("wrong bytes"),
+            d("plan"),
+            d("cascade"),
+            &BTreeSet::from([d("coverage")]),
+        )
+        .is_err()
+    );
     for bytes in [
         br#"{"schema":"one","schema":"two"}"#.to_vec(),
         vec![0xff],
         vec![b' '; MAX_PROFILE_BYTES + 1],
         Vec::new(),
     ] {
-        assert!(EventFusionProfile::from_counts_json(
-            &bytes, ContentDigest::sha256(&bytes), d("plan"), d("cascade"),
-            &BTreeSet::from([d("coverage")]),
-        ).is_err());
+        assert!(
+            EventFusionProfile::from_counts_json(
+                &bytes,
+                ContentDigest::sha256(&bytes),
+                d("plan"),
+                d("cascade"),
+                &BTreeSet::from([d("coverage")]),
+            )
+            .is_err()
+        );
     }
 }
 
@@ -154,7 +198,13 @@ fn raw_digest_duplicate_json_keys_and_input_bound_are_enforced() {
 fn escaped_text_and_exact_output_bound_are_preserved() -> Test {
     let value = text_value("\"quoted\"\\line\n\tλ");
     assert_eq!(parse(&encode(&value)?)?, value);
-    assert_eq!(encode(&text_value("x".repeat(MAX_PROFILE_BYTES - 2)))?.len(), MAX_PROFILE_BYTES);
-    assert_eq!(encode(&text_value("x".repeat(MAX_PROFILE_BYTES - 1))), Err(EventFusionError::Limit));
+    assert_eq!(
+        encode(&text_value("x".repeat(MAX_PROFILE_BYTES - 2)))?.len(),
+        MAX_PROFILE_BYTES
+    );
+    assert_eq!(
+        encode(&text_value("x".repeat(MAX_PROFILE_BYTES - 1))),
+        Err(EventFusionError::Limit)
+    );
     Ok(())
 }

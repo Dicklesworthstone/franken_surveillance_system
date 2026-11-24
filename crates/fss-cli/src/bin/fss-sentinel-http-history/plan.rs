@@ -51,6 +51,10 @@ pub(super) struct Options {
     pub framing: u64,
     pub archive_read_bytes: u64,
     pub timeout_ms: u64,
+    #[allow(
+        dead_code,
+        reason = "Shared plan module is also included by reconnect binaries"
+    )]
     pub approve: Option<ContentDigest>,
 }
 

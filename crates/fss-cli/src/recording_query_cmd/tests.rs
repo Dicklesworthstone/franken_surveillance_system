@@ -832,6 +832,7 @@ fn utc_session_json(fields: &std::collections::BTreeMap<&str, String>) -> String
     )
 }
 
+#[allow(clippy::type_complexity)]
 fn utc_sessions_pins(
     codec: &str,
 ) -> TestResult<(

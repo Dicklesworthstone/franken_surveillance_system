@@ -299,12 +299,8 @@ impl Options {
             )?,
             maximum_steps: number("--max-steps", 100_000, 1, 1_000_000)?,
             timeout_ns: number("--timeout-ms", 30_000, 1, 600_000)? * 1_000_000,
-            storage_drain_ns: number(
-                "--storage-drain-ms",
-                0,
-                0,
-                MAX_STORAGE_DRAIN_NS / 1_000_000,
-            )? * 1_000_000,
+            storage_drain_ns: number("--storage-drain-ms", 0, 0, MAX_STORAGE_DRAIN_NS / 1_000_000)?
+                * 1_000_000,
             report_bytes: number(
                 "--max-report-bytes",
                 8 * 1024 * 1024,
@@ -555,7 +551,10 @@ impl Options {
             fields.push((
                 "storage_drain",
                 object(&[
-                    ("maximum_extra_storage_ns", self.storage_drain_ns.to_string()),
+                    (
+                        "maximum_extra_storage_ns",
+                        self.storage_drain_ns.to_string(),
+                    ),
                     ("network_deadline_ns", self.timeout_ns.to_string()),
                     ("network_extended", "false".into()),
                     ("decode_extended", "false".into()),

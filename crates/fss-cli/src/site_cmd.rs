@@ -11,8 +11,15 @@ use std::collections::BTreeMap;
 use std::fs::{self, Metadata, OpenOptions};
 use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
+use fss_core::PrincipalId;
 use fss_core::json_input::MAX_INPUT_BYTES;
+use fss_daemon::{
+    DaemonError, DaemonStartConfig, DaemonSupervisor, SiteManifest as DaemonSiteManifest,
+    query_live_daemon_status, render_live_status_json, render_stop_accepted_json,
+    request_live_daemon_stop,
+};
 use fss_reference::site::{MAX_SITE_SOURCES, SiteManifest, parse_manifest, parse_probe_receipts};
 
 use crate::agent_json::{array, object, string};
@@ -30,7 +37,49 @@ const MAX_INPUT_OPERATIONS: usize = 1024;
 const INPUT_ERROR: &str = "ERR-SITE-INPUT-001";
 const OUTPUT_ERROR: &str = "ERR-SITE-OUTPUT-BOUND-001";
 
-/// Operator-only site commands. No variant grants or executes capture authority.
+/// Parsed options for `fss site run`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SiteRunArgs {
+    /// Path to the secret-free daemon site manifest (`site.json`).
+    pub manifest: PathBuf,
+    /// Optional deployment root directory overriding `manifest.deployment_root`.
+    pub root: Option<PathBuf>,
+    /// Optional `fss-vault` directory for scoped camera credential resolution at startup.
+    pub vault_dir: Option<PathBuf>,
+    /// Optional owner-only (`0600`) passphrase file unlocking `vault_dir` once during startup.
+    pub passphrase_file: Option<PathBuf>,
+    /// Optional bounded supervision tick count for finite / CI runs.
+    pub once_ticks: Option<u64>,
+    /// Inter-tick poll interval in milliseconds (default `50`).
+    pub tick_ms: u64,
+    /// Emit structured JSON output instead of human-readable text.
+    pub json: bool,
+}
+
+/// Parsed options for `fss site status`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SiteStatusArgs {
+    /// Deployment root directory containing `<root>/run/daemon.sock`.
+    pub root: PathBuf,
+    /// Optional explicit site identifier override.
+    pub site_id: Option<String>,
+    /// Emit structured JSON output instead of human-readable text.
+    pub json: bool,
+}
+
+/// Parsed options for `fss site stop`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SiteStopArgs {
+    /// Deployment root directory containing `<root>/run/daemon.sock`.
+    pub root: PathBuf,
+    /// Optional explicit site identifier override.
+    pub site_id: Option<String>,
+    /// Emit structured JSON output instead of human-readable text.
+    pub json: bool,
+}
+
+/// Operator-only site commands. Onboarding variants never grant capture authority; `run`/`status`/`stop`
+/// operate the local always-on `fss-daemon` supervisor over owner-owned roots and `fss-ipc` UDS.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SiteCommand {
     /// Measure a supplied native DESCRIBE response and RTPdump into a probe receipt.
@@ -62,15 +111,57 @@ pub enum SiteCommand {
         /// Explicit identity epoch, output destinations, principal and picture budget.
         options: SitePlanOptions,
     },
+    /// Run the always-on Asupersync-owned `fss-daemon` supervising all cameras in `site.json`.
+    Run(Box<SiteRunArgs>),
+    /// Query live daemon status over the local `fss-ipc` Unix domain socket.
+    Status(SiteStatusArgs),
+    /// Request graceful `request -> drain -> finalize` shutdown over `fss-ipc`.
+    Stop(SiteStopArgs),
 }
 
-/// Parse site validation, recorded/native probing or planning with exact exhaustion.
+impl SiteCommand {
+    /// Returns true if JSON output is requested for this site subcommand.
+    #[must_use]
+    pub const fn is_json(&self) -> bool {
+        match self {
+            Self::ProbeFile(_) | Self::Probe { .. } | Self::Validate { .. } | Self::Plan { .. } => {
+                true
+            }
+            Self::Run(args) => args.json,
+            Self::Status(args) => args.json,
+            Self::Stop(args) => args.json,
+        }
+    }
+}
+
+/// Parse site validation, recorded/native probing, planning, or daemon control with exact exhaustion.
 pub fn parse_site_args(tokens: &[ArgToken]) -> Result<SiteCommand, CliError> {
     let action = tokens.get(1).ok_or_else(|| CliError::MissingValue {
         option: "site".to_owned(),
         command: Some("site".to_owned()),
-        expected: "validate, plan, probe or probe-file".to_owned(),
+        expected: "validate, plan, probe, probe-file, run, status or stop".to_owned(),
     })?;
+    if action.as_str() == "run" {
+        return parse_site_run_args(tokens).map(|a| SiteCommand::Run(Box::new(a)));
+    }
+    if action.as_str() == "status" {
+        return parse_site_root_args("site status", tokens).map(|(root, site_id, json)| {
+            SiteCommand::Status(SiteStatusArgs {
+                root,
+                site_id,
+                json,
+            })
+        });
+    }
+    if action.as_str() == "stop" {
+        return parse_site_root_args("site stop", tokens).map(|(root, site_id, json)| {
+            SiteCommand::Stop(SiteStopArgs {
+                root,
+                site_id,
+                json,
+            })
+        });
+    }
     if action.as_str() == "probe" {
         let (manifest, options) = parse_probe_args(tokens)?;
         return Ok(SiteCommand::Probe { manifest, options });
@@ -204,6 +295,8 @@ impl InputAuthority {
                 Self::for_inputs(&inputs)
             }
             SiteCommand::ProbeFile(args) => Self::for_inputs(&args.input_scopes()),
+            SiteCommand::Run(args) => Self::for_inputs(&[(&args.manifest, MAX_INPUT_BYTES)]),
+            SiteCommand::Status(_) | SiteCommand::Stop(_) => Self::for_inputs(&[]),
         }
     }
 
@@ -324,11 +417,15 @@ fn same_file(left: &Metadata, right: &Metadata) -> bool {
     }
 }
 
-/// Read exactly the named control inputs and return a complete plan or a safe diagnostic.
+/// Read exactly the named control inputs and return a complete plan, daemon result, or safe diagnostic.
 #[must_use]
 pub fn execute_site(command: &SiteCommand) -> (String, ExitIdentity) {
-    if let SiteCommand::ProbeFile(args) = command {
-        return crate::site_probe_cmd::execute(args);
+    match command {
+        SiteCommand::ProbeFile(args) => return crate::site_probe_cmd::execute(args),
+        SiteCommand::Run(args) => return execute_site_run(args),
+        SiteCommand::Status(args) => return execute_site_status(args),
+        SiteCommand::Stop(args) => return execute_site_stop(args),
+        SiteCommand::Validate { .. } | SiteCommand::Plan { .. } | SiteCommand::Probe { .. } => {}
     }
     let mut authority = InputAuthority::new(command);
     let manifest_path = match command {
@@ -336,6 +433,9 @@ pub fn execute_site(command: &SiteCommand) -> (String, ExitIdentity) {
         | SiteCommand::Plan { manifest, .. }
         | SiteCommand::Probe { manifest, .. } => manifest,
         SiteCommand::ProbeFile(args) => &args.manifest,
+        SiteCommand::Run(args) => &args.manifest,
+        SiteCommand::Status(args) => &args.root,
+        SiteCommand::Stop(args) => &args.root,
     };
     let bytes = match authority.read(manifest_path) {
         Ok(bytes) => bytes,
@@ -354,6 +454,9 @@ pub fn execute_site(command: &SiteCommand) -> (String, ExitIdentity) {
     let output = match command {
         SiteCommand::Probe { options, .. } => return execute_probe(&manifest, options),
         SiteCommand::ProbeFile(args) => return crate::site_probe_cmd::execute(args),
+        SiteCommand::Run(args) => return execute_site_run(args),
+        SiteCommand::Status(args) => return execute_site_status(args),
+        SiteCommand::Stop(args) => return execute_site_stop(args),
         SiteCommand::Validate { .. } => match render_validation(&manifest) {
             Ok(output) => output,
             Err(error) => return refusal(error.code(), &error.to_string(), None),
@@ -504,6 +607,281 @@ pub(crate) fn refusal(
             ("credentials_read", "false".to_owned()),
             ("effect_started", "false".to_owned()),
             ("partial_plan", "false".to_owned()),
+        ]),
+        exit,
+    )
+}
+
+type ParsedDaemonFlags = (BTreeMap<String, (String, usize)>, bool);
+
+fn parse_daemon_flags(
+    command: &str,
+    tokens: &[ArgToken],
+    allowed: &[&str],
+) -> Result<ParsedDaemonFlags, CliError> {
+    let (cmd, mut opts, mut json, mut idx) =
+        (Some(command.to_owned()), BTreeMap::new(), false, 2_usize);
+    while idx < tokens.len() {
+        let (arg, s) = (&tokens[idx], tokens[idx].as_str());
+        if s == "--json" {
+            if json {
+                return Err(CliError::DuplicateOption {
+                    option: "--json".to_owned(),
+                    command: cmd,
+                    index: arg.index,
+                });
+            }
+            json = true;
+            idx += 1;
+            continue;
+        }
+        if !s.starts_with("--") {
+            return Err(CliError::UnexpectedPositional {
+                argument: arg.raw.clone(),
+                command: cmd,
+                index: arg.index,
+            });
+        }
+        let (opt, val, val_idx, step) = if let Some((k, v)) = s.split_once('=') {
+            (k, v, arg.index, 1)
+        } else {
+            let next = tokens.get(idx + 1).ok_or_else(|| CliError::MissingValue {
+                option: s.to_owned(),
+                command: cmd.clone(),
+                expected: format!("a value for `{s}`"),
+            })?;
+            (s, next.as_str(), next.index, 2)
+        };
+        if !allowed.contains(&opt) {
+            return Err(CliError::UnknownOption {
+                option: opt.to_owned(),
+                command: cmd,
+                index: arg.index,
+            });
+        }
+        if val.is_empty() {
+            return Err(CliError::MissingValue {
+                option: opt.to_owned(),
+                command: cmd,
+                expected: format!("non-empty value for `{opt}`"),
+            });
+        }
+        if opts
+            .insert(opt.to_owned(), (val.to_owned(), val_idx))
+            .is_some()
+        {
+            return Err(CliError::DuplicateOption {
+                option: opt.to_owned(),
+                command: cmd,
+                index: arg.index,
+            });
+        }
+        idx += step;
+    }
+    Ok((opts, json))
+}
+
+const FORBIDDEN_DAEMON_SECRET_FLAGS: &[&str] = &[
+    "--passphrase",
+    "--password",
+    "--secret",
+    "--token",
+    "--api-key",
+];
+
+fn parse_site_run_args(tokens: &[ArgToken]) -> Result<SiteRunArgs, CliError> {
+    for tok in &tokens[2..] {
+        let s = tok.as_str();
+        let flag = s.split_once('=').map_or(s, |(k, _)| k);
+        if FORBIDDEN_DAEMON_SECRET_FLAGS.contains(&flag) {
+            return Err(CliError::MalformedValue {
+                option: flag.to_owned(),
+                value: "[redacted]".to_owned(),
+                reason: "plaintext secrets and passphrases are forbidden on CLI argv; use --vault-dir and --passphrase-file (0600)".to_owned(),
+                command: Some("site run".to_owned()),
+                index: tok.index,
+            });
+        }
+    }
+    let (mut opts, json) = parse_daemon_flags(
+        "site run",
+        tokens,
+        &[
+            "--manifest",
+            "--root",
+            "--vault-dir",
+            "--passphrase-file",
+            "--once-ticks",
+            "--tick-ms",
+        ],
+    )?;
+    let cmd = Some("site run".to_owned());
+    let manifest = opts
+        .remove("--manifest")
+        .map(|(v, _)| PathBuf::from(v))
+        .ok_or_else(|| CliError::MissingValue {
+            option: "--manifest".to_owned(),
+            command: cmd.clone(),
+            expected: "path to site.json".to_owned(),
+        })?;
+    let once_ticks = opts
+        .remove("--once-ticks")
+        .map(|(raw, i)| parse_u64_flag(&raw, "--once-ticks", i, &cmd, true))
+        .transpose()?;
+    let tick_ms = opts
+        .remove("--tick-ms")
+        .map(|(raw, i)| parse_u64_flag(&raw, "--tick-ms", i, &cmd, false))
+        .transpose()?
+        .unwrap_or(50);
+    Ok(SiteRunArgs {
+        manifest,
+        root: opts.remove("--root").map(|(v, _)| PathBuf::from(v)),
+        vault_dir: opts.remove("--vault-dir").map(|(v, _)| PathBuf::from(v)),
+        passphrase_file: opts
+            .remove("--passphrase-file")
+            .map(|(v, _)| PathBuf::from(v)),
+        once_ticks,
+        tick_ms,
+        json,
+    })
+}
+
+fn parse_site_root_args(
+    command: &str,
+    tokens: &[ArgToken],
+) -> Result<(PathBuf, Option<String>, bool), CliError> {
+    let (mut opts, json) = parse_daemon_flags(command, tokens, &["--root", "--site-id"])?;
+    let root = opts
+        .remove("--root")
+        .map(|(v, _)| PathBuf::from(v))
+        .ok_or_else(|| CliError::MissingValue {
+            option: "--root".to_owned(),
+            command: Some(command.to_owned()),
+            expected: "deployment root".to_owned(),
+        })?;
+    Ok((root, opts.remove("--site-id").map(|(v, _)| v), json))
+}
+
+fn parse_u64_flag(
+    raw: &str,
+    opt: &str,
+    index: usize,
+    cmd: &Option<String>,
+    positive: bool,
+) -> Result<u64, CliError> {
+    match raw.parse::<u64>().ok() {
+        Some(v) if (!positive || v > 0) && v.to_string() == raw => Ok(v),
+        _ => Err(CliError::MalformedValue {
+            option: opt.to_owned(),
+            value: "[invalid integer]".to_owned(),
+            reason: if positive {
+                "expected positive integer"
+            } else {
+                "expected non-negative integer"
+            }
+            .to_owned(),
+            command: cmd.clone(),
+            index,
+        }),
+    }
+}
+
+fn execute_site_run(args: &SiteRunArgs) -> (String, ExitIdentity) {
+    let manifest = match DaemonSiteManifest::from_file(&args.manifest) {
+        Ok(m) => m,
+        Err(e) => return daemon_error_response(&e, "site run", args.json),
+    };
+    let mut cfg = DaemonStartConfig::new(manifest);
+    cfg.manifest_path = Some(args.manifest.clone());
+    cfg.root_override = args.root.clone();
+    cfg.vault_dir = args.vault_dir.clone();
+    cfg.vault_passphrase_file = args.passphrase_file.clone();
+    let sup = match DaemonSupervisor::start(cfg) {
+        Ok(s) => s,
+        Err(e) => return daemon_error_response(&e, "site run", args.json),
+    };
+    let r = match sup.run_until_stopped(args.once_ticks, Duration::from_millis(args.tick_ms)) {
+        Ok(r) => r,
+        Err(e) => return daemon_error_response(&e, "site run", args.json),
+    };
+    let out = if args.json {
+        r.to_json()
+    } else {
+        format!(
+            "fss site run stopped site={} ticks={} head_seq={} active_tasks={} leaked_obligations={}",
+            r.site_id,
+            r.ticks_executed,
+            r.head_commit_sequence,
+            r.active_tasks,
+            r.leaked_obligations
+        )
+    };
+    (out, ExitIdentity::SUCCESS)
+}
+
+fn execute_site_status(args: &SiteStatusArgs) -> (String, ExitIdentity) {
+    let Ok(p) = PrincipalId::parse("principal:local-operator") else {
+        return refusal("ERR-DAEMON-IPC-001", "invalid operator principal", None);
+    };
+    let (d, s) = match query_live_daemon_status(&args.root, args.site_id.as_deref(), p) {
+        Ok(v) => v,
+        Err(e) => return daemon_error_response(&e, "site status", args.json),
+    };
+    let out = if args.json {
+        render_live_status_json(&d, &s)
+    } else {
+        format!(
+            "fss site status site={} pid={} uptime_ms={} head_seq={} cameras={}",
+            d.site_id,
+            d.pid,
+            s.daemon_uptime_ms,
+            s.head_commit_sequence,
+            s.cameras.len()
+        )
+    };
+    (out, ExitIdentity::SUCCESS)
+}
+
+fn execute_site_stop(args: &SiteStopArgs) -> (String, ExitIdentity) {
+    let Ok(p) = PrincipalId::parse("principal:local-operator") else {
+        return refusal("ERR-DAEMON-IPC-001", "invalid operator principal", None);
+    };
+    let (d, op, st) = match request_live_daemon_stop(&args.root, args.site_id.as_deref(), p) {
+        Ok(v) => v,
+        Err(e) => return daemon_error_response(&e, "site stop", args.json),
+    };
+    let out = if args.json {
+        render_stop_accepted_json(&d, &op, st)
+    } else {
+        format!(
+            "fss site stop accepted site={} operation_id={} state={st:?}",
+            d.site_id,
+            op.as_str()
+        )
+    };
+    (out, ExitIdentity::SUCCESS)
+}
+
+fn daemon_error_response(err: &DaemonError, command: &str, json: bool) -> (String, ExitIdentity) {
+    let exit = match err {
+        DaemonError::SecretInManifest { .. }
+        | DaemonError::InvalidManifest { .. }
+        | DaemonError::InvalidConfig { .. } => ExitIdentity::MALFORMED_VALUE,
+        _ => ExitIdentity::RUNTIME_FAILURE,
+    };
+    if !json {
+        return (format!("{}: {err}", err.error_id()), exit);
+    }
+    (
+        object(&[
+            ("schema", string("fss.site_diagnostic.v1")),
+            ("phase", string("execution")),
+            ("binary", string("fss")),
+            ("command", string(command)),
+            ("error_id", string(err.error_id())),
+            ("exit_id", string(exit.identifier)),
+            ("exit_code", exit.code.to_string()),
+            ("reason", string(&err.to_string())),
         ]),
         exit,
     )

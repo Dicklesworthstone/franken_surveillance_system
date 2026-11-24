@@ -383,7 +383,7 @@ fn short_budget_skipped_and_exact_start_only_rows_do_not_claim_analyzed_or_quiet
     set(
         &mut input,
         "--stream-pixel-budget",
-        &one_attempt_pixels.to_string(),
+        one_attempt_pixels.to_string(),
     );
     let refused = run_with_timeout("sentinel-campaign", &approve(&input)?, INFERENCE_DEADLINE)?;
     assert!(
@@ -484,13 +484,13 @@ fn model_history_custody_and_owner_refusals_precede_source_recovery_or_destinati
             1 => set(
                 &mut input,
                 "--package-digest",
-                &digest("wrong expected package"),
+                digest("wrong expected package"),
             ),
             6 => set(&mut input, "--archive-read-bytes", "1"),
             7 => set(
                 &mut input,
                 "--history-root-digest",
-                &digest("wrong saved prefix"),
+                digest("wrong saved prefix"),
             ),
             8 => set(&mut input, "--principal", "principal:another-operator"),
             _ => {}
@@ -500,7 +500,7 @@ fn model_history_custody_and_owner_refusals_precede_source_recovery_or_destinati
             set(
                 &mut approved,
                 "--approve-import",
-                &digest("wrong outer approval"),
+                digest("wrong outer approval"),
             );
         }
         let refused = run_with_timeout("sentinel-campaign", &approved, INFERENCE_DEADLINE)?;

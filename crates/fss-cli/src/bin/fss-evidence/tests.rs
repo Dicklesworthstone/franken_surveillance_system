@@ -3,19 +3,29 @@
 
 use super::*;
 use fss_core::{
-    CaptureInterval, DecisionPath, EventEvidence, EventId, EventKind, EventState,
-    EvidenceClass, EvidenceEdgeRelation, ProbabilityInterval, TimestampNs,
+    CaptureInterval, DecisionPath, EventEvidence, EventId, EventKind, EventState, EvidenceClass,
+    EvidenceEdgeRelation, ProbabilityInterval, TimestampNs,
 };
 
 type TestResult = Result<(), String>;
 
 fn args(extra: &[&str]) -> Vec<OsString> {
-    ["analyze", "--root", "/unused/private-root", "--site", "site:test"]
-        .into_iter().chain(extra.iter().copied()).map(OsString::from).collect()
+    [
+        "analyze",
+        "--root",
+        "/unused/private-root",
+        "--site",
+        "site:test",
+    ]
+    .into_iter()
+    .chain(extra.iter().copied())
+    .map(OsString::from)
+    .collect()
 }
 
 fn request() -> Result<Request, String> {
-    parse(&args(&[])).map_err(|e| format!("{e:?}"))?
+    parse(&args(&[]))
+        .map_err(|e| format!("{e:?}"))?
         .ok_or_else(|| "fixture unexpectedly requested help".to_owned())
 }
 
@@ -70,7 +80,11 @@ fn event() -> Result<EventHypothesis, String> {
     Ok(event)
 }
 
-fn report(request: &Request, facts: &ReadFacts, events: &[EventHypothesis]) -> Result<String, String> {
+fn report(
+    request: &Request,
+    facts: &ReadFacts,
+    events: &[EventHypothesis],
+) -> Result<String, String> {
     report_for_records(request, facts, events, &|| false).map_err(|e| format!("{e:?}"))
 }
 
@@ -78,8 +92,11 @@ fn report(request: &Request, facts: &ReadFacts, events: &[EventHypothesis]) -> R
 fn parser_requires_explicit_site_root_and_unambiguous_grammar() -> TestResult {
     assert_eq!(request()?.site, "site:test");
     for input in [
-        vec![], vec!["analyze"], vec!["analyze", "--root", "/unused"],
-        vec!["analyze", "--site", "site:test"], vec!["other"],
+        vec![],
+        vec!["analyze"],
+        vec!["analyze", "--root", "/unused"],
+        vec!["analyze", "--site", "site:test"],
+        vec!["other"],
         vec!["analyze", "--root=/unused", "--site", "site:test"],
     ] {
         let input = input.into_iter().map(OsString::from).collect::<Vec<_>>();
@@ -91,12 +108,17 @@ fn parser_requires_explicit_site_root_and_unambiguous_grammar() -> TestResult {
 #[test]
 fn invalid_options_duplicates_and_bounds_are_refused() {
     for extra in [
-        vec!["--site", "site:test"], vec!["--unknown", "private"],
-        vec!["--max-operations", "0"], vec!["--max-operations", "50000001"],
+        vec!["--site", "site:test"],
+        vec!["--unknown", "private"],
+        vec!["--max-operations", "0"],
+        vec!["--max-operations", "50000001"],
         vec!["--max-operations", "18446744073709551616"],
-        vec!["--max-output-entries", "65537"], vec!["--timeout-ms", "0"],
-        vec!["--max-report-bytes", "1023"], vec!["--max-report-bytes", "2097153"],
-        vec!["--max-operations", "+2"], vec!["--expected-witness", "not-a-digest"],
+        vec!["--max-output-entries", "65537"],
+        vec!["--timeout-ms", "0"],
+        vec!["--max-report-bytes", "1023"],
+        vec!["--max-report-bytes", "2097153"],
+        vec!["--max-operations", "+2"],
+        vec!["--expected-witness", "not-a-digest"],
         vec!["--max-operations", "--site"],
     ] {
         assert!(parse(&args(&extra)).is_err(), "case {extra:?}");
@@ -106,7 +128,10 @@ fn invalid_options_duplicates_and_bounds_are_refused() {
 #[test]
 fn help_and_argument_bounds_do_not_open_any_deployment() {
     assert!(matches!(parse(&["--help".into()]), Ok(None)));
-    assert!(matches!(parse(&["analyze".into(), "--help".into()]), Ok(None)));
+    assert!(matches!(
+        parse(&["analyze".into(), "--help".into()]),
+        Ok(None)
+    ));
     assert!(parse(&["--help".into(), "--root".into(), "/unused".into()]).is_err());
     assert!(parse(&vec!["x".into(); MAX_ARGS + 1]).is_err());
     let mut values = args(&[]);
@@ -127,7 +152,10 @@ fn native_root_bytes_are_preserved_but_site_must_be_utf8() {
 
 #[test]
 fn cancellation_precedes_filesystem_access() -> TestResult {
-    assert!(matches!(execute(&request()?, &|| true), Err(CommandError::Stopped)));
+    assert!(matches!(
+        execute(&request()?, &|| true),
+        Err(CommandError::Stopped)
+    ));
     Ok(())
 }
 
@@ -143,7 +171,10 @@ fn complete_canonical_record_counterevidence_and_warnings_survive_rendering() ->
     assert!(result.contains("not custody, independent corroboration, truth, absence"));
     assert!(result.contains("\"source_bytes_read\":123"));
     assert!(!result.contains("/unused/private-root"));
-    assert_eq!(bytes, original.to_versioned_bytes().map_err(|e| e.to_string())?);
+    assert_eq!(
+        bytes,
+        original.to_versioned_bytes().map_err(|e| e.to_string())?
+    );
     assert_eq!(result, report(&request()?, &facts(), &[original])?);
     Ok(())
 }
@@ -156,8 +187,10 @@ fn exact_report_budget_succeeds_and_one_byte_less_refuses() -> TestResult {
     request.report_limit = baseline.len();
     assert_eq!(baseline, report(&request, &facts(), &events)?);
     request.report_limit -= 1;
-    assert!(matches!(report_for_records(&request, &facts(), &events, &|| false),
-        Err(CommandError::OutputBound)));
+    assert!(matches!(
+        report_for_records(&request, &facts(), &events, &|| false),
+        Err(CommandError::OutputBound)
+    ));
     Ok(())
 }
 
@@ -168,20 +201,29 @@ fn witness_pin_accepts_exact_replay_and_refuses_changed_anchor_or_record() -> Te
     let mut request = request()?;
     let projection = EvidenceClaimProjection::build(&events, EvidenceProjectionLimits::default())
         .map_err(|e| e.to_string())?;
-    request.expected = Some(projection.analyze(facts.anchor.clone(), request.budget)
-        .map_err(|e| e.to_string())?.witness.digest());
+    request.expected = Some(
+        projection
+            .analyze(facts.anchor.clone(), request.budget)
+            .map_err(|e| e.to_string())?
+            .witness
+            .digest(),
+    );
     assert!(report(&request, &facts, &events).is_ok());
     let mut changed_facts = facts.clone();
     changed_facts.site = "site:other".to_owned();
     changed_facts.anchor = LedgerAnchor::genesis("site:other");
     let mut moved_request = request.clone();
     moved_request.site = changed_facts.site.clone();
-    assert!(matches!(report_for_records(&moved_request, &changed_facts, &events, &|| false),
-        Err(CommandError::StaleWitness)));
+    assert!(matches!(
+        report_for_records(&moved_request, &changed_facts, &events, &|| false),
+        Err(CommandError::StaleWitness)
+    ));
     let mut changed = events;
     changed[0].uncertainty_reason = Some("changed uncertainty".to_owned());
-    assert!(matches!(report_for_records(&request, &facts, &changed, &|| false),
-        Err(CommandError::StaleWitness)));
+    assert!(matches!(
+        report_for_records(&request, &facts, &changed, &|| false),
+        Err(CommandError::StaleWitness)
+    ));
     Ok(())
 }
 
@@ -189,12 +231,16 @@ fn witness_pin_accepts_exact_replay_and_refuses_changed_anchor_or_record() -> Te
 fn wrong_site_and_algorithm_budget_exhaustion_have_no_report() -> TestResult {
     let mut wrong = facts();
     wrong.site = "site:other".to_owned();
-    assert!(matches!(report_for_records(&request()?, &wrong, &[], &|| false),
-        Err(CommandError::SiteMismatch)));
+    assert!(matches!(
+        report_for_records(&request()?, &wrong, &[], &|| false),
+        Err(CommandError::SiteMismatch)
+    ));
     let mut request = request()?;
     request.budget = Budget::new(0, 0);
-    assert!(matches!(report_for_records(&request, &facts(), &[event()?], &|| false),
-        Err(CommandError::Projection(_))));
+    assert!(matches!(
+        report_for_records(&request, &facts(), &[event()?], &|| false),
+        Err(CommandError::Projection(_))
+    ));
     Ok(())
 }
 
@@ -215,23 +261,35 @@ fn uncommitted_tails_stay_visible_but_are_not_event_inputs() -> TestResult {
 fn cancellation_after_analysis_still_suppresses_the_complete_report() -> TestResult {
     use std::cell::Cell;
     let calls = Cell::new(0);
-    let check = || { calls.set(calls.get() + 1); calls.get() >= 3 };
-    assert!(matches!(report_for_records(&request()?, &facts(), &[event()?], &check),
-        Err(CommandError::Stopped)));
+    let check = || {
+        calls.set(calls.get() + 1);
+        calls.get() >= 3
+    };
+    assert!(matches!(
+        report_for_records(&request()?, &facts(), &[event()?], &check),
+        Err(CommandError::Stopped)
+    ));
     Ok(())
 }
 
 #[test]
 fn array_bounds_include_delimiters_and_do_not_truncate_rows() {
-    assert_eq!(bounded_array(["123".to_owned()].into_iter(), 5).ok(), Some("[123]".to_owned()));
+    assert_eq!(
+        bounded_array(["123".to_owned()].into_iter(), 5).ok(),
+        Some("[123]".to_owned())
+    );
     assert!(bounded_array(["123".to_owned()].into_iter(), 4).is_err());
     assert!(bounded_array(["1".to_owned(), "2".to_owned()].into_iter(), 4).is_err());
 }
 
 struct Interrupted;
 impl Write for Interrupted {
-    fn write(&mut self, _: &[u8]) -> io::Result<usize> { Err(io::ErrorKind::Interrupted.into()) }
-    fn flush(&mut self) -> io::Result<()> { Ok(()) }
+    fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+        Err(io::ErrorKind::Interrupted.into())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 struct ShortWrites(Vec<u8>);
@@ -241,7 +299,9 @@ impl Write for ShortWrites {
         self.0.extend_from_slice(&bytes[..n]);
         Ok(n)
     }
-    fn flush(&mut self) -> io::Result<()> { Ok(()) }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 #[test]

@@ -44,8 +44,14 @@ struct HistoryRequest {
 }
 
 fn parse_history(args: &[OsString]) -> Result<Option<HistoryRequest>, CommandError> {
-    if args.len() > MAX_ARGS || args.iter().any(|arg| arg.as_encoded_bytes().len() > MAX_ARG_BYTES) {
-        return Err(CommandError::Usage("argument count or length exceeds its bound"));
+    if args.len() > MAX_ARGS
+        || args
+            .iter()
+            .any(|arg| arg.as_encoded_bytes().len() > MAX_ARG_BYTES)
+    {
+        return Err(CommandError::Usage(
+            "argument count or length exceeds its bound",
+        ));
     }
     let impact = match args.first().and_then(|arg| arg.to_str()) {
         Some("analyze-history") => false,
@@ -63,7 +69,9 @@ fn parse_history(args: &[OsString]) -> Result<Option<HistoryRequest>, CommandErr
     for pair in args[1..].as_chunks::<2>().0 {
         if pair[0] == "--artifact" {
             if !impact || artifact.is_some() {
-                return Err(CommandError::Usage("--artifact is unique and valid only for impact"));
+                return Err(CommandError::Usage(
+                    "--artifact is unique and valid only for impact",
+                ));
             }
             let digest = ContentDigest::parse(text(&pair[1])?)
                 .map_err(|_| CommandError::Usage("invalid artifact digest"))?;
@@ -92,7 +100,10 @@ pub(super) fn run(args: &[OsString]) -> Result<String, CommandError> {
     }
 }
 
-fn execute_history(request: &HistoryRequest, check: &impl Fn() -> bool) -> Result<String, CommandError> {
+fn execute_history(
+    request: &HistoryRequest,
+    check: &impl Fn() -> bool,
+) -> Result<String, CommandError> {
     stopped(check)?;
     let snapshot = read_deployment(&request.base.root, &OrientLimits::default())
         .map_err(|_| CommandError::Source)?;
@@ -108,13 +119,19 @@ fn execute_history(request: &HistoryRequest, check: &impl Fn() -> bool) -> Resul
         }
     }
     let facts = ReadFacts {
-        site: snapshot.site_lineage.clone(), anchor: snapshot.anchor.clone(),
+        site: snapshot.site_lineage.clone(),
+        anchor: snapshot.anchor.clone(),
         ledger_root: snapshot.ledger_root,
         ledger_tail_uncommitted: snapshot.ledger_tail_uncommitted,
         effect_tail_uncommitted: snapshot.effect_tail_uncommitted,
-        files_read: snapshot.files_read, bytes_read: snapshot.bytes_read,
+        files_read: snapshot.files_read,
+        bytes_read: snapshot.bytes_read,
     };
-    let lineages: Vec<_> = snapshot.events.iter().map(|retained| retained.revisions.as_slice()).collect();
+    let lineages: Vec<_> = snapshot
+        .events
+        .iter()
+        .map(|retained| retained.revisions.as_slice())
+        .collect();
     report_history(request, &facts, &lineages, check)
 }
 
@@ -125,24 +142,32 @@ fn report_history(
     check: &impl Fn() -> bool,
 ) -> Result<String, CommandError> {
     stopped(check)?;
-    if facts.site != request.base.site { return Err(CommandError::SiteMismatch); }
+    if facts.site != request.base.site {
+        return Err(CommandError::SiteMismatch);
+    }
     let projection = EvidenceHistoryProjection::build(lineages, HistoryLimits::default())
         .map_err(CommandError::Projection)?;
     stopped(check)?;
     let (run, witness) = match request.artifact {
         Some(artifact) => {
-            let result = projection.support_impact(artifact, facts.anchor.clone(), request.base.budget)
+            let result = projection
+                .support_impact(artifact, facts.anchor.clone(), request.base.budget)
                 .map_err(CommandError::Projection)?;
             (result.run, result.witness)
         }
         None => {
-            let result = projection.analyze(facts.anchor.clone(), request.base.budget)
+            let result = projection
+                .analyze(facts.anchor.clone(), request.base.budget)
                 .map_err(CommandError::Projection)?;
             (result.run, result.witness)
         }
     };
     stopped(check)?;
-    if request.base.expected.is_some_and(|pin| pin != witness.digest()) {
+    if request
+        .base
+        .expected
+        .is_some_and(|pin| pin != witness.digest())
+    {
         return Err(CommandError::StaleWitness);
     }
     let report = render_history(request, facts, &projection, &run, &witness)?;
@@ -163,70 +188,200 @@ fn render_history(
         let node = object_node(digest);
         node == run.output.root || immediate.contains_key(&node)
     };
-    let heads = bounded_array(projection.heads().iter().map(|(id, digest)| object(&[
-        ("event_id", string(id)), ("revision_digest", string(&digest.to_text())),
-        ("positive_path_from_query_root", reachable(*digest).to_string()),
-    ])), limit)?;
-    let records = bounded_array(projection.records().iter().map(|record| {
-        let digest = record.revision_digest();
-        let head = projection.heads().get(record.event_id.as_str());
-        let supports = record.evidence.iter().filter(|edge| edge.counts_as_support()).count();
-        let contradictions = record.evidence.iter().filter(|edge| edge.counts_as_contradiction()).count();
-        object(&[
-            ("revision_digest", string(&digest.to_text())),
-            ("is_current_head", (head == Some(&digest)).to_string()),
-            ("current_head_digest", head.map_or_else(|| "null".to_owned(), |d| string(&d.to_text()))),
-            ("record", record.to_canonical_json()),
-            ("supports", supports.to_string()), ("contradictions", contradictions.to_string()),
-            ("other_relations", (record.evidence.len() - supports - contradictions).to_string()),
-            ("positive_path_from_query_root", reachable(digest).to_string()),
-            ("immediate_dominator", immediate.get(&object_node(digest))
-                .map_or_else(|| "null".to_owned(), |node| string(node))),
-        ])
-    }), limit)?;
-    let idoms = bounded_array(run.output.immediate_dominators.iter()
-        .map(|(node, parent)| array(&[string(node), string(parent)])), limit)?;
+    let heads = bounded_array(
+        projection.heads().iter().map(|(id, digest)| {
+            object(&[
+                ("event_id", string(id)),
+                ("revision_digest", string(&digest.to_text())),
+                (
+                    "positive_path_from_query_root",
+                    reachable(*digest).to_string(),
+                ),
+            ])
+        }),
+        limit,
+    )?;
+    let records = bounded_array(
+        projection.records().iter().map(|record| {
+            let digest = record.revision_digest();
+            let head = projection.heads().get(record.event_id.as_str());
+            let supports = record
+                .evidence
+                .iter()
+                .filter(|edge| edge.counts_as_support())
+                .count();
+            let contradictions = record
+                .evidence
+                .iter()
+                .filter(|edge| edge.counts_as_contradiction())
+                .count();
+            object(&[
+                ("revision_digest", string(&digest.to_text())),
+                ("is_current_head", (head == Some(&digest)).to_string()),
+                (
+                    "current_head_digest",
+                    head.map_or_else(|| "null".to_owned(), |d| string(&d.to_text())),
+                ),
+                ("record", record.to_canonical_json()),
+                ("supports", supports.to_string()),
+                ("contradictions", contradictions.to_string()),
+                (
+                    "other_relations",
+                    (record.evidence.len() - supports - contradictions).to_string(),
+                ),
+                (
+                    "positive_path_from_query_root",
+                    reachable(digest).to_string(),
+                ),
+                (
+                    "immediate_dominator",
+                    immediate
+                        .get(&object_node(digest))
+                        .map_or_else(|| "null".to_owned(), |node| string(node)),
+                ),
+            ])
+        }),
+        limit,
+    )?;
+    let idoms = bounded_array(
+        run.output
+            .immediate_dominators
+            .iter()
+            .map(|(node, parent)| array(&[string(node), string(parent)])),
+        limit,
+    )?;
     let digest_array = |values: &[ContentDigest]| {
         bounded_array(values.iter().map(|digest| string(&digest.to_text())), limit)
     };
-    let affected = bounded_array(projection.heads().iter().filter(|(_, digest)| reachable(**digest))
-        .map(|(id, digest)| object(&[
-            ("event_id", string(id)), ("revision_digest", string(&digest.to_text())),
-        ])), limit)?;
+    let affected = bounded_array(
+        projection
+            .heads()
+            .iter()
+            .filter(|(_, digest)| reachable(**digest))
+            .map(|(id, digest)| {
+                object(&[
+                    ("event_id", string(id)),
+                    ("revision_digest", string(&digest.to_text())),
+                ])
+            }),
+        limit,
+    )?;
     let report = object(&[
         ("format", string(HISTORY_FORMAT)),
-        ("mode", string(if request.artifact.is_some() { "artifact_positive_support_impact" } else { "historical_support_analysis" })),
-        ("site", string(&facts.site)), ("anchor", evidence_anchor(&facts.anchor)),
+        (
+            "mode",
+            string(if request.artifact.is_some() {
+                "artifact_positive_support_impact"
+            } else {
+                "historical_support_analysis"
+            }),
+        ),
+        ("site", string(&facts.site)),
+        ("anchor", evidence_anchor(&facts.anchor)),
         ("ledger_root", string(&facts.ledger_root.to_text())),
-        ("ledger_tail_uncommitted", facts.ledger_tail_uncommitted.to_string()),
-        ("effect_tail_uncommitted", facts.effect_tail_uncommitted.to_string()),
-        ("selection", string("all_current_heads_then_exact_transitive_event_evidence_references; all_relations_expanded; only_supports_traversed")),
-        ("requested_artifact", request.artifact.map_or_else(|| "null".to_owned(), |d| string(&d.to_text()))),
+        (
+            "ledger_tail_uncommitted",
+            facts.ledger_tail_uncommitted.to_string(),
+        ),
+        (
+            "effect_tail_uncommitted",
+            facts.effect_tail_uncommitted.to_string(),
+        ),
+        (
+            "selection",
+            string(
+                "all_current_heads_then_exact_transitive_event_evidence_references; all_relations_expanded; only_supports_traversed",
+            ),
+        ),
+        (
+            "requested_artifact",
+            request
+                .artifact
+                .map_or_else(|| "null".to_owned(), |d| string(&d.to_text())),
+        ),
         ("query_root", string(&run.output.root)),
-        ("projection_digest", string(&projection.graph().digest().to_text())),
-        ("current_heads", heads), ("heads_reachable_from_query_root", affected),
+        (
+            "projection_digest",
+            string(&projection.graph().digest().to_text()),
+        ),
+        ("current_heads", heads),
+        ("heads_reachable_from_query_root", affected),
         ("expanded_records", records),
-        ("unexpanded_support_references", digest_array(projection.unexpanded_support())?),
-        ("unexpanded_evidence_references", digest_array(projection.unexpanded_evidence())?),
+        (
+            "unexpanded_support_references",
+            digest_array(projection.unexpanded_support())?,
+        ),
+        (
+            "unexpanded_evidence_references",
+            digest_array(projection.unexpanded_evidence())?,
+        ),
         ("immediate_dominators", idoms),
         ("unreachable_nodes", strings(&run.output.unreachable)),
-        ("witness", witness(proof)), ("witness_digest", string(&proof.digest().to_text())),
-        ("source_files_read", facts.files_read.to_string()), ("source_bytes_read", facts.bytes_read.to_string()),
-        ("catalogue_revisions_validated", projection.catalogue_revisions().to_string()),
-        ("expanded_revision_count", projection.records().len().to_string()),
-        ("catalogue_only_revision_count", (projection.catalogue_revisions() - projection.records().len()).to_string()),
-        ("catalogue_evidence_edges", projection.catalogue_edges().to_string()),
-        ("catalogue_canonical_bytes", projection.catalogue_bytes().to_string()),
-        ("graph_operation_limit", request.base.budget.max_operations.to_string()),
-        ("algorithm_output_entry_limit", request.base.budget.max_output_entries.to_string()),
-        ("budget_scope", string("algorithm witness excludes separately bounded snapshot IO, catalogue validation and JSON rendering")),
+        ("witness", witness(proof)),
+        ("witness_digest", string(&proof.digest().to_text())),
+        ("source_files_read", facts.files_read.to_string()),
+        ("source_bytes_read", facts.bytes_read.to_string()),
+        (
+            "catalogue_revisions_validated",
+            projection.catalogue_revisions().to_string(),
+        ),
+        (
+            "expanded_revision_count",
+            projection.records().len().to_string(),
+        ),
+        (
+            "catalogue_only_revision_count",
+            (projection.catalogue_revisions() - projection.records().len()).to_string(),
+        ),
+        (
+            "catalogue_evidence_edges",
+            projection.catalogue_edges().to_string(),
+        ),
+        (
+            "catalogue_canonical_bytes",
+            projection.catalogue_bytes().to_string(),
+        ),
+        (
+            "graph_operation_limit",
+            request.base.budget.max_operations.to_string(),
+        ),
+        (
+            "algorithm_output_entry_limit",
+            request.base.budget.max_output_entries.to_string(),
+        ),
+        (
+            "budget_scope",
+            string(
+                "algorithm witness excludes separately bounded snapshot IO, catalogue validation and JSON rendering",
+            ),
+        ),
         ("authority", string("derived_cognition_no_effect_authority")),
-        ("privacy", string("operator_local_metadata; no redaction transform; not an approved evidence export")),
-        ("interpretation", string("positive-path structure only; reachable does not mean indispensable, true, independent, available or invalidated; no positive path is not absence or lack of non-support influence")),
-        ("historical_semantics", string("exact old revisions, never successor redirects; current heads remain explicit; non-event artifacts are unexpanded and custody is unchecked")),
-        ("qualification", string("authored_unvalidated_reference_candidate")),
+        (
+            "privacy",
+            string(
+                "operator_local_metadata; no redaction transform; not an approved evidence export",
+            ),
+        ),
+        (
+            "interpretation",
+            string(
+                "positive-path structure only; reachable does not mean indispensable, true, independent, available or invalidated; no positive path is not absence or lack of non-support influence",
+            ),
+        ),
+        (
+            "historical_semantics",
+            string(
+                "exact old revisions, never successor redirects; current heads remain explicit; non-event artifacts are unexpanded and custody is unchecked",
+            ),
+        ),
+        (
+            "qualification",
+            string("authored_unvalidated_reference_candidate"),
+        ),
     ]);
-    if report.len().saturating_add(1) > limit { return Err(CommandError::OutputBound); }
+    if report.len().saturating_add(1) > limit {
+        return Err(CommandError::OutputBound);
+    }
     Ok(report + "\n")
 }
 

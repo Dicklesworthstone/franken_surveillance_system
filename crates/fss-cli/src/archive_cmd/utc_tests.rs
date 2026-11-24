@@ -130,7 +130,9 @@ fn utc_arguments_require_both_pins_and_refuse_decode_or_export_options() -> Test
         "--end-utc-ns",
     ] {
         let args: Vec<_> = valid
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .filter(|pair| pair[0] != missing)
             .flat_map(|pair| pair.iter().copied())
             .collect();

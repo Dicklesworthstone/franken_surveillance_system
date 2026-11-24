@@ -18,6 +18,10 @@ const BUDGET: &str = "ERR-ONVIF-BUDGET-001";
 const CANCELLED: &str = "ERR-ONVIF-CANCELLED-001";
 
 /// Maximum native wait per admission; the original request deadline never renews.
+#[allow(
+    dead_code,
+    reason = "Shared owner also serves commands without native wait loops"
+)]
 pub(crate) const WAIT_QUANTUM_NS: u64 = 1_000_000;
 
 fn execution_error(error: &ExecutionError) -> &'static str {
@@ -99,6 +103,10 @@ impl Scope<'_, '_> {
         Ok(now)
     }
 
+    #[allow(
+        dead_code,
+        reason = "Shared owner also serves commands without native file reads"
+    )]
     pub(crate) fn input(&self) -> Result<(), &'static str> {
         self.admit(RuntimeGrant::ReadMedia, true).map(|_| ())
     }
@@ -131,11 +139,16 @@ impl Scope<'_, '_> {
         self.observed_network_bytes.set(observed);
         Ok(())
     }
+    #[allow(dead_code, reason = "Shared owner also serves read-only commands")]
     pub(crate) fn output(&self) -> Result<(), &'static str> {
         self.admit(RuntimeGrant::ObjectStage, true)?;
         self.admit(RuntimeGrant::ObjectPublish, false).map(|_| ())
     }
 
+    #[allow(
+        dead_code,
+        reason = "Shared owner also serves commands without native wait loops"
+    )]
     pub(crate) fn wait(&self, deadline: u64) -> Result<(), &'static str> {
         let now = self.admit(RuntimeGrant::AdapterNet, false)?;
         if deadline > self.deadline || now >= deadline {

@@ -53,8 +53,14 @@ impl Drop for Process {
 
 fn binary(name: &str) -> Test<PathBuf> {
     let (variable, compiled) = match name {
-        "capture" => ("FSS_CAPTURE_RTSP_BIN", option_env!("CARGO_BIN_EXE_fss-capture-rtsp")),
-        "import" => ("FSS_IMPORT_RTSP_BIN", option_env!("CARGO_BIN_EXE_fss-import-rtsp")),
+        "capture" => (
+            "FSS_CAPTURE_RTSP_BIN",
+            option_env!("CARGO_BIN_EXE_fss-capture-rtsp"),
+        ),
+        "import" => (
+            "FSS_IMPORT_RTSP_BIN",
+            option_env!("CARGO_BIN_EXE_fss-import-rtsp"),
+        ),
         "file" => ("FSS_FILE_BIN", option_env!("CARGO_BIN_EXE_fss-file")),
         _ => return Err("unknown fixture binary".into()),
     };
@@ -81,16 +87,21 @@ fn run(directory: &Directory, name: &str, args: &[OsString]) -> Test<Output> {
     }
     let outputs = outputs.ok_or("process reservation exhausted")?;
     let make = |name: &str| -> io::Result<File> {
-        OpenOptions::new().write(true).create_new(true).open(outputs.join(name))
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(outputs.join(name))
     };
     let out = make("stdout")?;
     let err = make("stderr")?;
-    let mut process = Process(Command::new(binary(name)?)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(out))
-        .stderr(Stdio::from(err))
-        .spawn()?);
+    let mut process = Process(
+        Command::new(binary(name)?)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(out))
+            .stderr(Stdio::from(err))
+            .spawn()?,
+    );
     let deadline = Instant::now() + Duration::from_secs(60);
     let status = loop {
         if Instant::now() >= deadline
@@ -106,30 +117,49 @@ fn run(directory: &Directory, name: &str, args: &[OsString]) -> Test<Output> {
     };
     let read = |name: &str| -> Test<Vec<u8>> {
         let mut bytes = Vec::new();
-        File::open(outputs.join(name))?.take(OUTPUT_LIMIT + 1).read_to_end(&mut bytes)?;
+        File::open(outputs.join(name))?
+            .take(OUTPUT_LIMIT + 1)
+            .read_to_end(&mut bytes)?;
         if bytes.len() as u64 > OUTPUT_LIMIT {
             return Err("native fixture output too large".into());
         }
         Ok(bytes)
     };
-    Ok(Output { status, stdout: read("stdout")?, stderr: read("stderr")? })
+    Ok(Output {
+        status,
+        stdout: read("stdout")?,
+        stderr: read("stderr")?,
+    })
 }
 
 fn field<'a>(value: &'a Value, key: &str) -> Test<&'a Value> {
-    value.object().and_then(|object| object.get(key)).ok_or_else(|| format!("missing {key}").into())
+    value
+        .object()
+        .and_then(|object| object.get(key))
+        .ok_or_else(|| format!("missing {key}").into())
 }
 fn text<'a>(value: &'a Value, key: &str) -> Test<&'a str> {
-    field(value, key)?.text().ok_or_else(|| format!("{key} is not text").into())
+    field(value, key)?
+        .text()
+        .ok_or_else(|| format!("{key} is not text").into())
 }
 fn number(value: &Value, key: &str) -> Test<i128> {
-    field(value, key)?.integer().ok_or_else(|| format!("{key} is not an integer").into())
+    field(value, key)?
+        .integer()
+        .ok_or_else(|| format!("{key} is not an integer").into())
 }
 fn flag(value: &Value, key: &str) -> Test<bool> {
-    field(value, key)?.boolean().ok_or_else(|| format!("{key} is not boolean").into())
+    field(value, key)?
+        .boolean()
+        .ok_or_else(|| format!("{key} is not boolean").into())
 }
 fn good(output: Output) -> Test<String> {
-    assert!(output.status.success(), "stdout={} stderr={}",
-        String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
     Ok(String::from_utf8(output.stdout)?)
 }
 fn digest(label: &str) -> String {
@@ -171,7 +201,10 @@ fn args(directory: &Directory, address: SocketAddr, codec: Codec) -> Vec<OsStrin
         ("--codec", codec.name().into()),
         ("--payload-type", codec.pt().to_string()),
         ("--progress-timeout-ms", "500".into()),
-    ].into_iter().flat_map(|(key, value)| [key.into(), value.into()]).collect()
+    ]
+    .into_iter()
+    .flat_map(|(key, value)| [key.into(), value.into()])
+    .collect()
 }
 fn approve(directory: &Directory, args: &[OsString]) -> Test<Vec<OsString>> {
     let plan = parse(&good(run(directory, "capture", args)?)?)?;
@@ -193,24 +226,47 @@ fn no_connection(listener: &TcpListener) -> Test {
 }
 
 #[derive(Clone, Copy)]
-enum Codec { Avc, Hevc }
+enum Codec {
+    Avc,
+    Hevc,
+}
 impl Codec {
-    fn name(self) -> &'static str { match self { Self::Avc => "avc", Self::Hevc => "hevc" } }
-    fn pt(self) -> u8 { match self { Self::Avc => 96, Self::Hevc => 98 } }
-    fn cadence(self) -> u32 { match self { Self::Avc => 3600, Self::Hevc => 18_000 } }
+    fn name(self) -> &'static str {
+        match self {
+            Self::Avc => "avc",
+            Self::Hevc => "hevc",
+        }
+    }
+    fn pt(self) -> u8 {
+        match self {
+            Self::Avc => 96,
+            Self::Hevc => 98,
+        }
+    }
+    fn cadence(self) -> u32 {
+        match self {
+            Self::Avc => 3600,
+            Self::Hevc => 18_000,
+        }
+    }
     fn description(self) -> String {
         let mapping = match self {
             Self::Avc => concat!(
                 "a=rtpmap:96 H264/90000\r\n",
                 "a=fmtp:96 packetization-mode=1;sprop-parameter-sets=",
-                "Z0LAC9oKEbARAAADAAEAAAMAMg8UKqA=,aM4PLIA=\r\n"),
+                "Z0LAC9oKEbARAAADAAEAAAMAMg8UKqA=,aM4PLIA=\r\n"
+            ),
             Self::Hevc => concat!(
                 "a=rtpmap:98 H265/90000\r\n",
                 "a=fmtp:98 sprop-vps=QAEMAf//AWAAAAMAkAAAAwAAAwAeugJA;",
                 "sprop-sps=QgEBAWAAAAMAkAAAAwAAAwAeoCCDHVZbpKTC8BaAgAAAAwCAAAADAoQ=;",
-                "sprop-pps=RAHAc8CJ\r\n"),
+                "sprop-pps=RAHAc8CJ\r\n"
+            ),
         };
-        format!("v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=fixture\r\nt=0 0\r\na=control:*\r\nm=video 0 RTP/AVP {}\r\n{mapping}a=control:trackID=0\r\n", self.pt())
+        format!(
+            "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=fixture\r\nt=0 0\r\na=control:*\r\nm=video 0 RTP/AVP {}\r\n{mapping}a=control:trackID=0\r\n",
+            self.pt()
+        )
     }
 }
 fn avc_nals() -> Vec<&'static [u8]> {
@@ -218,26 +274,46 @@ fn avc_nals() -> Vec<&'static [u8]> {
     let mut starts = Vec::new();
     let mut at = 0;
     while at + 3 <= bytes.len() {
-        let prefix = if bytes.get(at..at + 4) == Some(&[0, 0, 0, 1]) { 4 }
-            else if bytes[at..at + 3] == [0, 0, 1] { 3 } else { 0 };
-        if prefix != 0 { starts.push((at, at + prefix)); at += prefix; } else { at += 1; }
+        let prefix = if bytes.get(at..at + 4) == Some(&[0, 0, 0, 1]) {
+            4
+        } else if bytes[at..at + 3] == [0, 0, 1] {
+            3
+        } else {
+            0
+        };
+        if prefix != 0 {
+            starts.push((at, at + prefix));
+            at += prefix;
+        } else {
+            at += 1;
+        }
     }
-    starts.iter().enumerate().filter_map(|(index, (_, begin))| {
-        let mut end = starts.get(index + 1).map_or(bytes.len(), |(at, _)| *at);
-        while end > *begin && bytes[end - 1] == 0 { end -= 1; }
-        (*begin < end).then_some(&bytes[*begin..end])
-    }).collect()
+    starts
+        .iter()
+        .enumerate()
+        .filter_map(|(index, (_, begin))| {
+            let mut end = starts.get(index + 1).map_or(bytes.len(), |(at, _)| *at);
+            while end > *begin && bytes[end - 1] == 0 {
+                end -= 1;
+            }
+            (*begin < end).then_some(&bytes[*begin..end])
+        })
+        .collect()
 }
 fn hevc_nals() -> Test<Vec<Vec<u8>>> {
     include_str!("../../../tests/fixtures/media/hevc/remux_main8.nals.hex")
-        .lines().filter(|line| !line.trim().is_empty()).map(|line| {
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
             if !line.is_ascii() || !line.len().is_multiple_of(2) {
                 return Err("invalid pinned HEVC fixture".into());
             }
-            (0..line.len()).step_by(2).map(|at| {
-                u8::from_str_radix(&line[at..at + 2], 16).map_err(Into::into)
-            }).collect()
-        }).collect()
+            (0..line.len())
+                .step_by(2)
+                .map(|at| u8::from_str_radix(&line[at..at + 2], 16).map_err(Into::into))
+                .collect()
+        })
+        .collect()
 }
 fn framed(codec: Codec, sequence: u16, timestamp: u32, nal: &[u8]) -> Test<Vec<u8>> {
     let mut packet = vec![0x80, codec.pt() | 128];
@@ -257,21 +333,49 @@ fn media(codec: Codec, target: bool, unclosed: bool) -> Test<Vec<Vec<u8>>> {
             let mut out = vec![framed(codec, 0, 9000, nals.first().ok_or("missing AVC")?)?];
             let mut pictures = 0;
             for nal in nals {
-                if pictures == if target { 2 } else { 1 } { break; }
+                if pictures == if target { 2 } else { 1 } {
+                    break;
+                }
                 let kind = nal[0] & 31;
-                if !matches!(kind, 1 | 5 | 6 | 7 | 8) { continue; }
-                out.push(framed(codec, u16::try_from(out.len())?, 9000 + pictures * 3600, nal)?);
-                if matches!(kind, 1 | 5) { pictures += 1; }
+                if !matches!(kind, 1 | 5 | 6 | 7 | 8) {
+                    continue;
+                }
+                out.push(framed(
+                    codec,
+                    u16::try_from(out.len())?,
+                    9000 + pictures * 3600,
+                    nal,
+                )?);
+                if matches!(kind, 1 | 5) {
+                    pictures += 1;
+                }
             }
             assert_eq!(pictures, if target { 2 } else { 1 });
             Ok(out)
         }
         Codec::Hevc => {
             let nals = hevc_nals()?;
-            let count = if unclosed { 4 } else if target { 6 } else { 5 };
-            assert_eq!(nals.iter().take(6).map(|n| (n[0] >> 1) & 63).collect::<Vec<_>>(), [32, 33, 34, 20, 1, 32]);
+            let count = if unclosed {
+                4
+            } else if target {
+                6
+            } else {
+                5
+            };
+            assert_eq!(
+                nals.iter()
+                    .take(6)
+                    .map(|n| (n[0] >> 1) & 63)
+                    .collect::<Vec<_>>(),
+                [32, 33, 34, 20, 1, 32]
+            );
             let mut out = vec![framed(codec, 0, 0, nals.first().ok_or("missing HEVC")?)?];
-            for (index, (nal, timestamp)) in nals.iter().zip([0, 0, 0, 0, 18_000, 36_000]).take(count).enumerate() {
+            for (index, (nal, timestamp)) in nals
+                .iter()
+                .zip([0, 0, 0, 0, 18_000, 36_000])
+                .take(count)
+                .enumerate()
+            {
                 out.push(framed(codec, u16::try_from(index + 1)?, timestamp, nal)?);
             }
             Ok(out)
@@ -292,36 +396,68 @@ fn request(peer: &mut TcpStream) -> Test<Option<(String, u32)>> {
         if bytes.ends_with(b"\r\n\r\n") {
             let text = String::from_utf8(bytes)?;
             assert!(!text.to_ascii_lowercase().contains("authorization:"));
-            let method = text.split_ascii_whitespace().next().ok_or("missing method")?.to_owned();
-            let cseq = text.split("\r\n").find_map(|line| {
-                let (name, value) = line.split_once(':')?;
-                name.eq_ignore_ascii_case("cseq").then_some(value.trim())
-            }).ok_or("missing cseq")?.parse()?;
+            let method = text
+                .split_ascii_whitespace()
+                .next()
+                .ok_or("missing method")?
+                .to_owned();
+            let cseq = text
+                .split("\r\n")
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("cseq").then_some(value.trim())
+                })
+                .ok_or("missing cseq")?
+                .parse()?;
             return Ok(Some((method, cseq)));
         }
     }
     Err("oversized fixture request".into())
 }
 fn closed(error: &io::Error) -> bool {
-    matches!(error.kind(), io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted)
+    matches!(
+        error.kind(),
+        io::ErrorKind::BrokenPipe
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+    )
 }
 fn response(peer: &mut TcpStream, cseq: u32, headers: &str, body: &str) -> Test {
-    peer.write_all(format!("RTSP/1.0 200 OK\r\nCSeq: {cseq}\r\nContent-Length: {}\r\n{headers}\r\n{body}", body.len()).as_bytes())?;
+    peer.write_all(
+        format!(
+            "RTSP/1.0 200 OK\r\nCSeq: {cseq}\r\nContent-Length: {}\r\n{headers}\r\n{body}",
+            body.len()
+        )
+        .as_bytes(),
+    )?;
     Ok(())
 }
 #[derive(Clone, Copy)]
-enum Camera { Silent, Prefix, Duplicate, Target, EofPrefix, Unclosed, Authentication, HeldControl, ExpiredControl }
+enum Camera {
+    Silent,
+    Prefix,
+    Duplicate,
+    Target,
+    EofPrefix,
+    Unclosed,
+    Authentication,
+    HeldControl,
+    ExpiredControl,
+}
 fn serve(listener: &TcpListener, codec: Codec, camera: Camera) -> Test {
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut peer = loop {
         match listener.accept() {
             Ok((peer, _)) => break peer,
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline => {
+            Err(error)
+                if error.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline =>
+            {
                 thread::sleep(Duration::from_millis(2));
             }
             Err(error) => return Err(error.into()),
         }
     };
+    peer.set_nonblocking(false)?;
     peer.set_read_timeout(Some(Duration::from_secs(15)))?;
     peer.set_write_timeout(Some(Duration::from_secs(15)))?;
     peer.set_nodelay(true)?;
@@ -332,7 +468,12 @@ fn serve(listener: &TcpListener, codec: Codec, camera: Camera) -> Test {
         assert!(request(&mut peer)?.is_none());
         return Ok(());
     }
-    response(&mut peer, cseq, "Content-Type: application/sdp\r\n", &codec.description())?;
+    response(
+        &mut peer,
+        cseq,
+        "Content-Type: application/sdp\r\n",
+        &codec.description(),
+    )?;
     let (method, cseq) = request(&mut peer)?.ok_or("missing SETUP")?;
     assert_eq!(method, "SETUP");
     // The held-control case must reach the progress boundary BEFORE lease expiry:
@@ -343,7 +484,14 @@ fn serve(listener: &TcpListener, codec: Codec, camera: Camera) -> Test {
         Camera::ExpiredControl => 2,
         _ => 60,
     };
-    response(&mut peer, cseq, &format!("Session: fixture;timeout={timeout}\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1;ssrc=7\r\n"), "")?;
+    response(
+        &mut peer,
+        cseq,
+        &format!(
+            "Session: fixture;timeout={timeout}\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1;ssrc=7\r\n"
+        ),
+        "",
+    )?;
     let (method, cseq) = request(&mut peer)?.ok_or("missing PLAY")?;
     assert_eq!(method, "PLAY");
     response(&mut peer, cseq, "Session: fixture\r\n", "")?;
@@ -354,11 +502,21 @@ fn serve(listener: &TcpListener, codec: Codec, camera: Camera) -> Test {
         assert!(request(&mut peer)?.is_none());
         return Ok(());
     }
-    let packets = if matches!(camera, Camera::Silent) { Vec::new() } else {
-        media(codec, matches!(camera, Camera::Target), matches!(camera, Camera::Unclosed))?
+    let packets = if matches!(camera, Camera::Silent) {
+        Vec::new()
+    } else {
+        media(
+            codec,
+            matches!(camera, Camera::Target),
+            matches!(camera, Camera::Unclosed),
+        )?
     };
-    for packet in &packets { peer.write_all(packet)?; }
-    if matches!(camera, Camera::EofPrefix) { peer.shutdown(Shutdown::Write)?; }
+    for packet in &packets {
+        peer.write_all(packet)?;
+    }
+    if matches!(camera, Camera::EofPrefix) {
+        peer.shutdown(Shutdown::Write)?;
+    }
     if matches!(camera, Camera::Duplicate) {
         let duplicate = packets.last().ok_or("missing duplicate")?;
         peer.set_read_timeout(Some(Duration::from_millis(20)))?;
@@ -373,7 +531,11 @@ fn serve(listener: &TcpListener, codec: Codec, camera: Camera) -> Test {
                 Ok(0) => return Ok(()),
                 Ok(_) => return Err("unexpected early command in duplicate fixture".into()),
                 Err(error) if closed(&error) => return Ok(()),
-                Err(error) if matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {}
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) => {}
                 Err(error) => return Err(error.into()),
             }
         }
@@ -381,23 +543,38 @@ fn serve(listener: &TcpListener, codec: Codec, camera: Camera) -> Test {
     }
     // The fixture leaves its write side open unless EofPrefix explicitly selected it.
     for _ in 0..16 {
-        let Some((method, cseq)) = request(&mut peer)? else { return Ok(()); };
+        let Some((method, cseq)) = request(&mut peer)? else {
+            return Ok(());
+        };
         assert!(matches!(method.as_str(), "GET_PARAMETER" | "OPTIONS"));
         response(&mut peer, cseq, "Session: fixture\r\n", "")?;
     }
     Err("fixture control allowance exhausted".into())
 }
-fn capture(directory: &Directory, args: &[OsString], listener: &TcpListener, codec: Codec, cameras: &[Camera]) -> Test<Output> {
+fn capture(
+    directory: &Directory,
+    args: &[OsString],
+    listener: &TcpListener,
+    codec: Codec,
+    cameras: &[Camera],
+) -> Test<Output> {
     thread::scope(|scope| {
         let server = scope.spawn(move || -> Test {
-            for camera in cameras { serve(listener, codec, *camera)?; }
+            for camera in cameras {
+                serve(listener, codec, *camera)?;
+            }
             Ok(())
         });
         let output = run(directory, "capture", args);
         let served = server.join().map_err(|_| "camera fixture panicked")?;
         let output = output?;
         if let Err(error) = served {
-            return Err(format!("{error}; stdout={} stderr={}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr)).into());
+            return Err(format!(
+                "{error}; stdout={} stderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+            .into());
         }
         Ok(output)
     })
@@ -409,7 +586,9 @@ fn rows(output: &Output) -> Test<Vec<Value>> {
         let row = parse(line)?;
         let expected = match text(&row, "schema")? {
             "fss.rtsp_capture_cli.v1" => {
-                if text(&row, "kind")? == "started" { native = 0; }
+                if text(&row, "kind")? == "started" {
+                    native = 0;
+                }
                 &mut native
             }
             "fss.rtsp_reconnect_cli.v1" => &mut outer,
@@ -423,13 +602,21 @@ fn rows(output: &Output) -> Test<Vec<Value>> {
     Ok(result)
 }
 fn details<'a>(rows: &'a [Value], kind: &str) -> Test<Vec<&'a Value>> {
-    rows.iter().filter(|row| text(row, "kind").ok() == Some(kind))
-        .map(|row| field(row, "detail")).collect()
+    rows.iter()
+        .filter(|row| text(row, "kind").ok() == Some(kind))
+        .map(|row| field(row, "detail"))
+        .collect()
 }
 fn unique<'a>(rows: &'a [Value], kind: &str) -> Test<&'a Value> {
     let matches = details(rows, kind)?;
-    assert_eq!(matches.len(), 1, "expected one {kind}; observed events: {:?}",
-        rows.iter().filter_map(|row| text(row, "kind").ok()).collect::<Vec<_>>());
+    assert_eq!(
+        matches.len(),
+        1,
+        "expected one {kind}; observed events: {:?}",
+        rows.iter()
+            .filter_map(|row| text(row, "kind").ok())
+            .collect::<Vec<_>>()
+    );
     Ok(matches[0])
 }
 fn assert_stall(rows: &[Value], pictures: i128) -> Test {
@@ -445,7 +632,10 @@ fn assert_stall(rows: &[Value], pictures: i128) -> Test {
     assert!(!flag(terminal, "input_end_observed")?);
     assert_eq!(number(terminal, "durable_pictures")?, pictures);
     assert_eq!(number(terminal, "collected_pictures")?, pictures);
-    assert_eq!(number(terminal, "durable_windows")?, number(terminal, "indexed_windows")?);
+    assert_eq!(
+        number(terminal, "durable_windows")?,
+        number(terminal, "indexed_windows")?
+    );
     Ok(())
 }
 
@@ -469,7 +659,10 @@ fn cold_decode_avc(directory: &Directory, rows: &[Value]) -> Test {
         ("--owner-authorized", "yes".into()),
         ("--read-originals", "yes".into()),
         ("--retain-originals", "yes".into()),
-    ].into_iter().flat_map(|(key, value)| [key.into(), value.into()]).collect();
+    ]
+    .into_iter()
+    .flat_map(|(key, value)| [key.into(), value.into()])
+    .collect();
     let preview = parse(&good(run(directory, "import", &input)?)?)?;
     assert!(!deployment.exists());
     set(&mut input, "--approve", text(&preview, "approval_digest")?);
@@ -479,15 +672,41 @@ fn cold_decode_avc(directory: &Directory, rows: &[Value]) -> Test {
     let effects = fs::read(deployment.join("effects/journal.fssj"))?;
     fs::rename(archive, directory.0.join("offline-capture"))?;
     let decode: Vec<OsString> = [
-        "decode", "--root", deployment.to_str().ok_or("deployment path")?,
-        "--site", SITE, "--import-id", text(&imported, "import_identity")?,
-        "--segment", "0", "--segment-count", "1", "--interpretation", "ycbcr",
-        "--work-units", "1000000000",
-    ].into_iter().map(OsString::from).collect();
+        "decode",
+        "--root",
+        deployment.to_str().ok_or("deployment path")?,
+        "--site",
+        SITE,
+        "--import-id",
+        text(&imported, "import_identity")?,
+        "--segment",
+        "0",
+        "--segment-count",
+        "1",
+        "--interpretation",
+        "ycbcr",
+        "--work-units",
+        "1000000000",
+    ]
+    .into_iter()
+    .map(OsString::from)
+    .collect();
     let decoded = good(run(directory, "file", &decode)?)?;
-    assert!(decoded.lines().any(|line| line == "h264_frames_decoded=1"), "{decoded}");
-    assert!(decoded.lines().any(|line| line == "decode_complete=true"), "{decoded}");
-    assert_eq!(decoded.lines().filter(|line| line.starts_with("frame_luma_sha256=")).count(), 1);
+    assert!(
+        decoded.lines().any(|line| line == "h264_frames_decoded=1"),
+        "{decoded}"
+    );
+    assert!(
+        decoded.lines().any(|line| line == "decode_complete=true"),
+        "{decoded}"
+    );
+    assert_eq!(
+        decoded
+            .lines()
+            .filter(|line| line.starts_with("frame_luma_sha256="))
+            .count(),
+        1
+    );
     assert_eq!(fs::read(deployment.join("effects/journal.fssj"))?, effects);
     Ok(())
 }
@@ -512,8 +731,17 @@ fn a_silent_avc_or_hevc_socket_cannot_stand_in_for_collected_pictures() -> Test 
 fn duplicate_rtp_cannot_renew_progress_and_the_stalled_prefix_cold_decodes() -> Test {
     let directory = Directory::new("duplicates")?;
     let listener = listener()?;
-    let input = approve(&directory, &args(&directory, listener.local_addr()?, Codec::Avc))?;
-    let output = capture(&directory, &input, &listener, Codec::Avc, &[Camera::Duplicate])?;
+    let input = approve(
+        &directory,
+        &args(&directory, listener.local_addr()?, Codec::Avc),
+    )?;
+    let output = capture(
+        &directory,
+        &input,
+        &listener,
+        Codec::Avc,
+        &[Camera::Duplicate],
+    )?;
     let report = rows(&output)?;
     assert_stall(&report, 1)?;
     cold_decode_avc(&directory, &report)
@@ -524,7 +752,10 @@ fn hevc_stall_retains_only_source_closed_pictures_not_marker_claims() -> Test {
     for (camera, pictures) in [(Camera::Prefix, 1), (Camera::Unclosed, 0)] {
         let directory = Directory::new("hevc-boundary")?;
         let listener = listener()?;
-        let input = approve(&directory, &args(&directory, listener.local_addr()?, Codec::Hevc))?;
+        let input = approve(
+            &directory,
+            &args(&directory, listener.local_addr()?, Codec::Hevc),
+        )?;
         let output = capture(&directory, &input, &listener, Codec::Hevc, &[camera])?;
         let report = rows(&output)?;
         assert_stall(&report, pictures)?;
@@ -557,7 +788,10 @@ fn timely_targets_and_real_eof_keep_their_original_native_completion() -> Test {
                 assert!(!flag(terminal, "peer_eof")?);
             } else {
                 assert!(!output.status.success());
-                assert_eq!(text(terminal, "error_id")?, "ERR-CAPTURE-RTSP-SHORTFALL-001");
+                assert_eq!(
+                    text(terminal, "error_id")?,
+                    "ERR-CAPTURE-RTSP-SHORTFALL-001"
+                );
                 assert_eq!(number(terminal, "durable_pictures")?, 1);
                 assert!(flag(terminal, "peer_eof")?);
             }
@@ -577,26 +811,53 @@ fn reconnect(mut input: Vec<OsString>) -> Vec<OsString> {
 fn a_drained_stall_reconnects_with_separate_epochs_and_both_archives_retained() -> Test {
     let directory = Directory::new("reconnect")?;
     let listener = listener()?;
-    let input = approve(&directory, &reconnect(args(&directory, listener.local_addr()?, Codec::Avc)))?;
-    let output = capture(&directory, &input, &listener, Codec::Avc, &[Camera::Prefix, Camera::Target])?;
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let input = approve(
+        &directory,
+        &reconnect(args(&directory, listener.local_addr()?, Codec::Avc)),
+    )?;
+    let output = capture(
+        &directory,
+        &input,
+        &listener,
+        Codec::Avc,
+        &[Camera::Prefix, Camera::Target],
+    )?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let report = rows(&output)?;
     let terminals = details(&report, "terminal")?;
     assert_eq!(terminals.len(), 2);
-    assert_eq!(text(terminals[0], "error_id")?, "ERR-CAPTURE-RTSP-PROGRESS-001");
+    assert_eq!(
+        text(terminals[0], "error_id")?,
+        "ERR-CAPTURE-RTSP-PROGRESS-001"
+    );
     assert_eq!(number(terminals[0], "durable_pictures")?, 1);
     assert!(flag(terminals[1], "complete")?);
     assert_eq!(number(field(terminals[0], "source")?, "generation")?, 1);
     assert_eq!(number(field(terminals[1], "source")?, "generation")?, 2);
-    assert_ne!(text(field(terminals[0], "source")?, "receive_clock")?, text(field(terminals[1], "source")?, "receive_clock")?);
+    assert_ne!(
+        text(field(terminals[0], "source")?, "receive_clock")?,
+        text(field(terminals[1], "source")?, "receive_clock")?
+    );
     let attempts = details(&report, "attempt_finished")?;
     assert_eq!(attempts.len(), 2);
-    assert_eq!(text(attempts[0], "retry_reason")?, "recording_progress_stalled");
+    assert_eq!(
+        text(attempts[0], "retry_reason")?,
+        "recording_progress_stalled"
+    );
     assert!(flag(attempts[0], "retrying")?);
     assert!(!flag(attempts[0], "recovery_required")?);
     assert_eq!(number(attempts[1], "durable_pictures_all_attempts")?, 3);
     assert!(!flag(attempts[1], "continuity_across_attempts")?);
-    for path in ["capture.attempt-0001", "capture.attempt-0002", "pins.attempt-0001", "pins.attempt-0002"] {
+    for path in [
+        "capture.attempt-0001",
+        "capture.attempt-0002",
+        "pins.attempt-0001",
+        "pins.attempt-0002",
+    ] {
         assert!(directory.0.join(path).is_dir());
     }
     Ok(())
@@ -609,7 +870,13 @@ fn an_unacknowledged_keepalive_vetoes_reconnect_after_a_clean_empty_drain() -> T
     let mut input = reconnect(args(&directory, listener.local_addr()?, Codec::Avc));
     set(&mut input, "--progress-timeout-ms", "3000");
     let input = approve(&directory, &input)?;
-    let output = capture(&directory, &input, &listener, Codec::Avc, &[Camera::HeldControl])?;
+    let output = capture(
+        &directory,
+        &input,
+        &listener,
+        Codec::Avc,
+        &[Camera::HeldControl],
+    )?;
     assert!(!output.status.success());
     let report = rows(&output)?;
     assert_stall(&report, 0)?;
@@ -625,8 +892,17 @@ fn an_unacknowledged_keepalive_vetoes_reconnect_after_a_clean_empty_drain() -> T
 fn authentication_refusal_never_becomes_a_retryable_recording_stall() -> Test {
     let directory = Directory::new("auth")?;
     let listener = listener()?;
-    let input = approve(&directory, &reconnect(args(&directory, listener.local_addr()?, Codec::Avc)))?;
-    let output = capture(&directory, &input, &listener, Codec::Avc, &[Camera::Authentication])?;
+    let input = approve(
+        &directory,
+        &reconnect(args(&directory, listener.local_addr()?, Codec::Avc)),
+    )?;
+    let output = capture(
+        &directory,
+        &input,
+        &listener,
+        Codec::Avc,
+        &[Camera::Authentication],
+    )?;
     assert!(!output.status.success());
     let report = rows(&output)?;
     assert!(details(&report, "recording_stalled")?.is_empty());
@@ -643,7 +919,10 @@ fn nested_approval_is_not_authority_and_preview_has_no_effects() -> Test {
     let listener = listener()?;
     let mut input = args(&directory, listener.local_addr()?, Codec::Avc);
     let preview = parse(&good(run(&directory, "capture", &input)?)?)?;
-    assert_eq!(text(&preview, "schema")?, "fss.rtsp_supervised_capture_cli.v1");
+    assert_eq!(
+        text(&preview, "schema")?,
+        "fss.rtsp_supervised_capture_cli.v1"
+    );
     let child = field(&preview, "capture")?;
     assert_eq!(Path::new(text(child, "root")?), directory.0.join("capture"));
     assert!(!directory.0.join("capture").exists());
@@ -673,7 +952,13 @@ fn expired_remote_session_cannot_become_a_later_stall_or_timed_success() -> Test
         set(&mut input, "--progress-timeout-ms", "5000");
         set(&mut input, "--max-attempts", "3");
         let input = approve(&directory, &input)?;
-        let output = capture(&directory, &input, &listener, codec, &[Camera::ExpiredControl])?;
+        let output = capture(
+            &directory,
+            &input,
+            &listener,
+            codec,
+            &[Camera::ExpiredControl],
+        )?;
         assert!(!output.status.success());
         let rows = rows(&output)?;
         assert!(details(&rows, "recording_stalled")?.is_empty());
@@ -688,7 +973,10 @@ fn expired_remote_session_cannot_become_a_later_stall_or_timed_success() -> Test
         let finished = unique(&rows, "attempt_finished")?;
         assert_eq!(field(finished, "retry_reason")?, &Value::Null);
         assert!(!flag(finished, "retrying")?);
-        assert_eq!(number(unique(&rows, "reconnect_terminal")?, "attempts_used")?, 1);
+        assert_eq!(
+            number(unique(&rows, "reconnect_terminal")?, "attempts_used")?,
+            1
+        );
         assert!(!directory.0.join("capture.attempt-0002").exists());
         assert!(!directory.0.join("pins.attempt-0002").exists());
         no_connection(&listener)?;

@@ -478,7 +478,9 @@ mod tests {
             "--custody",
         ] {
             let filtered: Vec<_> = VALID
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .filter(|p| p[0] != key)
                 .flatten()
                 .copied()

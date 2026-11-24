@@ -118,12 +118,8 @@ impl Fixture {
         admission: Option<&AlertDispatchAdmission<'_>>,
         work: impl FnOnce(&DispatchOwner<'_, '_, Clock>) -> Test,
     ) -> Test<(BudgetVector, QuiescenceProof)> {
-        let network_deadline = network_deadline(
-            BASE,
-            5,
-            None,
-            admission.and_then(|held| held.deadline),
-        )?;
+        let network_deadline =
+            network_deadline(BASE, 5, None, admission.and_then(|held| held.deadline))?;
         let allowance = self.source.budgets;
         let mut runtime = RuntimeOwner::new(
             &self.source,
@@ -547,7 +543,6 @@ fn a_fresh_retention_context_cannot_revive_revoked_dispatch_authority() -> Test 
     Ok(())
 }
 
-
 #[test]
 fn held_session_deadline_only_narrows_the_network_window() -> Test {
     let held = Some(timestamp(BASE + 2_000_000));
@@ -626,7 +621,11 @@ fn held_session_is_rechecked_after_sources_at_final_commit_and_send_admission() 
         })?;
         assert_eq!(
             consumed.network_bytes,
-            if boundary == WebhookBoundary::Send { IO_BYTES } else { 0 }
+            if boundary == WebhookBoundary::Send {
+                IO_BYTES
+            } else {
+                0
+            }
         );
         assert_eq!(f.prepared.state, EffectState::Prepared);
     }
@@ -652,7 +651,12 @@ fn held_session_expiry_or_cancellation_preserves_only_finite_cleanup() -> Test {
         let (consumed, proof) = f.run_with_admission(Some(&admission), |owner| {
             assert_eq!(owner.network_deadline_ns, held_deadline);
             owner
-                .checkpoint(f.scope(&committed), WebhookBoundary::Send, BASE, held_deadline)
+                .checkpoint(
+                    f.scope(&committed),
+                    WebhookBoundary::Send,
+                    BASE,
+                    held_deadline,
+                )
                 .map_err(|_| "initial session send admission")?;
             f.clock.elapsed.set(2_000_000);
             refused.set(true);

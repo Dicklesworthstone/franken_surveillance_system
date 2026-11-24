@@ -102,6 +102,10 @@ pub(super) struct Statistics {
     pub(super) clock_index_unsettled: bool,
     pub(super) collected_pictures: u64,
     pub(super) skipped_pictures: u64,
+    pub(super) parameter_set_origin:
+        Option<fss_reference::rtsp::client::inband::ParameterSetOrigin>,
+    pub(super) pre_sync_discarded: u64,
+    pub(super) companion_packets_discarded: u64,
     pub(super) durable_windows: usize,
     pub(super) durable_pictures: u64,
     pub(super) indexed_windows: usize,
@@ -155,6 +159,16 @@ impl Statistics {
             ));
         }
     }
+    pub(super) fn observe_telemetry(
+        &mut self,
+        telemetry: fss_reference::rtsp::client::inband::RtspIntakeTelemetry,
+    ) {
+        self.parameter_set_origin = self.parameter_set_origin.or(telemetry.parameter_set_origin);
+        self.pre_sync_discarded = self.pre_sync_discarded.max(telemetry.pre_sync_discarded);
+        self.companion_packets_discarded = self
+            .companion_packets_discarded
+            .max(telemetry.companion_packets_discarded);
+    }
     pub(super) fn observe(&mut self, capture: &JournaledLiveAvcArchive<'_, '_>) {
         if let Some(totals) = capture.totals() {
             self.totals = totals;
@@ -162,6 +176,7 @@ impl Statistics {
         if let Some(snapshot) = capture.snapshot() {
             self.snapshot(snapshot);
         }
+        self.observe_telemetry(capture.intake_telemetry());
         self.journal_anchor = Some(capture.journal_anchor());
         self.pins = capture.pin_state().clone();
     }
@@ -516,6 +531,21 @@ pub(super) fn terminal(
             None => object(&[("state", string("unresolved"))]),
         };
         fields.push(("source_binding", selection));
+    }
+    if options.allow_inband_parameter_sets {
+        fields.push((
+            "parameter_set_origin",
+            stats
+                .parameter_set_origin
+                .map_or_else(|| "null".into(), |origin| string(origin.as_str())),
+        ));
+        fields.push(("pre_sync_discarded", stats.pre_sync_discarded.to_string()));
+    }
+    if options.setup_companion_tracks {
+        fields.push((
+            "companion_packets_discarded",
+            stats.companion_packets_discarded.to_string(),
+        ));
     }
     if let Some(source) = &stats.source_custody {
         for (key, value) in &mut fields {

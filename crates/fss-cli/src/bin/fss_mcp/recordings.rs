@@ -285,12 +285,7 @@ fn replay_arguments(
         ("receive_clock", "receive-clock", 71, true),
         ("decode_clock", "decode-clock", 71, true),
         ("retained_import", "retained-import", 71, false),
-        (
-            "max_query_read_objects",
-            "max-query-read-objects",
-            7,
-            false,
-        ),
+        ("max_query_read_objects", "max-query-read-objects", 7, false),
         ("replay_root", "replay-root", 71, true),
         ("replay_request", "replay-request", 71, true),
         ("utc_start_ns", "utc-start-ns", 21, true),

@@ -107,7 +107,8 @@ impl std::error::Error for AlertEffectError {}
 #[must_use]
 pub fn not_eligible(error: ReferenceError) -> AlertEffectError {
     match error {
-        ReferenceError::InvalidSpec("alert_not_eligible")
+        ReferenceError::AlertNotEligible(_)
+        | ReferenceError::InvalidSpec("alert_not_eligible")
         | ReferenceError::Contract(ContractError::SensorIntegrityRisk)
         | ReferenceError::AlertSourceHealth(_) => AlertEffectError::NotEligible(error),
         other => AlertEffectError::Authority(other),

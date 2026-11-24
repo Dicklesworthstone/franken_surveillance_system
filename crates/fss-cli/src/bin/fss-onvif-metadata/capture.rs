@@ -443,22 +443,20 @@ pub(super) fn retain_control<G: ReplayAdmission>(
             };
             let dispatch_allowed = value.newly_prepared();
             receipts.intent = Some(value);
-            if dispatch_allowed {
-                if let Some(guard) = operation {
-                    // Preparation uses the observed request start; commitment needs
-                    // a fresh observation after custody work, never a fabricated tick.
-                    let observed_now = commit_now_ns().map_err(|_| MetadataError::Authority)?;
-                    let now = interval(plan, started_ns, observed_now)?.latest;
-                    let committed = guard
-                        .commit_with_intent(
-                            &mut deployment,
-                            receipts.intent.as_ref().ok_or(MetadataError::Custody)?,
-                            now,
-                            cx,
-                        )
-                        .map_err(|error| receipts.operation_refused(error))?;
-                    receipts.operation = Some(committed);
-                }
+            if dispatch_allowed && let Some(guard) = operation {
+                // Preparation uses the observed request start; commitment needs
+                // a fresh observation after custody work, never a fabricated tick.
+                let observed_now = commit_now_ns().map_err(|_| MetadataError::Authority)?;
+                let now = interval(plan, started_ns, observed_now)?.latest;
+                let committed = guard
+                    .commit_with_intent(
+                        &mut deployment,
+                        receipts.intent.as_ref().ok_or(MetadataError::Custody)?,
+                        now,
+                        cx,
+                    )
+                    .map_err(|error| receipts.operation_refused(error))?;
+                receipts.operation = Some(committed);
             }
             (receipt, dispatch_allowed)
         }

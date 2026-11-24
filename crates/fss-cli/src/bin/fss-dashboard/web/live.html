@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark"><meta name="referrer" content="no-referrer">
+  <title>FSS Live Operator Cockpit</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/live.css">
+  <script type="module" src="/live.js"></script>
+</head>
+<body>
+<header class="cockpit-bar">
+  <div class="brand">
+    <span class="dot" id="live-dot"></span>
+    <strong>FSS LIVE COCKPIT</strong>
+    <span id="site-label" class="chip">connecting</span>
+    <span id="mode-badge" class="chip">READ-ONLY</span>
+  </div>
+  <div class="meta">
+    <span id="anchor-badge" class="mono">anchor —</span>
+    <span id="latency-badge" class="mono">sse —</span>
+    <a class="nav-btn" href="/evidence">Evidence</a>
+    <a class="nav-btn" href="/spatial">Spatial</a>
+  </div>
+</header>
+<main class="cockpit-grid">
+  <section class="pane" id="pane-cameras">
+    <h2>1. Camera Mesh Health</h2>
+    <div id="cameras-body" class="pane-body">Loading camera mesh…</div>
+  </section>
+  <section class="pane" id="pane-situation">
+    <h2>2. Active Situation &amp; Attention Frontier</h2>
+    <div id="situation-body" class="pane-body">Loading situation…</div>
+  </section>
+  <section class="pane" id="pane-events">
+    <h2>3. Corroborated Events &amp; Milliban Fusion</h2>
+    <div id="events-body" class="pane-body">Loading events…</div>
+  </section>
+  <section class="pane" id="pane-obligations">
+    <h2>4. Active Obligations, Effects &amp; Legal Holds</h2>
+    <div id="obligations-body" class="pane-body">Loading obligations…</div>
+  </section>
+  <section class="pane" id="pane-storage">
+    <h2>5. Storage Ring Capacity &amp; Compaction Telemetry</h2>
+    <div id="storage-body" class="pane-body">Loading storage ring…</div>
+  </section>
+  <section class="pane" id="pane-agent">
+    <h2>6. Agent Activity Log &amp; Preview → Approve Workflows</h2>
+    <div id="agent-body" class="pane-body">Waiting for live deltas…</div>
+  </section>
+</main>
+</body>
+</html>

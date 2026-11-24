@@ -177,7 +177,7 @@ impl Options {
             "--reduced-rtcp",
         ];
         let mut values = BTreeMap::new();
-        for pair in args.chunks_exact(2) {
+        for pair in args.as_chunks::<2>().0 {
             let k = pair[0].to_str().ok_or("UTF-8 JPEG option required")?;
             let v = pair[1].to_str().ok_or("UTF-8 JPEG value required")?;
             if !allowed.contains(&k)
@@ -332,10 +332,10 @@ impl Options {
             .map_err(|_| "source archive configuration refused")?;
         let root = path(required("--root")?)?;
         let authentication = AuthPlan::parse(&values, path)?;
-        if let Some(auth) = &authentication {
-            if root.starts_with(&auth.credential_file) || auth.credential_file.starts_with(&root) {
-                return Err("credentials and source store must be separate");
-            }
+        if let Some(auth) = &authentication
+            && (root.starts_with(&auth.credential_file) || auth.credential_file.starts_with(&root))
+        {
+            return Err("credentials and source store must be separate");
         }
         let replay_keys = [
             "--prefix-head",

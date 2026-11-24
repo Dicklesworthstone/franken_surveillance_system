@@ -8,8 +8,8 @@ pub use crate::fusion_json::unique_source_step_json;
 use fss_core::{CanonicalEncoder, ContentDigest};
 use fss_fusion::{
     Calibration, EProcessConfig, EProcessStepOutcome, FusionError, FusionOutcome, FusionQuery,
-    MAX_EVIDENCE, Observability, RegimeResetReason, SequentialEProcess,
-    UniqueSourceEProcess, UniqueSourceError, UniqueSourceStepOutcome,
+    MAX_EVIDENCE, Observability, RegimeResetReason, SequentialEProcess, UniqueSourceEProcess,
+    UniqueSourceError, UniqueSourceStepOutcome,
 };
 
 use super::{

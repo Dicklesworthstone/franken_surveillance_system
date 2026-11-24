@@ -1,9 +1,9 @@
 #![forbid(unsafe_code)]
+//! Cold process inspection of real journaled multipart ownership, with no provider adapter.
 #![cfg(all(
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
-//! Cold process inspection of real journaled multipart ownership, with no provider adapter.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;

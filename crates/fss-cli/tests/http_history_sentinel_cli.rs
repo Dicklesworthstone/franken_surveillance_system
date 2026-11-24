@@ -211,8 +211,7 @@ fn capture(directory: &Directory) -> Test<(PathBuf, String, String)> {
     server.join().map_err(|_| "capture fixture panicked")??;
     let row = text
         .lines()
-        .filter(|r| r.contains("\"kind\":\"history_durable\""))
-        .next_back()
+        .rfind(|r| r.contains("\"kind\":\"history_durable\""))
         .ok_or("durable history pin")?;
     let pin = row
         .split_once("\"history_pin\":{")

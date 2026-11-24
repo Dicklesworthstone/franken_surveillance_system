@@ -425,7 +425,7 @@ fn compute_world_forecast(
     };
     let track_options = TrackOptions {
         projection: ProjectionOptions::default(),
-        max_gap_ns: query.horizon_ns.max(30_000_000_000).min(3_600_000_000_000),
+        max_gap_ns: query.horizon_ns.clamp(30_000_000_000, 3_600_000_000_000),
         max_modes: 64,
         receipt_capacity: 256,
     };
@@ -502,8 +502,8 @@ fn compute_handoff_forecast(
         return Ok(None);
     };
     let masses = HeadingMassPolicy::default();
-    let mut route_storage: Vec<(u64, Vec<[f64; 3]>, f64, RouteSurface, u32, bool, RouteEnd)> =
-        Vec::new();
+    type RouteStorageRow = (u64, Vec<[f64; 3]>, f64, RouteSurface, u32, bool, RouteEnd);
+    let mut route_storage: Vec<RouteStorageRow> = Vec::new();
     for route in &frontier.routes {
         let RouteOutcome::Found(path) = &route.search.outcome else {
             continue;

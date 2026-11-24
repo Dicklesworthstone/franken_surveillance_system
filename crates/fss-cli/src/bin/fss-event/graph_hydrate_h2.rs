@@ -17,7 +17,9 @@ use fss_cli::{ERR_CLI_MALFORMED_VALUE, ERR_CLI_RUNTIME_FAILURE, ExitIdentity};
 use fss_core::hydration::{DecisionArtifactKind, H2_SCHEMA};
 use fss_core::{AgentView, ContentDigest, DigestAlgorithm, EventId, PrincipalId, TimestampNs};
 use fss_reference::agent_event_hydration::build_event_h2_graph_neighborhood;
-use fss_reference::agent_orient::{OrientLimits, OrientRequest, orient_deployment, read_deployment};
+use fss_reference::agent_orient::{
+    OrientLimits, OrientRequest, orient_deployment, read_deployment,
+};
 
 type Run<T> = Result<T, Box<dyn Error>>;
 
@@ -90,8 +92,8 @@ fn parse(args: &[OsString]) -> Result<HydrateH2Options, String> {
             v.to_str().ok_or("--principal requires UTF-8")
         })?;
     let principal = PrincipalId::parse(principal_raw).map_err(|_| "invalid principal ID")?;
-    let event_id = EventId::parse(req_text(&values, "--event-id")?)
-        .map_err(|_| "invalid --event-id")?;
+    let event_id =
+        EventId::parse(req_text(&values, "--event-id")?).map_err(|_| "invalid --event-id")?;
     let revision_digest = ContentDigest::parse(req_text(&values, "--revision-digest")?)
         .map_err(|_| "invalid --revision-digest")?;
     if revision_digest.algorithm() != DigestAlgorithm::Sha256 || revision_digest.bytes() == [0; 32]
@@ -171,7 +173,10 @@ fn run(options: HydrateH2Options) -> Run<String> {
         ("content_type", string(artifact.content_type())),
         ("handle_id", string(artifact.handle_id())),
         ("subject_id", string(artifact.subject_id())),
-        ("subject_digest", string(&artifact.subject_digest().to_text())),
+        (
+            "subject_digest",
+            string(&artifact.subject_digest().to_text()),
+        ),
         (
             "artifact_digest",
             string(&artifact.artifact_digest().to_text()),
@@ -195,10 +200,7 @@ fn run(options: HydrateH2Options) -> Run<String> {
             artifact.is_authorized_and_redacted().to_string(),
         ),
         ("anchor", evidence_anchor(artifact.anchor())),
-        (
-            "center_entity_id",
-            string(neighborhood.center_entity_id()),
-        ),
+        ("center_entity_id", string(neighborhood.center_entity_id())),
         ("radius_hops", neighborhood.radius_hops().to_string()),
         ("node_count", neighborhood.node_count().to_string()),
         ("edge_count", neighborhood.edge_count().to_string()),
@@ -278,8 +280,8 @@ mod tests {
     }
 
     #[test]
-    fn hydrate_h2_emits_verified_redacted_graph_neighborhood_and_refuses_wrong_revision()
-    -> Run<()> {
+    fn hydrate_h2_emits_verified_redacted_graph_neighborhood_and_refuses_wrong_revision() -> Run<()>
+    {
         let dir = TempDir::new("e2e")?;
         let root = dir.0.join("deployment");
         let authority = ContextAuthority::new_root(RootAuthoritySpec {
@@ -358,12 +360,18 @@ mod tests {
         ];
         let options = parse(&argv).map_err(|e| format!("parse failed: {e}"))?;
         let json = run(options)?;
-        assert!(json.contains("\"schema\":\"fss.h2_decision_artifact.v1\""), "{json}");
+        assert!(
+            json.contains("\"schema\":\"fss.h2_decision_artifact.v1\""),
+            "{json}"
+        );
         assert!(json.contains("\"level\":\"H2\""), "{json}");
         assert!(json.contains("\"authorized_and_redacted\":true"), "{json}");
         assert!(json.contains("\"raw_media_disclosed\":false"), "{json}");
         assert!(json.contains("\"effect_authority\":false"), "{json}");
-        assert!(json.contains("\"center_entity_id\":\"event:h2-cli-1\""), "{json}");
+        assert!(
+            json.contains("\"center_entity_id\":\"event:h2-cli-1\""),
+            "{json}"
+        );
 
         let wrong_rev: Vec<OsString> = vec![
             "hydrate-h2".into(),

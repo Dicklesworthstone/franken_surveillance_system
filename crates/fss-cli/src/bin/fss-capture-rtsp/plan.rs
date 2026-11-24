@@ -62,6 +62,10 @@ hevc-exact-selected-payload:owner-vps-sps-pps:real-boundary-source-witness:v2";
 const GET_PARAMETER_POLICY: &str = "fss.rtsp_keepalive.v1:empty-get-parameter:no-method-fallback";
 const SSRC_AUTO_POLICY: &str =
     "fss.rtsp_ssrc_selection.v1:setup-or-valid-selected-rtp:learn-once:no-rebind";
+const INBAND_PARAMETER_SETS_POLICY: &str =
+    "fss.rtsp_inband_parameter_sets.v1:bounded-rtp-preroll:explicit-origin";
+const COMPANION_TRACKS_POLICY: &str =
+    "fss.rtsp_companion_tracks.v1:audio-setup-drain:no-audio-custody";
 pub(super) const HELP: &str = "fss-capture-rtsp --root NEW_ABSOLUTE_ARCHIVE --pins NEW_ABSOLUTE_PIN_JOURNAL\n\
   --peer IP:PORT --authority HOST[:PORT] --presentation /PATH --control-root /PATH\n\
   --sensor-id ID --stream-id ID --generation N --ingress N --ssrc N|auto\n\
@@ -132,6 +136,8 @@ Each is 3..=2048 exact NAL bytes without Annex-B prefixes; plan validation is pu
 There is no codec fallback. HEVC retains real picture-boundary lookahead as source-only\n\
 evidence; neither an RTP marker nor EOF can certify the last picture complete.\n\
 Track/channel: --media-index 0 --rtp-channel 0\n\
+Optional interoperability: --allow-inband-parameter-sets yes|no (default no)\n\
+                           --setup-companion-tracks yes|no (default no, AVC only)\n\
 Audit label: --principal principal:local-operator (not authentication)\n\
 Run limits: --timeout-ms 30000 --drain-timeout-ms 10000 --max-steps 100000\n\
             --max-report-bytes 8388608 --max-source-bytes 67108864 --max-io-calls 1000000\n\
@@ -172,6 +178,8 @@ pub(super) struct Options {
     pub(super) max_reorder_pictures: u8,
     pub(super) source_duration_limit: Option<u32>,
     pub(super) keepalive: ClientCommand,
+    pub(super) allow_inband_parameter_sets: bool,
+    pub(super) setup_companion_tracks: bool,
     pub(super) time_scale: u32,
     pub(super) timeout_ns: u64,
     pub(super) drain_timeout_ns: u64,
@@ -358,6 +366,8 @@ impl Options {
             "--source-duration-max-ticks",
             "--source-no-reorder",
             "--keepalive-method",
+            "--allow-inband-parameter-sets",
+            "--setup-companion-tracks",
             "--replay-start",
             "--replay-end",
             "--stop-after-pictures",
@@ -431,6 +441,24 @@ impl Options {
             "options" => ClientCommand::KeepAlive,
             "get-parameter" => ClientCommand::KeepAliveGetParameter,
             _ => return Err("keepalive method must be options or get-parameter"),
+        };
+        let allow_inband_parameter_sets = match values
+            .get("--allow-inband-parameter-sets")
+            .copied()
+            .unwrap_or("no")
+        {
+            "yes" => true,
+            "no" => false,
+            _ => return Err("allow-inband-parameter-sets must be yes or no"),
+        };
+        let setup_companion_tracks = match values
+            .get("--setup-companion-tracks")
+            .copied()
+            .unwrap_or("no")
+        {
+            "yes" => true,
+            "no" => false,
+            _ => return Err("setup-companion-tracks must be yes or no"),
         };
         let root = absolute_path(required("--root")?)?;
         let pins = absolute_path(required("--pins")?)?;
@@ -522,6 +550,14 @@ impl Options {
             values.get("--hevc-sps").copied(),
             values.get("--hevc-pps").copied(),
         )?;
+        if setup_companion_tracks && is_hevc {
+            return Err("setup-companion-tracks requires --codec avc");
+        }
+        if allow_inband_parameter_sets && supplied.is_some() {
+            return Err(
+                "allow-inband-parameter-sets cannot be combined with explicit --hevc-vps/sps/pps",
+            );
+        }
         let payload_type = number("--payload-type", 96, 0, 127)? as u8;
         if is_hevc {
             RtspClientSession::with_codec(protocol.clone(), ClientCodec::H265)
@@ -643,6 +679,9 @@ impl Options {
         if let Some(parameters) = &supplied {
             parameters.encode(&mut clock);
         }
+        if allow_inband_parameter_sets {
+            clock.text(INBAND_PARAMETER_SETS_POLICY);
+        }
         let clock_bytes = clock
             .finish_checked()
             .map_err(|_| "timing encoding refused")?;
@@ -659,6 +698,9 @@ impl Options {
         )?;
         if source_duration_limit.is_some() && replay.is_some() {
             return Err("source lookahead is not admitted for recorder replay");
+        }
+        if setup_companion_tracks && replay.is_some() {
+            return Err("setup-companion-tracks is not admitted for recorder replay");
         }
         // Historical request identity is part of archive media-clock provenance.
         // It never replaces the authority anchor or local packet receive clock.
@@ -763,6 +805,8 @@ impl Options {
             max_reorder_pictures,
             source_duration_limit,
             keepalive,
+            allow_inband_parameter_sets,
+            setup_companion_tracks,
             time_scale,
             timeout_ns,
             drain_timeout_ns,
@@ -872,6 +916,14 @@ impl Options {
         if let Some(request) = &self.replay {
             policy.push(':');
             policy.push_str(replay::policy(request));
+        }
+        if self.allow_inband_parameter_sets {
+            policy.push(':');
+            policy.push_str(INBAND_PARAMETER_SETS_POLICY);
+        }
+        if self.setup_companion_tracks {
+            policy.push(':');
+            policy.push_str(COMPANION_TRACKS_POLICY);
         }
         policy
     }
@@ -1020,6 +1072,22 @@ impl Options {
                 ),
             ]);
         }
+        if self.allow_inband_parameter_sets {
+            numbers.extend([
+                (
+                    "inband_sync_max_packets",
+                    fss_reference::rtsp::client::inband::DEFAULT_INBAND_MAX_PACKETS as u64,
+                ),
+                (
+                    "inband_sync_max_bytes",
+                    fss_reference::rtsp::client::inband::DEFAULT_INBAND_MAX_BYTES as u64,
+                ),
+                (
+                    "inband_sync_max_duration_ns",
+                    fss_reference::rtsp::client::inband::DEFAULT_INBAND_MAX_DURATION_NS,
+                ),
+            ]);
+        }
         if self.binding.ssrc_policy() == SsrcPolicy::LearnOnce {
             // Unobserved is not the valid numeric SSRC zero.
             numbers.retain(|(name, _)| *name != "ssrc");
@@ -1095,6 +1163,12 @@ impl Options {
         if let Some(request) = &self.replay {
             e.text(replay::policy(request));
             e.digest(request.digest());
+        }
+        if self.allow_inband_parameter_sets {
+            e.text(INBAND_PARAMETER_SETS_POLICY);
+        }
+        if self.setup_companion_tracks {
+            e.text(COMPANION_TRACKS_POLICY);
         }
         let bytes = e
             .finish_checked()
@@ -1224,6 +1298,12 @@ impl Options {
                 string("learn_once_from_setup_or_selected_rtp"),
             ));
             fields.push(("ssrc_state", string("unknown_until_session_observation")));
+        }
+        if self.allow_inband_parameter_sets {
+            fields.push(("inband_parameter_sets", string("bounded_rtp_preroll")));
+        }
+        if self.setup_companion_tracks {
+            fields.push(("companion_tracks", string("audio_setup_drain")));
         }
         Ok(object(&fields))
     }

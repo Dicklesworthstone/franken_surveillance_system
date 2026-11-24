@@ -124,8 +124,6 @@ fn parse_rate(values: &Values) -> ParseResult<PlaybackRate> {
         part.parse::<u32>()
             .map_err(|_| malformed("output rate component exceeds limit"))
     };
-    Ok(
-        PlaybackRate::new(integer(numerator)?, integer(denominator)?)
-            .map_err(|_| malformed("output rate components must be in 1..1000000"))?,
-    )
+    PlaybackRate::new(integer(numerator)?, integer(denominator)?)
+        .map_err(|_| malformed("output rate components must be in 1..1000000"))
 }

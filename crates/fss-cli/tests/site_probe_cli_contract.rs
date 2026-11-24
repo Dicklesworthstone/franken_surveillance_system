@@ -375,10 +375,13 @@ impl Codec {
             Self::Hevc => HEVC_DESCRIPTION,
             Self::Jpeg => JPEG_DESCRIPTION,
         };
+        assert!(
+            response.contains("\r\n\r\n"),
+            "checked-in DESCRIBE contains an SDP body"
+        );
         response
             .split_once("\r\n\r\n")
-            .expect("checked-in DESCRIBE contains an SDP body")
-            .1
+            .map_or("", |(_, body)| body)
             .to_owned()
     }
     fn parameter_digests(self) -> Test<Vec<ContentDigest>> {
@@ -544,6 +547,10 @@ fn signed_request(request: &Request, count: u32) -> Test {
     Ok(())
 }
 
+#[allow(
+    dead_code,
+    reason = "Private-file auth variants are exercised on Linux targets"
+)]
 #[derive(Clone, Debug)]
 enum Behavior {
     Complete,
@@ -618,8 +625,10 @@ fn media(codec: Codec, behavior: &Behavior) -> Test<Vec<u8>> {
     }
     if matches!(behavior, Behavior::EofBeforeTarget) {
         packets.retain(|packet| {
-            let timestamp =
-                u32::from_be_bytes(packet[4..8].try_into().expect("validated RTP header"));
+            let Ok(ts_bytes): Result<[u8; 4], _> = packet[4..8].try_into() else {
+                return false;
+            };
+            let timestamp = u32::from_be_bytes(ts_bytes);
             timestamp == FIRST_TIMESTAMP || timestamp == FIRST_TIMESTAMP.wrapping_add(FRAME_TICKS)
         });
     }

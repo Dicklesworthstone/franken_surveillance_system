@@ -149,11 +149,17 @@ fn cold_epoch(
     let preview = parse(&good(run("import", &input)?)?)?;
     assert!(!root.exists(), "import preview created destination custody");
     assert_eq!(text(&preview, "selection")?, "complete_catalog_page");
-    input.extend(["--approve".into(), text(&preview, "approval_digest")?.into()]);
+    input.extend([
+        "--approve".into(),
+        text(&preview, "approval_digest")?.into(),
+    ]);
     let imported = parse(&good(run("import", &input)?)?)?;
     assert_eq!(integer(&imported, "frames")?, frames);
     assert_eq!(text(&imported, "capture_time_label")?, "unknown");
-    assert!(boolean(&imported, "destination_contains_original_recording")?);
+    assert!(boolean(
+        &imported,
+        "destination_contains_original_recording"
+    )?);
     assert!(boolean(&imported, "destination_contains_complete_catalog")?);
     let identity = text(&imported, "import_identity")?.to_owned();
     ContentDigest::parse(&identity)?;
@@ -182,7 +188,10 @@ fn cold_epoch(
     verify.extend(common.iter().cloned());
     let verified = good(run("file", &verify)?)?;
     assert!(verified.contains("media_format=mp4avc"), "{verified}");
-    assert!(verified.contains("capture_time_class=unknown"), "{verified}");
+    assert!(
+        verified.contains("capture_time_class=unknown"),
+        "{verified}"
+    );
     assert!(verified.contains("absence_certifiable=false"), "{verified}");
     let mut decode = vec![OsString::from("decode")];
     decode.extend(common);
@@ -239,7 +248,10 @@ fn campaign_preview_and_stale_legacy_approval_have_no_effects() -> Test {
             .ok_or("campaign option")?;
         legacy.drain(offset..offset + 2);
         let legacy_preview = campaign_preview(&legacy)?;
-        assert_ne!(text(&preview, "approval")?, text(&legacy_preview, "approval")?);
+        assert_ne!(
+            text(&preview, "approval")?,
+            text(&legacy_preview, "approval")?
+        );
         for wrong in [
             text(&legacy_preview, "approval")?,
             text(&children[0], "approval")?,

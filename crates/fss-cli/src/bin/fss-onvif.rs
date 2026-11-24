@@ -12,10 +12,10 @@ mod driver;
 mod handoff;
 #[path = "fss-onvif/plan.rs"]
 mod plan;
-#[path = "fss-onvif/recorder.rs"]
-mod recorder;
 #[path = "fss-onvif/private_file.rs"]
 mod private_file;
+#[path = "fss-onvif/recorder.rs"]
+mod recorder;
 #[path = "fss-onvif/runtime.rs"]
 mod runtime;
 

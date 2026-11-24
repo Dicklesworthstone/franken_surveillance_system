@@ -175,7 +175,7 @@ fn auth_server(listener: TcpListener, scenario: Scenario, credential: PathBuf) -
                 thread::sleep(Duration::from_millis(2))
             }
             Err(error) => {
-                return Err(format!("fixture accepted no connection in 10s: {error}").into())
+                return Err(format!("fixture accepted no connection in 10s: {error}").into());
             }
         }
     };

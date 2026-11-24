@@ -44,10 +44,10 @@ fn invoke(query: &str, options: &[&str]) -> Test<Output> {
         .spawn()?;
     if let Some(mut input) = child.stdin.take() {
         // Argument refusal can exit before consuming stdin. Preserve that real-process refusal.
-        if let Err(error) = input.write_all(query.as_bytes()) {
-            if error.kind() != std::io::ErrorKind::BrokenPipe {
-                return Err(error.into());
-            }
+        if let Err(error) = input.write_all(query.as_bytes())
+            && error.kind() != std::io::ErrorKind::BrokenPipe
+        {
+            return Err(error.into());
         }
     }
     Ok(child.wait_with_output()?)

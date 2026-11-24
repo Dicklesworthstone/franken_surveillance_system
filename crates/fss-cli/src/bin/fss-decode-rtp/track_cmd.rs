@@ -77,7 +77,10 @@ pub(super) fn dispatch(args: &[OsString]) -> Option<ExitCode> {
             match result {
                 Ok(()) => ExitCode::from(ExitIdentity::SUCCESS.code),
                 Err(error) => {
-                    let _ = writeln!(out, "tracking_complete=false\ntracking_report_complete=false");
+                    let _ = writeln!(
+                        out,
+                        "tracking_complete=false\ntracking_report_complete=false"
+                    );
                     eprintln!("{ERR_CLI_RUNTIME_FAILURE}: {error}");
                     ExitCode::from(ExitIdentity::RUNTIME_FAILURE.code)
                 }
@@ -127,10 +130,13 @@ fn parse_native(args: &[OsString]) -> ParseResult<TrackOptions> {
         }
         at += 2;
     }
-    let base = super::parse(&native)?
-        .ok_or((ERR_CLI_MISSING_VALUE, "native decode options required"))?;
+    let base =
+        super::parse(&native)?.ok_or((ERR_CLI_MISSING_VALUE, "native decode options required"))?;
     if base.custody_read_bytes.is_none() {
-        return Err((ERR_CLI_MALFORMED_VALUE, "tracking requires --custody current"));
+        return Err((
+            ERR_CLI_MALFORMED_VALUE,
+            "tracking requires --custody current",
+        ));
     }
     if base.output.is_some() {
         return Err((ERR_CLI_UNKNOWN_OPTION, "tracking does not export pixels"));
@@ -147,7 +153,10 @@ fn parse_native(args: &[OsString]) -> ParseResult<TrackOptions> {
     let minimum_score_ppm = if values.contains_key("--minimum-score-ppm") {
         let score = super::number(&values, "--minimum-score-ppm", 0_u32)?;
         if score > 1_000_000 {
-            return Err((ERR_CLI_MALFORMED_VALUE, "minimum score must be 0..1000000 ppm"));
+            return Err((
+                ERR_CLI_MALFORMED_VALUE,
+                "minimum score must be 0..1000000 ppm",
+            ));
         }
         Some(score)
     } else {
@@ -155,7 +164,10 @@ fn parse_native(args: &[OsString]) -> ParseResult<TrackOptions> {
     };
     let iou_ppm = super::number(&values, "--track-iou-ppm", 100_000_u32)?;
     if iou_ppm > 1_000_000 {
-        return Err((ERR_CLI_MALFORMED_VALUE, "tracking IoU must be 0..1000000 ppm"));
+        return Err((
+            ERR_CLI_MALFORMED_VALUE,
+            "tracking IoU must be 0..1000000 ppm",
+        ));
     }
     let tracker = TrackerConfig {
         min_hits: super::number(&values, "--track-min-hits", 2_u32)?,
@@ -170,11 +182,17 @@ fn parse_native(args: &[OsString]) -> ParseResult<TrackOptions> {
     let max_track_frames =
         super::number(&values, "--max-track-frames", base.decode.decode.max_groups)?;
     if !(1..=1024).contains(&max_track_frames) {
-        return Err((ERR_CLI_MALFORMED_VALUE, "tracking frame ceiling must be 1..1024"));
+        return Err((
+            ERR_CLI_MALFORMED_VALUE,
+            "tracking frame ceiling must be 1..1024",
+        ));
     }
     let max_report_bytes = super::number(&values, "--max-report-bytes", 32 * 1024 * 1024)?;
     if !(1..=MAX_REPORT_BYTES).contains(&max_report_bytes) {
-        return Err((ERR_CLI_MALFORMED_VALUE, "tracking report allowance exceeds profile"));
+        return Err((
+            ERR_CLI_MALFORMED_VALUE,
+            "tracking report allowance exceeds profile",
+        ));
     }
     Ok(TrackOptions {
         base,
@@ -198,7 +216,10 @@ fn execute(
     cx: &ReplayCx,
     out: &mut impl Write,
 ) -> Result<()> {
-    let report = settings.report.as_deref().ok_or_else(|| failure("report output required"))?;
+    let report = settings
+        .report
+        .as_deref()
+        .ok_or_else(|| failure("report output required"))?;
     let destination = PrivateOutputPath::prepare(report, root, cx)?;
     let scalar = ScalarExecCx::new();
     let result = execute_inner(base, settings, root, cx, &scalar, &destination, out);
@@ -216,13 +237,7 @@ fn execute_inner(
     out: &mut impl Write,
 ) -> Result<()> {
     let bytes = read_package(&settings.package)?;
-    let package = RgbDetectorPackage::load(
-        &bytes,
-        settings.package_digest,
-        1 << 36,
-        cx,
-        scalar,
-    )?;
+    let package = RgbDetectorPackage::load(&bytes, settings.package_digest, 1 << 36, cx, scalar)?;
     let label = package
         .spec()
         .labels
@@ -268,7 +283,9 @@ fn execute_inner(
                             .detections()
                             .detections()
                             .get(observation.detection_index)
-                            .ok_or_else(|| failure("tracking observation references missing detection"))?;
+                            .ok_or_else(|| {
+                                failure("tracking observation references missing detection")
+                            })?;
                         let [x1, y1, x2, y2] = detection.bounds();
                         let row = format!(
                             concat!(
@@ -302,7 +319,9 @@ fn execute_inner(
                 }
                 RtpTrackingStep::Ended(stats) => {
                     if !stats.complete() {
-                        return Err(failure("RTP tracking ended with incomplete source or analysis"));
+                        return Err(failure(
+                            "RTP tracking ended with incomplete source or analysis",
+                        ));
                     }
                     break;
                 }
@@ -353,8 +372,10 @@ fn tracking_request(
         ..RtpCustodyDecodeLimits::default()
     };
     detection.minimum_score_ppm = settings.minimum_score_ppm;
-    let mut limits = RtpTrackingLimits::default();
-    limits.max_frames = settings.max_track_frames;
+    let limits = RtpTrackingLimits {
+        max_frames: settings.max_track_frames,
+        ..RtpTrackingLimits::default()
+    };
     Ok(RtpTrackingRequest {
         detection,
         class_index: settings.class_index,
@@ -503,7 +524,9 @@ impl<W: Write> ReportWriter<W> {
                         interruptions = 0;
                     }
                     Ok(_) => return Err(io::Error::other("writer exceeded supplied slice")),
-                    Err(error) if error.kind() == io::ErrorKind::Interrupted && interruptions < 7 => {
+                    Err(error)
+                        if error.kind() == io::ErrorKind::Interrupted && interruptions < 7 =>
+                    {
                         interruptions += 1;
                     }
                     Err(error) => return Err(error),
@@ -523,16 +546,22 @@ mod tests {
     use super::*;
 
     fn args(extra: &[&str]) -> Vec<OsString> {
-        let mut out: Vec<OsString> =
-            ["track", "--root", "unused", "--site", "site:track", "--source-root"]
-                .into_iter()
-                .map(OsString::from)
-                .collect();
+        let mut out: Vec<OsString> = [
+            "track",
+            "--root",
+            "unused",
+            "--site",
+            "site:track",
+            "--source-root",
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .collect();
         out.push(ContentDigest::sha256(b"root").to_string().into());
         out.extend(extra.iter().map(|value| OsString::from(*value)));
         out
     }
-    fn valid<'a>(digest: &'a str) -> Vec<&'a str> {
+    fn valid(digest: &str) -> Vec<&str> {
         vec![
             "--custody",
             "current",
@@ -561,7 +590,9 @@ mod tests {
             "--report-out",
         ] {
             let filtered: Vec<_> = required
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .filter(|pair| pair[0] != key)
                 .flatten()
                 .copied()

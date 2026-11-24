@@ -235,17 +235,17 @@ fn source_epochs_are_independent_and_aggregate_limits_cover_all_sixteen_attempts
     set(&mut input, "--max-attempts", "16");
     let plan = ReconnectPlan::parse(&input)?;
     let sources = plan.sources.as_ref().ok_or(STATE)?;
-    for index in 0..16 {
+    for (index, attempt) in plan.attempts.iter().enumerate().take(16) {
         let source = sources.get(index)?;
         assert_eq!(source.scope.binding.key().generation, 7 + index as u64);
         assert_eq!(
             source.root,
             std::path::PathBuf::from(format!("/owner/source.attempt-{:04}", index + 1))
         );
-        assert_eq!(source.scope.binding, plan.attempts[index].binding());
+        assert_eq!(source.scope.binding, attempt.binding());
         assert_eq!(
             source.scope.receive_clock,
-            plan.attempts[index].recording_config().scope.receive_clock
+            attempt.recording_config().scope.receive_clock
         );
         assert_eq!(source.work, 1_000_000);
         for earlier in 0..index {

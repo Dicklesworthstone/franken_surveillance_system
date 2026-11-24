@@ -52,6 +52,10 @@ pub(super) struct DetectorOptions {
 
 impl DetectorOptions {
     /// Whether the request includes calibrated fusion, before any profile or package I/O.
+    #[allow(
+        dead_code,
+        reason = "Shared detector options module is included by watch and corroborate commands"
+    )]
     pub(super) const fn has_fusion(&self) -> bool {
         self.fusion.is_some()
     }

@@ -303,13 +303,11 @@ impl UtcFixture {
         let mut input = process.stdin.take().ok_or("MCP stdin")?;
         writeln!(
             input,
-            "{}",
-            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"UTC-contract","version":"1"}}}"#
+            "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{{}},\"clientInfo\":{{\"name\":\"UTC-contract\",\"version\":\"1\"}}}}}}"
         )?;
         writeln!(
             input,
-            "{}",
-            r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#
+            "{{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}}"
         )?;
         writeln!(input, "{request}")?;
         drop(input);

@@ -99,7 +99,7 @@ fn continuation_args(input: &[OsString], pin: &Value, retry: bool) -> Test<Vec<O
     set(
         &mut continued,
         "--continue-history-records",
-        &integer(pin, "records")?.to_string(),
+        integer(pin, "records")?.to_string(),
     );
     if retry {
         set(&mut continued, "--continue-retry-history", "yes");

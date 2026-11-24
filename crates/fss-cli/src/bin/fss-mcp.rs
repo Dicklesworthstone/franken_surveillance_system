@@ -48,7 +48,8 @@ mod transport;
 
 const HELP: &str = "fss-mcp --root EXISTING_DEPLOYMENT [--principal PRINCIPAL_ID] [--archive-root EXISTING_ARCHIVE]\n\
         [--allow-replay-source-verification] [--allow-qsr-source-verification]\n\
-        [--allow-tracks-source-verification]\n\
+        [--allow-tracks-source-verification] [--allow-visual-hydration]\n\
+        [--grant-capability CAPABILITY_ID]\n\
 MCP 2025-06-18 over newline-delimited JSON-RPC on stdin/stdout.\n\
 The operator fixes root, optional archive root and principal; clients cannot override them.\n\
 Catalog queries and archive recorder replay require the optional archive binding.\n\
@@ -63,10 +64,12 @@ They return matched observations with tentative/confirmed state and continuity b
 Report discovery returns retained metadata handles without a source-verification grant.\n\
 Localizations discovers retained recipes/receipts by sensor, stream, import and twin.\n\
 No source or archive payload read, pose replay or calibration adoption is implied.\n\
-Event evidence-hydration uses an existing session and exact current event revision/anchor.\n\
+Event evidence-hydration supports H0/H1 session-owned metadata plus capability-gated H2/H3.\n\
 H0 costs 5000 and H1 costs 16000 cumulative tokens; agent-journal charge/cursor writes\n\
 precede output. Use the full receipt.continuation JSON for H1; consumed cursors never replay.\n\
-No source-media grant is needed or admitted; H2/H3/H4 are unavailable.\n\
+H2 requires CAP-AGENT-HYDRATE-H2-001; H3 visual keyframe/crop hydration requires BOTH the\n\
+launcher-only --allow-visual-hydration flag AND CAP-AGENT-HYDRATE-H3-001, enforcing active\n\
+sensor privacy masks before cropping, downscaling, or JPEG encoding.\n\
 The principal is an audit label, not authentication. Session open/handoff/resume and explicit\n\
 durable follow, investigate and advisory feedback write agent state. Alert controls\n\
 use native exact approvals and durable receipts; inspect with wait after response loss.\n\
@@ -88,6 +91,8 @@ struct Options {
     allow_replay_source_verification: bool,
     allow_qsr_source_verification: bool,
     allow_tracks_source_verification: bool,
+    allow_visual_hydration: bool,
+    granted_capabilities: Vec<String>,
 }
 
 fn options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>, &'static str> {
@@ -108,6 +113,8 @@ fn options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>, 
     let mut allow_replay_source_verification = false;
     let mut allow_qsr_source_verification = false;
     let mut allow_tracks_source_verification = false;
+    let mut allow_visual_hydration = false;
+    let mut granted_capabilities: Vec<String> = Vec::new();
     let mut flag = Some(first);
     while let Some(current) = flag {
         if current == "--allow-replay-source-verification" {
@@ -131,6 +138,33 @@ fn options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>, 
                 return Err("duplicate tracks source-verification grant");
             }
             allow_tracks_source_verification = true;
+            flag = args.next();
+            continue;
+        }
+        if current == "--allow-visual-hydration" {
+            if allow_visual_hydration {
+                return Err("duplicate visual hydration grant");
+            }
+            allow_visual_hydration = true;
+            flag = args.next();
+            continue;
+        }
+        if current == "--grant-capability" {
+            let value = args.next().ok_or("missing capability value")?;
+            let text = value
+                .into_string()
+                .map_err(|_| "capability must be UTF-8")?;
+            if text.is_empty()
+                || text.len() > 128
+                || !text
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b':' | b'.'))
+                || granted_capabilities.contains(&text)
+                || granted_capabilities.len() >= 8
+            {
+                return Err("invalid, duplicate, or excessive capability grant");
+            }
+            granted_capabilities.push(text);
             flag = args.next();
             continue;
         }
@@ -172,6 +206,8 @@ fn options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>, 
         allow_replay_source_verification,
         allow_qsr_source_verification,
         allow_tracks_source_verification,
+        allow_visual_hydration,
+        granted_capabilities,
     }))
 }
 
@@ -183,6 +219,8 @@ fn main() -> ExitCode {
         allow_replay_source_verification,
         allow_qsr_source_verification,
         allow_tracks_source_verification,
+        allow_visual_hydration,
+        granted_capabilities,
     } = match options(std::env::args_os().skip(1)) {
         Ok(Some(options)) => options,
         Ok(None) => {
@@ -220,6 +258,12 @@ fn main() -> ExitCode {
     }
     if allow_tracks_source_verification {
         server = server.with_tracks_source_verification();
+    }
+    if allow_visual_hydration {
+        server = server.with_visual_hydration();
+    }
+    if !granted_capabilities.is_empty() {
+        server = server.with_granted_capabilities(granted_capabilities);
     }
     #[cfg(unix)]
     let result = transport::serve_stdio(&mut server);
@@ -290,6 +334,8 @@ mod tests {
                 allow_replay_source_verification: false,
                 allow_qsr_source_verification: false,
                 allow_tracks_source_verification: false,
+                allow_visual_hydration: false,
+                granted_capabilities: Vec::new(),
             }))
         );
         assert!(
@@ -451,6 +497,50 @@ mod tests {
             vec!["--root", "/owner/deployment", "--verify-qsr-source=yes"],
         ] {
             assert!(options(args.into_iter().map(OsString::from)).is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn visual_hydration_is_an_explicit_launcher_only_grant() -> Result<(), &'static str> {
+        let visual = options(
+            [
+                "--root",
+                "/owner/deployment",
+                "--allow-visual-hydration",
+                "--grant-capability",
+                "CAP-AGENT-HYDRATE-H3-001",
+            ]
+            .map(OsString::from),
+        )?
+        .ok_or("missing visual hydration launcher options")?;
+        assert!(visual.allow_visual_hydration);
+        assert_eq!(
+            visual.granted_capabilities,
+            vec!["CAP-AGENT-HYDRATE-H3-001".to_owned()]
+        );
+        assert!(!visual.allow_replay_source_verification);
+        for bad in [
+            vec![
+                "--root",
+                "/owner/deployment",
+                "--allow-visual-hydration",
+                "--allow-visual-hydration",
+            ],
+            vec![
+                "--root",
+                "/owner/deployment",
+                "--allow-visual-hydration=yes",
+            ],
+            vec!["--root", "/owner/deployment", "--grant-capability"],
+            vec![
+                "--root",
+                "/owner/deployment",
+                "--grant-capability",
+                "bad cap",
+            ],
+        ] {
+            assert!(options(bad.into_iter().map(OsString::from)).is_err());
         }
         Ok(())
     }

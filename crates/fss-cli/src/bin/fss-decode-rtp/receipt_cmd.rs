@@ -189,6 +189,7 @@ fn parse(args: &[OsString], mode: Mode) -> ParseResult<ReceiptOptions> {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute(
     base: &Options,
     mode: Mode,
@@ -368,7 +369,11 @@ impl Write for ReceiptWriter<'_> {
 }
 impl<'a> ReceiptWriter<'a> {
     pub(super) fn new(path: PrivateOutputPath, cx: &'a ReplayCx) -> Self {
-        Self { path, file: None, cx }
+        Self {
+            path,
+            file: None,
+            cx,
+        }
     }
     pub(super) fn finish(self) -> io::Result<()> {
         let file = self

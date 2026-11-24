@@ -8,9 +8,21 @@ use fss_codec_jpeg_encode::{
 };
 use fss_core::{ContentDigest, DigestAlgorithm, Sha256Hasher};
 
+#[allow(
+    dead_code,
+    reason = "Shared encoder constants are used across binary and test targets"
+)]
 pub(crate) const DEFAULT_OUTPUT_BYTES: u64 = 64 * 1024 * 1024;
 pub(crate) const MAX_OUTPUT_BYTES: u64 = 256 * 1024 * 1024;
+#[allow(
+    dead_code,
+    reason = "Shared encoder constants are used across binary and test targets"
+)]
 pub(crate) const DEFAULT_ENCODE_WORK_UNITS: u64 = 2_000_000_000;
+#[allow(
+    dead_code,
+    reason = "Shared encoder constants are used across binary and test targets"
+)]
 pub(crate) const DEFAULT_QUALITY: u8 = 85;
 pub(crate) const FRAME_RECEIPTS_DOMAIN: &str = "fss.file_mjpeg_frame_receipts.v1";
 const WRITE_CHUNK: usize = 4096;
@@ -20,6 +32,10 @@ fn refused(message: &'static str) -> io::Error {
 }
 
 /// A complete, ordered local derivation. This grants no custody or delivery authority.
+#[allow(
+    dead_code,
+    reason = "Shared receipt fields are selectively read by binary and test targets"
+)]
 pub(crate) struct StreamReceipt {
     pub bytes: u64,
     pub frames: usize,
@@ -118,8 +134,13 @@ impl<W: Write> Encoder<W> {
             .map_err(io::Error::other)?;
             check()?;
             let receipt = encoded.receipt();
-            if self.encoder.is_some_and(|identity| identity != receipt.encoder) {
-                return Err(refused("MJPEG encoder generation changed within the stream"));
+            if self
+                .encoder
+                .is_some_and(|identity| identity != receipt.encoder)
+            {
+                return Err(refused(
+                    "MJPEG encoder generation changed within the stream",
+                ));
             }
             if encoded.bytes().len() as u64 > remaining {
                 return Err(refused("MJPEG encoder exceeded reserved output allowance"));
@@ -207,7 +228,9 @@ impl<W: Write> Encoder<W> {
         check()?;
         // Reuse the identity already measured and sealed by the codec under the shared
         // work budget. Finalizing the stream performs no additional encoder-source hash.
-        let encoder = self.encoder.ok_or_else(|| refused("missing MJPEG encoder identity"))?;
+        let encoder = self
+            .encoder
+            .ok_or_else(|| refused("missing MJPEG encoder identity"))?;
         let mut writer = self
             .writer
             .take()

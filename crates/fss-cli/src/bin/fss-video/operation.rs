@@ -461,8 +461,8 @@ pub(crate) fn run(plan: &Plan, out: &mut impl Write) -> Result<()> {
         let mut budget = RecordedVideoDecodeBudget::new(plan.work);
         let mut derived = 0_usize;
         let mut decoded = 0_usize;
-        let skipped;
-        match plan.command {
+
+        let skipped = match plan.command {
             Command::Publish => {
                 let retained =
                     RetainedFileImport::open(&deployment, plan.identity, plan.source, &cx)?;
@@ -516,12 +516,12 @@ pub(crate) fn run(plan: &Plan, out: &mut impl Write) -> Result<()> {
                         reports.row("frame", frame_json(&published))?;
                     }
                 }
-                skipped = range.skipped().to_vec();
+                range.skipped().to_vec()
             }
             Command::Read | Command::Verify => {
                 return Err(fail("read operations require the immutable owner"));
             }
-        }
+        };
         gate.check()?;
         if let Some(index) = plan.output_index {
             reports.row(

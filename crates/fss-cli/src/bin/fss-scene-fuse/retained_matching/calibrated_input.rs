@@ -198,6 +198,7 @@ pub(super) fn parse_rig(bytes: &[u8]) -> Result<AdoptedRig> {
 }
 
 /// Existing exact query schemas and their established native binding/geometry policies.
+#[allow(clippy::large_enum_variant)]
 pub(super) enum MatchingQuery {
     Pair(shared::Query),
     Multi(multiview::input::Query),

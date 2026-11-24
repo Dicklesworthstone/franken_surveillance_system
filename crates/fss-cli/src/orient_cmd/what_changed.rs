@@ -90,13 +90,13 @@ fn field_rows(
     value: &Value,
     proof: &[String],
 ) -> Result<()> {
-    if let Value::Array(values) = value {
-        if !values.is_empty() {
-            for (index, value) in values.iter().enumerate() {
-                row(out, &format!("{path}:{index}"), value, proof)?;
-            }
-            return Ok(());
+    if let Value::Array(values) = value
+        && !values.is_empty()
+    {
+        for (index, value) in values.iter().enumerate() {
+            row(out, &format!("{path}:{index}"), value, proof)?;
         }
+        return Ok(());
     }
     row(out, path, value, proof)
 }

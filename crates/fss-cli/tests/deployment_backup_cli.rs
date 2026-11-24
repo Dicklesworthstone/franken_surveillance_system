@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 #![cfg(all(
-    target_os = "linux",
+    any(target_os = "linux", target_os = "macos"),
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
 //! Real-process recovery of committed evidence, with explicit custody and an independent pin.

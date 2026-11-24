@@ -412,8 +412,8 @@ fn immutable_matroska_selection_coexists_with_writer_and_counts_final_read_allow
 }
 
 #[test]
-fn matroska_selection_refuses_wrong_site_missing_root_source_loss_and_torn_history_atomically() -> Test
-{
+fn matroska_selection_refuses_wrong_site_missing_root_source_loss_and_torn_history_atomically()
+-> Test {
     let directory = Directory::new()?;
     let (root, identity) = imported_without_external_source(&directory)?;
     let (cx, writer) = open_writer(&root)?;
@@ -483,7 +483,10 @@ fn matroska_arguments_require_presentation_nanoseconds_and_bounded_selection() -
     let valid = selection(&identity);
     assert!(matches!(
         parse(&arguments(root, "select-matroska", &valid)),
-        Ok(Some(crate::Options { action: Action::Matroska(_), .. }))
+        Ok(Some(crate::Options {
+            action: Action::Matroska(_),
+            ..
+        }))
     ));
     for (key, value) in [
         ("--selection-work-units", "0"),
@@ -498,14 +501,20 @@ fn matroska_arguments_require_presentation_nanoseconds_and_bounded_selection() -
         assert!(parse(&arguments(root, "select-matroska", &extra)).is_err());
     }
     assert!(parse(&arguments(root, "select-movie", &valid)).is_err());
-    assert!(parse(&arguments(
-        root,
-        "select-matroska",
-        &text_args(&[
-            "--import-id", &identity,
-            "--start-presentation-ns", "100",
-            "--end-presentation-ns", "100",
-        ]),
-    )).is_err());
+    assert!(
+        parse(&arguments(
+            root,
+            "select-matroska",
+            &text_args(&[
+                "--import-id",
+                &identity,
+                "--start-presentation-ns",
+                "100",
+                "--end-presentation-ns",
+                "100",
+            ]),
+        ))
+        .is_err()
+    );
     Ok(())
 }

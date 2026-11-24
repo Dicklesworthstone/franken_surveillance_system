@@ -1,10 +1,10 @@
 #![forbid(unsafe_code)]
 //! Real file ownership and refusal contracts for the native video streaming exporter.
 
-#[path = "../src/bin/fss-file/pgm_stream.rs"]
-mod pgm_stream;
 #[path = "../src/bin/fss-file/jpeg_stream.rs"]
 mod jpeg_stream;
+#[path = "../src/bin/fss-file/pgm_stream.rs"]
+mod pgm_stream;
 
 use fss_core::{BudgetVector, ContentDigest, ContextAuthority, OperationId, RootAuthoritySpec};
 use fss_reference::ReplayCx;
@@ -19,7 +19,8 @@ struct Directory(PathBuf);
 impl Directory {
     fn new() -> io::Result<Self> {
         for ordinal in 0..100 {
-            let path = std::env::temp_dir().join(format!("fss-pgm-stream-{}-{ordinal}", std::process::id()));
+            let path = std::env::temp_dir()
+                .join(format!("fss-pgm-stream-{}-{ordinal}", std::process::id()));
             match fs::create_dir(&path) {
                 Ok(()) => return Ok(Self(path)),
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
@@ -34,16 +35,27 @@ impl Directory {
             operation_id: OperationId::parse("operation:pgm-stream")?,
             principal: "principal:pgm-stream".into(),
             capabilities: vec!["ADP-REPLAY-001".into()],
-            deadline: None, priority: 10,
-            budgets: BudgetVector::builder().bytes(1024 * 1024).storage_operations(1000).build()?,
-            privacy_scope: "privacy:fixture".into(), retention_scope: "retention:fixture".into(),
-            anchor_universe: ContentDigest::sha256(b"pgm-stream fixture"), generation: 1,
+            deadline: None,
+            priority: 10,
+            budgets: BudgetVector::builder()
+                .bytes(1024 * 1024)
+                .storage_operations(1000)
+                .build()?,
+            privacy_scope: "privacy:fixture".into(),
+            retention_scope: "retention:fixture".into(),
+            anchor_universe: ContentDigest::sha256(b"pgm-stream fixture"),
+            generation: 1,
         })?;
-        Ok(ReplayCx::from_context_authority(&authority, self.0.join("deployment"))?)
+        Ok(ReplayCx::from_context_authority(
+            &authority,
+            self.0.join("deployment"),
+        )?)
     }
 }
 impl Drop for Directory {
-    fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
 }
 
 #[test]
@@ -51,7 +63,13 @@ fn export_is_lazy_private_and_byte_exact() -> Test {
     let directory = Directory::new()?;
     let cx = directory.context()?;
     let path = directory.0.join("frames.pgm");
-    let mut export = PgmExport::prepare(&path, &directory.0.join("deployment"), DEFAULT_OUTPUT_BYTES, 2, &cx)?;
+    let mut export = PgmExport::prepare(
+        &path,
+        &directory.0.join("deployment"),
+        DEFAULT_OUTPUT_BYTES,
+        2,
+        &cx,
+    )?;
     assert!(!path.exists());
     export.frame([1, 1], &[23], &cx)?;
     export.frame([1, 1], &[24], &cx)?;
@@ -147,7 +165,8 @@ fn mjpeg_runtime_adapter_is_lazy_private_cancellable_and_create_only() -> Test {
     let root = directory.0.join("deployment");
     let path = directory.0.join("frames.mjpeg");
     let input = || FrameInput {
-        dimensions: [8, 8], pixels: &[33; 64],
+        dimensions: [8, 8],
+        pixels: &[33; 64],
         luma_sha256: ContentDigest::sha256(&[33; 64]).bytes(),
         decode_receipt: ContentDigest::sha256(b"retained current-mask frame receipt"),
     };
@@ -169,22 +188,49 @@ fn mjpeg_runtime_adapter_is_lazy_private_cancellable_and_create_only() -> Test {
 
     let cx = directory.context()?;
     assert!(JpegExport::prepare(&path, &root, DEFAULT_OUTPUT_BYTES, 1, 85, &cx).is_err());
-    assert!(JpegExport::prepare(&root.join("forbidden"), &root, DEFAULT_OUTPUT_BYTES, 1, 85, &cx).is_err());
+    assert!(
+        JpegExport::prepare(
+            &root.join("forbidden"),
+            &root,
+            DEFAULT_OUTPUT_BYTES,
+            1,
+            85,
+            &cx
+        )
+        .is_err()
+    );
     let complete_path = directory.0.join("complete.mjpeg");
-    let mut complete = JpegExport::prepare(&complete_path, &root, DEFAULT_OUTPUT_BYTES, 1, 85, &cx)?;
+    let mut complete =
+        JpegExport::prepare(&complete_path, &root, DEFAULT_OUTPUT_BYTES, 1, 85, &cx)?;
     let mut budget = EncodeBudget::new(100_000_000);
     complete.frame(input(), &mut budget, &cx)?;
     let receipt = complete.finish(&cx)?;
-    assert_eq!(receipt.digest, ContentDigest::sha256(&fs::read(&complete_path)?));
+    assert_eq!(
+        receipt.digest,
+        ContentDigest::sha256(&fs::read(&complete_path)?)
+    );
     assert_eq!(receipt.frames, 1);
     assert_eq!(receipt.work_units, budget.used());
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        assert_eq!(fs::metadata(complete_path)?.permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            fs::metadata(complete_path)?.permissions().mode() & 0o777,
+            0o600
+        );
         let alias = directory.0.join("mjpeg-alias");
         std::os::unix::fs::symlink(&root, &alias)?;
-        assert!(JpegExport::prepare(&alias.join("forbidden"), &root, DEFAULT_OUTPUT_BYTES, 1, 85, &cx).is_err());
+        assert!(
+            JpegExport::prepare(
+                &alias.join("forbidden"),
+                &root,
+                DEFAULT_OUTPUT_BYTES,
+                1,
+                85,
+                &cx
+            )
+            .is_err()
+        );
     }
     cx.drain_and_finalize();
     Ok(())

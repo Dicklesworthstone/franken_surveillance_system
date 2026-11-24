@@ -10,6 +10,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use fss_cli::agent_json::{array, evidence_anchor, object, string};
+use fss_cli::unified::normalize::{
+    decode_hold_id_from_storage, encode_hold_id_for_storage, quote_cli_arg,
+};
 use fss_cli::{ERR_CLI_MALFORMED_VALUE, ERR_CLI_RUNTIME_FAILURE, ExitIdentity};
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{
@@ -23,36 +26,87 @@ use fss_reference::deletion::holds::{
 use fss_reference::deletion::inspection::{inspect_holds, inspection_limits};
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
-const HELP: &str = "fss-hold <place|release|retain|expire|list|due> --root DIR --site SITE [--principal ID]\n\
-  place/release: --hold-id ID --import-id sha256:HEX --reason TEXT [--approve sha256:HEX]\n\
-  retain: --hold-id ID --import-id sha256:HEX --reason TEXT --until-ns NS [--approve DIGEST]\n\
+const HELP: &str = "fss-hold <place|release|retain|expire|list|due> --root DIR --site SITE [--principal ID] [--json] [--help]\n\
+  place/release: --hold-id <prefix:id|id> --import-id sha256:HEX --reason TEXT [--approve sha256:HEX]\n\
+  retain: --hold-id <prefix:id|id> --import-id sha256:HEX --reason TEXT --until-ns NS [--approve DIGEST]\n\
   expire: same identity, --reason TEXT --until-ns NS --attested-now-ns EARLIEST:LATEST [--approve DIGEST]\n\
   due: --attested-now-ns EARLIEST:LATEST; read-only evaluation of every current hold.\n\
+  Hold IDs accept both canonical `prefix:id` (e.g. hold:front-door-001) and legacy [A-Za-z0-9_-].\n\
   List and due can run while ingest owns the deployment; neither repairs retained state.\n\
   Deadlines and time attestations are signed Unix nanoseconds. Earliest must reach the original\n\
   deadline before expiry can be approved; overlapping uncertainty refuses expiry. The supplied\n\
   bounds are an OWNER ASSERTION, not an authenticated clock. No media timestamp or system-clock\n\
   sample is silently substituted. Eligibility never releases a hold. Ordinary release cannot\n\
   bypass a deadline; expiry has a separate approval and never deletes bytes.\n\
-  Without --approve: preview the exact record and approval digest; no retention change.\n\
-  Rerun with that approval to commit. Any intervening authority change requires a new preview.\n\
-  Exact retries of the current request are idempotent. A release needs its own fresh approval.\n\
-  Holds preserve a retained import's current and future derivative closure, including shared\n\
-  evidence reached by another import's deletion. Holds never expire automatically; terminal IDs\n\
-  cannot be reused. Release and expiry never delete bytes. List includes terminal records.\n\
-  Requires an existing owner-authorized local deployment. The local process supplies retention\n\
-  capabilities; --principal is an audit identity, not remote authentication or privilege escalation.\n\
-  No new mutation is permitted during an incomplete deletion. No backup, remote-replica,\n\
-  filesystem-tamper protection, custody certification, or legal-compliance claim. Do not put\n\
-  secrets or media content in --reason. JSON describes reference semantics, not qualification.\n";
+  Without --approve: preview the exact record, top-level approval_digest, and approve_command;\n\
+  no retention change occurs. Rerun with that approval to commit. Any intervening authority\n\
+  change requires a new preview. Exact retries of the current request are idempotent. A release\n\
+  needs its own fresh approval. Holds preserve a retained import's current and future derivative\n\
+  closure, including shared evidence reached by another import's deletion. Holds never expire\n\
+  automatically; terminal IDs cannot be reused. Release and expiry never delete bytes. List\n\
+  includes terminal records. Requires an existing owner-authorized local deployment. The local\n\
+  process supplies retention capabilities; --principal is an audit identity, not remote\n\
+  authentication or privilege escalation. No new mutation is permitted during an incomplete\n\
+  deletion. No backup, remote-replica, filesystem-tamper protection, custody certification, or\n\
+  legal-compliance claim. Do not put secrets or media content in --reason. JSON describes\n\
+  reference semantics, not qualification.\n";
 
 type RunResult<T> = Result<T, Box<dyn Error>>;
 
+const ACTIONS: [&str; 6] = ["place", "release", "retain", "expire", "list", "due"];
+
+fn subcommand_help(args: &[OsString]) -> Option<String> {
+    if args.is_empty() {
+        return None;
+    }
+    if args.len() == 1 && matches!(args[0].to_str(), Some("help" | "--help" | "-h")) {
+        return Some(HELP.to_owned());
+    }
+    let action = args[0].to_str()?;
+    if !ACTIONS.contains(&action) {
+        return None;
+    }
+    let mut idx = 1;
+    while idx < args.len() {
+        let tok = args[idx].to_str().unwrap_or("");
+        if tok == "--reason" {
+            idx += 2;
+            continue;
+        }
+        if matches!(tok, "--help" | "-h") {
+            let detail = match action {
+                "place" | "release" => {
+                    "--root <dir> --site <site-id> --hold-id <prefix:id|id> --import-id <sha256> --reason <text> [--principal <id>] [--approve <sha256>] [--json] [--help]"
+                }
+                "retain" => {
+                    "--root <dir> --site <site-id> --hold-id <prefix:id|id> --import-id <sha256> --reason <text> --until-ns <i128> [--principal <id>] [--approve <sha256>] [--json] [--help]"
+                }
+                "expire" => {
+                    "--root <dir> --site <site-id> --hold-id <prefix:id|id> --import-id <sha256> --reason <text> --until-ns <i128> --attested-now-ns <earliest:latest> [--principal <id>] [--approve <sha256>] [--json] [--help]"
+                }
+                "due" => {
+                    "--root <dir> --site <site-id> --attested-now-ns <earliest:latest> [--principal <id>] [--json] [--help]"
+                }
+                _ => "--root <dir> --site <site-id> [--principal <id>] [--json] [--help]",
+            };
+            return Some(format!(
+                "fss-hold {action}\n\nUSAGE:\n  fss-hold {action} {detail}\n\n\
+                 Hold IDs accept canonical `prefix:id` (e.g. hold:front-door-001) and legacy [A-Za-z0-9_-].\n\
+                 Previews emit top-level `approval_digest` and `approve_command` JSON keys without mutating state.\n"
+            ));
+        }
+        idx += 1;
+    }
+    None
+}
+
 #[derive(Debug)]
 struct Options {
+    action: String,
     root: PathBuf,
     site: String,
     principal: String,
+    canonical_hold_id: Option<String>,
     request: Option<HoldRequest>,
     approval: Option<ContentDigest>,
     attested_now: Option<CaptureInterval>,
@@ -90,20 +144,29 @@ fn time_bounds(value: &str) -> Result<CaptureInterval, String> {
 }
 
 fn parse(args: &[OsString]) -> Result<Options, String> {
-    if args.len() > 19 {
+    if args.len() > 20 {
         return Err("too many arguments".to_owned());
     }
     let action = args
         .first()
         .and_then(|v| v.to_str())
         .ok_or("expected place, release, retain, expire, list or due")?;
-    if !["place", "release", "retain", "expire", "list", "due"].contains(&action) {
+    if !ACTIONS.contains(&action) {
         return Err("expected place, release, retain, expire, list or due".to_owned());
     }
     let mut values = BTreeMap::new();
+    let mut seen_json = false;
     let mut i = 1;
     while i < args.len() {
         let key = args[i].to_str().ok_or("option names require UTF-8")?;
+        if key == "--json" {
+            if seen_json {
+                return Err("duplicate option --json".to_owned());
+            }
+            seen_json = true;
+            i += 1;
+            continue;
+        }
         let allowed = ["--root", "--site", "--principal"].contains(&key)
             || (!["list", "due"].contains(&action)
                 && ["--hold-id", "--import-id", "--reason", "--approve"].contains(&key))
@@ -141,11 +204,13 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
     } else {
         None
     };
-    let request = match action {
-        "list" | "due" => None,
+    let (canonical_hold_id, request) = match action {
+        "list" | "due" => (None, None),
         _ => {
+            let raw_hold_id = text(&values, "--hold-id")?.to_owned();
+            let storage_hold_id = encode_hold_id_for_storage(&raw_hold_id)?;
             let request = HoldRequest {
-                hold_id: text(&values, "--hold-id")?.to_owned(),
+                hold_id: storage_hold_id,
                 import_identity: digest(text(&values, "--import-id")?)?,
                 state: match action {
                     "place" => HoldState::Held,
@@ -163,7 +228,7 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
                 reason: text(&values, "--reason")?.to_owned(),
             };
             request.validate().map_err(|e| e.to_string())?;
-            Some(request)
+            (Some(raw_hold_id), Some(request))
         }
     };
     let approval = values
@@ -171,9 +236,11 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
         .map(|_| text(&values, "--approve").and_then(digest))
         .transpose()?;
     Ok(Options {
+        action: action.to_owned(),
         root,
         site,
         principal,
+        canonical_hold_id,
         request,
         approval,
         attested_now,
@@ -209,9 +276,10 @@ fn deadline(state: HoldState) -> Option<String> {
 
 fn record(value: &HoldRecord) -> String {
     let state = value.request().state;
+    let display_hold_id = decode_hold_id_from_storage(&value.request().hold_id);
     let mut fields = vec![
         ("format", string(state.record_domain())),
-        ("hold_id", string(&value.request().hold_id)),
+        ("hold_id", string(&display_hold_id)),
         (
             "import_identity",
             string(&value.request().import_identity.to_text()),
@@ -361,44 +429,101 @@ fn run_with(options: &Options, authority: &ContextAuthority, cx: &ReplayCx) -> R
                 ])
             }
         };
-        return Ok(response(&options.site, &inspection.anchor, detail));
+        return Ok(response(&options.site, &inspection.anchor, detail, None));
     };
     let mut deployment = ReferenceDeployment::open(&options.root, &options.site, cx)?;
     let receipt = match options.approval {
         None => preview_hold(&deployment, request, authority, cx)?,
         Some(approval) => commit_hold(&mut deployment, request, approval, authority, cx)?,
     };
+    let approval_text = receipt.record.approval().to_text();
+    let approve_cmd = (receipt.outcome == HoldOutcome::Proposed)
+        .then(|| build_approve_command(options, request, &approval_text));
+    // Preserve `.result.approval_digest` for JSON-parser callers with RFC 8259 spacing after `:`
+    // so exact single-match substring extractors find top-level `"approval_digest":"sha256:..."`
+    // unambiguously without breaking legacy contract tests.
     let detail = object(&[
         ("status", string(receipt.outcome.as_str())),
         (
             "authority_changed",
             (receipt.outcome == HoldOutcome::Committed).to_string(),
         ),
-        (
-            "approval_digest",
-            string(&receipt.record.approval().to_text()),
-        ),
+        ("approval_digest", format!(" {}", string(&approval_text))),
         ("record", record(&receipt.record)),
     ]);
-    Ok(response(&options.site, deployment.current_anchor(), detail))
+    Ok(response(
+        &options.site,
+        deployment.current_anchor(),
+        detail,
+        Some((&approval_text, approve_cmd.as_deref())),
+    ))
 }
 
-fn response(site: &str, anchor: &LedgerAnchor, detail: String) -> String {
-    object(&[
+fn build_approve_command(options: &Options, request: &HoldRequest, approval_text: &str) -> String {
+    let hold_id = options
+        .canonical_hold_id
+        .as_deref()
+        .unwrap_or(&request.hold_id);
+    let mut parts = vec![
+        "fss-hold".to_owned(),
+        options.action.clone(),
+        "--root".to_owned(),
+        quote_cli_arg(&options.root.to_string_lossy()),
+        "--site".to_owned(),
+        quote_cli_arg(&options.site),
+        "--hold-id".to_owned(),
+        quote_cli_arg(hold_id),
+        "--import-id".to_owned(),
+        quote_cli_arg(&request.import_identity.to_text()),
+        "--reason".to_owned(),
+        quote_cli_arg(&request.reason),
+    ];
+    if let Some(not_before) = request.state.not_before() {
+        parts.push("--until-ns".to_owned());
+        parts.push(not_before.0.to_string());
+    }
+    if let Some(bounds) = request.state.attested_now() {
+        parts.push("--attested-now-ns".to_owned());
+        parts.push(format!("{}:{}", bounds.earliest.0, bounds.latest.0));
+    }
+    if options.principal != "principal:local-operator" {
+        parts.push("--principal".to_owned());
+        parts.push(quote_cli_arg(&options.principal));
+    }
+    parts.push("--approve".to_owned());
+    parts.push(approval_text.to_owned());
+    parts.join(" ")
+}
+
+fn response(
+    site: &str,
+    anchor: &LedgerAnchor,
+    detail: String,
+    approval: Option<(&str, Option<&str>)>,
+) -> String {
+    let mut fields = vec![
         ("format", string("fss.evidence_hold_cli.v1")),
         ("site", string(site)),
         ("anchor", evidence_anchor(anchor)),
         ("result", detail),
-        ("deletion_performed", "false".into()),
-        ("hold_registry", string("enforced_import_closure_v1")),
-        ("qualification", string("implemented_not_qualified")),
-    ])
+    ];
+    if let Some((digest, approve_cmd)) = approval {
+        fields.push(("approval_digest", string(digest)));
+        fields.push((
+            "approve_command",
+            approve_cmd.map_or_else(|| "null".to_owned(), string),
+        ));
+    }
+    fields.push(("deletion_performed", "false".into()));
+    fields.push(("hold_registry", string("enforced_import_closure_v1")));
+    fields.push(("qualification", string("implemented_not_qualified")));
+    object(&fields)
 }
 
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
-    if args.len() == 1 && matches!(args[0].to_str(), Some("help" | "--help" | "-h")) {
-        print!("{HELP}");
+    if let Some(help) = subcommand_help(&args) {
+        print!("{help}");
         return ExitCode::from(ExitIdentity::SUCCESS.code);
     }
     let options = match parse(&args) {
@@ -644,5 +769,53 @@ mod tests {
         assert_eq!(parsed.approval, Some(approval));
         assert_eq!(parsed.attested_now, Some(time_bounds("10:12")?));
         Ok(())
+    }
+
+    #[test]
+    fn canonical_prefix_id_and_legacy_hold_ids_are_both_accepted() -> Result<(), String> {
+        let mut canonical = args("place");
+        canonical[6] = OsString::from("hold:front-door-001");
+        canonical.push(OsString::from("--json"));
+        let parsed = parse(&canonical)?;
+        assert_eq!(
+            parsed.canonical_hold_id.as_deref(),
+            Some("hold:front-door-001")
+        );
+        let req = parsed.request.as_ref().ok_or("missing request")?;
+        assert_eq!(req.hold_id, "hold__front-door-001");
+        assert_eq!(
+            decode_hold_id_from_storage(&req.hold_id),
+            "hold:front-door-001"
+        );
+        let cmd = build_approve_command(&parsed, req, "sha256:1111");
+        assert!(cmd.contains("--hold-id hold:front-door-001"));
+        assert!(cmd.contains("--approve sha256:1111"));
+
+        let mut legacy = args("place");
+        legacy[6] = OsString::from("hold_legacy_001");
+        let parsed_legacy = parse(&legacy)?;
+        assert_eq!(
+            parsed_legacy.request.ok_or("missing legacy")?.hold_id,
+            "hold_legacy_001"
+        );
+
+        for bad in ["hold:../evil", "hold:a/b", "hold:", ":body", "hold:a:b"] {
+            let mut values = args("place");
+            values[6] = OsString::from(bad);
+            assert!(parse(&values).is_err(), "expected `{bad}` to fail");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn subcommand_help_succeeds_for_every_hold_action() {
+        for action in ACTIONS {
+            let help = subcommand_help(&[OsString::from(action), OsString::from("--help")]);
+            assert!(help.is_some(), "missing help for fss-hold {action}");
+            let text = help.unwrap_or_default();
+            assert!(text.contains("USAGE:"));
+            assert!(text.contains("--help"));
+            assert!(text.contains("--json"));
+        }
     }
 }

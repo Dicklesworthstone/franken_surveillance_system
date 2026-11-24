@@ -360,7 +360,7 @@ fn verify_clean_drain(deployment: &ReferenceDeployment, root_path: Option<&Path>
     let zero_orphan_obligations = deployment
         .effects()
         .operations()
-        .all(|op| !matches!(op.state, EffectState::Indeterminate { .. }));
+        .all(|op| !matches!(op.state, EffectState::Indeterminate));
     let zero_staging_artifacts = root_path
         .map(|root| {
             let staging = root.join("publications/staging");

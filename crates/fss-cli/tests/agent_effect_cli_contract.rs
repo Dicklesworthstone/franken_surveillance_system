@@ -2278,7 +2278,7 @@ fn learning_experiences(root: &Path) -> TestResult<Vec<ContentDigest>> {
         if name.len() != 64 || !name.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             continue;
         }
-        let digest = ContentDigest::parse(&format!("sha256:{name}"))?;
+        let digest = ContentDigest::parse(format!("sha256:{name}"))?;
         let bytes = fss_publication::read_verified(&directory, digest, 1 << 20)?;
         let mut decoder = fss_core::CanonicalDecoder::new(&bytes);
         if decoder
@@ -2486,7 +2486,7 @@ fn assert_learning_retry_requires_current_admission(
         }
         fs::write(&pin_path, format!("{}\n", store.committed_root()))?;
         drop(store);
-        let before = learning_tree(&agent.root, &[""])?;
+        let before = clock_independent_tree(&agent.root)?;
         let (code, stdout) = run_fss(args)?;
         let (_, response) = agent.answer(code, &stdout)?;
         assert_eq!(code, Some(5), "{revoked}: {stdout}");
@@ -2496,7 +2496,7 @@ fn assert_learning_retry_requires_current_admission(
             "{revoked} disclosed private feedback"
         );
         assert_eq!(
-            learning_tree(&agent.root, &[""])?,
+            clock_independent_tree(&agent.root)?,
             before,
             "{revoked} retry changed retained state"
         );
@@ -2740,7 +2740,7 @@ fn closed_episode_feedback_publishes_captured_learning_with_cold_cli_mcp_recover
     // Captured artifacts bind the original admitted workspace. Read-only inventory may show
     // newer evidence while that workspace remains anchored. After an explicit resume rebases
     // the workspace, recovery must authenticate the original captured source revision.
-    let before_inventory = learning_tree(&agent.root, &[""])?;
+    let before_inventory = clock_independent_tree(&agent.root)?;
     let inventory_options = [
         "--session",
         agent.session.as_str(),
@@ -2786,14 +2786,17 @@ fn closed_episode_feedback_publishes_captured_learning_with_cold_cli_mcp_recover
         &pointers,
     )?;
     assert_eq!(
-        learning_tree(&agent.root, &[""])?,
+        clock_independent_tree(&agent.root)?,
         before_inventory,
-        "captured-learning discovery must not mutate the deployment or session journal"
+        "captured-learning discovery must not mutate the deployment or session semantic state"
     );
     let (code, repeated_inventory) = agent.run("orient", &inventory_options)?;
     assert_eq!(code, Some(0), "{repeated_inventory:?}");
-    assert_eq!(repeated_inventory, before_resume);
-    assert_eq!(learning_tree(&agent.root, &[""])?, before_inventory);
+    assert_eq!(
+        field(&repeated_inventory, &["payload"])?,
+        field(&before_resume, &["payload"])?
+    );
+    assert_eq!(clock_independent_tree(&agent.root)?, before_inventory);
     let inventory_mcp = learning_mcp_tool_wire(
         &agent,
         principal,
@@ -2813,10 +2816,11 @@ fn closed_episode_feedback_publishes_captured_learning_with_cold_cli_mcp_recover
     assert_eq!(inventory_content.len(), 1);
     let (_, mcp_inventory) = agent.answer(None, text(&inventory_content[0], &["text"])?)?;
     assert_eq!(
-        mcp_inventory, before_resume,
+        field(&mcp_inventory, &["payload"])?,
+        field(&before_resume, &["payload"])?,
         "CLI and MCP share the admitted learning inventory"
     );
-    assert_eq!(learning_tree(&agent.root, &[""])?, before_inventory);
+    assert_eq!(clock_independent_tree(&agent.root)?, before_inventory);
     let (code, too_small) = agent.run(
         "orient",
         &[
@@ -2831,9 +2835,9 @@ fn closed_episode_feedback_publishes_captured_learning_with_cold_cli_mcp_recover
     assert_eq!(code, Some(5), "{too_small:?}");
     assert_eq!(text(&too_small, &["outcome"])?, "refused");
     assert_eq!(
-        learning_tree(&agent.root, &[""])?,
+        clock_independent_tree(&agent.root)?,
         before_inventory,
-        "protected learning context must refuse an insufficient budget without mutation or truncation"
+        "protected learning context must refuse an insufficient budget without semantic mutation or truncation"
     );
     let prior_workspace = field(&before_resume, &["workspaceRevision"])?
         .integer()
@@ -2978,7 +2982,7 @@ fn closed_episode_feedback_publishes_captured_learning_with_cold_cli_mcp_recover
         ));
     let slot_bytes = fs::read(&learning_slot)?;
     fs::remove_file(&learning_slot)?;
-    let missing_slot = learning_tree(&agent.root, &[""])?;
+    let missing_slot = clock_independent_tree(&agent.root)?;
     let (code, missing_stdout) = run_fss(&args)?;
     let (_, missing) = agent.answer(code, &missing_stdout)?;
     assert_eq!(code, Some(5), "{missing_stdout}");
@@ -2989,7 +2993,7 @@ fn closed_episode_feedback_publishes_captured_learning_with_cold_cli_mcp_recover
         learning_mcp(&agent, principal, &arguments, true)?,
         missing_stdout.trim_end()
     );
-    assert_eq!(learning_tree(&agent.root, &[""])?, missing_slot);
+    assert_eq!(clock_independent_tree(&agent.root)?, missing_slot);
     fs::write(&learning_slot, &slot_bytes)?;
 
     let feedback_slot_digest = ContentDigest::sha256(feedback_id.as_bytes()).to_text();
@@ -3004,12 +3008,12 @@ fn closed_episode_feedback_publishes_captured_learning_with_cold_cli_mcp_recover
         ));
     let feedback_slot_bytes = fs::read(&feedback_slot)?;
     fs::remove_file(&feedback_slot)?;
-    let missing_feedback = learning_tree(&agent.root, &[""])?;
+    let missing_feedback = clock_independent_tree(&agent.root)?;
     let (code, missing_stdout) = run_fss(&args)?;
     let (_, missing) = agent.answer(code, &missing_stdout)?;
     assert_eq!(code, Some(5), "{missing_stdout}");
     assert_eq!(text(&missing, &["outcome"])?, "refused");
-    assert_eq!(learning_tree(&agent.root, &[""])?, missing_feedback);
+    assert_eq!(clock_independent_tree(&agent.root)?, missing_feedback);
     fs::write(&feedback_slot, feedback_slot_bytes)?;
 
     // Retained learning never licenses a retry to recreate a lost source episode or ignore
@@ -3028,12 +3032,12 @@ fn closed_episode_feedback_publishes_captured_learning_with_cold_cli_mcp_recover
             fs::write(&path, damaged)?;
         }
         let damaged = learning_tree(&agent.root, &["agent/publications"])?;
-        let before_failed_read = learning_tree(&agent.root, &[""])?;
+        let before_failed_read = clock_independent_tree(&agent.root)?;
         let (code, unreadable) = agent.run("orient", &inventory_options)?;
         assert_eq!(code, Some(5), "{unreadable:?}");
         assert_ne!(text(&unreadable, &["outcome"])?, "ok");
         assert_eq!(
-            learning_tree(&agent.root, &[""])?,
+            clock_independent_tree(&agent.root)?,
             before_failed_read,
             "failed discovery must neither repair nor mutate a damaged captured source"
         );
@@ -3067,9 +3071,11 @@ fn closed_episode_feedback_publishes_captured_learning_with_cold_cli_mcp_recover
 
     // A materially changed request still creates a distinct advisory candidate at the current
     // session anchor. Returning the old request must not coalesce new evidence or prose.
+    use fss_reference::deployment_session::SessionContext;
     use fss_reference::deployment_session::feedback::{
         FeedbackRequest, FeedbackTarget, publish_feedback,
     };
+    let clock = fss_cli::session_time::HostSessionTime::default();
     let original_request = FeedbackRequest {
         session_id: fss_core::SessionId::parse(&agent.session)?,
         principal: fss_core::PrincipalId::parse(principal)?,
@@ -3084,13 +3090,19 @@ fn closed_episode_feedback_publishes_captured_learning_with_cold_cli_mcp_recover
     changed_evidence.contradicting.push(ContentDigest::sha256(
         b"outside the retained learning closure",
     ));
-    let unsupported = publish_feedback(&agent.root, &changed_evidence)?;
+    let unsupported = publish_feedback(
+        SessionContext::runtime(&agent.root, &clock),
+        &changed_evidence,
+    )?;
     assert_ne!(unsupported.root.to_text(), feedback_root);
     assert!(unsupported.learning.is_none());
     assert!(unsupported.learning_refusal.is_some());
     let mut changed_disposition = original_request.clone();
     changed_disposition.disposition = fss_core::RequestedDisposition::RecordOnly;
-    let recorded = publish_feedback(&agent.root, &changed_disposition)?;
+    let recorded = publish_feedback(
+        SessionContext::runtime(&agent.root, &clock),
+        &changed_disposition,
+    )?;
     assert_ne!(recorded.root.to_text(), feedback_root);
     assert!(recorded.learning.is_none());
     assert!(recorded.learning_refusal.is_none());
@@ -3101,7 +3113,10 @@ fn closed_episode_feedback_publishes_captured_learning_with_cold_cli_mcp_recover
     let changed_statement = "Review a different procedure using the same original episode.";
     let mut changed_request = original_request;
     changed_request.statement = changed_statement.to_owned();
-    let changed = publish_feedback(&agent.root, &changed_request)?;
+    let changed = publish_feedback(
+        SessionContext::runtime(&agent.root, &clock),
+        &changed_request,
+    )?;
     let changed_learning = changed.learning.as_ref().ok_or("changed request capture")?;
     assert_ne!(changed.root.to_text(), feedback_root);
     assert_ne!(changed_learning.root, learning_root);
@@ -3171,7 +3186,7 @@ fn learning_feedback_cannot_borrow_another_sessions_episode_or_request_activatio
     };
     assert_ne!(other.session, agent.session);
     assert_eq!(text(&opened, &["principalId"])?, principal);
-    let before_foreign_read = learning_tree(&agent.root, &[""])?;
+    let before_foreign_read = clock_independent_tree(&agent.root)?;
     let (code, foreign_inventory) = other.run("orient", &["--session", &other.session])?;
     assert_eq!(code, Some(0), "{foreign_inventory:?}");
     let foreign_items = field(&foreign_inventory, &["payload", "contextPack", "items"])?
@@ -3197,7 +3212,7 @@ fn learning_feedback_cannot_borrow_another_sessions_episode_or_request_activatio
         );
     }
     assert_eq!(
-        learning_tree(&agent.root, &[""])?,
+        clock_independent_tree(&agent.root)?,
         before_foreign_read,
         "private scope filtering is read-only"
     );

@@ -174,14 +174,19 @@ fn recovery_does_not_increment_a_maximal_generation_or_rehash_receive_clocks() -
     set(&mut input, "--recover", "yes");
     let forward = SinglePlan::parse(&input)?;
     let reversed: Vec<_> = input
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .rev()
         .flat_map(|pair| pair.iter().cloned())
         .collect();
     let backward = SinglePlan::parse(&reversed)?;
     assert_eq!(forward.capture_digest()?, native.digest()?);
     assert_eq!(backward.capture_digest()?, forward.capture_digest()?);
-    assert_eq!(forward.capture.recording_config().scope.generation, u64::MAX);
+    assert_eq!(
+        forward.capture.recording_config().scope.generation,
+        u64::MAX
+    );
     assert_eq!(forward.capture.root, native.root);
     assert_eq!(forward.capture.pins, native.pins);
     Ok(())
@@ -227,6 +232,7 @@ fn catalog_recovery_is_explicit_and_does_not_change_the_original_capture_identit
 }
 
 #[cfg(unix)]
+#[allow(clippy::duplicate_mod)]
 #[path = "../../../../fss-reference/tests/hevc_recording_support/mod.rs"]
 mod source;
 
@@ -405,7 +411,10 @@ mod native {
                 set(&mut input, "--progress-timeout-ms", "5000");
                 let plan = SinglePlan::parse(&input)?;
                 let report = plan.preview()?;
-                assert_eq!(digest_field(&report, "capture_plan")?, plan.capture_digest()?);
+                assert_eq!(
+                    digest_field(&report, "capture_plan")?,
+                    plan.capture_digest()?
+                );
                 assert!(report.contains("\"network_requested\":false"));
                 assert!(report.contains("\"capture_complete\":false"));
                 assert!(report.contains("both_stores_unobserved"));

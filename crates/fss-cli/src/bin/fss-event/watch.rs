@@ -61,26 +61,29 @@ use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use fss_cli::event_fusion::{EventFusionError, EventFusionProfile, EventFusionReport};
-use fss_core::{ContentDigest, DigestAlgorithm, PrincipalId};
+use fss_core::region::{ContextAuthority, RootAuthoritySpec};
+use fss_core::{BudgetVector, ContentDigest, DigestAlgorithm, OperationId, PrincipalId};
 use fss_reference::ingest::RetainedFileImport;
 use fss_reference::ingest::detector_cascade::DetectorCascade;
 use fss_reference::ingest::long_dwell::{LongDwellLimits, LongDwellReport, MAX_LONG_DWELL_FRAMES};
 use fss_reference::ingest::long_watch::{
     LongWatchDetector, LongWatchLimits, LongWatchReport, MAX_LONG_WATCH_FRAMES,
 };
+use fss_reference::ingest::osd_mask::validate_ignore_regions;
 use fss_reference::ingest::package_detect::PackageDetectLimits;
 use fss_reference::ingest::recorded_decode::ComponentInterpretation;
 use fss_reference::ingest::recorded_dwell::DwellReport;
 use fss_reference::ingest::recorded_health::RecordedHealthPolicy;
 use fss_reference::ingest::recorded_watch::{
-    MAX_WATCH_FRAMES, MAX_WATCH_ZONES, WatchDetectorConfig, WatchError, WatchLimits, WatchOptions,
-    WatchPlan, WatchReport, WatchTrackerConfig, WatchZone,
+    ImageRect, MAX_IGNORE_REGIONS, MAX_WATCH_FRAMES, MAX_WATCH_ZONES, WatchDetectorConfig,
+    WatchError, WatchLimits, WatchOptions, WatchPlan, WatchReport, WatchTrackerConfig, WatchZone,
 };
 use fss_reference::ingest::rgb_package::RgbDetectorPackage;
 use fss_reference::ingest::zone_dwell::DwellPolicy;
-use fss_reference::retained_source::ImmutableRetainedReadLimits;
+use fss_reference::retained_source::{ImmutableRetainedReadLimits, ImmutableRetainedSource};
 use fss_reference::{ReferenceDeployment, ReplayCx, RetainedSource, ScalarExecCx};
 
 use super::{RunResult, export};
@@ -91,7 +94,13 @@ mod immutable;
 mod incremental;
 #[path = "watch/whole.rs"]
 mod whole;
-pub(super) use immutable::run as run_immutable_preview;
+
+pub(super) fn run_immutable_preview(action: &WatchAction, out: &mut impl Write) -> RunResult<()> {
+    if action.ignore_regions.is_empty() {
+        return immutable::run(action, out);
+    }
+    run_immutable_ignore_preview(action, out)
+}
 
 const OPTIONS: &[&str] = &[
     "--root",
@@ -160,6 +169,7 @@ pub(super) struct WatchAction {
     import: ContentDigest,
     interpretation: ComponentInterpretation,
     zones: Vec<WatchZone>,
+    ignore_regions: Vec<ImageRect>,
     first_segment: usize,
     segment_count: Option<usize>,
     detector: WatchDetectorConfig,
@@ -270,10 +280,11 @@ fn dwell_policy(values: &[(String, String)]) -> Result<Option<DwellPolicy>, Stri
 }
 
 /// Parses the arguments after `watch`. Every option takes one separate value; only `--zone`
-/// repeats. Paths must be UTF-8 here because the report echoes an exact rerun command.
+/// and `--ignore-rect` repeat. Paths must be UTF-8 here because the report echoes an exact rerun command.
 pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
     let mut values: Vec<(String, String)> = Vec::new();
     let mut zones = Vec::new();
+    let mut ignore_regions = Vec::new();
     let mut rerun = vec!["fss-event".to_owned(), "watch".to_owned()];
     let mut options = WatchOptions::default();
     let mut stream_dwell = false;
@@ -321,6 +332,12 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
                 return Err("at most sixteen zones".to_owned());
             }
             zones.push(zone(argument)?);
+        } else if key == "--ignore-rect" {
+            if ignore_regions.len() == MAX_IGNORE_REGIONS {
+                return Err("at most sixteen ignore rects".to_owned());
+            }
+            ignore_regions
+                .push(ImageRect::parse_xywh(argument).map_err(|error| error.to_string())?);
         } else if !OPTIONS.contains(&key)
             && !super::detector::OPTIONS.contains(&key)
             && !super::detector::FUSION_OPTIONS.contains(&key)
@@ -453,7 +470,6 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
         minimum_iou_ppm: number(&values, "--minimum-iou-ppm", defaults.minimum_iou_ppm)?,
     };
     let mut limits = WatchLimits::default();
-    limits.jpeg_work_units = number(&values, "--work-units", limits.jpeg_work_units)?;
     limits.read_limits.max_segment_bytes = number(
         &values,
         "--max-segment-bytes",
@@ -466,6 +482,11 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
     }
     limits.jpeg_limits.maximum_dimension = dimension;
     limits.jpeg_limits.maximum_pixels = pixels;
+    limits.jpeg_work_units = number(
+        &values,
+        "--work-units",
+        limits.jpeg_limits.luma_work_bound(),
+    )?;
     limits.h264_limits.max_width = dimension;
     limits.h264_limits.max_height = dimension;
     // Complete coded AVC macroblocks must fit the requested ceiling. Keep the existing
@@ -484,6 +505,14 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
         }
     }
     let dwell = dwell_policy(&values)?;
+    let ignore_regions =
+        validate_ignore_regions(&ignore_regions).map_err(|error| error.to_string())?;
+    if !ignore_regions.is_empty() && (stream_watch || stream_dwell || dwell.is_some()) {
+        return Err(
+            "--ignore-rect is supported only in short entry watch mode (not --stream-watch, --stream-dwell, or dwell)"
+                .to_owned(),
+        );
+    }
     if health_screen && dwell.is_some() && !stream_dwell {
         return Err(
             "--sensor-health with dwell requires --stream-dwell; short dwell screening is unsupported"
@@ -521,6 +550,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
         import: digest(text(&values, "--import-id")?, "--import-id")?,
         interpretation,
         zones,
+        ignore_regions,
         first_segment: number(&values, "--first-segment", 0)?,
         segment_count,
         detector,
@@ -598,6 +628,16 @@ pub(super) fn run(
     {
         return Err(WatchError::InvalidPlan(
             "health retention requires screened whole-recording analysis and a separate event-approval invocation",
+        )
+        .into());
+    }
+    if !action.ignore_regions.is_empty()
+        && (action.stream_watch.is_some()
+            || action.stream_dwell.is_some()
+            || action.dwell.is_some())
+    {
+        return Err(WatchError::InvalidPlan(
+            "OSD ignore regions are supported only in short entry watch mode",
         )
         .into());
     }
@@ -863,13 +903,14 @@ fn run_with(
         out.write_all(json.as_bytes())?;
         return Ok(());
     }
-    let mut report = WatchReport::analyze_with_health(
+    let mut report = WatchReport::analyze_with_ignore_regions(
         deployment,
         &plan,
         &action.limits,
         cascade.as_mut(),
         action.options,
         action.health_screen.then_some(action.health_policy),
+        &action.ignore_regions,
         cx,
     )?;
     let fusion = match (&fusion_profile, cascade.as_ref()) {
@@ -895,13 +936,14 @@ fn run_with(
     // candidates, the proposal is recomputed against the new anchor so its approval is current.
     let reproposed = if published > 0 && action.retain_coverage.is_none() {
         // Same cascade instance: completed inferences are reused, never re-run.
-        Some(WatchReport::analyze_with_health(
+        Some(WatchReport::analyze_with_ignore_regions(
             deployment,
             &plan,
             &action.limits,
             cascade.as_mut(),
             action.options,
             action.health_screen.then_some(action.health_policy),
+            &action.ignore_regions,
             cx,
         )?)
     } else {
@@ -1060,6 +1102,206 @@ fn run_streaming(
     Ok(())
 }
 
+fn run_immutable_ignore_preview(action: &WatchAction, out: &mut impl Write) -> RunResult<()> {
+    if !action.is_immutable_preview() {
+        return Err(WatchError::InvalidPlan(
+            "immutable watch requires an unapproved, nonincremental preview",
+        )
+        .into());
+    }
+    if action.stream_watch.is_some() || action.stream_dwell.is_some() || action.dwell.is_some() {
+        return Err(WatchError::InvalidPlan(
+            "OSD ignore regions are supported only in short entry watch mode",
+        )
+        .into());
+    }
+    let root = std::fs::canonicalize(&action.root)?;
+    let authority = ContextAuthority::new_root(RootAuthoritySpec {
+        trace_id: "trace:event-cli".into(),
+        operation_id: OperationId::parse("operation:event-cli")?,
+        principal: action.principal.clone(),
+        capabilities: vec!["ADP-REPLAY-001".into(), "CAP-READ-MEDIA-001".into()],
+        deadline: None,
+        priority: 10,
+        budgets: BudgetVector::builder()
+            .bytes(action.read_limits.max_read_bytes as u64)
+            .storage_operations(action.read_limits.max_read_objects as u64)
+            .build()?,
+        privacy_scope: "privacy:local-authorized-files".into(),
+        retention_scope: "retention:existing-deployment-policy".into(),
+        anchor_universe: ContentDigest::sha256(action.site.as_bytes()),
+        generation: 1,
+    })?;
+    authority.validate()?;
+    let cx = ReplayCx::from_context_authority_read_only(&authority, root.clone())?;
+    let scalar = ScalarExecCx::new();
+    let started = Instant::now();
+    let cancelled = || started.elapsed() >= super::retained_read::DEADLINE;
+    let result = (|| -> RunResult<()> {
+        super::optical_health::short_only(
+            action.health_screen.then_some(action.health_policy),
+            false,
+        )?;
+        super::detector::check_watch_fusion_mode(action.cascade.as_ref(), true, false)?;
+        let (profile, package) = load_short_inputs(action, &cx, &scalar)?;
+        let source =
+            ImmutableRetainedSource::open_cancellable(&root, action.read_limits, &cx, &cancelled)?;
+        if source.site_lineage() != action.site {
+            return Err(
+                WatchError::InvalidPlan("retained deployment site lineage mismatch").into(),
+            );
+        }
+        let mut cascade = short_cascade(action, package.as_ref(), &scalar)?;
+        let plan = short_plan(action, &source, &cx)?;
+        let report = WatchReport::analyze_with_ignore_regions(
+            &source,
+            &plan,
+            &action.limits,
+            cascade.as_mut(),
+            action.options,
+            action.health_screen.then_some(action.health_policy),
+            &action.ignore_regions,
+            &cx,
+        )?;
+        let fusion = match (&profile, cascade.as_ref()) {
+            (Some(profile), Some(cascade)) => Some(EventFusionReport::watch(
+                &report, cascade, profile, &source, &cx,
+            )?),
+            (None, _) => None,
+            _ => return Err(EventFusionError::Scope.into()),
+        };
+        let json = render_short_watch(
+            action,
+            &report,
+            &report,
+            source.current_anchor().commit_sequence,
+            fusion.as_ref(),
+        )?;
+        report.revalidate_derived_source(&source, &cx)?;
+        let json = format!("{json}\n");
+        if json.len() > super::MAX_ANALYSIS_REPORT_BYTES {
+            return Err(WatchError::Limit.into());
+        }
+        cx.checkpoint("watch_preview:delivery")?;
+        source.revalidate_snapshot_metadata()?;
+        source.revalidate()?;
+        if let Some(path) = &action.report_out {
+            export(path, json.as_bytes(), &root, &cx)?;
+        }
+        out.write_all(json.as_bytes())?;
+        Ok(())
+    })();
+    scalar.drain_and_finalize();
+    cx.drain_and_finalize();
+    result
+}
+
 #[cfg(test)]
 #[path = "watch_fusion_tests.rs"]
 mod fusion_tests;
+
+#[cfg(test)]
+mod osd_and_budget_tests {
+    use super::*;
+
+    fn base_args() -> Vec<OsString> {
+        [
+            "--root",
+            "unused",
+            "--site",
+            "site:watch-test",
+            "--import-id",
+            "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "--interpretation",
+            "ycbcr",
+            "--zone",
+            "door:0,0,64,64",
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .collect()
+    }
+
+    #[test]
+    fn default_work_units_derives_from_decode_limits_and_allows_override() -> Result<(), String> {
+        let default_action = parse(&base_args())?;
+        let default_bound = default_action.limits.jpeg_limits.luma_work_bound();
+        assert_eq!(default_action.limits.jpeg_work_units, default_bound);
+        assert!(default_action.limits.jpeg_work_units > 800_000_000);
+
+        // Narrowed --max-pixels / --max-dimension shrinks the default dynamically.
+        let mut narrow = base_args();
+        narrow.extend(["--max-dimension", "640", "--max-pixels", "230400"].map(OsString::from));
+        let narrow_action = parse(&narrow)?;
+        assert_eq!(
+            narrow_action.limits.jpeg_work_units,
+            narrow_action.limits.jpeg_limits.luma_work_bound()
+        );
+        assert!(narrow_action.limits.jpeg_work_units < default_bound);
+
+        // Explicit tiny --work-units is preserved verbatim.
+        let mut tiny = base_args();
+        tiny.extend(["--work-units", "1024"].map(OsString::from));
+        let tiny_action = parse(&tiny)?;
+        assert_eq!(tiny_action.limits.jpeg_work_units, 1024);
+        Ok(())
+    }
+
+    #[test]
+    fn ignore_rect_parses_canonically_echoes_in_rerun_and_refuses_invalid() -> Result<(), String> {
+        let mut args = base_args();
+        args.extend(
+            ["--ignore-rect", "72,2,20,12", "--ignore-rect", "0,0,16,8"].map(OsString::from),
+        );
+        let action = parse(&args)?;
+        assert_eq!(
+            action.ignore_regions,
+            vec![
+                ImageRect {
+                    x: 0,
+                    y: 0,
+                    width: 16,
+                    height: 8
+                },
+                ImageRect {
+                    x: 72,
+                    y: 2,
+                    width: 20,
+                    height: 12
+                },
+            ]
+        );
+        assert!(action.rerun.contains("--ignore-rect 72,2,20,12"));
+        assert!(action.rerun.contains("--ignore-rect 0,0,16,8"));
+
+        // Duplicate, malformed, zero-sized, >16, and stream/dwell combinations are refused.
+        for bad in [
+            vec!["--ignore-rect", "0,0,10,10", "--ignore-rect", "0,0,10,10"],
+            vec!["--ignore-rect", "0,0,0,10"],
+            vec!["--ignore-rect", "0,0,10"],
+            vec!["--ignore-rect", "bad"],
+            vec!["--ignore-rect", "0,0,10,10", "--stream-watch"],
+            vec![
+                "--ignore-rect",
+                "0,0,10,10",
+                "--dwell-for-ns",
+                "1000",
+                "--dwell-max-gap-ns",
+                "500",
+            ],
+        ] {
+            let mut input = base_args();
+            input.extend(bad.into_iter().map(OsString::from));
+            assert!(parse(&input).is_err());
+        }
+
+        // More than 16 --ignore-rect flags are refused.
+        let mut too_many = base_args();
+        for i in 0..=MAX_IGNORE_REGIONS {
+            too_many.push(OsString::from("--ignore-rect"));
+            too_many.push(OsString::from(format!("{i},0,1,1")));
+        }
+        assert!(parse(&too_many).is_err());
+        Ok(())
+    }
+}

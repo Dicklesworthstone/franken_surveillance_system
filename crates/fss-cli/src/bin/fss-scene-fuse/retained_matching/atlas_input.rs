@@ -8,7 +8,9 @@
 
 use std::collections::BTreeSet;
 
-use fss_cli::json_input::{self, Value};
+use fss_cli::json_input;
+#[cfg(test)]
+use fss_cli::json_input::Value;
 use fss_cli::json_output::{array, object, string};
 use fss_cli::scene_rig::SceneRig;
 use fss_core::{ContentDigest, DigestAlgorithm};

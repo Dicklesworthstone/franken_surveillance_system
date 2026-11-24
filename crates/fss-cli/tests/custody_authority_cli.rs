@@ -41,7 +41,8 @@ impl Fixture {
     fn new(label: &str) -> TestResult<Self> {
         for attempt in 0..32 {
             let directory = std::env::temp_dir().join(format!(
-                "fss-custody-authority-process-{label}-{}-{attempt}", std::process::id(),
+                "fss-custody-authority-process-{label}-{}-{attempt}",
+                std::process::id(),
             ));
             match fs::create_dir(&directory) {
                 Ok(()) => return Self::populate(directory),
@@ -64,36 +65,68 @@ impl Fixture {
         let counter = ContentDigest::sha256(COUNTER);
         let policy = ContentDigest::sha256(b"uncalibrated synthetic custody fixture");
         let edge = |digest, relation: EvidenceEdgeRelation| EventEvidence {
-            digest, class: EvidenceClass::Observed,
+            digest,
+            class: EvidenceClass::Observed,
             failure_domain: "sensor:custody-fixture".to_owned(),
-            supports: relation.required_supports_flag(), relation,
-            capsule_digest: None, identity_digest: None,
+            supports: relation.required_supports_flag(),
+            relation,
+            capsule_digest: None,
+            identity_digest: None,
         };
         let event = EventHypothesis {
-            schema: EventHypothesis::SCHEMA.to_owned(), event_id: EventId::parse(EVENT)?,
-            revision: 1, supersedes: None, state: EventState::Indeterminate,
-            kind: EventKind::Unclassified, interval,
-            uncertainty_reason: Some("synthetic; custody does not adjudicate either observation".to_owned()),
-            zone_ids: vec!["fixture-zone".to_owned()], track_ids: vec![],
-            probability: ProbabilityInterval { lower: 0.0, upper: 1.0, calibration_generation: None },
-            evidence: vec![edge(source, EvidenceEdgeRelation::Supports), edge(counter, EvidenceEdgeRelation::Contradicts)],
+            schema: EventHypothesis::SCHEMA.to_owned(),
+            event_id: EventId::parse(EVENT)?,
+            revision: 1,
+            supersedes: None,
+            state: EventState::Indeterminate,
+            kind: EventKind::Unclassified,
+            interval,
+            uncertainty_reason: Some(
+                "synthetic; custody does not adjudicate either observation".to_owned(),
+            ),
+            zone_ids: vec!["fixture-zone".to_owned()],
+            track_ids: vec![],
+            probability: ProbabilityInterval {
+                lower: 0.0,
+                upper: 1.0,
+                calibration_generation: None,
+            },
+            evidence: vec![
+                edge(source, EvidenceEdgeRelation::Supports),
+                edge(counter, EvidenceEdgeRelation::Contradicts),
+            ],
             model_receipts: vec![staged.root],
             decision_path: DecisionPath {
-                policy_generation: policy, fingerprint: policy, abstained: true,
+                policy_generation: policy,
+                fingerprint: policy,
+                abstained: true,
                 abstention_reason: Some("uncalibrated reference fixture".to_owned()),
             },
         };
         event.verify()?;
-        let receipt = deployment.publish_event(&ReferencePolicyDecision {
-            event: event.clone(), action: ReferencePolicyAction::Hold,
-        }, &cx)?;
+        let receipt = deployment.publish_event(
+            &ReferencePolicyDecision {
+                event: event.clone(),
+                action: ReferencePolicyAction::Hold,
+            },
+            &cx,
+        )?;
         drop(deployment);
-        Ok(Self { directory, root, event, event_root: receipt.event_root,
-            provenance: staged.root, source, counter })
+        Ok(Self {
+            directory,
+            root,
+            event,
+            event_root: receipt.event_root,
+            provenance: staged.root,
+            source,
+            counter,
+        })
     }
 
     fn object_path(&self, digest: ContentDigest) -> PathBuf {
-        self.root.join("objects/spool/objects").join(digest.to_text().trim_start_matches("sha256:"))
+        self.root
+            .join("objects/spool/objects")
+            .join(digest.to_text().trim_start_matches("sha256:"))
     }
 
     fn run(&self, extra: &[&str]) -> TestResult<Output> {
@@ -102,12 +135,17 @@ impl Fixture {
 
     fn run_as(&self, site: &str, event: &str, extra: &[&str]) -> TestResult<Output> {
         Ok(Command::new(env!("CARGO_BIN_EXE_fss-custody"))
-            .args(["audit", "--root"]).arg(&self.root)
-            .args(["--site", site, "--event-id", event]).args(extra).output()?)
+            .args(["audit", "--root"])
+            .arg(&self.root)
+            .args(["--site", site, "--event-id", event])
+            .args(extra)
+            .output()?)
     }
 }
 impl Drop for Fixture {
-    fn drop(&mut self) { let _ = fs::remove_dir_all(&self.directory); }
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.directory);
+    }
 }
 
 fn context(directory: &Path) -> TestResult<ReplayCx> {
@@ -115,20 +153,35 @@ fn context(directory: &Path) -> TestResult<ReplayCx> {
         trace_id: "trace:custody-process".to_owned(),
         operation_id: OperationId::parse("operation:custody-process")?,
         principal: "operator:custody-process".to_owned(),
-        capabilities: vec![ADP_REPLAY_ROW_ID.to_owned()], deadline: None, priority: 10,
-        budgets: BudgetVector::default(), privacy_scope: "privacy:internal".to_owned(),
+        capabilities: vec![ADP_REPLAY_ROW_ID.to_owned()],
+        deadline: None,
+        priority: 10,
+        budgets: BudgetVector::default(),
+        privacy_scope: "privacy:internal".to_owned(),
         retention_scope: "retention:ephemeral".to_owned(),
-        anchor_universe: ContentDigest::sha256(b"custody-process"), generation: 1,
+        anchor_universe: ContentDigest::sha256(b"custody-process"),
+        generation: 1,
     })?;
-    Ok(ReplayCx::new(ReplayIoAuthority::from_context_authority(&authority, directory.join("cx"))?))
+    Ok(ReplayCx::new(ReplayIoAuthority::from_context_authority(
+        &authority,
+        directory.join("cx"),
+    )?))
 }
 
 fn field<'a>(value: &'a Value, key: &str) -> TestResult<&'a Value> {
-    value.object().and_then(|fields| fields.get(key)).ok_or_else(|| format!("missing {key}").into())
+    value
+        .object()
+        .and_then(|fields| fields.get(key))
+        .ok_or_else(|| format!("missing {key}").into())
 }
 fn row(value: &Value, digest: ContentDigest) -> TestResult<&Value> {
-    field(value, "objects")?.array().ok_or("objects not an array")?.iter()
-        .find(|row| field(row, "digest").ok().and_then(Value::text) == Some(digest.to_text().as_str()))
+    field(value, "objects")?
+        .array()
+        .ok_or("objects not an array")?
+        .iter()
+        .find(|row| {
+            field(row, "digest").ok().and_then(Value::text) == Some(digest.to_text().as_str())
+        })
         .ok_or_else(|| format!("object {digest} missing").into())
 }
 fn report(output: &Output) -> TestResult<Value> {
@@ -140,15 +193,22 @@ fn inventory(root: &Path) -> TestResult<BTreeMap<PathBuf, Vec<u8>>> {
     while let Some(dir) = pending.pop() {
         for entry in fs::read_dir(dir)? {
             let entry = entry?;
-            if entry.file_type()?.is_dir() { pending.push(entry.path()); }
-            else { result.insert(entry.path(), fs::read(entry.path())?); }
+            if entry.file_type()?.is_dir() {
+                pending.push(entry.path());
+            } else {
+                result.insert(entry.path(), fs::read(entry.path())?);
+            }
         }
     }
     Ok(result)
 }
 fn no_report(output: &Output) {
     assert!(!output.status.success());
-    assert!(output.stdout.is_empty(), "refusal emitted a report: {}", String::from_utf8_lossy(&output.stdout));
+    assert!(
+        output.stdout.is_empty(),
+        "refusal emitted a report: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
     assert!(!output.stderr.is_empty());
 }
 
@@ -157,21 +217,58 @@ fn committed_slotless_event_audits_real_source_and_preserves_all_metadata() -> T
     let f = Fixture::new("intact")?;
     // Verify that this fixture crosses the precise seam the original command got wrong.
     let snapshot = read_deployment(&f.root, &OrientLimits::default())?;
-    assert_eq!(snapshot.event(&f.event.event_id).ok_or("event absent")?.event_root, f.event_root);
-    assert_eq!(audit_local_roots(&HostSpoolIo, &f.root.join("objects"), &[f.event_root],
-        &BTreeMap::new(), CustodyAuditLimits::default(), &|| false), Err(CustodyAuditError::RootNotPublished));
+    assert_eq!(
+        snapshot
+            .event(&f.event.event_id)
+            .ok_or("event absent")?
+            .event_root,
+        f.event_root
+    );
+    assert_eq!(
+        audit_local_roots(
+            &HostSpoolIo,
+            &f.root.join("objects"),
+            &[f.event_root],
+            &BTreeMap::new(),
+            CustodyAuditLimits::default(),
+            &|| false
+        ),
+        Err(CustodyAuditError::RootNotPublished)
+    );
     let before = inventory(&f.root)?;
     let output = f.run(&[])?;
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let json = report(&output)?;
-    assert_eq!(field(&json, "root_basis")?.text(), Some("caller_verified_authority"));
-    assert_eq!(field(&json, "status")?.text(), Some("intact_at_observation"));
+    assert_eq!(
+        field(&json, "root_basis")?.text(),
+        Some("caller_verified_authority")
+    );
+    assert_eq!(
+        field(&json, "status")?.text(),
+        Some("intact_at_observation")
+    );
     assert_eq!(field(&json, "all_verified")?.boolean(), Some(true));
-    assert_eq!(field(&json, "event_record")?, &json_input::parse(&f.event.to_canonical_json())?);
+    assert_eq!(
+        field(&json, "event_record")?,
+        &json_input::parse(&f.event.to_canonical_json())?
+    );
     assert_eq!(field(&json, "objects")?.array().ok_or("objects")?.len(), 5);
-    assert_eq!(field(row(&json, f.source)?, "state")?.text(), Some("verified"));
-    assert_eq!(field(row(&json, f.counter)?, "state")?.text(), Some("verified"));
-    assert_eq!(field(row(&json, f.event_root)?, "declared_manifest")?.boolean(), Some(true));
+    assert_eq!(
+        field(row(&json, f.source)?, "state")?.text(),
+        Some("verified")
+    );
+    assert_eq!(
+        field(row(&json, f.counter)?, "state")?.text(),
+        Some("verified")
+    );
+    assert_eq!(
+        field(row(&json, f.event_root)?, "declared_manifest")?.boolean(),
+        Some(true)
+    );
     let text = std::str::from_utf8(&output.stdout)?;
     assert!(!text.contains(std::str::from_utf8(SOURCE)?));
     assert!(!text.contains(std::str::from_utf8(COUNTER)?));
@@ -183,11 +280,15 @@ fn committed_slotless_event_audits_real_source_and_preserves_all_metadata() -> T
 }
 
 #[test]
-fn source_damage_is_a_nonzero_complete_fault_report_not_a_successful_metadata_only_read() -> TestResult {
+fn source_damage_is_a_nonzero_complete_fault_report_not_a_successful_metadata_only_read()
+-> TestResult {
     for (label, missing) in [("missing", true), ("corrupt", false)] {
         let f = Fixture::new(label)?;
-        if missing { fs::remove_file(f.object_path(f.source))?; }
-        else { fs::write(f.object_path(f.source), b"broken spool envelope")?; }
+        if missing {
+            fs::remove_file(f.object_path(f.source))?;
+        } else {
+            fs::write(f.object_path(f.source), b"broken spool envelope")?;
+        }
         let before = inventory(&f.root)?;
         let output = f.run(&[])?;
         assert!(!output.status.success());
@@ -195,8 +296,14 @@ fn source_damage_is_a_nonzero_complete_fault_report_not_a_successful_metadata_on
         assert_eq!(field(&json, "status")?.text(), Some("custody_faults"));
         assert_eq!(field(&json, "all_verified")?.boolean(), Some(false));
         assert_eq!(field(row(&json, f.source)?, "state")?.text(), Some(label));
-        assert_eq!(field(row(&json, f.counter)?, "state")?.text(), Some("verified"));
-        assert_eq!(field(&json, "event_record")?, &json_input::parse(&f.event.to_canonical_json())?);
+        assert_eq!(
+            field(row(&json, f.counter)?, "state")?.text(),
+            Some("verified")
+        );
+        assert_eq!(
+            field(&json, "event_record")?,
+            &json_input::parse(&f.event.to_canonical_json())?
+        );
         assert_eq!(inventory(&f.root)?, before);
     }
     Ok(())
@@ -209,11 +316,20 @@ fn lost_provenance_manifest_keeps_unknown_descendants_explicit() -> TestResult {
     let output = f.run(&[])?;
     assert!(!output.status.success());
     let json = report(&output)?;
-    assert_eq!(field(&json, "manifest_expansion_complete")?.boolean(), Some(false));
-    assert_eq!(field(row(&json, f.provenance)?, "state")?.text(), Some("missing"));
+    assert_eq!(
+        field(&json, "manifest_expansion_complete")?.boolean(),
+        Some(false)
+    );
+    assert_eq!(
+        field(row(&json, f.provenance)?, "state")?.text(),
+        Some("missing")
+    );
     assert!(row(&json, f.source).is_err());
     assert!(row(&json, f.counter).is_err());
-    assert_eq!(field(&json, "event_record")?, &json_input::parse(&f.event.to_canonical_json())?);
+    assert_eq!(
+        field(&json, "event_record")?,
+        &json_input::parse(&f.event.to_canonical_json())?
+    );
     Ok(())
 }
 
@@ -221,13 +337,20 @@ fn lost_provenance_manifest_keeps_unknown_descendants_explicit() -> TestResult {
 fn local_tombstone_remains_a_denial_when_payload_bytes_are_still_present() -> TestResult {
     let f = Fixture::new("tombstone")?;
     let tombstone = TombstoneRecord::new(
-        ObjectId::parse("object:custody-source")?, Generation(2), Generation(1),
-        TombstoneReason::Deleted, Some(f.source), ContentDigest::sha256(b"fixture privacy policy"),
+        ObjectId::parse("object:custody-source")?,
+        Generation(2),
+        Generation(1),
+        TombstoneReason::Deleted,
+        Some(f.source),
+        ContentDigest::sha256(b"fixture privacy policy"),
     )?;
     let bytes = tombstone_record_bytes(&tombstone)?;
-    fs::write(f.root.join("objects/tombstones").join(format!(
-        "{}.tomb", f.source.to_text().replacen(':', "-", 1),
-    )), &bytes)?;
+    fs::write(
+        f.root
+            .join("objects/tombstones")
+            .join(format!("{}.tomb", f.source.to_text().replacen(':', "-", 1),)),
+        &bytes,
+    )?;
     let before = inventory(&f.root)?;
     let output = f.run(&[])?;
     assert!(!output.status.success());
@@ -235,7 +358,10 @@ fn local_tombstone_remains_a_denial_when_payload_bytes_are_still_present() -> Te
     let source = row(&json, f.source)?;
     assert_eq!(field(source, "state")?.text(), Some("locally_tombstoned"));
     assert_eq!(field(source, "verified_payload_bytes")?, &Value::Null);
-    assert_eq!(field(source, "denial_digest")?.text(), Some(ContentDigest::sha256(&bytes).to_text().as_str()));
+    assert_eq!(
+        field(source, "denial_digest")?.text(),
+        Some(ContentDigest::sha256(&bytes).to_text().as_str())
+    );
     assert!(f.object_path(f.source).is_file());
     assert_eq!(inventory(&f.root)?, before);
     Ok(())
@@ -249,23 +375,36 @@ fn current_event_pin_and_work_limits_refuse_without_fallback_or_partial_output()
     no_report(&f.run_as("site:wrong", EVENT, &[])?);
     no_report(&f.run_as(SITE, "event:missing", &[])?);
     for options in [
-        ["--max-objects", "0"], ["--max-edges", "0"],
-        ["--max-io-calls", "0"], ["--max-read-bytes", "0"],
+        ["--max-objects", "0"],
+        ["--max-edges", "0"],
+        ["--max-io-calls", "0"],
+        ["--max-read-bytes", "0"],
         ["--max-report-bytes", "1024"],
-    ] { no_report(&f.run(&options)?); }
+    ] {
+        no_report(&f.run(&options)?);
+    }
     let cx = context(&f.directory)?;
     let mut deployment = ReferenceDeployment::open(&f.root, SITE, &cx)?;
     let mut successor = f.event.clone();
     successor.revision += 1;
     successor.supersedes = Some(f.event.revision_digest());
-    successor.uncertainty_reason = Some("later retained qualification; not automatic invalidation".to_owned());
-    let next = deployment.publish_event(&ReferencePolicyDecision {
-        event: successor, action: ReferencePolicyAction::Hold,
-    }, &cx)?;
+    successor.uncertainty_reason =
+        Some("later retained qualification; not automatic invalidation".to_owned());
+    let next = deployment.publish_event(
+        &ReferencePolicyDecision {
+            event: successor,
+            action: ReferencePolicyAction::Hold,
+        },
+        &cx,
+    )?;
     drop(deployment);
     assert_ne!(next.event_root, f.event_root);
     no_report(&f.run(&["--expected-root", &pin])?);
-    assert!(f.run(&["--expected-root", &next.event_root.to_text()])?.status.success());
+    assert!(
+        f.run(&["--expected-root", &next.event_root.to_text()])?
+            .status
+            .success()
+    );
     Ok(())
 }
 

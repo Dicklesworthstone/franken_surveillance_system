@@ -112,7 +112,7 @@ fn dwell_pins_bind_rule_analysis_package_recipe_and_source_root_without_coverage
             baseline.digest(),
             EventFusionProfile::for_long_dwell(changed, root)?.digest()
         );
-        let zero = ContentDigest::parse(&format!("sha256:{}", "00".repeat(32)))?;
+        let zero = ContentDigest::parse(format!("sha256:{}", "00".repeat(32)))?;
         let mut invalid = spec()?;
         let mut root = pin("graph");
         match field {

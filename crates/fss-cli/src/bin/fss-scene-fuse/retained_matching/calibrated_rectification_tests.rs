@@ -34,7 +34,7 @@ fn jpeg(camera: usize, exposure: usize) -> Test<Vec<u8>> {
         .collect::<Vec<_>>();
     assert_eq!(digits.len() % 2, 0);
     let mut bytes = Vec::with_capacity(digits.len() / 2);
-    for pair in digits.chunks_exact(2) {
+    for pair in digits.as_chunks::<2>().0 {
         bytes.push(u8::from_str_radix(std::str::from_utf8(pair)?, 16)?);
     }
     assert_eq!(h(&bytes).to_text(), RAW_DIGESTS[camera]);

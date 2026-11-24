@@ -23,7 +23,9 @@ fn multipart_request(stream: &mut TcpStream) -> Result<Request, String> {
         if Instant::now() >= deadline {
             return Err("multipart fixture request deadline".into());
         }
-        let read = stream.read(&mut buffer).map_err(|error| error.to_string())?;
+        let read = stream
+            .read(&mut buffer)
+            .map_err(|error| error.to_string())?;
         if read == 0 {
             return Err("truncated multipart request head".into());
         }
@@ -154,7 +156,8 @@ impl MultipartServer {
                             String::new(),
                             "<InitiateMultipartUploadResult><Bucket>test-archive</Bucket>\
                              <Key>object.bin</Key><UploadId>two-part-upload</UploadId>\
-                             </InitiateMultipartUploadResult>".to_owned(),
+                             </InitiateMultipartUploadResult>"
+                                .to_owned(),
                         )
                     }
                     1 => {
@@ -175,7 +178,9 @@ impl MultipartServer {
                             != "GET /test-archive/object.bin?max-parts=1000&part-number-marker=0&uploadId=two-part-upload HTTP/1.1"
                             || !request.body.is_empty()
                         {
-                            return Err("expected positive bounded inventory before forward work".into());
+                            return Err(
+                                "expected positive bounded inventory before forward work".into()
+                            );
                         }
                         (
                             String::new(),
@@ -197,7 +202,9 @@ impl MultipartServer {
                             || request.body != FINAL_BYTES
                             || request.headers.get("x-amz-checksum-sha256") != Some(&final_checksum)
                         {
-                            return Err("cold recovery did not send only the final three bytes".into());
+                            return Err(
+                                "cold recovery did not send only the final three bytes".into()
+                            );
                         }
                         (
                             format!(
@@ -220,7 +227,9 @@ impl MultipartServer {
                             || request.headers.get("if-none-match").map(String::as_str) != Some("*")
                             || request.body != expected.as_bytes()
                         {
-                            return Err("completion lost recovered or newly acknowledged part".into());
+                            return Err(
+                                "completion lost recovered or newly acknowledged part".into()
+                            );
                         }
                         (
                             String::new(),
@@ -297,14 +306,26 @@ fn lost_first_part_ack_reopens_then_sends_only_the_final_range_and_completes_two
     let prepared = run(&args)?;
     assert!(prepared.status.success(), "{prepared:?}");
     let prepared = fields(&prepared)?;
-    assert_eq!(prepared.get("total_parts").and_then(Value::integer), Some(2));
+    assert_eq!(
+        prepared.get("total_parts").and_then(Value::integer),
+        Some(2)
+    );
     let resume = with_pin(args, &prepared, "upload-s3-resume")?;
     let completed = run(&resume)?;
     assert!(completed.status.success(), "{completed:?}");
     let completed = fields(&completed)?;
-    assert_eq!(completed.get("phase").and_then(Value::text), Some("completed"));
-    assert_eq!(completed.get("confirmed_parts").and_then(Value::integer), Some(2));
-    assert_eq!(completed.get("total_parts").and_then(Value::integer), Some(2));
+    assert_eq!(
+        completed.get("phase").and_then(Value::text),
+        Some("completed")
+    );
+    assert_eq!(
+        completed.get("confirmed_parts").and_then(Value::integer),
+        Some(2)
+    );
+    assert_eq!(
+        completed.get("total_parts").and_then(Value::integer),
+        Some(2)
+    );
     assert_eq!(completed.get("locally_settled"), Some(&Value::Bool(true)));
     assert_eq!(
         completed.get("source_digest").and_then(Value::text),
@@ -328,8 +349,14 @@ fn lost_first_part_ack_reopens_then_sends_only_the_final_range_and_completes_two
         .get("upload_remaining")
         .and_then(Value::object)
         .ok_or("remaining")?;
-    assert_eq!(consumed.get("storageOperations").and_then(Value::integer), Some(7));
-    assert_eq!(remaining.get("storageOperations").and_then(Value::integer), Some(2));
+    assert_eq!(
+        consumed.get("storageOperations").and_then(Value::integer),
+        Some(7)
+    );
+    assert_eq!(
+        remaining.get("storageOperations").and_then(Value::integer),
+        Some(2)
+    );
 
     fs::remove_file(directory.0.join("source"))?;
     fs::remove_file(directory.0.join("credentials"))?;
@@ -337,10 +364,19 @@ fn lost_first_part_ack_reopens_then_sends_only_the_final_range_and_completes_two
     assert!(cold.status.success(), "{cold:?}");
     let cold = fields(&cold)?;
     assert_eq!(cold.get("phase").and_then(Value::text), Some("completed"));
-    assert_eq!(cold.get("confirmed_parts").and_then(Value::integer), Some(2));
+    assert_eq!(
+        cold.get("confirmed_parts").and_then(Value::integer),
+        Some(2)
+    );
     assert_eq!(cold.get("receipt_digest"), completed.get("receipt_digest"));
-    assert_eq!(cold.get("upload_consumed"), completed.get("upload_consumed"));
-    assert_eq!(cold.get("source_verified_this_invocation"), Some(&Value::Bool(false)));
+    assert_eq!(
+        cold.get("upload_consumed"),
+        completed.get("upload_consumed")
+    );
+    assert_eq!(
+        cold.get("source_verified_this_invocation"),
+        Some(&Value::Bool(false))
+    );
     assert_eq!(
         cold.get("provider_work_requested_this_invocation"),
         Some(&Value::Bool(false))
@@ -348,7 +384,10 @@ fn lost_first_part_ack_reopens_then_sends_only_the_final_range_and_completes_two
     let requests = server.finish()?;
     assert_eq!(requests.len(), 5);
     assert_eq!(
-        requests.iter().filter(|request| request.first.starts_with("PUT ")).count(),
+        requests
+            .iter()
+            .filter(|request| request.first.starts_with("PUT "))
+            .count(),
         2
     );
     assert_eq!(requests[1].body.len(), PART_BYTES);

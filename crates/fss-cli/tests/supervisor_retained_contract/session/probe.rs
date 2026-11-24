@@ -64,13 +64,11 @@ fn tool(
     let mut input = child.stdin.take().ok_or("MCP stdin")?;
     writeln!(
         input,
-        "{}",
-        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"retained-probe-contract","version":"1"}}}"#
+        "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{{}},\"clientInfo\":{{\"name\":\"retained-probe-contract\",\"version\":\"1\"}}}}}}"
     )?;
     writeln!(
         input,
-        "{}",
-        r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#
+        "{{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}}"
     )?;
     if notification {
         writeln!(
@@ -82,7 +80,10 @@ fn tool(
                 ("params", call)
             ])
         )?;
-        writeln!(input, "{}", r#"{"jsonrpc":"2.0","id":3,"method":"ping"}"#)?;
+        writeln!(
+            input,
+            "{{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"ping\"}}"
+        )?;
     } else {
         writeln!(
             input,

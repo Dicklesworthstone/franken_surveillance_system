@@ -340,6 +340,7 @@ fn serve_one(listener: &TcpListener, behavior: Behavior) -> Test<Vec<String>> {
             Err(e) => return Err(e.into()),
         }
     };
+    peer.set_nonblocking(false)?;
     peer.set_read_timeout(Some(Duration::from_secs(10)))?;
     peer.set_write_timeout(Some(Duration::from_secs(10)))?;
     peer.set_nodelay(true)?;

@@ -5,6 +5,7 @@
 use std::path::{Component, Path, PathBuf};
 
 pub(crate) const MAX_FILE_BYTES: usize = 262_144;
+#[cfg(target_os = "linux")]
 const MAX_IO_CALLS: usize = 1024;
 const FILE: &str = "ERR-ONVIF-PRIVATE-FILE-001";
 
@@ -352,6 +353,10 @@ mod native {
 }
 
 #[cfg(not(target_os = "linux"))]
+#[allow(
+    dead_code,
+    reason = "Shared private-file stub refuses on non-Linux targets and is included by multiple binaries"
+)]
 mod native {
     use super::*;
     pub(crate) struct InputLease;
@@ -404,6 +409,10 @@ mod native {
     }
 }
 
+#[allow(
+    unused_imports,
+    reason = "Shared private-file helpers are selectively used by each including binary"
+)]
 pub(crate) use native::{InputLease, Output};
 
 #[cfg(all(test, target_os = "linux"))]

@@ -280,7 +280,6 @@ fn output(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::ffi::OsString;
 
     const PIN: &str = "sha256:1111111111111111111111111111111111111111111111111111111111111111";

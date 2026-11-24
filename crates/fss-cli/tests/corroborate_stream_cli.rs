@@ -408,7 +408,7 @@ fn unsupported_options_and_orphan_budgets_refuse_before_deployment_io() -> Test 
         ),
         (
             vec!["--stream-corroborate", "--sensor-health", "latest"],
-            "requires policy conservative-v1",
+            "requires conservative-v1",
         ),
     ] {
         let mut args = prefix.clone();

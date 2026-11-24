@@ -29,14 +29,19 @@ impl Inputs {
         scalar: &ScalarExecCx,
     ) -> RunResult<Self> {
         if action.incremental.is_some() || action.retain_coverage.is_some() {
-            return Err(WatchError::InvalidPlan("whole-recording analysis has no checkpoint or coverage owner").into());
+            return Err(WatchError::InvalidPlan(
+                "whole-recording analysis has no checkpoint or coverage owner",
+            )
+            .into());
         }
         match scope {
             Scope::Watch if action.dwell.is_some() || action.stream_dwell.is_some() => {
                 return Err(WatchError::InvalidPlan("streaming watch has no dwell owner").into());
             }
             Scope::Dwell if action.dwell.is_none() || action.stream_watch.is_some() => {
-                return Err(WatchError::InvalidPlan("streaming dwell requires only a dwell rule").into());
+                return Err(
+                    WatchError::InvalidPlan("streaming dwell requires only a dwell rule").into(),
+                );
             }
             _ => {}
         }
@@ -83,10 +88,22 @@ impl Inputs {
         scalar: &ScalarExecCx,
     ) -> RunResult<(LongWatchReport, Option<EventFusionReport>)> {
         let detector = self.detector(action, scalar)?;
-        let plan = plan(action, deployment, limits.decode.read_limits, Scope::Watch, cx)?;
+        let plan = plan(
+            action,
+            deployment,
+            limits.decode.read_limits,
+            Scope::Watch,
+            cx,
+        )?;
         let report = match &detector {
             Some(detector) => LongWatchReport::analyze_with_detector(
-                deployment, &plan, action.options, limits, detector, action.health_screen, cx,
+                deployment,
+                &plan,
+                action.options,
+                limits,
+                detector,
+                action.health_screen,
+                cx,
             )?,
             None if action.health_screen => {
                 LongWatchReport::analyze_screened(deployment, &plan, action.options, limits, cx)?
@@ -103,7 +120,11 @@ impl Inputs {
         // Keep the native preflight before any publication or output.
         if fusion.is_some() {
             render_watch(
-                action, &report, deployment.current_anchor().commit_sequence, None, fusion.as_ref(),
+                action,
+                &report,
+                deployment.current_anchor().commit_sequence,
+                None,
+                fusion.as_ref(),
             )?;
         }
         let sequence = if report.health_diagnostic().is_some() {
@@ -129,15 +150,35 @@ impl Inputs {
         scalar: &ScalarExecCx,
     ) -> RunResult<(LongDwellReport, Option<EventFusionReport>)> {
         let detector = self.detector(action, scalar)?;
-        let rule = action.dwell.ok_or(WatchError::InvalidPlan("streaming dwell requires a rule"))?;
-        let plan = plan(action, deployment, limits.decode.read_limits, Scope::Dwell, cx)?;
+        let rule = action
+            .dwell
+            .ok_or(WatchError::InvalidPlan("streaming dwell requires a rule"))?;
+        let plan = plan(
+            action,
+            deployment,
+            limits.decode.read_limits,
+            Scope::Dwell,
+            cx,
+        )?;
         let report = match &detector {
             Some(detector) => LongDwellReport::analyze_with_detector(
-                deployment, &plan, rule, action.options, limits, detector, action.health_screen, cx,
+                deployment,
+                &plan,
+                rule,
+                action.options,
+                limits,
+                detector,
+                action.health_screen,
+                cx,
             )?,
-            None if action.health_screen => {
-                LongDwellReport::analyze_screened(deployment, &plan, rule, action.options, limits, cx)?
-            }
+            None if action.health_screen => LongDwellReport::analyze_screened(
+                deployment,
+                &plan,
+                rule,
+                action.options,
+                limits,
+                cx,
+            )?,
             None => LongDwellReport::analyze(deployment, &plan, rule, action.options, limits, cx)?,
         };
         let fusion = match (&self.profile, &self.package) {
@@ -243,8 +284,7 @@ fn render(
     retention: Option<&HistoricalHealthRetention>,
     fusion: Option<&EventFusionReport>,
 ) -> RunResult<String> {
-    let native = super::super::health::with_watch_diagnostic(
-        native, diagnostic, retention, &action.rerun,
-    )?;
+    let native =
+        super::super::health::with_watch_diagnostic(native, diagnostic, retention, &action.rerun)?;
     Ok(super::super::detector::with_fusion(native, fusion)?)
 }

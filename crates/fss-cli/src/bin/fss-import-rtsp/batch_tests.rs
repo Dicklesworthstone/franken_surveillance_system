@@ -6,21 +6,36 @@ use super::*;
 fn child(generation: u64, codec: &str) -> Vec<String> {
     let digest = ContentDigest::sha256(b"batch-import-operator-fixture").to_text();
     [
-        "--archive", "/absent-batch-fixture/source",
-        "--root", "/absent-batch-fixture/destination",
-        "--site", "site:test",
-        "--window-slot", "recording-test",
-        "--window-root", &digest,
-        "--codec", codec,
-        "--sensor-id", "sensor:test",
-        "--stream-id", "stream:test",
-        "--generation", &generation.to_string(),
-        "--anchor", &digest,
-        "--receive-clock", &digest,
-        "--receive-time-ns", "2000000000",
-        "--owner-authorized", "yes",
-        "--read-originals", "yes",
-        "--retain-originals", "yes",
+        "--archive",
+        "/absent-batch-fixture/source",
+        "--root",
+        "/absent-batch-fixture/destination",
+        "--site",
+        "site:test",
+        "--window-slot",
+        "recording-test",
+        "--window-root",
+        &digest,
+        "--codec",
+        codec,
+        "--sensor-id",
+        "sensor:test",
+        "--stream-id",
+        "stream:test",
+        "--generation",
+        &generation.to_string(),
+        "--anchor",
+        &digest,
+        "--receive-clock",
+        &digest,
+        "--receive-time-ns",
+        "2000000000",
+        "--owner-authorized",
+        "yes",
+        "--read-originals",
+        "yes",
+        "--retain-originals",
+        "yes",
     ]
     .into_iter()
     .map(str::to_owned)
@@ -114,9 +129,14 @@ fn pure_plan_preserves_each_native_epoch_and_sums_not_widens_limits() -> Result<
     );
     assert_eq!(field(&preview, "atomic")?.boolean(), Some(false));
     assert_eq!(field(&preview, "network")?.text(), Some("none"));
-    let children = field(&preview, "children")?.array().ok_or("child previews")?;
+    let children = field(&preview, "children")?
+        .array()
+        .ok_or("child previews")?;
     for (index, child) in children.iter().enumerate() {
-        assert_eq!(field(child, "generation")?.integer(), Some(index as i128 + 1));
+        assert_eq!(
+            field(child, "generation")?.integer(),
+            Some(index as i128 + 1)
+        );
         assert_eq!(field(child, "capture_time_label")?.text(), Some("unknown"));
         assert_eq!(field(child, "maximum_frames")?.integer(), Some(256));
     }
@@ -155,7 +175,15 @@ fn all_children_validate_before_any_effect_and_child_approval_is_forbidden() -> 
 
 #[test]
 fn duplicate_and_malformed_or_oversized_batches_refuse() {
-    for json in ["[]", "{}", "[1]", "[[1]]", "[[\"--root\"]]", "null", "[] trailing"] {
+    for json in [
+        "[]",
+        "{}",
+        "[1]",
+        "[[1]]",
+        "[[\"--root\"]]",
+        "null",
+        "[] trailing",
+    ] {
         assert!(BatchPlan::parse(&["--requests".into(), json.into()]).is_err());
     }
     assert!(BatchPlan::parse(&input(&[child(1, "avc"), child(1, "avc")])).is_err());
@@ -173,7 +201,14 @@ fn canonical_child_ordering_is_ignored_but_batch_order_and_bounds_are_bound() ->
     let first = child(1, "avc");
     let second = child(2, "hevc");
     let original = BatchPlan::parse(&input(&[first.clone(), second.clone()]))?.approval()?;
-    let reordered = first.chunks_exact(2).rev().flatten().cloned().collect();
+    let reordered = first
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .rev()
+        .flatten()
+        .cloned()
+        .collect();
     assert_eq!(
         BatchPlan::parse(&input(&[reordered, second.clone()]))?.approval()?,
         original
@@ -184,14 +219,21 @@ fn canonical_child_ordering_is_ignored_but_batch_order_and_bounds_are_bound() ->
     );
     let mut changed = second;
     set(&mut changed, "--max-work", "1000");
-    assert_ne!(BatchPlan::parse(&input(&[first, changed]))?.approval()?, original);
+    assert_ne!(
+        BatchPlan::parse(&input(&[first, changed]))?.approval()?,
+        original
+    );
     Ok(())
 }
 
 #[test]
 fn absent_stale_child_or_mutated_plan_approval_cannot_emit_or_import() -> Result<()> {
     let mut plan = approved(2)?;
-    for approval in [None, Some(plan.pins[0]), Some(ContentDigest::sha256(b"stale"))] {
+    for approval in [
+        None,
+        Some(plan.pins[0]),
+        Some(ContentDigest::sha256(b"stale")),
+    ] {
         plan.approve = approval;
         let mut script = Script::default();
         assert_eq!(execute(&mut plan, &mut script), Err(APPROVAL));
@@ -220,7 +262,10 @@ fn successful_batch_returns_every_original_receipt_without_cross_epoch_claims() 
     let end = terminal(&script)?;
     assert_eq!(field(end, "complete")?.boolean(), Some(true));
     assert_eq!(field(end, "completed_imports")?.integer(), Some(3));
-    assert_eq!(field(end, "continuity_between_imports")?.boolean(), Some(false));
+    assert_eq!(
+        field(end, "continuity_between_imports")?.boolean(),
+        Some(false)
+    );
     assert_eq!(field(end, "absence_certifiable")?.boolean(), Some(false));
     Ok(())
 }
@@ -232,7 +277,10 @@ fn unconfirmed_child_stops_and_preserves_completed_prefix_without_rollback_claim
         fault_at: Some(1),
         ..Script::default()
     };
-    assert_eq!(execute(&mut plan, &mut script), Err("ERR-RTSP-IMPORT-SOURCE-001"));
+    assert_eq!(
+        execute(&mut plan, &mut script),
+        Err("ERR-RTSP-IMPORT-SOURCE-001")
+    );
     assert_eq!(script.calls.len(), 2);
     let end = terminal(&script)?;
     assert_eq!(field(end, "complete")?.boolean(), Some(false));
@@ -273,7 +321,10 @@ fn malformed_or_wrong_native_receipt_is_unconfirmed_and_never_advances() -> Resu
     };
     assert_eq!(execute(&mut plan, &mut script), Err(RECEIPT));
     assert_eq!(script.calls.len(), 2);
-    assert_eq!(field(terminal(&script)?, "completed_imports")?.integer(), Some(1));
+    assert_eq!(
+        field(terminal(&script)?, "completed_imports")?.integer(),
+        Some(1)
+    );
     let wrong = object(&[
         ("kind", string("imported")),
         ("approval_digest", string(&plan.pins[0].to_text())),

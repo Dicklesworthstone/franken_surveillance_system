@@ -418,7 +418,7 @@ fn render(
                 ("sensor_id", string(&c.sensor)),
                 (
                     "observes",
-                    strings(&c.observes.iter().cloned().collect::<Vec<_>>()),
+                    strings(c.observes.iter().cloned().collect::<Vec<_>>()),
                 ),
                 ("installation_cost_units", c.installation_cost.to_string()),
                 ("sensor_loss_cost_units", c.disable_cost.to_string()),
@@ -434,7 +434,7 @@ fn render(
                 ("zone", string(zone)),
                 (
                     "sensors",
-                    strings(&sensors.iter().cloned().collect::<Vec<_>>()),
+                    strings(sensors.iter().cloned().collect::<Vec<_>>()),
                 ),
             ])
         })
@@ -484,11 +484,11 @@ fn render(
                 ("moves", array(&moves)),
                 (
                     "entries",
-                    strings(&query.baseline.entries.iter().cloned().collect::<Vec<_>>()),
+                    strings(query.baseline.entries.iter().cloned().collect::<Vec<_>>()),
                 ),
                 (
                     "targets",
-                    strings(&query.baseline.targets.iter().cloned().collect::<Vec<_>>()),
+                    strings(query.baseline.targets.iter().cloned().collect::<Vec<_>>()),
                 ),
                 ("existing_sensor_loss_costs", counts(&query.baseline.costs)),
                 ("candidates", array(&declarations)),

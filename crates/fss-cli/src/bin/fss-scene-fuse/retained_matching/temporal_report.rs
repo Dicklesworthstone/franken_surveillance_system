@@ -422,6 +422,10 @@ pub(super) fn compute(
     })
 }
 
+#[allow(
+    dead_code,
+    reason = "Convenience wrapper retained for tests and callers without clock replay"
+)]
 pub(super) fn assumptions() -> String {
     assumptions_with_clock(false)
 }

@@ -393,7 +393,10 @@ fn inference_inspection_uses_one_allowance_through_final_revalidation() -> TestR
                 .arg("--output")
                 .arg(&destination)
                 .output()?;
-            assert!(!refused.status.success(), "{key} with one less was accepted");
+            assert!(
+                !refused.status.success(),
+                "{key} with one less was accepted"
+            );
             assert!(refused.stdout.is_empty());
             assert!(!destination.exists());
             assert_eq!(deployment_bytes(&root)?, before);

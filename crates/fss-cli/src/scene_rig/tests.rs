@@ -82,10 +82,10 @@ fn document(twin: &PropertyTwin) -> Result<Value, Box<dyn std::error::Error>> {
 }
 
 fn cameras_mut(doc: &mut Value) -> Result<&mut Vec<Value>, Box<dyn std::error::Error>> {
-    if let Value::Object(fields) = doc {
-        if let Some(Value::Array(rows)) = fields.get_mut("cameras") {
-            return Ok(rows);
-        }
+    if let Value::Object(fields) = doc
+        && let Some(Value::Array(rows)) = fields.get_mut("cameras")
+    {
+        return Ok(rows);
     }
     Err("test cameras missing".into())
 }

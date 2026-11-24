@@ -55,7 +55,7 @@ pub(crate) fn arguments(
     let mut seen = BTreeSet::new();
     let mut input = None;
     let mut expected = None;
-    for pair in args[1..].chunks_exact(2) {
+    for pair in args[1..].as_chunks::<2>().0 {
         let key = pair[0].to_str().ok_or("UTF-8 option names required")?;
         if !seen.insert(key) {
             return Err("duplicate verification option");

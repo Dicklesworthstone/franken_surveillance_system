@@ -10,6 +10,7 @@ use fss_reference::rtsp::recording_archive::checkpoint::write_ahead::{
 use std::cell::Cell;
 use std::ffi::OsString;
 use std::sync::atomic::{AtomicU64, Ordering};
+#[allow(clippy::duplicate_mod)]
 #[path = "../../../../fss-reference/tests/hevc_recording_support/mod.rs"]
 mod source;
 type Test<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;

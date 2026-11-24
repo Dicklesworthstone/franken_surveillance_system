@@ -342,14 +342,14 @@ fn pump(
             ReadStep::More => {}
             ReadStep::Frame(frame) => {
                 out.frames_recv += 1;
-                if let Ok(inbound) = client.handle(&frame) {
-                    if inbound.cmd == cmd::STATUS {
-                        let dps = String::from_utf8_lossy(&inbound.payload).into_owned();
-                        if !dps.is_empty() {
-                            out.status_reports
-                                .push((dps.clone(), t0.elapsed().as_nanos() as u64));
-                            out.last_dps = Some(dps);
-                        }
+                if let Ok(inbound) = client.handle(&frame)
+                    && inbound.cmd == cmd::STATUS
+                {
+                    let dps = String::from_utf8_lossy(&inbound.payload).into_owned();
+                    if !dps.is_empty() {
+                        out.status_reports
+                            .push((dps.clone(), t0.elapsed().as_nanos() as u64));
+                        out.last_dps = Some(dps);
                     }
                 }
             }

@@ -113,7 +113,7 @@ pub(super) struct SourcePlan {
 }
 impl SourcePlan {
     pub(super) fn parse(args: &[OsString]) -> Result<Self, &'static str> {
-        if args.len() > super::plan::MAX_ARGUMENTS + 10 || args.len() % 2 != 0 {
+        if args.len() > super::plan::MAX_ARGUMENTS + 10 || !args.len().is_multiple_of(2) {
             return Err("bounded key/value capture arguments required");
         }
         let keys = [
@@ -125,7 +125,7 @@ impl SourcePlan {
         ];
         let mut values = BTreeMap::new();
         let mut native = Vec::new();
-        for pair in args.chunks_exact(2) {
+        for pair in args.as_chunks::<2>().0 {
             let key = pair[0].to_str().ok_or("UTF-8 option required")?;
             let value = pair[1].to_str().ok_or("UTF-8 option value required")?;
             if key.len() > 4096 || value.len() > 4096 {

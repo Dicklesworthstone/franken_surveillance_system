@@ -20,6 +20,9 @@ use fss_reference::deployment_session::{
 use super::json::MAX_FRAME_BYTES;
 use super::json::{self, Value};
 
+#[path = "ops.rs"]
+mod ops;
+
 const PROTOCOL_VERSION: &str = "2025-06-18";
 const MAX_BUDGET_TOKENS: u64 = 4096;
 const MAX_PAGE_ENTRIES: u64 = 4096;
@@ -126,6 +129,7 @@ impl RequestId {
 }
 
 /// Parsing and native admission finish on the transport owner; execution is an owned handoff.
+#[allow(clippy::large_enum_variant)]
 pub(super) enum Dispatch {
     Ignore,
     Reply {
@@ -154,6 +158,8 @@ pub(super) struct Server {
     allow_replay_source_verification: bool,
     allow_qsr_source_verification: bool,
     allow_tracks_source_verification: bool,
+    allow_visual_hydration: bool,
+    granted_capabilities: Vec<String>,
     phase: Phase,
     request_ids: Option<BTreeSet<RequestKey>>,
 }
@@ -167,6 +173,8 @@ impl Server {
             allow_replay_source_verification: false,
             allow_qsr_source_verification: false,
             allow_tracks_source_verification: false,
+            allow_visual_hydration: false,
+            granted_capabilities: Vec::new(),
             phase: Phase::New,
             request_ids: None,
         }
@@ -202,6 +210,18 @@ impl Server {
     /// Separate launcher-owned grant for immutable detector-track source verification.
     pub(super) fn with_tracks_source_verification(mut self) -> Self {
         self.allow_tracks_source_verification = true;
+        self
+    }
+
+    /// Separate launcher-owned grant for privacy-masked H3 visual keyframe/crop hydration.
+    pub(super) fn with_visual_hydration(mut self) -> Self {
+        self.allow_visual_hydration = true;
+        self
+    }
+
+    /// Launcher-owned capability grants forwarded exclusively by the server operator.
+    pub(super) fn with_granted_capabilities(mut self, capabilities: Vec<String>) -> Self {
+        self.granted_capabilities = capabilities;
         self
     }
 
@@ -399,7 +419,14 @@ impl Server {
                 .get("transition")
                 .and_then(Value::text)
                 .ok_or((-32602, "Expected investigation transition"))?;
-            let command = if super::coordination::selects(transition) {
+            let command = if ops::selects_investigate_transition(transition) {
+                ops::investigate_command(
+                    &self.root,
+                    &self.principal,
+                    &self.granted_capabilities,
+                    args,
+                )?
+            } else if super::coordination::selects(transition) {
                 super::coordination::command(&self.root, &self.principal, args)?
             } else {
                 super::investigate::command(&self.root, &self.principal, args)?
@@ -407,7 +434,17 @@ impl Server {
             return admit(command);
         }
         if matches!(name, "plan" | "commit" | "cancel") {
-            let command = super::control::command(name, &self.root, &self.principal, args)?;
+            let command = if ops::selects_control_intent(name, args) {
+                ops::control_command(
+                    name,
+                    &self.root,
+                    &self.principal,
+                    &self.granted_capabilities,
+                    args,
+                )?
+            } else {
+                super::control::command(name, &self.root, &self.principal, args)?
+            };
             return admit(command);
         }
         if name == "feedback" {
@@ -726,8 +763,22 @@ impl Server {
             "query" if args.get("target").and_then(Value::text) == Some("localizations") => {
                 super::localizations::arguments(args, self.base_args("query"))?
             }
+            "query" if ops::selects_query_target(args) => {
+                let command = ops::query_command(
+                    &self.root,
+                    &self.principal,
+                    &self.granted_capabilities,
+                    args,
+                )?;
+                return admit(command);
+            }
             "query" if args.get("target").and_then(Value::text) == Some("evidence-hydration") => {
-                super::event_hydration::arguments(args, self.base_args("query"))?
+                super::event_hydration::arguments(
+                    args,
+                    self.allow_visual_hydration,
+                    &self.granted_capabilities,
+                    self.base_args("query"),
+                )?
             }
             "query" => {
                 if !only(
@@ -987,6 +1038,40 @@ pub(super) fn error(id: &str, code: i32, message: &str) -> String {
     )
 }
 
+fn extract_h3_image_blocks(output: &str) -> Option<Vec<(String, String)>> {
+    use fss_core::json_input::{Value as CoreValue, parse_mcp_reply};
+    let parsed = parse_mcp_reply(output).ok()?;
+    let root = parsed.object()?;
+    if root.get("payloadSchema").and_then(CoreValue::text)
+        != Some(fss_cli::query_cmd::hydration::H3_PAYLOAD_SCHEMA)
+        || root.get("outcome").and_then(CoreValue::text) != Some("ok")
+    {
+        return None;
+    }
+    let frames = root
+        .get("payload")
+        .and_then(CoreValue::object)?
+        .get("frames")
+        .and_then(CoreValue::array)?;
+    if frames.is_empty() || frames.len() > fss_cli::query_cmd::hydration::MAX_H3_FRAMES {
+        return None;
+    }
+    let mut blocks = Vec::with_capacity(frames.len());
+    for frame in frames {
+        let obj = frame.object()?;
+        let data = obj.get("jpegBase64").and_then(CoreValue::text)?;
+        if data.is_empty() {
+            return None;
+        }
+        let mime = obj
+            .get("mimeType")
+            .and_then(CoreValue::text)
+            .unwrap_or("image/jpeg");
+        blocks.push((data.to_owned(), mime.to_owned()));
+    }
+    Some(blocks)
+}
+
 fn tool_result(output: &str, failed: bool) -> String {
     let (output, failed) = if output.len() > MAX_MCP_TOOL_OUTPUT_BYTES {
         (
@@ -996,6 +1081,24 @@ fn tool_result(output: &str, failed: bool) -> String {
     } else {
         (output, failed)
     };
+    if !failed && let Some(images) = extract_h3_image_blocks(output) {
+        let mut content = String::new();
+        content.push_str(r#"{"type":"text","text":"#);
+        content.push_str(&quote(output));
+        content.push('}');
+        for (data, mime) in &images {
+            content.push_str(r#",{"type":"image","data":"#);
+            content.push_str(&quote(data));
+            content.push_str(r#","mimeType":"#);
+            content.push_str(&quote(mime));
+            content.push('}');
+        }
+        let formatted =
+            format!("{{\"content\":[{content}],\"structuredContent\":{output},\"isError\":false}}");
+        if formatted.len() <= MAX_MCP_TOOL_OUTPUT_BYTES * 6 {
+            return formatted;
+        }
+    }
     format!(
         "{{\"content\":[{{\"type\":\"text\",\"text\":{}}}],\"isError\":{failed}}}",
         quote(output)
@@ -2814,6 +2917,44 @@ mod tests {
         ));
         let bounded = tool_result(&"x".repeat(MAX_MCP_TOOL_OUTPUT_BYTES + 1), false);
         assert!(bounded.len() < 1024 && bounded.contains("\"isError\":true"));
+
+        // H3 visual response emits both MCP image content blocks and structuredContent.
+        let h3_envelope = r#"{"schema":"fss.agent_response_envelope.v1","outcome":"ok","payloadSchema":"fss.agent_hydration_h3.v1","payload":{"frames":[{"segmentIndex":0,"mimeType":"image/jpeg","jpegBase64":"/9j/4AAQ"}]}}"#;
+        let h3_wire = tool_result(h3_envelope, false);
+        let parsed = fss_cli::json_input::parse(&h3_wire).expect("valid MCP JSON");
+        let obj = parsed.object().expect("result object");
+        assert_eq!(
+            obj.get("isError")
+                .and_then(fss_cli::json_input::Value::boolean),
+            Some(false)
+        );
+        assert!(obj.contains_key("structuredContent"));
+        let blocks = obj
+            .get("content")
+            .and_then(fss_cli::json_input::Value::array)
+            .expect("content blocks");
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(
+            blocks[0]
+                .object()
+                .and_then(|b| b.get("type"))
+                .and_then(fss_cli::json_input::Value::text),
+            Some("text")
+        );
+        let img = blocks[1].object().expect("image block");
+        assert_eq!(
+            img.get("type").and_then(fss_cli::json_input::Value::text),
+            Some("image")
+        );
+        assert_eq!(
+            img.get("mimeType")
+                .and_then(fss_cli::json_input::Value::text),
+            Some("image/jpeg")
+        );
+        assert_eq!(
+            img.get("data").and_then(fss_cli::json_input::Value::text),
+            Some("/9j/4AAQ")
+        );
     }
 
     #[test]

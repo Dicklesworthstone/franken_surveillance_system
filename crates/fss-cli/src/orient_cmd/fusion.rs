@@ -142,7 +142,7 @@ fn field<'a>(map: &'a BTreeMap<String, Value>, key: &str) -> Result<&'a Value, F
     ))
 }
 
-fn as_text<'a>(value: &'a Value) -> Result<&'a str, FusionExplainError> {
+fn as_text(value: &Value) -> Result<&str, FusionExplainError> {
     value.text().ok_or(FusionExplainError::InvalidCalibration(
         "score calibration expected string field",
     ))

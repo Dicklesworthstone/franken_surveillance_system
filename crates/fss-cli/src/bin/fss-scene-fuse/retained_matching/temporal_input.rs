@@ -246,6 +246,10 @@ fn validate_declarations(views: &[View]) -> Result<()> {
 
 /// Bind every original exposure and its full aligned interval before descriptor expansion.
 /// Repeated encoded bytes are allowed; they are not a second independent sensor claim.
+#[allow(
+    dead_code,
+    reason = "Convenience wrapper retained for tests and callers without clock replay"
+)]
 pub(super) fn bind(
     query: &Query,
     resolved: &[ResolvedFrame<'_>],

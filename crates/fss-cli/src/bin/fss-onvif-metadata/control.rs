@@ -140,7 +140,7 @@ fn parse_cold(args: &[OsString]) -> Result<ColdOptions, &'static str> {
     let reconcile = command == "reconcile-operation";
     let recovery = command == "recover-created";
     let mut values = BTreeMap::new();
-    for pair in args[1..].chunks_exact(2) {
+    for pair in args[1..].as_chunks::<2>().0 {
         let key = pair[0].to_str().ok_or(ARGUMENT_ERROR)?;
         let common = matches!(key, "--root" | "--site" | "--principal");
         let specific = if listing {
@@ -817,14 +817,14 @@ fn kind_name(kind: ControlKind) -> &'static str {
 fn cleanup_options(
     args: &[OsString],
 ) -> Result<(Plan, ContentDigest, ContentDigest), &'static str> {
-    if args.len() > 70 || args.len() % 2 != 0 {
+    if args.len() > 70 || !args.len().is_multiple_of(2) {
         return Err(ARGUMENT_ERROR);
     }
     let mut remaining = Vec::new();
     let mut identity = None;
     let mut expected_root = None;
     let mut expected_control = None;
-    for pair in args.chunks_exact(2) {
+    for pair in args.as_chunks::<2>().0 {
         match pair[0].to_str() {
             Some("--subscription-id") if identity.is_none() => {
                 identity = Some(digest(pair[1].to_str().ok_or(ARGUMENT_ERROR)?)?);
@@ -1078,7 +1078,7 @@ mod tests {
             "--recover",
         ] {
             let mut changed = vec![valid[0].clone()];
-            for pair in valid[1..].chunks_exact(2) {
+            for pair in valid[1..].as_chunks::<2>().0 {
                 if pair[0] != missing {
                     changed.extend_from_slice(pair);
                 }
@@ -1172,7 +1172,7 @@ mod tests {
             "--reconcile",
         ] {
             let mut changed = vec![valid[0].clone()];
-            for pair in valid[1..].chunks_exact(2) {
+            for pair in valid[1..].as_chunks::<2>().0 {
                 if pair[0] != missing {
                     changed.extend_from_slice(pair);
                 }

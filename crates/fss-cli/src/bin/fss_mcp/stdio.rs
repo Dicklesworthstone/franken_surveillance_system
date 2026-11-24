@@ -242,25 +242,33 @@ mod tests {
         Ok(())
     }
 
+    /// File access mode and documented status flags, stripping kernel-internal
+    /// bits that macOS XNU leaks via `F_GETFL` (such as `FWASWRITTEN = 0x10000`
+    /// set on the first `write()` to an open file description).
+    fn status_flags(fd: &OwnedFd) -> io::Result<OFlag> {
+        Ok(OFlag::from_bits_truncate(flags(fd)?.bits()))
+    }
+
     #[test]
     fn aliased_duplex_descriptors_preserve_the_true_original_flags() -> Test {
         let (endpoint, mut peer) = UnixStream::pair()?;
         peer.set_read_timeout(Some(Duration::from_secs(1)))?;
         let witness = endpoint.as_fd().try_clone_to_owned()?;
-        let original = flags(&witness)?;
+        let original = status_flags(&witness)?;
         let (input, mut output) = Stdio::from_owned_fds(
             endpoint.as_fd().try_clone_to_owned()?,
             endpoint.as_fd().try_clone_to_owned()?,
         )?
         .split();
         drop(input);
-        assert!(flags(&witness)?.contains(OFlag::O_NONBLOCK));
+        assert!(status_flags(&witness)?.contains(OFlag::O_NONBLOCK));
         assert_eq!(output.write(b"still owned")?, 11);
         let mut bytes = [0_u8; 11];
         peer.read_exact(&mut bytes)?;
         assert_eq!(&bytes, b"still owned");
         drop(output);
-        assert_eq!(flags(&witness)?, original);
+        assert_eq!(status_flags(&witness)?, original);
+        assert!(!status_flags(&witness)?.contains(OFlag::O_NONBLOCK));
         Ok(())
     }
 

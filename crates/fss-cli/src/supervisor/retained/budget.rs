@@ -32,7 +32,7 @@ fn spool(error: &SpoolError) -> Option<SpoolError> {
             requested,
             maximum,
         } => Some(SpoolError::ReadBudgetExceeded {
-            resource: *resource,
+            resource,
             current: *current,
             requested: *requested,
             maximum: *maximum,

@@ -94,7 +94,9 @@ fn invalid(reason: &'static str) -> EventCounterfactualError {
 }
 
 fn field<'a>(fields: &'a BTreeMap<String, Value>, key: &str) -> Result<&'a Value> {
-    fields.get(key).ok_or_else(|| invalid("counterfactual field is missing"))
+    fields
+        .get(key)
+        .ok_or_else(|| invalid("counterfactual field is missing"))
 }
 
 fn only(fields: &BTreeMap<String, Value>, names: &[&str]) -> Result<()> {
@@ -105,24 +107,33 @@ fn only(fields: &BTreeMap<String, Value>, names: &[&str]) -> Result<()> {
 }
 
 fn text(value: &Value) -> Result<&str> {
-    value.text().ok_or_else(|| invalid("counterfactual field must be a string"))
+    value
+        .text()
+        .ok_or_else(|| invalid("counterfactual field must be a string"))
 }
 
 fn unsigned(value: &Value) -> Result<u64> {
     if !matches!(value, Value::Number(_)) {
-        return Err(invalid("counterfactual count or score must be a JSON integer"));
+        return Err(invalid(
+            "counterfactual count or score must be a JSON integer",
+        ));
     }
-    value.integer().and_then(|n| u64::try_from(n).ok())
+    value
+        .integer()
+        .and_then(|n| u64::try_from(n).ok())
         .ok_or_else(|| invalid("counterfactual count or score is outside its integer bounds"))
 }
 
 fn exact_digest(value: &Value) -> Result<ContentDigest> {
     let raw = text(value)?;
-    ContentDigest::parse(raw).ok().filter(|digest| {
-        digest.algorithm() == DigestAlgorithm::Sha256
-            && digest.to_text() == raw
-            && digest.bytes().iter().any(|byte| *byte != 0)
-    }).ok_or_else(|| invalid("expected an exact nonzero canonical SHA-256 digest"))
+    ContentDigest::parse(raw)
+        .ok()
+        .filter(|digest| {
+            digest.algorithm() == DigestAlgorithm::Sha256
+                && digest.to_text() == raw
+                && digest.bytes().iter().any(|byte| *byte != 0)
+        })
+        .ok_or_else(|| invalid("expected an exact nonzero canonical SHA-256 digest"))
 }
 
 fn valid_domain(value: &str) -> bool {
@@ -135,54 +146,82 @@ fn same_count(fields: &BTreeMap<String, Value>, key: &str, expected: u64) -> Res
     if let Some(value) = fields.get(key)
         && unsigned(value)? != expected
     {
-        return Err(invalid("calibration summary does not reproduce from its counts"));
+        return Err(invalid(
+            "calibration summary does not reproduce from its counts",
+        ));
     }
     Ok(())
 }
 
-fn same_interval(
-    fields: &BTreeMap<String, Value>,
-    key: &str,
-    lo: i64,
-    hi: i64,
-) -> Result<()> {
+fn same_interval(fields: &BTreeMap<String, Value>, key: &str, lo: i64, hi: i64) -> Result<()> {
     let Some(value) = fields.get(key) else {
         return Ok(());
     };
-    let pair = value.array().filter(|pair| pair.len() == 2)
+    let pair = value
+        .array()
+        .filter(|pair| pair.len() == 2)
         .ok_or_else(|| invalid("calibration interval must be a two-integer array"))?;
     for (value, expected) in pair.iter().zip([lo, hi]) {
         if !matches!(value, Value::Number(_)) || value.integer() != Some(i128::from(expected)) {
-            return Err(invalid("calibration interval does not reproduce from its counts"));
+            return Err(invalid(
+                "calibration interval does not reproduce from its counts",
+            ));
         }
     }
     Ok(())
 }
 
 fn calibration(value: &Value) -> Result<ScoreCalibration> {
-    let fields = value.object().ok_or_else(|| invalid("score_calibration must be an object"))?;
-    only(fields, &[
-        "schema", "generation", "digest", "bins", "true_positives", "false_positives",
-        "prior_log_odds_millibans", "interval",
-    ])?;
+    let fields = value
+        .object()
+        .ok_or_else(|| invalid("score_calibration must be an object"))?;
+    only(
+        fields,
+        &[
+            "schema",
+            "generation",
+            "digest",
+            "bins",
+            "true_positives",
+            "false_positives",
+            "prior_log_odds_millibans",
+            "interval",
+        ],
+    )?;
     if text(field(fields, "schema")?)? != "fss.score_calibration.v1" {
         return Err(invalid("unsupported score calibration schema"));
     }
     let generation = text(field(fields, "generation")?)?;
     // Native per-row generations append '@' and the 71-byte canonical SHA-256 identity.
     if generation.len() > 184 {
-        return Err(invalid("score calibration generation exceeds native projection bounds"));
+        return Err(invalid(
+            "score calibration generation exceeds native projection bounds",
+        ));
     }
-    let bins = field(fields, "bins")?.array()
+    let bins = field(fields, "bins")?
+        .array()
         .filter(|bins| !bins.is_empty() && bins.len() <= fss_fusion::calibration::MAX_BINS)
         .ok_or_else(|| invalid("score calibration bin count is outside its bounds"))?;
     let mut edges = Vec::with_capacity(bins.len());
     let mut counts = Vec::with_capacity(bins.len());
     for value in bins {
-        let bin = value.object().ok_or_else(|| invalid("score calibration bin must be an object"))?;
-        only(bin, &["lo_ppm", "hi_ppm", "true_positives", "false_positives", "llr_millibans"])?;
-        edges.push(u32::try_from(unsigned(field(bin, "lo_ppm")?)?)
-            .map_err(|_| invalid("score bin edge is outside ppm bounds"))?);
+        let bin = value
+            .object()
+            .ok_or_else(|| invalid("score calibration bin must be an object"))?;
+        only(
+            bin,
+            &[
+                "lo_ppm",
+                "hi_ppm",
+                "true_positives",
+                "false_positives",
+                "llr_millibans",
+            ],
+        )?;
+        edges.push(
+            u32::try_from(unsigned(field(bin, "lo_ppm")?)?)
+                .map_err(|_| invalid("score bin edge is outside ppm bounds"))?,
+        );
         counts.push((
             unsigned(field(bin, "true_positives")?)?,
             unsigned(field(bin, "false_positives")?)?,
@@ -191,18 +230,27 @@ fn calibration(value: &Value) -> Result<ScoreCalibration> {
     let rebuilt = ScoreCalibration::from_counts(generation, &edges, &counts)
         .map_err(|_| invalid("score calibration counts or edges are invalid"))?;
     if exact_digest(field(fields, "digest")?)? != rebuilt.digest {
-        return Err(invalid("score calibration digest does not reproduce from its counts"));
+        return Err(invalid(
+            "score calibration digest does not reproduce from its counts",
+        ));
     }
     same_count(fields, "true_positives", rebuilt.positives)?;
     same_count(fields, "false_positives", rebuilt.negatives)?;
-    same_interval(fields, "prior_log_odds_millibans", rebuilt.prior.lo(), rebuilt.prior.hi())?;
+    same_interval(
+        fields,
+        "prior_log_odds_millibans",
+        rebuilt.prior.lo(),
+        rebuilt.prior.hi(),
+    )?;
     if let Some(value) = fields.get("interval")
         && text(value)? != INTERVAL
     {
         return Err(invalid("unsupported score calibration interval method"));
     }
     for (value, expected) in bins.iter().zip(&rebuilt.bins) {
-        let bin = value.object().ok_or_else(|| invalid("score calibration bin must be an object"))?;
+        let bin = value
+            .object()
+            .ok_or_else(|| invalid("score calibration bin must be an object"))?;
         same_count(bin, "hi_ppm", u64::from(expected.hi_ppm))?;
         same_interval(bin, "llr_millibans", expected.llr.lo(), expected.llr.hi())?;
     }
@@ -210,20 +258,32 @@ fn calibration(value: &Value) -> Result<ScoreCalibration> {
 }
 
 fn calibration_json(calibration: &ScoreCalibration) -> String {
-    let bins: Vec<_> = calibration.bins.iter().map(|bin| object(&[
-        ("lo_ppm", bin.lo_ppm.to_string()),
-        ("hi_ppm", bin.hi_ppm.to_string()),
-        ("true_positives", bin.positives.to_string()),
-        ("false_positives", bin.negatives.to_string()),
-        ("llr_millibans", format!("[{},{}]", bin.llr.lo(), bin.llr.hi())),
-    ])).collect();
+    let bins: Vec<_> = calibration
+        .bins
+        .iter()
+        .map(|bin| {
+            object(&[
+                ("lo_ppm", bin.lo_ppm.to_string()),
+                ("hi_ppm", bin.hi_ppm.to_string()),
+                ("true_positives", bin.positives.to_string()),
+                ("false_positives", bin.negatives.to_string()),
+                (
+                    "llr_millibans",
+                    format!("[{},{}]", bin.llr.lo(), bin.llr.hi()),
+                ),
+            ])
+        })
+        .collect();
     object(&[
         ("schema", string("fss.score_calibration.v1")),
         ("generation", string(&calibration.generation)),
         ("digest", string(&calibration.digest.to_text())),
         ("true_positives", calibration.positives.to_string()),
         ("false_positives", calibration.negatives.to_string()),
-        ("prior_log_odds_millibans", format!("[{},{}]", calibration.prior.lo(), calibration.prior.hi())),
+        (
+            "prior_log_odds_millibans",
+            format!("[{},{}]", calibration.prior.lo(), calibration.prior.hi()),
+        ),
         ("interval", string(INTERVAL)),
         ("bins", array(&bins)),
     ])
@@ -232,14 +292,21 @@ fn calibration_json(calibration: &ScoreCalibration) -> String {
 fn policy(raw: &str) -> Result<FusionPolicy> {
     let parts: Vec<_> = raw.split(',').collect();
     if parts.len() != 3 {
-        return Err(invalid("fusion_policy must be three canonical signed integers"));
+        return Err(invalid(
+            "fusion_policy must be three canonical signed integers",
+        ));
     }
     let mut thresholds = [0_i64; 3];
     for (destination, part) in thresholds.iter_mut().zip(parts) {
-        let value = part.parse::<i64>()
+        let value = part
+            .parse::<i64>()
             .map_err(|_| invalid("fusion_policy threshold is invalid"))?;
-        if value.to_string() != part || !(-fss_fusion::MAX_ABS_LLR..=fss_fusion::MAX_ABS_LLR).contains(&value) {
-            return Err(invalid("fusion_policy threshold is outside canonical native bounds"));
+        if value.to_string() != part
+            || !(-fss_fusion::MAX_ABS_LLR..=fss_fusion::MAX_ABS_LLR).contains(&value)
+        {
+            return Err(invalid(
+                "fusion_policy threshold is outside canonical native bounds",
+            ));
         }
         *destination = value;
     }
@@ -261,11 +328,15 @@ fn policy(raw: &str) -> Result<FusionPolicy> {
 }
 
 fn policy_text(policy: &FusionPolicy) -> String {
-    format!("{},{},{}", policy.alert_threshold, policy.retain_threshold, policy.reject_threshold)
+    format!(
+        "{},{},{}",
+        policy.alert_threshold, policy.retain_threshold, policy.reject_threshold
+    )
 }
 
 fn scores_json(scores: &BTreeMap<String, u32>) -> String {
-    let rows: Vec<_> = scores.iter()
+    let rows: Vec<_> = scores
+        .iter()
         .map(|(domain, score)| format!("{}:{score}", string(domain)))
         .collect();
     format!("{{{}}}", rows.join(","))
@@ -289,12 +360,22 @@ impl EventCounterfactualRequest {
         if input.len() > MAX_COUNTERFACTUAL_REQUEST_BYTES {
             return Err(EventCounterfactualError::Limit);
         }
-        let value = parse(input).map_err(|_| invalid("counterfactual is not strict bounded JSON"))?;
-        let fields = value.object().ok_or_else(|| invalid("counterfactual must be an object"))?;
-        only(fields, &[
-            "schema", "event_revision_digest", "without_domains", "score_calibration",
-            "domain_scores_ppm", "fusion_policy",
-        ])?;
+        let value =
+            parse(input).map_err(|_| invalid("counterfactual is not strict bounded JSON"))?;
+        let fields = value
+            .object()
+            .ok_or_else(|| invalid("counterfactual must be an object"))?;
+        only(
+            fields,
+            &[
+                "schema",
+                "event_revision_digest",
+                "without_domains",
+                "score_calibration",
+                "domain_scores_ppm",
+                "fusion_policy",
+            ],
+        )?;
         if text(field(fields, "schema")?)? != EVENT_COUNTERFACTUAL_REQUEST_SCHEMA {
             return Err(invalid("unsupported event counterfactual request schema"));
         }
@@ -304,27 +385,39 @@ impl EventCounterfactualRequest {
             Some(value) => policy(text(value)?)?,
             None => policy(DEFAULT_POLICY)?,
         };
-        let mapping = field(fields, "domain_scores_ppm")?.object()
+        let mapping = field(fields, "domain_scores_ppm")?
+            .object()
             .filter(|mapping| !mapping.is_empty() && mapping.len() <= fss_fusion::MAX_EVIDENCE)
             .ok_or_else(|| invalid("explicit score map is outside its bounds"))?;
         let mut scores = BTreeMap::new();
         for (domain, value) in mapping {
             if !valid_domain(domain) {
-                return Err(invalid("score mapping has an invalid failure-domain identity"));
+                return Err(invalid(
+                    "score mapping has an invalid failure-domain identity",
+                ));
             }
             let score = u32::try_from(unsigned(value)?)
-                .ok().filter(|score| *score <= fss_fusion::calibration::MAX_SCORE_PPM)
+                .ok()
+                .filter(|score| *score <= fss_fusion::calibration::MAX_SCORE_PPM)
                 .ok_or_else(|| invalid("score mapping is outside ppm bounds"))?;
             scores.insert(domain.clone(), score);
         }
-        let selectors = field(fields, "without_domains")?.array()
-            .filter(|selectors| !selectors.is_empty() && selectors.len() <= fss_fusion::MAX_ABLATION_TARGETS)
+        let selectors = field(fields, "without_domains")?
+            .array()
+            .filter(|selectors| {
+                !selectors.is_empty() && selectors.len() <= fss_fusion::MAX_ABLATION_TARGETS
+            })
             .ok_or_else(|| invalid("failure-domain loss selector count is outside its bounds"))?;
         let mut unique = BTreeSet::new();
         for selector in selectors {
             let domain = text(selector)?;
-            if !valid_domain(domain) || !scores.contains_key(domain) || !unique.insert(domain.to_owned()) {
-                return Err(invalid("failure-domain loss selector is invalid, duplicated or unmapped"));
+            if !valid_domain(domain)
+                || !scores.contains_key(domain)
+                || !unique.insert(domain.to_owned())
+            {
+                return Err(invalid(
+                    "failure-domain loss selector is invalid, duplicated or unmapped",
+                ));
             }
         }
         let without_domains: Vec<_> = unique.into_iter().collect();
@@ -343,9 +436,18 @@ impl EventCounterfactualRequest {
             encoder.u32(*score);
         }
         let digest = ContentDigest::sha256(
-            &encoder.finish_checked().map_err(|_| EventCounterfactualError::Limit)?,
+            &encoder
+                .finish_checked()
+                .map_err(|_| EventCounterfactualError::Limit)?,
         );
-        let request = Self { expected_revision, without_domains, calibration, scores, policy, digest };
+        let request = Self {
+            expected_revision,
+            without_domains,
+            calibration,
+            scores,
+            policy,
+            digest,
+        };
         // Transport adapters retain this spelling. Canonical expansion must obey the same cap.
         if request.canonical_request_json().len() > MAX_COUNTERFACTUAL_REQUEST_BYTES {
             return Err(EventCounterfactualError::Limit);
@@ -371,7 +473,10 @@ impl EventCounterfactualRequest {
     pub fn canonical_request_json(&self) -> String {
         object(&[
             ("schema", string(EVENT_COUNTERFACTUAL_REQUEST_SCHEMA)),
-            ("event_revision_digest", string(&self.expected_revision.to_text())),
+            (
+                "event_revision_digest",
+                string(&self.expected_revision.to_text()),
+            ),
             ("without_domains", strings(&self.without_domains)),
             ("score_calibration", calibration_json(&self.calibration)),
             ("domain_scores_ppm", scores_json(&self.scores)),
@@ -391,8 +496,14 @@ impl EventCounterfactualRequest {
         self.compute_event(&retained.event, retained.event_root)
     }
 
-    fn compute_event(&self, event: &EventHypothesis, source_root: ContentDigest) -> Result<EventCounterfactual> {
-        event.verify().map_err(|_| EventCounterfactualError::InvalidEvent)?;
+    fn compute_event(
+        &self,
+        event: &EventHypothesis,
+        source_root: ContentDigest,
+    ) -> Result<EventCounterfactual> {
+        event
+            .verify()
+            .map_err(|_| EventCounterfactualError::InvalidEvent)?;
         if event.revision_digest() != self.expected_revision {
             return Err(EventCounterfactualError::StaleRevision);
         }
@@ -401,31 +512,55 @@ impl EventCounterfactualRequest {
         {
             return Err(EventCounterfactualError::InvalidEvent);
         }
-        let domains: BTreeSet<_> = event.evidence.iter().filter(|edge| {
-            matches!(edge.relation, EvidenceEdgeRelation::Supports | EvidenceEdgeRelation::Contradicts)
-        }).map(|edge| edge.failure_domain.as_str()).collect();
+        let domains: BTreeSet<_> = event
+            .evidence
+            .iter()
+            .filter(|edge| {
+                matches!(
+                    edge.relation,
+                    EvidenceEdgeRelation::Supports | EvidenceEdgeRelation::Contradicts
+                )
+            })
+            .map(|edge| edge.failure_domain.as_str())
+            .collect();
         if domains.is_empty()
             || domains.len() != self.scores.len()
-            || domains.iter().any(|domain| !self.scores.contains_key(*domain))
+            || domains
+                .iter()
+                .any(|domain| !self.scores.contains_key(*domain))
         {
-            return Err(invalid("score map must exactly cover the contributing declared event domains"));
+            return Err(invalid(
+                "score map must exactly cover the contributing declared event domains",
+            ));
         }
         let shared_calibration = format!("calibration:{}", self.calibration.digest);
         let shared_sensor = format!("sensor:{SYNTHETIC_GROUP}");
-        if domains.contains(shared_calibration.as_str()) || domains.contains(shared_sensor.as_str()) {
-            return Err(invalid("declared event domain collides with a synthetic common-cause grouping"));
+        if domains.contains(shared_calibration.as_str()) || domains.contains(shared_sensor.as_str())
+        {
+            return Err(invalid(
+                "declared event domain collides with a synthetic common-cause grouping",
+            ));
         }
         let mut evidence = Vec::new();
         for (ordinal, edge) in event.evidence.iter().enumerate() {
-            if !matches!(edge.relation, EvidenceEdgeRelation::Supports | EvidenceEdgeRelation::Contradicts) {
+            if !matches!(
+                edge.relation,
+                EvidenceEdgeRelation::Supports | EvidenceEdgeRelation::Contradicts
+            ) {
                 continue;
             }
-            let score = self.scores.get(&edge.failure_domain).copied()
+            let score = self
+                .scores
+                .get(&edge.failure_domain)
+                .copied()
                 .ok_or_else(|| invalid("contributing event domain has no explicit score"))?;
             evidence.push(EvidenceItem {
                 id: format!("edge:{ordinal}:{}", edge.digest),
                 sensor: SYNTHETIC_GROUP.to_owned(),
-                failure_domains: BTreeSet::from([edge.failure_domain.clone(), shared_calibration.clone()]),
+                failure_domains: BTreeSet::from([
+                    edge.failure_domain.clone(),
+                    shared_calibration.clone(),
+                ]),
                 calibration: self.calibration.calibrate(score),
                 observability: Observability::Observed,
             });
@@ -438,7 +573,9 @@ impl EventCounterfactualRequest {
             kind: event.kind.as_str().to_owned(),
             prior: self.calibration.prior,
             evidence,
-            coverage: Coverage::Gap { reason: NO_COVERAGE.to_owned() },
+            coverage: Coverage::Gap {
+                reason: NO_COVERAGE.to_owned(),
+            },
             opportunities: Vec::new(),
             probes: Vec::new(),
             severity: Severity {
@@ -451,8 +588,12 @@ impl EventCounterfactualRequest {
             looks: 1,
             now_ns: 0,
         };
-        let targets: Vec<_> = self.without_domains.iter().cloned()
-            .map(AblationTarget::FailureDomain).collect();
+        let targets: Vec<_> = self
+            .without_domains
+            .iter()
+            .cloned()
+            .map(AblationTarget::FailureDomain)
+            .collect();
         let ablation = ablate(&query, &targets).map_err(|_| EventCounterfactualError::Fusion)?;
         let receipt = ExplainReceipt::compile(
             ExplainQuestion::WhatIf,
@@ -460,7 +601,8 @@ impl EventCounterfactualRequest {
             vec![source_root, self.digest, ablation.digest()],
             Vec::new(),
             0,
-        ).map_err(|_| EventCounterfactualError::Limit)?;
+        )
+        .map_err(|_| EventCounterfactualError::Limit)?;
         let mut encoder = CanonicalEncoder::new();
         encoder.text(EVENT_COUNTERFACTUAL_DOMAIN);
         encoder.digest(self.expected_revision);
@@ -469,7 +611,9 @@ impl EventCounterfactualRequest {
         encoder.digest(ablation.digest());
         encoder.digest(receipt.receipt_digest());
         let digest = ContentDigest::sha256(
-            &encoder.finish_checked().map_err(|_| EventCounterfactualError::Limit)?,
+            &encoder
+                .finish_checked()
+                .map_err(|_| EventCounterfactualError::Limit)?,
         );
         let result = EventCounterfactual {
             request: self.clone(),
@@ -522,28 +666,41 @@ impl EventCounterfactual {
 
     /// Whole deterministic projection. Failure never returns a truncated baseline or alternative.
     pub fn to_json(&self) -> Result<String> {
-        let ablation = fusion_ablation_json(&self.ablation).ok_or(EventCounterfactualError::Limit)?;
+        let ablation =
+            fusion_ablation_json(&self.ablation).ok_or(EventCounterfactualError::Limit)?;
         let result = object(&[
             ("schema", string(EVENT_COUNTERFACTUAL_SCHEMA)),
             ("question", string("what_if")),
             ("scope", string("hypothetical_declared_failure_domain_loss")),
             ("source_event", self.source.to_canonical_json()),
-            ("source_event_revision_digest", string(&self.source.revision_digest().to_text())),
-            ("source_publication_root", string(&self.source_root.to_text())),
+            (
+                "source_event_revision_digest",
+                string(&self.source.revision_digest().to_text()),
+            ),
+            (
+                "source_publication_root",
+                string(&self.source_root.to_text()),
+            ),
             ("request", self.request.canonical_request_json()),
             ("request_digest", string(&self.request.digest.to_text())),
             ("ablation", ablation),
-            ("explain_receipt_digest", string(&self.receipt.receipt_digest().to_text())),
+            (
+                "explain_receipt_digest",
+                string(&self.receipt.receipt_digest().to_text()),
+            ),
             ("counterfactual_digest", string(&self.digest.to_text())),
-            ("assumptions", strings([
-                "Raw ppm scores and calibration applicability are caller-declared hypothetical inputs, not measured scores recovered from support/contradiction labels.",
-                "All projected evidence shares one synthetic sensor grouping and the supplied calibration failure domain. Distinct event domain labels do not prove physical sensor independence.",
-                "Baseline rows are assumed available only for this numerical experiment; original media, models and current source custody were not verified by this pure computation.",
-                "Coverage remains a gap in both queries. No physical absence, restored coverage or permission is inferred.",
-                "The prior comes from the caller calibration; policy thresholds come from this request. Severity is the fixed 1000/100/10 irreversible consequence profile, one look and virtual time zero, with no future observations or probes.",
-                "This is hypothetical calibrated sensitivity, not replay of the event's original decision. The original event, uncertainty, noncontributing edges and recorded policy path are preserved unchanged in source_event.",
-                "Derived receipts are recomputable read products, not newly retained objects or hydration authority.",
-            ])),
+            (
+                "assumptions",
+                strings([
+                    "Raw ppm scores and calibration applicability are caller-declared hypothetical inputs, not measured scores recovered from support/contradiction labels.",
+                    "All projected evidence shares one synthetic sensor grouping and the supplied calibration failure domain. Distinct event domain labels do not prove physical sensor independence.",
+                    "Baseline rows are assumed available only for this numerical experiment; original media, models and current source custody were not verified by this pure computation.",
+                    "Coverage remains a gap in both queries. No physical absence, restored coverage or permission is inferred.",
+                    "The prior comes from the caller calibration; policy thresholds come from this request. Severity is the fixed 1000/100/10 irreversible consequence profile, one look and virtual time zero, with no future observations or probes.",
+                    "This is hypothetical calibrated sensitivity, not replay of the event's original decision. The original event, uncertainty, noncontributing edges and recorded policy path are preserved unchanged in source_event.",
+                    "Derived receipts are recomputable read products, not newly retained objects or hydration authority.",
+                ]),
+            ),
             ("source_custody_verified", "false".to_owned()),
             ("historical_decision_replayed", "false".to_owned()),
             ("physical_coverage_certified", "false".to_owned()),

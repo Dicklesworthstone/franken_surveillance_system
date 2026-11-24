@@ -293,7 +293,9 @@ fn jpeg_plan_is_pure_exact_approval_is_required_and_every_cli_setting_is_bound()
     assert_eq!(Options::parse(&approved_args)?.digest()?, digest);
     assert!(Options::parse(&approved_args)?.admit().is_ok());
     let reversed = approved_args
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .rev()
         .flat_map(|pair| pair.iter().cloned())
         .collect::<Vec<_>>();

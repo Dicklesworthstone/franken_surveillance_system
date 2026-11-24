@@ -322,19 +322,18 @@ pub(super) fn run(
                             retirement, source, ..
                         } => {
                             protocol_retired(report, &retirement);
-                            if let Some(source) = source {
-                                if matches!(source.event(),RtspEvent::Interleaved {channel,..} if *channel == options.scope.channels.0 || *channel == options.scope.channels.1)
-                                {
-                                    storage::retain(
-                                        &source,
-                                        &mut archive,
-                                        &mut publisher,
-                                        owner,
-                                        work,
-                                        report,
-                                        out,
-                                    )?;
-                                }
+                            if let Some(source) = source
+                                && matches!(source.event(),RtspEvent::Interleaved {channel,..} if *channel == options.scope.channels.0 || *channel == options.scope.channels.1)
+                            {
+                                storage::retain(
+                                    &source,
+                                    &mut archive,
+                                    &mut publisher,
+                                    owner,
+                                    work,
+                                    report,
+                                    out,
+                                )?;
                             }
                             return Err(SOURCE);
                         }

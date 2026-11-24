@@ -23,7 +23,11 @@ use crate::unifi_plan::UnifiSourceSpec;
 // Reuse the site's actual protected-file owner, including its lease type, rather
 // than compiling another independent inclusion of the same file boundary.
 pub(super) use crate::site_unifi::private_file;
-#[allow(dead_code, reason = "Shared bounded request and durable output owner")]
+#[allow(
+    dead_code,
+    clippy::duplicate_mod,
+    reason = "Shared bounded request and durable output owner"
+)]
 #[path = "../bin/fss-onvif/runtime.rs"]
 pub(super) mod runtime;
 

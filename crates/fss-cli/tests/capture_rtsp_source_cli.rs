@@ -323,6 +323,7 @@ fn playing(l: &TcpListener, codec: &str) -> Test<TcpStream> {
             Err(e) => return Err(e.into()),
         }
     };
+    peer.set_nonblocking(false)?;
     peer.set_nodelay(true)?;
     peer.set_read_timeout(Some(Duration::from_secs(8)))?;
     peer.set_write_timeout(Some(Duration::from_secs(8)))?;
@@ -762,10 +763,10 @@ fn complete_video(codec: &str) -> Test<Vec<Vec<u8>>> {
         start = Some(at + prefix);
         at += prefix;
     }
-    if let Some(begin) = start {
-        if begin < bytes.len() {
-            nals.push(&bytes[begin..]);
-        }
+    if let Some(begin) = start
+        && begin < bytes.len()
+    {
+        nals.push(&bytes[begin..]);
     }
     let end = nals
         .iter()

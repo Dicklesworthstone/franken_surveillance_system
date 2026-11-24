@@ -165,6 +165,7 @@ pub(super) fn render(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_bounded(
     query: &Query,
     evaluated: &ClockValidationReport,

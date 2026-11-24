@@ -180,28 +180,26 @@ fn published_corroborated(
     )?;
     let run_corroborate = |extra: &[&str]| -> TestResult<Output> {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_fss-event"));
-        cmd.args(["corroborate", "--root"])
-            .arg(&root)
-            .args([
-                "--site",
-                SITE,
-                "--camera",
-                &format!("north:{first}"),
-                "--camera",
-                &format!("east:{second}"),
-                "--ground",
-                "north:1,0,0,0,1,0,0,0,1",
-                "--ground",
-                "east:-1,0,96,0,1,0,0,0,1",
-                "--interpretation",
-                "gray",
-                "--zone",
-                "door:56,0,40,48",
-                "--time-gate-ns",
-                "250000000",
-                "--distance-gate",
-                "16",
-            ]);
+        cmd.args(["corroborate", "--root"]).arg(&root).args([
+            "--site",
+            SITE,
+            "--camera",
+            &format!("north:{first}"),
+            "--camera",
+            &format!("east:{second}"),
+            "--ground",
+            "north:1,0,0,0,1,0,0,0,1",
+            "--ground",
+            "east:-1,0,96,0,1,0,0,0,1",
+            "--interpretation",
+            "gray",
+            "--zone",
+            "door:56,0,40,48",
+            "--time-gate-ns",
+            "250000000",
+            "--distance-gate",
+            "16",
+        ]);
         if shared_domain {
             cmd.args(["--failure-domain", "clock:shared-ntp=north,east"]);
         }
@@ -223,7 +221,10 @@ fn tree(root: &Path) -> TestResult<BTreeMap<PathBuf, (bool, ContentDigest)>> {
         path: &Path,
         output: &mut BTreeMap<PathBuf, (bool, ContentDigest)>,
     ) -> TestResult {
-        output.insert(path.strip_prefix(root)?.to_path_buf(), (true, ContentDigest::sha256(b"directory")));
+        output.insert(
+            path.strip_prefix(root)?.to_path_buf(),
+            (true, ContentDigest::sha256(b"directory")),
+        );
         for entry in fs::read_dir(path)? {
             let entry = entry?;
             if entry.file_type()?.is_dir() {
@@ -264,8 +265,14 @@ fn retained_inputs(root: &Path, event_id: &str) -> TestResult<(String, Vec<(Stri
             domains.insert(edge.failure_domain.clone(), 900_000);
         }
     }
-    assert!(domains.len() >= 2, "fixture needs distinct declared domains");
-    Ok((retained.revision_digest.to_text(), domains.into_iter().collect()))
+    assert!(
+        domains.len() >= 2,
+        "fixture needs distinct declared domains"
+    );
+    Ok((
+        retained.revision_digest.to_text(),
+        domains.into_iter().collect(),
+    ))
 }
 
 fn request(revision: &str, without: &[String], scores: &[(String, u32)]) -> TestResult<String> {
@@ -290,10 +297,16 @@ fn request(revision: &str, without: &[String], scores: &[(String, u32)]) -> Test
         .map(|(domain, score)| format!("{}:{score}", quote(domain)))
         .collect::<Vec<_>>()
         .join(",");
-    let without = without.iter().map(|domain| quote(domain)).collect::<Vec<_>>().join(",");
+    let without = without
+        .iter()
+        .map(|domain| quote(domain))
+        .collect::<Vec<_>>()
+        .join(",");
     Ok(format!(
         "{{\"schema\":\"fss.event_counterfactual_request.v1\",\"event_revision_digest\":{},\"without_domains\":[{without}],\"score_calibration\":{{\"schema\":\"fss.score_calibration.v1\",\"generation\":{},\"digest\":{},\"bins\":[{bins}]}},\"domain_scores_ppm\":{{{scores}}}}}",
-        quote(revision), quote(&calibration.generation), quote(&calibration.digest.to_text())
+        quote(revision),
+        quote(&calibration.generation),
+        quote(&calibration.digest.to_text())
     ))
 }
 
@@ -326,7 +339,11 @@ fn what_if(
 }
 
 fn refusal(output: &Output, error_id: &str) -> TestResult {
-    assert!(!output.status.success(), "{}", String::from_utf8_lossy(&output.stdout));
+    assert!(
+        !output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
     let response = parse(std::str::from_utf8(&output.stdout)?)?;
     assert_eq!(text(get(&response, "outcome")?)?, "refused");
     assert_eq!(text(get(&response, "errorId")?)?, error_id);
@@ -364,7 +381,11 @@ fn mcp_matches(
     assert!(output.stderr.is_empty(), "{output:?}");
     let wire = std::str::from_utf8(&output.stdout)?;
     let lines = wire.lines().collect::<Vec<_>>();
-    assert_eq!(lines.len(), 2, "initialize and one tools/call response only");
+    assert_eq!(
+        lines.len(),
+        2,
+        "initialize and one tools/call response only"
+    );
     assert!(lines[1].contains(&format!("\"isError\":{}", !expected.status.success())));
     // The executable prints one transport newline; MCP embeds the native envelope itself.
     // Remove exactly that frame delimiter, preserving every semantic byte and any whitespace
@@ -380,7 +401,10 @@ fn mcp_matches(
 }
 
 fn artifact_rows(document: &Value) -> TestResult<BTreeMap<String, Value>> {
-    let propositions = array(get(get(get(document, "payload")?, "epistemic")?, "propositions")?)?;
+    let propositions = array(get(
+        get(get(document, "payload")?, "epistemic")?,
+        "propositions",
+    )?)?;
     let mut result = BTreeMap::new();
     let mut indexes = BTreeSet::new();
     for proposition in propositions {
@@ -388,7 +412,10 @@ fn artifact_rows(document: &Value) -> TestResult<BTreeMap<String, Value>> {
         let Some(index) = id.strip_prefix("claim:event-counterfactual:row:") else {
             continue;
         };
-        assert!(indexes.insert(index.parse::<usize>()?), "duplicate artifact row identity");
+        assert!(
+            indexes.insert(index.parse::<usize>()?),
+            "duplicate artifact row identity"
+        );
         let statement = text(get(proposition, "statement")?)?;
         let body = statement
             .strip_prefix("Hypothetical source-loss artifact at ")
@@ -396,22 +423,40 @@ fn artifact_rows(document: &Value) -> TestResult<BTreeMap<String, Value>> {
         // A declared domain may itself contain ": "; locate the complete JSON suffix.
         let (pointer, value) = body
             .match_indices(": ")
-            .find_map(|(index, _)| parse(&body[index + 2..]).ok().map(|value| (&body[..index], value)))
+            .find_map(|(index, _)| {
+                parse(&body[index + 2..])
+                    .ok()
+                    .map(|value| (&body[..index], value))
+            })
             .ok_or("artifact row has no complete JSON value")?;
-        assert!(pointer.is_empty() || pointer.starts_with('/'), "invalid artifact JSON pointer");
+        assert!(
+            pointer.is_empty() || pointer.starts_with('/'),
+            "invalid artifact JSON pointer"
+        );
         // A row may contain a complete subtree. Normalize it independently to exact scalar
         // and empty-container leaves so no dropped or overlapping field can pass parity.
         for (path, value) in flattened_at(&value, pointer) {
-            assert!(result.insert(path, value).is_none(), "duplicate or overlapping artifact field");
+            assert!(
+                result.insert(path, value).is_none(),
+                "duplicate or overlapping artifact field"
+            );
         }
     }
-    assert!(!result.is_empty(), "missing complete counterfactual artifact");
-    assert_eq!(indexes, (0..indexes.len()).collect::<BTreeSet<_>>(), "artifact row identities must be contiguous");
+    assert!(
+        !result.is_empty(),
+        "missing complete counterfactual artifact"
+    );
+    assert_eq!(
+        indexes,
+        (0..indexes.len()).collect::<BTreeSet<_>>(),
+        "artifact row identities must be contiguous"
+    );
     Ok(result)
 }
 
 fn row<'a>(rows: &'a BTreeMap<String, Value>, pointer: &str) -> TestResult<&'a Value> {
-    rows.get(pointer).ok_or_else(|| format!("missing artifact pointer {pointer}").into())
+    rows.get(pointer)
+        .ok_or_else(|| format!("missing artifact pointer {pointer}").into())
 }
 
 fn assert_semantic_boundaries(rows: &BTreeMap<String, Value>, revision: &str) -> TestResult {
@@ -432,9 +477,15 @@ fn assert_semantic_boundaries(rows: &BTreeMap<String, Value>, revision: &str) ->
     ] {
         assert_eq!(row(rows, &format!("/{key}"))?, &Value::Bool(false), "{key}");
     }
-    assert!(rows.keys().any(|pointer| pointer.starts_with("/source_event/")));
+    assert!(
+        rows.keys()
+            .any(|pointer| pointer.starts_with("/source_event/"))
+    );
     assert!(rows.keys().any(|pointer| pointer.starts_with("/ablation/")));
-    assert!(rows.keys().any(|pointer| pointer.starts_with("/request/domain_scores_ppm/")));
+    assert!(
+        rows.keys()
+            .any(|pointer| pointer.starts_with("/request/domain_scores_ppm/"))
+    );
     Ok(())
 }
 
@@ -465,22 +516,22 @@ fn owner_artifact(root: &Path, event_id: &str, raw: &str) -> TestResult<EventCou
 
 fn flattened_at(value: &Value, pointer: &str) -> BTreeMap<String, Value> {
     fn walk(value: &Value, path: &str, result: &mut BTreeMap<String, Value>) {
-        if let Some(object) = value.object() {
-            if !object.is_empty() {
-                for (key, child) in object {
-                    let key = key.replace('~', "~0").replace('/', "~1");
-                    walk(child, &format!("{path}/{key}"), result);
-                }
-                return;
+        if let Some(object) = value.object()
+            && !object.is_empty()
+        {
+            for (key, child) in object {
+                let key = key.replace('~', "~0").replace('/', "~1");
+                walk(child, &format!("{path}/{key}"), result);
             }
+            return;
         }
-        if let Some(array) = value.array() {
-            if !array.is_empty() {
-                for (index, child) in array.iter().enumerate() {
-                    walk(child, &format!("{path}/{index}"), result);
-                }
-                return;
+        if let Some(array) = value.array()
+            && !array.is_empty()
+        {
+            for (index, child) in array.iter().enumerate() {
+                walk(child, &format!("{path}/{index}"), result);
             }
+            return;
         }
         result.insert(path.to_owned(), value.clone());
     }
@@ -499,9 +550,19 @@ fn exact_native_artifact_and_mcp_parity_preserve_all_deployment_bytes() -> TestR
 
     let artifact = owner_artifact(&root, &event_id, &request)?;
     let ablation = artifact.ablation();
-    assert!(matches!(&ablation.original_query().coverage, Coverage::Gap { .. }));
-    assert!(matches!(&ablation.counterfactual_query().coverage, Coverage::Gap { .. }));
-    assert_eq!(ablation.baseline().supporting_clusters, 1, "shared calibration remains one common cause");
+    assert!(matches!(
+        &ablation.original_query().coverage,
+        Coverage::Gap { .. }
+    ));
+    assert!(matches!(
+        &ablation.counterfactual_query().coverage,
+        Coverage::Gap { .. }
+    ));
+    assert_eq!(
+        ablation.baseline().supporting_clusters,
+        1,
+        "shared calibration remains one common cause"
+    );
     assert!(!ablation.unavailable_evidence().is_empty());
     assert_eq!(
         ablation.original_query().evidence.len(),
@@ -518,7 +579,10 @@ fn exact_native_artifact_and_mcp_parity_preserve_all_deployment_bytes() -> TestR
         assert_eq!(original.calibration, changed.calibration);
         assert_eq!(original.failure_domains, changed.failure_domains);
         if ablation.unavailable_evidence().contains(&original.id) {
-            assert!(matches!(&changed.observability, Observability::NotObservable { .. }));
+            assert!(matches!(
+                &changed.observability,
+                Observability::NotObservable { .. }
+            ));
         } else {
             assert_eq!(original.observability, changed.observability);
         }
@@ -529,10 +593,17 @@ fn exact_native_artifact_and_mcp_parity_preserve_all_deployment_bytes() -> TestR
     let document = parse(std::str::from_utf8(&output.stdout)?)?;
     assert_eq!(text(get(&document, "operationId")?)?, "AOP-011");
     let rows = artifact_rows(&document)?;
-    assert_eq!(rows, expected, "every field of the domain-owner artifact must survive the canonical envelope");
+    assert_eq!(
+        rows, expected,
+        "every field of the domain-owner artifact must survive the canonical envelope"
+    );
     assert_semantic_boundaries(&rows, &revision)?;
     mcp_matches(&root, &event_id, &request, 16_000, &output)?;
-    assert_eq!(before, tree(&root)?, "explanation must not create directories or change retained bytes");
+    assert_eq!(
+        before,
+        tree(&root)?,
+        "explanation must not create directories or change retained bytes"
+    );
     Ok(())
 }
 
@@ -617,10 +688,16 @@ fn normalized_order_preserves_identity_but_same_bin_assumptions_change_it() -> T
     reversed.reverse();
     without.reverse();
     let reordered_request = request(&revision, &without, &reversed)?;
-    assert_ne!(first_request, reordered_request, "fixture must change raw JSON order");
+    assert_ne!(
+        first_request, reordered_request,
+        "fixture must change raw JSON order"
+    );
     let reordered = what_if(&root, &event_id, &reordered_request, 16_000, &[])?;
     success(&reordered);
-    assert_eq!(first.stdout, reordered.stdout, "map and simultaneous selector order cannot change semantic identity");
+    assert_eq!(
+        first.stdout, reordered.stdout,
+        "map and simultaneous selector order cannot change semantic identity"
+    );
     mcp_matches(&root, &event_id, &reordered_request, 16_000, &reordered)?;
 
     let mut changed = scores;
@@ -633,7 +710,10 @@ fn normalized_order_preserves_identity_but_same_bin_assumptions_change_it() -> T
         changed_artifact.ablation().digest(),
         "same-bin scores leave the calibrated numerical query unchanged"
     );
-    assert_ne!(original_artifact.request_digest(), changed_artifact.request_digest());
+    assert_ne!(
+        original_artifact.request_digest(),
+        changed_artifact.request_digest()
+    );
     assert_ne!(original_artifact.digest(), changed_artifact.digest());
     let changed_output = what_if(&root, &event_id, &changed_request, 16_000, &[])?;
     success(&changed_output);

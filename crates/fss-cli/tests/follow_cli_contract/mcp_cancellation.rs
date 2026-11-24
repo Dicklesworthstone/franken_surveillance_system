@@ -209,7 +209,7 @@ fn ping_and_exact_request_cancellation_remain_live_during_native_quiet_wait() ->
         .ok_or("native request cancellation response missing")?;
     assert_eq!(cancelled.get("id")?.number()?, 2);
     assert_eq!(cancelled.path(&["result", "isError"])?, &Json::Bool(true));
-    let body = semantic(&cancelled)?;
+    let body = semantic(cancelled)?;
     assert_eq!(body.get("outcome")?.text()?, "cancelled");
     assert_eq!(body.get("payload")?, &Json::Null);
     assert_eq!(body.get("resnapshotRequired")?, &Json::Bool(false));

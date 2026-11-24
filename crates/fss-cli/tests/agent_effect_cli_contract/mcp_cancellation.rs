@@ -51,53 +51,96 @@ fn cancelling_mcp_wait_retains_the_real_prepared_receipt_and_does_not_cancel_its
     let operation = operation_of(&planned)?;
     let (code, _) = agent.plan(&event_id, relay.address, &["--approve", &approval])?;
     assert_eq!(code, Some(0));
-    let (_, initial) = agent.run(
-        "wait", &["--operation", &operation, "--deadline-ms", "1"],
-    )?;
+    let (_, initial) = agent.run("wait", &["--operation", &operation, "--deadline-ms", "1"])?;
     assert_eq!(text(&initial, &["payload", "state"])?, "prepared");
     let journals = [
         agent.root.join("ledger/journal.fssj"),
         agent.root.join("effects/journal.fssj"),
         agent.root.join("agent/sessions/journal.fssj"),
     ];
-    let before = journals.iter().map(fs::read).collect::<io::Result<Vec<_>>>()?;
+    let before = journals
+        .iter()
+        .map(fs::read)
+        .collect::<io::Result<Vec<_>>>()?;
 
-    let mut child = OwnedMcp(Command::new(env!("CARGO_BIN_EXE_fss-mcp"))
-        .arg("--root").arg(&agent.root)
-        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
-        .spawn()?);
+    let mut child = OwnedMcp(
+        Command::new(env!("CARGO_BIN_EXE_fss-mcp"))
+            .arg("--root")
+            .arg(&agent.root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?,
+    );
     let mut input = child.0.stdin.take().ok_or("MCP stdin unavailable")?;
     let mut output = child.0.stdout.take().ok_or("MCP stdout unavailable")?;
     let flags = OFlag::from_bits_retain(fcntl(&output, FcntlArg::F_GETFL)?);
     fcntl(&output, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK))?;
     let mut pending = Vec::new();
-    writeln!(input, "{}", r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"effect-wait-cancel","version":"1"}}}"#)?;
-    writeln!(input, "{}", r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)?;
-    assert_eq!(field(&response(&mut output, &mut pending)?, &["id"])?, &Value::Number("1".to_owned()));
+    writeln!(
+        input,
+        "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{{}},\"clientInfo\":{{\"name\":\"effect-wait-cancel\",\"version\":\"1\"}}}}}}"
+    )?;
+    writeln!(
+        input,
+        "{{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}}"
+    )?;
+    assert_eq!(
+        field(&response(&mut output, &mut pending)?, &["id"])?,
+        &Value::Number("1".to_owned())
+    );
 
     let operation = fss_cli::escape_json_str(&operation);
-    writeln!(input, r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"wait","arguments":{{"operation_id":"{operation}","deadline_ms":10000}}}}}}"#)?;
-    writeln!(input, "{}", r#"{"jsonrpc":"2.0","id":3,"method":"ping"}"#)?;
-    assert_eq!(field(&response(&mut output, &mut pending)?, &["id"])?, &Value::Number("3".to_owned()));
+    writeln!(
+        input,
+        r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"wait","arguments":{{"operation_id":"{operation}","deadline_ms":10000}}}}}}"#
+    )?;
+    writeln!(
+        input,
+        "{{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"ping\"}}"
+    )?;
+    assert_eq!(
+        field(&response(&mut output, &mut pending)?, &["id"])?,
+        &Value::Number("3".to_owned())
+    );
     std::thread::sleep(Duration::from_millis(150));
-    writeln!(input, "{}", r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":2}}"#)?;
-    writeln!(input, "{}", r#"{"jsonrpc":"2.0","id":4,"method":"ping"}"#)?;
-    let replies = [response(&mut output, &mut pending)?, response(&mut output, &mut pending)?];
-    let ping = replies.iter().find(|reply| {
-        field(reply, &["id"]).is_ok_and(|id| id == &Value::Number("4".to_owned()))
-    }).ok_or("ping response missing after cancellation")?;
+    writeln!(
+        input,
+        "{{\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\",\"params\":{{\"requestId\":2}}}}"
+    )?;
+    writeln!(
+        input,
+        "{{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"ping\"}}"
+    )?;
+    let replies = [
+        response(&mut output, &mut pending)?,
+        response(&mut output, &mut pending)?,
+    ];
+    let ping = replies
+        .iter()
+        .find(|reply| field(reply, &["id"]).is_ok_and(|id| id == &Value::Number("4".to_owned())))
+        .ok_or("ping response missing after cancellation")?;
     assert!(field(ping, &["result"]).is_ok());
-    let cancelled = replies.iter().find(|reply| {
-        field(reply, &["id"]).is_ok_and(|id| id == &Value::Number("2".to_owned()))
-    }).ok_or("cancelled wait response missing")?;
-    assert_eq!(field(&cancelled, &["id"])?, &Value::Number("2".to_owned()));
-    assert_eq!(field(&cancelled, &["result", "isError"])?, &Value::Bool(true));
-    let content = field(&cancelled, &["result", "content"])?.array().ok_or("MCP content")?;
+    let cancelled = replies
+        .iter()
+        .find(|reply| field(reply, &["id"]).is_ok_and(|id| id == &Value::Number("2".to_owned())))
+        .ok_or("cancelled wait response missing")?;
+    assert_eq!(field(cancelled, &["id"])?, &Value::Number("2".to_owned()));
+    assert_eq!(
+        field(cancelled, &["result", "isError"])?,
+        &Value::Bool(true)
+    );
+    let content = field(cancelled, &["result", "content"])?
+        .array()
+        .ok_or("MCP content")?;
     let body = parse(text(content.first().ok_or("MCP text")?, &["text"])?)?;
     assert_eq!(text(&body, &["outcome"])?, "cancelled");
     assert_eq!(text(&body, &["payload", "state"])?, "prepared");
     assert_eq!(field(&body, &["payload"])?, field(&initial, &["payload"])?);
-    assert_eq!(texts(&body, &["proofPointers"])?, texts(&initial, &["proofPointers"])?);
+    assert_eq!(
+        texts(&body, &["proofPointers"])?,
+        texts(&initial, &["proofPointers"])?
+    );
 
     drop(input);
     let started = Instant::now();
@@ -111,7 +154,17 @@ fn cancelling_mcp_wait_retains_the_real_prepared_receipt_and_does_not_cancel_its
         std::thread::sleep(Duration::from_millis(5));
     };
     assert!(status.success());
-    assert_eq!(journals.iter().map(fs::read).collect::<io::Result<Vec<_>>>()?, before);
-    assert_eq!(relay.connections(), 0, "request cancellation must never dispatch or cancel the prepared alert");
+    assert_eq!(
+        journals
+            .iter()
+            .map(fs::read)
+            .collect::<io::Result<Vec<_>>>()?,
+        before
+    );
+    assert_eq!(
+        relay.connections(),
+        0,
+        "request cancellation must never dispatch or cancel the prepared alert"
+    );
     Ok(())
 }

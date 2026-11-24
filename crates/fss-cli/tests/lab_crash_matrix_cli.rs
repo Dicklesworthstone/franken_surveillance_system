@@ -232,7 +232,8 @@ fn expected_all_rows() -> Vec<(&'static str, &'static str)> {
     ] {
         rows.push(expected_publish_row(point));
     }
-    for point in [LedgerCutPoint::AfterRootDurable] {
+    {
+        let point = LedgerCutPoint::AfterRootDurable;
         rows.push(expected_ledger_row(point));
     }
     for phase in [

@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
-#![cfg(target_os = "linux")]
 //! Separate native CLI processes, real AVC/HEVC, exact frame identity and fail-closed selection.
+#![cfg(target_os = "linux")]
 
 use fss_cli::json_input::{Value, parse};
 use fss_core::ContentDigest;

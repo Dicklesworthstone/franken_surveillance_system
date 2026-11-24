@@ -25,6 +25,7 @@ mod sweep_all;
 const USAGE: &str = "fss-unifi-discover (--iface IPV4 --prefix 1..32 | --auto-scope NETWORK/PREFIX [--only-interface NAME] [--limited-broadcast] [--neighbor-cache | --sweep-page N | --sweep-all] [--combined-v2]) [--target IPV4]... [--include-mac-claims] --principal PRINCIPAL --approval sha256:DIGEST --owner-authorized";
 const MAX_AUTO_INTERFACES: usize = 4;
 const MAX_AUTO_WINDOWS: usize = 4;
+#[cfg(target_os = "linux")]
 const MAX_NEIGHBOR_BYTES: usize = 128 * 1024;
 
 #[derive(Debug)]
@@ -363,6 +364,7 @@ fn auto_targets(
 // Neighbor entries are unauthenticated hints, not an inventory of all hosts.
 // Only complete entries on the operator-selected interface and an admitted
 // subnet become unicast destinations; missing entries never prove absence.
+#[cfg(any(test, target_os = "linux"))]
 fn parse_neighbor_cache(
     input: &str,
     interface_name: &str,
@@ -528,6 +530,7 @@ fn auto_neighbor_plans(
 // A page covers at most four windows on one selected interface. The ordinal
 // sequence skips the interface itself but otherwise visits every usable host;
 // a completed page is still not proof of device absence or packet delivery.
+#[allow(clippy::type_complexity)]
 fn auto_sweep_page(
     interfaces: &[AutoInterface],
     page: u16,
@@ -756,13 +759,13 @@ fn json(value: &str) -> String {
 }
 
 fn report_json(report: &Report, include_mac_claims: bool) -> String {
-    let cameras = report.cameras.iter().enumerate().map(|(index, c)| {
-                let claims = report.assess_claims(index).expect("enumerated candidate exists");
+    let cameras = report.cameras.iter().enumerate().filter_map(|(index, c)| {
+                let claims = report.assess_claims(index)?;
                 let mac = if include_mac_claims {
                     let value = c.mac().map_or_else(|| "null".to_owned(), |bytes| json(&bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>()));
                     format!(",\"mac_claim\":{value}")
                 } else { String::new() };
-                format!("{{\"address\":{},\"platform\":{},\"firmware\":{},\"source_advertised\":{},\"identity\":\"unverified\",\"setup\":\"unavailable\"{mac},\"claim_issues\":{{\"missing_or_invalid_mac\":{},\"conflicting_macs_at_address\":{},\"same_mac_at_multiple_addresses\":{},\"conflicting_metadata\":{},\"source_not_advertised\":{},\"incomplete_claim_at_address\":{}}}}}", json(&c.source().ip().to_string()), json(c.platform()), c.firmware().map_or_else(|| "null".into(), json), c.source_advertised(), claims.missing_or_invalid_mac, claims.conflicting_macs_at_address, claims.same_mac_at_multiple_addresses, claims.conflicting_metadata, claims.source_not_advertised, claims.incomplete_claim_at_address)
+                Some(format!("{{\"address\":{},\"platform\":{},\"firmware\":{},\"source_advertised\":{},\"identity\":\"unverified\",\"setup\":\"unavailable\"{mac},\"claim_issues\":{{\"missing_or_invalid_mac\":{},\"conflicting_macs_at_address\":{},\"same_mac_at_multiple_addresses\":{},\"conflicting_metadata\":{},\"source_not_advertised\":{},\"incomplete_claim_at_address\":{}}}}}", json(&c.source().ip().to_string()), json(c.platform()), c.firmware().map_or_else(|| "null".into(), json), c.source_advertised(), claims.missing_or_invalid_mac, claims.conflicting_macs_at_address, claims.same_mac_at_multiple_addresses, claims.conflicting_metadata, claims.source_not_advertised, claims.incomplete_claim_at_address))
             }).collect::<Vec<_>>().join(",");
     format!(
         "{{\"schema\":\"fss.unifi_discovery_lab.v{}\",\"datagrams\":{},\"malformed\":{},\"out_of_scope\":{},\"stop\":{},\"absence_proven\":false,\"cameras\":[{}]}}",
@@ -790,6 +793,10 @@ fn combine_windows(windows: &[Window]) -> Result<Report, &'static str> {
 /// Prepare the normal discovery command's optional UniFi probe before it
 /// starts any network work. The supplied digest refers to existing owner
 /// authorization; it is never manufactured from the command line.
+#[allow(
+    dead_code,
+    reason = "Used when included as a submodule by fss-site discovery"
+)]
 pub(crate) fn prepare_scopes(
     scopes: &[String],
     principal: &str,
@@ -813,6 +820,10 @@ pub(crate) fn prepare_scopes(
 
 /// Return the existing laboratory report shapes, preserving partial windows
 /// and refusing to turn a failed or truncated probe into an absence claim.
+#[allow(
+    dead_code,
+    reason = "Used when included as a submodule by fss-site discovery"
+)]
 pub(crate) fn scope_report(options: &Options) -> String {
     match execute(options) {
         Ok(windows) => format_scope_windows(&windows),
@@ -823,6 +834,10 @@ pub(crate) fn scope_report(options: &Options) -> String {
     }
 }
 
+#[allow(
+    dead_code,
+    reason = "Used when included as a submodule by fss-site discovery"
+)]
 fn format_scope_windows(windows: &[Window]) -> String {
     let (combined, combination, success) = match combine_windows(windows) {
         Ok(report) => (report_json(&report, false), "complete", true),
@@ -884,20 +899,22 @@ fn main() -> ExitCode {
         })
     };
     match result {
-        Ok((false, _, include_mac_claims, _, _, _, mut windows)) => match windows
-            .pop()
-            .expect("explicit interface has one window")
-            .report
-        {
-            Ok(report) => {
-                println!("{}", report_json(&report, include_mac_claims));
-                ExitCode::SUCCESS
+        Ok((false, _, include_mac_claims, _, _, _, mut windows)) => {
+            match windows.pop().map(|window| window.report) {
+                Some(Ok(report)) => {
+                    println!("{}", report_json(&report, include_mac_claims));
+                    ExitCode::SUCCESS
+                }
+                Some(Err(error)) => {
+                    eprintln!("UniFi discovery: {error}; {USAGE}");
+                    ExitCode::FAILURE
+                }
+                None => {
+                    eprintln!("UniFi discovery: explicit interface produced no window; {USAGE}");
+                    ExitCode::FAILURE
+                }
             }
-            Err(error) => {
-                eprintln!("UniFi discovery: {error}; {USAGE}");
-                ExitCode::FAILURE
-            }
-        },
+        }
         Ok((true, true, include_mac_claims, _, _, _, windows)) => match combine_windows(&windows) {
             Ok(report) => {
                 println!("{}", report_json(&report, include_mac_claims));

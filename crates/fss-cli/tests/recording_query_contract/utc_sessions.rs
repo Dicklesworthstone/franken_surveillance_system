@@ -341,12 +341,13 @@ impl UtcSessionsFixture {
     }
 
     fn select_unknown_only(&mut self) {
+        assert!(!self.sessions.is_empty(), "session fixture");
         let after = self
             .sessions
             .iter()
             .map(|session| session.known.latest_ns)
             .max()
-            .expect("session fixture")
+            .unwrap_or(0)
             + 1;
         self.request.recording.interval = after..after + 10;
     }

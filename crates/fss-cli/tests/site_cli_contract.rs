@@ -296,7 +296,9 @@ fn argv(value: &Value) -> Test<Vec<OsString>> {
 }
 
 fn native_value<'a>(args: &'a [OsString], name: &str) -> Test<&'a str> {
-    args.chunks_exact(2)
+    args.as_chunks::<2>()
+        .0
+        .iter()
         .find(|pair| pair[0] == name)
         .and_then(|pair| pair[1].to_str())
         .ok_or_else(|| format!("missing native option {name}").into())
@@ -407,7 +409,13 @@ fn multi_source_avc_and_hevc_plans_match_native_cli_without_contact_or_secret_re
         );
         assert_eq!(text(source, "command")?, "fss-capture-rtsp");
         let args = argv(source)?;
-        assert!(!args.chunks_exact(2).any(|pair| pair[0] == "--approve"));
+        assert!(
+            !args
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .any(|pair| pair[0] == "--approve")
+        );
         assert_eq!(native_value(&args, "--codec")?, ["avc", "hevc"][index]);
         assert_eq!(native_value(&args, "--ssrc")?, (index + 7).to_string());
         assert_eq!(native_value(&args, "--frame-duration-ticks")?, "3600");
@@ -1180,3 +1188,309 @@ mod unifi;
 #[cfg(target_os = "linux")]
 #[path = "site_cli_contract/onvif.rs"]
 mod onvif;
+
+fn daemon_e2e_manifest_json(root: &Path) -> String {
+    let root_str = root.to_string_lossy().replace('\\', "\\\\");
+    format!(
+        r#"{{
+  "schema": "fss.site_manifest.v1",
+  "site_id": "site-cli-e2e",
+  "deployment_root": "{root_str}",
+  "ring_cap_bytes": 67108864,
+  "soft_watermark_pct": 75,
+  "hard_watermark_pct": 95,
+  "pack_target_bytes": 65536,
+  "scrub_budget_bytes_per_tick": 1048576,
+  "cameras": [
+    {{
+      "sensor_id": "sensor:wyze-51",
+      "adapter": "synthetic",
+      "endpoint": "synthetic://wyze-51",
+      "secret_id": "secret:wyze:51",
+      "priority_tier": "high_consequence_zone",
+      "zone_id": "driveway",
+      "dimensions": [32, 32],
+      "osd_ignore_rects": ["0,0,8,4"],
+      "failure_domains": ["wifi:home-2g"],
+      "reconnect_min_ms": 200,
+      "reconnect_max_ms": 2000,
+      "stall_timeout_ms": 5000,
+      "ring_max_frames": 32,
+      "ring_max_bytes": 32768,
+      "gop_frames": 4
+    }},
+    {{
+      "sensor_id": "sensor:unifi-g4-177",
+      "adapter": "synthetic",
+      "endpoint": "synthetic://unifi-g4-177",
+      "secret_id": "secret:unifi:177",
+      "priority_tier": "active_investigation",
+      "zone_id": "driveway",
+      "dimensions": [32, 32],
+      "osd_ignore_rects": ["0,0,8,4"],
+      "failure_domains": ["poe:switch-1"],
+      "reconnect_min_ms": 200,
+      "reconnect_max_ms": 2000,
+      "stall_timeout_ms": 5000,
+      "ring_max_frames": 32,
+      "ring_max_bytes": 32768,
+      "gop_frames": 4
+    }}
+  ],
+  "topology": {{
+    "shared_zones": [
+      {{
+        "zone_id": "driveway",
+        "cameras": ["sensor:wyze-51", "sensor:unifi-g4-177"],
+        "max_separation_ns": 5000000000
+      }}
+    ]
+  }}
+}}"#
+    )
+}
+
+#[test]
+fn site_daemon_subcommands_grammar_is_total() -> Test {
+    use fss_cli::{CliError, FssCommand, SiteCommand, parse_fss_args};
+
+    let run_cmd = parse_fss_args([
+        OsString::from("site"),
+        OsString::from("run"),
+        OsString::from("--manifest"),
+        OsString::from("/tmp/site.json"),
+        OsString::from("--root=/tmp/deploy"),
+        OsString::from("--once-ticks"),
+        OsString::from("4"),
+        OsString::from("--tick-ms=10"),
+        OsString::from("--json"),
+    ])?;
+    assert!(run_cmd.is_json());
+    assert!(matches!(run_cmd, FssCommand::Site(ref s) if matches!(**s, SiteCommand::Run(_))));
+
+    let status_cmd = parse_fss_args([
+        OsString::from("site"),
+        OsString::from("status"),
+        OsString::from("--root"),
+        OsString::from("/tmp/deploy"),
+        OsString::from("--json"),
+    ])?;
+    assert!(status_cmd.is_json());
+    assert!(matches!(
+        status_cmd,
+        FssCommand::Site(ref s) if matches!(**s, SiteCommand::Status(_))
+    ));
+
+    let stop_cmd = parse_fss_args([
+        OsString::from("site"),
+        OsString::from("stop"),
+        OsString::from("--root=/tmp/deploy"),
+        OsString::from("--site-id=site-cli-e2e"),
+    ])?;
+    assert!(!stop_cmd.is_json());
+    assert!(matches!(
+        stop_cmd,
+        FssCommand::Site(ref s) if matches!(**s, SiteCommand::Stop(_))
+    ));
+
+    assert!(matches!(
+        parse_fss_args([OsString::from("site"), OsString::from("run")]),
+        Err(CliError::MissingValue { .. })
+    ));
+    assert!(matches!(
+        parse_fss_args([OsString::from("site"), OsString::from("status")]),
+        Err(CliError::MissingValue { .. })
+    ));
+    assert!(matches!(
+        parse_fss_args([
+            OsString::from("site"),
+            OsString::from("run"),
+            OsString::from("--manifest"),
+            OsString::from("/tmp/site.json"),
+            OsString::from("--once-ticks"),
+            OsString::from("0"),
+        ]),
+        Err(CliError::MalformedValue { .. })
+    ));
+    assert!(matches!(
+        parse_fss_args([
+            OsString::from("site"),
+            OsString::from("stop"),
+            OsString::from("--root"),
+            OsString::from("/tmp/deploy"),
+            OsString::from("--unknown"),
+            OsString::from("1"),
+        ]),
+        Err(CliError::UnknownOption { .. })
+    ));
+    assert!(matches!(
+        parse_fss_args([
+            OsString::from("site"),
+            OsString::from("status"),
+            OsString::from("--root"),
+            OsString::from("/tmp/deploy"),
+            OsString::from("extra"),
+        ]),
+        Err(CliError::UnexpectedPositional { .. })
+    ));
+    Ok(())
+}
+
+#[test]
+fn site_run_refuses_plaintext_secret_in_manifest() -> Test {
+    use fss_cli::{ExitIdentity, execute_fss_with_exit, parse_fss_args};
+
+    let root_base = PathBuf::from("/tmp").join(format!("fssc-sec-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root_base);
+    fs::create_dir_all(&root_base)?;
+    let secret = "TopSecretCliPassword77";
+    let manifest_path = root_base.join("secret-site.json");
+    let deploy_root = root_base.join("deploy");
+    let raw = format!(
+        r#"{{"schema":"fss.site_manifest.v1","site_id":"site-sec","cameras":[{{"sensor_id":"sensor:wyze-51","adapter":"rtsp","endpoint":"rtsp://admin:{secret}@192.168.1.51/stream1"}}]}}"#
+    );
+    fs::write(&manifest_path, raw)?;
+
+    let cmd = parse_fss_args([
+        OsString::from("site"),
+        OsString::from("run"),
+        OsString::from("--manifest"),
+        manifest_path.into_os_string(),
+        OsString::from("--root"),
+        deploy_root.into_os_string(),
+        OsString::from("--once-ticks"),
+        OsString::from("1"),
+        OsString::from("--json"),
+    ])?;
+    let (out, exit) = execute_fss_with_exit(cmd);
+    let _ = fs::remove_dir_all(&root_base);
+    assert_eq!(exit, ExitIdentity::MALFORMED_VALUE);
+    let parsed = json_input::parse(&out)?;
+    assert_eq!(
+        text(&parsed, "error_id")?,
+        "ERR-DAEMON-SECRET-IN-MANIFEST-001"
+    );
+    assert!(
+        !out.contains(secret),
+        "CLI diagnostic must never echo plaintext credentials"
+    );
+    Ok(())
+}
+
+#[test]
+fn site_run_status_stop_live_uds_roundtrip() -> Test {
+    use fss_cli::{ExitIdentity, execute_fss_with_exit, parse_fss_args};
+
+    // Use short `/tmp/fssc-...` root so `<root>/run/daemon.sock` stays well below macOS SUN_LEN (104 bytes).
+    struct ShortDir(PathBuf);
+    impl Drop for ShortDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    let root_base = PathBuf::from("/tmp").join(format!("fssc-uds-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root_base);
+    fs::create_dir_all(&root_base)?;
+    let dir = ShortDir(root_base);
+    let deploy_once = dir.0.join("d1");
+    let deploy_live = dir.0.join("d2");
+    let manifest_once = dir.0.join("site-once.json");
+    let manifest_live = dir.0.join("site-live.json");
+    fs::write(&manifest_once, daemon_e2e_manifest_json(&deploy_once))?;
+    fs::write(&manifest_live, daemon_e2e_manifest_json(&deploy_live))?;
+
+    // 1. Bounded finite run (`--once-ticks 3`) exits cleanly with active_tasks == 0.
+    let once_cmd = parse_fss_args([
+        OsString::from("site"),
+        OsString::from("run"),
+        OsString::from("--manifest"),
+        manifest_once.into_os_string(),
+        OsString::from("--root"),
+        deploy_once.into_os_string(),
+        OsString::from("--once-ticks"),
+        OsString::from("3"),
+        OsString::from("--tick-ms"),
+        OsString::from("5"),
+        OsString::from("--json"),
+    ])?;
+    let (once_out, once_exit) = execute_fss_with_exit(once_cmd);
+    assert_eq!(once_exit, ExitIdentity::SUCCESS, "once output: {once_out}");
+    let once_val = json_input::parse(&once_out)?;
+    assert_eq!(text(&once_val, "schema")?, "fss.daemon_shutdown.v1");
+    assert_eq!(field(&once_val, "ticks_executed")?.integer(), Some(3));
+    assert_eq!(field(&once_val, "active_tasks")?.integer(), Some(0));
+    assert_eq!(field(&once_val, "leaked_obligations")?.integer(), Some(0));
+
+    // 2. Always-on live daemon run -> live `fss site status` -> graceful `fss site stop` over UDS.
+    let live_cmd = parse_fss_args([
+        OsString::from("site"),
+        OsString::from("run"),
+        OsString::from("--manifest"),
+        manifest_live.into_os_string(),
+        OsString::from("--root"),
+        deploy_live.clone().into_os_string(),
+        OsString::from("--tick-ms"),
+        OsString::from("10"),
+        OsString::from("--json"),
+    ])?;
+    let runner = std::thread::spawn(move || execute_fss_with_exit(live_cmd));
+
+    // Wait for `<deploy_live>/run/daemon.meta.json` to publish (up to 3s).
+    let meta_path = deploy_live.join("run").join("daemon.meta.json");
+    let mut ready = false;
+    for _ in 0..150 {
+        if meta_path.exists() {
+            ready = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(ready, "daemon failed to bind UDS / write daemon.meta.json");
+
+    let status_cmd = parse_fss_args([
+        OsString::from("site"),
+        OsString::from("status"),
+        OsString::from("--root"),
+        deploy_live.clone().into_os_string(),
+        OsString::from("--json"),
+    ])?;
+    let (status_out, status_exit) = execute_fss_with_exit(status_cmd);
+    assert_eq!(
+        status_exit,
+        ExitIdentity::SUCCESS,
+        "status output: {status_out}"
+    );
+    let status_val = json_input::parse(&status_out)?;
+    assert_eq!(text(&status_val, "schema")?, "fss.daemon_status.v1");
+    assert_eq!(text(&status_val, "site_id")?, "site-cli-e2e");
+    assert_eq!(items(&status_val, "cameras")?.len(), 2);
+
+    let stop_cmd = parse_fss_args([
+        OsString::from("site"),
+        OsString::from("stop"),
+        OsString::from("--root"),
+        deploy_live.clone().into_os_string(),
+        OsString::from("--json"),
+    ])?;
+    let (stop_out, stop_exit) = execute_fss_with_exit(stop_cmd);
+    assert_eq!(stop_exit, ExitIdentity::SUCCESS, "stop output: {stop_out}");
+    let stop_val = json_input::parse(&stop_out)?;
+    assert_eq!(text(&stop_val, "schema")?, "fss.daemon_stop.v1");
+    assert_eq!(text(&stop_val, "state")?, "Accepted");
+
+    let (daemon_out, daemon_exit) = runner.join().map_err(|_| "daemon thread panicked")?;
+    assert_eq!(
+        daemon_exit,
+        ExitIdentity::SUCCESS,
+        "daemon shutdown output: {daemon_out}"
+    );
+    let shutdown_val = json_input::parse(&daemon_out)?;
+    assert_eq!(text(&shutdown_val, "schema")?, "fss.daemon_shutdown.v1");
+    assert_eq!(field(&shutdown_val, "active_tasks")?.integer(), Some(0));
+    assert_eq!(
+        field(&shutdown_val, "leaked_obligations")?.integer(),
+        Some(0)
+    );
+    assert!(!deploy_live.join("run").join("daemon.sock").exists());
+    Ok(())
+}

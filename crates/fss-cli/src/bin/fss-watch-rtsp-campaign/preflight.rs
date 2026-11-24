@@ -57,6 +57,7 @@ fn resolved(
 
 /// The caller first validates its exact pure history mapping/destination. Protect every frozen
 /// custody path, including unobserved successors, plus any separately approved input files.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn check(
     root: &Path,
     history_root: &Path,

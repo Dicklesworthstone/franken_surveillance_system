@@ -57,7 +57,9 @@ fn binary() -> Test<PathBuf> {
 
 fn jpeg_args() -> Vec<OsString> {
     let mut jpeg: Vec<_> = args("avc")
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .filter(|pair| {
             ![
                 "--pins",

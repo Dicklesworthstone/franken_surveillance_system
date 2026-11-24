@@ -97,7 +97,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<Options, String> {
         return Err("review action exceeds argument bound or lacks a value".into());
     }
     let mut values = BTreeMap::new();
-    for pair in args[1..].chunks_exact(2) {
+    for pair in args[1..].as_chunks::<2>().0 {
         let key = pair[0].to_str().ok_or("option names require UTF-8")?;
         if !matches!(key, "--root" | "--site" | "--principal") && !extra.contains(&key) {
             return Err("unknown or inapplicable review option".into());

@@ -7,17 +7,20 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use fss_core::{ContentDigest, SensorId, StreamId, TimestampNs};
+use fss_reference::ReferenceDeployment;
 use fss_reference::ingest::rtpdump::import::{
     RtpImportLimits, RtpImportScope, prepare_rtp_import, publish_rtp_import,
 };
-use fss_reference::ReferenceDeployment;
 use rtpdump_support::{Error, TestResult, config_for, cx, real_dump};
 
 fn directory(label: &str) -> Result<PathBuf, Error> {
     let base = Path::new(env!("CARGO_TARGET_TMPDIR"));
     std::fs::create_dir_all(base)?;
     for index in 0..1000 {
-        let path = base.join(format!("rtp-custody-cli-{label}-{}-{index}", std::process::id()));
+        let path = base.join(format!(
+            "rtp-custody-cli-{label}-{}-{index}",
+            std::process::id()
+        ));
         match std::fs::create_dir(&path) {
             Ok(()) => return Ok(path),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -27,7 +30,12 @@ fn directory(label: &str) -> Result<PathBuf, Error> {
     Err("temporary directory bound".into())
 }
 
-fn command(root: &Path, source: ContentDigest, output: &Path, extra: &[&str]) -> Result<Output, Error> {
+fn command(
+    root: &Path,
+    source: ContentDigest,
+    output: &Path,
+    extra: &[&str],
+) -> Result<Output, Error> {
     Ok(Command::new(env!("CARGO_BIN_EXE_fss-decode-rtp"))
         .args(["decode", "--root"])
         .arg(root)
@@ -67,14 +75,27 @@ fn current_mode_preserves_native_pixels_and_read_only_cold_operation() -> TestRe
     let snapshot_path = dir.join("snapshot.pgm");
     let current_path = dir.join("current.pgm");
     let snapshot = command(&root, source, &snapshot_path, &[])?;
-    assert!(snapshot.status.success(), "{}", String::from_utf8_lossy(&snapshot.stderr));
+    assert!(
+        snapshot.status.success(),
+        "{}",
+        String::from_utf8_lossy(&snapshot.stderr)
+    );
     let current = command(
         &root,
         source,
         &current_path,
-        &["--custody", "current", "--max-custody-read-bytes", "134217728"],
+        &[
+            "--custody",
+            "current",
+            "--max-custody-read-bytes",
+            "134217728",
+        ],
     )?;
-    assert!(current.status.success(), "{}", String::from_utf8_lossy(&current.stderr));
+    assert!(
+        current.status.success(),
+        "{}",
+        String::from_utf8_lossy(&current.stderr)
+    );
     let snapshot_text = String::from_utf8(snapshot.stdout)?;
     let current_text = String::from_utf8(current.stdout)?;
     assert!(!snapshot_text.contains("custody_mode="));
@@ -112,9 +133,19 @@ fn malformed_custody_options_refuse_before_deployment_or_output_creation() -> Te
         vec!["--custody", "latest"],
         vec!["--max-custody-read-bytes", "134217728"],
         vec!["--custody", "current", "--max-custody-read-bytes", "1"],
-        vec!["--custody", "current", "--max-custody-read-bytes", "2147483649"],
+        vec![
+            "--custody",
+            "current",
+            "--max-custody-read-bytes",
+            "2147483649",
+        ],
     ] {
-        let result = command(&root, ContentDigest::sha256(b"unused root"), &output, &extra)?;
+        let result = command(
+            &root,
+            ContentDigest::sha256(b"unused root"),
+            &output,
+            &extra,
+        )?;
         assert_eq!(result.status.code(), Some(2));
         assert!(!root.exists());
         assert!(!output.exists());

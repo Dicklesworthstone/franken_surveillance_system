@@ -837,6 +837,7 @@ fn unrelated_mask_does_not_block_but_sensor_substitution_cannot_bypass_a_mask() 
 }
 
 #[test]
+#[allow(clippy::result_large_err)]
 fn metadata_preflight_and_source_capture_share_one_io_allowance() -> TestResult {
     let f = fixture(false, false)?;
     let slots = [SlotName::parse("activity-originals")?];

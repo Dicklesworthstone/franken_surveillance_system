@@ -1,9 +1,9 @@
 #![forbid(unsafe_code)]
+//! Real process handoff of committed redacted exports; fixtures use real local journals.
 #![cfg(all(
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
-//! Real process handoff of committed redacted exports; fixtures use real local journals.
 
 use std::ffi::OsString;
 use std::fs;

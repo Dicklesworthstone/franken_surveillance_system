@@ -67,6 +67,10 @@ impl AuthPlan {
         }))
     }
 
+    #[allow(
+        dead_code,
+        reason = "Shared authentication plan module is included by multiple capture binaries"
+    )]
     pub(crate) fn preview(&self) -> String {
         object(&[
             (
@@ -82,8 +86,22 @@ impl AuthPlan {
                 "allow_legacy_no_qop",
                 self.policy.allow_legacy_no_qop.to_string(),
             ),
-            ("credential_backend", string("linux_private_regular_file")),
-            ("entropy_backend", string("linux_urandom")),
+            (
+                "credential_backend",
+                string(if cfg!(target_os = "linux") {
+                    "linux_private_regular_file"
+                } else {
+                    "posix_private_regular_file"
+                }),
+            ),
+            (
+                "entropy_backend",
+                string(if cfg!(target_os = "linux") {
+                    "linux_urandom"
+                } else {
+                    "posix_urandom"
+                }),
+            ),
             ("credentials_read", "false".into()),
             ("server_identity_verified", "false".into()),
             ("transport_encrypted", "false".into()),

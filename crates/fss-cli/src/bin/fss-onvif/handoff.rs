@@ -93,6 +93,10 @@ impl Handoff {
         Ok(())
     }
 
+    #[allow(
+        dead_code,
+        reason = "Shared handoff helper is consumed selectively across ONVIF/RTSP binaries"
+    )]
     pub(crate) fn presentation(&self) -> Result<&str, &'static str> {
         validated_uri_parts(&self.uri)
             .map(|(_, path)| path)
@@ -137,6 +141,10 @@ impl Handoff {
         Ok(object(&fields) + "\n")
     }
 
+    #[allow(
+        dead_code,
+        reason = "Shared handoff helper is consumed selectively across ONVIF/RTSP binaries"
+    )]
     pub(crate) fn parse(bytes: &[u8]) -> Result<Self, &'static str> {
         if bytes.is_empty() || bytes.len() > 8192 {
             return Err(ERROR);

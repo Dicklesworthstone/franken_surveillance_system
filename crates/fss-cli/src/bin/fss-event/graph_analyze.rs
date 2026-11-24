@@ -69,6 +69,7 @@ const HELP: &str = "fss-event graph analyze --root DIR --site SITE\n\
   executes the registered Certified Graph Atlas algorithm under its registered complexity bound,\n\
   verifies the GraphAlgorithmWitness, and outputs a canonical JSON report.\n";
 
+#[allow(clippy::enum_variant_names)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ProjectionKind {
     SensorCoverageGraph,

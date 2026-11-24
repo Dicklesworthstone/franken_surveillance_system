@@ -66,6 +66,7 @@ complete canonical report and every packet mapping remain in the verified root.
 No coverage, physical absence, identity, calibrated geometry or effects are claimed.
 ";
 
+#[allow(clippy::large_enum_variant)]
 enum Action {
     Import {
         input: PathBuf,
@@ -126,7 +127,7 @@ fn parse(args: &[OsString]) -> Result<Options, &'static str> {
     }
     let importing = command == "import-rtp";
     let mut values = BTreeMap::new();
-    for pair in args[1..].chunks_exact(2) {
+    for pair in args[1..].as_chunks::<2>().0 {
         let key = pair[0].to_str().ok_or(ARGUMENT_ERROR)?;
         let common = matches!(
             key,
@@ -425,7 +426,7 @@ fn run(options: Options) -> Result<(CommandOutput, bool), &'static str> {
                     &mut deployment,
                     input.as_deref().ok_or(INPUT_ERROR)?,
                     source.clone(),
-                    config.clone(),
+                    *config,
                     &cx,
                 )
                 .map_err(|error| error.code()),

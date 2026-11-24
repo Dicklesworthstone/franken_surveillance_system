@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 //! Real custody and graph composition; accounting failures must not partially augment output.
 
+#[allow(clippy::duplicate_mod)]
 #[path = "../custody_review/fixture.rs"]
 mod fixture;
 

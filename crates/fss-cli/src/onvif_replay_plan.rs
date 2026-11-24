@@ -58,7 +58,10 @@ impl ReplayHandoff {
     ) -> Result<Self, &'static str> {
         let result = Self {
             onboarding_plan,
-            services_digest: selected.services.digest().map_err(|_| ERR_ONVIF_REPLAY_HANDOFF)?,
+            services_digest: selected
+                .services
+                .digest()
+                .map_err(|_| ERR_ONVIF_REPLAY_HANDOFF)?,
             services_observation_digest: selected.services.response_body_digest,
             information: selected.information.clone(),
             window,
@@ -81,21 +84,33 @@ impl ReplayHandoff {
         {
             return Err(ERR_ONVIF_REPLAY_HANDOFF);
         }
-        self.information.canonical_bytes().map_err(|_| ERR_ONVIF_REPLAY_HANDOFF)?;
-        self.information.validate_requested_window(self.window).map_err(|error| error.code())?;
-        validate_stream_uri(&self.uri, &RtspScope {
-            peer: self.peer,
-            authority: self.authority.clone(),
-        }).map_err(|_| ERR_ONVIF_REPLAY_HANDOFF)?;
+        self.information
+            .canonical_bytes()
+            .map_err(|_| ERR_ONVIF_REPLAY_HANDOFF)?;
+        self.information
+            .validate_requested_window(self.window)
+            .map_err(|error| error.code())?;
+        validate_stream_uri(
+            &self.uri,
+            &RtspScope {
+                peer: self.peer,
+                authority: self.authority.clone(),
+            },
+        )
+        .map_err(|_| ERR_ONVIF_REPLAY_HANDOFF)?;
         Ok(())
     }
 
     /// Exact requested protocol range, never clipped to advertised extrema.
     #[must_use]
-    pub const fn window(&self) -> ReplayWindow { self.window }
+    pub const fn window(&self) -> ReplayWindow {
+        self.window
+    }
     /// Explicit owner codec; descriptions and tokens never choose it.
     #[must_use]
-    pub const fn codec(&self) -> ReplayCodec { self.codec }
+    pub const fn codec(&self) -> ReplayCodec {
+        self.codec
+    }
     /// Exact selected recording identity without exposing the token.
     #[must_use]
     pub fn recording_token_digest(&self) -> ContentDigest {
@@ -103,11 +118,17 @@ impl ReplayHandoff {
     }
     /// Complete canonical information identity, including advertised and unknown bounds.
     pub fn information_digest(&self) -> Result<ContentDigest, &'static str> {
-        self.information.digest().map_err(|_| ERR_ONVIF_REPLAY_HANDOFF)
+        self.information
+            .digest()
+            .map_err(|_| ERR_ONVIF_REPLAY_HANDOFF)
     }
     /// Advertised containment is never media coverage.
     pub fn range_assessment(&self) -> Result<&'static str, &'static str> {
-        match self.information.validate_requested_window(self.window).map_err(|error| error.code())? {
+        match self
+            .information
+            .validate_requested_window(self.window)
+            .map_err(|error| error.code())?
+        {
             RecordingRangeAssessment::WithinAdvertisedBounds => Ok("within_advertised_bounds"),
             RecordingRangeAssessment::Unknown => Ok("unknown"),
         }
@@ -121,20 +142,43 @@ impl ReplayHandoff {
     /// Exact private output. Complete canonical information is embedded and checked on read.
     pub fn render(&self) -> Result<String, &'static str> {
         self.validate()?;
-        let information = self.information.canonical_bytes().map_err(|_| ERR_ONVIF_REPLAY_HANDOFF)?;
-        let chunks: Vec<_> = information.chunks(INFORMATION_CHUNK_BYTES)
-            .map(|chunk| string(&hex(chunk))).collect();
+        let information = self
+            .information
+            .canonical_bytes()
+            .map_err(|_| ERR_ONVIF_REPLAY_HANDOFF)?;
+        let chunks: Vec<_> = information
+            .chunks(INFORMATION_CHUNK_BYTES)
+            .map(|chunk| string(&hex(chunk)))
+            .collect();
         let result = object(&[
             ("schema", string(ONVIF_REPLAY_HANDOFF_SCHEMA)),
             ("onboarding_plan", string(&self.onboarding_plan.to_text())),
             ("services_digest", string(&self.services_digest.to_text())),
-            ("services_response_digest", string(&self.services_observation_digest.to_text())),
-            ("recording_token_digest", string(&self.recording_token_digest().to_text())),
-            ("information_digest", string(&self.information_digest()?.to_text())),
-            ("information_canonical_hex", format!("[{}]", chunks.join(","))),
-            ("uri_response_digest", string(&self.uri_observation.to_text())),
+            (
+                "services_response_digest",
+                string(&self.services_observation_digest.to_text()),
+            ),
+            (
+                "recording_token_digest",
+                string(&self.recording_token_digest().to_text()),
+            ),
+            (
+                "information_digest",
+                string(&self.information_digest()?.to_text()),
+            ),
+            (
+                "information_canonical_hex",
+                format!("[{}]", chunks.join(",")),
+            ),
+            (
+                "uri_response_digest",
+                string(&self.uri_observation.to_text()),
+            ),
             ("requested_range", string(&self.window.to_string())),
-            ("advertised_range_assessment", string(self.range_assessment()?)),
+            (
+                "advertised_range_assessment",
+                string(self.range_assessment()?),
+            ),
             ("codec", string(self.codec.as_str())),
             ("peer", string(&self.peer.to_string())),
             ("authority", string(&self.authority)),
@@ -154,31 +198,51 @@ impl ReplayHandoff {
         if bytes.is_empty() || bytes.len() > MAX_ONVIF_REPLAY_HANDOFF_BYTES {
             return Err(ERR_ONVIF_REPLAY_HANDOFF);
         }
-        let input = json_input::parse(
-            std::str::from_utf8(bytes).map_err(|_| ERR_ONVIF_REPLAY_HANDOFF)?
-        ).map_err(|_| ERR_ONVIF_REPLAY_HANDOFF)?;
+        let input =
+            json_input::parse(std::str::from_utf8(bytes).map_err(|_| ERR_ONVIF_REPLAY_HANDOFF)?)
+                .map_err(|_| ERR_ONVIF_REPLAY_HANDOFF)?;
         let fields = input.object().ok_or(ERR_ONVIF_REPLAY_HANDOFF)?;
         const FIELDS: &[&str] = &[
-            "schema", "onboarding_plan", "services_digest", "services_response_digest",
-            "recording_token_digest", "information_digest", "information_canonical_hex",
-            "uri_response_digest", "requested_range", "advertised_range_assessment",
-            "codec", "peer", "authority", "uri", "uri_lifetime_basis",
-            "capture_authorized", "source_evidence",
+            "schema",
+            "onboarding_plan",
+            "services_digest",
+            "services_response_digest",
+            "recording_token_digest",
+            "information_digest",
+            "information_canonical_hex",
+            "uri_response_digest",
+            "requested_range",
+            "advertised_range_assessment",
+            "codec",
+            "peer",
+            "authority",
+            "uri",
+            "uri_lifetime_basis",
+            "capture_authorized",
+            "source_evidence",
         ];
-        if fields.len() != FIELDS.len() || fields.keys().any(|key| !FIELDS.contains(&key.as_str())) {
-            return Err(ERR_ONVIF_REPLAY_HANDOFF);
-        }
-        let text = |key: &str| fields.get(key).and_then(Value::text).ok_or(ERR_ONVIF_REPLAY_HANDOFF);
-        if text("schema")? != ONVIF_REPLAY_HANDOFF_SCHEMA
-            || text("uri_lifetime_basis")? != "unknown"
-            || ["capture_authorized", "source_evidence"].iter().any(|key| {
-                fields.get(*key).and_then(Value::boolean) != Some(false)
-            })
+        if fields.len() != FIELDS.len() || fields.keys().any(|key| !FIELDS.contains(&key.as_str()))
         {
             return Err(ERR_ONVIF_REPLAY_HANDOFF);
         }
-        let chunks = fields.get("information_canonical_hex")
-            .and_then(Value::array).ok_or(ERR_ONVIF_REPLAY_HANDOFF)?;
+        let text = |key: &str| {
+            fields
+                .get(key)
+                .and_then(Value::text)
+                .ok_or(ERR_ONVIF_REPLAY_HANDOFF)
+        };
+        if text("schema")? != ONVIF_REPLAY_HANDOFF_SCHEMA
+            || text("uri_lifetime_basis")? != "unknown"
+            || ["capture_authorized", "source_evidence"]
+                .iter()
+                .any(|key| fields.get(*key).and_then(Value::boolean) != Some(false))
+        {
+            return Err(ERR_ONVIF_REPLAY_HANDOFF);
+        }
+        let chunks = fields
+            .get("information_canonical_hex")
+            .and_then(Value::array)
+            .ok_or(ERR_ONVIF_REPLAY_HANDOFF)?;
         if chunks.is_empty()
             || chunks.len() > MAX_RECORDING_INFORMATION_BYTES.div_ceil(INFORMATION_CHUNK_BYTES)
         {
@@ -187,13 +251,14 @@ impl ReplayHandoff {
         let mut canonical = Vec::new();
         for (index, chunk) in chunks.iter().enumerate() {
             let chunk = chunk.text().ok_or(ERR_ONVIF_REPLAY_HANDOFF)?;
-            if chunk.is_empty() || chunk.len() > 2 * INFORMATION_CHUNK_BYTES
+            if chunk.is_empty()
+                || chunk.len() > 2 * INFORMATION_CHUNK_BYTES
                 || !chunk.len().is_multiple_of(2)
                 || (index + 1 != chunks.len() && chunk.len() != 2 * INFORMATION_CHUNK_BYTES)
             {
                 return Err(ERR_ONVIF_REPLAY_HANDOFF);
             }
-            for pair in chunk.as_bytes().chunks_exact(2) {
+            for pair in chunk.as_bytes().as_chunks::<2>().0 {
                 let digit = |byte: u8| match byte {
                     b'0'..=b'9' => Ok(byte - b'0'),
                     b'a'..=b'f' => Ok(byte - b'a' + 10),
@@ -207,7 +272,8 @@ impl ReplayHandoff {
         }
         let information = RecordingInformation::from_canonical_bytes(&canonical)
             .map_err(|_| ERR_ONVIF_REPLAY_HANDOFF)?;
-        let window = ReplayWindow::parse(text("requested_range")?).map_err(|_| ERR_ONVIF_REPLAY_HANDOFF)?;
+        let window =
+            ReplayWindow::parse(text("requested_range")?).map_err(|_| ERR_ONVIF_REPLAY_HANDOFF)?;
         if window.to_string() != text("requested_range")? {
             return Err(ERR_ONVIF_REPLAY_HANDOFF);
         }
@@ -222,7 +288,9 @@ impl ReplayHandoff {
                 "hevc" => ReplayCodec::Hevc,
                 _ => return Err(ERR_ONVIF_REPLAY_HANDOFF),
             },
-            peer: text("peer")?.parse().map_err(|_| ERR_ONVIF_REPLAY_HANDOFF)?,
+            peer: text("peer")?
+                .parse()
+                .map_err(|_| ERR_ONVIF_REPLAY_HANDOFF)?,
             authority: text("authority")?.into(),
             uri: text("uri")?.into(),
             uri_observation: parse_digest(text("uri_response_digest")?)?,
@@ -239,7 +307,9 @@ impl ReplayHandoff {
 }
 
 fn valid_digest(digest: ContentDigest) -> bool {
-    digest.algorithm() == DigestAlgorithm::Sha256 && !digest.is_laboratory() && digest.bytes() != [0; 32]
+    digest.algorithm() == DigestAlgorithm::Sha256
+        && !digest.is_laboratory()
+        && digest.bytes() != [0; 32]
 }
 
 /// Parse a canonical nonzero production SHA-256 without reflecting private input.
@@ -273,10 +343,14 @@ pub struct PreparedOnvifReplaySelection {
 impl PreparedOnvifReplaySelection {
     /// Immutable provenance without URI/token disclosure.
     #[must_use]
-    pub fn source_binding(&self) -> &OnvifReplaySource { &self.source }
+    pub fn source_binding(&self) -> &OnvifReplaySource {
+        &self.source
+    }
     /// Actual private lease fingerprint, also inside the native request.
     #[must_use]
-    pub fn file_identity(&self) -> ContentDigest { self.source.file_identity() }
+    pub fn file_identity(&self) -> ContentDigest {
+        self.source.file_identity()
+    }
     /// Borrow exact route-bearing arguments only for the native parser.
     pub fn with_capture_arguments<T>(&self, prepare: impl FnOnce(&[OsString]) -> T) -> T {
         prepare(&self.arguments)
@@ -286,9 +360,15 @@ impl PreparedOnvifReplaySelection {
 impl OnvifReplaySourceSpec {
     fn validate(&self) -> Result<(), &'static str> {
         let path = self.source.to_str().ok_or(ERR_CAPTURE_ONVIF_REPLAY)?;
-        if path.is_empty() || path.len() > 4096 || path.chars().any(char::is_control)
-            || !self.source.is_absolute() || self.source.file_name().is_none()
-            || self.source.components().any(|part| matches!(part, Component::ParentDir | Component::CurDir))
+        if path.is_empty()
+            || path.len() > 4096
+            || path.chars().any(char::is_control)
+            || !self.source.is_absolute()
+            || self.source.file_name().is_none()
+            || self
+                .source
+                .components()
+                .any(|part| matches!(part, Component::ParentDir | Component::CurDir))
             || path.split('/').any(|part| matches!(part, "." | ".."))
             || !valid_digest(self.expected)
         {
@@ -307,8 +387,11 @@ impl OnvifReplaySourceSpec {
         self.validate()?;
         if input.bytes.len() > MAX_ONVIF_REPLAY_HANDOFF_BYTES
             || ContentDigest::sha256(input.bytes) != self.expected
-            || native_args.len() > MAX_ARGUMENTS || !native_args.len().is_multiple_of(2)
-            || native_args.iter().any(|arg| arg.as_encoded_bytes().len() > 4096)
+            || native_args.len() > MAX_ARGUMENTS
+            || !native_args.len().is_multiple_of(2)
+            || native_args
+                .iter()
+                .any(|arg| arg.as_encoded_bytes().len() > 4096)
         {
             return Err(ERR_CAPTURE_ONVIF_REPLAY);
         }
@@ -316,10 +399,22 @@ impl OnvifReplaySourceSpec {
         let mut seen = BTreeSet::new();
         for pair in native_args.as_chunks::<2>().0 {
             let key = pair[0].to_str().ok_or(ERR_CAPTURE_ONVIF_REPLAY)?;
-            if pair[1].to_str().is_none_or(str::is_empty) || !seen.insert(key)
-                || matches!(key, "--onvif-source" | "--onvif-digest" | "--approve" | "--capture-mode"
-                    | "--peer" | "--authority" | "--presentation" | "--codec"
-                    | "--replay-start" | "--replay-end" | "--recover")
+            if pair[1].to_str().is_none_or(str::is_empty)
+                || !seen.insert(key)
+                || matches!(
+                    key,
+                    "--onvif-source"
+                        | "--onvif-digest"
+                        | "--approve"
+                        | "--capture-mode"
+                        | "--peer"
+                        | "--authority"
+                        | "--presentation"
+                        | "--codec"
+                        | "--replay-start"
+                        | "--replay-end"
+                        | "--recover"
+                )
             {
                 return Err(ERR_CAPTURE_ONVIF_REPLAY);
             }
@@ -331,7 +426,8 @@ impl OnvifReplaySourceSpec {
                     return Err(ERR_CAPTURE_ONVIF_REPLAY);
                 }
                 let root = crate::onvif_plan::resolve_control_root(
-                    handoff.presentation()?, pair[1].to_str().ok_or(ERR_CAPTURE_ONVIF_REPLAY)?,
+                    handoff.presentation()?,
+                    pair[1].to_str().ok_or(ERR_CAPTURE_ONVIF_REPLAY)?,
                 )?;
                 arguments.extend([OsString::from("--control-root"), OsString::from(root)]);
             } else {
@@ -358,7 +454,8 @@ impl OnvifReplaySourceSpec {
             handoff.information_digest()?,
             ContentDigest::sha256(handoff.uri.as_bytes()),
             handoff.uri_observation,
-        ).map_err(|_| ERR_CAPTURE_ONVIF_REPLAY)?;
+        )
+        .map_err(|_| ERR_CAPTURE_ONVIF_REPLAY)?;
         Ok(PreparedOnvifReplaySelection { source, arguments })
     }
 
@@ -379,7 +476,9 @@ impl OnvifReplaySourceSpec {
         out.digest(self.expected);
         out.digest(identity);
         out.digest(native);
-        Ok(ContentDigest::sha256(&out.finish_checked().map_err(|_| ERR_CAPTURE_ONVIF_REPLAY)?))
+        Ok(ContentDigest::sha256(
+            &out.finish_checked().map_err(|_| ERR_CAPTURE_ONVIF_REPLAY)?,
+        ))
     }
 
     /// Redacted wrapper around a native preview that already hides private URI paths.
@@ -392,13 +491,19 @@ impl OnvifReplaySourceSpec {
         Ok(object(&[
             ("schema", string(ONVIF_REPLAY_APPROVAL_DOMAIN)),
             ("phase", string("planned")),
-            ("approval", string(&self.approval(identity, native)?.to_text())),
+            (
+                "approval",
+                string(&self.approval(identity, native)?.to_text()),
+            ),
             ("policy", string(POLICY)),
             ("onvif_digest", string(&self.expected.to_text())),
             ("onvif_file_identity", string(&identity.to_text())),
             ("native_capture", private_native_preview.into()),
             ("uri_lifetime_basis", string("unknown")),
-            ("effects", string("protected-file-and-destination-inspection-only")),
+            (
+                "effects",
+                string("protected-file-and-destination-inspection-only"),
+            ),
         ]))
     }
 }
@@ -407,15 +512,33 @@ impl OnvifReplaySourceSpec {
 pub fn source_json(source: &OnvifReplaySource) -> String {
     object(&[
         ("kind", string("onvif_recording_selection")),
-        ("onboarding_plan", string(&source.onboarding_plan().to_text())),
+        (
+            "onboarding_plan",
+            string(&source.onboarding_plan().to_text()),
+        ),
         ("handoff_digest", string(&source.handoff_digest().to_text())),
         ("file_identity", string(&source.file_identity().to_text())),
-        ("services_digest", string(&source.services_digest().to_text())),
-        ("services_response_digest", string(&source.services_observation_digest().to_text())),
-        ("recording_token_digest", string(&source.recording_token_digest().to_text())),
-        ("information_digest", string(&source.information_digest().to_text())),
+        (
+            "services_digest",
+            string(&source.services_digest().to_text()),
+        ),
+        (
+            "services_response_digest",
+            string(&source.services_observation_digest().to_text()),
+        ),
+        (
+            "recording_token_digest",
+            string(&source.recording_token_digest().to_text()),
+        ),
+        (
+            "information_digest",
+            string(&source.information_digest().to_text()),
+        ),
         ("uri_digest", string(&source.uri_digest().to_text())),
-        ("uri_response_digest", string(&source.uri_observation_digest().to_text())),
+        (
+            "uri_response_digest",
+            string(&source.uri_observation_digest().to_text()),
+        ),
         ("uri_lifetime_basis", string("unknown")),
         ("source_coverage_asserted", "false".into()),
     ])

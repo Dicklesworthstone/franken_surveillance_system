@@ -36,10 +36,19 @@ fn projected_sources(envelope: &Value) -> Test<BTreeMap<(String, String), Value>
         if let Some(encoded) = statement.strip_prefix("Retained source metadata: ") {
             let row = parse(encoded)?;
             let key = (
-                field(&row, "sensor_id")?.text().ok_or("sensor identity")?.to_owned(),
-                field(&row, "stream_id")?.text().ok_or("stream identity")?.to_owned(),
+                field(&row, "sensor_id")?
+                    .text()
+                    .ok_or("sensor identity")?
+                    .to_owned(),
+                field(&row, "stream_id")?
+                    .text()
+                    .ok_or("stream identity")?
+                    .to_owned(),
             );
-            assert!(sources.insert(key, row).is_none(), "duplicate source stream");
+            assert!(
+                sources.insert(key, row).is_none(),
+                "duplicate source stream"
+            );
         }
     }
     Ok(sources)
@@ -160,14 +169,21 @@ fn same_mcp(fixture: &Fixture, extra: &str, expected: &(String, ExitIdentity)) -
 #[test]
 fn source_inventory_and_protected_context_match_cli_and_mcp_without_media_grants() -> Test {
     let fixture = Fixture::new("sources-cli-mcp-parity")?;
-    fs::write(fixture.source.root.join("LAYOUT.tmp"), b"pending layout bytes")?;
+    fs::write(
+        fixture.source.root.join("LAYOUT.tmp"),
+        b"pending layout bytes",
+    )?;
     let before = tree(&fixture.source.root)?;
     let expected = cli(&fixture, &[])?;
     assert_eq!(expected.1, ExitIdentity::SUCCESS, "{}", expected.0);
     assert!(expected.0.len() <= 256 * 1024);
     same_mcp(&fixture, "", &expected)?;
     assert!(expected.0.contains("AOP-005"));
-    assert!(!expected.0.contains(fixture.source.root.to_str().ok_or("root")?));
+    assert!(
+        !expected
+            .0
+            .contains(fixture.source.root.to_str().ok_or("root")?)
+    );
     for state in ["prepared", "committed", "indeterminate"] {
         assert!(expected.0.contains(&format!("obligation:qsr-read:{state}")));
     }
@@ -178,10 +194,17 @@ fn source_inventory_and_protected_context_match_cli_and_mcp_without_media_grants
     };
     let cx = support::context(&fixture.source.root)?;
     let native = query_sources(
-        &fixture.source.root, &native_args.request, native_args.limits, &cx, &|| false,
+        &fixture.source.root,
+        &native_args.request,
+        native_args.limits,
+        &cx,
+        &|| false,
     )?;
     cx.drain_and_finalize();
-    assert!(!native.rows.is_empty(), "fixture must retain a source stream");
+    assert!(
+        !native.rows.is_empty(),
+        "fixture must retain a source stream"
+    );
     let mut projected = projected_sources(&value)?;
     assert_eq!(projected.len(), native.rows.len());
     for row in &native.rows {
@@ -193,11 +216,15 @@ fn source_inventory_and_protected_context_match_cli_and_mcp_without_media_grants
     }
     assert!(projected.is_empty());
     let cognitive = field(&value, "payload")?;
-    let handles = field(cognitive, "evidenceHandles")?.array().ok_or("handles")?;
+    let handles = field(cognitive, "evidenceHandles")?
+        .array()
+        .ok_or("handles")?;
     assert!(!handles.is_empty(), "retained capsule metadata handles");
     for handle in handles {
         assert_eq!(field(handle, "hydration")?.text(), Some("H0"));
-        let allowed = field(handle, "allowedHydration")?.array().ok_or("allowed hydration")?;
+        let allowed = field(handle, "allowedHydration")?
+            .array()
+            .ok_or("allowed hydration")?;
         assert_eq!(allowed.len(), 1);
         assert_eq!(allowed[0].text(), Some("H0"));
         assert_eq!(
@@ -234,14 +261,30 @@ fn empty_filters_keep_protected_context_and_cannot_hide_corrupt_capsules() -> Te
     };
     let cx = support::context(&fixture.source.root)?;
     let native = query_sources(
-        &fixture.source.root, &native_args.request, native_args.limits, &cx, &|| false,
+        &fixture.source.root,
+        &native_args.request,
+        native_args.limits,
+        &cx,
+        &|| false,
     )?;
     cx.drain_and_finalize();
-    let digest = native.rows.first().and_then(|row| row.capsule_metadata.first())
+    let digest = native
+        .rows
+        .first()
+        .and_then(|row| row.capsule_metadata.first())
         .ok_or("retained capsule metadata")?;
-    let hex: String = digest.bytes().iter().map(|byte| format!("{byte:02x}")).collect();
-    let metadata = fixture.source.root.join("objects")
-        .join(LOCAL_SPOOL_DIR).join(SPOOL_OBJECTS_DIR).join(hex);
+    let hex: String = digest
+        .bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let metadata = fixture
+        .source
+        .root
+        .join("objects")
+        .join(LOCAL_SPOOL_DIR)
+        .join(SPOOL_OBJECTS_DIR)
+        .join(hex);
     fs::write(metadata, b"corrupt excluded capsule metadata")?;
     let damaged = tree(&fixture.source.root)?;
     let refused = cli(&fixture, &[("--sensor", "sensor:not-retained")])?;
@@ -273,7 +316,10 @@ fn bounded_reads_and_closed_grammar_refuse_without_source_rows() -> Test {
         ("--report-digest", "sha256:invalid"),
         ("--continuation", "continuation:INVALID"),
     ] {
-        assert!(parse_fss_args(args(&fixture, &[(flag, value)])).is_err(), "{flag}");
+        assert!(
+            parse_fss_args(args(&fixture, &[(flag, value)])).is_err(),
+            "{flag}"
+        );
     }
     for extra in [
         r#", "root":"/another-deployment""#,

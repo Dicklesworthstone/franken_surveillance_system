@@ -187,7 +187,7 @@ fn disjoint_sessions_can_resolve_static_search_ambiguity_without_narrowing_time_
     }
     let response = parse(&text).map_err(|e| e.to_string())?;
     let start = text.rfind("\"report\":").ok_or("report boundary")? + "\"report\":".len();
-    let digest = ContentDigest::sha256(text[start..text.len() - 1].as_bytes()).to_text();
+    let digest = ContentDigest::sha256(&text.as_bytes()[start..text.len() - 1]).to_text();
     assert_eq!(
         fields(&response)?
             .get("report_digest")

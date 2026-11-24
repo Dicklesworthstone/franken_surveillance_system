@@ -186,6 +186,7 @@ fn begin_drain(
     owner.begin_drain()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn drive<W: Write>(
     options: &Options,
     source: &mut Option<SourceCustody>,
@@ -582,6 +583,7 @@ fn drive<W: Write>(
     }
 }
 
+#[allow(clippy::result_large_err, clippy::too_many_arguments)]
 pub(super) fn run<W: Write>(
     options: &Options,
     pin_root: &Path,
@@ -640,13 +642,22 @@ pub(super) fn run<W: Write>(
     stats.connection_attempted = true;
     // Pin the already-approved liveness method before the first automatic request.
     // Always run the normal retirement path, even if this pure selection is refused.
-    let selection = capture.select_keepalive(options.keepalive).and_then(|()| {
-        if let Some(request) = &options.replay {
-            capture.select_replay(request.window())
-        } else {
-            Ok(())
-        }
-    });
+    let selection = capture
+        .select_keepalive(options.keepalive)
+        .and_then(|()| {
+            if options.allow_inband_parameter_sets {
+                capture.set_allow_inband_parameter_sets(true)
+            } else {
+                Ok(())
+            }
+        })
+        .and_then(|()| {
+            if let Some(request) = &options.replay {
+                capture.select_replay(request.window())
+            } else {
+                Ok(())
+            }
+        });
     let result = match selection {
         Ok(()) => drive(options, source, &mut capture, owner, entropy, stats, log),
         Err(error) => Err(failure(error, stats)),

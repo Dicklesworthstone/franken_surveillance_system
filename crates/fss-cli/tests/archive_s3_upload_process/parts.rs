@@ -27,7 +27,11 @@ impl PartServer {
         let cancelled = stop.clone();
         let worker = thread::spawn(move || {
             let deadline = Instant::now() + Duration::from_secs(25);
-            let expected = if matches!(inventory, Inventory::Exact) { 4 } else { 3 };
+            let expected = if matches!(inventory, Inventory::Exact) {
+                4
+            } else {
+                3
+            };
             let mut received = Vec::new();
             loop {
                 if cancelled.load(Ordering::SeqCst) {
@@ -127,15 +131,14 @@ impl PartServer {
                             .map_err(|error| error.to_string())?;
                         if !completion.contains("<PartNumber>1</PartNumber>")
                             || !completion.contains("<ETag>&quot;opaque-part&quot;</ETag>")
-                            || !completion.contains(&format!(
-                                "<ChecksumSHA256>{checksum}</ChecksumSHA256>"
-                            ))
+                            || !completion
+                                .contains(&format!("<ChecksumSHA256>{checksum}</ChecksumSHA256>"))
                         {
                             return Err("completion did not use the proven part receipt".into());
                         }
-                        let composite = b64(
-                            &ContentDigest::sha256(&ContentDigest::sha256(BODY).bytes()).bytes(),
-                        );
+                        let composite =
+                            b64(&ContentDigest::sha256(&ContentDigest::sha256(BODY).bytes())
+                                .bytes());
                         format!(
                             "<CompleteMultipartUploadResult><Bucket>test-archive</Bucket>\
                              <Key>object.bin</Key><ETag>&quot;object-etag&quot;</ETag>\
@@ -194,12 +197,18 @@ fn lost_part_ack_completes_after_one_positive_inventory_without_resending() -> T
     assert!(completed.status.success(), "{completed:?}");
     let report = fields(&completed)?;
     assert_eq!(report.get("phase").and_then(Value::text), Some("completed"));
-    assert_eq!(report.get("confirmed_parts").and_then(Value::integer), Some(1));
+    assert_eq!(
+        report.get("confirmed_parts").and_then(Value::integer),
+        Some(1)
+    );
     assert_eq!(report.get("locally_settled"), Some(&Value::Bool(true)));
     let requests = server.finish()?;
     assert_eq!(requests.len(), 4);
     assert_eq!(
-        requests.iter().filter(|request| request.first.starts_with("PUT ")).count(),
+        requests
+            .iter()
+            .filter(|request| request.first.starts_with("PUT "))
+            .count(),
         1,
     );
     fs::remove_file(directory.0.join("source"))?;
@@ -216,7 +225,8 @@ fn lost_part_ack_completes_after_one_positive_inventory_without_resending() -> T
 }
 
 #[test]
-fn incomplete_or_conflicting_inventory_never_replays_a_part_or_resurrects_a_settled_owner() -> Test {
+fn incomplete_or_conflicting_inventory_never_replays_a_part_or_resurrects_a_settled_owner() -> Test
+{
     for (label, inventory) in [
         ("missing", Inventory::Missing),
         ("corrupt", Inventory::Corrupt),

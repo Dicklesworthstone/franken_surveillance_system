@@ -20,7 +20,7 @@ use fss_reference::rtsp::recording::hevc::local::load_hevc_recording;
 use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::fs;
-use std::io::{self, Write};
+use std::io::Write;
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::process::Output;
 use std::thread;
@@ -180,7 +180,7 @@ fn accept(listener: TcpListener) -> Test<TcpStream> {
                 thread::sleep(Duration::from_millis(2));
             }
             Err(error) => {
-                return Err(format!("fixture accepted no connection in 10s: {error}").into())
+                return Err(format!("fixture accepted no connection in 10s: {error}").into());
             }
         }
     };

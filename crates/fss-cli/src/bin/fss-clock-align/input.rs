@@ -13,34 +13,60 @@ use fss_geometry::triangulation::CalibratedView;
 use fss_geometry::{PinholeIntrinsics, RigidPose};
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Schema identifier for strict clock-alignment query documents.
 pub const SCHEMA: &str = "fss.clock_alignment_query.v1";
+/// Caller-declared calibrated camera entry pinned to calibration and image-domain digests.
 #[derive(Clone)]
 pub struct Camera {
+    /// Caller-assigned positive camera identifier.
     pub id: u64,
+    /// Caller-assigned positive clock-domain identifier.
     pub clock: u64,
+    /// SHA-256 digest of the asserted camera calibration artifact.
     pub calibration: ContentDigest,
+    /// SHA-256 digest of the camera's image domain.
     pub image_domain: ContentDigest,
+    /// Rigid camera pose in the shared world frame.
     pub pose: RigidPose,
+    /// Pinhole intrinsic parameters for this camera.
     pub intrinsics: PinholeIntrinsics,
 }
+/// Caller-pinned media source observation referenced by a clock-alignment query.
 pub struct Source {
+    /// Camera identifier that produced this source observation.
     pub camera: u64,
+    /// Clock-domain identifier associated with this source.
     pub clock: u64,
+    /// Whether this source belongs to the held-out validation split.
     pub validation: bool,
+    /// Inclusive `[start, end]` capture interval in nanoseconds.
     pub capture: [i128; 2],
+    /// Declared exposure or timestamp semantics label.
     pub exposure: String,
+    /// SHA-256 digest of the source media artifact.
     pub source: ContentDigest,
+    /// SHA-256 digest of the supporting evidence record.
     pub evidence: ContentDigest,
 }
+/// Parsed and validated clock-alignment query over a reference/target camera pair.
 pub struct Query {
+    /// SHA-256 digest of the shared world-frame basis.
     pub world: ContentDigest,
+    /// SHA-256 digest of the cross-camera association evidence.
     pub association: ContentDigest,
+    /// Ordered `[reference, target]` calibrated cameras.
     pub cameras: [Camera; 2],
+    /// Clock-alignment pair metadata binding the two cameras.
     pub pair: ClockAlignmentPair,
+    /// Timed calibrated views used to fit candidate clock offsets.
     pub training: Vec<TimedCalibratedView>,
+    /// Interval calibrated views used to validate candidate clock offsets.
     pub validation: Vec<IntervalCalibratedView>,
+    /// Ordered source pins referenced by training and validation views.
     pub sources: Vec<Source>,
+    /// Candidate clock-offset hypotheses in nanoseconds.
     pub offsets: Vec<i128>,
+    /// Bounded temporal-triangulation fitting options.
     pub options: TemporalTriangulationOptions,
 }
 fn fields<'a>(value: &'a Value, keys: &[&str]) -> Result<&'a BTreeMap<String, Value>> {
@@ -61,6 +87,7 @@ fn text(value: &Value) -> Result<&str> {
         .text()
         .ok_or_else(|| failure("input", "expected string"))
 }
+/// Parse and require a SHA-256 [`ContentDigest`] pin.
 pub fn digest(value: &str) -> Result<ContentDigest> {
     let digest = ContentDigest::parse(value).map_err(|_| failure("input", "invalid digest"))?;
     if digest.algorithm() != DigestAlgorithm::Sha256 {
@@ -155,6 +182,7 @@ fn camera(value: &Value) -> Result<Camera> {
     })
 }
 
+/// Parse and strictly validate a `fss.clock_alignment_query.v1` JSON document.
 pub fn query(value: &Value) -> Result<Query> {
     let f = fields(
         value,

@@ -182,13 +182,31 @@ fn read_os_entropy() -> Result<[u8; 32], &'static str> {
 fn cfg_field(json: &str, key: &str) -> Option<String> {
     let needle = format!("\"{key}\"");
     let start = json.find(&needle)? + needle.len();
-    let rest = json[start..].trim_start_matches([':', ' ', '\t']);
+    let rest = json[start..].trim_start_matches([':', ' ', '\t', '\r', '\n']);
     if let Some(inner) = rest.strip_prefix('"') {
         let end = inner.find('"')?;
         return Some(inner[..end].to_string());
     }
     let end = rest.find([',', '}']).unwrap_or(rest.len());
-    Some(rest[..end].trim().to_string())
+    let bare = rest[..end].trim();
+    if bare == "null" {
+        return None;
+    }
+    Some(bare.to_string())
+}
+
+/// Parse the optional `bind_ip` value from a camera config JSON.
+///
+/// Omitted, empty (`""`), or whitespace-only values default to `0.0.0.0`.
+/// Any non-empty value must parse strictly as an [`std::net::IpAddr`]; invalid
+/// values fail closed with `ERR-TUTK-CAPTURE-CONFIG-004`.
+fn parse_bind_ip(raw_value: Option<&str>) -> Result<std::net::IpAddr, &'static str> {
+    let Some(trimmed) = raw_value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+    };
+    trimmed
+        .parse::<std::net::IpAddr>()
+        .map_err(|_| "ERR-TUTK-CAPTURE-CONFIG-004: invalid bind_ip")
 }
 
 fn run(o: &Options) -> Result<String, &'static str> {
@@ -202,7 +220,7 @@ fn run(o: &Options) -> Result<String, &'static str> {
     let cam_port: u16 = get("camera_port")?
         .parse()
         .map_err(|_| "ERR-TUTK-CAPTURE-CONFIG-003: invalid camera_port")?;
-    let bind_ip = cfg_field(&raw, "bind_ip").unwrap_or_else(|| "0.0.0.0".into());
+    let bind_ip = parse_bind_ip(cfg_field(&raw, "bind_ip").as_deref())?;
 
     let authority = ContextAuthority::new_root(RootAuthoritySpec {
         trace_id: format!("trace:tutk-capture:{}", o.site),
@@ -234,7 +252,7 @@ fn run(o: &Options) -> Result<String, &'static str> {
         .map_err(|_| "ERR-TUTK-CAPTURE-DEPLOYMENT-001: open failed")?;
 
     let result = (|| -> Result<String, &'static str> {
-        let sock = std::net::UdpSocket::bind((bind_ip.as_str(), 0u16))
+        let sock = std::net::UdpSocket::bind(SocketAddr::from((bind_ip, 0u16)))
             .map_err(|_| "ERR-TUTK-CAPTURE-SESSION-001: socket bind failed")?;
         sock.set_read_timeout(Some(Duration::from_millis(20)))
             .map_err(|_| "ERR-TUTK-CAPTURE-SESSION-001: socket options failed")?;
@@ -396,7 +414,11 @@ fn run(o: &Options) -> Result<String, &'static str> {
             .seal_acquisition(&mut deployment, "HL_CAM4/4.52.17.26", &cx)
             .map_err(|_| "ERR-TUTK-CAPTURE-COMMIT-002: seal refused")?;
         let committed = vec![seal.manifest_batch.as_str().to_owned()];
-        let staged = (seal.capsule_count * 2) as u64;
+        let chunks = seal
+            .input_bytes
+            .div_ceil(fss_reference::ingest::tutk::SEAL_CHUNK_BYTES)
+            .max(1);
+        let staged = (seal.capsule_count as u64) + chunks + 2;
         let frames = sess.video_frames;
         Ok(format!(
             "{{\"schema\":\"{FORMAT}\",\"site\":\"{}\",\"root\":\"{}\",\"state\":{},\"frames\":{},\"capsules\":{},\"batches\":{},\"gaps\":{},\"resync_bytes\":{},\"acks\":{},\"rtsp_listening\":{},\"rtsp_describe\":{},\"custody_staged\":{},\"anchors\":{:?}}}",
@@ -621,10 +643,61 @@ mod tests {
 
     #[test]
     fn cfg_field_flat() {
-        let j = r#"{"uid":"ABCDEFGH","camera_port":32761}"#;
+        let j = r#"{"uid":"ABCDEFGH","camera_port":32761,"bind_ip":null}"#;
         assert_eq!(cfg_field(j, "uid").as_deref(), Some("ABCDEFGH"));
         assert_eq!(cfg_field(j, "camera_port").as_deref(), Some("32761"));
+        assert!(cfg_field(j, "bind_ip").is_none());
         assert!(cfg_field(j, "missing").is_none());
+    }
+
+    #[test]
+    fn parse_bind_ip_defaults_omitted_empty_and_whitespace() {
+        let unspecified = std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED);
+        assert_eq!(parse_bind_ip(None), Ok(unspecified));
+        assert_eq!(parse_bind_ip(Some("")), Ok(unspecified));
+        assert_eq!(parse_bind_ip(Some("   ")), Ok(unspecified));
+        assert_eq!(parse_bind_ip(Some("\t \r\n")), Ok(unspecified));
+
+        for json in [
+            r#"{"uid":"A"}"#,
+            r#"{"uid":"A","bind_ip":""}"#,
+            r#"{"uid":"A","bind_ip":"   "}"#,
+            r#"{"uid":"A","bind_ip":null}"#,
+        ] {
+            let parsed = parse_bind_ip(cfg_field(json, "bind_ip").as_deref());
+            assert_eq!(parsed, Ok(unspecified), "json={json}");
+        }
+    }
+
+    #[test]
+    fn parse_bind_ip_accepts_valid_ips_and_refuses_invalid() {
+        assert_eq!(
+            parse_bind_ip(Some("127.0.0.1")),
+            Ok(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
+        );
+        assert_eq!(
+            parse_bind_ip(Some("  127.0.0.1  ")),
+            Ok(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
+        );
+        assert_eq!(
+            parse_bind_ip(Some("::1")),
+            Ok(std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST))
+        );
+
+        for bad in ["not-an-ip", "999.0.0.1", "127.0.0.1:8080", "null"] {
+            let err = parse_bind_ip(Some(bad)).unwrap_err();
+            assert!(
+                err.contains("ERR-TUTK-CAPTURE-CONFIG-004"),
+                "expected typed refusal for {bad}, got {err}"
+            );
+        }
+
+        let json_bad = r#"{"uid":"A","bind_ip":"not-an-ip"}"#;
+        assert!(
+            parse_bind_ip(cfg_field(json_bad, "bind_ip").as_deref())
+                .unwrap_err()
+                .contains("ERR-TUTK-CAPTURE-CONFIG-004")
+        );
     }
 
     #[test]

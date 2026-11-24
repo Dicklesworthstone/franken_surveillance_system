@@ -256,7 +256,7 @@ fn catalog(
             .as_str()
             .strip_prefix("object:package-detection:")
             .ok_or(Error::Selection("native detector object namespace"))?;
-        let report = ContentDigest::parse(&format!("sha256:{suffix}"))
+        let report = ContentDigest::parse(format!("sha256:{suffix}"))
             .map_err(|_| Error::Selection("native detector report identity"))?;
         if !sha(report) || !sha(revision.payload_digest) {
             return Err(Error::Selection("native detector metadata digest"));
@@ -691,13 +691,15 @@ pub fn run_discovered_detection_supervisor(
         let previous_count = cumulative.len();
         let mut new_sensors = BTreeSet::new();
         for selection in &mut selections {
-            if !cumulative.contains_key(&selection.observation) {
+            if let std::collections::btree_map::Entry::Vacant(e) =
+                cumulative.entry(selection.observation)
+            {
                 let observation = unique
                     .get(&selection.observation)
                     .ok_or(Error::Selection("selected native detector row unavailable"))?
                     .clone();
                 new_sensors.insert(observation.sensor_id.clone());
-                cumulative.insert(selection.observation, observation);
+                e.insert(observation);
                 selection.new_evidence = true;
             }
         }

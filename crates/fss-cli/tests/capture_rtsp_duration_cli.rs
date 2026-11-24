@@ -339,7 +339,9 @@ fn prefix(codec: Codec) -> Test<Vec<Vec<u8>>> {
                 })
                 .collect::<Test<Vec<_>>>()?;
             assert_eq!(
-                nals.iter().map(|nal| (nal[0] >> 1) & 63).collect::<Vec<_>>(),
+                nals.iter()
+                    .map(|nal| (nal[0] >> 1) & 63)
+                    .collect::<Vec<_>>(),
                 [32, 33, 34, 20, 1]
             );
             let mut out = vec![framed(codec, 0, 0, &nals[0])?];
@@ -372,7 +374,11 @@ fn request(peer: &mut TcpStream) -> Test<Option<(String, u32)>> {
         }
         if bytes.ends_with(b"\r\n\r\n") {
             let text = String::from_utf8(bytes)?;
-            let method = text.split_ascii_whitespace().next().ok_or("missing method")?.to_owned();
+            let method = text
+                .split_ascii_whitespace()
+                .next()
+                .ok_or("missing method")?
+                .to_owned();
             let cseq = text
                 .split("\r\n")
                 .find_map(|line| {
@@ -401,18 +407,26 @@ fn serve(listener: &TcpListener, codec: Codec, silent: bool, delayed_play: bool)
     let mut peer = loop {
         match listener.accept() {
             Ok((peer, _)) => break peer,
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline => {
+            Err(error)
+                if error.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline =>
+            {
                 thread::sleep(Duration::from_millis(2));
             }
             Err(error) => return Err(error.into()),
         }
     };
+    peer.set_nonblocking(false)?;
     peer.set_read_timeout(Some(Duration::from_secs(15)))?;
     peer.set_write_timeout(Some(Duration::from_secs(15)))?;
     peer.set_nodelay(true)?;
     let (method, cseq) = request(&mut peer)?.ok_or("missing DESCRIBE")?;
     assert_eq!(method, "DESCRIBE");
-    response(&mut peer, cseq, "Content-Type: application/sdp\r\n", &codec.description())?;
+    response(
+        &mut peer,
+        cseq,
+        "Content-Type: application/sdp\r\n",
+        &codec.description(),
+    )?;
     let (method, cseq) = request(&mut peer)?.ok_or("missing SETUP")?;
     assert_eq!(method, "SETUP");
     response(
@@ -503,7 +517,10 @@ fn timed_avc_and_hevc_prefixes_are_published_without_source_eof() -> Test {
         assert_eq!(number(terminal, "indexed_windows")?, 1);
         assert!(!details(&rows, "checkpoint_durable")?.is_empty());
         assert_eq!(details(&rows, "catalog_published")?.len(), 1);
-        assert_eq!(text(unique(&rows, "window_durable")?, "codec")?, codec.name());
+        assert_eq!(
+            text(unique(&rows, "window_durable")?, "codec")?,
+            codec.name()
+        );
         assert!(flag(unique(&rows, "reconnect_terminal")?, "complete")?);
         assert!(details(&rows, "recording_stalled")?.is_empty());
         no_connection(&listener)?;
@@ -525,10 +542,16 @@ fn empty_duration_cannot_succeed_or_open_another_campaign_attempt() -> Test {
         let rows = rows(&output)?;
         assert!(details(&rows, "capture_duration_complete")?.is_empty());
         let terminal = unique(&rows, "terminal")?;
-        assert_eq!(text(terminal, "error_id")?, "ERR-CAPTURE-RTSP-EMPTY-DURATION-001");
+        assert_eq!(
+            text(terminal, "error_id")?,
+            "ERR-CAPTURE-RTSP-EMPTY-DURATION-001"
+        );
         assert_eq!(number(terminal, "durable_pictures")?, 0);
         assert!(!flag(terminal, "peer_eof")?);
-        assert_eq!(number(unique(&rows, "reconnect_terminal")?, "attempts_used")?, 1);
+        assert_eq!(
+            number(unique(&rows, "reconnect_terminal")?, "attempts_used")?,
+            1
+        );
         assert!(!directory.0.join("capture.attempt-0002").exists());
         assert!(!directory.0.join("pins.attempt-0002").exists());
         no_connection(&listener)?;
@@ -585,7 +608,10 @@ fn picture_ceiling_still_finishes_before_a_later_duration() -> Test {
         let rows = rows(&output)?;
         assert!(details(&rows, "capture_duration_elapsed")?.is_empty());
         assert!(details(&rows, "capture_duration_complete")?.is_empty());
-        assert!(flag(unique(&rows, "attempt_finished")?, "picture_ceiling_reached")?);
+        assert!(flag(
+            unique(&rows, "attempt_finished")?,
+            "picture_ceiling_reached"
+        )?);
         no_connection(&listener)?;
     }
     Ok(())
@@ -604,7 +630,10 @@ fn an_earlier_progress_stall_remains_a_failure() -> Test {
         let rows = rows(&output)?;
         assert!(details(&rows, "capture_duration_complete")?.is_empty());
         assert_eq!(details(&rows, "recording_stalled")?.len(), 1);
-        assert_eq!(text(unique(&rows, "terminal")?, "error_id")?, "ERR-CAPTURE-RTSP-PROGRESS-001");
+        assert_eq!(
+            text(unique(&rows, "terminal")?, "error_id")?,
+            "ERR-CAPTURE-RTSP-PROGRESS-001"
+        );
         no_connection(&listener)?;
     }
     Ok(())
@@ -614,10 +643,16 @@ fn an_earlier_progress_stall_remains_a_failure() -> Test {
 fn negotiation_does_not_spend_the_play_armed_capture_duration() -> Test {
     let directory = Directory::new()?;
     let listener = listener()?;
-    let approved = approve(&directory, &args(&directory, listener.local_addr()?, Codec::Avc))?;
+    let approved = approve(
+        &directory,
+        &args(&directory, listener.local_addr()?, Codec::Avc),
+    )?;
     let output = capture(&directory, &approved, &listener, Codec::Avc, 1, false, true)?;
     assert_success(&output);
-    assert_eq!(details(&rows(&output)?, "capture_duration_complete")?.len(), 1);
+    assert_eq!(
+        details(&rows(&output)?, "capture_duration_complete")?.len(),
+        1
+    );
     no_connection(&listener)?;
     Ok(())
 }
@@ -626,7 +661,10 @@ fn negotiation_does_not_spend_the_play_armed_capture_duration() -> Test {
 fn changing_duration_invalidates_approval_before_camera_or_archive_effects() -> Test {
     let directory = Directory::new()?;
     let listener = listener()?;
-    let mut approved = approve(&directory, &args(&directory, listener.local_addr()?, Codec::Avc))?;
+    let mut approved = approve(
+        &directory,
+        &args(&directory, listener.local_addr()?, Codec::Avc),
+    )?;
     set(&mut approved, "--capture-duration-ms", "501");
     let output = run(&directory, &approved)?;
     assert!(!output.status.success());

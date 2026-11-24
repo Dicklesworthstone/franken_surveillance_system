@@ -15,12 +15,20 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Directory(PathBuf);
 impl Directory {
     fn new() -> Result<Self, Box<dyn Error>> {
-        let root = std::env::temp_dir().join(format!("fss-dashboard-contract-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        let root = std::env::temp_dir().join(format!(
+            "fss-dashboard-contract-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
         fs::create_dir(&root)?;
         Ok(Self(root))
     }
 }
-impl Drop for Directory { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); } }
+impl Drop for Directory {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
 fn context(directory: &Directory) -> Result<ReplayCx, Box<dyn Error>> {
     let authority = ContextAuthority::new_root(RootAuthoritySpec {
         trace_id: "trace:dashboard-test".to_owned(),
@@ -35,7 +43,10 @@ fn context(directory: &Directory) -> Result<ReplayCx, Box<dyn Error>> {
         anchor_universe: ContentDigest::sha256(b"dashboard test anchor"),
         generation: 1,
     })?;
-    Ok(ReplayCx::new(ReplayIoAuthority::from_context_authority(&authority, directory.0.join("scratch"))?))
+    Ok(ReplayCx::new(ReplayIoAuthority::from_context_authority(
+        &authority,
+        directory.0.join("scratch"),
+    )?))
 }
 fn inventory(root: &Path) -> Result<BTreeMap<PathBuf, Vec<u8>>, Box<dyn Error>> {
     fn visit(root: &Path, dir: &Path, result: &mut BTreeMap<PathBuf, Vec<u8>>) -> Test {
@@ -57,7 +68,9 @@ fn inventory(root: &Path) -> Result<BTreeMap<PathBuf, Vec<u8>>, Box<dyn Error>> 
 }
 fn snapshot(root: &Path, site: &str) -> Result<Output, Box<dyn Error>> {
     Ok(Command::new(env!("CARGO_BIN_EXE_fss-dashboard"))
-        .arg("--snapshot").arg("--root").arg(root)
+        .arg("--snapshot")
+        .arg("--root")
+        .arg(root)
         .args(["--site", site, "--allow-local-metadata", "yes"])
         .output()?)
 }
@@ -66,13 +79,29 @@ fn native_empty_deployment_is_read_without_new_files_or_journal_writes() -> Test
     let directory = Directory::new()?;
     let root = directory.0.join("deployment");
     let cx = context(&directory)?;
-    drop(ReferenceDeployment::open(&root, "site:dashboard-test", &cx)?);
+    drop(ReferenceDeployment::open(
+        &root,
+        "site:dashboard-test",
+        &cx,
+    )?);
     let before = inventory(&root)?;
     for _ in 0..2 {
         let output = snapshot(&root, "site:dashboard-test")?;
-        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         let body = String::from_utf8(output.stdout)?;
-        for field in ["\"format\":\"fss.operator_dashboard.v1\"", "\"demo\":false", "\"site\":\"site:dashboard-test\"", "\"events\":[]", "\"imports\":[]", "\"openObligations\":0", "\"indeterminateOperations\":0"] {
+        for field in [
+            "\"format\":\"fss.operator_dashboard.v1\"",
+            "\"demo\":false",
+            "\"site\":\"site:dashboard-test\"",
+            "\"events\":[]",
+            "\"imports\":[]",
+            "\"openObligations\":0",
+            "\"indeterminateOperations\":0",
+        ] {
             assert!(body.contains(field), "missing {field}: {body}");
         }
         assert!(!body.contains("event:demo:"));
@@ -85,15 +114,21 @@ fn wrong_site_and_damaged_layout_never_substitute_demo_or_repair_the_root() -> T
     let directory = Directory::new()?;
     let root = directory.0.join("deployment");
     let cx = context(&directory)?;
-    drop(ReferenceDeployment::open(&root, "site:dashboard-test", &cx)?);
+    drop(ReferenceDeployment::open(
+        &root,
+        "site:dashboard-test",
+        &cx,
+    )?);
     let before = inventory(&root)?;
     let output = snapshot(&root, "site:another-site")?;
-    assert!(!output.status.success()); assert!(output.stdout.is_empty());
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
     assert_eq!(inventory(&root)?, before);
     fs::write(root.join("LAYOUT"), b"deliberately damaged layout\n")?;
     let damaged = inventory(&root)?;
     let output = snapshot(&root, "site:dashboard-test")?;
-    assert!(!output.status.success()); assert!(output.stdout.is_empty());
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
     assert_eq!(inventory(&root)?, damaged);
     Ok(())
 }
@@ -102,9 +137,15 @@ fn missing_deployment_is_not_created_and_demo_cannot_select_one() -> Test {
     let directory = Directory::new()?;
     let root = directory.0.join("not-present");
     let output = snapshot(&root, "site:dashboard-test")?;
-    assert!(!output.status.success()); assert!(output.stdout.is_empty()); assert!(!root.exists());
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(!root.exists());
     let output = Command::new(env!("CARGO_BIN_EXE_fss-dashboard"))
-        .args(["--demo", "--snapshot", "--root"]).arg(&root).output()?;
-    assert!(!output.status.success()); assert!(output.stdout.is_empty()); assert!(!root.exists());
+        .args(["--demo", "--snapshot", "--root"])
+        .arg(&root)
+        .output()?;
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(!root.exists());
     Ok(())
 }

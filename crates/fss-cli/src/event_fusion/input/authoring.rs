@@ -2,8 +2,8 @@
 //! Inert profile authoring from explicit owner choices and labelled counts.
 //! No supplied likelihood, probability, calibration digest or analysis scope is trusted.
 
-use super::*;
 use super::super::render;
+use super::*;
 
 const COUNTS_SCHEMA: &str = "fss.event_class_fusion_counts.v1";
 const TABLE_SCHEMA: &str = "fss.score_calibration_counts.v1";
@@ -40,7 +40,12 @@ impl EventFusionProfile {
         analysis_root: ContentDigest,
     ) -> Result<Self> {
         Self::from_counts_scoped(
-            bytes, expected, analysis, detector_recipe, &BTreeSet::new(), Some(WholeRecordingScope::Watch(analysis_root)),
+            bytes,
+            expected,
+            analysis,
+            detector_recipe,
+            &BTreeSet::new(),
+            Some(WholeRecordingScope::Watch(analysis_root)),
         )
     }
 
@@ -73,7 +78,11 @@ impl EventFusionProfile {
         analysis_roots: [ContentDigest; 2],
     ) -> Result<Self> {
         Self::from_counts_scoped(
-            bytes, expected, analysis, detector_recipe, &BTreeSet::new(),
+            bytes,
+            expected,
+            analysis,
+            detector_recipe,
+            &BTreeSet::new(),
             Some(WholeRecordingScope::Corroboration(analysis_roots)),
         )
     }
@@ -104,8 +113,14 @@ impl EventFusionProfile {
         let request = object(
             &document,
             &[
-                "schema", "class_index", "prior", "policy", "severity", "looks",
-                "now_ns", "calibrations",
+                "schema",
+                "class_index",
+                "prior",
+                "policy",
+                "severity",
+                "looks",
+                "now_ns",
+                "calibrations",
             ],
         )?;
         if text_field(request, "schema")? != COUNTS_SCHEMA {
@@ -171,13 +186,21 @@ impl EventFusionProfile {
                     ("alert_threshold", numeric(policy.alert_threshold)),
                     ("retain_threshold", numeric(policy.retain_threshold)),
                     ("reject_threshold", numeric(policy.reject_threshold)),
-                    ("min_independent_support", numeric(policy.min_independent_support)),
+                    (
+                        "min_independent_support",
+                        numeric(policy.min_independent_support),
+                    ),
                     (
                         "urgent_single_domain_threshold",
-                        policy.urgent_single_domain_threshold.map_or(Value::Null, numeric),
+                        policy
+                            .urgent_single_domain_threshold
+                            .map_or(Value::Null, numeric),
                     ),
                     ("max_wait_ns", numeric(policy.max_wait_ns)),
-                    ("look_penalty_per_doubling", numeric(policy.look_penalty_per_doubling)),
+                    (
+                        "look_penalty_per_doubling",
+                        numeric(policy.look_penalty_per_doubling),
+                    ),
                     (
                         "operator_confirmation_available",
                         Value::Bool(policy.operator_confirmation_available),
@@ -189,7 +212,10 @@ impl EventFusionProfile {
                 fields([
                     ("expected_harm", numeric(severity.expected_harm)),
                     ("false_alert_cost", numeric(severity.false_alert_cost)),
-                    ("delay_cost_per_second", numeric(severity.delay_cost_per_second)),
+                    (
+                        "delay_cost_per_second",
+                        numeric(severity.delay_cost_per_second),
+                    ),
                     ("reversible", Value::Bool(severity.reversible)),
                 ]),
             ),
@@ -211,8 +237,10 @@ fn encode_scope(fields: &mut Object, scope: Option<WholeRecordingScope>) {
         }
         Some(WholeRecordingScope::Corroboration(roots)) => {
             fields.insert("schema".to_owned(), text_value(LONG_CORROBORATION_SCHEMA));
-            fields.insert("long_corroboration_analysis_roots".to_owned(),
-                Value::Array(roots.iter().map(text_value).collect()));
+            fields.insert(
+                "long_corroboration_analysis_roots".to_owned(),
+                Value::Array(roots.iter().map(text_value).collect()),
+            );
         }
         Some(WholeRecordingScope::Dwell(root)) => {
             fields.insert("schema".to_owned(), text_value(LONG_DWELL_SCHEMA));
@@ -248,7 +276,11 @@ fn calibration_value(table: &ScoreCalibration) -> Result<Value> {
 }
 
 fn fields<const N: usize>(rows: [(&str, Value); N]) -> Value {
-    Value::Object(rows.into_iter().map(|(key, value)| (key.to_owned(), value)).collect())
+    Value::Object(
+        rows.into_iter()
+            .map(|(key, value)| (key.to_owned(), value))
+            .collect(),
+    )
 }
 fn text_value(value: impl ToString) -> Value {
     Value::Text(value.to_string())
@@ -264,7 +296,11 @@ fn pair(value: LlrInterval) -> Value {
 /// typed profile above; arbitrary caller-created Number strings never reach this function.
 fn encode(value: &Value) -> Result<String> {
     fn append(out: &mut String, text: &str) -> Result<()> {
-        if out.len().checked_add(text.len()).is_none_or(|n| n > MAX_PROFILE_BYTES) {
+        if out
+            .len()
+            .checked_add(text.len())
+            .is_none_or(|n| n > MAX_PROFILE_BYTES)
+        {
             return Err(EventFusionError::Limit);
         }
         out.push_str(text);

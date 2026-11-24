@@ -66,12 +66,21 @@ fn handoff(selected: &RecordingReplay, hevc: bool) -> Test<String> {
         selected,
         ContentDigest::sha256(b"independently approved recording selection"),
         ReplayWindow::from_timestamps(REPLAY_START, REPLAY_END)?,
-        if hevc { ReplayCodec::Hevc } else { ReplayCodec::Avc },
-    )?.render()?)
+        if hevc {
+            ReplayCodec::Hevc
+        } else {
+            ReplayCodec::Avc
+        },
+    )?
+    .render()?)
 }
 
 fn write_private(path: &Path, bytes: &[u8]) -> Test {
-    let mut file = OpenOptions::new().create_new(true).write(true).mode(0o600).open(path)?;
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(path)?;
     file.write_all(bytes)?;
     file.sync_all()?;
     Ok(())
@@ -81,16 +90,31 @@ fn source_path(directory: &Directory) -> PathBuf {
     directory.0.join("selected-replay.json")
 }
 
-fn arguments(directory: &Directory, peer: SocketAddr, hevc: bool, bytes: &[u8]) -> Test<Vec<OsString>> {
+fn arguments(
+    directory: &Directory,
+    peer: SocketAddr,
+    hevc: bool,
+    bytes: &[u8],
+) -> Test<Vec<OsString>> {
     let direct = codec_replay_args(directory, peer, hevc)?;
     let mut arguments = vec![
         "from-onvif-replay".into(),
-        "--onvif-source".into(), source_path(directory).into_os_string(),
-        "--onvif-digest".into(), ContentDigest::sha256(bytes).to_text().into(),
+        "--onvif-source".into(),
+        source_path(directory).into_os_string(),
+        "--onvif-digest".into(),
+        ContentDigest::sha256(bytes).to_text().into(),
     ];
     for pair in direct.chunks_exact(2) {
-        if !["--peer", "--authority", "--presentation", "--codec", "--replay-start", "--replay-end"]
-            .iter().any(|flag| pair[0] == *flag)
+        if ![
+            "--peer",
+            "--authority",
+            "--presentation",
+            "--codec",
+            "--replay-start",
+            "--replay-end",
+        ]
+        .iter()
+        .any(|flag| pair[0] == *flag)
         {
             arguments.extend_from_slice(pair);
         }
@@ -105,7 +129,10 @@ fn private_preview(arguments: &[OsString]) -> Test<Value> {
     assert_eq!(text(&preview, "schema")?, ONVIF_REPLAY_APPROVAL_DOMAIN);
     assert_eq!(text(&preview, "phase")?, "planned");
     assert_eq!(text(&preview, "uri_lifetime_basis")?, "unknown");
-    assert_eq!(text(value(&preview, "native_capture")?, "schema")?, "fss.rtsp_capture_cli.v1");
+    assert_eq!(
+        text(value(&preview, "native_capture")?, "schema")?,
+        "fss.rtsp_capture_cli.v1"
+    );
     Ok(preview)
 }
 
@@ -113,7 +140,10 @@ fn redacted(output: &Output) -> Test {
     for bytes in [&output.stdout, &output.stderr] {
         let text = String::from_utf8_lossy(bytes);
         for secret in [TOKEN, PRIVATE_NAME, URI_MARKER, PRESENTATION] {
-            assert!(!text.contains(secret), "private recording selection leaked in process output");
+            assert!(
+                !text.contains(secret),
+                "private recording selection leaked in process output"
+            );
         }
     }
     Ok(())
@@ -127,13 +157,17 @@ fn capture_selected(
     thread::scope(|scope| {
         let server = scope.spawn(move || serve_replay(listener, ReplayBehavior::Target, hevc));
         let output = run("capture", arguments);
-        let server = server.join().map_err(|_| "selected replay fixture thread panicked")?;
+        let server = server
+            .join()
+            .map_err(|_| "selected replay fixture thread panicked")?;
         match (output, server) {
             (Ok(output), Ok(transcript)) => Ok((output, transcript)),
             (Ok(output), Err(error)) => Err(format!(
                 "selected replay fixture failed: {error}; stdout={} stderr={}",
-                String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr)
-            ).into()),
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+            .into()),
             (Err(error), _) => Err(error),
         }
     })
@@ -142,7 +176,11 @@ fn capture_selected(
 fn cold_arguments(directory: &Directory, native: &Value, rows: &[Value]) -> Test<Vec<OsString>> {
     let scope = catalog_scope(native)?;
     let published = detail(rows, "replay_receipt_published")?;
-    let mut arguments = vec!["inspect-replay".into(), "--root".into(), directory.root().into_os_string()];
+    let mut arguments = vec![
+        "inspect-replay".into(),
+        "--root".into(),
+        directory.root().into_os_string(),
+    ];
     for (key, value) in [
         ("--codec", text(native, "codec")?.to_owned()),
         ("--sensor", scope.recording.sensor.as_str().to_owned()),
@@ -152,8 +190,14 @@ fn cold_arguments(directory: &Directory, native: &Value, rows: &[Value]) -> Test
         ("--receive-clock", scope.recording.receive_clock.to_text()),
         ("--decode-clock", scope.decode_clock.to_text()),
         ("--time-scale", scope.time_scale.to_string()),
-        ("--expected-replay-root", text(published, "root")?.to_owned()),
-        ("--expected-replay-request", text(published, "request_identity")?.to_owned()),
+        (
+            "--expected-replay-root",
+            text(published, "root")?.to_owned(),
+        ),
+        (
+            "--expected-replay-request",
+            text(published, "request_identity")?.to_owned(),
+        ),
     ] {
         arguments.extend([key.into(), value.into()]);
     }
@@ -161,7 +205,8 @@ fn cold_arguments(directory: &Directory, native: &Value, rows: &[Value]) -> Test
 }
 
 #[test]
-fn onvif_selected_avc_and_hevc_replay_preserve_outer_approval_private_source_and_cold_custody() -> Test {
+fn onvif_selected_avc_and_hevc_replay_preserve_outer_approval_private_source_and_cold_custody()
+-> Test {
     for hevc in [false, true] {
         let directory = Directory::new("onvif-replay-capture")?;
         let listener = listener()?;
@@ -173,14 +218,38 @@ fn onvif_selected_avc_and_hevc_replay_preserve_outer_approval_private_source_and
         let preview = private_preview(&arguments)?;
         let native = value(&preview, "native_capture")?;
         let source = value(value(native, "recorder_replay")?, "onvif_source")?;
-        assert_eq!(text(source, "handoff_digest")?, ContentDigest::sha256(bytes.as_bytes()).to_text());
-        assert_eq!(text(source, "recording_token_digest")?, ContentDigest::sha256(TOKEN.as_bytes()).to_text());
-        assert_eq!(text(source, "information_digest")?, selected.information.digest()?.to_text());
-        assert_eq!(text(source, "services_digest")?, selected.services.digest()?.to_text());
-        assert_eq!(text(source, "services_response_digest")?, selected.services.response_body_digest.to_text());
-        assert_eq!(text(source, "uri_digest")?, ContentDigest::sha256(selected.uri.as_bytes()).to_text());
-        assert_eq!(text(source, "uri_response_digest")?, selected.uri_response_digest.to_text());
-        assert_eq!(text(source, "file_identity")?, text(&preview, "onvif_file_identity")?);
+        assert_eq!(
+            text(source, "handoff_digest")?,
+            ContentDigest::sha256(bytes.as_bytes()).to_text()
+        );
+        assert_eq!(
+            text(source, "recording_token_digest")?,
+            ContentDigest::sha256(TOKEN.as_bytes()).to_text()
+        );
+        assert_eq!(
+            text(source, "information_digest")?,
+            selected.information.digest()?.to_text()
+        );
+        assert_eq!(
+            text(source, "services_digest")?,
+            selected.services.digest()?.to_text()
+        );
+        assert_eq!(
+            text(source, "services_response_digest")?,
+            selected.services.response_body_digest.to_text()
+        );
+        assert_eq!(
+            text(source, "uri_digest")?,
+            ContentDigest::sha256(selected.uri.as_bytes()).to_text()
+        );
+        assert_eq!(
+            text(source, "uri_response_digest")?,
+            selected.uri_response_digest.to_text()
+        );
+        assert_eq!(
+            text(source, "file_identity")?,
+            text(&preview, "onvif_file_identity")?
+        );
         assert!(!boolean(source, "source_coverage_asserted")?);
         assert!(!directory.root().exists());
         assert!(!directory.pins().exists());
@@ -191,7 +260,10 @@ fn onvif_selected_avc_and_hevc_replay_preserve_outer_approval_private_source_and
         nested.extend(["--approve".into(), text(native, "approval")?.into()]);
         let refused = run("capture", &nested)?;
         assert!(!refused.status.success());
-        assert!(String::from_utf8_lossy(&refused.stderr).contains("ERR-CAPTURE-ONVIF-REPLAY-APPROVAL-001"));
+        assert!(
+            String::from_utf8_lossy(&refused.stderr)
+                .contains("ERR-CAPTURE-ONVIF-REPLAY-APPROVAL-001")
+        );
         redacted(&refused)?;
         no_connection(&listener)?;
         assert!(!directory.root().exists());
@@ -199,19 +271,41 @@ fn onvif_selected_avc_and_hevc_replay_preserve_outer_approval_private_source_and
 
         arguments.extend(["--approve".into(), text(&preview, "approval")?.into()]);
         let (output, transcript) = capture_selected(listener, &arguments, hevc)?;
-        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         redacted(&output)?;
         assert!(!transcript.source_eof);
         for method in ["DESCRIBE", "PLAY"] {
-            let request = transcript.requests.iter().find(|request| request.method == method)
+            let request = transcript
+                .requests
+                .iter()
+                .find(|request| request.method == method)
                 .ok_or("missing selected replay request")?;
-            assert_eq!(request.wire.lines().next().ok_or("request line")?,
-                format!("{method} {} RTSP/1.0", selected.uri));
+            assert_eq!(
+                request.wire.lines().next().ok_or("request line")?,
+                format!("{method} {} RTSP/1.0", selected.uri)
+            );
         }
         let rows = saved_rows(&directory, output)?;
-        verify_saved_receipt(&directory, &preview, &rows, &transcript,
-            ReplayTermination::RequestedStop, true, 2)?;
-        assert_eq!(value(value(detail(&rows, "terminal")?, "recorder_replay")?, "onvif_source")?, source);
+        verify_saved_receipt(
+            &directory,
+            &preview,
+            &rows,
+            &transcript,
+            ReplayTermination::RequestedStop,
+            true,
+            2,
+        )?;
+        assert_eq!(
+            value(
+                value(detail(&rows, "terminal")?, "recorder_replay")?,
+                "onvif_source"
+            )?,
+            source
+        );
 
         // Cold verification is pinned to public receipt/request/scope identities and original
         // archive custody. It does not depend on a surviving private discovery file or URI.
@@ -226,7 +320,11 @@ fn onvif_selected_avc_and_hevc_replay_preserve_outer_approval_private_source_and
         assert_eq!(text(&report, "acknowledged_range")?, ACKNOWLEDGED_RANGE);
         assert_eq!(text(&report, "coverage_claim")?, "not_claimed");
         assert!(boolean(&report, "original_source_verified")?);
-        replace(&mut cold, "--expected-replay-request", &digest("different protected selection"))?;
+        replace(
+            &mut cold,
+            "--expected-replay-request",
+            &digest("different protected selection"),
+        )?;
         let refused = run("archive", &cold)?;
         assert!(!refused.status.success());
         assert!(refused.stdout.is_empty());
@@ -249,16 +347,29 @@ fn onvif_replay_same_bytes_new_inode_and_widened_permissions_invalidate_before_e
     fs::rename(&path, directory.0.join("original-private-input.json"))?;
     write_private(&path, bytes.as_bytes())?;
     let replacement = private_preview(&arguments)?;
-    assert_eq!(text(&replacement, "onvif_digest")?, text(&original, "onvif_digest")?);
-    assert_ne!(text(&replacement, "onvif_file_identity")?, text(&original, "onvif_file_identity")?);
-    assert_ne!(text(&replacement, "approval")?, text(&original, "approval")?);
+    assert_eq!(
+        text(&replacement, "onvif_digest")?,
+        text(&original, "onvif_digest")?
+    );
+    assert_ne!(
+        text(&replacement, "onvif_file_identity")?,
+        text(&original, "onvif_file_identity")?
+    );
+    assert_ne!(
+        text(&replacement, "approval")?,
+        text(&original, "approval")?
+    );
     for field in ["decode_clock", "archive_namespace"] {
-        assert_ne!(text(value(&replacement, "native_capture")?, field)?,
-            text(value(&original, "native_capture")?, field)?);
+        assert_ne!(
+            text(value(&replacement, "native_capture")?, field)?,
+            text(value(&original, "native_capture")?, field)?
+        );
     }
     let refused = run("capture", &approved)?;
     assert!(!refused.status.success());
-    assert!(String::from_utf8_lossy(&refused.stderr).contains("ERR-CAPTURE-ONVIF-REPLAY-APPROVAL-001"));
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("ERR-CAPTURE-ONVIF-REPLAY-APPROVAL-001")
+    );
     redacted(&refused)?;
     no_connection(&listener)?;
     assert!(!directory.root().exists());
@@ -289,7 +400,10 @@ fn onvif_replay_consumer_rechecks_full_observed_bounds_even_with_new_file_digest
     selected.information.range = range;
     selected.information.tracks[0].range = range;
     let valid = handoff(&selected, false)?;
-    assert_eq!(ReplayHandoff::parse(valid.as_bytes())?.range_assessment()?, "within_advertised_bounds");
+    assert_eq!(
+        ReplayHandoff::parse(valid.as_bytes())?.range_assessment()?,
+        "within_advertised_bounds"
+    );
     let changed = valid.replace(REQUESTED_RANGE, "clock=20261101T115959Z-20261101T120100Z");
     assert_ne!(changed, valid);
     write_private(&source_path(&directory), changed.as_bytes())?;
@@ -315,9 +429,14 @@ fn onvif_replay_owned_choices_and_live_handoff_contracts_cannot_be_overridden() 
     let original = arguments(&directory, peer, false, bytes.as_bytes())?;
     private_preview(&original)?;
     for (key, value) in [
-        ("--replay-start", REPLAY_START), ("--replay-end", REPLAY_END),
-        ("--codec", "hevc"), ("--peer", "127.0.0.1:1"), ("--authority", "127.0.0.1:1"),
-        ("--presentation", "/unapproved"), ("--capture-mode", "reconnect"), ("--recover", "yes"),
+        ("--replay-start", REPLAY_START),
+        ("--replay-end", REPLAY_END),
+        ("--codec", "hevc"),
+        ("--peer", "127.0.0.1:1"),
+        ("--authority", "127.0.0.1:1"),
+        ("--presentation", "/unapproved"),
+        ("--capture-mode", "reconnect"),
+        ("--recover", "yes"),
     ] {
         let mut changed = original.clone();
         changed.extend([key.into(), value.into()]);

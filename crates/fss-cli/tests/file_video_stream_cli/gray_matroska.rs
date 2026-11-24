@@ -21,14 +21,19 @@ fn request(
         request
     };
     request.extend([
-        "--output-format".into(), "gray-mkv".into(),
-        "--output-rate".into(), rate.into(),
+        "--output-format".into(),
+        "gray-mkv".into(),
+        "--output-rate".into(),
+        rate.into(),
     ]);
     request
 }
 
 fn samples(pgm: &[u8], count: usize) -> Test<Vec<&[u8]>> {
-    assert!((1..=8).contains(&count), "these retained fixtures contain at most eight frames");
+    assert!(
+        (1..=8).contains(&count),
+        "these retained fixtures contain at most eight frames"
+    );
     assert_eq!(pgm.len(), count * (HEADER.len() + PIXELS));
     let mut samples = Vec::with_capacity(count);
     for frame in pgm.chunks_exact(HEADER.len() + PIXELS) {
@@ -59,18 +64,35 @@ fn same_source_receipts(
     actual: &BTreeMap<String, Vec<String>>,
 ) -> Test {
     for key in [
-        "frame_output_index", "frame_segment", "frame_luma_sha256",
-        "frame_i420_sha256", "frame_receipt_digest",
-        "frame_capture_earliest_ns", "frame_capture_latest_ns",
-        "source_import_identity", "source_segment", "source_capsule_digest",
-        "source_encoded_digest", "source_sensor_id", "source_stream_id",
-        "source_clock_basis", "privacy_mask_binding_digest",
+        "frame_output_index",
+        "frame_segment",
+        "frame_luma_sha256",
+        "frame_i420_sha256",
+        "frame_receipt_digest",
+        "frame_capture_earliest_ns",
+        "frame_capture_latest_ns",
+        "source_import_identity",
+        "source_segment",
+        "source_capsule_digest",
+        "source_encoded_digest",
+        "source_sensor_id",
+        "source_stream_id",
+        "source_clock_basis",
+        "privacy_mask_binding_digest",
     ] {
-        let expected = expected.get(key).ok_or_else(|| format!("missing original {key}"))?;
+        let expected = expected
+            .get(key)
+            .ok_or_else(|| format!("missing original {key}"))?;
         assert_eq!(actual.get(key), Some(expected), "{key}");
     }
-    assert_eq!(one(actual, "decode_work_units")?, one(expected, "decode_work_units")?);
-    assert_eq!(one(actual, "decoder_identity")?, one(expected, "decoder_identity")?);
+    assert_eq!(
+        one(actual, "decode_work_units")?,
+        one(expected, "decode_work_units")?
+    );
+    assert_eq!(
+        one(actual, "decoder_identity")?,
+        one(expected, "decoder_identity")?
+    );
     Ok(())
 }
 
@@ -80,13 +102,25 @@ fn complete(
     frames: usize,
     rate: PlaybackRate,
 ) -> Test {
-    assert_eq!(one(report, "gray_mkv_sha256")?, ContentDigest::sha256(bytes).to_text());
-    assert_eq!(one(report, "gray_mkv_bytes")?.parse::<usize>()?, bytes.len());
+    assert_eq!(
+        one(report, "gray_mkv_sha256")?,
+        ContentDigest::sha256(bytes).to_text()
+    );
+    assert_eq!(
+        one(report, "gray_mkv_bytes")?.parse::<usize>()?,
+        bytes.len()
+    );
     assert_eq!(one(report, "gray_mkv_frames")?.parse::<usize>()?, frames);
     assert_eq!(one(report, "gray_mkv_width")?, "176");
     assert_eq!(one(report, "gray_mkv_height")?, "144");
-    assert_eq!(one(report, "gray_mkv_rate_numerator")?.parse::<u32>()?, rate.numerator());
-    assert_eq!(one(report, "gray_mkv_rate_denominator")?.parse::<u32>()?, rate.denominator());
+    assert_eq!(
+        one(report, "gray_mkv_rate_numerator")?.parse::<u32>()?,
+        rate.numerator()
+    );
+    assert_eq!(
+        one(report, "gray_mkv_rate_denominator")?.parse::<u32>()?,
+        rate.denominator()
+    );
     let end = (frames as u128 * 1_000_000_000 * u128::from(rate.denominator())
         / u128::from(rate.numerator())) as u64;
     assert_eq!(one(report, "gray_mkv_duration_ns")?.parse::<u64>()?, end);
@@ -99,13 +133,19 @@ fn complete(
         ("gray_mkv_published", "false"),
         ("gray_mkv_export_complete", "true"),
         ("gray_mkv_work_unit_model", "logical_sha256_input_bytes"),
-        ("gray_mkv_frame_receipts_domain", "fss.file_gray_matroska_frame_receipts.v1"),
+        (
+            "gray_mkv_frame_receipts_domain",
+            "fss.file_gray_matroska_frame_receipts.v1",
+        ),
         ("decode_complete", "true"),
         ("decode_published", "false"),
     ] {
         assert_eq!(one(report, key)?, expected, "{key}");
     }
-    for key in ["gray_mkv_encoder_identity", "gray_mkv_frame_receipts_sha256"] {
+    for key in [
+        "gray_mkv_encoder_identity",
+        "gray_mkv_frame_receipts_sha256",
+    ] {
         let digest = ContentDigest::parse(one(report, key)?)?;
         assert_eq!(digest.algorithm(), fss_core::DigestAlgorithm::Sha256);
         assert!(!digest.is_laboratory());
@@ -126,10 +166,17 @@ fn refused(output: &Output) -> Test<BTreeMap<String, Vec<String>>> {
     assert_eq!(one(&report, "decode_complete")?, "false");
     assert_eq!(one(&report, "gray_mkv_export_complete")?, "false");
     for key in [
-        "gray_mkv_sha256", "gray_mkv_frame_receipts_sha256", "gray_mkv_encoder_identity",
-        "output_window_complete", "output_window_request_digest", "output_window_selection_digest",
+        "gray_mkv_sha256",
+        "gray_mkv_frame_receipts_sha256",
+        "gray_mkv_encoder_identity",
+        "output_window_complete",
+        "output_window_request_digest",
+        "output_window_selection_digest",
     ] {
-        assert!(!report.contains_key(key), "incomplete output cannot expose {key}");
+        assert!(
+            !report.contains_key(key),
+            "incomplete output cannot expose {key}"
+        );
     }
     Ok(report)
 }
@@ -145,7 +192,9 @@ fn avc_and_hevc_exact_screened_pixels_source_receipts_and_cadence_match_pgm() ->
         let before = journals(&directory)?;
         let pgm_path = directory.0.join("screened.pgm");
         let pgm = fields(&successful(raw(&export_args(
-            &base, &pgm_path, count * (HEADER.len() + PIXELS),
+            &base,
+            &pgm_path,
+            count * (HEADER.len() + PIXELS),
         ))?)?)?;
         let pgm_bytes = fs::read(pgm_path)?;
         let pixels = samples(&pgm_bytes, count)?;
@@ -153,11 +202,15 @@ fn avc_and_hevc_exact_screened_pixels_source_receipts_and_cadence_match_pgm() ->
         let mut lineages = Vec::new();
         let mut generations = Vec::new();
         for (name, supplied_rate) in [
-            ("first.mkv", "60000/2002"), ("equivalent.mkv", "30000/1001"),
+            ("first.mkv", "60000/2002"),
+            ("equivalent.mkv", "30000/1001"),
         ] {
             let path = directory.0.join(name);
             let report = fields(&successful(raw(&request(
-                &base, &path, Some(expected.len()), supplied_rate,
+                &base,
+                &path,
+                Some(expected.len()),
+                supplied_rate,
             ))?)?)?;
             assert_eq!(fs::read(&path)?, expected);
             complete(&report, &expected, count, rate)?;
@@ -181,7 +234,11 @@ fn exact_frame_quotas_are_lazy_and_late_pressure_never_certifies_or_overwrites_a
         let base = args(&directory, &identity, count);
         let before = journals(&directory)?;
         let pgm_path = directory.0.join("quota-source.pgm");
-        successful(raw(&export_args(&base, &pgm_path, count * (HEADER.len() + PIXELS)))?)?;
+        successful(raw(&export_args(
+            &base,
+            &pgm_path,
+            count * (HEADER.len() + PIXELS),
+        ))?)?;
         let pgm_bytes = fs::read(pgm_path)?;
         let pixels = samples(&pgm_bytes, count)?;
         let full = framed(&pixels, rate)?;
@@ -189,7 +246,12 @@ fn exact_frame_quotas_are_lazy_and_late_pressure_never_certifies_or_overwrites_a
         let prior = framed(&pixels[..count - 1], rate)?;
 
         let tiny = directory.0.join("too-small.mkv");
-        let report = refused(&raw(&request(&base, &tiny, Some(first.len() - 1), "30000/1001"))?)?;
+        let report = refused(&raw(&request(
+            &base,
+            &tiny,
+            Some(first.len() - 1),
+            "30000/1001",
+        ))?)?;
         assert!(!tiny.exists());
         assert!(!report.contains_key("frame_receipt_digest"));
 
@@ -203,12 +265,22 @@ fn exact_frame_quotas_are_lazy_and_late_pressure_never_certifies_or_overwrites_a
             assert_eq!(saved, expected);
             assert!(saved.len() < full.len());
             // A fresh attempt cannot replace or certify an earlier incomplete destination.
-            refused(&raw(&request(&base, &path, Some(full.len()), "30000/1001"))?)?;
+            refused(&raw(&request(
+                &base,
+                &path,
+                Some(full.len()),
+                "30000/1001",
+            ))?)?;
             assert_eq!(fs::read(path)?, saved);
         }
         let owned = directory.0.join("operator-owned.mkv");
         fs::write(&owned, b"operator-owned destination")?;
-        refused(&raw(&request(&base, &owned, Some(full.len()), "30000/1001"))?)?;
+        refused(&raw(&request(
+            &base,
+            &owned,
+            Some(full.len()),
+            "30000/1001",
+        ))?)?;
         assert_eq!(fs::read(owned)?, b"operator-owned destination");
         assert_eq!(journals(&directory)?, before);
     }
@@ -226,7 +298,9 @@ fn current_full_frame_masks_preserve_every_sample_as_sixteen_in_both_codecs() ->
         let base = args(&directory, &identity, count);
         let pgm_path = directory.0.join("current-mask.pgm");
         let pgm = fields(&successful(raw(&export_args(
-            &base, &pgm_path, count * (HEADER.len() + PIXELS),
+            &base,
+            &pgm_path,
+            count * (HEADER.len() + PIXELS),
         ))?)?)?;
         let pgm_bytes = fs::read(pgm_path)?;
         let pixels = samples(&pgm_bytes, count)?;
@@ -236,7 +310,10 @@ fn current_full_frame_masks_preserve_every_sample_as_sixteen_in_both_codecs() ->
         let expected = framed(&pixels, rate)?;
         let path = directory.0.join("current-mask.mkv");
         let report = fields(&successful(raw(&request(
-            &base, &path, Some(expected.len()), "60000/2002",
+            &base,
+            &path,
+            Some(expected.len()),
+            "60000/2002",
         ))?)?)?;
         assert_eq!(fs::read(path)?, expected);
         complete(&report, &expected, count, rate)?;
@@ -254,13 +331,26 @@ fn timed_avc_setup() -> Test<(Directory, String)> {
     fs::write(&path, AVC)?;
     let output = run_command(
         Command::new(env!("CARGO_BIN_EXE_fss-file"))
-            .arg("import").arg("--root").arg(directory.root())
-            .args(["--site", SITE, "--input"]).arg(&path)
+            .arg("import")
+            .arg("--root")
+            .arg(directory.root())
+            .args(["--site", SITE, "--input"])
+            .arg(&path)
             .args([
-                "--sensor", "sensor:camera", "--stream", "stream:camera",
-                "--receive-time-ns", "1000000000", "--media-format", "annexb",
-                "--capture-start-ns", "100000000", "--capture-uncertainty-ns", "1000",
-                "--assumed-fps", "10",
+                "--sensor",
+                "sensor:camera",
+                "--stream",
+                "stream:camera",
+                "--receive-time-ns",
+                "1000000000",
+                "--media-format",
+                "annexb",
+                "--capture-start-ns",
+                "100000000",
+                "--capture-uncertainty-ns",
+                "1000",
+                "--assumed-fps",
+                "10",
             ]),
     )?;
     let imported = fields(&successful(output)?)?;
@@ -272,8 +362,10 @@ fn timed_avc_setup() -> Test<(Directory, String)> {
 fn window_request(base: &[OsString], path: &std::path::Path, interval: &str) -> Vec<OsString> {
     let mut request = request(base, path, Some(DEFAULT_OUTPUT_BYTES), "30/1");
     request.extend([
-        "--output-window-ns".into(), interval.into(),
-        "--output-clock-basis".into(), "estimated".into(),
+        "--output-window-ns".into(),
+        interval.into(),
+        "--output-clock-basis".into(),
+        "estimated".into(),
     ]);
     request
 }
@@ -281,7 +373,10 @@ fn window_request(base: &[OsString], path: &std::path::Path, interval: &str) -> 
 fn selected_source_index(report: &BTreeMap<String, Vec<String>>) -> Test<usize> {
     let segments = report.get("frame_segment").ok_or("source segments")?;
     assert_eq!(segments.len(), 3);
-    let index = segments.iter().position(|segment| segment == "1").ok_or("middle source frame")?;
+    let index = segments
+        .iter()
+        .position(|segment| segment == "1")
+        .ok_or("middle source frame")?;
     assert_eq!(segments.iter().filter(|segment| *segment == "1").count(), 1);
     Ok(index)
 }
@@ -293,7 +388,9 @@ fn retained_window_selects_only_middle_capture_then_starts_new_playback_at_zero(
     let before = journals(&directory)?;
     let pgm_path = directory.0.join("timed-source.pgm");
     let pgm = fields(&successful(raw(&export_args(
-        &base, &pgm_path, 3 * (HEADER.len() + PIXELS),
+        &base,
+        &pgm_path,
+        3 * (HEADER.len() + PIXELS),
     ))?)?)?;
     let pgm_bytes = fs::read(pgm_path)?;
     let pixels = samples(&pgm_bytes, 3)?;
@@ -302,7 +399,9 @@ fn retained_window_selects_only_middle_capture_then_starts_new_playback_at_zero(
     let expected = framed(&[pixels[index]], rate)?;
     let path = directory.0.join("middle.mkv");
     let report = fields(&successful(raw(&window_request(
-        &base, &path, "150000000:250000000",
+        &base,
+        &path,
+        "150000000:250000000",
     ))?)?)?;
     assert_eq!(fs::read(path)?, expected);
     complete(&report, &expected, 1, rate)?;
@@ -328,21 +427,32 @@ fn retained_window_selects_only_middle_capture_then_starts_new_playback_at_zero(
         assert_eq!(one(&report, key)?, value, "{key}");
     }
     for key in [
-        "frame_output_index", "frame_receipt_digest", "frame_luma_sha256",
-        "source_import_identity", "source_segment", "source_capsule_digest",
-        "source_encoded_digest", "source_clock_basis",
+        "frame_output_index",
+        "frame_receipt_digest",
+        "frame_luma_sha256",
+        "source_import_identity",
+        "source_segment",
+        "source_capsule_digest",
+        "source_encoded_digest",
+        "source_clock_basis",
     ] {
         let values = pgm.get(key).ok_or_else(|| format!("missing PGM {key}"))?;
         let original = values.get(index).ok_or("source field length")?;
         assert_eq!(one(&report, key)?, original);
     }
-    for key in ["output_window_request_digest", "output_window_selection_digest"] {
+    for key in [
+        "output_window_request_digest",
+        "output_window_selection_digest",
+    ] {
         let digest = ContentDigest::parse(one(&report, key)?)?;
         assert_eq!(digest.algorithm(), fss_core::DigestAlgorithm::Sha256);
         assert!(!digest.is_laboratory());
         assert_ne!(digest.bytes(), [0; 32]);
     }
-    assert_eq!(one(&report, "decode_work_units")?, one(&pgm, "decode_work_units")?);
+    assert_eq!(
+        one(&report, "decode_work_units")?,
+        one(&pgm, "decode_work_units")?
+    );
     assert_eq!(journals(&directory)?, before);
     Ok(())
 }
@@ -354,7 +464,9 @@ fn a_late_uncertain_capture_boundary_keeps_only_an_uncertified_private_prefix() 
     let before = journals(&directory)?;
     let pgm_path = directory.0.join("boundary-source.pgm");
     let pgm = fields(&successful(raw(&export_args(
-        &base, &pgm_path, 3 * (HEADER.len() + PIXELS),
+        &base,
+        &pgm_path,
+        3 * (HEADER.len() + PIXELS),
     ))?)?)?;
     let pgm_bytes = fs::read(pgm_path)?;
     let pixels = samples(&pgm_bytes, 3)?;
@@ -380,7 +492,11 @@ fn default_and_maximum_output_allowances_work_and_out_of_profile_limits_refuse_e
     let base = args(&directory, &identity, count);
     let before = journals(&directory)?;
     let pgm_path = directory.0.join("allowance-source.pgm");
-    successful(raw(&export_args(&base, &pgm_path, count * (HEADER.len() + PIXELS)))?)?;
+    successful(raw(&export_args(
+        &base,
+        &pgm_path,
+        count * (HEADER.len() + PIXELS),
+    ))?)?;
     let pgm_bytes = fs::read(pgm_path)?;
     let rate = PlaybackRate::new(30, 1)?;
     let expected = framed(&samples(&pgm_bytes, count)?, rate)?;

@@ -225,10 +225,10 @@ fn invalid_policy_empty_duplicate_and_conflicting_generation_profiles_refuse() -
 fn exact_duplicate_source_records_count_once_and_cannot_change_sensor() -> Test {
     let r = record("same", 0.9);
     let a = run(spec()?, &[r.clone(), r.clone()], &[])?;
-    let b = run(spec()?, &[r.clone()], &[])?;
+    let b = run(spec()?, std::slice::from_ref(&r), &[])?;
     assert_eq!(a.binding_digest, b.binding_digest);
     assert!(matches!(
-        run(spec()?, &[r.clone()], &[r]),
+        run(spec()?, std::slice::from_ref(&r), std::slice::from_ref(&r)),
         Err(EventFusionError::Evidence)
     ));
     Ok(())
@@ -263,7 +263,7 @@ fn other_classes_and_unassociated_detections_do_not_become_a_zero_score() -> Tes
 #[test]
 fn optional_stopping_changes_the_engine_threshold_and_complete_binding() -> Test {
     let r = record("a", 0.9);
-    let a = run(spec()?, &[r.clone()], &[])?;
+    let a = run(spec()?, std::slice::from_ref(&r), &[])?;
     let mut p = spec()?;
     p.looks = 8;
     let b = run(p, &[r], &[])?;

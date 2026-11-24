@@ -381,6 +381,7 @@ fn segment_in_span(segment: u64, span: &MovieDecodeSpan) -> RunResult<usize> {
     Ok(segment)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn decode_avc(
     action: &Action,
     selected: &RetainedMovieSelection,
@@ -441,6 +442,7 @@ fn decode_avc(
     Ok(range.decoded())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn decode_hevc(
     action: &Action,
     selected: &RetainedMovieSelection,

@@ -9,12 +9,12 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use fss_cli::supervisor::retained::session::NativeSupervisionRequest as NativeRequest;
 use fss_cli::supervisor::retained::{
     MAX_RETAINED_SUPERVISOR_PLAN_BYTES, RetainedDetectionRequest, RetainedDiscoveryRequest,
-    RetainedSupervisorError, RetainedSupervisorPlan, run_discovered_detection_supervisor,
+    RetainedSupervisorPlan, run_discovered_detection_supervisor,
     run_discovered_retained_supervisor, run_retained_supervisor,
 };
-use fss_cli::supervisor::retained::session::NativeSupervisionRequest as NativeRequest;
 use fss_cli::{ERR_CLI_MALFORMED_VALUE, ERR_CLI_RUNTIME_FAILURE, ExitIdentity};
 use fss_core::{
     BudgetVector, ContentDigest, ContextAuthority, DigestAlgorithm, OperationId, PrincipalId,
@@ -36,7 +36,7 @@ enum Mode {
     Detection,
 }
 
-
+#[allow(clippy::large_enum_variant)]
 enum InputPlan {
     Explicit(RetainedSupervisorPlan),
     Discover {

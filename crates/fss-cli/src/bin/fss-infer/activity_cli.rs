@@ -37,11 +37,14 @@ const HELP: &str = "fss-infer activity --root DIR --site SITE --import-id sha256
   [--max-staged-bytes N] [--max-history-entries N]\n\
 \n\
   Runs the committed first-party model:fss-activity:v1 scalar graph over two exact\n\
-  retained JPEG frames from one real MJPEG import. The reference segment must precede\n\
-  the evaluated segment; sensor and stream must match both retained source capsules.\n\
-  The package pin is the whole-archive SHA-256 printed below, not a model root. No\n\
-  model is downloaded or activated, and no import/watch/capture command enables this\n\
-  computation implicitly. AVC and HEVC sources are not supported by this command.\n\
+  retained frames from one real MJPEG, H.264 (Annex-B, MP4, Matroska, FLV) or\n\
+  H.265 (Annex-B, MP4, Matroska) import. The reference segment must precede the\n\
+  evaluated segment; sensor and stream must match both retained source capsules.\n\
+  H.264/H.265 imports require --interpretation ycbcr and start decoding from the\n\
+  nearest preceding IDR/IRAP access unit without crossing a source gap. The\n\
+  package pin is the whole-archive SHA-256 printed below, not a model root. No\n\
+  model is downloaded or activated, and no import/watch/capture command enables\n\
+  this computation implicitly.\n\
 \n\
   The threshold policy is mandatory. HEX8 is eight lowercase hexadecimal digits for\n\
   an exact finite nonnegative f32; 3c23d70a encodes 0.01f32. A finite score strictly\n\
@@ -56,11 +59,13 @@ const HELP: &str = "fss-infer activity --root DIR --site SITE --import-id sha256
   the same publications; a refusal never repairs or replaces damaged evidence.\n\
 \n\
   Prints one fss.recorded_activity_report.v1 JSON document with source/result roots,\n\
-  exact policy and execution settings, charged work, and a verification_arguments\n\
-  array for fss-evidence. Execute that array as arguments, not as shell text. For\n\
-  non-UTF-8 root paths, supply --root with the original native path separately.\n\
-  An abstention has no successful-score verification recipe. A later output failure\n\
-  can leave valid publications retained; repeat the exact request to reconcile.\n\
+  media format, exact policy and execution settings, charged work, and (for MJPEG)\n\
+  a verification_arguments array for fss-evidence. Execute that array as arguments,\n\
+  not as shell text. For non-UTF-8 root paths, supply --root with the original\n\
+  native path separately. An abstention or non-MJPEG source has verification_arguments\n\
+  null because fss-evidence verify-activity currently cold-replays MJPEG inputs only.\n\
+  A later output failure can leave valid publications retained; repeat the exact\n\
+  request to reconcile.\n\
 \n\
   The score is uncalibrated pixel change, reference-only. It is not an object class,\n\
   probability, identity, coverage certificate, corroboration, event or alert.\n\
@@ -223,12 +228,22 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
         1,
         4096,
     )? as u32;
+    limits.decode.maximum_output_bytes = limits
+        .decode
+        .maximum_output_bytes
+        .min(limits.decode.frame.maximum_pixels.saturating_mul(3));
+    let default_decode_work = limits.decode.baseline_rgb_work_bound().saturating_mul(2);
+    let max_decode_work = limits
+        .decode
+        .rgb_work_bound()
+        .saturating_mul(2)
+        .max(1_000_000_000);
     limits.max_decode_work = bounded_number(
         &values,
         "--max-decode-work",
-        Some(limits.max_decode_work),
+        Some(default_decode_work),
         0,
-        1_000_000_000,
+        max_decode_work,
     )?;
     limits.max_staged_bytes = bounded_number(
         &values,
@@ -319,7 +334,8 @@ fn report(options: &Options, receipt: &RecordedActivityReceipt) -> String {
     let plan = &receipt.plan;
     let verification = match result.outcome {
         ExecutorModelOutcome::Abstained { .. } => "null".to_owned(),
-        _ => strings(&verification_arguments(options, receipt)),
+        _ if receipt.media_format == "mjpeg" => strings(verification_arguments(options, receipt)),
+        _ => "null".to_owned(),
     };
     let score = result.outcome.score().map_or_else(
         || "null".to_owned(),
@@ -345,6 +361,7 @@ fn report(options: &Options, receipt: &RecordedActivityReceipt) -> String {
             string(&receipt.import_identity.to_text()),
         ),
         ("import_root", string(&receipt.import_root.to_text())),
+        ("media_format", string(&receipt.media_format)),
         ("reference_segment", receipt.reference_segment.to_string()),
         ("segment", receipt.segment.to_string()),
         (
@@ -646,5 +663,43 @@ mod tests {
             assert!(parse(&args).is_err());
         }
         assert!(parse(&["--help".into(), "extra".into()]).is_err());
+    }
+
+    #[test]
+    fn default_decode_work_derives_from_frame_limits_and_allows_explicit_override() {
+        let parsed = parse(&request())
+            .expect("default activity request")
+            .expect("options");
+        let expected_default = parsed
+            .limits
+            .decode
+            .baseline_rgb_work_bound()
+            .saturating_mul(2);
+        assert_eq!(parsed.limits.max_decode_work, expected_default);
+        // Must stay within fss-evidence verify-activity's 1B ceiling for default 1MP limits.
+        assert!(parsed.limits.max_decode_work <= 1_000_000_000);
+        // Must cover two 640x360 4:4:4 JPEGs (~2 * 130M = 260M work).
+        assert!(parsed.limits.max_decode_work >= 300_000_000);
+
+        // Narrowing --max-frame-pixels scales the default decode work down accordingly.
+        let mut narrow = request();
+        narrow
+            .extend(["--max-frame-pixels", "230400", "--max-dimension", "640"].map(OsString::from));
+        let narrow_parsed = parse(&narrow).expect("narrow").expect("options");
+        assert_eq!(
+            narrow_parsed.limits.max_decode_work,
+            narrow_parsed
+                .limits
+                .decode
+                .baseline_rgb_work_bound()
+                .saturating_mul(2)
+        );
+        assert!(narrow_parsed.limits.max_decode_work < parsed.limits.max_decode_work);
+
+        // Explicit tiny --max-decode-work is still honored so BudgetExhausted tests fail closed.
+        let mut tiny = request();
+        tiny.extend(["--max-decode-work", "0"].map(OsString::from));
+        let tiny_parsed = parse(&tiny).expect("tiny").expect("options");
+        assert_eq!(tiny_parsed.limits.max_decode_work, 0);
     }
 }

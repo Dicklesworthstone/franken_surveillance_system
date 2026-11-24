@@ -27,8 +27,11 @@ fn args(fixture: &Fixture, identity: &str) -> Vec<OsString> {
         "--verify-replay-source".into(),
         "yes".into(),
     ];
-    for pair in native[1..].chunks_exact(2) {
-        let key = pair[0].to_str().expect("fixture option");
+    for pair in native[1..].as_chunks::<2>().0 {
+        let Some(key) = pair[0].to_str() else {
+            assert!(pair[0].to_str().is_some(), "fixture option must be UTF-8");
+            continue;
+        };
         let key = match key {
             "--site" | "--import-id" | "--max-segment-bytes" | "--timeout-ms" => continue,
             "--anchor" => "--source-anchor",
@@ -57,7 +60,7 @@ fn item<'a>(value: &'a Value, key: &str) -> Test<&'a Value> {
 fn mcp(fixture: &Fixture, args: &[OsString], granted: bool) -> Test<Value> {
     let mut fields = Vec::new();
     // query and --json have no value. All remaining canonical fixture options are pairs.
-    for pair in args[2..].chunks_exact(2) {
+    for pair in args[2..].as_chunks::<2>().0 {
         let option = pair[0].to_str().ok_or("fixture option")?;
         if matches!(option, "--root" | "--verify-replay-source") {
             continue;

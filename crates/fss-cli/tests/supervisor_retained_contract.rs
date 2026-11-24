@@ -498,12 +498,14 @@ fn encode(value: &Value) -> String {
         ),
     }
 }
+#[allow(clippy::panic)]
 fn fields(value: &mut Value) -> &mut BTreeMap<String, Value> {
     match value {
         Value::Object(fields) => fields,
         _ => panic!("fixture object"),
     }
 }
+#[allow(clippy::panic)]
 fn rows(value: &mut Value) -> &mut Vec<Value> {
     match value {
         Value::Array(rows) => rows,
@@ -583,6 +585,7 @@ fn discovered_refusal_without_mutation(f: &Fixture, request: &Value) -> TestResu
     Ok(output)
 }
 
+#[allow(clippy::expect_used)]
 fn discovery_plan(request: &mut Value) -> &mut Value {
     fields(request)
         .get_mut("plan")

@@ -49,6 +49,10 @@ pub(super) struct Options {
     pub preserve_decode_gaps: bool,
     pub work: u64,
     pub timeout_ms: u64,
+    #[allow(
+        dead_code,
+        reason = "Shared plan module is included by multiple RTSP binaries"
+    )]
     pub approve: Option<ContentDigest>,
 }
 

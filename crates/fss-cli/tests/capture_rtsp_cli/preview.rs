@@ -181,15 +181,17 @@ impl Camera {
             match listener.accept() {
                 Ok((peer, _)) => break peer,
                 Err(_) if Instant::now() < deadline => {
-                // A poll miss can arrive as a raw EAGAIN on macOS; keep waiting until the deadline.
-                thread::sleep(Duration::from_millis(2));
-            }
-            Err(error) => return Err(format!("fixture accepted no connection in 10s: {error}").into()),
+                    // A poll miss can arrive as a raw EAGAIN on macOS; keep waiting until the deadline.
+                    thread::sleep(Duration::from_millis(2));
+                }
+                Err(error) => {
+                    return Err(format!("fixture accepted no connection in 10s: {error}").into());
+                }
             }
         };
         // macOS inherits O_NONBLOCK from a non-blocking listener onto the accepted peer.
-    peer.set_nonblocking(false)?;
-    peer.set_read_timeout(Some(CAMERA_WAIT))?;
+        peer.set_nonblocking(false)?;
+        peer.set_read_timeout(Some(CAMERA_WAIT))?;
         peer.set_write_timeout(Some(CAMERA_WAIT))?;
         peer.set_nodelay(true)?;
         for expected in ["DESCRIBE", "SETUP", "PLAY"] {

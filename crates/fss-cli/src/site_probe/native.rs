@@ -29,6 +29,7 @@ use crate::json_output::{array, object, string};
 mod authentication;
 #[allow(
     dead_code,
+    clippy::duplicate_mod,
     reason = "The shared runtime also serves retained reads and durable publications"
 )]
 #[path = "../bin/fss-onvif/runtime.rs"]

@@ -11,11 +11,15 @@ use fss_reference::ReplayCx;
 use super::pgm_stream::private_output::PrivateOutputPath;
 #[path = "jpeg_stream/encoder.rs"]
 mod encoder;
+use encoder::Encoder;
+#[allow(
+    unused_imports,
+    reason = "Shared re-exports used across binary and contract tests"
+)]
 pub(super) use encoder::{
     DEFAULT_ENCODE_WORK_UNITS, DEFAULT_OUTPUT_BYTES, DEFAULT_QUALITY, FRAME_RECEIPTS_DOMAIN,
     FrameInput, StreamReceipt,
 };
-use encoder::Encoder;
 
 fn checkpoint(cx: &ReplayCx) -> io::Result<()> {
     cx.checkpoint("file_cli:mjpeg_export")
@@ -58,12 +62,10 @@ impl JpegExport {
         let result = (|| {
             checkpoint(cx)?;
             self.path.check(cx)?;
-            self.encoder.frame(
-                input,
-                budget,
-                || self.path.create(cx),
-                &mut || checkpoint(cx),
-            )?;
+            self.encoder
+                .frame(input, budget, || self.path.create(cx), &mut || {
+                    checkpoint(cx)
+                })?;
             self.path.check(cx)
         })();
         if result.is_err() {

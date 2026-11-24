@@ -143,6 +143,7 @@ impl Fixture {
             fs::read(self.root.join("effects/journal.fssj"))?,
         ))
     }
+    #[allow(dead_code, reason = "Used by Linux-only video publication tests")]
     fn mask(&self, rectangles: &[[u32; 4]]) -> Test<ContentDigest> {
         let cx = context(&self.root)?;
         let mut deployment = ReferenceDeployment::open(&self.root, SITE, &cx)?;

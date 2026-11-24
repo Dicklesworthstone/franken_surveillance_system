@@ -90,6 +90,7 @@ fn camera(listener: TcpListener, video: Vec<u8>) -> Test {
             Err(e) => return Err(e.into()),
         }
     };
+    peer.set_nonblocking(false)?;
     peer.set_read_timeout(Some(Duration::from_secs(3)))?;
     peer.set_write_timeout(Some(Duration::from_secs(3)))?;
     peer.set_nodelay(true)?;

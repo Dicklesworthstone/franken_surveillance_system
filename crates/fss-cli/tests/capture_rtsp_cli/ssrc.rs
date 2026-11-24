@@ -33,7 +33,9 @@ fn serve_sender(listener: TcpListener, advertised: Option<u32>, packets: &[Vec<u
                 // A poll miss can arrive as a raw EAGAIN on macOS; keep waiting until the deadline.
                 thread::sleep(Duration::from_millis(2));
             }
-            Err(error) => return Err(format!("fixture accepted no connection in 10s: {error}").into()),
+            Err(error) => {
+                return Err(format!("fixture accepted no connection in 10s: {error}").into());
+            }
         }
     };
     // macOS inherits O_NONBLOCK from a non-blocking listener onto the accepted peer.

@@ -38,7 +38,10 @@ pub(super) fn arguments(
             let identity = value
                 .text()
                 .filter(|value| !value.is_empty() && value.len() <= 128)
-                .ok_or((-32602, "Expected an exact bounded sensor or stream identity"))?;
+                .ok_or((
+                    -32602,
+                    "Expected an exact bounded sensor or stream identity",
+                ))?;
             argv.push(format!("--{flag}={identity}").into());
         }
     }
@@ -112,8 +115,8 @@ mod tests {
     }
 
     #[test]
-    fn source_selection_dispatches_through_native_parser()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn source_selection_dispatches_through_native_parser() -> Result<(), Box<dyn std::error::Error>>
+    {
         let fields = BTreeMap::from([
             ("target".into(), Value::Text("sources".into())),
             ("sensor".into(), Value::Text("sensor:rear".into())),
@@ -127,11 +130,19 @@ mod tests {
             return Err("sources query command".into());
         };
         assert_eq!(
-            args.request.filter.sensor_id.as_ref().map(|value| value.as_str()),
+            args.request
+                .filter
+                .sensor_id
+                .as_ref()
+                .map(|value| value.as_str()),
             Some("sensor:rear")
         );
         assert_eq!(
-            args.request.filter.stream_id.as_ref().map(|value| value.as_str()),
+            args.request
+                .filter
+                .stream_id
+                .as_ref()
+                .map(|value| value.as_str()),
             Some("stream:rear:1")
         );
         assert_eq!(args.root, std::path::PathBuf::from("/operator/fixed"));
@@ -144,8 +155,17 @@ mod tests {
     #[test]
     fn discovery_rejects_scope_overrides_and_media_or_execution_arguments() {
         for key in [
-            "root", "principal", "sources", "family", "from_ns", "at",
-            "report_digest", "session", "verify_source", "hydrate", "execute",
+            "root",
+            "principal",
+            "sources",
+            "family",
+            "from_ns",
+            "at",
+            "report_digest",
+            "session",
+            "verify_source",
+            "hydrate",
+            "execute",
         ] {
             let fields = BTreeMap::from([
                 ("target".into(), Value::Text("sources".into())),

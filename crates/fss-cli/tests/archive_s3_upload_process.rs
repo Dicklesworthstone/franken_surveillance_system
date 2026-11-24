@@ -1,14 +1,14 @@
 #![forbid(unsafe_code)]
+//! Actual-process native S3 upload and cold journal reuse against a bounded loopback oracle.
 #![cfg(all(
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
-//! Actual-process native S3 upload and cold journal reuse against a bounded loopback oracle.
 
-#[path = "archive_s3_upload_process/parts.rs"]
-mod parts;
 #[path = "archive_s3_upload_process/multipart_parts.rs"]
 mod multipart_parts;
+#[path = "archive_s3_upload_process/parts.rs"]
+mod parts;
 
 use std::collections::BTreeMap;
 use std::fs;

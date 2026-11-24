@@ -320,7 +320,7 @@ pub(super) fn compute(
                 (
                     "source_object_id",
                     string(
-                        &rig.camera(camera.camera)
+                        rig.camera(camera.camera)
                             .map_or("", |row| row.source_object_id.as_str()),
                     ),
                 ),

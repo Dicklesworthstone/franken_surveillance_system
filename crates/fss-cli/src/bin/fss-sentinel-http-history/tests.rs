@@ -154,13 +154,20 @@ fn approval_is_order_independent_except_for_connection_order() -> Test {
     let original = args();
     let baseline = Options::parse(&original)?.approval()?;
     let mut pairs = original
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .filter(|p| p[0] != "--binding")
-        .map(<[OsString]>::to_vec)
+        .map(|pair| pair.to_vec())
         .collect::<Vec<_>>();
     pairs.reverse();
     let mut reordered = pairs.into_iter().flatten().collect::<Vec<_>>();
-    for pair in original.chunks_exact(2).filter(|p| p[0] == "--binding") {
+    for pair in original
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .filter(|p| p[0] == "--binding")
+    {
         reordered.extend_from_slice(pair);
     }
     assert_eq!(Options::parse(&reordered)?.approval()?, baseline);

@@ -22,7 +22,9 @@ fn source() -> TestResult<EventHypothesis> {
         failure_domain: domain.to_owned(),
         supports: relation.required_supports_flag(),
         relation,
-        capsule_digest: Some(ContentDigest::sha256(format!("capsule:{domain}").as_bytes())),
+        capsule_digest: Some(ContentDigest::sha256(
+            format!("capsule:{domain}").as_bytes(),
+        )),
         identity_digest: None,
     })
     .collect();
@@ -75,7 +77,10 @@ fn request_json(
 ) -> String {
     object(&[
         ("schema", string(EVENT_COUNTERFACTUAL_REQUEST_SCHEMA)),
-        ("event_revision_digest", string(&event.revision_digest().to_text())),
+        (
+            "event_revision_digest",
+            string(&event.revision_digest().to_text()),
+        ),
         ("without_domains", strings(without)),
         ("score_calibration", calibration_json(calibration)),
         ("domain_scores_ppm", scores.to_owned()),
@@ -111,19 +116,26 @@ fn loss_recomputes_both_queries_without_upgrading_coverage_or_independence() -> 
     assert!(baseline.opportunities.is_empty() && alternative.probes.is_empty());
 
     let lost = format!("edge:0:{}", event.evidence[0].digest);
-    assert_eq!(result.ablation().unavailable_evidence(), [lost.clone()]);
+    assert_eq!(
+        result.ablation().unavailable_evidence(),
+        std::slice::from_ref(&lost)
+    );
     for (before, after) in baseline.evidence.iter().zip(&alternative.evidence) {
         assert_eq!(before.id, after.id);
         assert_eq!(before.calibration, after.calibration);
         assert_eq!(before.failure_domains, after.failure_domains);
         assert_eq!(before.sensor, SYNTHETIC_GROUP);
-        assert!(before.failure_domains.contains(&format!(
-            "calibration:{}",
-            request.calibration.digest
-        )));
+        assert!(
+            before
+                .failure_domains
+                .contains(&format!("calibration:{}", request.calibration.digest))
+        );
         assert_eq!(before.observability, Observability::Observed);
         if before.id == lost {
-            assert!(matches!(after.observability, Observability::NotObservable { .. }));
+            assert!(matches!(
+                after.observability,
+                Observability::NotObservable { .. }
+            ));
         } else {
             assert_eq!(after.observability, Observability::Observed);
         }
@@ -140,7 +152,10 @@ fn loss_recomputes_both_queries_without_upgrading_coverage_or_independence() -> 
     let json = parse(&result.to_json()?)?;
     let fields = json.object().ok_or("result object")?;
     assert_eq!(fields.get("source_event"), Some(&parse(&original)?));
-    assert_eq!(fields.get("request"), Some(&parse(&request.canonical_request_json())?));
+    assert_eq!(
+        fields.get("request"),
+        Some(&parse(&request.canonical_request_json())?)
+    );
     for key in [
         "source_custody_verified",
         "historical_decision_replayed",
@@ -172,7 +187,10 @@ fn complete_source_loss_is_missingness_and_never_physical_absence() -> TestResul
     assert_eq!(result.ablation().unavailable_evidence().len(), 2);
     assert!(result.ablation().outcome().clusters.is_empty());
     assert_eq!(result.ablation().outcome().excluded.len(), 2);
-    assert_eq!(result.ablation().outcome().knowledge_state, "not_observable");
+    assert_eq!(
+        result.ablation().outcome().knowledge_state,
+        "not_observable"
+    );
     assert_ne!(result.ablation().outcome().decision, Decision::Reject);
     assert_ne!(result.ablation().baseline().decision, Decision::Reject);
     assert!(matches!(
@@ -186,7 +204,10 @@ fn complete_source_loss_is_missingness_and_never_physical_absence() -> TestResul
 fn exact_raw_scores_bind_identity_even_when_the_numerical_bin_is_unchanged() -> TestResult {
     let event = source()?;
     let calibration = calibration_fixture()?;
-    assert_eq!(calibration.calibrate(900_000), calibration.calibrate(850_000));
+    assert_eq!(
+        calibration.calibrate(900_000),
+        calibration.calibrate(850_000)
+    );
     let first = standard_request(&event)?;
     let second = EventCounterfactualRequest::parse(&request_json(
         &event,
@@ -199,7 +220,10 @@ fn exact_raw_scores_bind_identity_even_when_the_numerical_bin_is_unchanged() -> 
     assert_eq!(before.ablation().digest(), after.ablation().digest());
     assert_ne!(first.request_digest(), second.request_digest());
     assert_ne!(before.digest(), after.digest());
-    assert_ne!(before.receipt().receipt_digest(), after.receipt().receipt_digest());
+    assert_ne!(
+        before.receipt().receipt_digest(),
+        after.receipt().receipt_digest()
+    );
     assert_ne!(before.to_json()?, after.to_json()?);
     Ok(())
 }
@@ -221,7 +245,10 @@ fn map_and_simultaneous_selector_order_have_one_canonical_request() -> TestResul
         &["camera:west", "camera:east"],
     ))?;
     assert_eq!(first, second);
-    assert_eq!(first.canonical_request_json(), second.canonical_request_json());
+    assert_eq!(
+        first.canonical_request_json(),
+        second.canonical_request_json()
+    );
     assert_eq!(
         first.compute_event(&event, root())?.to_json()?,
         second.compute_event(&event, root())?.to_json()?
@@ -261,8 +288,14 @@ fn scores_must_exactly_cover_contributing_domains_without_guessing() -> TestResu
     let request = standard_request(&contradiction)?;
     let result = request.compute_event(&contradiction, root())?;
     assert_eq!(result.ablation().original_query().evidence.len(), 2);
-    assert_eq!(result.source.evidence[1].relation, EvidenceEdgeRelation::Contradicts);
-    assert_eq!(result.source.evidence[2].relation, EvidenceEdgeRelation::SensorTamper);
+    assert_eq!(
+        result.source.evidence[1].relation,
+        EvidenceEdgeRelation::Contradicts
+    );
+    assert_eq!(
+        result.source.evidence[2].relation,
+        EvidenceEdgeRelation::SensorTamper
+    );
     Ok(())
 }
 
@@ -290,7 +323,10 @@ fn stale_revision_invalid_source_and_unbound_publication_are_refused() -> TestRe
     let second = request.compute_event(&event, ContentDigest::sha256(b"another-publication"))?;
     assert_eq!(first.ablation().digest(), second.ablation().digest());
     assert_ne!(first.digest(), second.digest());
-    assert_ne!(first.receipt().receipt_digest(), second.receipt().receipt_digest());
+    assert_ne!(
+        first.receipt().receipt_digest(),
+        second.receipt().receipt_digest()
+    );
     Ok(())
 }
 
@@ -359,12 +395,15 @@ fn closed_request_refuses_ambiguous_numeric_inputs_aliases_and_paths() -> TestRe
         r#"{"camera:east":900000,"camera:east":900000,"camera:west":900000}"#,
         r#"{"camera:east":900000,"\u0000":900000}"#,
     ] {
-        assert!(EventCounterfactualRequest::parse(&request_json(
-            &event,
-            &calibration,
-            mapping,
-            &["camera:east"],
-        )).is_err());
+        assert!(
+            EventCounterfactualRequest::parse(&request_json(
+                &event,
+                &calibration,
+                mapping,
+                &["camera:east"],
+            ))
+            .is_err()
+        );
     }
     let valid = request_json(
         &event,
@@ -381,7 +420,13 @@ fn closed_request_refuses_ambiguous_numeric_inputs_aliases_and_paths() -> TestRe
         let changed = valid.replacen('{', &format!("{{{extra}"), 1);
         assert!(EventCounterfactualRequest::parse(&changed).is_err());
     }
-    for policy in ["+1000,0,-1000", "1000,0,-0", "0,1000,-1000", "1000, 0,-1000", "1000,0"] {
+    for policy in [
+        "+1000,0,-1000",
+        "1000,0,-0",
+        "0,1000,-1000",
+        "1000, 0,-1000",
+        "1000,0",
+    ] {
         let changed = valid.replacen('{', &format!("{{\"fusion_policy\":{},", string(policy)), 1);
         assert!(EventCounterfactualRequest::parse(&changed).is_err());
     }
@@ -406,12 +451,20 @@ fn native_calibration_summaries_are_recomputed_instead_of_trusted() -> TestResul
             1,
         ),
         valid.replacen(
-            &format!("\"prior_log_odds_millibans\":[{},{}]", calibration.prior.lo(), calibration.prior.hi()),
+            &format!(
+                "\"prior_log_odds_millibans\":[{},{}]",
+                calibration.prior.lo(),
+                calibration.prior.hi()
+            ),
             "\"prior_log_odds_millibans\":[0,0]",
             1,
         ),
         valid.replacen(
-            &format!("\"llr_millibans\":[{},{}]", calibration.bins[0].llr.lo(), calibration.bins[0].llr.hi()),
+            &format!(
+                "\"llr_millibans\":[{},{}]",
+                calibration.bins[0].llr.lo(),
+                calibration.bins[0].llr.hi()
+            ),
             "\"llr_millibans\":[0,0]",
             1,
         ),
@@ -431,11 +484,17 @@ fn native_calibration_summaries_are_recomputed_instead_of_trusted() -> TestResul
         assert_ne!(changed, valid, "regression must change an input field");
         assert!(EventCounterfactualRequest::parse(&changed).is_err());
     }
-    let compact_bins: Vec<_> = calibration.bins.iter().map(|bin| object(&[
-        ("lo_ppm", bin.lo_ppm.to_string()),
-        ("true_positives", bin.positives.to_string()),
-        ("false_positives", bin.negatives.to_string()),
-    ])).collect();
+    let compact_bins: Vec<_> = calibration
+        .bins
+        .iter()
+        .map(|bin| {
+            object(&[
+                ("lo_ppm", bin.lo_ppm.to_string()),
+                ("true_positives", bin.positives.to_string()),
+                ("false_positives", bin.negatives.to_string()),
+            ])
+        })
+        .collect();
     let compact = object(&[
         ("schema", string("fss.score_calibration.v1")),
         ("generation", string(&calibration.generation)),
@@ -459,13 +518,17 @@ fn request_and_complete_result_bounds_refuse_without_truncated_fallback() -> Tes
     let mut event = source()?;
     let domain = format!("camera:{}", "x".repeat(120));
     let template = event.evidence[0].clone();
-    event.evidence = (0..256).map(|index| {
-        let mut edge = template.clone();
-        edge.failure_domain = domain.clone();
-        edge.digest = ContentDigest::sha256(format!("bounded-edge:{index}").as_bytes());
-        edge.identity_digest = Some(ContentDigest::sha256(format!("identity:{index}").as_bytes()));
-        edge
-    }).collect();
+    event.evidence = (0..256)
+        .map(|index| {
+            let mut edge = template.clone();
+            edge.failure_domain = domain.clone();
+            edge.digest = ContentDigest::sha256(format!("bounded-edge:{index}").as_bytes());
+            edge.identity_digest = Some(ContentDigest::sha256(
+                format!("identity:{index}").as_bytes(),
+            ));
+            edge
+        })
+        .collect();
     event.verify()?;
     let scores = scores_json(&BTreeMap::from([(domain.clone(), 900_000)]));
     let request = EventCounterfactualRequest::parse(&request_json(

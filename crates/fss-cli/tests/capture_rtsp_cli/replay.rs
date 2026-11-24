@@ -153,7 +153,9 @@ fn serve_replay(
                 // A poll miss can arrive as a raw EAGAIN on macOS; keep waiting until the deadline.
                 thread::sleep(Duration::from_millis(2));
             }
-            Err(error) => return Err(format!("fixture accepted no connection in 10s: {error}").into()),
+            Err(error) => {
+                return Err(format!("fixture accepted no connection in 10s: {error}").into());
+            }
         }
     };
     // macOS inherits O_NONBLOCK from a non-blocking listener onto the accepted peer.
@@ -228,7 +230,7 @@ fn serve_replay(
             2
         };
         transcript.video = if hevc {
-            hevc_video(pictures as usize)?
+            hevc_video(pictures)?
         } else {
             video(pictures, 3600, 96, false)?
         };
@@ -382,7 +384,11 @@ fn verify_saved_receipt(
     // approval is admitted. Keep that approval while reading native scope/bounds.
     let preview = preview
         .object()
-        .and_then(|fields| fields.get("capture").or_else(|| fields.get("native_capture")))
+        .and_then(|fields| {
+            fields
+                .get("capture")
+                .or_else(|| fields.get("native_capture"))
+        })
         .unwrap_or(preview);
     let accepted = detail(rows, "replay_accepted")?;
     assert_eq!(
@@ -430,7 +436,7 @@ fn verify_saved_receipt(
         replay_slot(&scope, request)?
     };
     assert_eq!(slot.as_str(), text(published, "slot")?);
-    let publisher = LocalRootPublisher::open(&directory.root(), publication_limits(preview)?)?;
+    let publisher = LocalRootPublisher::open(directory.root(), publication_limits(preview)?)?;
     let receipt = if hevc {
         load_hevc_replay_receipt(&publisher, root, &scope, request, &NeverCancel)?
     } else {

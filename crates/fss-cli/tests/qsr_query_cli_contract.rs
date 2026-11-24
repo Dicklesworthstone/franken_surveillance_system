@@ -13,8 +13,8 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use fss_cli::{
-    ExitIdentity, FssCommand, RequestControl, execute_fss_with_exit,
-    execute_live_fss_with_control, parse_fss_args,
+    ExitIdentity, FssCommand, RequestControl, execute_fss_with_exit, execute_live_fss_with_control,
+    parse_fss_args,
 };
 use fss_core::json_input::{Value, parse};
 use support::{Fixture, PRINCIPAL, Test};
@@ -434,8 +434,7 @@ fn source_grant_budget_and_corruption_refusals_return_no_partial_observations() 
 }
 
 #[test]
-fn native_cancellation_withholds_qsr_rows_through_final_delivery_without_source_mutation() -> Test
-{
+fn native_cancellation_withholds_qsr_rows_through_final_delivery_without_source_mutation() -> Test {
     let fixture = Fixture::new_lane("canonical-qsr-native-cancellation")?;
     fs::write(
         fixture.source.root.join("LAYOUT.tmp"),
@@ -461,7 +460,10 @@ fn native_cancellation_withholds_qsr_rows_through_final_delivery_without_source_
     assert_eq!(baseline, expected);
     assert_eq!(tree(&fixture.source.root)?, before);
     let total_polls = polls.load(Ordering::SeqCst);
-    assert!(total_polls > 4, "native source verification must poll cancellation");
+    assert!(
+        total_polls > 4,
+        "native source verification must poll cancellation"
+    );
 
     // Use the real successful run's checkpoints, including the final delivery poll.
     // The owner signal stays cancelled, as required by RequestControl.

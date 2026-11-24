@@ -1,9 +1,9 @@
 #![forbid(unsafe_code)]
+//! Actual-process source-independent S3 restoration and failure-safe local publication.
 #![cfg(all(
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
-//! Actual-process source-independent S3 restoration and failure-safe local publication.
 
 use std::collections::BTreeMap;
 use std::fs;

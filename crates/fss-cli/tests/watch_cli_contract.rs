@@ -343,3 +343,133 @@ fn hevc_mp4_remux_of_the_same_scene_reaches_the_same_watch_decision() -> TestRes
     assert_eq!(json_field(&mp4, "candidate_count")?, "1");
     Ok(())
 }
+
+#[test]
+fn published_watch_event_reads_via_fss_event_before_and_after_privacy_mask_and_explains_in_decision_diff()
+-> TestResult {
+    let (_directory, root, id) = import("watch-read-custody", &scene(true)?, "mjpeg")?;
+    let door = "door:64,0,32,32";
+    let prepared = watch(&root, &id, "gray", door, &[])?;
+    success(&prepared);
+    let proposal = json_field(&prepared, "proposal_digest")?;
+    let event_id = json_field(&prepared, "event_id")?;
+    assert!(event_id.starts_with("event:watch:"), "event_id={event_id}");
+
+    let published = watch(&root, &id, "gray", door, &["--approve", &proposal])?;
+    success(&published);
+    assert_eq!(json_field(&published, "status")?, "published");
+
+    // 1. fss-event read verifies the published event:watch: custody chain directly.
+    let read_before = Command::new(env!("CARGO_BIN_EXE_fss-event"))
+        .args(["read", "--root"])
+        .arg(&root)
+        .args(["--site", "site:watch-cli", "--event-id", &event_id])
+        .output()?;
+    success(&read_before);
+    let before_stdout = String::from_utf8(read_before.stdout)?;
+    assert!(
+        before_stdout.contains("operation=read_verified"),
+        "{before_stdout}"
+    );
+    assert!(
+        before_stdout.contains(&format!("event_id={event_id}")),
+        "{before_stdout}"
+    );
+    assert!(
+        before_stdout.contains("historical_mask_generation_changed=false"),
+        "{before_stdout}"
+    );
+    let verified_count: usize = before_stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("verified_evidence_objects="))
+        .ok_or("missing verified_evidence_objects")?
+        .parse()?;
+    assert!(verified_count > 0, "{before_stdout}");
+
+    // 2. Declare a later privacy mask on the same sensor; fss-event read must NOT misreport
+    //    history corruption and must explicitly surface historical_mask_generation_changed=true.
+    let mask_preview = Command::new(env!("CARGO_BIN_EXE_fss-event"))
+        .args(["privacy-mask", "declare", "--root"])
+        .arg(&root)
+        .args([
+            "--site",
+            "site:watch-cli",
+            "--sensor",
+            "sensor:watch-cli",
+            "--resolution",
+            "96x48",
+            "--rect",
+            "0,32,16,16",
+        ])
+        .output()?;
+    success(&mask_preview);
+    let approval = json_field(&mask_preview, "approval_digest")?;
+    let mask_commit = Command::new(env!("CARGO_BIN_EXE_fss-event"))
+        .args(["privacy-mask", "declare", "--root"])
+        .arg(&root)
+        .args([
+            "--site",
+            "site:watch-cli",
+            "--sensor",
+            "sensor:watch-cli",
+            "--resolution",
+            "96x48",
+            "--rect",
+            "0,32,16,16",
+            "--approve",
+            &approval,
+        ])
+        .output()?;
+    success(&mask_commit);
+
+    let read_after = Command::new(env!("CARGO_BIN_EXE_fss-event"))
+        .args(["read", "--root"])
+        .arg(&root)
+        .args(["--site", "site:watch-cli", "--event-id", &event_id])
+        .output()?;
+    success(&read_after);
+    let after_stdout = String::from_utf8(read_after.stdout)?;
+    assert!(
+        after_stdout.contains("operation=read_verified"),
+        "{after_stdout}"
+    );
+    assert!(
+        after_stdout.contains("historical_mask_generation_changed=true"),
+        "{after_stdout}"
+    );
+
+    // 3. Both `fss orient --view pulse` and `fss explain --view decision_diff` succeed cleanly
+    //    within frozen reference-v4 token budgets on the real watch deployment.
+    let pulse = Command::new(env!("CARGO_BIN_EXE_fss"))
+        .args(["orient", "--json", "--root"])
+        .arg(&root)
+        .args(["--view", "pulse"])
+        .output()?;
+    success(&pulse);
+    let pulse_stdout = String::from_utf8(pulse.stdout)?;
+    assert!(
+        pulse_stdout.contains("\"outcome\":\"ok\""),
+        "{pulse_stdout}"
+    );
+    assert!(
+        !pulse_stdout.contains("                             "),
+        "29-space typo leaked in pulse output"
+    );
+
+    let explain = Command::new(env!("CARGO_BIN_EXE_fss"))
+        .args(["explain", "--json", "--root"])
+        .arg(&root)
+        .args(["--event-id", &event_id, "--view", "decision_diff"])
+        .output()?;
+    success(&explain);
+    let explain_stdout = String::from_utf8(explain.stdout)?;
+    assert!(
+        explain_stdout.contains("\"outcome\":\"ok\""),
+        "{explain_stdout}"
+    );
+    assert!(
+        explain_stdout.contains("\"effectiveViewId\":\"AVIEW-007\""),
+        "{explain_stdout}"
+    );
+    Ok(())
+}

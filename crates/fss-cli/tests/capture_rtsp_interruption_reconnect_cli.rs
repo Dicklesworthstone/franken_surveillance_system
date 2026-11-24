@@ -1,9 +1,9 @@
 #![forbid(unsafe_code)]
-#![feature(tcp_linger)]
-#![cfg(target_os = "linux")]
 //! A real abortive TCP close followed by a separately approved native capture.
 //! Reset synchronization uses the child's collected-picture report, never a guessed
 //! delay or a fabricated native outcome. Reopen each original window after exit.
+#![cfg_attr(target_os = "linux", feature(tcp_linger))]
+#![cfg(target_os = "linux")]
 
 use fss_cli::json_input::{Value, parse};
 use fss_core::{ContentDigest, SensorId, StreamId};
@@ -493,6 +493,7 @@ fn connect_camera(listener: &TcpListener, codec: &str, pending_control: bool) ->
             Err(error) => return Err(error.into()),
         }
     };
+    peer.set_nonblocking(false)?;
     peer.set_read_timeout(Some(Duration::from_secs(10)))?;
     peer.set_write_timeout(Some(Duration::from_secs(10)))?;
     peer.set_nodelay(true)?;

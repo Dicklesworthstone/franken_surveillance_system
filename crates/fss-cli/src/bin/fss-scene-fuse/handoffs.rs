@@ -54,7 +54,7 @@ fn options(args: &[OsString]) -> Result<Option<Options>> {
         return Ok(None);
     }
     if args.len() > 12
-        || args.len() % 2 != 0
+        || !args.len().is_multiple_of(2)
         || args.iter().any(|arg| arg.as_encoded_bytes().len() > 4096)
     {
         return Err(input_error(

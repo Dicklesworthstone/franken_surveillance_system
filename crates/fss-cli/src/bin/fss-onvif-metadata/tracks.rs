@@ -111,7 +111,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<Options, &'static str> {
     }
     let mut values = BTreeMap::new();
     let mut pins = Vec::new();
-    for pair in args[1..].chunks_exact(2) {
+    for pair in args[1..].as_chunks::<2>().0 {
         let key = pair[0].to_str().ok_or(ARGUMENT_ERROR)?;
         if matches!(key, "--xml-source" | "--rtp-source") {
             if pins.len() == MAX_TRACK_SOURCES {

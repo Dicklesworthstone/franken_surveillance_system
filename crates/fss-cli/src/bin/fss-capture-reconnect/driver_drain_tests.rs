@@ -1,8 +1,8 @@
 #![forbid(unsafe_code)]
 //! Force expiry after a real accepted read, not by racing the scheduler or the peer.
-use super::*;
 use super::storage_lease::StorageLease;
 use super::tests::{NO_STALL, TestClock, joined, serve};
+use super::*;
 use fss_core::ContentDigest;
 use fss_geometry::WorkBudget;
 use fss_publication::NeverCancel;
@@ -43,21 +43,52 @@ impl Drop for Directory {
 fn arguments(root: &Path, peer: SocketAddr) -> Result<Vec<OsString>, &'static str> {
     let digest = ContentDigest::sha256(b"explicit-storage-drain-test").to_text();
     Ok([
-        "--root", root.to_str().ok_or("UTF-8 path")?,
-        "--peer", &peer.to_string(),
-        "--host", "camera.invalid", "--target", "/stream",
-        "--source", &digest, "--generations", "7,19",
-        "--receive-clock", &digest, "--retention-evidence", &digest,
-        "--owner-authorized", "yes", "--plaintext", "yes", "--retain-originals", "yes",
-        "--timeout-ms", "60000", "--connect-timeout-ms", "60000",
-        "--initial-backoff-ms", "1", "--maximum-backoff-ms", "2",
-        "--after-complete", "yes",
-    ].into_iter().map(Into::into).collect())
+        "--root",
+        root.to_str().ok_or("UTF-8 path")?,
+        "--peer",
+        &peer.to_string(),
+        "--host",
+        "camera.invalid",
+        "--target",
+        "/stream",
+        "--source",
+        &digest,
+        "--generations",
+        "7,19",
+        "--receive-clock",
+        &digest,
+        "--retention-evidence",
+        &digest,
+        "--owner-authorized",
+        "yes",
+        "--plaintext",
+        "yes",
+        "--retain-originals",
+        "yes",
+        "--timeout-ms",
+        "60000",
+        "--connect-timeout-ms",
+        "60000",
+        "--initial-backoff-ms",
+        "1",
+        "--maximum-backoff-ms",
+        "2",
+        "--after-complete",
+        "yes",
+    ]
+    .into_iter()
+    .map(Into::into)
+    .collect())
 }
 fn add(args: &mut Vec<OsString>, key: &str, value: &str) {
     args.extend([key.into(), value.into()]);
 }
-fn approved(root: &Path, peer: SocketAddr, grace_ms: u64, history: bool) -> Result<Options, &'static str> {
+fn approved(
+    root: &Path,
+    peer: SocketAddr,
+    grace_ms: u64,
+    history: bool,
+) -> Result<Options, &'static str> {
     let mut args = arguments(root, peer)?;
     add(&mut args, "--recoverable", "yes");
     add(&mut args, "--storage-drain-ms", &grace_ms.to_string());
@@ -72,7 +103,8 @@ fn response() -> Vec<u8> {
     let mut body = format!(
         "--camera\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",
         JPEG.len()
-    ).into_bytes();
+    )
+    .into_bytes();
     body.extend_from_slice(JPEG);
     body.extend_from_slice(b"\r\n--camera--\r\n");
     let mut response = format!(
@@ -90,7 +122,9 @@ struct CutClock<'a> {
 }
 impl CaptureClock for CutClock<'_> {
     fn now_ns(&self) -> Option<u64> {
-        self.inner.now_ns().map(|now| self.at.get().map_or(now, |at| now.max(at)))
+        self.inner
+            .now_ns()
+            .map(|now| self.at.get().map_or(now, |at| now.max(at)))
     }
     fn await_peer(&self, bound_ns: u64) {
         self.inner.await_peer(bound_ns);
@@ -131,10 +165,17 @@ impl Write for PreparedCut<'_> {
     }
 }
 fn saved_key(text: &str) -> Result<HttpWireRecoveryKey, Box<dyn std::error::Error>> {
-    let row = text.lines().find(|row| row.contains("\"kind\":\"wire_prepared\""))
+    let row = text
+        .lines()
+        .find(|row| row.contains("\"kind\":\"wire_prepared\""))
         .ok_or("missing prepared row")?;
-    let value = row.split_once("\"recovery_key\":\"").ok_or("missing recovery key")?.1;
-    Ok(HttpWireRecoveryKey::from_text(value.split_once('"').ok_or("key terminator")?.0)?)
+    let value = row
+        .split_once("\"recovery_key\":\"")
+        .ok_or("missing recovery key")?
+        .1;
+    Ok(HttpWireRecoveryKey::from_text(
+        value.split_once('"').ok_or("key terminator")?.0,
+    )?)
 }
 fn number(row: &str, name: &str) -> Result<u64, Box<dyn std::error::Error>> {
     let marker = format!("\"{name}\":");
@@ -150,8 +191,12 @@ fn zero_grace_preserves_legacy_approval_preview_and_native_reservations() -> Tes
     for recoverable in [false, true] {
         for history in [false, true] {
             let mut args = base.clone();
-            if recoverable { add(&mut args, "--recoverable", "yes"); }
-            if history { add(&mut args, "--durable-history", "yes"); }
+            if recoverable {
+                add(&mut args, "--recoverable", "yes");
+            }
+            if history {
+                add(&mut args, "--durable-history", "yes");
+            }
             let implicit = Options::parse(&args)?;
             add(&mut args, "--storage-drain-ms", "0");
             let explicit = Options::parse(&args)?;
@@ -159,7 +204,10 @@ fn zero_grace_preserves_legacy_approval_preview_and_native_reservations() -> Tes
             assert_eq!(implicit.approval(), explicit.approval());
             assert_eq!(implicit.preview(), explicit.preview());
             assert!(!explicit.preview().contains("storage_drain"));
-            assert_eq!(implicit.recording()?.reservation(), explicit.recording()?.reservation());
+            assert_eq!(
+                implicit.recording()?.reservation(),
+                explicit.recording()?.reservation()
+            );
         }
     }
     assert!(!directory.0.join("absent").exists());
@@ -183,7 +231,10 @@ fn grace_requires_lossless_recovery_and_a_bounded_unsigned_millisecond_value() -
         let mut args = base.clone();
         add(&mut args, "--recoverable", "yes");
         add(&mut args, "--storage-drain-ms", good);
-        assert_eq!(Options::parse(&args)?.storage_drain_ns, good.parse::<u64>()? * 1_000_000);
+        assert_eq!(
+            Options::parse(&args)?.storage_drain_ns,
+            good.parse::<u64>()? * 1_000_000
+        );
         add(&mut args, "--storage-drain-ms", good);
         assert!(Options::parse(&args).is_err());
     }
@@ -209,10 +260,13 @@ fn changing_grace_invalidates_approval_before_clock_root_or_network() -> TestRes
         assert!(options.preview().contains("\"network_extended\":false"));
         let started = Cell::new(false);
         let mut output = Vec::new();
-        assert_eq!(capture_with(&options, &mut output, || {
-            started.set(true);
-            WallClock::start()
-        }), Err("ERR-CAPTURE-RECONNECT-APPROVAL-STALE-001"));
+        assert_eq!(
+            capture_with(&options, &mut output, || {
+                started.set(true);
+                WallClock::start()
+            }),
+            Err("ERR-CAPTURE-RECONNECT-APPROVAL-STALE-001")
+        );
         assert!(!started.get());
         assert!(output.is_empty());
         assert!(!root.exists());
@@ -226,18 +280,41 @@ fn changing_grace_invalidates_approval_before_clock_root_or_network() -> TestRes
     Ok(())
 }
 
-fn accepted_read_cut(grace_ms: u64, history: bool, exhaust_grace: bool, fail_flush: bool) -> TestResult {
+fn accepted_read_cut(
+    grace_ms: u64,
+    history: bool,
+    exhaust_grace: bool,
+    fail_flush: bool,
+) -> TestResult {
     let directory = Directory::new("accepted")?;
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let probe = listener.try_clone()?;
     probe.set_nonblocking(true)?;
-    let options = approved(&directory.0.join("archive"), listener.local_addr()?, grace_ms, history)?;
+    let options = approved(
+        &directory.0.join("archive"),
+        listener.local_addr()?,
+        grace_ms,
+        history,
+    )?;
     let (server, inner) = serve(listener, vec![response()], NO_STALL);
-    let clock = CutClock { inner: &inner, at: Cell::new(None) };
-    let at = options.timeout_ns + if exhaust_grace { options.storage_drain_ns } else { 0 };
+    let clock = CutClock {
+        inner: &inner,
+        at: Cell::new(None),
+    };
+    let at = options.timeout_ns
+        + if exhaust_grace {
+            options.storage_drain_ns
+        } else {
+            0
+        };
     let mut out = PreparedCut {
-        jump: &clock.at, at, fail_flush, fired: false, failed: false,
-        writes_after_failure: 0, bytes: Vec::new(),
+        jump: &clock.at,
+        at,
+        fail_flush,
+        fired: false,
+        failed: false,
+        writes_after_failure: 0,
+        bytes: Vec::new(),
     };
     let result = capture_with(&options, &mut out, || &clock);
     // Always join before inspecting the result: a failed client must not orphan the peer.
@@ -257,7 +334,10 @@ fn accepted_read_cut(grace_ms: u64, history: bool, exhaust_grace: bool, fail_flu
         return Ok(());
     }
     assert_eq!(result, Ok(false)); // successful salvage is not successful capture
-    let finish = text.lines().find(|r| r.contains("\"kind\":\"finish\"" )).ok_or("finish")?;
+    let finish = text
+        .lines()
+        .find(|r| r.contains("\"kind\":\"finish\""))
+        .ok_or("finish")?;
     assert_eq!(number(finish, "connect_attempts")?, 1);
     assert_eq!(number(finish, "connections_started")?, 1);
     assert_eq!(number(finish, "frames_parsed")?, 0);
@@ -266,20 +346,41 @@ fn accepted_read_cut(grace_ms: u64, history: bool, exhaust_grace: bool, fail_flu
     assert!(finish.contains("\"capture_continuity\":false"));
     if grace_ms == 0 || exhaust_grace {
         assert_eq!(number(finish, "durable_bytes")?, 0);
-        assert_eq!(number(finish, "unpublished_received_bytes")?, key.expected_pin().bytes);
+        assert_eq!(
+            number(finish, "unpublished_received_bytes")?,
+            key.expected_pin().bytes
+        );
         assert!(!text.contains("\"kind\":\"wire_durable\""));
         assert_eq!(publisher.visible_roots().count(), 0);
     } else {
         assert_eq!(number(finish, "unpublished_received_bytes")?, 0);
         assert_eq!(number(finish, "durable_bytes")?, key.expected_pin().bytes);
-        let durable = text.lines().find(|r| r.contains("\"kind\":\"wire_durable\"" )).ok_or("durable")?;
+        let durable = text
+            .lines()
+            .find(|r| r.contains("\"kind\":\"wire_durable\""))
+            .ok_or("durable")?;
         assert!(durable.contains("\"parser_acknowledged\":null"));
         assert!(text.find("\"kind\":\"wire_prepared\"") < text.find("\"kind\":\"wire_durable\""));
-        assert_eq!(key.inspect(&publisher, options.archive, &NeverCancel,
-            &mut WorkBudget::new(options.source_work))?, HttpWireRecoveryState::Durable);
+        assert_eq!(
+            key.inspect(
+                &publisher,
+                options.archive,
+                &NeverCancel,
+                &mut WorkBudget::new(options.source_work)
+            )?,
+            HttpWireRecoveryState::Durable
+        );
         let roots = publisher.visible_roots().count();
-        assert_eq!(key.recover(&mut publisher, options.archive, &NeverCancel,
-            &mut WorkBudget::new(options.source_work))?.pin, key.expected_pin());
+        assert_eq!(
+            key.recover(
+                &mut publisher,
+                options.archive,
+                &NeverCancel,
+                &mut WorkBudget::new(options.source_work)
+            )?
+            .pin,
+            key.expected_pin()
+        );
         assert_eq!(publisher.visible_roots().count(), roots);
         if history {
             assert!(text.contains("\"kind\":\"history_durable\""));
@@ -315,33 +416,69 @@ struct FixedClock {
     waits: Cell<u64>,
 }
 impl CaptureClock for FixedClock {
-    fn now_ns(&self) -> Option<u64> { self.now.get() }
-    fn await_peer(&self, _: u64) { self.waits.set(self.waits.get() + 1); }
-    fn sleep(&self, _: u64) { self.waits.set(self.waits.get() + 1); }
+    fn now_ns(&self) -> Option<u64> {
+        self.now.get()
+    }
+    fn await_peer(&self, _: u64) {
+        self.waits.set(self.waits.get() + 1);
+    }
+    fn sleep(&self, _: u64) {
+        self.waits.set(self.waits.get() + 1);
+    }
 }
-fn with_owner(missing: Option<&str>, f: impl FnOnce(&Owner<'_>, &FixedClock) -> TestResult) -> TestResult {
+fn with_owner(
+    missing: Option<&str>,
+    f: impl FnOnce(&Owner<'_>, &FixedClock) -> TestResult,
+) -> TestResult {
     let directory = Directory::new("authority")?;
-    let options = approved(&directory.0.join("archive"), "127.0.0.1:9".parse()?, GRACE_MS, false)?;
+    let options = approved(
+        &directory.0.join("archive"),
+        "127.0.0.1:9".parse()?,
+        GRACE_MS,
+        false,
+    )?;
     let authority = ContextAuthority::new_root(RootAuthoritySpec {
         trace_id: "trace:storage-drain-test".into(),
         operation_id: OperationId::parse("operation:storage-drain-test")?,
         principal: options.principal.clone(),
-        capabilities: STORAGE_CAPS.iter().copied()
-            .chain(["ADP-REPLAY-001", "CAP-ADAPTER-NET-001", "CAP-MEDIA-DECODE-001"])
-            .filter(|cap| missing != Some(*cap)).map(str::to_owned).collect(),
+        capabilities: STORAGE_CAPS
+            .iter()
+            .copied()
+            .chain([
+                "ADP-REPLAY-001",
+                "CAP-ADAPTER-NET-001",
+                "CAP-MEDIA-DECODE-001",
+            ])
+            .filter(|cap| missing != Some(*cap))
+            .map(str::to_owned)
+            .collect(),
         deadline: None,
         priority: 10,
-        budgets: BudgetVector::builder().bytes(1024 * 1024 * 1024)
-            .storage_operations(1_000_000).build()?,
-        privacy_scope: "privacy:test".into(), retention_scope: "retention:test".into(),
-        anchor_universe: options.approval(), generation: 1,
+        budgets: BudgetVector::builder()
+            .bytes(1024 * 1024 * 1024)
+            .storage_operations(1_000_000)
+            .build()?,
+        privacy_scope: "privacy:test".into(),
+        retention_scope: "retention:test".into(),
+        anchor_universe: options.approval(),
+        generation: 1,
     })?;
     let cx = ReplayCx::from_context_authority(&authority, options.root.clone())?;
-    let clock = FixedClock { now: Cell::new(Some(options.timeout_ns)), waits: Cell::new(0) };
+    let clock = FixedClock {
+        now: Cell::new(Some(options.timeout_ns)),
+        waits: Cell::new(0),
+    };
     let owner = Owner {
-        cx: &cx, authority: &authority,
-        routes: options.plan()?.slots.into_iter().map(|s| s.source.route).collect(),
-        clock: &clock, deadline: options.timeout_ns,
+        cx: &cx,
+        authority: &authority,
+        routes: options
+            .plan()?
+            .slots
+            .into_iter()
+            .map(|s| s.source.route)
+            .collect(),
+        clock: &clock,
+        deadline: options.timeout_ns,
     };
     let result = f(&owner, &clock);
     cx.drain_and_finalize();
@@ -354,9 +491,20 @@ fn grace_separates_storage_from_network_decode_and_wait_authority() -> TestResul
         let grace = GRACE_MS * 1_000_000;
         let lease = StorageLease::new(owner, grace).map_err(|_| "lease")?;
         let access = lease.access().map_err(|_| "storage access")?;
-        assert!(!access.storage.cancel_requested(PublishCutPoint::AfterChildrenVerified));
-        assert_eq!(access.camera.checkpoint(&owner.routes[0], HttpCameraOperation::AcknowledgeWire,
-            access.now_ns, owner.deadline), Err(HttpCameraDenial::Deadline));
+        assert!(
+            !access
+                .storage
+                .cancel_requested(PublishCutPoint::AfterChildrenVerified)
+        );
+        assert_eq!(
+            access.camera.checkpoint(
+                &owner.routes[0],
+                HttpCameraOperation::AcknowledgeWire,
+                access.now_ns,
+                owner.deadline
+            ),
+            Err(HttpCameraDenial::Deadline)
+        );
         assert_eq!(owner.decode_authority(), Err(HttpCameraDenial::Deadline));
         assert!(owner.cancel_requested(PublishCutPoint::AfterChildrenVerified));
         assert!(lease.pause(None).is_ok());
@@ -380,9 +528,15 @@ fn every_storage_capability_remains_required_during_grace() -> TestResult {
     for cap in STORAGE_CAPS {
         with_owner(Some(cap), |owner, _| {
             let lease = StorageLease::new(owner, GRACE_MS * 1_000_000).map_err(|_| "lease")?;
-            assert!(matches!(lease.access(), Err(HttpCameraDenial::Unauthorized)));
+            assert!(matches!(
+                lease.access(),
+                Err(HttpCameraDenial::Unauthorized)
+            ));
             assert!(lease.cancel_requested(PublishCutPoint::AfterChildrenVerified));
-            assert!(matches!(lease.pause(None), Err(HttpCameraDenial::Unauthorized)));
+            assert!(matches!(
+                lease.pause(None),
+                Err(HttpCameraDenial::Unauthorized)
+            ));
             Ok(())
         })?;
     }
@@ -392,12 +546,21 @@ fn every_storage_capability_remains_required_during_grace() -> TestResult {
 #[test]
 fn overflowing_or_out_of_range_storage_leases_fail_closed() -> TestResult {
     with_owner(None, |owner, _| {
-        assert!(matches!(StorageLease::new(owner, 60_000_000_001), Err(HttpCameraDenial::Deadline)));
+        assert!(matches!(
+            StorageLease::new(owner, 60_000_000_001),
+            Err(HttpCameraDenial::Deadline)
+        ));
         let overflow = Owner {
-            cx: owner.cx, authority: owner.authority, routes: owner.routes.clone(),
-            clock: owner.clock, deadline: u64::MAX - 1,
+            cx: owner.cx,
+            authority: owner.authority,
+            routes: owner.routes.clone(),
+            clock: owner.clock,
+            deadline: u64::MAX - 1,
         };
-        assert!(matches!(StorageLease::new(&overflow, 2), Err(HttpCameraDenial::Deadline)));
+        assert!(matches!(
+            StorageLease::new(&overflow, 2),
+            Err(HttpCameraDenial::Deadline)
+        ));
         Ok(())
     })
 }
@@ -407,14 +570,22 @@ fn enabled_grace_preserves_successful_reacquisition_and_whole_run_bounds() -> Te
     for history in [false, true] {
         let directory = Directory::new("success")?;
         let listener = TcpListener::bind("127.0.0.1:0")?;
-        let options = approved(&directory.0.join("archive"), listener.local_addr()?, GRACE_MS, history)?;
+        let options = approved(
+            &directory.0.join("archive"),
+            listener.local_addr()?,
+            GRACE_MS,
+            history,
+        )?;
         let (server, clock) = serve(listener, vec![response(), response()], NO_STALL);
         let mut out = Vec::new();
         let result = capture_with(&options, &mut out, || &clock);
         assert_eq!(joined(server)?, 2);
         assert_eq!(result, Ok(true));
         let text = String::from_utf8(out)?;
-        let finish = text.lines().find(|r| r.contains("\"kind\":\"finish\"" )).ok_or("finish")?;
+        let finish = text
+            .lines()
+            .find(|r| r.contains("\"kind\":\"finish\""))
+            .ok_or("finish")?;
         assert_eq!(number(finish, "connect_attempts")?, 2);
         assert_eq!(number(finish, "frames_taken")?, 2);
         assert_eq!(number(finish, "unpublished_received_bytes")?, 0);
@@ -447,10 +618,16 @@ fn transient_unrepresentable_wait_clock_is_not_mistaken_for_network_timeout() ->
         fn sleep(&self, _: u64) {}
     }
     with_owner(None, |owner, _| {
-        let clock = MissingOnce { reads: Cell::new(0), deadline: owner.deadline };
+        let clock = MissingOnce {
+            reads: Cell::new(0),
+            deadline: owner.deadline,
+        };
         let scripted = Owner {
-            cx: owner.cx, authority: owner.authority, routes: owner.routes.clone(),
-            clock: &clock, deadline: owner.deadline,
+            cx: owner.cx,
+            authority: owner.authority,
+            routes: owner.routes.clone(),
+            clock: &clock,
+            deadline: owner.deadline,
         };
         let lease = StorageLease::new(&scripted, GRACE_MS * 1_000_000).map_err(|_| "lease")?;
         assert!(matches!(lease.pause(None), Err(HttpCameraDenial::Deadline)));

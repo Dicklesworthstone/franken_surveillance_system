@@ -44,7 +44,12 @@ impl RecorderRequest {
         command: Option<&str>,
         values: &BTreeMap<&str, &str>,
     ) -> Result<Option<Self>, &'static str> {
-        const REPLAY: &[&str] = &["--recording-token", "--replay-start", "--replay-end", "--codec"];
+        const REPLAY: &[&str] = &[
+            "--recording-token",
+            "--replay-start",
+            "--replay-end",
+            "--codec",
+        ];
         let Some(command) = command else {
             if REPLAY.iter().any(|key| values.contains_key(key)) {
                 return Err(ARGUMENT);
@@ -71,13 +76,18 @@ impl RecorderRequest {
                 let window = ReplayWindow::from_timestamps(
                     required("--replay-start")?,
                     required("--replay-end")?,
-                ).map_err(|_| ARGUMENT)?;
+                )
+                .map_err(|_| ARGUMENT)?;
                 let codec = match required("--codec")? {
                     "avc" => ReplayCodec::Avc,
                     "hevc" => ReplayCodec::Hevc,
                     _ => return Err(ARGUMENT),
                 };
-                Ok(Some(Self::Replay { token, window, codec }))
+                Ok(Some(Self::Replay {
+                    token,
+                    window,
+                    codec,
+                }))
             }
             _ => Err(ARGUMENT),
         }
@@ -97,7 +107,11 @@ impl RecorderRequest {
     pub(super) fn encode(&self, out: &mut CanonicalEncoder) {
         match self {
             Self::Inventory => out.u8(0),
-            Self::Replay { token, window, codec } => {
+            Self::Replay {
+                token,
+                window,
+                codec,
+            } => {
                 out.u8(1);
                 out.text(token);
                 out.text(&window.to_string());
@@ -121,15 +135,24 @@ impl RecorderRequest {
             Self::Replay { token, .. } => [
                 wire::recording::get_recording_information_request(token),
                 wire::recording::get_replay_uri_request(token),
-            ].into_iter().any(|expected| expected.is_ok_and(|expected| request == &expected)),
+            ]
+            .into_iter()
+            .any(|expected| expected.is_ok_and(|expected| request == &expected)),
         }
     }
 
     fn selection_json(&self) -> String {
         match self {
             Self::Inventory => "null".into(),
-            Self::Replay { token, window, codec } => object(&[
-                ("recording_token_digest", string(&ContentDigest::sha256(token.as_bytes()).to_text())),
+            Self::Replay {
+                token,
+                window,
+                codec,
+            } => object(&[
+                (
+                    "recording_token_digest",
+                    string(&ContentDigest::sha256(token.as_bytes()).to_text()),
+                ),
                 ("requested_range", string(&window.to_string())),
                 ("codec", string(codec.as_str())),
                 ("recording_availability", string("not_observed")),
@@ -154,9 +177,24 @@ pub(super) fn preview(plan: &Plan) -> Result<String, &'static str> {
         ("generation", plan.generation.to_string()),
         ("output", string(plan.output.to_str().ok_or(ARGUMENT)?)),
         ("selection", request.selection_json()),
-        ("rtsp_peer", plan.rtsp.as_ref().map_or_else(|| "null".into(), |s| string(&s.peer.to_string()))),
-        ("rtsp_authority", plan.rtsp.as_ref().map_or_else(|| "null".into(), |s| string(&s.authority))),
-        ("authentication", plan.auth.as_ref().map_or_else(|| string("challenge-refused"), OnvifAuthPlan::preview)),
+        (
+            "rtsp_peer",
+            plan.rtsp
+                .as_ref()
+                .map_or_else(|| "null".into(), |s| string(&s.peer.to_string())),
+        ),
+        (
+            "rtsp_authority",
+            plan.rtsp
+                .as_ref()
+                .map_or_else(|| "null".into(), |s| string(&s.authority)),
+        ),
+        (
+            "authentication",
+            plan.auth
+                .as_ref()
+                .map_or_else(|| string("challenge-refused"), OnvifAuthPlan::preview),
+        ),
         ("timeout_ns", plan.timeout_ns.to_string()),
         ("max_steps", plan.max_steps.to_string()),
         ("max_response_bytes", plan.limits.body_bytes.to_string()),
@@ -191,7 +229,10 @@ impl RecorderObservation {
             ("tracks", self.tracks.to_string()),
             ("http_exchanges", self.exchanges.to_string()),
             ("handoff_ready", self.selection.is_some().to_string()),
-            ("selection", self.selection.clone().unwrap_or_else(|| "null".into())),
+            (
+                "selection",
+                self.selection.clone().unwrap_or_else(|| "null".into()),
+            ),
             ("native_resources_quiescent", "true".into()),
             ("capture_authorized", "false".into()),
             ("source_evidence", "false".into()),
@@ -208,48 +249,98 @@ fn source_json(source: &wire::RecordingSource) -> String {
         ("location", string(&source.location)),
         ("description", string(&source.description)),
         ("address", string(&source.address)),
-        ("video_source_token", source.video_source_token.as_deref().map_or_else(|| "null".into(), string)),
+        (
+            "video_source_token",
+            source
+                .video_source_token
+                .as_deref()
+                .map_or_else(|| "null".into(), string),
+        ),
     ])
 }
 
 fn service_json(service: Option<&wire::RecordingService>) -> String {
-    service.map_or_else(|| "null".into(), |service| object(&[
-        ("xaddr", string(&service.xaddr)),
-        ("major", service.version.major.to_string()),
-        ("minor", service.version.minor.to_string()),
-    ]))
+    service.map_or_else(
+        || "null".into(),
+        |service| {
+            object(&[
+                ("xaddr", string(&service.xaddr)),
+                ("major", service.version.major.to_string()),
+                ("minor", service.version.minor.to_string()),
+            ])
+        },
+    )
 }
 
-fn inventory_json(report: &recording::RecordingInventory, approval: ContentDigest) -> Result<String, &'static str> {
+fn inventory_json(
+    report: &recording::RecordingInventory,
+    approval: ContentDigest,
+) -> Result<String, &'static str> {
     let services = &report.services;
-    let recordings: Vec<_> = report.recordings.iter().map(|recording| {
-        let tracks: Vec<_> = recording.tracks.iter().map(|track| object(&[
-            ("token", string(&track.token)),
-            ("type", string(track.kind.as_str())),
-            ("description", string(&track.description)),
-        ])).collect();
-        object(&[
-            ("token", string(&recording.token)),
-            ("token_digest", string(&ContentDigest::sha256(recording.token.as_bytes()).to_text())),
-            ("source", source_json(&recording.source)),
-            ("content", string(&recording.content)),
-            ("maximum_retention_time", string(&recording.maximum_retention_time)),
-            ("tracks", array(&tracks)),
-            ("advertisement_basis", string("device-configuration-observation")),
-            ("retained_media_verified", "false".into()),
-        ])
-    }).collect();
+    let recordings: Vec<_> = report
+        .recordings
+        .iter()
+        .map(|recording| {
+            let tracks: Vec<_> = recording
+                .tracks
+                .iter()
+                .map(|track| {
+                    object(&[
+                        ("token", string(&track.token)),
+                        ("type", string(track.kind.as_str())),
+                        ("description", string(&track.description)),
+                    ])
+                })
+                .collect();
+            object(&[
+                ("token", string(&recording.token)),
+                (
+                    "token_digest",
+                    string(&ContentDigest::sha256(recording.token.as_bytes()).to_text()),
+                ),
+                ("source", source_json(&recording.source)),
+                ("content", string(&recording.content)),
+                (
+                    "maximum_retention_time",
+                    string(&recording.maximum_retention_time),
+                ),
+                ("tracks", array(&tracks)),
+                (
+                    "advertisement_basis",
+                    string("device-configuration-observation"),
+                ),
+                ("retained_media_verified", "false".into()),
+            ])
+        })
+        .collect();
     Ok(object(&[
         ("schema", string("fss.onvif_recording_inventory.v1")),
         ("onboarding_plan", string(&approval.to_text())),
-        ("services", object(&[
-            ("recording", service_json(services.recording.as_ref())),
-            ("search", service_json(services.search.as_ref())),
-            ("replay", service_json(services.replay.as_ref())),
-            ("observation_digest", string(&services.digest().map_err(|error| ClientError::Wire(error).code())?.to_text())),
-            ("response_body_digest", string(&services.response_body_digest.to_text())),
-        ])),
-        ("response_body_digest", string(&report.response_body_digest.to_text())),
+        (
+            "services",
+            object(&[
+                ("recording", service_json(services.recording.as_ref())),
+                ("search", service_json(services.search.as_ref())),
+                ("replay", service_json(services.replay.as_ref())),
+                (
+                    "observation_digest",
+                    string(
+                        &services
+                            .digest()
+                            .map_err(|error| ClientError::Wire(error).code())?
+                            .to_text(),
+                    ),
+                ),
+                (
+                    "response_body_digest",
+                    string(&services.response_body_digest.to_text()),
+                ),
+            ]),
+        ),
+        (
+            "response_body_digest",
+            string(&report.response_body_digest.to_text()),
+        ),
         ("recordings", array(&recordings)),
         ("capture_authorized", "false".into()),
         ("source_evidence", "false".into()),
@@ -271,22 +362,52 @@ pub(super) fn observe(
                 bytes: inventory_json(&report, approval)?,
                 operation: request.operation(),
                 recordings: report.recordings.len(),
-                tracks: report.recordings.iter().map(|recording| recording.tracks.len()).sum(),
+                tracks: report
+                    .recordings
+                    .iter()
+                    .map(|recording| recording.tracks.len())
+                    .sum(),
                 exchanges: report.exchanges,
                 selection: None,
             }
         }
-        RecorderRequest::Replay { token, window, codec } => {
-            let report = recording::select(config, token, *window, owner).map_err(|error| error.code())?;
+        RecorderRequest::Replay {
+            token,
+            window,
+            codec,
+        } => {
+            let report =
+                recording::select(config, token, *window, owner).map_err(|error| error.code())?;
             let handoff = ReplayHandoff::from_selected(&report, approval, *window, *codec)?;
             let selection = object(&[
-                ("recording_token_digest", string(&handoff.recording_token_digest().to_text())),
-                ("information_digest", string(&handoff.information_digest()?.to_text())),
-                ("services_digest", string(&report.services.digest().map_err(|error| ClientError::Wire(error).code())?.to_text())),
-                ("uri_response_digest", string(&report.uri_response_digest.to_text())),
+                (
+                    "recording_token_digest",
+                    string(&handoff.recording_token_digest().to_text()),
+                ),
+                (
+                    "information_digest",
+                    string(&handoff.information_digest()?.to_text()),
+                ),
+                (
+                    "services_digest",
+                    string(
+                        &report
+                            .services
+                            .digest()
+                            .map_err(|error| ClientError::Wire(error).code())?
+                            .to_text(),
+                    ),
+                ),
+                (
+                    "uri_response_digest",
+                    string(&report.uri_response_digest.to_text()),
+                ),
                 ("requested_range", string(&handoff.window().to_string())),
                 ("codec", string(handoff.codec().as_str())),
-                ("advertised_range_assessment", string(handoff.range_assessment()?)),
+                (
+                    "advertised_range_assessment",
+                    string(handoff.range_assessment()?),
+                ),
                 ("uri_lifetime", string("unknown")),
             ]);
             RecorderObservation {

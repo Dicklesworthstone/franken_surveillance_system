@@ -225,13 +225,11 @@ impl Fixture {
         let mut input = child.stdin.take().ok_or("MCP stdin")?;
         writeln!(
             input,
-            "{}",
-            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"session-cancellation-test","version":"1"}}}"#
+            "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{{}},\"clientInfo\":{{\"name\":\"session-cancellation-test\",\"version\":\"1\"}}}}}}"
         )?;
         writeln!(
             input,
-            "{}",
-            r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#
+            "{{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}}"
         )?;
         writeln!(
             input,
@@ -330,7 +328,7 @@ fn preview_admits_only_time_and_fresh_grant_owner_approval_and_lock_are_mandator
                 path.as_path() != Path::new("agent/sessions/journal.fssj")
                     && path.as_path() != Path::new("agent/sessions/ROOT")
             })
-            .map(|(path, state)| (path.clone(), state.clone()))
+            .map(|(path, state)| (path.clone(), *state))
             .collect::<FileState>()
     };
     assert_eq!(without_clock(&after), without_clock(&before));

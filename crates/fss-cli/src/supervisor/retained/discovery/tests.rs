@@ -139,10 +139,8 @@ fn generated_v1_plan_round_trips_all_policy_calibration_and_native_pins() -> Tes
         });
     let selected = RetainedSupervisorPlan::new(spec)?;
     let json = plan_to_json(&selected);
-    let reopened = RetainedSupervisorPlan::from_json(
-        json.as_bytes(),
-        ContentDigest::sha256(json.as_bytes()),
-    )?;
+    let reopened =
+        RetainedSupervisorPlan::from_json(json.as_bytes(), ContentDigest::sha256(json.as_bytes()))?;
     assert_eq!(reopened.digest(), selected.digest());
     assert_eq!(
         reopened.spec().cameras[0].calibration,
@@ -196,7 +194,10 @@ fn complete_exclusion_inventory_never_accepts_a_truncated_prefix() -> TestResult
         discovery.exclude(&event, root, "model_digest_mismatch", true, None),
         Err(Error::Limit(_))
     ));
-    assert_eq!(discovery.exclusions.len(), MAX_RETAINED_DISCOVERY_EXCLUSIONS);
+    assert_eq!(
+        discovery.exclusions.len(),
+        MAX_RETAINED_DISCOVERY_EXCLUSIONS
+    );
     assert!(
         discovery
             .exclusions
@@ -216,9 +217,14 @@ fn explicit_authority_rebinding_preserves_every_original_scope_choice() -> TestR
     assert_eq!(original.template().spec().expected_authority_root, old);
     assert_ne!(current.digest(), original.digest());
     assert_eq!(current.for_authority(old)?.digest(), original.digest());
-    assert!(current.for_authority(ContentDigest::new(
-        fss_core::DigestAlgorithm::Sha256, [0; 32],
-    )).is_err());
+    assert!(
+        current
+            .for_authority(ContentDigest::new(
+                fss_core::DigestAlgorithm::Sha256,
+                [0; 32],
+            ))
+            .is_err()
+    );
     Ok(())
 }
 
@@ -229,12 +235,18 @@ fn scheduled_prefix_is_exact_bounded_and_preserves_the_full_configuration() -> T
     assert_eq!(first.template().spec().windows.len(), 1);
     assert_eq!(first.template().spec().windows[0].window_index, 0);
     assert_eq!(first.template().spec().windows[0].end_ns, 20);
-    assert_eq!(first.maximum_catalog_events(), original.maximum_catalog_events());
+    assert_eq!(
+        first.maximum_catalog_events(),
+        original.maximum_catalog_events()
+    );
     assert_ne!(first.digest(), original.digest());
     assert_eq!(original.for_window_prefix(2)?.digest(), original.digest());
     assert_eq!(original.template().spec().windows.len(), 2);
     for count in [0, 3, usize::MAX] {
-        assert!(matches!(original.for_window_prefix(count), Err(Error::Plan(_))));
+        assert!(matches!(
+            original.for_window_prefix(count),
+            Err(Error::Plan(_))
+        ));
     }
     let root = ContentDigest::sha256(b"explicit scheduled authority");
     assert_eq!(
@@ -243,6 +255,9 @@ fn scheduled_prefix_is_exact_bounded_and_preserves_the_full_configuration() -> T
     );
     let mut restored = first.template().spec().clone();
     restored.windows = original.template().spec().windows.clone();
-    assert_eq!(RetainedSupervisorPlan::new(restored)?.digest(), original.template().digest());
+    assert_eq!(
+        RetainedSupervisorPlan::new(restored)?.digest(),
+        original.template().digest()
+    );
     Ok(())
 }

@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use fss_core::{ObligationState, RegionTree, TimestampNs};
 use fss_object::multipart::{
-    CompletionReceipt, MultipartPhase, MultipartRecovery, MultipartTransport,
-    TransportOperation, UploadIntent,
+    CompletionReceipt, MultipartPhase, MultipartRecovery, MultipartTransport, TransportOperation,
+    UploadIntent,
 };
 use fss_object::planner::plan_chunks;
 use fss_object::upload_journal::FileUploadJournal;
@@ -21,8 +21,8 @@ use fss_reference::s3_upload::{NativeS3Transport, S3Credentials, S3Limits};
 
 use super::s3_io::ScopedS3Io;
 use super::{
-    Command, Error, HostClock, MAX_SOURCE_BYTES, NoNetwork, Options, Report, Result,
-    drive, journal_limits, report_recovery, verify_source, wall_now,
+    Command, Error, HostClock, MAX_SOURCE_BYTES, NoNetwork, Options, Report, Result, drive,
+    journal_limits, report_recovery, verify_source, wall_now,
 };
 
 pub(super) enum Progress {
@@ -40,10 +40,9 @@ pub(super) fn upload_pass<T: MultipartTransport>(
         MAX_SOURCE_BYTES,
         || wall_now().unwrap_or(TimestampNs(0)),
         |chunk| {
-            let start = usize::try_from(chunk.offset)
-                .map_err(|_| io::Error::other("source range"))?;
-            let len = usize::try_from(chunk.len)
-                .map_err(|_| io::Error::other("source range"))?;
+            let start =
+                usize::try_from(chunk.offset).map_err(|_| io::Error::other("source range"))?;
+            let len = usize::try_from(chunk.len).map_err(|_| io::Error::other("source range"))?;
             let end = start
                 .checked_add(len)
                 .ok_or_else(|| io::Error::other("source range"))?;
@@ -86,7 +85,9 @@ pub(super) fn execute(
     local: &Arc<ScopedS3Io>,
     expected: UploadIntent,
 ) -> Result<Report> {
-    let mut minimum = options.minimum.ok_or(Error::Runtime("minimum pin absent"))?;
+    let mut minimum = options
+        .minimum
+        .ok_or(Error::Runtime("minimum pin absent"))?;
     let maximum = plan_chunks(options.source_bytes, options.policy)
         .map_err(|_| Error::Runtime("object plan refused"))?
         .chunks
@@ -175,7 +176,9 @@ pub(super) fn execute(
             || report.confirmed <= confirmed_before
             || report.head.sequence <= head_before.sequence
         {
-            return Err(Error::Runtime("durable part reconciliation made no forward progress"));
+            return Err(Error::Runtime(
+                "durable part reconciliation made no forward progress",
+            ));
         }
         minimum = report.head;
     }

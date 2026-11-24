@@ -21,6 +21,10 @@ pub const EVENT: &str = "event:agent-custody";
 pub const SOURCE: &[u8] = b"PRIVATE SOURCE: never disclose these payload bytes";
 pub const COUNTER: &[u8] = b"PRIVATE COUNTEREVIDENCE: metadata is not permission to disclose";
 
+#[allow(
+    dead_code,
+    reason = "Shared test fixture fields/helpers are used selectively across contract test targets"
+)]
 pub struct Fixture {
     pub directory: PathBuf,
     pub root: PathBuf,
@@ -31,6 +35,10 @@ pub struct Fixture {
     pub counter: ContentDigest,
     pub extras: Vec<ContentDigest>,
 }
+#[allow(
+    dead_code,
+    reason = "Shared test fixture constructors are used selectively across contract test targets"
+)]
 impl Fixture {
     pub fn new(label: &str) -> TestResult<Self> {
         Self::with_extra(label, 0)

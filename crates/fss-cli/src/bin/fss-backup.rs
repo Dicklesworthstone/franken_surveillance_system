@@ -39,7 +39,7 @@ fss-backup restore --bundle BUNDLE --root NEW_DEPLOYMENT --expect sha256:HEX --a
   exact core journals, objects, holds and deletion state, plus the native agent\n\
   journal and publications when populated. Unknown or incomplete state refuses.\n\
   Source must be quiescent with no pending recovery. New destinations only.\n\
-  Create/restore require Linux x86_64 or aarch64 with descriptor-pinned writes.\n\
+  Create/restore support Linux (procfs descriptor-pinned) and macOS (O_NOFOLLOW + identity-pinned).\n\
   Bundles retain unredacted original evidence and private cognition:\n\
   --allow-originals explicitly grants the selected local custody access.\n\
   A replay context alone never grants that access. There is no remote export.\n\
@@ -452,7 +452,7 @@ fn report(
         ),
     ])
 }
-fn path<'a>(value: &'a Option<PathBuf>) -> Result<&'a Path, Error> {
+fn path(value: &Option<PathBuf>) -> Result<&Path, Error> {
     value
         .as_deref()
         .ok_or(Error::Usage("required path is absent"))

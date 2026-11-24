@@ -354,7 +354,9 @@ pub(super) fn execute(plan: &Plan) -> Result<String, &'static str> {
             let observation = super::recorder::observe(recording, &config, &owner, approval)?;
             let file_digest = ContentDigest::sha256(observation.bytes.as_bytes());
             if let Some(lease) = &credentials {
-                lease.revalidate(&check).map_err(|error| secret_error(error).code())?;
+                lease
+                    .revalidate(&check)
+                    .map_err(|error| secret_error(error).code())?;
             }
             output.write(observation.bytes.as_bytes(), &|| scope.output())?;
             return Ok(observation.result(approval, file_digest));

@@ -9,7 +9,8 @@
 
 use super::super::plan::MAX_STORAGE_DRAIN_NS;
 use super::{
-    HttpCameraDenial, HttpRecordingAccess, Owner, PublishCancellation, PublishCutPoint, STORAGE_CAPS,
+    HttpCameraDenial, HttpRecordingAccess, Owner, PublishCancellation, PublishCutPoint,
+    STORAGE_CAPS,
 };
 
 pub(super) struct StorageLease<'owner, 'context> {
@@ -48,7 +49,11 @@ impl<'owner, 'context> StorageLease<'owner, 'context> {
         {
             return Err(HttpCameraDenial::Unauthorized);
         }
-        let now = self.owner.clock.now_ns().ok_or(HttpCameraDenial::Deadline)?;
+        let now = self
+            .owner
+            .clock
+            .now_ns()
+            .ok_or(HttpCameraDenial::Deadline)?;
         if now >= self.deadline {
             return Err(HttpCameraDenial::Deadline);
         }

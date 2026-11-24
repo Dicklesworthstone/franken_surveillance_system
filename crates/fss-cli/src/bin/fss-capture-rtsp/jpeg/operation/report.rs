@@ -211,11 +211,11 @@ impl Report {
         let mut offset = 0;
         let mut interrupted = 0_u8;
         while offset < row.len() {
-            if let Some(owner) = owner {
-                if let Err(error) = owner.checkpoint(Effect::Output) {
-                    self.io_failed = offset != 0;
-                    return Err(error);
-                }
+            if let Some(owner) = owner
+                && let Err(error) = owner.checkpoint(Effect::Output)
+            {
+                self.io_failed = offset != 0;
+                return Err(error);
             }
             match out.write(&row.as_bytes()[offset..(offset + 4096).min(row.len())]) {
                 Ok(0) => {

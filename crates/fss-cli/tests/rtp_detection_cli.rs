@@ -17,8 +17,7 @@ use fss_reference::ingest::rtpdump::import::{
 use rtpdump_support::{Error, TestResult, config_for, cx, real_dump};
 
 const PACKAGE: &[u8] = include_bytes!("../../../models/yolox-nano/yolox_nano.fmpk");
-const PACKAGE_SHA: &str =
-    "sha256:5b6568750faa375de3742e5eb310fbd4e22ff26e1ba727f193b79ab984a68c74";
+const PACKAGE_SHA: &str = "sha256:5b6568750faa375de3742e5eb310fbd4e22ff26e1ba727f193b79ab984a68c74";
 const SITE: &str = "site:rtp-detection-cli";
 
 fn directory(label: &str) -> Result<PathBuf, Error> {
@@ -120,7 +119,12 @@ fn cold_detection_report_is_deterministic_private_and_read_only() -> TestResult 
         ContentDigest::sha256(&std::fs::read(&first)?).to_string()
     );
     let report = std::fs::read_to_string(&first)?;
-    assert!(report.lines().next().is_some_and(|line| line.contains("\"type\":\"header\"")));
+    assert!(
+        report
+            .lines()
+            .next()
+            .is_some_and(|line| line.contains("\"type\":\"header\""))
+    );
     assert!(report.contains("\"type\":\"frame\""));
     assert!(report.lines().last().is_some_and(|line| {
         line.contains("\"type\":\"summary\"") && line.contains("\"complete\":true")
@@ -133,7 +137,10 @@ fn cold_detection_report_is_deterministic_private_and_read_only() -> TestResult 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        assert_eq!(std::fs::metadata(&first)?.permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            std::fs::metadata(&first)?.permissions().mode() & 0o777,
+            0o600
+        );
     }
     let reopened = ReferenceDeployment::reopen(&root, SITE, &cx)?;
     assert_eq!(reopened.current_anchor(), &anchor);
@@ -145,11 +152,21 @@ fn package_tamper_unsafe_path_and_incomplete_source_never_certify_detection() ->
     let (dir, root, source, package) = setup("refuse", false)?;
     let existing = dir.join("existing.jsonl");
     std::fs::write(&existing, b"keep")?;
-    assert!(!command(&root, source, &package, &existing).output()?.status.success());
+    assert!(
+        !command(&root, source, &package, &existing)
+            .output()?
+            .status
+            .success()
+    );
     assert_eq!(std::fs::read(&existing)?, b"keep");
 
     let inside = root.join("forbidden.jsonl");
-    assert!(!command(&root, source, &package, &inside).output()?.status.success());
+    assert!(
+        !command(&root, source, &package, &inside)
+            .output()?
+            .status
+            .success()
+    );
     assert!(!inside.exists());
 
     let mut tampered = PACKAGE.to_vec();

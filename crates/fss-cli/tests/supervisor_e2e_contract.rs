@@ -409,6 +409,7 @@ fn initialize_deployment(dir: &OwnedDirectory) -> TestResult<ReferenceDeployment
     Ok(ReferenceDeployment::open(&dir.root(), SITE, &cx)?)
 }
 
+#[allow(clippy::expect_used)]
 fn sample_calibration() -> ScoreCalibration {
     ScoreCalibration::from_counts(
         "cal:yolox-nano:site-v1",

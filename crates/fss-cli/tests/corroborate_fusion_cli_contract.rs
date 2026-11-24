@@ -97,7 +97,9 @@ fn success(output: &Output) {
 }
 
 fn import(directory: &OwnedDirectory, motion: Motion, sensor: &str) -> TestResult<String> {
-    let input = directory.0.join(format!("{sensor}.mjpeg").replace(':', "-"));
+    let input = directory
+        .0
+        .join(format!("{sensor}.mjpeg").replace(':', "-"));
     fs::write(&input, scene(motion)?)?;
     let output = Command::new(env!("CARGO_BIN_EXE_fss-file"))
         .arg("import")
@@ -190,12 +192,18 @@ fn write_calibration_file(
 
 fn migration_refusal(output: &Output) {
     assert!(!output.status.success(), "legacy calibration was accepted");
-    assert!(output.stdout.is_empty(), "refusal must not deliver a report");
+    assert!(
+        output.stdout.is_empty(),
+        "refusal must not deliver a report"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("unsupported for corroborate"), "{stderr}");
     assert!(stderr.contains("--fusion-profile PATH"), "{stderr}");
     assert!(stderr.contains("--fusion-digest sha256:HEX"), "{stderr}");
-    assert!(stderr.contains("read-only calibrated class advice"), "{stderr}");
+    assert!(
+        stderr.contains("read-only calibrated class advice"),
+        "{stderr}"
+    );
 }
 
 fn snapshot(root: &Path) -> TestResult<BTreeMap<PathBuf, Vec<u8>>> {
@@ -314,7 +322,9 @@ fn legacy_options_refuse_before_source_or_output_io_including_whole_recordings()
                 extra.extend([
                     legacy,
                     if legacy == "--score-calibration" {
-                        missing_calibration.to_str().ok_or("UTF-8 calibration path")?
+                        missing_calibration
+                            .to_str()
+                            .ok_or("UTF-8 calibration path")?
                     } else {
                         "1000,0,-1000"
                     },

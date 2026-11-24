@@ -602,6 +602,7 @@ impl RetainedSupervisorReport {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn resolve(
     event: &PackageEvent,
     camera: &RetainedCameraSpec,

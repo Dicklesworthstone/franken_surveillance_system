@@ -112,7 +112,9 @@ fn values(output: &Output, name: &str) -> TestResult<Vec<String>> {
         .collect())
 }
 
-fn custody_state(root: &Path) -> TestResult<(Vec<u8>, BTreeMap<OsString, Vec<u8>>)> {
+type CustodySnapshot = (Vec<u8>, BTreeMap<OsString, Vec<u8>>);
+
+fn custody_state(root: &Path) -> TestResult<CustodySnapshot> {
     let ledger = fs::read(root.join(RELATIVE_PATH_LEDGER))?;
     let mut roots = BTreeMap::new();
     for entry in fs::read_dir(root.join(RELATIVE_PATH_OBJECTS).join(LOCAL_ROOTS_DIR))? {

@@ -24,13 +24,13 @@ use fss_reference::evidence_export::{
 use fss_reference::retained_source::{ImmutableRetainedReadLimits, ImmutableRetainedSource};
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
+#[cfg(test)]
+#[path = "fss-export/immutable_tests.rs"]
+mod immutable_tests;
 #[path = "fss-export/media.rs"]
 mod media;
 #[path = "fss-export/review.rs"]
 mod review;
-#[cfg(test)]
-#[path = "fss-export/immutable_tests.rs"]
-mod immutable_tests;
 
 const DEFAULT_SHOW_READ_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_SHOW_READ_BYTES: u64 = 1024 * 1024 * 1024;

@@ -241,7 +241,9 @@ fn exact_approval_excludes_only_approval_itself_and_argument_order() {
     assert_eq!(approved.approve, Some(approval));
     assert_eq!(approved.digest().expect("same plan"), approval);
     let reversed: Vec<_> = input
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .rev()
         .flat_map(|pair| pair.iter().cloned())
         .collect();
@@ -963,5 +965,58 @@ fn hevc_replay_is_explicit_and_binds_a_separate_clock_namespace_and_approval()
     assert!(hevc.preview()?.contains("recorder-replay:hevc:"));
     set(&mut input, "--ssrc", "auto");
     assert!(Options::parse(&input).is_err());
+    Ok(())
+}
+
+#[test]
+fn inband_parameter_sets_and_companion_tracks_bind_approval_and_preserve_default()
+-> Result<(), &'static str> {
+    let default_plan = Options::parse(&args())?;
+    let mut explicit_no = args();
+    set(&mut explicit_no, "--allow-inband-parameter-sets", "no");
+    set(&mut explicit_no, "--setup-companion-tracks", "no");
+    let explicit_no_plan = Options::parse(&explicit_no)?;
+    assert_eq!(default_plan.digest()?, explicit_no_plan.digest()?);
+    assert_eq!(default_plan.preview()?, explicit_no_plan.preview()?);
+
+    let mut inband_args = args();
+    set(&mut inband_args, "--allow-inband-parameter-sets", "yes");
+    let inband_plan = Options::parse(&inband_args)?;
+    assert!(inband_plan.allow_inband_parameter_sets);
+    assert!(!inband_plan.setup_companion_tracks);
+    assert_ne!(inband_plan.digest()?, default_plan.digest()?);
+    assert_ne!(
+        inband_plan.catalog_scope().decode_clock,
+        default_plan.catalog_scope().decode_clock
+    );
+    assert!(
+        inband_plan
+            .preview()?
+            .contains("\"inband_parameter_sets\":\"bounded_rtp_preroll\"")
+    );
+
+    let mut companion_args = inband_args.clone();
+    set(&mut companion_args, "--setup-companion-tracks", "yes");
+    let companion_plan = Options::parse(&companion_args)?;
+    assert!(companion_plan.setup_companion_tracks);
+    assert_ne!(companion_plan.digest()?, inband_plan.digest()?);
+    assert!(
+        companion_plan
+            .preview()?
+            .contains("\"companion_tracks\":\"audio_setup_drain\"")
+    );
+
+    for (key, value) in [
+        ("--allow-inband-parameter-sets", "true"),
+        ("--setup-companion-tracks", "1"),
+    ] {
+        let mut bad = args();
+        set(&mut bad, key, value);
+        assert!(Options::parse(&bad).is_err(), "accepted {key}={value}");
+    }
+    let mut hevc_companion = args();
+    set(&mut hevc_companion, "--codec", "hevc");
+    set(&mut hevc_companion, "--setup-companion-tracks", "yes");
+    assert!(Options::parse(&hevc_companion).is_err());
     Ok(())
 }

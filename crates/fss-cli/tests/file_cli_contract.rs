@@ -283,7 +283,9 @@ fn read_command(
     (command, manifest, source)
 }
 
-fn filesystem(root: &Path) -> Result<BTreeMap<PathBuf, Option<Vec<u8>>>, Box<dyn Error>> {
+type FilesystemSnapshot = BTreeMap<PathBuf, Option<Vec<u8>>>;
+
+fn filesystem(root: &Path) -> Result<FilesystemSnapshot, Box<dyn Error>> {
     let mut pending = vec![root.to_path_buf()];
     let mut result = BTreeMap::new();
     while let Some(path) = pending.pop() {

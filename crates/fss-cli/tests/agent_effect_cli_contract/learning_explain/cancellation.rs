@@ -125,7 +125,7 @@ fn cancellation_during_clock_admission_keeps_the_completed_native_watermark() ->
         }
     }
     let clock = Clock {
-        now: TimestampNs(now_ns()?),
+        now: TimestampNs(i128::try_from(now_ns()?)?),
         cancelled: &cancelled,
         samples: AtomicUsize::new(0),
     };

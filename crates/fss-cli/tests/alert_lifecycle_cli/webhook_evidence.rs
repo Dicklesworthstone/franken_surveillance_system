@@ -78,7 +78,7 @@ fn retained_fixture(root: &Path, record: bool) -> TestResult<ContentDigest> {
     let mut deployment = open(root, &cx)?;
     let capture_directory = Directory::new("wire-captures")?;
     let mut captures = DurableReferenceLedger::open(
-        &capture_directory.0.join("captures.fssj"),
+        capture_directory.0.join("captures.fssj"),
         "site:alert-cli-fixture-captures",
         IncompleteTailPolicy::Reject,
     )?;

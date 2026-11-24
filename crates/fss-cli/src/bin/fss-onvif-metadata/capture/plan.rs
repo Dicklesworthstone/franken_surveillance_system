@@ -120,13 +120,13 @@ impl Plan {
         cleanup: Option<(ContentDigest, ContentDigest, ContentDigest)>,
     ) -> Result<Self, &'static str> {
         if args.len() > 64
-            || args.len() % 2 != 0
+            || !args.len().is_multiple_of(2)
             || args.iter().any(|arg| arg.as_encoded_bytes().len() > 4096)
         {
             return Err(ARGUMENT_ERROR);
         }
         let mut values = BTreeMap::new();
-        for pair in args.chunks_exact(2) {
+        for pair in args.as_chunks::<2>().0 {
             let key = pair[0].to_str().ok_or(ARGUMENT_ERROR)?;
             let common = matches!(
                 key,
@@ -513,7 +513,14 @@ mod tests {
             assert_eq!(plan.config.max_pulls, baseline.config.max_pulls);
             assert_ne!(plan.approval, baseline.approval);
             assert_eq!(plan.config.events.plaintext_approval(), plan.approval);
-            let reordered: Vec<_> = enabled.chunks_exact(2).rev().flatten().cloned().collect();
+            let reordered: Vec<_> = enabled
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .rev()
+                .flatten()
+                .cloned()
+                .collect();
             assert_eq!(Plan::parse(&reordered)?.approval, plan.approval);
         }
         for maximum in ["5", "-1", "18446744073709551616", "unbounded"] {
@@ -537,7 +544,9 @@ mod tests {
         for key in ["--owner-authorized", "--plaintext", "--unsubscribe"] {
             let mut args = arguments("--unsubscribe");
             let index = args
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .position(|pair| pair[0] == key)
                 .ok_or("approval argument absent from fixture")?
                 * 2;
@@ -613,7 +622,14 @@ mod tests {
         assert_eq!(plan.config.message_limit, 1);
         assert_eq!(plan.config.lifetime_seconds, 5);
         assert_eq!(plan.config.events.plaintext_approval(), plan.approval);
-        let reordered: Vec<_> = args.chunks_exact(2).rev().flatten().cloned().collect();
+        let reordered: Vec<_> = args
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .rev()
+            .flatten()
+            .cloned()
+            .collect();
         assert_eq!(cleanup(&reordered)?.approval, plan.approval);
         let mut explicit_default = args;
         explicit_default.extend([OsString::from("--timeout-ms"), OsString::from("30000")]);
@@ -672,7 +688,12 @@ mod tests {
     }
 
     fn replace_argument(args: &mut Vec<OsString>, key: &str, value: &str) {
-        if let Some(index) = args.chunks_exact(2).position(|pair| pair[0] == key) {
+        if let Some(index) = args
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .position(|pair| pair[0] == key)
+        {
             args[index * 2 + 1] = OsString::from(value);
         } else {
             args.extend([OsString::from(key), OsString::from(value)]);
@@ -691,7 +712,14 @@ mod tests {
         replace_argument(&mut changed, "--max-pulls", "4");
         replace_argument(&mut changed, "--max-renewals", "0");
         replace_argument(&mut changed, "--principal", "operator:local-onvif-metadata");
-        let reversed: Vec<_> = changed.chunks_exact(2).rev().flatten().cloned().collect();
+        let reversed: Vec<_> = changed
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .rev()
+            .flatten()
+            .cloned()
+            .collect();
         let normalized = Plan::parse(&reversed)?;
         assert_eq!(normalized.operation.as_ref(), Some(expected));
         assert_ne!(normalized.approval, original.approval);

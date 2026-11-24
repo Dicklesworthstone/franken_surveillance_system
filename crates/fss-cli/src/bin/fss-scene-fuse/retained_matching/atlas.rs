@@ -90,7 +90,7 @@ pub(super) fn options(args: &[OsString]) -> Result<Option<Options>> {
         return Ok(None);
     }
     if args.len() > 30
-        || args.len() % 2 != 0
+        || !args.len().is_multiple_of(2)
         || args.iter().any(|v| v.as_encoded_bytes().len() > 4096)
     {
         return Err(input_error(

@@ -123,7 +123,9 @@ impl MinimumPins {
             ("minimum_prefixes_verified", "true".into()),
             (
                 "minimum_prefix_scope",
-                string("listed-attempts-only:caller-retained:not-a-signature-or-media-custody-proof"),
+                string(
+                    "listed-attempts-only:caller-retained:not-a-signature-or-media-custody-proof",
+                ),
             ),
         ]);
         report.push(',');
@@ -137,7 +139,10 @@ mod tests {
     use super::*;
 
     fn row(attempt: u64, sequence: u64, root: &str) -> String {
-        format!("{attempt}:{sequence}:{}", ContentDigest::sha256(root.as_bytes()).to_text())
+        format!(
+            "{attempt}:{sequence}:{}",
+            ContentDigest::sha256(root.as_bytes()).to_text()
+        )
     }
 
     fn encoded(pins: &MinimumPins) -> Result<Vec<u8>> {
@@ -155,7 +160,10 @@ mod tests {
         assert_eq!(left, right);
         assert_eq!(encoded(&left)?, encoded(&right)?);
         for changed in [row(1, 4, "first"), row(2, 3, "first"), row(1, 3, "other")] {
-            assert_ne!(encoded(&MinimumPins::parse(&a)?)?, encoded(&MinimumPins::parse(&changed)?)?);
+            assert_ne!(
+                encoded(&MinimumPins::parse(&a)?)?,
+                encoded(&MinimumPins::parse(&changed)?)?
+            );
         }
         Ok(())
     }
@@ -164,23 +172,37 @@ mod tests {
     fn malformed_duplicate_and_unbounded_inputs_are_rejected() {
         let valid = row(1, 3, "first");
         let bad = [
-            String::new(), " ".into(), "1:1".into(), "1:1:sha256:00".into(),
-            row(0, 1, "zero"), row(17, 1, "many"), row(1, 0, "zero"),
-            format!("{valid},"), format!(",{valid}"), format!("{valid},{valid}"),
-            format!("{valid},{}", row(1, 4, "different")), format!(" {valid}"),
-            valid.replacen("1:", "+1:", 1), valid.replacen("1:", "18446744073709551616:", 1),
+            String::new(),
+            " ".into(),
+            "1:1".into(),
+            "1:1:sha256:00".into(),
+            row(0, 1, "zero"),
+            row(17, 1, "many"),
+            row(1, 0, "zero"),
+            format!("{valid},"),
+            format!(",{valid}"),
+            format!("{valid},{valid}"),
+            format!("{valid},{}", row(1, 4, "different")),
+            format!(" {valid}"),
+            valid.replacen("1:", "+1:", 1),
+            valid.replacen("1:", "18446744073709551616:", 1),
             valid.replacen(":3:", ":18446744073709551616:", 1),
             "x".repeat(MAX_TEXT_BYTES + 1),
         ];
         for input in bad {
-            assert!(MinimumPins::parse(&input).is_err(), "accepted malformed minimum pins");
+            assert!(
+                MinimumPins::parse(&input).is_err(),
+                "accepted malformed minimum pins"
+            );
         }
     }
 
     #[test]
     fn full_attempt_matrix_fits_the_explicit_text_bound() -> Result<()> {
-        let text = (1..=16).map(|n| row(n, u64::MAX, "maximum"))
-            .collect::<Vec<_>>().join(",");
+        let text = (1..=16)
+            .map(|n| row(n, u64::MAX, "maximum"))
+            .collect::<Vec<_>>()
+            .join(",");
         assert!(text.len() <= MAX_TEXT_BYTES);
         let pins = MinimumPins::parse(&text)?;
         assert!(pins.get(15).is_some());
@@ -192,7 +214,10 @@ mod tests {
     #[test]
     fn preview_receipt_is_bounded_complete_and_does_not_replace_the_approval() -> Result<()> {
         let pins = MinimumPins::parse(&row(1, 2, "saved"))?;
-        let original = object(&[("approval", string("original")), ("detail", string("braces } {"))]);
+        let original = object(&[
+            ("approval", string("original")),
+            ("detail", string("braces } {")),
+        ]);
         let report = pins.annotate(original.clone())?;
         assert!(report.starts_with(original.strip_suffix('}').ok_or(MALFORMED)?));
         assert!(report.ends_with('}'));

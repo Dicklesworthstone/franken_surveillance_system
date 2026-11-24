@@ -7,9 +7,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use fss_cli::onvif_plan::ProtectedOnvifInput;
-use fss_cli::onvif_replay_plan::{
-    ERR_CAPTURE_ONVIF_REPLAY, OnvifReplaySourceSpec, parse_digest,
-};
+use fss_cli::onvif_replay_plan::{ERR_CAPTURE_ONVIF_REPLAY, OnvifReplaySourceSpec, parse_digest};
 use fss_core::{ContentDigest, PrincipalId};
 
 use super::driver;
@@ -82,8 +80,8 @@ impl SourcePlan {
                 "--onvif-source" => source = Some(private_file::absolute_path(value)?),
                 "--onvif-digest" => expected = Some(parse_digest(value)?),
                 "--approve" => approval = Some(parse_digest(value)?),
-                "--peer" | "--authority" | "--presentation" | "--codec"
-                | "--replay-start" | "--replay-end" | "--capture-mode" | "--recover" => {
+                "--peer" | "--authority" | "--presentation" | "--codec" | "--replay-start"
+                | "--replay-end" | "--capture-mode" | "--recover" => {
                     return Err(ERR_CAPTURE_ONVIF_REPLAY);
                 }
                 _ => {
@@ -159,7 +157,8 @@ impl SourcePlan {
         output: &Path,
         checkpoint: &impl Fn() -> Result<(), &'static str>,
     ) -> Result<(), &'static str> {
-        let overlaps = |path: &Path| self.source.starts_with(path) || path.starts_with(&self.source);
+        let overlaps =
+            |path: &Path| self.source.starts_with(path) || path.starts_with(&self.source);
         if overlaps(output) {
             return Err(ERR_CAPTURE_ONVIF_REPLAY);
         }

@@ -295,7 +295,7 @@ fn utc_approval_binds_the_protected_plan_and_cooperative_deadline() -> Test {
     assert!(options.approval(ContentDigest::sha256(b"other")).is_ok());
     assert!(
         options
-            .approval(ContentDigest::parse(&format!("sha256:{}", "0".repeat(64)))?)
+            .approval(ContentDigest::parse(format!("sha256:{}", "0".repeat(64)))?)
             .is_err()
     );
     Ok(())

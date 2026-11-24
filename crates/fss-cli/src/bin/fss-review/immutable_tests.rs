@@ -305,6 +305,7 @@ fn cancellation_at_the_buffered_delivery_boundary_returns_no_success() -> Test {
 }
 
 #[test]
+#[allow(clippy::result_large_err)]
 fn late_review_statement_damage_is_refused_without_repair() -> Test {
     let mut f = Fixture::new("custody")?;
     let options = f.options("reject")?;
@@ -359,6 +360,7 @@ fn late_review_statement_damage_is_refused_without_repair() -> Test {
 }
 
 #[test]
+#[allow(clippy::result_large_err)]
 fn effect_only_append_invalidates_delivery_and_blocks_new_reviews_but_not_exact_retries() -> Test {
     for committed in [false, true] {
         let mut f = Fixture::new(&format!("effect-{committed}"))?;

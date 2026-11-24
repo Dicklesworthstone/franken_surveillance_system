@@ -105,7 +105,7 @@ fn render(
                 ("sensor_id", string(&candidate.sensor)),
                 (
                     "observes",
-                    strings(&candidate.observes.iter().cloned().collect::<Vec<_>>()),
+                    strings(candidate.observes.iter().cloned().collect::<Vec<_>>()),
                 ),
                 (
                     "installation_cost_units",
@@ -127,7 +127,7 @@ fn render(
                 ("loss_cost_units", action.cost.to_string()),
                 (
                     "members",
-                    strings(&action.members.iter().cloned().collect::<Vec<_>>()),
+                    strings(action.members.iter().cloned().collect::<Vec<_>>()),
                 ),
             ])
         })
@@ -141,7 +141,7 @@ fn render(
                 ("zone", string(zone)),
                 (
                     "sensors",
-                    strings(&sensors.iter().cloned().collect::<Vec<_>>()),
+                    strings(sensors.iter().cloned().collect::<Vec<_>>()),
                 ),
             ])
         })
@@ -192,7 +192,7 @@ fn render(
                 (
                     "entries",
                     strings(
-                        &placement
+                        placement
                             .baseline
                             .entries
                             .iter()
@@ -203,7 +203,7 @@ fn render(
                 (
                     "targets",
                     strings(
-                        &placement
+                        placement
                             .baseline
                             .targets
                             .iter()

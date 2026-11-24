@@ -16,6 +16,7 @@ use std::ffi::OsString;
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[allow(clippy::duplicate_mod)]
 #[path = "../../../../fss-reference/tests/hevc_recording_support/mod.rs"]
 mod source;
 

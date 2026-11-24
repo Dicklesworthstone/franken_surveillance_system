@@ -85,6 +85,7 @@ impl ClockIo for Owner {
 }
 
 struct NoIo;
+#[allow(clippy::panic)]
 impl ClockIo for NoIo {
     fn now(&self) -> Result<u64, &'static str> {
         panic!("closed or poisoned clock read its owner")

@@ -2,7 +2,7 @@
 //! Cancellation of real retained explanations through the same facade used by native MCP work.
 
 // The shared fixture also exposes helpers and objects used by other custody contracts.
-#[allow(dead_code)]
+#[allow(dead_code, clippy::duplicate_mod)]
 #[path = "../custody_review/fixture.rs"]
 mod fixture;
 
@@ -308,6 +308,9 @@ fn comparison_and_counterfactual_reads_cancel_native_work_and_final_delivery() -
     check_derived_cancellation(&f, &counterfactual)?;
     let next = publish_revision(&f)?;
     let mut comparison = arguments(&f)?;
+    // Complete adjacent revision comparisons require the explicit Forensic maximum (16_000),
+    // matching `event_changes_cli_contract.rs` (`TOKENS = 16_000`).
+    comparison.budget_tokens = Some(u64::from(AgentView::Forensic.maximum_tokens()));
     comparison.target = ExplainTarget::EventComparison {
         event_id: f.event.event_id.clone(),
         from_revision_digest: f.event.revision_digest(),
@@ -354,5 +357,52 @@ fn check_derived_cancellation(f: &Fixture, args: &ExplainArgs) -> TestResult {
         assert!(!body.contains("Recorded adjacent event metadata"), "{body}");
         assert_eq!(inventory(&f.root)?, before);
     }
+    Ok(())
+}
+
+#[test]
+fn internal_failure_diagnostics_expose_redacted_cause_and_recovery_hint() -> TestResult {
+    let root = std::path::Path::new("/tmp/fss-diag-root");
+    let raw_cause = "failed connecting to rtsp://admin:SuperSecret99@192.168.1.51/live \
+                     password=hunter2 token=abc123\n\tcontrol";
+    let (body, exit) = rendered(
+        Err(std::io::Error::other(raw_cause).into()),
+        ExitIdentity::SUCCESS,
+        "orient",
+        root,
+    );
+    assert_eq!(exit, ExitIdentity::RUNTIME_FAILURE);
+    let parsed = parse(&body)?;
+    assert_eq!(
+        field(&parsed, "schema")?.text(),
+        Some("fss.cli_diagnostic.v1")
+    );
+    assert_eq!(
+        field(&parsed, "error_id")?.text(),
+        Some(crate::ERR_CLI_RUNTIME_FAILURE)
+    );
+    let detail = field(&parsed, "detail")?.text().ok_or("missing detail")?;
+    let hint = field(&parsed, "recovery_hint")?
+        .text()
+        .ok_or("missing recovery_hint")?;
+    assert!(!detail.is_empty());
+    assert!(!hint.is_empty());
+    assert!(
+        !detail.contains("SuperSecret99"),
+        "URL password leaked: {detail}"
+    );
+    assert!(!detail.contains("hunter2"), "password= leaked: {detail}");
+    assert!(!detail.contains("abc123"), "token= leaked: {detail}");
+    assert!(
+        detail.contains("rtsp://<redacted>@192.168.1.51/live"),
+        "{detail}"
+    );
+    assert!(detail.contains("password=<redacted>"), "{detail}");
+    assert!(detail.contains("token=<redacted>"), "{detail}");
+    assert!(!detail.contains('\n') && !detail.contains('\t'), "{detail}");
+
+    let long = "x".repeat(2048);
+    let sanitized = sanitize_diagnostic_text(&long);
+    assert!(sanitized.len() <= 512, "len={}", sanitized.len());
     Ok(())
 }

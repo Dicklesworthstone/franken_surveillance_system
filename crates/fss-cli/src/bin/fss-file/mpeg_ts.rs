@@ -24,8 +24,7 @@ pub(super) const MAX_SOURCE_BYTES: u64 = MAX_BYTES;
 const DEFAULT_WORK_UNITS: u64 = 1024 * 1024 * 1024;
 const MAX_WORK_UNITS: u64 = 4 * 1024 * 1024 * 1024;
 // Reopened manifest/revalidation plus the bounded transport-origin proof.
-const VERIFICATION_METADATA_UNITS: u64 =
-    2 * MAX_RETAINED_MANIFEST_BYTES as u64 + 4 * 1024 * 1024;
+const VERIFICATION_METADATA_UNITS: u64 = 2 * MAX_RETAINED_MANIFEST_BYTES as u64 + 4 * 1024 * 1024;
 
 #[derive(Debug)]
 pub(super) struct Action {
@@ -57,25 +56,25 @@ pub(super) fn accepts_option(command: &str, key: &str) -> bool {
         )
 }
 
-fn decimal<T: std::str::FromStr>(
-    values: &Values,
-    key: &str,
-    default: Option<T>,
-) -> ParseResult<T> {
-    if values.contains_key(key)
-        && !text(values, key)?.bytes().all(|byte| byte.is_ascii_digit())
-    {
-        return Err(malformed(&format!("{key} requires an unsigned decimal integer")));
+fn decimal<T: std::str::FromStr>(values: &Values, key: &str, default: Option<T>) -> ParseResult<T> {
+    if values.contains_key(key) && !text(values, key)?.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(malformed(&format!(
+            "{key} requires an unsigned decimal integer"
+        )));
     }
     number(values, key, default)
 }
 
 pub(super) fn parse(file: FileIngestRequest, values: &Values) -> ParseResult<Action> {
     if !(1..=MAX_SOURCE_BYTES).contains(&file.limits.max_file_bytes) {
-        return Err(malformed("--max-source-bytes must be in 1..=67108864 for import-ts"));
+        return Err(malformed(
+            "--max-source-bytes must be in 1..=67108864 for import-ts",
+        ));
     }
     if file.format_hint.is_some() || file.rtp_binding.is_some() {
-        return Err(malformed("import-ts does not accept media-format or RTP binding options"));
+        return Err(malformed(
+            "import-ts does not accept media-format or RTP binding options",
+        ));
     }
     let mut request = MpegTsImportRequest::new(file);
     request.framing = if values.contains_key("--ts-framing") {
@@ -98,9 +97,14 @@ pub(super) fn parse(file: FileIngestRequest, values: &Values) -> ParseResult<Act
             .transpose()?,
     };
     if request.selection.program == Some(0)
-        || request.selection.video_pid.is_some_and(|pid| !(16..8191).contains(&pid))
+        || request
+            .selection
+            .video_pid
+            .is_some_and(|pid| !(16..8191).contains(&pid))
     {
-        return Err(malformed("TS program must be 1..65535 and video PID 16..8190"));
+        return Err(malformed(
+            "TS program must be 1..65535 and video PID 16..8190",
+        ));
     }
     let defaults = request.transport_limits;
     request.transport_limits = TsLimits {
@@ -130,12 +134,19 @@ pub(super) fn parse(file: FileIngestRequest, values: &Values) -> ParseResult<Act
     // explicit elementary byte ceiling; no codec hint is inferred from a NAL prefix.
     request.file.limits.annexb_limits.max_input_bytes =
         request.transport_limits.max_elementary_bytes;
-    request.digest().map_err(|_| malformed("MPEG-TS file scope or capture assumptions refused"))?;
+    request
+        .digest()
+        .map_err(|_| malformed("MPEG-TS file scope or capture assumptions refused"))?;
     let work_units = decimal(values, "--work-units", Some(DEFAULT_WORK_UNITS))?;
     if work_units > MAX_WORK_UNITS {
-        return Err(malformed("--work-units cannot exceed 4294967296 for import-ts"));
+        return Err(malformed(
+            "--work-units cannot exceed 4294967296 for import-ts",
+        ));
     }
-    Ok(Action { request, work_units })
+    Ok(Action {
+        request,
+        work_units,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -201,7 +212,9 @@ fn report_verified(
         || manifest.segment_spans.len() != receipt.segments
         || manifest.capture_time_label != receipt.capture_time_label
     {
-        return Err(io::Error::other("MPEG-TS receipt differs from reopened retained custody").into());
+        return Err(
+            io::Error::other("MPEG-TS receipt differs from reopened retained custody").into(),
+        );
     }
     // This also reconstructs and verifies every original TS byte through its retained origin.
     // No successful line or exported manifest may precede this cold custody check.
@@ -209,7 +222,13 @@ fn report_verified(
     work.charge(0)?;
 
     let mut report = Vec::new();
-    source_read::metadata(deployment, &retained, receipt.import_identity, "import-ts", &mut report)?;
+    source_read::metadata(
+        deployment,
+        &retained,
+        receipt.import_identity,
+        "import-ts",
+        &mut report,
+    )?;
     writeln!(report, "transport_container=mpegts")?;
     writeln!(
         report,

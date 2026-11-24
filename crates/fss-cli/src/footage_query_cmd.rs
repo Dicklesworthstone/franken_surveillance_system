@@ -76,10 +76,37 @@ fn number<T: std::str::FromStr + ToString>(
     Ok(parsed)
 }
 
+fn selects_evidence_hydration(tokens: &[ArgToken]) -> bool {
+    let mut first_target: Option<&str> = None;
+    let mut idx = 1;
+    while idx < tokens.len() {
+        let text = tokens[idx].as_str();
+        if let Some(target) = text.strip_prefix("--target=") {
+            if first_target.is_some() {
+                return false;
+            }
+            first_target = Some(target);
+        } else if text == "--target" {
+            if first_target.is_some() {
+                return false;
+            }
+            first_target = tokens.get(idx + 1).map(ArgToken::as_str);
+            idx += 1;
+        }
+        idx += 1;
+    }
+    first_target == Some("evidence-hydration")
+}
+
 /// Dispatches a closed query target without weakening either target's grammar.
 /// Existing invocations select events. Cross-target predicates are rejected by the
 /// selected parser rather than silently ignored or reinterpreted.
 pub(crate) fn parse_query_command(tokens: &[ArgToken]) -> Result<FssCommand, CliError> {
+    if selects_evidence_hydration(tokens) {
+        return crate::event_hydration_query_cmd::parse_event_hydration_query_args(tokens)
+            .map(Box::new)
+            .map(FssCommand::EventHydrationQuery);
+    }
     let values = collect_options(
         "query",
         tokens,
@@ -186,6 +213,7 @@ pub(crate) fn parse_query_command(tokens: &[ArgToken]) -> Result<FssCommand, Cli
         }
         Some((_, target, _)) if target == "evidence-hydration" => {
             crate::event_hydration_query_cmd::parse_event_hydration_query_args(tokens)
+                .map(Box::new)
                 .map(FssCommand::EventHydrationQuery)
         }
         Some((_, target, _)) if target == "recordings" => {

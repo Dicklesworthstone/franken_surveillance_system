@@ -43,7 +43,10 @@ impl RetainedDiscoveryRequest {
     pub fn for_authority(&self, expected_authority_root: ContentDigest) -> Result<Self> {
         let mut spec = self.template().spec().clone();
         spec.expected_authority_root = expected_authority_root;
-        Self::new(RetainedSupervisorPlan::new(spec)?, self.maximum_catalog_events())
+        Self::new(
+            RetainedSupervisorPlan::new(spec)?,
+            self.maximum_catalog_events(),
+        )
     }
 }
 
@@ -176,20 +179,35 @@ impl RetainedDiscoveryValidation {
 
     fn fields(&self) -> Vec<(&'static str, String)> {
         vec![
-            ("schema", string("fss.retained_supervisor_source_validation.v1")),
+            (
+                "schema",
+                string("fss.retained_supervisor_source_validation.v1"),
+            ),
             ("request_digest", string(&self.request_digest.to_text())),
-            ("source_inventory_digest", string(&self.inventory_digest.to_text())),
+            (
+                "source_inventory_digest",
+                string(&self.inventory_digest.to_text()),
+            ),
             ("site_lineage", string(&self.basis.site_lineage)),
-            ("current_authority_root", string(&self.basis.state_root.to_text())),
+            (
+                "current_authority_root",
+                string(&self.basis.state_root.to_text()),
+            ),
             ("ledger_root", string(&self.ledger_root.to_text())),
             ("effect_root", string(&self.effect_root.to_text())),
             ("metadata_sources", self.metadata_sources.to_string()),
             ("native_sources", self.native_sources.to_string()),
-            ("metadata_history_scan_units", self.history_scan_units.to_string()),
+            (
+                "metadata_history_scan_units",
+                self.history_scan_units.to_string(),
+            ),
             ("reserved_bytes", self.reserved_bytes.to_string()),
             ("read_attempts", self.read_attempts.to_string()),
             ("journal_observations", "2".to_owned()),
-            ("open_recovery_and_filesystem_metadata_included", "false".to_owned()),
+            (
+                "open_recovery_and_filesystem_metadata_included",
+                "false".to_owned(),
+            ),
             ("complete_current_catalog", "false".to_owned()),
             ("effects_authorized", "false".to_owned()),
             ("supports_absence_claim", "false".to_owned()),
@@ -213,7 +231,9 @@ fn inventory_digest(sources: &[RetainedDiscoverySource], maximum: usize) -> Resu
                 .health_digest
                 .is_some_and(|digest| !source.source_verified || !super::super::sha(digest))
         {
-            return Err(Error::Plan("sorted unique historical discovery source roots"));
+            return Err(Error::Plan(
+                "sorted unique historical discovery source roots",
+            ));
         }
         encoder.text(source.event_id.as_str());
         encoder.digest(source.event_root);
@@ -249,23 +269,27 @@ pub fn revalidate_retained_discovery_sources(
         max_journal_bytes: spec.limits.max_journal_bytes,
         ..OrientLimits::default()
     };
-    let initial = DeploymentHistory::read(deployment.root(), &limits)
-        .map_err(|_| Error::History)?;
+    let initial =
+        DeploymentHistory::read(deployment.root(), &limits).map_err(|_| Error::History)?;
     let roots = initial.roots_at(initial.head()).ok_or(Error::History)?;
     if roots.0 != *deployment.current_anchor()
         || initial.site_lineage() != spec.site_lineage
         || initial.replay_objects_root()
-            != deployment.root().join(&deployment.layout_report().objects_relpath)
+            != deployment
+                .root()
+                .join(&deployment.layout_report().objects_relpath)
     {
         return Err(Error::Authority);
     }
     checkpoint(cx)?;
-    let before = deployment.publisher_mut()
+    let before = deployment
+        .publisher_mut()
         .tighten_read_budget(spec.limits.max_read_bytes, spec.limits.max_read_attempts)
         .map_err(Error::ReadBudget)?;
     let mut work = Discovery::default();
     let per_source = history_scan_units(deployment, &mut work, cx)?;
-    let total_work = per_source.checked_mul(sources.len())
+    let total_work = per_source
+        .checked_mul(sources.len())
         .filter(|units| *units <= super::MAX_RETAINED_DISCOVERY_HISTORY_SCAN_UNITS)
         .ok_or(Error::Limit("source revalidation metadata history work"))?;
     let mut native_sources = 0_usize;
@@ -276,13 +300,17 @@ pub fn revalidate_retained_discovery_sources(
             .current_event_authority(&source.event_id)
             .map_err(|error| package_error(PackageEventError::from(error)))?;
         if receipt.event_root != source.event_root {
-            return Err(Error::Selection("historical discovery source revision changed"));
+            return Err(Error::Selection(
+                "historical discovery source revision changed",
+            ));
         }
         if source.source_verified {
-            let native = PackageEvent::open(deployment, &source.event_id, cx)
-                .map_err(package_error)?;
+            let native =
+                PackageEvent::open(deployment, &source.event_id, cx).map_err(package_error)?;
             if native.root() != source.event_root || native.event() != &metadata {
-                return Err(Error::Selection("historical native source revision changed"));
+                return Err(Error::Selection(
+                    "historical native source revision changed",
+                ));
             }
             let current_health =
                 compute_event_health(deployment, request, &native, &mut health, cx)?;
@@ -295,8 +323,8 @@ pub fn revalidate_retained_discovery_sources(
         }
     }
     checkpoint(cx)?;
-    let current = DeploymentHistory::read(deployment.root(), &limits)
-        .map_err(|_| Error::History)?;
+    let current =
+        DeploymentHistory::read(deployment.root(), &limits).map_err(|_| Error::History)?;
     if current.head() != initial.head()
         || current.roots_at(current.head()) != Some(roots.clone())
         || current.site_lineage() != initial.site_lineage()

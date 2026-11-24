@@ -30,7 +30,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<DeleteAction, String> {
         return Err("review expiry argument bound exceeded or option value missing".into());
     }
     let mut values = BTreeMap::new();
-    for pair in args[1..].chunks_exact(2) {
+    for pair in args[1..].as_chunks::<2>().0 {
         let key = pair[0]
             .to_str()
             .ok_or("review expiry option names require UTF-8")?;

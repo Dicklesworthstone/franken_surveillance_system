@@ -454,7 +454,7 @@ fn history_scope_path_page_and_budget_refusals_precede_destination_imports() -> 
             7 => set(
                 &mut input,
                 "--history-root-digest",
-                &digest("wrong independently selected history root"),
+                digest("wrong independently selected history root"),
             ),
             8 => set(&mut input, "--history-records", "4"),
             9 => set(&mut input, "--principal", "principal:another-operator"),

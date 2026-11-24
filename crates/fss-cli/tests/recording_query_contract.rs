@@ -2,22 +2,22 @@
 //! Native AVC/HEVC recording metadata through the real CLI and protected deployment owner.
 //! Synthetic retained windows establish transport/custody wiring only, not camera coverage.
 
+#[path = "../../fss-reference/tests/recording_clock_contract/support.rs"]
+mod clock_support;
 #[path = "../../fss-reference/tests/collector_support/mod.rs"]
 mod collector_support;
+#[path = "recording_query_contract/discover.rs"]
+mod discover;
 #[path = "../../fss-reference/tests/hevc_catalog_support/mod.rs"]
 mod hevc_catalog_support;
 #[path = "../../fss-reference/tests/hevc_recording_support/mod.rs"]
 mod hevc_recording_support;
 #[path = "../../fss-reference/tests/recording_support/mod.rs"]
 mod recording_support;
-#[path = "../../fss-reference/tests/recording_clock_contract/support.rs"]
-mod clock_support;
-#[path = "recording_query_contract/utc.rs"]
-mod utc;
 #[path = "recording_query_contract/set.rs"]
 mod set;
-#[path = "recording_query_contract/discover.rs"]
-mod discover;
+#[path = "recording_query_contract/utc.rs"]
+mod utc;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -176,7 +176,10 @@ impl Fixture {
             ("--start-tick", recording.interval.start.to_string()),
             ("--end-tick", recording.interval.end.to_string()),
             ("--max-windows", recording.max_windows.to_string()),
-            ("--max-hydration-bytes", recording.max_hydration_bytes.to_string()),
+            (
+                "--max-hydration-bytes",
+                recording.max_hydration_bytes.to_string(),
+            ),
             ("--principal", self.request.principal.as_str().to_owned()),
         ];
         if let Some(anchor) = &self.request.expected_anchor {
@@ -198,9 +201,14 @@ impl Fixture {
     fn run(&self) -> TestResult<(String, ExitIdentity)> {
         let args = self.args();
         let answer = execute_fss_with_exit(parse_fss_args(args.clone())?);
-        let process = Command::new(env!("CARGO_BIN_EXE_fss")).args(args).output()?;
+        let process = Command::new(env!("CARGO_BIN_EXE_fss"))
+            .args(args)
+            .output()?;
         assert_eq!(process.status.code(), Some(i32::from(answer.1.code)));
-        assert_eq!(String::from_utf8(process.stdout)?, format!("{}\n", answer.0));
+        assert_eq!(
+            String::from_utf8(process.stdout)?,
+            format!("{}\n", answer.0)
+        );
         assert!(process.stderr.is_empty());
         parse_json(&answer.0)?;
         Ok(answer)
@@ -213,11 +221,15 @@ impl Drop for Fixture {
 }
 
 fn object_path(root: &Path, digest: ContentDigest) -> PathBuf {
-    root.join("spool/objects").join(digest.to_text().trim_start_matches("sha256:"))
+    root.join("spool/objects")
+        .join(digest.to_text().trim_start_matches("sha256:"))
 }
 fn put(root: &Path, bytes: &[u8]) -> TestResult {
     let digest = ContentDigest::sha256(bytes);
-    fs::write(object_path(root, digest), encode_spool_object(digest, bytes)?)?;
+    fs::write(
+        object_path(root, digest),
+        encode_spool_object(digest, bytes)?,
+    )?;
     Ok(())
 }
 fn publish(root: &Path, slot: &SlotName, manifest: &ObjectManifest) -> TestResult {
@@ -230,21 +242,22 @@ fn publish(root: &Path, slot: &SlotName, manifest: &ObjectManifest) -> TestResul
 }
 fn avc_window(sequence: u64, decode_time: u64) -> TestResult<PreparedRecording> {
     let mut collector = collector_support::collector(CollectorLimits::default())?;
-    let sample = collector_support::sample(
-        sequence,
-        90_000 + sequence as u32 * 3600,
-        true,
-        false,
-    )?;
+    let sample = collector_support::sample(sequence, 90_000 + sequence as u32 * 3600, true, false)?;
     sample.source(&mut collector, 1)?;
     collector_support::accepted(collector.push_picture(sample.timed(decode_time), 1))?;
     collector.seal(2)?;
-    collector.take_ready().ok_or_else(|| "missing AVC window".into())
+    collector
+        .take_ready()
+        .ok_or_else(|| "missing AVC window".into())
 }
 fn prepare_archive(
     root: &Path,
     codec: RecordingQueryCodec,
-) -> TestResult<(RecordingQueryRequest, ContentDigest, BTreeSet<ContentDigest>)> {
+) -> TestResult<(
+    RecordingQueryRequest,
+    ContentDigest,
+    BTreeSet<ContentDigest>,
+)> {
     let a = SlotName::parse("first-window")?;
     let b = SlotName::parse("second-window")?;
     let (scope, catalog, index, leaves, interval) = match codec {
@@ -259,8 +272,14 @@ fn prepare_archive(
             let catalog = prepare_catalog(
                 scope.clone(),
                 &[
-                    CatalogWindow { slot: &a, recording: &first },
-                    CatalogWindow { slot: &b, recording: &second },
+                    CatalogWindow {
+                        slot: &a,
+                        recording: &first,
+                    },
+                    CatalogWindow {
+                        slot: &b,
+                        recording: &second,
+                    },
                 ],
             )?;
             publish(root, &a, first.manifest())?;
@@ -286,8 +305,14 @@ fn prepare_archive(
             let catalog = prepare_hevc_catalog(
                 scope.clone(),
                 &[
-                    HevcCatalogWindow { slot: &a, recording: &first },
-                    HevcCatalogWindow { slot: &b, recording: &second },
+                    HevcCatalogWindow {
+                        slot: &a,
+                        recording: &first,
+                    },
+                    HevcCatalogWindow {
+                        slot: &b,
+                        recording: &second,
+                    },
                 ],
             )?;
             publish(root, &a, first.manifest())?;
@@ -329,20 +354,26 @@ fn prepare_archive(
 fn at<'a>(value: &'a Value, keys: &[&str]) -> TestResult<&'a Value> {
     let mut current = value;
     for key in keys {
-        current = current.object().and_then(|o| o.get(*key))
+        current = current
+            .object()
+            .and_then(|o| o.get(*key))
             .ok_or_else(|| format!("missing JSON field {key}"))?;
     }
     Ok(current)
 }
 fn text_at<'a>(value: &'a Value, keys: &[&str]) -> TestResult<&'a str> {
-    at(value, keys)?.text().ok_or_else(|| "expected JSON string".into())
+    at(value, keys)?
+        .text()
+        .ok_or_else(|| "expected JSON string".into())
 }
 fn propositions(value: &Value) -> TestResult<&[Value]> {
     at(value, &["payload", "epistemic", "propositions"])?
-        .array().ok_or_else(|| "expected propositions".into())
+        .array()
+        .ok_or_else(|| "expected propositions".into())
 }
 fn proposition<'a>(value: &'a Value, id: &str) -> TestResult<&'a Value> {
-    propositions(value)?.iter()
+    propositions(value)?
+        .iter()
         .find(|p| text_at(p, &["id"]).is_ok_and(|value| value == id))
         .ok_or_else(|| format!("missing proposition {id}").into())
 }
@@ -379,7 +410,10 @@ fn actual_avc_and_hevc_cli_return_h0_metadata_gaps_and_independent_current_conte
         assert_eq!(exit, ExitIdentity::SUCCESS, "{output}");
         assert_eq!(fixture.run()?, (output.clone(), exit));
         let envelope = parse_json(&output)?;
-        assert_eq!(text_at(&envelope, &["schema"])?, "fss.agent_response_envelope.v1");
+        assert_eq!(
+            text_at(&envelope, &["schema"])?,
+            "fss.agent_response_envelope.v1"
+        );
         assert_eq!(text_at(&envelope, &["outcome"])?, "ok");
         assert_eq!(text_at(&envelope, &["principalId"])?, PRINCIPAL);
         assert_eq!(text_at(&envelope, &["epistemicState"])?, "unknown");
@@ -388,12 +422,15 @@ fn actual_avc_and_hevc_cli_return_h0_metadata_gaps_and_independent_current_conte
             "pinned_catalog_exhausted"
         );
         let handles = at(&envelope, &["payload", "evidenceHandles"])?
-            .array().ok_or("evidence handles")?;
+            .array()
+            .ok_or("evidence handles")?;
         assert_eq!(handles.len(), 3);
         for handle in handles {
             assert_eq!(text_at(handle, &["hydration"])?, "H0");
             assert_eq!(
-                at(handle, &["allowedHydration"])?.array().ok_or("allowed hydration")?,
+                at(handle, &["allowedHydration"])?
+                    .array()
+                    .ok_or("allowed hydration")?,
                 &[Value::Text("H0".to_owned())]
             );
             assert_eq!(text_at(handle, &["availability"])?, "available");
@@ -405,9 +442,11 @@ fn actual_avc_and_hevc_cli_return_h0_metadata_gaps_and_independent_current_conte
             )?,
             "unknown"
         );
-        let gaps: Vec<_> = propositions(&envelope)?.iter()
-            .filter(|p| text_at(p, &["id"])
-                .is_ok_and(|id| id.starts_with("claim:recordings:indexed-gap:")))
+        let gaps: Vec<_> = propositions(&envelope)?
+            .iter()
+            .filter(|p| {
+                text_at(p, &["id"]).is_ok_and(|id| id.starts_with("claim:recordings:indexed-gap:"))
+            })
             .collect();
         assert_eq!(gaps.len(), 3);
         for gap in gaps {
@@ -432,12 +471,21 @@ fn actual_avc_and_hevc_cli_return_h0_metadata_gaps_and_independent_current_conte
         )?;
         for cell in &orientation.capsule().frame.knowledge_cells {
             let retained = proposition(&envelope, cell.claim_id())?;
-            assert_eq!(text_at(retained, &["state"])?, cell.knowledge_state().as_str());
-            assert_eq!(text_at(retained, &["statement"])?, cell.disclosable_statement());
+            assert_eq!(
+                text_at(retained, &["state"])?,
+                cell.knowledge_state().as_str()
+            );
+            assert_eq!(
+                text_at(retained, &["statement"])?,
+                cell.disclosable_statement()
+            );
         }
         assert!(output.contains("event:protected-recording-query"));
         assert!(output.contains(&query.anchor_token));
-        assert_ne!(query.anchor_token, fixture.request.recording.scope.recording.anchor.to_text());
+        assert_ne!(
+            query.anchor_token,
+            fixture.request.recording.scope.recording.anchor.to_text()
+        );
         assert!(output.contains("source_payload_availability=unknown"));
         assert!(!output.contains(fixture.archive.to_str().ok_or("archive UTF-8")?));
         assert_eq!(tree(&fixture.directory)?, before);
@@ -446,7 +494,8 @@ fn actual_avc_and_hevc_cli_return_h0_metadata_gaps_and_independent_current_conte
 }
 
 #[test]
-fn principal_changes_request_and_decision_without_changing_selected_recording_roots() -> TestResult {
+fn principal_changes_request_and_decision_without_changing_selected_recording_roots() -> TestResult
+{
     let mut fixture = Fixture::new("principal", RecordingQueryCodec::Avc)?;
     let first = fixture.run()?;
     assert_eq!(first.1, ExitIdentity::SUCCESS, "{}", first.0);
@@ -464,7 +513,10 @@ fn principal_changes_request_and_decision_without_changing_selected_recording_ro
         at(&a, &["payload", "evidenceHandles"])?,
         at(&b, &["payload", "evidenceHandles"])?
     );
-    assert_eq!(text_at(&b, &["principalId"])?, "principal:second-recording-reader");
+    assert_eq!(
+        text_at(&b, &["principalId"])?,
+        "principal:second-recording-reader"
+    );
     Ok(())
 }
 
@@ -507,20 +559,31 @@ fn metadata_context_reads_succeed_with_both_writers_locked_and_never_touch_sourc
 #[test]
 fn missing_corrupt_deleted_and_mismatched_catalogs_refuse_without_a_successful_empty_result()
 -> TestResult {
-    for fault in ["missing-member", "metadata", "catalog-root", "source-scope", "tombstone"] {
+    for fault in [
+        "missing-member",
+        "metadata",
+        "catalog-root",
+        "source-scope",
+        "tombstone",
+    ] {
         let mut fixture = Fixture::new(fault, RecordingQueryCodec::Avc)?;
         match fault {
             "missing-member" => fs::remove_file(fixture.archive.join("roots/second-window.root"))?,
-            "metadata" => fs::write(object_path(&fixture.archive, fixture.metadata), b"corrupt metadata")?,
-            "catalog-root" => fixture.request.recording.catalog_root = ContentDigest::sha256(b"foreign-catalog"),
+            "metadata" => fs::write(
+                object_path(&fixture.archive, fixture.metadata),
+                b"corrupt metadata",
+            )?,
+            "catalog-root" => {
+                fixture.request.recording.catalog_root = ContentDigest::sha256(b"foreign-catalog")
+            }
             "source-scope" => fixture.request.recording.scope.recording.generation += 1,
             _ => {
                 let leaf = fixture.source_leaves.first().ok_or("source leaf")?;
                 fs::write(
-                    fixture.archive.join("tombstones").join(format!(
-                        "{}.tomb",
-                        leaf.to_text().replacen(':', "-", 1)
-                    )),
+                    fixture
+                        .archive
+                        .join("tombstones")
+                        .join(format!("{}.tomb", leaf.to_text().replacen(':', "-", 1))),
                     b"deletion present",
                 )?;
             }
@@ -545,9 +608,8 @@ fn expected_deployment_anchor_and_mid_query_deployment_changes_refuse() -> TestR
         &RecordingContextLimits::default(),
         &|| false,
     )?;
-    fixture.request.expected_anchor = Some(
-        AnchorToken::parse(&snapshot_anchor_token(&initial.snapshot)).ok_or("anchor token")?,
-    );
+    fixture.request.expected_anchor =
+        Some(AnchorToken::parse(&snapshot_anchor_token(&initial.snapshot)).ok_or("anchor token")?);
     fixture.publish_hypothesis("event:recording-query-new-head")?;
     let before = tree(&fixture.directory)?;
     assert_eq!(fixture.run()?.1, ExitIdentity::AGENT_REFUSED);
@@ -556,10 +618,10 @@ fn expected_deployment_anchor_and_mid_query_deployment_changes_refuse() -> TestR
     let io = RecordingSpoolIo::new(Arc::new(HostSpoolIo));
     let changed = AtomicBool::new(false);
     let cancelled = || {
-        if io.call_count(SpoolIoCall::OpenRead) >= 5
-            && !changed.swap(true, Ordering::SeqCst)
-        {
-            return fixture.publish_hypothesis("event:recording-query-racing-head").is_err();
+        if io.call_count(SpoolIoCall::OpenRead) >= 5 && !changed.swap(true, Ordering::SeqCst) {
+            return fixture
+                .publish_hypothesis("event:recording-query-racing-head")
+                .is_err();
         }
         false
     };
@@ -607,8 +669,14 @@ fn context_budgets_share_both_reads_and_invalid_native_allowance_fails_preflight
         &|| false,
     )?;
     assert_eq!(exact_result.native.rows, baseline.native.rows);
-    assert_eq!(exact_result.deployment_bytes_read, baseline.deployment_bytes_read);
-    assert_eq!(exact_result.deployment_metadata_reads, baseline.deployment_metadata_reads);
+    assert_eq!(
+        exact_result.deployment_bytes_read,
+        baseline.deployment_bytes_read
+    );
+    assert_eq!(
+        exact_result.deployment_metadata_reads,
+        baseline.deployment_metadata_reads
+    );
     assert_ne!(exact_result.request_digest, baseline.request_digest);
     for lowered in [
         RecordingContextLimits {

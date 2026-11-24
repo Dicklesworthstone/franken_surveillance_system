@@ -17,8 +17,7 @@ use fss_reference::ingest::rtpdump::import::{
 use rtpdump_support::{Error, TestResult, config_for, cx, real_dump};
 
 const PACKAGE: &[u8] = include_bytes!("../../../models/yolox-nano/yolox_nano.fmpk");
-const PACKAGE_SHA: &str =
-    "sha256:5b6568750faa375de3742e5eb310fbd4e22ff26e1ba727f193b79ab984a68c74";
+const PACKAGE_SHA: &str = "sha256:5b6568750faa375de3742e5eb310fbd4e22ff26e1ba727f193b79ab984a68c74";
 const SITE: &str = "site:rtp-tracking-cli";
 
 fn directory(label: &str) -> Result<PathBuf, Error> {
@@ -77,7 +76,13 @@ fn command(root: &Path, source: ContentDigest, package: &Path, report: &Path) ->
         .arg(source.to_string())
         .args(["--custody", "current", "--package"])
         .arg(package)
-        .args(["--package-sha256", PACKAGE_SHA, "--class-index", "0", "--report-out"])
+        .args([
+            "--package-sha256",
+            PACKAGE_SHA,
+            "--class-index",
+            "0",
+            "--report-out",
+        ])
         .arg(report);
     command
 }
@@ -120,7 +125,11 @@ fn cold_tracking_report_is_deterministic_private_and_read_only() -> TestResult {
         ContentDigest::sha256(&std::fs::read(&first)?).to_string()
     );
     let text = std::fs::read_to_string(&first)?;
-    assert!(text.lines().next().is_some_and(|line| line.contains("\"type\":\"header\"")));
+    assert!(
+        text.lines()
+            .next()
+            .is_some_and(|line| line.contains("\"type\":\"header\""))
+    );
     assert!(text.contains("\"type\":\"frame\""));
     assert!(text.lines().last().is_some_and(|line| {
         line.contains("\"type\":\"summary\"") && line.contains("\"complete\":true")
@@ -133,7 +142,10 @@ fn cold_tracking_report_is_deterministic_private_and_read_only() -> TestResult {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        assert_eq!(std::fs::metadata(&first)?.permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            std::fs::metadata(&first)?.permissions().mode() & 0o777,
+            0o600
+        );
     }
     let reopened = ReferenceDeployment::reopen(&root, SITE, &cx)?;
     assert_eq!(reopened.current_anchor(), &anchor);
@@ -150,13 +162,21 @@ fn unsafe_paths_wrong_package_and_prefix_limits_never_certify_tracking() -> Test
     assert_eq!(std::fs::read(&existing)?, b"keep");
 
     let inside = root.join("forbidden.jsonl");
-    assert!(!command(&root, source, &package, &inside).output()?.status.success());
+    assert!(
+        !command(&root, source, &package, &inside)
+            .output()?
+            .status
+            .success()
+    );
     assert!(!inside.exists());
 
     let wrong = dir.join("wrong.jsonl");
     assert!(
         !command(&root, source, &package, &wrong)
-            .args(["--package-sha256", &ContentDigest::sha256(b"wrong").to_string()])
+            .args([
+                "--package-sha256",
+                &ContentDigest::sha256(b"wrong").to_string()
+            ])
             .output()?
             .status
             .success()
@@ -193,9 +213,14 @@ fn malformed_source_and_malformed_options_are_not_completed_quiet_tracks() -> Te
 
     let absent = dir.join("absent");
     let malformed = dir.join("malformed.jsonl");
-    let result = command(&absent, ContentDigest::sha256(b"missing"), &package, &malformed)
-        .args(["--track-iou-ppm", "1000001"])
-        .output()?;
+    let result = command(
+        &absent,
+        ContentDigest::sha256(b"missing"),
+        &package,
+        &malformed,
+    )
+    .args(["--track-iou-ppm", "1000001"])
+    .output()?;
     assert_eq!(result.status.code(), Some(2));
     assert!(!absent.exists() && !malformed.exists());
     Ok(())

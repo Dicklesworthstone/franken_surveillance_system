@@ -229,7 +229,120 @@ struct Options {
     manifest_output: Option<PathBuf>,
     limits: RetainedReadLimits,
     read_limits: ImmutableRetainedReadLimits,
+    json: bool,
     action: Action,
+}
+
+fn is_valid_subcommand(command: &str) -> bool {
+    matches!(
+        command,
+        "import"
+            | "import-ts"
+            | "inspect"
+            | "verify"
+            | "extract"
+            | "select-movie"
+            | "select-matroska"
+    ) || media::is_command(command)
+        || command == "localize"
+        || localization_replay::is_command(command)
+}
+
+fn subcommand_help(args: &[OsString]) -> Option<String> {
+    let command = args.first()?.to_str()?;
+    if !is_valid_subcommand(command) {
+        return None;
+    }
+    if !args[1..]
+        .iter()
+        .any(|a| matches!(a.to_str(), Some("--help" | "-h")))
+    {
+        return None;
+    }
+    let detail = match command {
+        "import" => {
+            "--root <dir> --site <site-id> --input <file> --sensor <id> --stream <id> --receive-time-ns <n> [--media-format auto|mjpeg|annexb|hevc|mp4avc|mp4hevc|mkvavc|mkvhevc|flvavc|rtpplay] [--capture-start-ns <n> --capture-uncertainty-ns <n> --assumed-fps <f>] [--manifest-out <file>] [--principal <id>] [--json] [--help]"
+        }
+        "import-ts" => {
+            "--root <dir> --site <site-id> --input <file> --sensor <id> --stream <id> --receive-time-ns <n> [--ts-framing ts188|m2ts192] [--ts-program <n>] [--ts-video-pid <n>] [--principal <id>] [--json] [--help]"
+        }
+        "inspect" | "verify" => {
+            "--root <dir> --site <site-id> --import-id <sha256> [--max-read-bytes <n>] [--max-read-objects <n>] [--manifest-out <file>] [--principal <id>] [--json] [--help]"
+        }
+        "extract" => {
+            "--root <dir> --site <site-id> --import-id <sha256> --segment <n> --output <file> [--principal <id>] [--json] [--help]"
+        }
+        "decode" | "read-decoded" | "verify-decoded" => {
+            "--root <dir> --site <site-id> --import-id <sha256> --segment <n> [--segment-count <m>] --interpretation gray|ycbcr [--output <file>] [--output-format pgm|mjpeg|gray-mkv] [--principal <id>] [--json] [--help]"
+        }
+        _ => "--root <dir> --site <site-id> [options...] [--principal <id>] [--json] [--help]",
+    };
+    Some(format!(
+        "fss-file {command}\n\nUSAGE:\n  fss-file {command} {detail}\n\n\
+         Default output emits legacy `key=value` lines; pass `--json` for structured JSON (`fss.file_cli.v1`).\n\
+         Use `fss-file --help` for full option bounds and custody semantics.\n"
+    ))
+}
+
+fn format_kv_as_json(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.starts_with('{') && fss_cli::json_input::parse(trimmed).is_ok() {
+        return trimmed.to_owned();
+    }
+    let mut keys: Vec<String> = Vec::new();
+    let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for line in trimmed.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once('=') {
+            if !grouped.contains_key(key) {
+                keys.push(key.to_owned());
+            }
+            grouped
+                .entry(key.to_owned())
+                .or_default()
+                .push(value.to_owned());
+        }
+    }
+    let mut fields: Vec<(String, String)> = Vec::with_capacity(keys.len() + 1);
+    if !grouped.contains_key("schema") {
+        fields.push((
+            "schema".to_owned(),
+            fss_cli::json_output::string("fss.file_cli.v1"),
+        ));
+    }
+    for key in keys {
+        if let Some(values) = grouped.get(&key) {
+            let rendered = if values.len() == 1 {
+                render_scalar_kv(&values[0])
+            } else {
+                fss_cli::json_output::strings(values)
+            };
+            fields.push((key, rendered));
+        }
+    }
+    let borrowed: Vec<(&str, String)> = fields
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.clone()))
+        .collect();
+    fss_cli::json_output::object(&borrowed)
+}
+
+fn render_scalar_kv(val: &str) -> String {
+    if val == "true" || val == "false" {
+        return val.to_owned();
+    }
+    let is_safe_decimal = !val.is_empty()
+        && val.len() <= 15
+        && val.bytes().all(|b| b.is_ascii_digit())
+        && (val.len() == 1 || !val.starts_with('0'));
+    if is_safe_decimal {
+        val.to_owned()
+    } else {
+        fss_cli::json_output::string(val)
+    }
 }
 
 fn value<'a>(values: &'a Values, key: &str) -> ParseResult<&'a OsStr> {
@@ -274,24 +387,18 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
         }
         return Ok(None);
     }
-    if !matches!(
-        command,
-        "import"
-            | "import-ts"
-            | "inspect"
-            | "verify"
-            | "extract"
-            | "select-movie"
-            | "select-matroska"
-    ) && !media::is_command(command)
-        && command != "localize"
-        && !localization_replay::is_command(command)
-    {
+    if !is_valid_subcommand(command) {
         return Err((
             ERR_CLI_UNKNOWN_COMMAND,
             "expected import, import-ts, inspect, verify, extract, select-movie, select-matroska, export-movie or a decoded-media command"
                 .to_owned(),
         ));
+    }
+    if args[1..]
+        .iter()
+        .any(|arg| matches!(arg.to_str(), Some("--help" | "-h")))
+    {
+        return Ok(None);
     }
     let common = [
         "--root",
@@ -317,6 +424,7 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
         "--rtp-mode",
     ];
     let mut values = Values::new();
+    let mut json = false;
     let mut index = 1;
     while index < args.len() {
         let key = args[index].to_str().ok_or_else(|| {
@@ -325,6 +433,14 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
                 "option names must be UTF-8".to_owned(),
             )
         })?;
+        if key == "--json" {
+            if json {
+                return Err((ERR_CLI_DUPLICATE_OPTION, "duplicate --json".to_owned()));
+            }
+            json = true;
+            index += 1;
+            continue;
+        }
         let replay = localization_replay::is_command(command);
         let allowed = (common.contains(&key)
             && !((replay || command == "export-movie") && key == "--manifest-out"))
@@ -541,6 +657,7 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
         manifest_output: values.get("--manifest-out").map(PathBuf::from),
         limits,
         read_limits: source_read::parse_limits(&values)?,
+        json,
         action,
     }))
 }
@@ -571,6 +688,18 @@ fn write_new(path: &Path, bytes: &[u8], deployment_root: &Path, cx: &ReplayCx) -
 }
 
 fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
+    if options.json {
+        let mut buffer = Vec::new();
+        run_inner(options, &mut buffer)?;
+        let raw = String::from_utf8(buffer)?;
+        let rendered = format_kv_as_json(&raw);
+        writeln!(out, "{rendered}")?;
+        return Ok(());
+    }
+    run_inner(options, out)
+}
+
+fn run_inner(options: Options, out: &mut impl Write) -> RunResult<()> {
     if matches!(
         &options.action,
         Action::Inspect(_)
@@ -790,6 +919,12 @@ fn main() -> ExitCode {
         return replay_time::dispatch(&args);
     }
     let args: Vec<OsString> = first.into_iter().chain(input).collect();
+    if let Some(help) = subcommand_help(&args) {
+        return match io::stdout().lock().write_all(help.as_bytes()) {
+            Ok(()) => ExitCode::from(ExitIdentity::SUCCESS.code),
+            Err(_) => ExitCode::from(ExitIdentity::RUNTIME_FAILURE.code),
+        };
+    }
     match parse(&args) {
         Ok(None) => match io::stdout().lock().write_all(HELP.as_bytes()) {
             Ok(()) => ExitCode::from(ExitIdentity::SUCCESS.code),
@@ -1451,5 +1586,54 @@ mod tests {
                 .is_err()
             );
         }
+    }
+
+    #[test]
+    fn subcommand_help_and_json_flag_work_cleanly() {
+        for sub in [
+            "import",
+            "import-ts",
+            "inspect",
+            "verify",
+            "extract",
+            "decode",
+            "read-decoded",
+            "verify-decoded",
+            "motion",
+        ] {
+            let help_args = [OsString::from(sub), OsString::from("--help")];
+            assert!(subcommand_help(&help_args).is_some(), "help for {sub}");
+            assert!(matches!(parse(&help_args), Ok(None)));
+        }
+        let parsed = parse(&args(&["--json"]))
+            .expect("import --json parses")
+            .expect("options");
+        assert!(parsed.json);
+        assert!(parse(&args(&["--json", "--json"])).is_err());
+
+        let json = format_kv_as_json(
+            "operation=created\nimport_identity=sha256:1111\ninput_bytes=256\nabsence_certifiable=false\n",
+        );
+        let doc = fss_cli::json_input::parse(&json).expect("valid JSON");
+        let obj = doc.object().expect("JSON object");
+        assert_eq!(
+            obj.get("schema").and_then(fss_cli::json_input::Value::text),
+            Some("fss.file_cli.v1")
+        );
+        assert_eq!(
+            obj.get("operation")
+                .and_then(fss_cli::json_input::Value::text),
+            Some("created")
+        );
+        assert_eq!(
+            obj.get("input_bytes")
+                .and_then(fss_cli::json_input::Value::integer),
+            Some(256)
+        );
+        assert_eq!(
+            obj.get("absence_certifiable")
+                .and_then(fss_cli::json_input::Value::boolean),
+            Some(false)
+        );
     }
 }

@@ -13,8 +13,8 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use fss_cli::{
-    ExitIdentity, FssCommand, RequestControl, execute_fss_with_exit,
-    execute_live_fss_with_control, parse_fss_args,
+    ExitIdentity, FssCommand, RequestControl, execute_fss_with_exit, execute_live_fss_with_control,
+    parse_fss_args,
 };
 use fss_core::json_input::{Value, parse};
 use support::{Fixture, PRINCIPAL, SITE, Test, context};
@@ -441,7 +441,11 @@ fn native_cancellation_withholds_track_pages_through_final_delivery_without_sour
     let expected = execute_fss_with_exit(parse_fss_args(args(&fixture, &options))?);
     assert_eq!(expected.1, ExitIdentity::SUCCESS, "{}", expected.0);
     assert!(expected.0.contains("claim:tracks:observation:"));
-    assert!(field(&parse(&expected.0)?, "continuation")?.text().is_some());
+    assert!(
+        field(&parse(&expected.0)?, "continuation")?
+            .text()
+            .is_some()
+    );
 
     let polls = AtomicUsize::new(0);
     let probe = || {
@@ -456,7 +460,10 @@ fn native_cancellation_withholds_track_pages_through_final_delivery_without_sour
     assert_eq!(baseline, expected);
     assert_eq!(tree(&fixture.source.root)?, before);
     let total_polls = polls.load(Ordering::SeqCst);
-    assert!(total_polls > 4, "native source verification must poll cancellation");
+    assert!(
+        total_polls > 4,
+        "native source verification must poll cancellation"
+    );
 
     // Use the real successful run's checkpoints, including the final delivery poll.
     // The owner signal stays cancelled, as required by RequestControl.

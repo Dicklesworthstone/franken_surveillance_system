@@ -1,9 +1,9 @@
 #![forbid(unsafe_code)]
+//! Actual operator processes over cold native HEVC originals, not mocked storage or native requests.
 #![cfg(all(
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
-//! Actual operator processes over cold native HEVC originals, not mocked storage or native requests.
 #[path = "../../fss-reference/tests/hevc_datagram_support/mod.rs"]
 mod support;
 use fss_cli::agent_json::{object, string};

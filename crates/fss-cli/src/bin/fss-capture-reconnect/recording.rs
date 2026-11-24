@@ -182,6 +182,7 @@ pub(super) fn history_pin_json(pin: ReconnectHistoryPin) -> String {
     ])
 }
 
+#[allow(clippy::large_enum_variant)]
 pub(super) enum Boundary {
     Native(HttpReconnectBoundary),
     History(ArchivedReconnectBoundary, ReconnectHistoryPin),

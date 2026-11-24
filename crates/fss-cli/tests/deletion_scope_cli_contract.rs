@@ -1430,7 +1430,11 @@ fn an_interrupted_scoped_commit_resumes_and_completes_exactly_once() -> TestResu
 }
 
 fn scoped_commit_cutpoints(event_scope: bool) -> TestResult {
-    let directory = OwnedDirectory::new(if event_scope { "event-cuts" } else { "sensor-cuts" })?;
+    let directory = OwnedDirectory::new(if event_scope {
+        "event-cuts"
+    } else {
+        "sensor-cuts"
+    })?;
     let base = directory.root();
     let (first, _) = import_named(&directory, &scene(Scene::Right)?, "sensor:alpha", "a1")?;
     let (second, _) = import_named(&directory, &scene(Scene::Quiet(80))?, "sensor:alpha", "a2")?;
@@ -1485,12 +1489,24 @@ fn scoped_commit_cutpoints(event_scope: bool) -> TestResult {
         if index < 2 {
             let before = files(&copy)?;
             let refreshed = report(&delete_plan(&copy, &scope)?)?;
-            assert_eq!(refreshed.get("plan_digest")?.text()?, plan_digest, "{stage}");
-            assert_eq!(refreshed.get("approval_digest")?.text()?, approval, "{stage}");
+            assert_eq!(
+                refreshed.get("plan_digest")?.text()?,
+                plan_digest,
+                "{stage}"
+            );
+            assert_eq!(
+                refreshed.get("approval_digest")?.text()?,
+                approval,
+                "{stage}"
+            );
             assert_eq!(files(&copy)?, before, "{stage}: preparation writes nothing");
         } else {
             // Durable records deny every selected source while completion remains resumable.
-            let members = if event_scope { vec![&first] } else { vec![&first, &second] };
+            let members = if event_scope {
+                vec![&first]
+            } else {
+                vec![&first, &second]
+            };
             for member in members {
                 assert_eq!(
                     refusal(&file(&copy, "verify", &["--import-id", member])?),

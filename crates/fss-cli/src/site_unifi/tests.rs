@@ -59,6 +59,7 @@ fn document(manifest: &SiteManifest, rows: &[String]) -> Test<Vec<u8>> {
     .into_bytes())
 }
 
+#[cfg(target_os = "linux")]
 fn receipts(manifest: &SiteManifest) -> Test<Vec<SiteProbeReceipt>> {
     Ok(vec![receipt_for(manifest, 0)?])
 }

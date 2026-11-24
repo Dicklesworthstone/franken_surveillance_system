@@ -1,0 +1,24 @@
+:root { color-scheme: dark; --bg: #0b1114; --panel: #121b20; --border: #22333b; --text: #dce8ee; --muted: #8ea5b0; --ok: #7ed8a8; --warn: #f0c27b; --crit: #f28b82; }
+* { box-sizing: border-box; }
+body { margin: 0; font: 13px/1.45 ui-sans-serif, system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.cockpit-bar { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--border); background: #0e161a; }
+.brand, .meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--warn); display: inline-block; }
+.dot.live { background: var(--ok); }
+.chip { padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px; font-size: 11px; color: var(--muted); }
+.nav-btn { color: var(--text); text-decoration: none; border: 1px solid var(--border); border-radius: 6px; padding: 3px 8px; font-size: 12px; }
+.cockpit-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 12px; }
+@media (max-width: 900px) { .cockpit-grid { grid-template-columns: 1fr; } }
+.pane { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px; min-height: 210px; }
+.pane h2 { margin: 0 0 8px; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.pane-body { display: flex; flex-direction: column; gap: 6px; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; }
+th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid #1b2830; }
+th { color: var(--muted); font-weight: 600; }
+.row-card { border: 1px solid #1d2d35; border-radius: 6px; padding: 6px 8px; background: #0f171b; }
+.tag { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 11px; margin-right: 6px; border: 1px solid var(--border); }
+.tag.ok { color: var(--ok); border-color: #2c5c43; }
+.tag.warn { color: var(--warn); border-color: #6b532d; }
+.tag.crit { color: var(--crit); border-color: #6e3531; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: #b7d7e6; word-break: break-all; }

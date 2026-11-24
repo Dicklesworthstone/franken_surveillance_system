@@ -15,11 +15,12 @@ mod sentinel;
 #[path = "history/continuation.rs"]
 mod continuation;
 
-fn set(input: &mut Vec<OsString>, key: &str, value: &str) {
+fn set(input: &mut Vec<OsString>, key: &str, value: impl Into<OsString>) {
+    let value = value.into();
     if let Some(index) = input.iter().position(|part| part == key) {
-        input[index + 1] = value.into();
+        input[index + 1] = value;
     } else {
-        input.extend([key.into(), value.into()]);
+        input.extend([key.into(), value]);
     }
 }
 
@@ -27,11 +28,7 @@ fn history_args(directory: &Directory, peer: SocketAddr) -> Vec<OsString> {
     let mut input = campaign_args(directory, peer);
     set(&mut input, "--max-attempts", "2");
     // The child creates the history root exclusively, so it must NOT pre-exist; its parent must.
-    set(
-        &mut input,
-        "--history-root",
-        directory.0.join("history").to_str().unwrap(),
-    );
+    set(&mut input, "--history-root", directory.0.join("history"));
     input
 }
 
@@ -354,7 +351,7 @@ fn history_retains_known_empty_source_pin_on_authentication_refusal() -> Test {
     set(
         &mut input,
         "--source-retention-evidence",
-        &digest("explicit raw source retention"),
+        digest("explicit raw source retention"),
     );
     let (approved, _) = campaign_approval(&input)?;
     let (output, _) = capture_sessions(&camera, &approved, &[Behavior::AuthenticationRequired])?;

@@ -44,6 +44,8 @@ pub struct QueryArgs {
     pub at: Option<AnchorToken>,
     /// Native query request, including any exact anchor and continuation preconditions.
     pub request: EventQueryRequest,
+    /// Optional typed operational target, probe, or intent dispatch.
+    pub ops: Option<ops_targets::OpsDispatch>,
 }
 
 fn malformed(option: &str, value: &str, reason: &str, index: usize) -> CliError {
@@ -78,6 +80,9 @@ fn number<T: std::str::FromStr + ToString>(
 /// Parses exact conjunctive filters. No natural language, raw offsets, mutation flags or
 /// unimplemented query mode is accepted. Time endpoints are independently optional.
 pub fn parse_query_args(tokens: &[ArgToken]) -> Result<QueryArgs, CliError> {
+    if let Some(target) = detect_ops_query_target(tokens) {
+        return parse_ops_query_args(target, tokens);
+    }
     let values = collect_options(
         "query",
         tokens,
@@ -180,6 +185,274 @@ pub fn parse_query_args(tokens: &[ArgToken]) -> Result<QueryArgs, CliError> {
         root: required_root("query", &values)?,
         at,
         request,
+        ops: None,
+    })
+}
+
+fn detect_ops_query_target(tokens: &[ArgToken]) -> Option<&'static str> {
+    let mut iter = tokens.iter().enumerate();
+    while let Some((_, tok)) = iter.next() {
+        let raw = tok.as_str();
+        let val = if let Some(rest) = raw.strip_prefix("--target=") {
+            Some(rest)
+        } else if raw == "--target" {
+            iter.next().map(|(_, next)| next.as_str())
+        } else {
+            None
+        };
+        if let Some(v) = val {
+            return match v {
+                "cameras" => Some("cameras"),
+                "graph" => Some("graph"),
+                "fusion" => Some("fusion"),
+                "holds" => Some("holds"),
+                "privacy-masks" => Some("privacy-masks"),
+                _ => None,
+            };
+        }
+    }
+    None
+}
+
+fn parse_ops_query_args(target: &'static str, tokens: &[ArgToken]) -> Result<QueryArgs, CliError> {
+    use std::collections::BTreeSet;
+    let mut root: Option<PathBuf> = None;
+    let mut principal_raw: Option<String> = None;
+    let mut session_raw: Option<String> = None;
+    let mut camera_id: Option<String> = None;
+    let mut site_id: Option<String> = None;
+    let mut projection_raw: Option<String> = None;
+    let mut algorithm_raw: Option<String> = None;
+    let mut root_node: Option<String> = None;
+    let mut event_id_raw: Option<String> = None;
+    let mut sensor_raw: Option<String> = None;
+    let mut coverage_state = "complete".to_owned();
+    let mut prior = (-500_i64, -400_i64);
+    let mut alert_threshold = 1000_i64;
+    let mut retain_threshold = 0_i64;
+    let mut reject_threshold = -1000_i64;
+    let mut min_independent_support = 2_u32;
+    let mut attested_earliest: Option<i128> = None;
+    let mut attested_latest: Option<i128> = None;
+    let mut without_sensors: Vec<String> = Vec::new();
+    let mut without_domains: Vec<String> = Vec::new();
+    let mut granted_capabilities: BTreeSet<String> = BTreeSet::new();
+    let mut saw_json = false;
+
+    let mut i = 1_usize; // skip "query"
+    while i < tokens.len() {
+        let tok = &tokens[i];
+        if tok.as_str() == "--json" {
+            saw_json = true;
+            i += 1;
+            continue;
+        }
+        let (flag, val, idx) = if let Some((k, v)) = tok.as_str().split_once('=') {
+            (k, v.to_owned(), tok.index)
+        } else {
+            let next = tokens.get(i + 1).ok_or_else(|| CliError::MissingValue {
+                option: tok.raw.clone(),
+                command: Some("query".to_owned()),
+                expected: "option value".to_owned(),
+            })?;
+            i += 1;
+            (tok.as_str(), next.raw.clone(), next.index)
+        };
+        i += 1;
+        match flag {
+            "--target" => {
+                if val != target {
+                    return Err(malformed(
+                        "--target",
+                        &val,
+                        "duplicate conflicting --target",
+                        idx,
+                    ));
+                }
+            }
+            "--root" => {
+                if root.is_some() {
+                    return Err(malformed("--root", &val, "duplicate --root", idx));
+                }
+                root = Some(PathBuf::from(val));
+            }
+            "--principal" => principal_raw = Some(val),
+            "--session" => session_raw = Some(val),
+            "--capability" => {
+                granted_capabilities.insert(val);
+            }
+            "--camera-id" if target == "cameras" => camera_id = Some(val),
+            "--site-id" if target == "cameras" => site_id = Some(val),
+            "--projection" if target == "graph" => projection_raw = Some(val),
+            "--algorithm" if target == "graph" => algorithm_raw = Some(val),
+            "--root-node" if target == "graph" => root_node = Some(val),
+            "--event-id" if target == "fusion" => event_id_raw = Some(val),
+            "--without-sensor" if target == "fusion" => without_sensors.push(val),
+            "--without-domain" if target == "fusion" => without_domains.push(val),
+            "--coverage" if target == "fusion" => coverage_state = val,
+            "--prior-lo" if target == "fusion" => prior.0 = number::<i64>("--prior-lo", &val, idx)?,
+            "--prior-hi" if target == "fusion" => prior.1 = number::<i64>("--prior-hi", &val, idx)?,
+            "--alert-threshold" if target == "fusion" => {
+                alert_threshold = number::<i64>("--alert-threshold", &val, idx)?;
+            }
+            "--retain-threshold" if target == "fusion" => {
+                retain_threshold = number::<i64>("--retain-threshold", &val, idx)?;
+            }
+            "--reject-threshold" if target == "fusion" => {
+                reject_threshold = number::<i64>("--reject-threshold", &val, idx)?;
+            }
+            "--min-independent-support" if target == "fusion" => {
+                min_independent_support = number::<u32>("--min-independent-support", &val, idx)?;
+            }
+            "--sensor" if matches!(target, "holds" | "privacy-masks") => sensor_raw = Some(val),
+            "--attested-earliest-ns" if target == "holds" => {
+                attested_earliest = Some(number::<i128>("--attested-earliest-ns", &val, idx)?);
+            }
+            "--attested-latest-ns" if target == "holds" => {
+                attested_latest = Some(number::<i128>("--attested-latest-ns", &val, idx)?);
+            }
+            _ => {
+                return Err(CliError::UnknownOption {
+                    option: flag.to_owned(),
+                    command: Some("query".to_owned()),
+                    index: idx,
+                });
+            }
+        }
+    }
+    if !saw_json {
+        return Err(CliError::MissingValue {
+            option: "--json".to_owned(),
+            command: Some("query".to_owned()),
+            expected: "agent operational queries require --json".to_owned(),
+        });
+    }
+    let root = root.ok_or_else(|| CliError::MissingValue {
+        option: "--root".to_owned(),
+        command: Some("query".to_owned()),
+        expected: "existing deployment directory path".to_owned(),
+    })?;
+    let principal_id = fss_core::PrincipalId::parse(
+        principal_raw.unwrap_or_else(|| "principal:local-operator".to_owned()),
+    )
+    .map_err(|_| malformed("--principal", "[redacted]", "invalid principal identity", 0))?;
+    let session_id = session_raw
+        .map(|s| {
+            fss_core::SessionId::parse(s)
+                .map_err(|_| malformed("--session", "[redacted]", "invalid session identity", 0))
+        })
+        .transpose()?;
+    let dispatch = match target {
+        "cameras" => ops_targets::OpsDispatch::Cameras(ops_targets::cameras::CamerasQueryRequest {
+            root: root.clone(),
+            principal: principal_id.clone(),
+            session_id,
+            camera_id,
+            site_id,
+            granted_capabilities,
+        }),
+        "graph" => ops_targets::OpsDispatch::Graph(ops_targets::graph::GraphQueryRequest {
+            root: root.clone(),
+            principal: principal_id.clone(),
+            session_id,
+            projection: ops_targets::graph::GraphProjectionKind::parse(
+                projection_raw.as_deref().unwrap_or("SensorCoverageGraph"),
+            )
+            .map_err(|e| malformed("--projection", "[redacted]", &e.to_string(), 0))?,
+            algorithm: ops_targets::graph::GraphAlgorithmKind::parse(
+                algorithm_raw.as_deref().unwrap_or("ALG-BRIDGE-001"),
+            )
+            .map_err(|e| malformed("--algorithm", "[redacted]", &e.to_string(), 0))?,
+            root_node,
+            granted_capabilities,
+        }),
+        "fusion" => ops_targets::OpsDispatch::Fusion(ops_targets::fusion::FusionQueryRequest {
+            root: root.clone(),
+            principal: principal_id.clone(),
+            session_id,
+            event_id: event_id_raw
+                .map(|v| {
+                    EventId::parse(v)
+                        .map_err(|_| malformed("--event-id", "[redacted]", "invalid event id", 0))
+                })
+                .transpose()?,
+            evidence: Vec::new(),
+            prior,
+            coverage_state,
+            alert_threshold,
+            retain_threshold,
+            reject_threshold,
+            min_independent_support,
+            without_sensors,
+            without_domains,
+            granted_capabilities,
+        }),
+        "holds" => ops_targets::OpsDispatch::Holds(ops_targets::holds_masks::HoldsQueryRequest {
+            root: root.clone(),
+            principal: principal_id.clone(),
+            session_id,
+            sensor: sensor_raw
+                .map(|s| {
+                    fss_core::SensorId::parse(s)
+                        .map_err(|_| malformed("--sensor", "[redacted]", "invalid sensor id", 0))
+                })
+                .transpose()?,
+            attested_now_ns: match (attested_earliest, attested_latest) {
+                (Some(a), Some(b)) => Some((a, b)),
+                (None, None) => None,
+                _ => {
+                    return Err(malformed(
+                        "--attested-earliest-ns",
+                        "[redacted]",
+                        "supply both --attested-earliest-ns and --attested-latest-ns",
+                        0,
+                    ));
+                }
+            },
+            granted_capabilities,
+        }),
+        "privacy-masks" => ops_targets::OpsDispatch::PrivacyMasks(
+            ops_targets::holds_masks::PrivacyMasksQueryRequest {
+                root: root.clone(),
+                principal: principal_id.clone(),
+                session_id,
+                sensor: sensor_raw
+                    .map(|s| {
+                        fss_core::SensorId::parse(s).map_err(|_| {
+                            malformed("--sensor", "[redacted]", "invalid sensor id", 0)
+                        })
+                    })
+                    .transpose()?,
+                granted_capabilities,
+            },
+        ),
+        _ => {
+            return Err(malformed(
+                "--target",
+                target,
+                "unsupported operational target",
+                0,
+            ));
+        }
+    };
+    Ok(QueryArgs {
+        root,
+        at: None,
+        request: EventQueryRequest {
+            filter: EventQueryFilter {
+                event_id: None,
+                kind: None,
+                state: None,
+                zone: None,
+                from_ns: None,
+                through_ns: None,
+            },
+            principal: principal_id,
+            max_entries: DEFAULT_QUERY_ENTRIES,
+            expected_anchor: None,
+            continuation: None,
+        },
+        ops: Some(dispatch),
     })
 }
 
@@ -417,6 +690,9 @@ pub(crate) fn execute_query_with_control(
     if control.is_cancelled() {
         return crate::request_control::cancelled_read("query", &args.root);
     }
+    if let Some(ops) = &args.ops {
+        return ops_targets::execute_with_control(ops, control);
+    }
     // Public library callers can construct QueryArgs directly. Preserve the same exclusion
     // before opening the deployment rather than reinterpreting a current-head precondition.
     if args.at.is_some() && args.request.expected_anchor.is_some() {
@@ -544,6 +820,13 @@ fn cancelled_query(args: &QueryArgs, snapshot: &DeploymentSnapshot) -> (String, 
         snapshot,
     )
 }
+
+/// Privacy-masked H2 (analytic) and H3 (visual keyframe/crop) hydration.
+pub mod hydration;
+
+/// Typed operational targets (`cameras`, `graph`, `fusion`, `holds`, `privacy-masks`),
+/// cognition-only probes (`probe-detect`, `probe-corroborate`), and approval-gated intents.
+pub mod ops_targets;
 
 #[cfg(test)]
 mod tests;

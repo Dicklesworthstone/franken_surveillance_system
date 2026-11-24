@@ -29,10 +29,12 @@ const HELP: &str = "fss-discover --subnet CIDR [--subnet CIDR ...] [--iface IP] 
                     \x20 [--standards-seconds N] [--unifi-only] [--unifi-principal PRINCIPAL --unifi-approval SHA256] --owner-authorized --json\n\
                     \n\
                     Owner-network camera discovery: passive-first (beacons + mDNS/SSDP/\n\
-                    WS-Discovery), then a bounded census (ping -> ARP -> OUI -> registered\n\
-                    port connects), typed brand classification and adapter dispatch with\n\
-                    the exact missing owner-auth ingredient per candidate. Owner-network\n\
-                    scope only. Report: fss.discover_cli.v1 JSON on stdout.\n\
+                    WS-Discovery + UniFi UDP-10001), then a pure-Rust bounded census (TCP\n\
+                    liveness + /proc/net/arp where available -> OUI -> registered port\n\
+                    connects + non-intrusive RTSP OPTIONS banner peek), typed brand\n\
+                    classification and adapter dispatch with the exact missing owner-auth\n\
+                    ingredient per candidate. Owner-network scope only (zero subprocess\n\
+                    shell-outs). Report: fss.discover_cli.v1 JSON on stdout.\n\
                     The optional UniFi probe emits separate laboratory JSON records;\n\
                     camera claims are unauthenticated and setup is not performed.\n\
                     --unifi-only skips all other discovery probes and the census.\n\
@@ -329,9 +331,20 @@ fn probe_tutk_listeners(report: &mut DiscoverReport, cancel: &AtomicBool) {
                 .signals
                 .push(fss_reference::discovery::Signal::TutkListener(port));
         }
+        let has_corroboration = candidate.brand.signals.iter().any(|s| {
+            matches!(
+                s,
+                fss_reference::discovery::Signal::OuiVendor(_)
+                    | fss_reference::discovery::Signal::PortSignature(_)
+            )
+        });
         candidate.brand = BrandConfidence {
             brand: Brand::Tutk,
-            confidence: Confidence::Likely,
+            confidence: if has_corroboration {
+                Confidence::Confirmed
+            } else {
+                Confidence::Likely
+            },
             signals: candidate.brand.signals.clone(),
         };
         candidate.dispatch = dispatch(&candidate.brand);
@@ -407,6 +420,22 @@ fn format_report(report: &DiscoverReport, cfg: &DiscoverConfig) -> String {
                 fss_reference::discovery::Signal::AdvertisedService(service) => {
                     json_escape(&format!("advertised-service:{}", service.as_str()))
                 }
+                fss_reference::discovery::Signal::UniFiDiscovery { model, firmware } => {
+                    json_escape(&format!(
+                        "unifi-discovery:model={};fw={}",
+                        model.as_deref().unwrap_or("unknown"),
+                        firmware.as_deref().unwrap_or("unknown")
+                    ))
+                }
+                fss_reference::discovery::Signal::RtspBanner {
+                    port,
+                    server,
+                    realm,
+                } => json_escape(&format!(
+                    "rtsp-banner:{port}:server={};realm={}",
+                    server.as_deref().unwrap_or(""),
+                    realm.as_deref().unwrap_or("")
+                )),
             })
             .collect();
         rows.push(format!(
@@ -465,7 +494,11 @@ fn watch_loop(o: &Options, period_secs: u64) -> ExitCode {
     // sightings; a forward jump would fake mass offline). Anchor once,
     // advance by monotonic Instant deltas only.
     let mut clock = SweepClock::new();
+    let watch_cancel = fss_runtime::asupersync_ops::WorkerCancelToken::new();
     loop {
+        if watch_cancel.is_cancelled() {
+            return ExitCode::SUCCESS;
+        }
         let sweep_start = std::time::Instant::now();
         let sweep_started_ns = clock.next_ns();
         match run_typed(o) {
@@ -499,8 +532,12 @@ fn watch_loop(o: &Options, period_secs: u64) -> ExitCode {
             }
         }
         let elapsed = sweep_start.elapsed();
-        if elapsed < period {
-            std::thread::sleep(period - elapsed);
+        if elapsed < period
+            && watch_cancel
+                .sleep_cooperative(period - elapsed, std::time::Duration::from_millis(50))
+                .is_err()
+        {
+            return ExitCode::SUCCESS;
         }
     }
 }
@@ -530,9 +567,9 @@ fn update_watchdog_window(
     for candidate in &report.candidates {
         let id = candidate.host.ip.to_string();
         let class = match candidate.brand.brand {
+            Brand::UniFiProtect | Brand::Tapo | Brand::Standards => DeviceClass::Onvif,
             Brand::Tutk => DeviceClass::Tutk,
             Brand::Tuya => DeviceClass::Tuya,
-            Brand::Standards => DeviceClass::Onvif,
             _ => DeviceClass::Unknown,
         };
         watchdog.register(&id, class, None);
@@ -966,6 +1003,120 @@ mod tests {
             watchdog.state_of("192.168.4.44"),
             Some(WatchState::NotObservable { .. })
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn format_report_renders_unifi_protect_tapo_and_rtsp_banner_signals()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use fss_cli::json_input::{Value, parse};
+        use fss_reference::discovery::{
+            OUI_SNAPSHOT, OuiTable, assemble_discovery_with_probes, parse_proc_net_arp,
+            parse_rtsp_options_response, parse_unifi_discovery_reply,
+        };
+        let cfg = DiscoverConfig::for_subnets(
+            vec!["192.168.4.0/24".into()],
+            Ipv4Addr::new(192, 168, 4, 2),
+        );
+        let scope = cfg.census.plan()?;
+        let oui = OuiTable::parse_snapshot(OUI_SNAPSHOT);
+
+        let arp_table = "\
+IP address       HW type     Flags       HW address            Mask     Device
+192.168.4.243    0x1         0x2         50:3d:d1:e3:e2:07     *        eth0
+192.168.4.23     0x1         0x2         80:48:2c:52:59:05     *        eth0
+";
+        let neighbors = parse_proc_net_arp(arp_table);
+
+        // Ubiquiti G4 Instant UDP-10001 TLV reply
+        let g4_ip = Ipv4Addr::new(192, 168, 4, 177);
+        let g4_mac: [u8; 6] = [0x00, 0x15, 0x6d, 0x12, 0x34, 0x56];
+        let mut body = Vec::new();
+        for &(tag, val) in &[
+            (1u8, &g4_mac[..]),
+            (3u8, &b"UVC.SAV530q.v4.72.38.67"[..]),
+            (12u8, &b"UVC G4 Instant"[..]),
+        ] {
+            body.push(tag);
+            body.extend_from_slice(&(val.len() as u16).to_be_bytes());
+            body.extend_from_slice(val);
+        }
+        let mut pkt = vec![1, 0];
+        pkt.extend_from_slice(&(body.len() as u16).to_be_bytes());
+        pkt.extend_from_slice(&body);
+        let unifi_g4 = parse_unifi_discovery_reply(g4_ip, &pkt)?;
+
+        let open_ports = std::collections::BTreeMap::from([
+            (g4_ip, vec![443, 7442, 7447]),
+            (Ipv4Addr::new(192, 168, 4, 243), vec![443, 8800]),
+            (Ipv4Addr::new(192, 168, 4, 23), vec![554]),
+        ]);
+        let census = scope.assemble_report(neighbors, &[g4_ip], &open_ports, &oui);
+        let rtsp = parse_rtsp_options_response(
+            g4_ip,
+            7447,
+            b"RTSP/1.0 401 Unauthorized\r\nCSeq: 1\r\nServer: UniFi Protect RTSP\r\nWWW-Authenticate: Digest realm=\"ubnt\"\r\n\r\n",
+        )
+        .ok_or("rtsp parse failed")?;
+
+        let report = assemble_discovery_with_probes(
+            &scope,
+            census,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[unifi_g4],
+            &[rtsp],
+        )?;
+        let encoded = parse(&format_report(&report, &cfg))?;
+        let rows = encoded
+            .object()
+            .and_then(|o| o.get("hosts"))
+            .and_then(Value::array)
+            .ok_or("missing hosts")?;
+        let row = |ip: &str| {
+            rows.iter()
+                .filter_map(Value::object)
+                .find(|r| r.get("ip").and_then(Value::text) == Some(ip))
+        };
+
+        let g4_row = row("192.168.4.177").ok_or("missing G4 Instant")?;
+        assert_eq!(
+            g4_row.get("brand").and_then(Value::text),
+            Some("UniFiProtect")
+        );
+        assert_eq!(
+            g4_row.get("confidence").and_then(Value::text),
+            Some("Confirmed")
+        );
+        assert_eq!(
+            g4_row.get("adapter").and_then(Value::text),
+            Some("UniFiProtect")
+        );
+        assert_eq!(
+            g4_row.get("missing").and_then(Value::text),
+            Some("UniFiProtectCredentials")
+        );
+
+        let tapo_row = row("192.168.4.243").ok_or("missing Tapo C460")?;
+        assert_eq!(tapo_row.get("brand").and_then(Value::text), Some("Tapo"));
+        assert_eq!(tapo_row.get("adapter").and_then(Value::text), Some("Tapo"));
+        assert_eq!(
+            tapo_row.get("missing").and_then(Value::text),
+            Some("TapoLocalCredentials")
+        );
+
+        let wyze_row = row("192.168.4.23").ok_or("missing Wyze Cam v4")?;
+        assert_eq!(wyze_row.get("brand").and_then(Value::text), Some("Tutk"));
+        assert_eq!(
+            wyze_row.get("confidence").and_then(Value::text),
+            Some("Likely")
+        );
+        assert_eq!(
+            wyze_row.get("adapter").and_then(Value::text),
+            Some("Standards")
+        );
         Ok(())
     }
 }

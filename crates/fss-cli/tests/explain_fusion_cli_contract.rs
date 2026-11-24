@@ -9,8 +9,8 @@ use std::process::{Command, Output};
 
 use fss_cli::json_input::{Value, parse};
 use fss_core::{ContentDigest, EvidenceEdgeRelation};
-use fss_reference::agent_orient::{OrientLimits, read_deployment};
 use fss_fusion::ScoreCalibration;
+use fss_reference::agent_orient::{OrientLimits, read_deployment};
 use fss_reference::media_fixture::jpeg::{JpegConfig, Subsampling, encode_jpeg};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -203,28 +203,26 @@ fn published_corroborated(
     )?;
     let run_corroborate = |extra: &[&str]| -> TestResult<Output> {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_fss-event"));
-        cmd.args(["corroborate", "--root"])
-            .arg(&root)
-            .args([
-                "--site",
-                SITE,
-                "--camera",
-                &format!("north:{first}"),
-                "--camera",
-                &format!("east:{second}"),
-                "--ground",
-                "north:1,0,0,0,1,0,0,0,1",
-                "--ground",
-                "east:-1,0,96,0,1,0,0,0,1",
-                "--interpretation",
-                "gray",
-                "--zone",
-                "door:56,0,40,48",
-                "--time-gate-ns",
-                "250000000",
-                "--distance-gate",
-                "16",
-            ]);
+        cmd.args(["corroborate", "--root"]).arg(&root).args([
+            "--site",
+            SITE,
+            "--camera",
+            &format!("north:{first}"),
+            "--camera",
+            &format!("east:{second}"),
+            "--ground",
+            "north:1,0,0,0,1,0,0,0,1",
+            "--ground",
+            "east:-1,0,96,0,1,0,0,0,1",
+            "--interpretation",
+            "gray",
+            "--zone",
+            "door:56,0,40,48",
+            "--time-gate-ns",
+            "250000000",
+            "--distance-gate",
+            "16",
+        ]);
         if shared_domain {
             cmd.args(["--failure-domain", "clock:shared-ntp=north,east"]);
         }
@@ -261,11 +259,7 @@ fn tree(root: &Path) -> TestResult<BTreeMap<PathBuf, ContentDigest>> {
     Ok(result)
 }
 
-fn score_assumptions(
-    root: &Path,
-    event_id: &str,
-    score: u32,
-) -> TestResult<Vec<(String, u32)>> {
+fn score_assumptions(root: &Path, event_id: &str, score: u32) -> TestResult<Vec<(String, u32)>> {
     let snapshot = read_deployment(root, &OrientLimits::default())?;
     let retained = snapshot
         .events
@@ -301,7 +295,10 @@ fn explain(root: &Path, event_id: &str, calibration: Option<&Path>) -> TestResul
 }
 
 fn propositions(value: &Value) -> TestResult<&[Value]> {
-    array(get(get(get(value, "payload")?, "epistemic")?, "propositions")?)
+    array(get(
+        get(get(value, "payload")?, "epistemic")?,
+        "propositions",
+    )?)
 }
 
 fn posterior(rows: &[Value]) -> TestResult<&Value> {
@@ -316,7 +313,6 @@ fn posterior(rows: &[Value]) -> TestResult<&Value> {
         })
         .ok_or_else(|| "missing posterior proposition".into())
 }
-
 
 fn caller_assumptions(rows: &[Value]) -> TestResult<&Value> {
     rows.iter()
@@ -362,9 +358,11 @@ fn refusal(output: &Output, error: &str) -> TestResult {
 fn explicit_scores_preserve_shared_calibration_and_unknown_coverage() -> TestResult {
     let (directory, root, event_id) = published_corroborated("explicit", false)?;
     let assumptions = score_assumptions(&root, &event_id, 900_000)?;
-    assert!(assumptions.len() >= 2, "fixture must declare distinct domains");
-    let calibration =
-        write_score_calibration(&directory.0, "explicit.json", Some(&assumptions))?;
+    assert!(
+        assumptions.len() >= 2,
+        "fixture must declare distinct domains"
+    );
+    let calibration = write_score_calibration(&directory.0, "explicit.json", Some(&assumptions))?;
     let before = tree(&root)?;
 
     let baseline = explain(&root, &event_id, None)?;
@@ -391,12 +389,20 @@ fn explicit_scores_preserve_shared_calibration_and_unknown_coverage() -> TestRes
                 .is_some_and(|id| id.contains(":cluster:"))
         })
         .collect();
-    assert_eq!(clusters.len(), 1, "one calibration is one shared failure domain");
+    assert_eq!(
+        clusters.len(),
+        1,
+        "one calibration is one shared failure domain"
+    );
     assert!(
         text(get(clusters[0], "statement")?)?.contains("calibration:"),
         "shared calibration provenance must survive projection"
     );
-    assert_eq!(before, tree(&root)?, "explanation must not mutate retained state");
+    assert_eq!(
+        before,
+        tree(&root)?,
+        "explanation must not mutate retained state"
+    );
     Ok(())
 }
 
@@ -411,11 +417,8 @@ fn missing_unused_numeric_and_conflicting_score_mappings_refuse_without_writes()
         "ERR-FUSION-INPUT-INVALID-001",
     )?;
 
-    let incomplete = write_score_calibration(
-        &directory.0,
-        "incomplete.json",
-        Some(&assumptions[1..]),
-    )?;
+    let incomplete =
+        write_score_calibration(&directory.0, "incomplete.json", Some(&assumptions[1..]))?;
     refusal(
         &explain(&root, &event_id, Some(&incomplete))?,
         "ERR-FUSION-INPUT-INVALID-001",
@@ -434,8 +437,7 @@ fn missing_unused_numeric_and_conflicting_score_mappings_refuse_without_writes()
         .enumerate()
         .map(|(index, (_, score))| (index.to_string(), *score))
         .collect();
-    let positional =
-        write_score_calibration(&directory.0, "positional.json", Some(&positional))?;
+    let positional = write_score_calibration(&directory.0, "positional.json", Some(&positional))?;
     refusal(
         &explain(&root, &event_id, Some(&positional))?,
         "ERR-FUSION-INPUT-INVALID-001",
@@ -445,7 +447,10 @@ fn missing_unused_numeric_and_conflicting_score_mappings_refuse_without_writes()
     let original = fs::read_to_string(valid)?;
     for (name, score) in [("conflicting-alias", 100_000), ("duplicate-alias", 900_000)] {
         let path = directory.0.join(format!("{name}.json"));
-        let head = original.trim_end().strip_suffix('}').ok_or("calibration shape")?;
+        let head = original
+            .trim_end()
+            .strip_suffix('}')
+            .ok_or("calibration shape")?;
         fs::write(
             &path,
             format!(
@@ -458,7 +463,11 @@ fn missing_unused_numeric_and_conflicting_score_mappings_refuse_without_writes()
             "ERR-FUSION-INPUT-INVALID-001",
         )?;
     }
-    assert_eq!(before, tree(&root)?, "refused explanations must not mutate retained state");
+    assert_eq!(
+        before,
+        tree(&root)?,
+        "refused explanations must not mutate retained state"
+    );
     Ok(())
 }
 
@@ -466,8 +475,7 @@ fn missing_unused_numeric_and_conflicting_score_mappings_refuse_without_writes()
 fn low_caller_scores_never_assert_physical_absence_or_create_independence() -> TestResult {
     let (directory, root, event_id) = published_corroborated("low-scores", true)?;
     let assumptions = score_assumptions(&root, &event_id, 100_000)?;
-    let calibration =
-        write_score_calibration(&directory.0, "low.json", Some(&assumptions))?;
+    let calibration = write_score_calibration(&directory.0, "low.json", Some(&assumptions))?;
     let before = tree(&root)?;
     let output = explain(&root, &event_id, Some(&calibration))?;
     success(&output);
@@ -486,11 +494,13 @@ fn low_caller_scores_never_assert_physical_absence_or_create_independence() -> T
 fn calibration_count_tampering_and_insufficient_complete_output_budget_refuse() -> TestResult {
     let (directory, root, event_id) = published_corroborated("bounds", false)?;
     let assumptions = score_assumptions(&root, &event_id, 900_000)?;
-    let valid =
-        write_score_calibration(&directory.0, "valid.json", Some(&assumptions))?;
+    let valid = write_score_calibration(&directory.0, "valid.json", Some(&assumptions))?;
     let raw = fs::read_to_string(&valid)?;
     let tampered = directory.0.join("tampered.json");
-    fs::write(&tampered, raw.replace("\"true_positives\":95", "\"true_positives\":94"))?;
+    fs::write(
+        &tampered,
+        raw.replace("\"true_positives\":95", "\"true_positives\":94"),
+    )?;
     let before = tree(&root)?;
     refusal(
         &explain(&root, &event_id, Some(&tampered))?,
@@ -507,8 +517,13 @@ fn calibration_count_tampering_and_insufficient_complete_output_budget_refuse() 
         .args(["explain", "--json", "--root"])
         .arg(&root)
         .args([
-            "--event-id", &event_id, "--view", "forensic",
-            "--budget-tokens", &(tokens + 10).to_string(), "--score-calibration",
+            "--event-id",
+            &event_id,
+            "--view",
+            "forensic",
+            "--budget-tokens",
+            &(tokens + 10).to_string(),
+            "--score-calibration",
         ])
         .arg(&valid)
         .output()?;
@@ -531,7 +546,10 @@ fn raw_assumptions_bind_receipts_while_map_order_is_semantically_irrelevant() ->
     write_score_calibration(&directory.0, "identity.json", Some(&reversed))?;
     let reordered = explain(&root, &event_id, Some(&path))?;
     success(&reordered);
-    assert_eq!(first.stdout, reordered.stdout, "map order cannot change a semantic receipt");
+    assert_eq!(
+        first.stdout, reordered.stdout,
+        "map order cannot change a semantic receipt"
+    );
 
     // The two scores occupy the same calibrated bin, so this specifically checks that the
     // original assumptions remain bound even when the numerical fusion inputs do not change.
@@ -540,7 +558,10 @@ fn raw_assumptions_bind_receipts_while_map_order_is_semantically_irrelevant() ->
         &[0, 300_000, 700_000],
         &[(5, 95), (50, 50), (95, 5)],
     )?;
-    assert_eq!(calibration.calibrate(900_000), calibration.calibrate(850_000));
+    assert_eq!(
+        calibration.calibrate(900_000),
+        calibration.calibrate(850_000)
+    );
     let mut changed = assumptions;
     changed[0].1 = 850_000;
     write_score_calibration(&directory.0, "identity.json", Some(&changed))?;

@@ -181,7 +181,9 @@ fn ordering_is_irrelevant_but_every_reconnect_input_changes_outer_approval() {
         .digest()
         .expect("digest");
     let reversed = args()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .rev()
         .flat_map(|pair| pair.iter().cloned())
         .collect::<Vec<_>>();

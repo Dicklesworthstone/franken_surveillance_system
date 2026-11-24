@@ -190,7 +190,6 @@ pub(super) fn parse(
         read_limits,
         decode_limits,
     };
-    let work_units = number(values, "--work-units", Some(100_000_000_u64))?;
     if command == "motion" {
         let frame_count: usize = number(values, "--frame-count", None)?;
         if frame_count == 0
@@ -201,6 +200,10 @@ pub(super) fn parse(
                 "frame count must be 1..128 and its source range must not overflow",
             ));
         }
+        let default_work = decode_limits
+            .luma_work_bound()
+            .saturating_mul(frame_count as u64);
+        let work_units = number(values, "--work-units", Some(default_work))?;
         let thresholds = PixelChangeConfig {
             minimum_delta: number(values, "--pixel-delta", None)?,
             minimum_changed_pixels: number(values, "--minimum-changed-pixels", None)?,
@@ -233,6 +236,10 @@ pub(super) fn parse(
                 "segment count must be 1..1024 and its source range must not overflow",
             ));
         }
+        let default_work = decode_limits
+            .luma_work_bound()
+            .saturating_mul(segment_count as u64);
+        let work_units = number(values, "--work-units", Some(default_work))?;
         if segment_count > 1 && values.contains_key("--receipt-out") {
             return Err(malformed(
                 "--receipt-out requires a single JPEG frame, not a range",
@@ -1730,4 +1737,94 @@ fn run_video_motion(
     result?;
     export?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsString;
+
+    fn base_decode_values() -> Values {
+        Values::from([
+            ("--interpretation".to_owned(), OsString::from("ycbcr")),
+            ("--segment".to_owned(), OsString::from("0")),
+        ])
+    }
+
+    fn base_motion_values(frames: usize) -> Values {
+        Values::from([
+            ("--interpretation".to_owned(), OsString::from("ycbcr")),
+            ("--start-segment".to_owned(), OsString::from("0")),
+            (
+                "--frame-count".to_owned(),
+                OsString::from(frames.to_string()),
+            ),
+            ("--pixel-delta".to_owned(), OsString::from("16")),
+            ("--minimum-changed-pixels".to_owned(), OsString::from("8")),
+            ("--report-out".to_owned(), OsString::from("motion.json")),
+        ])
+    }
+
+    #[test]
+    fn default_work_units_derive_from_decode_limits_and_scale_with_count() {
+        let identity = ContentDigest::sha256(b"media-work-bound-test");
+        let read_limits = RetainedReadLimits::default();
+        let default_bound = DecodeLimits::default().luma_work_bound();
+        // 4MP 4:4:4 UniFi G4 baseline JPEG requires ~789M luma work units; default must exceed it.
+        assert!(default_bound > 800_000_000);
+
+        let single = parse("decode", identity, read_limits, &base_decode_values())
+            .expect("single decode parse");
+        match single {
+            Action::Frame(frame) => assert_eq!(frame.work_units, default_bound),
+            other => panic!("expected frame action, got {other:?}"),
+        }
+
+        let mut range_values = base_decode_values();
+        range_values.insert("--segment-count".to_owned(), OsString::from("5"));
+        let range = parse("decode", identity, read_limits, &range_values).expect("range parse");
+        match range {
+            Action::Frame(frame) => {
+                assert_eq!(frame.work_units, default_bound.saturating_mul(5));
+            }
+            other => panic!("expected frame action, got {other:?}"),
+        }
+
+        let motion =
+            parse("motion", identity, read_limits, &base_motion_values(8)).expect("motion parse");
+        match motion {
+            Action::Motion(action) => {
+                assert_eq!(action.work_units, default_bound.saturating_mul(8));
+            }
+            other => panic!("expected motion action, got {other:?}"),
+        }
+
+        // Narrowed --max-pixels scales the default dynamically without requiring --work-units.
+        let mut narrow = base_decode_values();
+        narrow.insert("--max-pixels".to_owned(), OsString::from("262144"));
+        narrow.insert("--max-dimension".to_owned(), OsString::from("512"));
+        let narrow_action = parse("decode", identity, read_limits, &narrow).expect("narrow parse");
+        let narrow_limits = DecodeLimits {
+            maximum_pixels: 262_144,
+            maximum_dimension: 512,
+            ..DecodeLimits::default()
+        };
+        match narrow_action {
+            Action::Frame(frame) => {
+                assert_eq!(frame.work_units, narrow_limits.luma_work_bound());
+                assert!(frame.work_units < default_bound);
+            }
+            other => panic!("expected frame action, got {other:?}"),
+        }
+
+        // Explicit tiny --work-units override is preserved so BudgetExhausted still fails closed.
+        let mut explicit = base_decode_values();
+        explicit.insert("--work-units".to_owned(), OsString::from("1024"));
+        let explicit_action =
+            parse("decode", identity, read_limits, &explicit).expect("explicit override");
+        match explicit_action {
+            Action::Frame(frame) => assert_eq!(frame.work_units, 1024),
+            other => panic!("expected frame action, got {other:?}"),
+        }
+    }
 }

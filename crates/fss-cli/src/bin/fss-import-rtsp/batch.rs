@@ -343,7 +343,9 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
         let mut plan = match BatchPlan::parse(args) {
             Ok(plan) => plan,
             Err(code) => {
-                eprintln!("{code}: invalid bounded batch request; use fss-import-rtsp batch --help");
+                eprintln!(
+                    "{code}: invalid bounded batch request; use fss-import-rtsp batch --help"
+                );
                 return ExitCode::from(ExitIdentity::MALFORMED_VALUE.code);
             }
         };
@@ -357,7 +359,9 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
     match result {
         Ok(()) => ExitCode::from(ExitIdentity::SUCCESS.code),
         Err(code) => {
-            eprintln!("{code}: batch not confirmed; preserve every store and complete receipt. Replay the exact approved batch to reconcile; do not infer rollback or retry from truncated output.");
+            eprintln!(
+                "{code}: batch not confirmed; preserve every store and complete receipt. Replay the exact approved batch to reconcile; do not infer rollback or retry from truncated output."
+            );
             ExitCode::from(ExitIdentity::RUNTIME_FAILURE.code)
         }
     }

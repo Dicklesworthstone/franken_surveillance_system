@@ -136,7 +136,7 @@ impl SiteProbeOptions {
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b"._:-".contains(&b))
             || self.media_index > 63
-            || self.rtp_channel % 2 != 0
+            || !self.rtp_channel.is_multiple_of(2)
             || self.payload_type.is_some_and(|p| {
                 !(96..=127).contains(&p) && !(self.codec == ProbeCodec::Jpeg && p == 26)
             })

@@ -810,7 +810,11 @@ fn historical_reads_keep_current_deletion_denials_and_never_restore_evidence() -
     assert_current_deletion(&empty.0)?;
     mcp(
         &fixture.root,
-        &format!(r#"{{"at":{},"event_id":{}}}"#, quote(&at), quote(absent_event)),
+        &format!(
+            r#"{{"at":{},"event_id":{}}}"#,
+            quote(&at),
+            quote(absent_event)
+        ),
         &empty,
     )?;
 
@@ -836,20 +840,43 @@ fn historical_reads_keep_current_deletion_denials_and_never_restore_evidence() -
     // The event's own metadata closure can remain intact after source deletion. Its
     // all_verified flag is scoped to that closure; direct denied sources are separate facts.
     let explained = fss_cli::json_input::parse(&explanation.0)?;
-    let claims = explained.object()
-        .and_then(|o| o.get("payload")).and_then(fss_cli::json_input::Value::object)
-        .and_then(|o| o.get("epistemic")).and_then(fss_cli::json_input::Value::object)
-        .and_then(|o| o.get("propositions")).and_then(fss_cli::json_input::Value::array)
+    let claims = explained
+        .object()
+        .and_then(|o| o.get("payload"))
+        .and_then(fss_cli::json_input::Value::object)
+        .and_then(|o| o.get("epistemic"))
+        .and_then(fss_cli::json_input::Value::object)
+        .and_then(|o| o.get("propositions"))
+        .and_then(fss_cli::json_input::Value::array)
         .ok_or("explanation propositions")?;
-    let denials: Vec<_> = claims.iter().filter_map(fss_cli::json_input::Value::object)
-        .filter(|claim| claim.get("id").and_then(fss_cli::json_input::Value::text)
-            .is_some_and(|id| id.starts_with("claim:event-custody:") && id.contains(":denied-references:")))
+    let denials: Vec<_> = claims
+        .iter()
+        .filter_map(fss_cli::json_input::Value::object)
+        .filter(|claim| {
+            claim
+                .get("id")
+                .and_then(fss_cli::json_input::Value::text)
+                .is_some_and(|id| {
+                    id.starts_with("claim:event-custody:") && id.contains(":denied-references:")
+                })
+        })
         .collect();
-    assert!(!denials.is_empty(), "current source denials were hidden: {}", explanation.0);
+    assert!(
+        !denials.is_empty(),
+        "current source denials were hidden: {}",
+        explanation.0
+    );
     let snapshot = read_deployment(&fixture.root, &OrientLimits::default())?;
     for denial in denials {
-        assert_eq!(denial.get("state").and_then(fss_cli::json_input::Value::text), Some("known"));
-        let evidence = denial.get("evidence").and_then(fss_cli::json_input::Value::array)
+        assert_eq!(
+            denial
+                .get("state")
+                .and_then(fss_cli::json_input::Value::text),
+            Some("known")
+        );
+        let evidence = denial
+            .get("evidence")
+            .and_then(fss_cli::json_input::Value::array)
             .ok_or("denial evidence")?;
         assert!(evidence.len() > 1);
         assert_eq!(evidence[0].text(), Some(plan.as_str()));
@@ -857,7 +884,11 @@ fn historical_reads_keep_current_deletion_denials_and_never_restore_evidence() -
             let digest = ContentDigest::parse(reference.text().ok_or("denied digest")?)?;
             assert!(snapshot.deletions.entries().iter().any(|entry| {
                 entry.plan_digest.to_text() == plan
-                    && entry.plan.deletable.iter().any(|object| object.digest == digest)
+                    && entry
+                        .plan
+                        .deletable
+                        .iter()
+                        .any(|object| object.digest == digest)
             }));
         }
     }
@@ -882,8 +913,14 @@ fn current_deletion_blocks_support_outside_an_intact_historical_metadata_closure
     let fixture = Fixture::new("deleted-support-path")?;
     let (recorded, import) = fixture.publish_recording("sensor:deleted-support-path")?;
     let before = read_deployment(&fixture.root, &OrientLimits::default())?;
-    let recorded = before.event(&EventId::parse(recorded)?).ok_or("recorded event")?;
-    let source = recorded.event.evidence.iter().find_map(|edge| edge.capsule_digest)
+    let recorded = before
+        .event(&EventId::parse(recorded)?)
+        .ok_or("recorded event")?;
+    let source = recorded
+        .event
+        .evidence
+        .iter()
+        .find_map(|edge| edge.capsule_digest)
         .ok_or("original source capsule")?;
     let id = EventId::parse("event:deleted-support-path")?;
     // A synthetic positive-support edge tests graph availability only. It grants neither
@@ -915,7 +952,9 @@ fn current_deletion_blocks_support_outside_an_intact_historical_metadata_closure
             policy_generation: policy,
             fingerprint: policy,
             abstained: true,
-            abstention_reason: Some("test-only graph availability; no event or effect advice".into()),
+            abstention_reason: Some(
+                "test-only graph availability; no event or effect advice".into(),
+            ),
         },
     };
     let authority = ContextAuthority::new_root(RootAuthoritySpec {
@@ -932,51 +971,86 @@ fn current_deletion_blocks_support_outside_an_intact_historical_metadata_closure
         generation: 1,
     })?;
     let cx = ReplayCx::new(ReplayIoAuthority::from_context_authority(
-        &authority, fixture.directory.join("deleted-support-cx"),
+        &authority,
+        fixture.directory.join("deleted-support-cx"),
     )?);
     ReferenceDeployment::open(&fixture.root, SITE, &cx)?.publish_event(
-        &ReferencePolicyDecision { event: event.clone(), action: ReferencePolicyAction::Hold },
+        &ReferencePolicyDecision {
+            event: event.clone(),
+            action: ReferencePolicyAction::Hold,
+        },
         &cx,
     )?;
     cx.drain_and_finalize();
     let at = snapshot_anchor_token(&read_deployment(&fixture.root, &OrientLimits::default())?);
     let explain = |at: Option<&str>| -> TestResult<(String, ExitIdentity)> {
         let mut options = vec![
-            "--event-id", id.as_str(), "--view", "forensic",
-            "--budget-tokens", "16000", "--custody", "yes",
+            "--event-id",
+            id.as_str(),
+            "--view",
+            "forensic",
+            "--budget-tokens",
+            "16000",
+            "--custody",
+            "yes",
         ];
-        if let Some(at) = at { options.extend(["--at", at]); }
+        if let Some(at) = at {
+            options.extend(["--at", at]);
+        }
         native_command(&fixture.root, "explain", &options)
     };
     let unchecked = explain(None)?;
     assert_eq!(unchecked.1, ExitIdentity::SUCCESS, "{}", unchecked.0);
-    assert!(unchecked.0.contains("Declared support availability: unchecked_reference_path."));
+    assert!(
+        unchecked
+            .0
+            .contains("Declared support availability: unchecked_reference_path.")
+    );
     assert!(unchecked.0.contains("all_verified=true"));
 
     let planned = Command::new(env!("CARGO_BIN_EXE_fss-event"))
-        .args(["delete", "plan", "--root"]).arg(&fixture.root)
-        .args(["--site", SITE, "--import-id", &import]).output()?;
+        .args(["delete", "plan", "--root"])
+        .arg(&fixture.root)
+        .args(["--site", SITE, "--import-id", &import])
+        .output()?;
     success(&planned);
     let planned = String::from_utf8(planned.stdout)?;
     let plan = quoted_field(&planned, "plan_digest")?;
     let approval = quoted_field(&planned, "approval_digest")?;
     let deleted = Command::new(env!("CARGO_BIN_EXE_fss-event"))
-        .args(["delete", "commit", "--root"]).arg(&fixture.root)
-        .args(["--site", SITE, "--plan", &plan, "--approve", &approval]).output()?;
+        .args(["delete", "commit", "--root"])
+        .arg(&fixture.root)
+        .args(["--site", SITE, "--plan", &plan, "--approve", &approval])
+        .output()?;
     success(&deleted);
     let after_delete = tree(&fixture.root)?;
     for historical in [None, Some(at.as_str())] {
         let answer = explain(historical)?;
         assert_eq!(answer.1, ExitIdentity::SUCCESS, "{}", answer.0);
-        assert!(answer.0.contains("Declared support availability: no_unblocked_reference_path."));
+        assert!(
+            answer
+                .0
+                .contains("Declared support availability: no_unblocked_reference_path.")
+        );
         assert!(answer.0.contains("Current event publication closure:"));
         assert!(answer.0.contains("all_verified=true"));
         assert!(answer.0.contains(&format!(":denied-references:{plan}")));
         assert!(answer.0.contains(&source.to_text()));
-        assert!(answer.0.contains("intact event metadata does not restore source availability"));
+        assert!(
+            answer
+                .0
+                .contains("intact event metadata does not restore source availability")
+        );
         let arguments = match historical {
-            None => format!(r#"{{"event_id":{},"view":"forensic","budget_tokens":16000,"custody":"yes"}}"#, quote(id.as_str())),
-            Some(at) => format!(r#"{{"at":{},"event_id":{},"view":"forensic","budget_tokens":16000,"custody":"yes"}}"#, quote(at), quote(id.as_str())),
+            None => format!(
+                r#"{{"event_id":{},"view":"forensic","budget_tokens":16000,"custody":"yes"}}"#,
+                quote(id.as_str())
+            ),
+            Some(at) => format!(
+                r#"{{"at":{},"event_id":{},"view":"forensic","budget_tokens":16000,"custody":"yes"}}"#,
+                quote(at),
+                quote(id.as_str())
+            ),
         };
         mcp_tool(&fixture.root, "explain", &arguments, &answer)?;
     }

@@ -16,15 +16,22 @@ pub(super) const POLICY: &str = "recorder-replay:avc:explicit-uri:closed-clock-r
 const HEVC_POLICY: &str = "recorder-replay:hevc:explicit-uri:closed-clock-range:require-onvif-replay:rate-control-no:durable-request-acknowledgement:received-prefix-only:v1";
 
 pub(super) fn policy(request: &ReplayRequest) -> &'static str {
-    match request.codec() { ReplayCodec::Avc => POLICY, ReplayCodec::Hevc => HEVC_POLICY }
+    match request.codec() {
+        ReplayCodec::Avc => POLICY,
+        ReplayCodec::Hevc => HEVC_POLICY,
+    }
 }
 
 pub(crate) fn reject_wrapped(args: &[OsString]) -> Result<(), &'static str> {
     if args
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .any(|pair| pair[0] == "--replay-start" || pair[0] == "--replay-end")
     {
-        return Err("recorder replay requires direct single AVC or HEVC capture with an explicit replay URI");
+        return Err(
+            "recorder replay requires direct single AVC or HEVC capture with an explicit replay URI",
+        );
     }
     Ok(())
 }
@@ -48,8 +55,9 @@ pub(super) fn parse(
     if binding.ssrc_policy() != SsrcPolicy::Pinned {
         return Err("recorder replay requires an explicitly pinned SSRC");
     }
-    let window = ReplayWindow::from_timestamps(start, end)
-        .map_err(|_| "invalid closed recorder replay interval; use compact UTC within seven days")?;
+    let window = ReplayWindow::from_timestamps(start, end).map_err(
+        |_| "invalid closed recorder replay interval; use compact UTC within seven days",
+    )?;
     let mut route = CanonicalEncoder::new();
     route.text("fss.rtsp_recorder_replay_route.v1");
     route.text(&binding.peer().to_string());
@@ -73,10 +81,12 @@ pub(super) fn parse(
     } else {
         ReplayRequest::new(scope.clone(), route, window, base_decode_clock)
     };
-    request.and_then(|request| match onvif_source {
-        Some(source) => request.with_onvif_source(source),
-        None => Ok(request),
-    }).map(Some)
+    request
+        .and_then(|request| match onvif_source {
+            Some(source) => request.with_onvif_source(source),
+            None => Ok(request),
+        })
+        .map(Some)
         .map_err(|_| "recorder replay request refused")
 }
 
@@ -86,18 +96,30 @@ pub(super) fn preview(request: &ReplayRequest) -> String {
         ("codec", string(request.codec().as_str())),
         ("request_identity", string(&request.digest().to_text())),
         ("requested_range", string(&request.window().to_string())),
-        ("maximum_range_seconds", MAX_REPLAY_DURATION_SECONDS.to_string()),
+        (
+            "maximum_range_seconds",
+            MAX_REPLAY_DURATION_SECONDS.to_string(),
+        ),
         ("require", string("onvif-replay")),
         ("rate_control", string("no")),
-        ("acknowledgement", string("one-closed-contained-clock-range-required")),
-        ("receipt", string("root-last-after-original-window-verification")),
+        (
+            "acknowledgement",
+            string("one-closed-contained-clock-range-required"),
+        ),
+        (
+            "receipt",
+            string("root-last-after-original-window-verification"),
+        ),
         ("historical_frame_time", string("unknown")),
         ("complete_interval_retrieval", "false".into()),
         ("upstream_retention_known", "false".into()),
         ("automatic_live_fallback", "false".into()),
     ];
     if let Some(source) = request.onvif_source() {
-        fields.push(("onvif_source", fss_cli::onvif_replay_plan::source_json(source)));
+        fields.push((
+            "onvif_source",
+            fss_cli::onvif_replay_plan::source_json(source),
+        ));
     }
     object(&fields)
 }

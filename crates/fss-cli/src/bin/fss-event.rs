@@ -38,6 +38,8 @@ mod corroborate;
 mod coverage;
 #[path = "fss-event/delete.rs"]
 mod delete;
+#[path = "fss-event/detect_osd.rs"]
+mod detect_osd;
 #[path = "fss-event/detector.rs"]
 mod detector;
 #[path = "fss-event/familiarity.rs"]
@@ -65,7 +67,7 @@ mod supervise;
 #[path = "fss-event/watch.rs"]
 mod watch;
 
-const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corroborate|package-zones|qsr|health|calibrate|calibration|alert|privacy-mask|graph|delete> [options]\n\
+const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|detect-osd|corroborate|package-zones|qsr|health|calibrate|calibration|alert|privacy-mask|graph|delete> [options]\n\
   All: --root DIR --site SITE [--principal ID]\n\
   report: --import-id sha256:HEX --runs FILE --interpretation gray|ycbcr\n\
           --model-digest sha256:HEX --output-port NAME --labels ORDERED,CLASS,NAMES\n\
@@ -125,6 +127,8 @@ const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corrobor
   files outside the deployment; options take separate values and paths preserve OS bytes.\n\
   watch (model-free, no trained model): --import-id sha256:HEX --interpretation gray|ycbcr\n\
           --zone ID:X,Y,W,H [--zone ...] (1..16, decoded pixels, UTF-8 arguments)\n\
+          [--ignore-rect X,Y,W,H [--ignore-rect ...]] (0..16, OSD foreground-exclusion rects;\n\
+           keeps source pixels untouched in custody; distinct from privacy masks)\n\
           [--first-segment N] [--segment-count M (1..128; H.264 must start at an IDR,\n\
            H.265 at an IDR, CRA or BLA)]\n\
           [--pixel-threshold N --threshold-sigma N --learning-rate-num N\n\
@@ -230,6 +234,12 @@ const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corrobor
     Existing unscreened checkpoints remain readable. Screening cannot change on resume;\n\
     independent health retention requires a completed screened checkpoint. Incremental coverage\n\
     retention and screened incremental calibrated fusion are refused.\n\
+  detect-osd (read-only OSD clock/overlay candidate proposal): --root DIR --site SITE\n\
+          --import-id sha256:HEX --interpretation gray|ycbcr [--first-segment N]\n\
+          [--segment-count M (4..128)] [--report-out FILE]\n\
+    Inspects retained MJPEG, H.264, or H.265 clips read-only and proposes corner/edge\n\
+    --ignore-rect X,Y,W,H candidates with provenance digests (never auto-activated).\n\
+    See `fss-event detect-osd --help`.\n\
   corroborate (two recordings, two sensors): --camera NAME:sha256:IMPORT (exactly twice)\n\
           --ground NAME:h11,h12,h13,h21,h22,h23,h31,h32,h33 (one per camera; image pixels ->\n\
           ground units; an owner assertion like a zone, NOT a calibration certificate)\n\
@@ -1241,6 +1251,9 @@ fn main() -> ExitCode {
     }
     if args.first().is_some_and(|command| command == "supervise") {
         return supervise::main(&args[1..]);
+    }
+    if args.first().is_some_and(|command| command == "detect-osd") {
+        return detect_osd::main(&args[1..]);
     }
     match parse(&args) {
         Ok(None) => match io::stdout().lock().write_all(HELP.as_bytes()) {

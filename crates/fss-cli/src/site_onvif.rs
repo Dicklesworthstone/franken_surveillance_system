@@ -19,6 +19,7 @@ use crate::site_plan::{SiteOnvifInput, SitePlanError, SitePlanOptions};
 #[allow(
     dead_code,
     unused_imports,
+    clippy::duplicate_mod,
     reason = "The existing private-file owner also writes outputs"
 )]
 #[path = "bin/fss-onvif/private_file.rs"]

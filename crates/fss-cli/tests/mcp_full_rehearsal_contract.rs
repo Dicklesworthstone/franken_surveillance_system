@@ -220,7 +220,6 @@ fn publish_corroborated_event(
     report_field(&published, "event_id")
 }
 
-
 struct Relay {
     address: SocketAddr,
     stop: Arc<AtomicBool>,
@@ -485,7 +484,10 @@ fn full_14_operation_mcp_rehearsal_and_explain_parity() -> TestResult {
     // 3. AOP-005: query
     let queried = mcp.call(
         "query",
-        &object(&[("event_id", string(&event_id)), ("max_entries", "4".to_owned())]),
+        &object(&[
+            ("event_id", string(&event_id)),
+            ("max_entries", "4".to_owned()),
+        ]),
         Some("AOP-005"),
     )?;
     assert!(!queried.failed, "{}", queried.body);
@@ -598,7 +600,11 @@ fn full_14_operation_mcp_rehearsal_and_explain_parity() -> TestResult {
         ]),
         Some("AOP-007"),
     )?;
-    assert!(!plan_cancel_prepared.failed, "{}", plan_cancel_prepared.body);
+    assert!(
+        !plan_cancel_prepared.failed,
+        "{}",
+        plan_cancel_prepared.body
+    );
 
     let cancel_preview = mcp.call(
         "cancel",
@@ -648,7 +654,9 @@ fn full_14_operation_mcp_rehearsal_and_explain_parity() -> TestResult {
             ("session", string(&session_id)),
             (
                 "note",
-                string("Handoff after cancelling port-9 probe; rebase onto new effect-journal head."),
+                string(
+                    "Handoff after cancelling port-9 probe; rebase onto new effect-journal head.",
+                ),
             ),
         ]),
         Some("AOP-012"),
@@ -717,8 +725,7 @@ fn full_14_operation_mcp_rehearsal_and_explain_parity() -> TestResult {
         "adapter_accepted"
     );
 
-    let delivery_evidence =
-        ContentDigest::sha256(b"owned loopback delivery observation").to_text();
+    let delivery_evidence = ContentDigest::sha256(b"owned loopback delivery observation").to_text();
     let reconcile_preview = mcp.call(
         "commit",
         &object(&[
@@ -800,7 +807,9 @@ fn full_14_operation_mcp_rehearsal_and_explain_parity() -> TestResult {
     // 11. AOP-014: doctor
     let doctored = mcp.call("doctor", "{}", None)?;
     assert_eq!(text(&doctored.value, &["schema"])?, "fss.doctor.v1");
-    let checks = field(&doctored.value, &["checks"])?.array().ok_or("checks")?;
+    let checks = field(&doctored.value, &["checks"])?
+        .array()
+        .ok_or("checks")?;
     for required_clean in [
         "deployment.layout",
         "ledger.journal",

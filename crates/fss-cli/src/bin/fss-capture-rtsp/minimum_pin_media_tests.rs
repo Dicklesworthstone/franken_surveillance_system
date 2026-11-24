@@ -13,6 +13,7 @@ use fss_reference::rtsp::recording_archive::checkpoint::write_ahead::{
 use fss_reference::rtsp::recording_archive::hevc::HevcArchiveNamespace;
 use std::cell::Cell;
 
+#[allow(clippy::duplicate_mod)]
 #[path = "../../../../fss-reference/tests/hevc_recording_support/mod.rs"]
 mod source;
 
@@ -165,10 +166,18 @@ fn lost_restoration_reply_accepts_a_verified_descendant_without_duplicate_media(
     // Index approval includes the minimum even when two minima are both valid ancestors.
     set(&mut input, "--recover", "index");
     let old_floor_index = SinglePlan::parse(&input)?.preview()?;
-    set(&mut input, "--minimum-pin-anchors", &anchor_text(1, confirmed));
+    set(
+        &mut input,
+        "--minimum-pin-anchors",
+        &anchor_text(1, confirmed),
+    );
     let new_floor_index = SinglePlan::parse(&input)?.preview()?;
     assert_ne!(approval(&old_floor_index)?, approval(&new_floor_index)?);
-    set(&mut input, "--approve", &approval(&old_floor_index)?.to_text());
+    set(
+        &mut input,
+        "--approve",
+        &approval(&old_floor_index)?.to_text(),
+    );
     assert!(SinglePlan::parse(&input)?.execute().is_err());
     approve_single(&mut input)?.execute()?;
     verify_original(&original.attempts()[0], saved.window)?;
@@ -204,7 +213,11 @@ fn a_checksum_valid_older_journal_cannot_erase_an_independent_confirmation() -> 
     let path = original.attempts()[0].pins.join("pins.journal");
     // All owners have been dropped. Simulate restoring the original, valid old backup.
     fs::write(&path, &saved.journal_bytes)?;
-    set(&mut input, "--minimum-pin-anchors", &anchor_text(1, confirmed));
+    set(
+        &mut input,
+        "--minimum-pin-anchors",
+        &anchor_text(1, confirmed),
+    );
     for mode in ["yes", "index"] {
         set(&mut input, "--recover", mode);
         let mut refused = SinglePlan::parse(&input)?;

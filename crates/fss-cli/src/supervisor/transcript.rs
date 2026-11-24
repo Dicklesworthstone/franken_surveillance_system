@@ -5,7 +5,7 @@ use fss_core::{CanonicalEncoder, ContentDigest};
 
 use super::{
     SUPERVISOR_TRANSCRIPT_DOMAIN, SUPERVISOR_TRANSCRIPT_REPORT_SCHEMA, SupervisorReport, array,
-    nullable, object, string, unsigned,
+    object, string, unsigned,
 };
 
 use crate::fusion_json::fusion_transcript_json;

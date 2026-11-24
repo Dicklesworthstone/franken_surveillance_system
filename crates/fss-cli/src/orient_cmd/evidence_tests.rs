@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 //! Deterministic H1 projection tests; these do not substitute for the binary integration test.
 
+#[allow(clippy::duplicate_mod)]
 #[path = "../custody_review/fixture.rs"]
 mod fixture;
 

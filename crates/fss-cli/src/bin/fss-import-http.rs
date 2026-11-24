@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 //! Exact, owner-approved conversion of retained HTTP originals into a recording import.
 
+#[cfg(test)]
 use std::ffi::OsString;
 use std::io::{self, Write};
 use std::path::Path;

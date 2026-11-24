@@ -39,6 +39,8 @@ const MAX_NATIVE_REPLY_BYTES: usize = 6 * MAX_MCP_TOOL_OUTPUT_BYTES + 1024;
 const FRAMES_PER_TURN: usize = 8;
 const IO_SLICE_BYTES: usize = 64 * 1024;
 const POLL_INTERVAL: Duration = Duration::from_millis(2);
+const ACTIVE_POLL_INTERVAL: Duration = Duration::from_micros(250);
+const ACTIVE_POLL_BURST_TURNS: u8 = 16;
 const OUTPUT_STALL_LIMIT: Duration = Duration::from_secs(30);
 const NATIVE_REQUEST_LIMIT: Duration = Duration::from_secs(60);
 
@@ -449,10 +451,7 @@ impl Replies {
                     if matches!(
                         error.kind(),
                         io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
-                    ) =>
-                {
-                    ()
-                }
+                    ) => {}
                 Err(error) => return Err(error),
             }
         }
@@ -529,6 +528,7 @@ async fn serve_owned(
     let mut scheduler = Scheduler::new(execute);
     let mut frames = Frames::default();
     let mut eof = false;
+    let mut active_burst_turns: u8 = 0;
     let result = async {
         loop {
             if cx.checkpoint().is_err() {
@@ -537,14 +537,23 @@ async fn serve_owned(
                     "MCP transport cancelled",
                 ));
             }
+            let mut had_activity = false;
+            let had_active = scheduler.active.is_some();
             scheduler.retire_ready().await?;
+            if had_active && scheduler.active.is_none() {
+                had_activity = true;
+            }
             scheduler.expire_active(cx.now())?;
+            if !scheduler.replies.empty() {
+                had_activity = true;
+            }
             scheduler.replies.pump(output, stall_limit)?;
             eof |= scheduler.stop_admission;
             if !eof {
                 for _ in 0..FRAMES_PER_TURN {
                     match frames.read(input)? {
                         Input::Frame(frame) => {
+                            had_activity = true;
                             let request = match std::str::from_utf8(&frame) {
                                 Ok(text) => server.dispatch_reserved(text, |key| scheduler.owns(key)),
                                 Err(_) => Dispatch::Reply {
@@ -580,7 +589,17 @@ async fn serve_owned(
                     None => Ok(()),
                 };
             }
-            sleep(cx.now(), POLL_INTERVAL).await;
+            if had_activity || scheduler.active.is_some() || !scheduler.replies.empty() {
+                active_burst_turns = ACTIVE_POLL_BURST_TURNS;
+            } else {
+                active_burst_turns = active_burst_turns.saturating_sub(1);
+            }
+            let interval = if active_burst_turns > 0 {
+                ACTIVE_POLL_INTERVAL
+            } else {
+                POLL_INTERVAL
+            };
+            sleep(cx.now(), interval).await;
         }
     }
     .await;

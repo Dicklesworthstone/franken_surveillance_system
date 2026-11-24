@@ -63,7 +63,12 @@ fn args() -> Vec<OsString> {
 }
 
 fn replace(args: &mut Vec<OsString>, key: &str, value: &str) {
-    if let Some(pair) = args.chunks_exact_mut(2).find(|pair| pair[0] == key) {
+    if let Some(pair) = args
+        .as_chunks_mut::<2>()
+        .0
+        .iter_mut()
+        .find(|pair| pair[0] == key)
+    {
         pair[1] = value.into();
     } else {
         args.extend([key.into(), value.into()]);
@@ -88,7 +93,12 @@ fn pure_parent_preview_binds_model_route_capture_and_full_analysis_reservation()
     assert!(plan.analysis.approve.is_none());
     assert_ne!(plan.approval().unwrap(), plan.capture.approval());
     assert_ne!(plan.approval().unwrap(), plan.analysis.approval().unwrap());
-    let mut reordered: Vec<_> = original.chunks_exact(2).map(<[OsString]>::to_vec).collect();
+    let mut reordered: Vec<_> = original
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| pair.to_vec())
+        .collect();
     reordered.sort_by(|left, right| left[0].cmp(&right[0]));
     assert_eq!(
         Options::parse(&reordered.into_iter().flatten().collect::<Vec<_>>())

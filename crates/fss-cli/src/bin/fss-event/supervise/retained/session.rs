@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 
 use fss_cli::agent_json::{object, string};
+#[cfg(test)]
 use fss_cli::json_input;
 use fss_cli::supervisor::retained::RetainedSupervisorError;
 use fss_cli::supervisor::retained::session::{

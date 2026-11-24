@@ -22,7 +22,7 @@ impl Invocation {
     fn new(command: &str) -> Self {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("test clock is after the epoch")
+            .unwrap_or_default()
             .as_nanos();
         let root = std::env::temp_dir().join(format!(
             "fss-fusion-cli-{}-{nonce}-{}",
@@ -42,9 +42,11 @@ impl Invocation {
             report,
         };
         invocation.add(&["--site", "site:fusion-cli", "--interpretation", "gray"]);
-        match command {
-            "watch" => invocation.add(&["--import-id", PIN, "--zone", "door:4,4,16,16"]),
-            "corroborate" => invocation.add(&[
+        if command == "watch" {
+            invocation.add(&["--import-id", PIN, "--zone", "door:4,4,16,16"]);
+        } else {
+            assert_eq!(command, "corroborate", "unsupported fixture command");
+            invocation.add(&[
                 "--camera",
                 &format!("east:{PIN}"),
                 "--camera",
@@ -59,8 +61,7 @@ impl Invocation {
                 "250000000",
                 "--distance-gate",
                 "16",
-            ]),
-            _ => panic!("unsupported fixture command"),
+            ]);
         }
         invocation.args.extend([
             "--report-out".into(),
@@ -97,8 +98,15 @@ impl Invocation {
     fn refused(&self, reason: &str) {
         let output = Command::new(env!("CARGO_BIN_EXE_fss-event"))
             .args(&self.args)
-            .output()
-            .expect("start the actual fss-event binary");
+            .output();
+        assert!(
+            output.is_ok(),
+            "start the actual fss-event binary: {:?}",
+            output.as_ref().err()
+        );
+        let Ok(output) = output else {
+            return;
+        };
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
             !output.status.success(),

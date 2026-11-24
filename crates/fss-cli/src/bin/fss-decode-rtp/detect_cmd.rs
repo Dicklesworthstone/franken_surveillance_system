@@ -73,7 +73,10 @@ pub(super) fn dispatch(args: &[OsString]) -> Option<ExitCode> {
             match result {
                 Ok(()) => ExitCode::from(ExitIdentity::SUCCESS.code),
                 Err(error) => {
-                    let _ = writeln!(out, "detection_complete=false\ndetection_report_complete=false");
+                    let _ = writeln!(
+                        out,
+                        "detection_complete=false\ndetection_report_complete=false"
+                    );
                     eprintln!("{ERR_CLI_RUNTIME_FAILURE}: {error}");
                     ExitCode::from(ExitIdentity::RUNTIME_FAILURE.code)
                 }
@@ -110,10 +113,13 @@ fn parse(args: &[OsString]) -> ParseResult<DetectOptions> {
         }
         at += 2;
     }
-    let base = super::parse(&native)?
-        .ok_or((ERR_CLI_MISSING_VALUE, "native decode options required"))?;
+    let base =
+        super::parse(&native)?.ok_or((ERR_CLI_MISSING_VALUE, "native decode options required"))?;
     if base.custody_read_bytes.is_none() {
-        return Err((ERR_CLI_MALFORMED_VALUE, "detection requires --custody current"));
+        return Err((
+            ERR_CLI_MALFORMED_VALUE,
+            "detection requires --custody current",
+        ));
     }
     if base.output.is_some() {
         return Err((ERR_CLI_UNKNOWN_OPTION, "detection does not export pixels"));
@@ -126,7 +132,10 @@ fn parse(args: &[OsString]) -> ParseResult<DetectOptions> {
     let minimum_score_ppm = if values.contains_key("--minimum-score-ppm") {
         let score = super::number(&values, "--minimum-score-ppm", 0_u32)?;
         if score > 1_000_000 {
-            return Err((ERR_CLI_MALFORMED_VALUE, "minimum score must be 0..1000000 ppm"));
+            return Err((
+                ERR_CLI_MALFORMED_VALUE,
+                "minimum score must be 0..1000000 ppm",
+            ));
         }
         Some(score)
     } else {
@@ -134,7 +143,10 @@ fn parse(args: &[OsString]) -> ParseResult<DetectOptions> {
     };
     let max_report_bytes = super::number(&values, "--max-report-bytes", 32 * 1024 * 1024)?;
     if !(1..=MAX_REPORT_BYTES).contains(&max_report_bytes) {
-        return Err((ERR_CLI_MALFORMED_VALUE, "detection report allowance exceeds profile"));
+        return Err((
+            ERR_CLI_MALFORMED_VALUE,
+            "detection report allowance exceeds profile",
+        ));
     }
     Ok(DetectOptions {
         base,
@@ -231,7 +243,9 @@ fn execute_inner(
                 }
                 RtpDetectionStep::Ended(stats) => {
                     if !stats.complete() {
-                        return Err(failure("RTP detection ended with incomplete source or analysis"));
+                        return Err(failure(
+                            "RTP detection ended with incomplete source or analysis",
+                        ));
                     }
                     break;
                 }
@@ -418,7 +432,9 @@ impl<W: Write> ReportWriter<W> {
                         interruptions = 0;
                     }
                     Ok(_) => return Err(io::Error::other("writer exceeded supplied slice")),
-                    Err(error) if error.kind() == io::ErrorKind::Interrupted && interruptions < 7 => {
+                    Err(error)
+                        if error.kind() == io::ErrorKind::Interrupted && interruptions < 7 =>
+                    {
                         interruptions += 1;
                     }
                     Err(error) => return Err(error),
@@ -438,16 +454,22 @@ mod tests {
     use super::*;
 
     fn args(extra: &[&str]) -> Vec<OsString> {
-        let mut output: Vec<OsString> =
-            ["detect", "--root", "unused", "--site", "site:detect", "--source-root"]
-                .into_iter()
-                .map(OsString::from)
-                .collect();
+        let mut output: Vec<OsString> = [
+            "detect",
+            "--root",
+            "unused",
+            "--site",
+            "site:detect",
+            "--source-root",
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .collect();
         output.push(ContentDigest::sha256(b"root").to_string().into());
         output.extend(extra.iter().map(|value| OsString::from(*value)));
         output
     }
-    fn valid<'a>(digest: &'a str) -> Vec<&'a str> {
+    fn valid(digest: &str) -> Vec<&str> {
         vec![
             "--custody",
             "current",
@@ -468,7 +490,9 @@ mod tests {
         assert_eq!(parsed.settings.minimum_score_ppm, None);
         for key in ["--custody", "--package", "--package-sha256", "--report-out"] {
             let filtered: Vec<_> = required
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .filter(|pair| pair[0] != key)
                 .flatten()
                 .copied()

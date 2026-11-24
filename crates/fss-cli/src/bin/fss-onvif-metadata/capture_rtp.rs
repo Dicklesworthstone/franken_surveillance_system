@@ -592,16 +592,15 @@ fn acquire(
                                 reconstruction: Ok(output),
                                 ..
                             } = event
+                                && output.document.is_some()
                             {
-                                if output.document.is_some() {
-                                    capture.documents += 1;
-                                    if !first_document {
-                                        first_document = true;
-                                        milestone = Some("first_document");
-                                    }
-                                    if capture.documents >= options.max_documents {
-                                        want_stop = true;
-                                    }
+                                capture.documents += 1;
+                                if !first_document {
+                                    first_document = true;
+                                    milestone = Some("first_document");
+                                }
+                                if capture.documents >= options.max_documents {
+                                    want_stop = true;
                                 }
                             }
                         }
@@ -662,15 +661,15 @@ fn acquire(
                 capture.stop = stop_for_owner(error);
                 capture.error.get_or_insert(error);
             }
-            if capture.error.is_none() {
-                if let Some(kind) = milestone {
-                    let result = scope
-                        .now()
-                        .and_then(|now| capture.publish(kind, now, publish));
-                    if let Err(error) = result {
-                        capture.stop = Stop::Storage;
-                        capture.error = Some(error);
-                    }
+            if capture.error.is_none()
+                && let Some(kind) = milestone
+            {
+                let result = scope
+                    .now()
+                    .and_then(|now| capture.publish(kind, now, publish));
+                if let Err(error) = result {
+                    capture.stop = Stop::Storage;
+                    capture.error = Some(error);
                 }
             }
             if capture.error.is_none() && !terminal {
@@ -698,11 +697,11 @@ fn acquire(
                         target_ns.min(deadline_ns)
                     }
                     .min(wake);
-                    if until > scope.observed_ns() {
-                        if let Err(error) = wait_for_progress(scope, until) {
-                            capture.stop = stop_for_owner(error);
-                            capture.error = Some(error);
-                        }
+                    if until > scope.observed_ns()
+                        && let Err(error) = wait_for_progress(scope, until)
+                    {
+                        capture.stop = stop_for_owner(error);
+                        capture.error = Some(error);
                     }
                 }
             }
