@@ -72,14 +72,10 @@ fn preconditions() -> ContentDigest {
 }
 
 fn next_timestamp<T: AsRef<PreparedEffect>>(effects: &EffectCoordinator, token: &T) -> TimestampNs {
-    TimestampNs(
-        effects
-            .receipt(token)
-            .expect("fixture operation is retained")
-            .updated_at
-            .0
-            + 1,
-    )
+    let Ok(receipt) = effects.receipt(token) else {
+        unreachable!("fixture operation is retained");
+    };
+    TimestampNs(receipt.updated_at.0 + 1)
 }
 
 fn commit_effect(

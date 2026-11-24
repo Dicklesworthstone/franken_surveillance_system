@@ -25,6 +25,8 @@
 //! control (virtual time) composes through asupersync's lab modules and is
 //! not re-implemented here.
 
+/// Structured Asupersync 0.5.0 region runner, scoped non-detached workers, and `Cx` boundaries.
+pub mod asupersync_ops;
 pub mod authority;
 pub mod budget;
 pub mod cancellation;
