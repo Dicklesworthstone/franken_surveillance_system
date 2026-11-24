@@ -61,6 +61,9 @@ fn explicit_transport_parser_preserves_bindings_and_capture_assumptions() -> Tes
     let m2ts = parsed_action(parsed(&args(&["--ts-framing", "m2ts192"]))?)?;
     assert_eq!(m2ts.request.framing, TsFraming::M2ts192);
     assert_ne!(m2ts.request.digest()?, request.digest()?);
+    let dvb = parsed_action(parsed(&args(&["--ts-framing", "dvb204"]))?)?;
+    assert_eq!(dvb.request.framing, TsFraming::Dvb204);
+    assert_ne!(dvb.request.digest()?, m2ts.request.digest()?);
 
     let selected = parsed_action(parsed(&args(&[
         "--ts-program", "65535", "--ts-video-pid", "8190",
@@ -426,5 +429,28 @@ fn explicit_m2ts_command_reports_verified_custody_and_replays_without_the_loose_
             ContentDigest::sha256(&elementary).to_text()
         );
     }
+    Ok(())
+}
+
+#[test]
+fn dvb204_import_reports_custody_and_unverified_parity() -> Test {
+    let directory = Directory::new("dvb204")?;
+    let root = directory.0.join("deployment");
+    let input = directory.0.join("recording.ts");
+    let (transport, elementary) = recording(VideoCodec::Avc);
+    let source: Vec<_> = transport
+        .chunks_exact(188)
+        .flat_map(|packet| packet.iter().copied().chain([0x47; 16]))
+        .collect();
+    fs::write(&input, &source)?;
+    let args = bound_args(&root, &input, &["--ts-framing", "dvb204"]);
+    let report = execute(&args)?;
+    assert_eq!(field(&report, "ts_framing")?, "dvb204");
+    assert_eq!(field(&report, "source_dvb_parity")?, "unverified");
+    assert_eq!(field(&report, "original_ts_sha256")?, ContentDigest::sha256(&source).to_text());
+    assert_eq!(field(&report, "verified_elementary_sha256")?, ContentDigest::sha256(&elementary).to_text());
+    let retry = execute(&args)?;
+    assert_eq!(field(&retry, "reused")?, "true");
+    assert_eq!(field(&retry, "import_identity")?, field(&report, "import_identity")?);
     Ok(())
 }

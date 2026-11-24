@@ -18,7 +18,7 @@ use crate::video_codec::VideoCodec;
 
 /// Original 188-byte extraction contract; its canonical bytes remain unchanged.
 pub const RECEIPT_SCHEMA: &str = "fss.mpeg_ts.extraction_receipt.v1";
-/// Explicit M2TS physical framing contract. Standard TS continues to encode as v1.
+/// Explicit M2TS and DVB physical framing contract. Standard TS continues to encode as v1.
 pub const FRAMED_RECEIPT_SCHEMA: &str = "fss.mpeg_ts.extraction_receipt.v2";
 const MAPPING_DOMAIN: &str = "fss.mpeg_ts.extraction_mapping.v1";
 /// Hard ceiling for the fixed-size receipt, independent of source/map length.
@@ -148,11 +148,11 @@ impl TsExtractionReceipt {
     pub fn to_bytes(&self) -> Result<Vec<u8>, TsError> {
         self.validate()?;
         let mut e = CanonicalEncoder::new();
-        match self.framing {
-            TsFraming::Ts188 => e.text(RECEIPT_SCHEMA),
-            TsFraming::M2ts192 => {
+        match self.framing.outer_framing_tag() {
+            None => e.text(RECEIPT_SCHEMA),
+            Some(tag) => {
                 e.text(FRAMED_RECEIPT_SCHEMA);
-                e.u8(2);
+                e.u8(tag);
             }
         }
         encode_selection(&mut e, self.selection);
@@ -203,11 +203,10 @@ impl TsExtractionReceipt {
         let mut d = CanonicalDecoder::new(payload);
         let framing = match d.text().map_err(|_| TsError::Receipt)? {
             RECEIPT_SCHEMA => TsFraming::Ts188,
-            FRAMED_RECEIPT_SCHEMA => match d.u8().map_err(|_| TsError::Receipt)? {
-                2 => TsFraming::M2ts192,
-                // No alternate v2 encoding of v1 TS: each policy has one identity.
-                _ => return Err(TsError::Receipt),
-            },
+            FRAMED_RECEIPT_SCHEMA => {
+                TsFraming::from_outer_framing_tag(d.u8().map_err(|_| TsError::Receipt)?)
+                    .ok_or(TsError::Receipt)?
+            }
             _ => return Err(TsError::Receipt),
         };
         let selection = TsSelection {

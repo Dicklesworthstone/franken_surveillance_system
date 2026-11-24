@@ -73,13 +73,13 @@ bits are never promoted to capture time, synchronized clock evidence or health.
 
 Standard TS receipts retain the exact `fss.mpeg_ts.extraction_receipt.v1`
 encoding. M2TS uses `fss.mpeg_ts.extraction_receipt.v2` with explicit framing tag
-`2`. V2 refuses any other tag, including an alternate encoding of standard TS.
+`2`. V2 also admits tag 3 for DVB and refuses other tags, including an alternate encoding of standard TS.
 Recorded source lengths and packet counts must agree with the selected stride.
 Current-limit intersection and full original replay remain mandatory during
 bounded verification; changing only an opaque prefix invalidates the source pin.
 
 Native import requests likewise preserve the standard v1 encoding and select
-`fss.mpegts_file_import_request.v2` only for M2TS. The retained origin proof checks
+`fss.mpegts_file_import_request.v2` for explicitly framed sources. The retained origin proof checks
 that request framing and extraction-receipt framing agree. A cold reader uses
 that committed framing to reconstruct bytes, without needing the loose source.
 `MpegTsImportRequest::new` still defaults to standard TS; set its `framing` field
@@ -143,3 +143,16 @@ cargo +nightly-2026-08-31 test --locked --offline -p fss-container --lib mpeg_ts
 The repository-owned qualification entrypoint and native DSR receipts remain
 required for promotion. No broad media or release gate is closed by this source
 increment.
+
+## DVB recordings with 204-byte packets
+
+Use `fss-file import-ts ... --ts-framing dvb204` for a finite recording with a
+188-byte transport packet followed by a 16-byte trailer in every record. A partial
+final record is an error. PAT/PMT, continuity and PES checks apply to the transport
+packets. The parser neither checks nor corrects Reed-Solomon parity. The report
+labels parity `unverified`.
+
+The original-byte digest covers every trailer. Elementary payload spans exclude
+trailers and refer to offsets in the complete 204-byte-stride file. Cold verification
+detects a trailer-only change even when all extracted video bytes match. The v2
+request and receipt encode DVB with framing tag 3.

@@ -82,7 +82,8 @@ pub(super) fn parse(file: FileIngestRequest, values: &Values) -> ParseResult<Act
         match text(values, "--ts-framing")? {
             "ts188" => TsFraming::Ts188,
             "m2ts192" => TsFraming::M2ts192,
-            _ => return Err(malformed("--ts-framing must be ts188 or m2ts192")),
+            "dvb204" => TsFraming::Dvb204,
+            _ => return Err(malformed("--ts-framing must be ts188, m2ts192 or dvb204")),
         }
     } else {
         TsFraming::Ts188
@@ -217,10 +218,13 @@ fn report_verified(
         match receipt.framing {
             TsFraming::Ts188 => "ts188",
             TsFraming::M2ts192 => "m2ts192",
+            TsFraming::Dvb204 => "dvb204",
         }
     )?;
     if receipt.framing == TsFraming::M2ts192 {
         writeln!(report, "source_m2ts_prefix_clock=opaque_untrusted")?;
+    } else if receipt.framing == TsFraming::Dvb204 {
+        writeln!(report, "source_dvb_parity=unverified")?;
     }
     writeln!(report, "transport_origin_proof={}", receipt.proof)?;
     writeln!(report, "original_ts_sha256={}", receipt.original_digest)?;

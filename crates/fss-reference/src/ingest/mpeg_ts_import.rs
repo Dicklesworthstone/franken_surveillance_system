@@ -54,7 +54,7 @@ pub struct MpegTsImportRequest {
     /// A media-format hint or recorded-RTP binding is refused for this explicit operation.
     pub file: FileIngestRequest,
     /// Physical packet framing, supplied by the owner rather than inferred from source bytes.
-    /// Standard TS is the default; M2TS prefixes remain opaque original custody.
+    /// Standard TS is the default; M2TS prefixes and DVB trailers remain opaque original custody.
     pub framing: TsFraming,
     /// Program and video PID; omitted values require unambiguous native selection.
     pub selection: TsSelection,
@@ -128,11 +128,11 @@ impl MpegTsImportRequest {
         let file = &self.file;
         let limits = &file.limits;
         let mut e = CanonicalEncoder::new();
-        match self.framing {
-            TsFraming::Ts188 => e.text(REQUEST_DOMAIN),
-            TsFraming::M2ts192 => {
+        match self.framing.outer_framing_tag() {
+            None => e.text(REQUEST_DOMAIN),
+            Some(tag) => {
                 e.text(FRAMED_REQUEST_DOMAIN);
-                e.u8(2);
+                e.u8(tag);
             }
         }
         e.text(file.sensor_id.as_str());

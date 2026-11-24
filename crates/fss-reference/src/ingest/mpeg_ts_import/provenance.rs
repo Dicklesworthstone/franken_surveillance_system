@@ -37,10 +37,8 @@ fn request(bytes: &[u8]) -> Result<MpegTsImportRequest, FileIngestError> {
     let mut d = CanonicalDecoder::new(bytes);
     let framing = match d.text()? {
         REQUEST_DOMAIN => TsFraming::Ts188,
-        FRAMED_REQUEST_DOMAIN => match d.u8()? {
-            2 => TsFraming::M2ts192,
-            _ => return Err(corrupt("request framing")),
-        },
+        FRAMED_REQUEST_DOMAIN => TsFraming::from_outer_framing_tag(d.u8()?)
+            .ok_or_else(|| corrupt("request framing"))?,
         _ => return Err(corrupt("request domain")),
     };
     let sensor = SensorId::parse(d.text()?)?;

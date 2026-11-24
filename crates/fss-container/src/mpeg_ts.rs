@@ -1,8 +1,8 @@
 #![forbid(unsafe_code)]
 //! Bounded, source-preserving AVC/HEVC MPEG-2 transport stream extraction.
 //!
-//! This finite-file profile admits explicitly selected 188-byte TS or 192-byte
-//! M2TS framing, one selected program and
+//! This finite-file profile admits explicitly selected 188-byte TS, 192-byte M2TS
+//! or 204-byte DVB framing, one selected program and
 //! video PID, single-section current PAT/PMT tables, and MPEG-2 video PES headers
 //! with optional PTS/DTS. Tables must precede the selected video. Their CRCs,
 //! repeats, packet continuity, adaptation bounds and complete PES lengths are
@@ -50,20 +50,45 @@ pub enum TsFraming {
     /// 192-byte M2TS packets, each with an opaque four-byte arrival-time prefix.
     /// The prefix is retained as source data and excluded from elementary payloads.
     M2ts192,
+    /// A TS packet followed by 16 opaque bytes. DVB parity is neither checked nor corrected.
+    Dvb204,
 }
 
 impl TsFraming {
-    /// Exact physical packet stride in the original source, including any prefix.
+    /// Exact physical packet stride in the original source, including any prefix or trailer.
     pub const fn packet_bytes(self) -> usize {
         match self {
             Self::Ts188 => TS_PACKET_BYTES,
             Self::M2ts192 => M2TS_PACKET_BYTES,
+            Self::Dvb204 => 204,
+        }
+    }
+
+    /// Canonical v2 framing tag shared by import requests and extraction receipts.
+    /// Standard TS retains its untagged v1 encoding.
+    pub const fn outer_framing_tag(self) -> Option<u8> {
+        match self {
+            Self::Ts188 => None,
+            Self::M2ts192 => Some(2),
+            Self::Dvb204 => Some(3),
+        }
+    }
+
+    /// Decode a v2 framing tag; standard TS has no tagged representation.
+    pub const fn from_outer_framing_tag(tag: u8) -> Option<Self> {
+        match tag {
+            2 => Some(Self::M2ts192),
+            3 => Some(Self::Dvb204),
+            _ => None,
         }
     }
 
     /// Bytes before each TS sync byte; these remain opaque original custody.
     pub const fn prefix_bytes(self) -> usize {
-        self.packet_bytes() - TS_PACKET_BYTES
+        match self {
+            Self::Ts188 | Self::Dvb204 => 0,
+            Self::M2ts192 => 4,
+        }
     }
 }
 
