@@ -57,6 +57,8 @@ pub struct InMemoryObjectStore {
     limits: ObjectLimits,
     objects: BTreeMap<ContentDigest, StoredObject>,
     visible_manifests: BTreeMap<ContentDigest, ObjectManifest>,
+    // Reverse edges of visible manifests only. These never grant publication authority.
+    parents: BTreeMap<ContentDigest, BTreeSet<ContentDigest>>,
     invalidated_manifests: BTreeMap<ContentDigest, ObjectManifest>,
     total_bytes: u64,
 }
@@ -69,6 +71,7 @@ impl InMemoryObjectStore {
             limits,
             objects: BTreeMap::new(),
             visible_manifests: BTreeMap::new(),
+            parents: BTreeMap::new(),
             invalidated_manifests: BTreeMap::new(),
             total_bytes: 0,
         }
@@ -285,7 +288,14 @@ impl InMemoryObjectStore {
         };
 
         match stage_and_publish(self) {
-            Ok(receipt) => Ok(receipt),
+            Ok(receipt) => {
+                if !was_visible {
+                    for &child in manifest.children() {
+                        self.parents.entry(child).or_default().insert(root);
+                    }
+                }
+                Ok(receipt)
+            }
             Err(error) => {
                 if !was_visible {
                     self.visible_manifests.remove(&root);
@@ -340,20 +350,19 @@ impl InMemoryObjectStore {
         if !self.visible_manifests.contains_key(&root) {
             return Err(ObjectError::ManifestNotPublished(root));
         }
-        let mut seen = BTreeSet::new();
+        self.require_graph_member(root)?;
+        let mut seen = BTreeSet::from([root]);
         let mut pending = vec![root];
         while let Some(digest) = pending.pop() {
-            if !seen.insert(digest) {
-                continue;
-            }
-            self.require_graph_member(digest)?;
             if let Some(manifest) = self.visible_manifests.get(&digest) {
                 if manifest.root() != digest || manifest.computed_root() != digest {
                     return Err(ObjectError::Corrupt(digest));
                 }
-                for child in manifest.children().iter().rev() {
-                    self.require_graph_member(*child)?;
-                    pending.push(*child);
+                for &child in manifest.children().iter().rev() {
+                    if seen.insert(child) {
+                        self.require_graph_member(child)?;
+                        pending.push(child);
+                    }
                 }
             }
         }
@@ -437,39 +446,27 @@ impl InMemoryObjectStore {
         object.tombstone = Some(record);
         self.total_bytes = self.total_bytes.saturating_sub(released_bytes);
 
-        self.visible_manifests.remove(&digest);
-
-        // Cascade unpublish all published parent manifests whose closure now contains a tombstoned object:
-        let mut newly_invalidated = BTreeMap::new();
-        let mut changed = true;
-        while changed {
-            changed = false;
-            let mut to_remove = Vec::new();
-            for (&root, manifest) in &self.visible_manifests {
-                let mut has_tombstone = false;
-                for &child in manifest.children() {
-                    if self.is_tombstoned(child)
-                        || newly_invalidated.contains_key(&child)
-                        || self.invalidated_manifests.contains_key(&child)
-                    {
-                        has_tombstone = true;
-                        break;
-                    }
-                }
-                if has_tombstone {
-                    to_remove.push(root);
-                }
+        // Only visible ancestors lose publication. Each outgoing edge of a removed
+        // manifest is detached, including those to independent, surviving objects.
+        let mut pending = vec![digest];
+        while let Some(member) = pending.pop() {
+            if let Some(parents) = self.parents.remove(&member) {
+                pending.extend(parents);
             }
-            if !to_remove.is_empty() {
-                changed = true;
-                for root in to_remove {
-                    if let Some(m) = self.visible_manifests.remove(&root) {
-                        newly_invalidated.insert(root, m);
+            if let Some(manifest) = self.visible_manifests.remove(&member) {
+                for child in manifest.children() {
+                    if let Some(parents) = self.parents.get_mut(child) {
+                        parents.remove(&member);
+                        if parents.is_empty() {
+                            self.parents.remove(child);
+                        }
                     }
+                }
+                if member != digest {
+                    self.invalidated_manifests.insert(member, manifest);
                 }
             }
         }
-        self.invalidated_manifests.extend(newly_invalidated);
 
         Ok(())
     }
