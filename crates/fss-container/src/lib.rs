@@ -8,6 +8,8 @@
 //! Source custody, privacy, storage publication, and authentication remain with
 //! the owner. No codec, socket, filesystem, worker, or external runtime is used.
 
+/// Source-preserving MJPEG AVI indexing and exact rational stream timing.
+pub mod avi;
 mod boxes;
 /// Indexed or fragmented AVC/HEVC MP4 sample index, source-preserving Annex-B extraction and
 /// exact byte maps.

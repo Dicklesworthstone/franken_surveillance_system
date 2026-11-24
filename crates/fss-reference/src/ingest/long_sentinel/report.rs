@@ -282,7 +282,7 @@ fn render_report(
         usage.execution_macs,
         json_string(VIDEO_DECODE_WORK_MODEL),
         json_string(VIDEO_DECODE_SEPARATE_AXIS_POLICY),
-        json_string(if media_format == "mjpeg" {
+        json_string(if matches!(media_format, "mjpeg" | "avimjpeg") {
             "selected_mjpeg_frames"
         } else {
             "strict_whole_video_range"

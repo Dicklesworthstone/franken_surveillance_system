@@ -135,7 +135,8 @@ pub use annexb::{
     split_annexb,
 };
 pub use file_adapter::{
-    ADP_FILE_GENERATION, ADP_FILE_ROW_ID, CONTAINER_TRUNCATED_TAIL_REASON, CaptureHint,
+    ADP_FILE_GENERATION, ADP_FILE_ROW_ID, AVI_STRUCTURE_REASON_PREFIX,
+    CONTAINER_TRUNCATED_TAIL_REASON, CaptureHint,
     DEFAULT_CHUNK_BYTES, DetectedFileFormat, FILE_IMPORT_MANIFEST_SCHEMA,
     FLV_PARAMETER_SET_REASON_PREFIX, FLV_STRUCTURE_REASON_PREFIX, FileFormatHint, FileImport,
     FileImportManifest, FileIngestAdapter, FileIngestError, FileIngestFailure, FileIngestLimits,

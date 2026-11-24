@@ -576,7 +576,7 @@ pub fn produce_recorded_activity(
     let media_format = retained.manifest().format.clone();
     if !matches!(
         media_format.as_str(),
-        "mjpeg" | "annexb" | "mp4avc" | "mkvavc" | "flvavc" | "hevc" | "mp4hevc" | "mkvhevc"
+        "mjpeg" | "avimjpeg" | "annexb" | "mp4avc" | "mkvavc" | "flvavc" | "hevc" | "mp4hevc" | "mkvhevc"
     ) {
         return Err(Error::UnsupportedMedia);
     }
@@ -612,7 +612,7 @@ pub fn produce_recorded_activity(
     drop(chunks);
     checkpoint(cx, scalar, "recorded_activity:decode")?;
     let decoded = match media_format.as_str() {
-        "mjpeg" => {
+        "mjpeg" | "avimjpeg" => {
             let mut decode = DecodeBudget::new(limits.max_decode_work);
             let frame = decode_rgb(
                 &frame_source,

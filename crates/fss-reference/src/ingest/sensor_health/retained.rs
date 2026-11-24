@@ -177,7 +177,7 @@ impl ScreeningReport {
             Ok(())
         };
         match media {
-            "mjpeg" => {
+            "mjpeg" | "avimjpeg" => {
                 let mut budget = DecodeBudget::new(limits.jpeg_work_units);
                 // The sensor's current mask, resolved once; applied before screening.
                 let (first, _) = source_capsule(deployment, &retained, plan.first_segment)?;

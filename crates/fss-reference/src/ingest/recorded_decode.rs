@@ -547,7 +547,7 @@ pub(crate) fn retained_frame_metadata(
     )?;
     let index = usize::try_from(receipt.segment_index).map_err(|_| RecordedDecodeError::Limit)?;
     let (capsule, capsule_digest) = source_capsule(deployment, &retained, index)?;
-    if retained.manifest().format != "mjpeg"
+    if !matches!(retained.manifest().format.as_str(), "mjpeg" | "avimjpeg")
         || receipt.import_root != retained.import_root()
         || receipt.manifest_digest != retained.manifest_digest()
         || receipt.source_anchor != *retained.authority_anchor()
@@ -744,7 +744,7 @@ fn source_with_budget(
     validate_limits(request.decode_limits)?;
     let retained =
         RetainedFileImport::open(deployment, request.import_identity, request.read_limits, cx)?;
-    if retained.manifest().format != "mjpeg" {
+    if !matches!(retained.manifest().format.as_str(), "mjpeg" | "avimjpeg") {
         return Err(RecordedDecodeError::UnsupportedMedia);
     }
     let span = retained

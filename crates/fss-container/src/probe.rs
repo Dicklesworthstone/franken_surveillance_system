@@ -59,6 +59,8 @@ impl ProbeLimits {
 /// Container family claimed by the head.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ContainerKind {
+    /// RIFF AVI video.
+    Avi,
     /// ISO base media (`ftyp`).
     IsoBmff,
     /// Matroska or WebM (EBML header).
@@ -78,6 +80,7 @@ impl ContainerKind {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Avi => "avi",
             Self::IsoBmff => "iso-bmff",
             Self::Matroska => "matroska",
             Self::Flv => "flv",
@@ -92,7 +95,7 @@ impl ContainerKind {
     pub const fn media(self) -> MediaKind {
         match self {
             Self::Jpeg => MediaKind::Image,
-            Self::IsoBmff | Self::Matroska | Self::Flv | Self::MpegTs | Self::AnnexB => {
+            Self::Avi | Self::IsoBmff | Self::Matroska | Self::Flv | Self::MpegTs | Self::AnnexB => {
                 MediaKind::Video
             }
         }
@@ -138,6 +141,7 @@ pub fn probe<'a>(head: &'a [u8], limits: &ProbeLimits) -> ProbeOutcome<'a> {
             needed: TRANSPORT_PREFIX,
         };
     }
+    let avi = starts_with(window, b"RIFF") && window[8..12] == *b"AVI ";
     let transport = window[0] == 0x47 && window.get(188) == Some(&0x47);
     let bmff = window[4..8] == *b"ftyp";
     let ebml = starts_with(window, &[0x1A, 0x45, 0xDF, 0xA3]);
@@ -149,7 +153,8 @@ pub fn probe<'a>(head: &'a [u8], limits: &ProbeLimits) -> ProbeOutcome<'a> {
     let annex_b = !extended_bmff
         && (starts_with(window, &[0x00, 0x00, 0x00, 0x01])
             || starts_with(window, &[0x00, 0x00, 0x01]));
-    let matched = u8::from(ebml)
+    let matched = u8::from(avi)
+        + u8::from(ebml)
         + u8::from(flv)
         + u8::from(jpeg)
         + u8::from(annex_b)
@@ -184,7 +189,9 @@ pub fn probe<'a>(head: &'a [u8], limits: &ProbeLimits) -> ProbeOutcome<'a> {
             brand: Some(brand),
         };
     }
-    let container = if transport {
+    let container = if avi {
+        ContainerKind::Avi
+    } else if transport {
         ContainerKind::MpegTs
     } else if ebml {
         ContainerKind::Matroska

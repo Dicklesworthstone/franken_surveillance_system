@@ -520,7 +520,7 @@ fn run_jpeg_range(
         EncodeBudget::with_cancellation_probe(action.export.encode_work_units, &cancelled);
     let result: RunResult<(usize, usize)> = (|| {
         cx.checkpoint("file_cli:jpeg_range")?;
-        if retained.manifest().format != "mjpeg" {
+        if !matches!(retained.manifest().format.as_str(), "mjpeg" | "avimjpeg") {
             return Err(RecordedDecodeError::UnsupportedMedia.into());
         }
         if action.receipt_output.is_some() {

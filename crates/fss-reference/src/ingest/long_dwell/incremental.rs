@@ -1233,7 +1233,7 @@ fn decode_recipe(bytes: &[u8]) -> Result<DecodedRecipe> {
         RECIPE_DOMAIN_V4 => {
             partitioned = true;
             let format = d.text()?;
-            if format != "mjpeg" {
+            if !matches!(format, "mjpeg" | "avimjpeg") {
                 video::codec(format)?;
                 video_format = Some(format.to_owned());
             }

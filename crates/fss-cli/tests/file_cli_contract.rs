@@ -13,6 +13,9 @@ use fss_core::{BudgetVector, ContentDigest, OperationId};
 use fss_reference::ingest::{FileImportManifest, RetainedReadLimits};
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
+#[path = "../../fss-container/tests/support/avi_fixture.rs"]
+mod avi_fixture;
+
 const JPEG: &[u8] = include_bytes!("fixtures/retained_file_8x8.jpg");
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -465,6 +468,79 @@ fn immutable_source_reads_refuse_both_torn_journals_without_recovery_or_exports(
             assert_eq!(filesystem(&root)?, before, "repaired {relative}");
         }
         fs::write(path, original)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn avi_import_cold_verify_extract_and_native_decode_use_the_ordinary_entry_point() -> TestResult {
+    let temp = OwnedTestDir::new("avi")?;
+    let root = temp.0.join("deployment");
+    let source = temp.0.join("camera.avi");
+    let bytes = avi_fixture::movie(true, true);
+    fs::write(&source, &bytes)?;
+    let imported = command(&root, "import")
+        .arg("--input")
+        .arg(&source)
+        .args([
+            "--sensor",
+            "sensor:file-cli-test",
+            "--stream",
+            "stream:file-cli-test",
+            "--receive-time-ns",
+            "1000000000",
+            "--media-format",
+            "avimjpeg",
+        ])
+        .output()?;
+    success(&imported);
+    assert_eq!(field(&imported, "media_format")?, "avimjpeg");
+    assert_eq!(field(&imported, "segment_count")?, "3");
+    assert_eq!(field(&imported, "capture_time_class")?, "unknown");
+    assert_eq!(field(&imported, "absence_certifiable")?, "false");
+    let identity = field(&imported, "import_identity")?;
+    fs::remove_file(source)?;
+
+    let verified = command(&root, "verify")
+        .args(["--import-id", &identity])
+        .output()?;
+    success(&verified);
+    assert_eq!(
+        field(&verified, "verified_source_sha256")?,
+        ContentDigest::sha256(&bytes).to_text()
+    );
+    let jpeg = temp.0.join("third-frame.jpg");
+    let extracted = command(&root, "extract")
+        .args(["--import-id", &identity, "--segment", "2"])
+        .arg("--output")
+        .arg(&jpeg)
+        .output()?;
+    success(&extracted);
+    assert_eq!(fs::read(jpeg)?, avi_fixture::JPEG);
+
+    let mut decoded = None;
+    for action in ["decode", "read-decoded", "verify-decoded"] {
+        let image = temp.0.join(format!("{action}.pgm"));
+        let result = command(&root, action)
+            .args([
+                "--import-id",
+                &identity,
+                "--segment",
+                "2",
+                "--interpretation",
+                "gray",
+            ])
+            .arg("--output")
+            .arg(&image)
+            .output()?;
+        success(&result);
+        let pixels = fs::read(image)?;
+        assert!(!pixels.is_empty());
+        if let Some(expected) = &decoded {
+            assert_eq!(&pixels, expected);
+        } else {
+            decoded = Some(pixels);
+        }
     }
     Ok(())
 }

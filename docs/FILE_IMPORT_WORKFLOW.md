@@ -1,7 +1,7 @@
 # Retained camera-file workflow
 
 `fss-file` is an operator utility over the persistent reference deployment and the existing
-ADP-FILE adapter. It imports JPEG/MJPEG or Annex-B H.264 source bytes, reopens the resulting
+ADP-FILE adapter. It imports JPEG/MJPEG, MJPEG AVI or Annex-B H.264 source bytes, reopens the resulting
 ledgered import without the original file, verifies retained custody, and extracts exact
 source segments. It does not run a model, certify live coverage, or claim that H.264 was decoded.
 
@@ -36,6 +36,22 @@ coverage is labelled `recorded file source; no live continuity` (fss-dt3qf; see
 The command reports the actual retained manifest and completion anchor, rather than treating a
 newly reconstructed retry receipt as stored truth. A successful import also performs a complete
 source-byte verification. Save the printed `import_identity=sha256:...` for subsequent commands.
+
+## Import MJPEG AVI recordings
+
+The same `import` command accepts finite classic RIFF AVI recordings with one
+MJPEG video stream, with optional interleaved audio. Auto detection identifies
+the container bytes; `--media-format avimjpeg` is the explicit selector. The
+retained format is `avimjpeg`. Original headers, padding, audio and JPEG frame
+bytes stay under the source digest, and selected frame ranges feed the existing
+native JPEG decode and recorded analysis paths after cold reopening.
+
+AVI's rational stream rate supplies relative sample timing. Capture time remains
+unknown without the full operator capture-hint tuple; that tuple does not replace
+AVI's relative timing with its assumed frame rate. OpenDML continuation files,
+multiple video streams, dropped frames and index-directed ordering refuse. See
+[AVI_MJPEG_IMPORT.md](AVI_MJPEG_IMPORT.md) for commands, the admitted profile and
+custody contracts.
 
 ## Import a finite MPEG-TS recording
 

@@ -151,7 +151,7 @@ pub fn run_long_sentinel_detection(
     let mut usage = LongSentinelUsage::default();
     let mut jpeg = DecodeBudget::new(limits.package.jpeg_work_units);
     match media_format.as_str() {
-        "mjpeg" => {
+        "mjpeg" | "avimjpeg" => {
             let mut cursor = ChunkCursor::new(limits.maximum_source_chunk_bytes);
             for &segment in &selected {
                 checkpoint(cx, scalar, "long_sentinel:jpeg")?;

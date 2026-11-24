@@ -85,6 +85,7 @@
 //! must still be a regular file with the admitted `(dev, ino)` identity. Every byte read and the
 //! post-read size check use that handle, never the path again.
 
+mod avi;
 pub(crate) mod retry;
 
 use std::fs;
@@ -174,6 +175,8 @@ pub enum DetectedFileFormat {
     Hevc,
     /// Single JPEG image or concatenated MJPEG frame stream starting with SOI (`0xFFD8`).
     JpegStream,
+    /// Finite RIFF AVI with one MJPEG video stream.
+    AviMjpeg,
     /// Recorded RTP session (`#!rtpplay1.0` header).
     RtpPlay,
     /// Indexed (non-fragmented) ISO-BMFF/MP4 file with one `avc1` H.264 video track.
@@ -196,6 +199,7 @@ impl DetectedFileFormat {
             Self::AnnexB => "annexb",
             Self::Hevc => "hevc",
             Self::JpegStream => "mjpeg",
+            Self::AviMjpeg => "avimjpeg",
             Self::RtpPlay => "rtpplay",
             Self::Mp4Avc => "mp4avc",
             Self::Mp4Hevc => "mp4hevc",
@@ -212,6 +216,7 @@ impl DetectedFileFormat {
             Self::AnnexB => FileFormatHint::AnnexB,
             Self::Hevc => FileFormatHint::Hevc,
             Self::JpegStream => FileFormatHint::JpegStream,
+            Self::AviMjpeg => FileFormatHint::AviMjpeg,
             Self::RtpPlay => FileFormatHint::RtpPlay,
             Self::Mp4Avc => FileFormatHint::Mp4Avc,
             Self::Mp4Hevc => FileFormatHint::Mp4Hevc,
@@ -232,6 +237,8 @@ pub enum FileFormatHint {
     Hevc,
     /// Expected format is JPEG or MJPEG.
     JpegStream,
+    /// Expected format is a finite MJPEG AVI recording.
+    AviMjpeg,
     /// Expected format is rtpplay packet capture.
     RtpPlay,
     /// Expected format is an indexed MP4 file with one H.264 (`avc1`) video track.
@@ -254,6 +261,7 @@ impl FileFormatHint {
             Self::AnnexB => "annexb",
             Self::Hevc => "hevc",
             Self::JpegStream => "mjpeg",
+            Self::AviMjpeg => "avimjpeg",
             Self::RtpPlay => "rtpplay",
             Self::Mp4Avc => "mp4avc",
             Self::Mp4Hevc => "mp4hevc",
@@ -532,6 +540,9 @@ pub const MKV_PARAMETER_SET_REASON_PREFIX: &str = "mkv_avc_parameter_set:nal_len
 /// completed by `nal_length_bytes=N`.
 pub const MKV_HEVC_PARAMETER_SET_REASON_PREFIX: &str = "mkv_hevc_parameter_set:nal_length_bytes=";
 
+/// Omission reason prefix of AVI framing, metadata, padding and unselected stream bytes.
+pub const AVI_STRUCTURE_REASON_PREFIX: &str = "avi_";
+
 /// Omission reason prefix of FLV header/tag structure and opaque audio or script payloads.
 pub const FLV_STRUCTURE_REASON_PREFIX: &str = "flv_";
 /// Exact original AVC sequence-header parameter payload, followed by its NAL length width.
@@ -550,6 +561,7 @@ impl FileOmissionSpan {
         self.reason.starts_with(MP4_STRUCTURE_REASON_PREFIX)
             || self.reason.starts_with(MKV_STRUCTURE_REASON_PREFIX)
             || self.reason.starts_with(FLV_STRUCTURE_REASON_PREFIX)
+            || self.reason.starts_with(AVI_STRUCTURE_REASON_PREFIX)
     }
 }
 
@@ -788,6 +800,11 @@ pub enum FileIngestError {
     /// framing, or a bound). Nothing is retained.
     MatroskaRefused {
         /// The demuxer's typed, non-disclosing refusal.
+        refusal: fss_container::demux::DemuxError,
+    },
+    /// The MJPEG AVI parser refused framing, sample layout, timing or bounds.
+    AviRefused {
+        /// Non-disclosing native container refusal; no partial import is published.
         refusal: fss_container::demux::DemuxError,
     },
     /// The strict standard AVC FLV parser refused framing, configuration, timing or bounds.
@@ -1067,6 +1084,7 @@ impl std::fmt::Display for FileIngestError {
             Self::Contract(e) => write!(f, "contract error: {}", e),
             Self::AnnexB(e) => write!(f, "Annex-B error: {:?}", e),
             Self::Mp4Refused { refusal } => write!(f, "MP4 demux refused the file: {refusal:?}"),
+            Self::AviRefused { refusal } => write!(f, "AVI demux refused the file: {refusal:?}"),
             Self::MatroskaRefused { refusal } => {
                 write!(f, "Matroska demux refused the file: {refusal:?}")
             }
@@ -1090,6 +1108,7 @@ impl FileIngestError {
             Self::AmbiguousAnnexBCodec { .. } => Some("ERR-INGEST-FORMAT-AMBIGUOUS-001"),
             Self::FormatConflict { .. } => Some("ERR-INGEST-FORMAT-CONFLICT-001"),
             Self::Mp4Refused { .. } => Some("ERR-INGEST-MP4-REFUSED-001"),
+            Self::AviRefused { .. } => Some("ERR-INGEST-AVI-REFUSED-001"),
             Self::MatroskaRefused { .. } => Some("ERR-INGEST-MKV-REFUSED-001"),
             Self::FlvRefused { .. } => Some("ERR-INGEST-FLV-REFUSED-001"),
             Self::EvidenceDeleted { .. } => Some("ERR-EVIDENCE-DELETED-001"),
@@ -1226,6 +1245,7 @@ fn box_kind_text(kind: [u8; 4]) -> String {
 /// Container family of a demuxed length-prefixed video import.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ContainerFamily {
+    Avi,
     Mp4,
     Matroska,
     Flv,
@@ -1265,6 +1285,7 @@ impl ContainerVideo {
                 .map_err(|_| DemuxError::Cancelled)
         };
         let family = match format {
+            DetectedFileFormat::AviMjpeg => ContainerFamily::Avi,
             DetectedFileFormat::Mp4Avc | DetectedFileFormat::Mp4Hevc => ContainerFamily::Mp4,
             DetectedFileFormat::MkvAvc | DetectedFileFormat::MkvHevc => ContainerFamily::Matroska,
             DetectedFileFormat::FlvAvc => ContainerFamily::Flv,
@@ -1275,6 +1296,7 @@ impl ContainerVideo {
             refusal => Self::refusal(family, refusal),
         };
         let video = match family {
+            ContainerFamily::Avi => Self::avi(file_bytes, request, cx)?,
             ContainerFamily::Mp4 => {
                 let mp4 =
                     AvcMp4::parse_inband_recovering_tail(file_bytes, None, limits, &mut check)
@@ -1402,6 +1424,7 @@ impl ContainerVideo {
 
     fn refusal(family: ContainerFamily, refusal: DemuxError) -> FileIngestError {
         match family {
+            ContainerFamily::Avi => FileIngestError::AviRefused { refusal },
             ContainerFamily::Mp4 => FileIngestError::Mp4Refused { refusal },
             ContainerFamily::Matroska => FileIngestError::MatroskaRefused { refusal },
             ContainerFamily::Flv => FileIngestError::FlvRefused { refusal },
@@ -1485,6 +1508,10 @@ pub fn sniff_format_with_hint(
     // Check rtpplay: starts with "#!rtpplay1.0"
     if bytes.starts_with(b"#!rtpplay1.0") {
         return Ok((DetectedFileFormat::RtpPlay, "rtpplay_magic"));
+    }
+
+    if bytes.starts_with(b"RIFF") {
+        return avi::sniff(bytes, usize::MAX, &mut || Ok(()));
     }
 
     // Standard FLV is admitted whole through exact framing. No extended-FLV candidate search
@@ -2229,7 +2256,12 @@ impl FileIngestAdapter {
         let input_sha256 = ContentDigest::sha256(&file_bytes);
 
         // Step 3: Format sniffing
-        let sniffed = if file_bytes.starts_with(b"FLV") {
+        let sniffed = if file_bytes.starts_with(b"RIFF") {
+            avi::sniff(&file_bytes, request.limits.max_segments, &mut || {
+                cx.checkpoint(STAGE_SPLIT)
+                    .map_err(|_| DemuxError::Cancelled)
+            })
+        } else if file_bytes.starts_with(b"FLV") {
             sniff_flv(&file_bytes, request.limits.max_segments, &mut || {
                 cx.checkpoint(STAGE_SPLIT)
                     .map_err(|_| DemuxError::Cancelled)
@@ -2936,7 +2968,8 @@ impl FileIngestAdapter {
                     format: DetectedFileFormat::RtpPlay,
                 });
             }
-            DetectedFileFormat::Mp4Avc
+            DetectedFileFormat::AviMjpeg
+            | DetectedFileFormat::Mp4Avc
             | DetectedFileFormat::Mp4Hevc
             | DetectedFileFormat::MkvAvc
             | DetectedFileFormat::MkvHevc

@@ -383,7 +383,7 @@ fn run_selected(
             request.limits.read_limits,
             cx,
         )?;
-        if retained.manifest().format != "mjpeg" || end > retained.manifest().segment_spans.len() {
+        if !matches!(retained.manifest().format.as_str(), "mjpeg" | "avimjpeg") || end > retained.manifest().segment_spans.len() {
             return Err(RecordingError::InvalidRequest("JPEG/MJPEG source range"));
         }
         progress.completed.reserve(request.segment_count);

@@ -788,7 +788,7 @@ pub fn detect_osd_candidates(
     let privacy =
         current_mask(deployment, &first_capsule.sensor_id).map_err(RecordedDecodeError::from)?;
     let mut source = match media_format.as_str() {
-        "mjpeg" => OsdFrameSource::Jpeg {
+        "mjpeg" | "avimjpeg" => OsdFrameSource::Jpeg {
             retained: Box::new(retained),
             next: request.first_segment,
             end,

@@ -557,7 +557,7 @@ fn run_selected_detection<T>(
     };
     let mut frames = Vec::with_capacity(request.segment_count);
     match media_format.as_str() {
-        "mjpeg" => {
+        "mjpeg" | "avimjpeg" => {
             let mut budget = DecodeBudget::new(limits.jpeg_work_units);
             let mut chunks = super::VerifiedChunkCache::default();
             for segment in first..end {

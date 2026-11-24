@@ -973,7 +973,7 @@ impl<'a> DetectorCascade<'a> {
         let labels = &contract.spec().labels;
         let mut results: Vec<(usize, FrameStatus)> = Vec::with_capacity(wanted.len());
         match source.media_format {
-            "mjpeg" => {
+            "mjpeg" | "avimjpeg" => {
                 let retained = RetainedFileImport::open(
                     deployment,
                     source.import_identity,

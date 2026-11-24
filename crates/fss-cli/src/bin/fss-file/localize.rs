@@ -334,7 +334,7 @@ fn read(path: &Path, maximum: usize, cx: &ReplayCx) -> RunResult<Vec<u8>> {
 }
 fn source(a: &Action, format: &str) -> RunResult<RecordedLocalizationSource> {
     let l = a.decode_limits;
-    if format == "mjpeg" {
+    if matches!(format, "mjpeg" | "avimjpeg") {
         if a.first.is_some() {
             return Err(std::io::Error::other(
                 "JPEG localization selects one segment; no video range",

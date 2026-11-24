@@ -279,7 +279,7 @@ impl TolerantSource {
         let (first_capsule, _) = source_capsule(deployment, &retained, request.first_segment)?;
         let mask = current_mask(deployment, &first_capsule.sensor_id)?;
         let codec = match retained.manifest().format.as_str() {
-            "mjpeg" => None,
+            "mjpeg" | "avimjpeg" => None,
             "annexb" | "mp4avc" | "mkvavc" | "flvavc" => Some(Codec::H264),
             "hevc" | "mp4hevc" | "mkvhevc" => Some(Codec::H265),
             _ => return Err(RecordedDecodeError::UnsupportedMedia),

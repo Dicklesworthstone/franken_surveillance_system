@@ -257,6 +257,7 @@ impl FileImportManifest {
                     "annexb"
                         | "hevc"
                         | "mjpeg"
+                        | "avimjpeg"
                         | "mp4avc"
                         | "mp4hevc"
                         | "mkvavc"
@@ -403,6 +404,7 @@ impl FileImportManifest {
             "mp4avc" | "mp4hevc" => Some(super::MP4_STRUCTURE_REASON_PREFIX),
             "mkvavc" | "mkvhevc" => Some(super::MKV_STRUCTURE_REASON_PREFIX),
             "flvavc" => Some(super::FLV_STRUCTURE_REASON_PREFIX),
+            "avimjpeg" => Some(super::AVI_STRUCTURE_REASON_PREFIX),
             _ => None,
         };
         let container = structure_prefix.is_some();

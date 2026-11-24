@@ -1190,7 +1190,7 @@ fn prepare_scan(
     )?;
     let source = retained.manifest();
     let inter = match source.format.as_str() {
-        "mjpeg" => false,
+        "mjpeg" | "avimjpeg" => false,
         "annexb" | "hevc" | "mp4avc" | "mp4hevc" | "mkvavc" | "flvavc" | "mkvhevc" => true,
         _ => return Err(RecordedDecodeError::UnsupportedMedia.into()),
     };
@@ -1717,7 +1717,7 @@ impl LongDwellReport {
             publication_guard,
             ..
         } = scan;
-        let policy: &'static [u8] = if media_format == "mjpeg" {
+        let policy: &'static [u8] = if matches!(media_format.as_str(), "mjpeg" | "avimjpeg") {
             POLICY
         } else {
             POLICY_INTER

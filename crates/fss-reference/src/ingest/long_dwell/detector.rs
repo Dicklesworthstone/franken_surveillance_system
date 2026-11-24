@@ -36,7 +36,7 @@ pub(super) fn select(scan: &ScanData, config: CascadeConfig, cx: &ReplayCx) -> R
         if d.text()? != FRAME_DOMAIN {
             return Err(WatchError::Conflict);
         }
-        let inter_coded = scan.media_format != "mjpeg";
+        let inter_coded = !matches!(scan.media_format.as_str(), "mjpeg" | "avimjpeg");
         if inter_coded && d.clone().text().ok() == Some("break") {
             continue;
         }

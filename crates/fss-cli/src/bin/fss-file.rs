@@ -53,7 +53,7 @@ const HELP: &str = "fss-file <import|import-ts|inspect|verify|extract|select-mov
   Query retained recorder timestamps without the archive: fss-file query-replay-utc --help.\n\
   Source commands also accept --manifest-out FILE.\n\
   import: --input FILE --sensor ID --stream ID --receive-time-ns N\n\
-          [--media-format auto|mjpeg|annexb|hevc|mp4avc|mp4hevc|mkvavc|mkvhevc|flvavc|rtpplay]\n\
+          [--media-format auto|mjpeg|avimjpeg|annexb|hevc|mp4avc|mp4hevc|mkvavc|mkvhevc|flvavc|rtpplay]\n\
           (annexb is H.264, hevc is H.265, mp4avc/mp4hevc an MP4/MOV with one H.264 avc1 /\n\
           H.265 hvc1 track, mkvavc/mkvhevc a Matroska/WebM file with one H.264 / H.265 track;\n\
           flvavc is strict standard AVC FLV with one immutable configuration and observed\n\
@@ -261,7 +261,7 @@ fn subcommand_help(args: &[OsString]) -> Option<String> {
     }
     let detail = match command {
         "import" => {
-            "--root <dir> --site <site-id> --input <file> --sensor <id> --stream <id> --receive-time-ns <n> [--media-format auto|mjpeg|annexb|hevc|mp4avc|mp4hevc|mkvavc|mkvhevc|flvavc|rtpplay] [--capture-start-ns <n> --capture-uncertainty-ns <n> --assumed-fps <f>] [--manifest-out <file>] [--principal <id>] [--json] [--help]"
+            "--root <dir> --site <site-id> --input <file> --sensor <id> --stream <id> --receive-time-ns <n> [--media-format auto|mjpeg|avimjpeg|annexb|hevc|mp4avc|mp4hevc|mkvavc|mkvhevc|flvavc|rtpplay] [--capture-start-ns <n> --capture-uncertainty-ns <n> --assumed-fps <f>] [--manifest-out <file>] [--principal <id>] [--json] [--help]"
         }
         "import-ts" => {
             "--root <dir> --site <site-id> --input <file> --sensor <id> --stream <id> --receive-time-ns <n> [--ts-framing ts188|m2ts192] [--ts-program <n>] [--ts-video-pid <n>] [--principal <id>] [--json] [--help]"
@@ -532,6 +532,7 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
             request.format_hint = match text(&values, "--media-format")? {
                 "auto" => None,
                 "mjpeg" => Some(FileFormatHint::JpegStream),
+                "avimjpeg" => Some(FileFormatHint::AviMjpeg),
                 "annexb" => Some(FileFormatHint::AnnexB),
                 "hevc" => Some(FileFormatHint::Hevc),
                 "rtpplay" => Some(FileFormatHint::RtpPlay),
@@ -542,7 +543,7 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
                 "flvavc" => Some(FileFormatHint::FlvAvc),
                 _ => {
                     return Err(malformed(
-                        "media format must be auto, mjpeg, annexb, hevc, mp4avc, mp4hevc, mkvavc, mkvhevc, flvavc or rtpplay",
+                        "media format must be auto, mjpeg, avimjpeg, annexb, hevc, mp4avc, mp4hevc, mkvavc, mkvhevc, flvavc or rtpplay",
                     ));
                 }
             };

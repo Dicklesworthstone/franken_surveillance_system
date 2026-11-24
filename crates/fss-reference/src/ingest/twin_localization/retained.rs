@@ -176,7 +176,7 @@ fn admit_source(
     }
     let format = retained.manifest().format.as_str();
     let compatible = match source {
-        RecordedLocalizationSource::Jpeg(_) => format == "mjpeg",
+        RecordedLocalizationSource::Jpeg(_) => matches!(format, "mjpeg" | "avimjpeg"),
         RecordedLocalizationSource::H264 { .. } => {
             matches!(format, "annexb" | "mp4avc" | "mkvavc" | "flvavc")
         }

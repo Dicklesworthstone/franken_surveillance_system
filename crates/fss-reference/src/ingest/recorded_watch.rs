@@ -681,6 +681,7 @@ struct WatchCascade {
 pub fn media_decoder_label(media_format: &str) -> &'static str {
     match media_format {
         "mjpeg" => "mjpeg:fss-codec-mjpeg:luma",
+        "avimjpeg" => "avimjpeg:fss-container-avi:fss-codec-mjpeg:luma",
         "annexb" => "annexb:fss-codec-h264:idr-led-range:luma",
         "mp4avc" => "mp4avc:fss-container-demux:fss-codec-h264:idr-led-range:luma",
         "flvavc" => "flvavc:fss-container-flv:fss-codec-h264:idr-led-range:luma",
@@ -903,7 +904,7 @@ impl WatchReport {
         };
         let mut source = match media_format.as_str() {
             _ if tolerant.is_some() => None,
-            "mjpeg" => Some(FrameSource::Jpeg {
+            "mjpeg" | "avimjpeg" => Some(FrameSource::Jpeg {
                 retained: Box::new(retained),
                 next: plan.first_segment,
                 end,

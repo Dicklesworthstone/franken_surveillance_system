@@ -352,7 +352,7 @@ pub(in crate::ingest) fn run_selected(
     let mut inference_pipeline_attempts = 0;
     let mut jpeg = DecodeBudget::new(remaining_jpeg);
     if !wanted.is_empty() {
-        if scan.media_format == "mjpeg" {
+        if matches!(scan.media_format.as_str(), "mjpeg" | "avimjpeg") {
             let retained = RetainedFileImport::open(
                 deployment,
                 plan.import_identity,

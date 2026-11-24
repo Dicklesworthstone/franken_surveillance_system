@@ -564,7 +564,7 @@ fn load(
     if retained.import_root() != recipe.import_root
         || retained.manifest_digest() != recipe.manifest
         || retained.authority_anchor() != &recipe.source_anchor
-        || retained.manifest().format != "mjpeg"
+        || !matches!(retained.manifest().format.as_str(), "mjpeg" | "avimjpeg")
         || retained.manifest().capture_time_label != "operator_assumption"
     {
         return Err(DwellReplayError::InvalidRecord);

@@ -561,7 +561,7 @@ pub(super) fn load(
         cx,
     )?;
     recipe.source.media_format = super::watch::media_format(&retained.manifest().format)?;
-    if (recipe.source.media_format != "mjpeg") != inter {
+    if (!matches!(recipe.source.media_format.as_str(), "mjpeg" | "avimjpeg")) != inter {
         return Err(Error::InvalidRecord);
     }
     for (&position, frame) in &frames {
