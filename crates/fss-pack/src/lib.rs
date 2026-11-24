@@ -44,9 +44,10 @@ pub use archive::{
     ColdS3Limits, ColdStorageTier, ColdUploadMode, DEFAULT_COLD_MAX_PACK_BYTES,
     DEFAULT_COLD_MIN_PACK_BYTES, DEFAULT_COLD_TARGET_PACK_BYTES, DEFAULT_MULTIPART_PART_BYTES,
     DEFAULT_MULTIPART_THRESHOLD_BYTES, LocalPackEvictionReceipt, PACK_COLD_ARCHIVE_MANIFEST_DOMAIN,
+    MAX_COLD_MANIFEST_DOWNLOAD_BYTES,
     PACK_COLD_ENDPOINT_DOMAIN, PACK_COLD_RETRIEVABILITY_AUDIT_DOMAIN, S3CompatiblePackTransport,
     archive_sealed_pack, audit_cold_pack_retrievability, evict_local_sealed_pack,
-    restore_cold_pack, restore_cold_pack_to_dir,
+    fetch_cold_pack_manifest, restore_cold_pack, restore_cold_pack_to_dir,
 };
 pub use catalog::{
     CATALOG_FORMAT_VERSION, CATALOG_JOURNAL_MAGIC, CATALOG_SNAPSHOT_MAGIC, CatalogRecoveryReport,

@@ -998,6 +998,88 @@ fn fss_archive_cli_seal_verify_s3_upload_restore_and_crypto_erase_e2e() -> TestR
         "restored pack bytes must match original bit-for-bit"
     );
 
+    // Recover after both the original plaintext pack and every local manifest have been lost.
+    let upload = parse_json(&up_out)?;
+    let remote_key = json_text(&upload, "manifest_object_key")?.to_owned();
+    let manifest_pin = json_text(&upload, "manifest_digest")?.to_owned();
+    fs::remove_dir_all(&manifests_dir)?;
+    fs::remove_file(dep_root.join("objects/packs").join(PackId::new(1, 1).file_name()))?;
+    fs::remove_file(&restored_pack)?;
+    let remote_args = [
+        "archive", "restore", "--packs-dir", &rp,
+        "--manifest-object-key", &remote_key, "--expected-manifest", &manifest_pin,
+        "--key-catalog", &kc, "--peer", &peer_str, "--host", "s3.local",
+        "--bucket", "fss-cold-bucket", "--vault-dir", &vd,
+        "--passphrase-file", &pf, "--kek-secret-id", "secret:kek:site-1",
+        "--s3-secret-id", "secret:s3:cold-1", "--access-key-id", "AKIAIOSFODNN7EXAMPLE",
+        "--site", "site:archive-e2e", "--json",
+    ];
+    let pin_index = remote_args.iter().position(|arg| *arg == "--expected-manifest")
+        .ok_or("missing pin option")? + 1;
+    let wrong_pin = ContentDigest::sha256(b"a different independently retained manifest").to_text();
+    let mut wrong_args = remote_args;
+    wrong_args[pin_index] = &wrong_pin;
+    let (code, rejected, _) = run_fss(&wrong_args)?;
+    assert_ne!(code, 0, "wrong root pin was accepted: {rejected}");
+    assert!(!restored_pack.exists());
+
+    let remote_path = format!("/fss-cold-bucket/{remote_key}");
+    let remote_bytes = s3.objects.lock().map_err(|_| "S3 lock poisoned")?
+        .get(&remote_path).ok_or("missing remote root")?.clone();
+    let mut tampered = remote_bytes.clone();
+    tampered[0] ^= 1;
+    for bytes in [
+        tampered,
+        vec![0; fss_pack::MAX_COLD_MANIFEST_DOWNLOAD_BYTES + 1],
+    ] {
+        s3.objects.lock().map_err(|_| "S3 lock poisoned")?
+            .insert(remote_path.clone(), bytes);
+        let (code, rejected, _) = run_fss(&remote_args)?;
+        assert_ne!(code, 0, "invalid remote manifest was accepted: {rejected}");
+        assert!(!restored_pack.exists());
+    }
+    s3.objects.lock().map_err(|_| "S3 lock poisoned")?.remove(&remote_path);
+    let (code, missing, _) = run_fss(&remote_args)?;
+    assert_ne!(code, 0, "missing remote manifest was accepted: {missing}");
+    assert!(!restored_pack.exists());
+
+    let original_manifest = fss_pack::ColdPackArchiveManifest::from_canonical_bytes(&remote_bytes)?;
+    let wrong_source = fss_pack::ColdPackArchiveManifest::build(
+        original_manifest.pack_id,
+        original_manifest.key_epoch,
+        original_manifest.dek_id,
+        original_manifest.wrapped_dek_digest,
+        ContentDigest::sha256(b"incorrect original plaintext identity"),
+        original_manifest.plaintext_bytes,
+        original_manifest.ciphertext_sha256,
+        original_manifest.ciphertext_bytes,
+        original_manifest.object_key.clone(),
+        original_manifest.etag.clone(),
+        original_manifest.storage_tier,
+        original_manifest.part_count,
+        original_manifest.published_at_ns,
+    )?;
+    s3.objects.lock().map_err(|_| "S3 lock poisoned")?
+        .insert(remote_path.clone(), wrong_source.to_canonical_bytes()?);
+    let wrong_source_pin = wrong_source.manifest_digest.to_text();
+    let mut wrong_source_args = remote_args;
+    wrong_source_args[pin_index] = &wrong_source_pin;
+    let (code, rejected, _) = run_fss(&wrong_source_args)?;
+    assert_ne!(code, 0, "incorrect plaintext identity was accepted: {rejected}");
+    assert!(rejected.contains("plaintext pack length or SHA-256"));
+    assert!(!restored_pack.exists());
+
+    s3.objects.lock().map_err(|_| "S3 lock poisoned")?
+        .insert(remote_path, remote_bytes);
+    let (code, recovered_out, err) = run_fss(&remote_args)?;
+    assert_eq!(code, 0, "remote-root recovery failed: {recovered_out} {err}");
+    let recovered = parse_json(&recovered_out)?;
+    assert_eq!(json_text(&recovered, "manifest_source")?, "remote_object");
+    assert_eq!(json_text(&recovered, "manifest_digest")?, manifest_pin);
+    assert!(recovered_out.contains("\"manifest_pin_verified\":true"));
+    assert_eq!(fs::read(&restored_pack)?, orig_bytes);
+    assert!(!manifest_file.exists());
+
     // 7. `fss archive crypto-erase` preview -> approve -> signed erasure -> verify fails with ERR-CRYPTO-KEY-ERASED-001!
     let (code, ce_prev, err) = run_fss(&[
         "archive",
@@ -1065,6 +1147,26 @@ fn fss_archive_cli_seal_verify_s3_upload_restore_and_crypto_erase_e2e() -> TestR
         after_out.contains("ERR-CRYPTO-KEY-ERASED-001"),
         "expected ERR-CRYPTO-KEY-ERASED-001 after erasure, got: {after_out}"
     );
+
+    // A verified remote root cannot revive an archived DEK that the current catalog erased.
+    let archive_dek = json_text(&upload, "dek_id")?;
+    let erase_args = [
+        "archive", "crypto-erase", "--key-catalog", &kc, "--dek-id", archive_dek,
+        "--reason", "remote-recovery-erasure", "--vault-dir", &vd,
+        "--passphrase-file", &pf, "--kek-secret-id", "secret:kek:site-1",
+        "--site", "site:archive-e2e", "--json",
+    ];
+    let (code, preview, err) = run_fss(&erase_args)?;
+    assert_eq!(code, 0, "archived DEK erasure preview failed: {preview} {err}");
+    let approval = json_text(&parse_json(&preview)?, "approval_digest")?.to_owned();
+    let mut approved_erasure = erase_args.to_vec();
+    approved_erasure.extend(["--approve", &approval]);
+    assert_eq!(run_fss(&approved_erasure)?.0, 0);
+    fs::remove_file(&restored_pack)?;
+    let (code, erased, _) = run_fss(&remote_args)?;
+    assert_ne!(code, 0);
+    assert!(erased.contains("ERR-CRYPTO-KEY-ERASED-001"), "{erased}");
+    assert!(!restored_pack.exists());
 
     Ok(())
 }
@@ -1343,5 +1445,28 @@ fn fss_site_run_authenticates_http_mjpeg_camera_from_vault_with_zero_canary_leak
     assert!(doc_out.contains("\"format_version\":2"), "doctor={doc_out}");
     scanner.assert_clean("fss doctor stdout", doc_out.as_bytes())?;
 
+    Ok(())
+}
+
+#[test]
+fn remote_archive_restore_refuses_ambiguous_or_unpinned_modes_before_io() -> TestResult {
+    let valid = ContentDigest::sha256(b"trusted upload manifest identity").to_text();
+    let zero = format!("sha256:{}", "0".repeat(64));
+    let blake = format!("blake3:{}", "1".repeat(64));
+    for flags in [
+        vec!["--manifest-object-key", "remote/root"],
+        vec!["--expected-manifest", valid.as_str()],
+        vec!["--manifest-file", "/absent/local", "--manifest-object-key", "remote/root", "--expected-manifest", valid.as_str()],
+        vec!["--manifest-object-key", "remote/root", "--expected-manifest", zero.as_str()],
+        vec!["--manifest-object-key", "remote/root", "--expected-manifest", blake.as_str()],
+        vec!["--manifest-object-key", "remote/root", "--manifest-object-key", "other/root", "--expected-manifest", valid.as_str()],
+        vec!["--manifest-object-key", "remote/root", "--expected-manifest", valid.as_str(), "--expected-manifest", valid.as_str()],
+    ] {
+        let mut args = vec!["archive", "restore", "--packs-dir", "/absent/destination"];
+        args.extend(flags);
+        let (code, stdout, _) = run_fss(&args)?;
+        assert_ne!(code, 0);
+        assert!(stdout.contains("ERR-CLI-MALFORMED-VALUE-001"), "{stdout}");
+    }
     Ok(())
 }

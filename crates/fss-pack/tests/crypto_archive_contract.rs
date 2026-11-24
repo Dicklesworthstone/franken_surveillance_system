@@ -26,7 +26,7 @@ use fss_pack::{
     archive_sealed_pack, audit_cold_pack_retrievability, decrypt_aead_frame,
     decrypt_and_verify_ledger_epoch_segment, decrypt_and_verify_pack_bytes,
     decrypt_and_verify_pack_file, encrypt_aead_frame, encrypt_ledger_epoch_segment,
-    encrypt_pack_file, evict_local_sealed_pack, restore_cold_pack,
+    encrypt_pack_file, evict_local_sealed_pack, fetch_cold_pack_manifest, restore_cold_pack,
 };
 use fss_vault::{
     AdapterFamily, CAP_SECRET_READ_001, CAP_SECRET_WRITE_001, CanaryLeakScanner, KdfParams,
@@ -1444,10 +1444,102 @@ fn cold_tier_loopback_s3_e2e_archive_audit_tamper_evict_and_restore() -> TestRes
         Err(PackError::MissingObject(_))
     ));
 
+    // Lose all local archive manifests and recover both roots from independent retained pins.
+    fs::remove_dir_all(&local_manifests_dir)?;
+    let recovered_p1 = fetch_cold_pack_manifest(
+        &mut transport,
+        &arch_p1.manifest_object_key,
+        arch_p1.manifest.manifest_digest,
+        now,
+    )?;
+    let recovered_p2 = fetch_cold_pack_manifest(
+        &mut transport,
+        &arch_p2.manifest_object_key,
+        arch_p2.manifest.manifest_digest,
+        now,
+    )?;
+    assert_eq!(recovered_p1, arch_p1.manifest);
+    assert_eq!(recovered_p2, arch_p2.manifest);
+
+    let manifest_requests = server.requests().len();
+    for invalid_pin in [
+        ContentDigest::new(fss_core::DigestAlgorithm::Sha256, [0; 32]),
+        ContentDigest::new(fss_core::DigestAlgorithm::Blake3, [1; 32]),
+    ] {
+        assert!(fetch_cold_pack_manifest(
+            &mut transport, &arch_p1.manifest_object_key, invalid_pin, now
+        ).is_err());
+    }
+    assert!(fetch_cold_pack_manifest(
+        &mut transport, "", arch_p1.manifest.manifest_digest, now
+    ).is_err());
+    assert_eq!(server.requests().len(), manifest_requests);
+    assert!(matches!(
+        fetch_cold_pack_manifest(
+            &mut transport,
+            &arch_p1.manifest_object_key,
+            arch_p2.manifest.manifest_digest,
+            now,
+        ),
+        Err(PackError::DigestMismatch { .. })
+    ));
+
+    let original_manifest = arch_p1.manifest.to_canonical_bytes()?;
+    let mut corrupt_manifest = original_manifest.clone();
+    corrupt_manifest[0] ^= 1;
+    let mut suffixed_manifest = original_manifest.clone();
+    suffixed_manifest.push(0);
+    for bytes in [
+        corrupt_manifest,
+        suffixed_manifest,
+        arch_p2.manifest.to_canonical_bytes()?,
+        vec![0; fss_pack::MAX_COLD_MANIFEST_DOWNLOAD_BYTES + 1],
+    ] {
+        server.state.lock().map_err(|_| "S3 state poisoned")?.objects.insert(
+            format!("/{bucket}/{}", arch_p1.manifest_object_key),
+            (bytes, "\"untrusted-manifest-etag\"".to_owned()),
+        );
+        let before = server.requests().len();
+        assert!(fetch_cold_pack_manifest(
+            &mut transport,
+            &arch_p1.manifest_object_key,
+            arch_p1.manifest.manifest_digest,
+            now,
+        ).is_err());
+        let requests = server.requests();
+        assert_eq!(requests.len(), before + 1);
+        assert!(requests[before].path.ends_with(&arch_p1.manifest_object_key));
+    }
+    server.state.lock().map_err(|_| "S3 state poisoned")?.objects.insert(
+        format!("/{bucket}/{}", arch_p1.manifest_object_key),
+        (original_manifest, "\"recovered-manifest-etag\"".to_owned()),
+    );
+    assert_eq!(fetch_cold_pack_manifest(
+        &mut transport,
+        &arch_p1.manifest_object_key,
+        arch_p1.manifest.manifest_digest,
+        now,
+    )?, recovered_p1);
+
+    let before = server.requests().len();
+    assert!(matches!(
+        restore_cold_pack(
+            &mut transport,
+            &recovered_p1,
+            &catalog,
+            &kek,
+            &reopened,
+            recovered_p1.ciphertext_bytes as usize - 1,
+            now,
+        ),
+        Err(PackError::ObjectTooLarge { .. })
+    ));
+    assert_eq!(server.requests().len(), before);
+
     // Restore BOTH cold packs from loopback S3 -> verify EVERY inner object's SHA-256 + bytes!
     let rest_p1 = restore_cold_pack(
         &mut transport,
-        &arch_p1.manifest,
+        &recovered_p1,
         &catalog,
         &kek,
         &reopened,
@@ -1457,7 +1549,7 @@ fn cold_tier_loopback_s3_e2e_archive_audit_tamper_evict_and_restore() -> TestRes
     assert_eq!(rest_p1.restored_object_count, p1_objects.len());
     let rest_p2 = restore_cold_pack(
         &mut transport,
-        &arch_p2.manifest,
+        &recovered_p2,
         &catalog,
         &kek,
         &reopened,

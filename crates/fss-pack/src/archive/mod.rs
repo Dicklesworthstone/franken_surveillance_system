@@ -5,6 +5,7 @@
 
 pub mod audit;
 pub mod manifest;
+pub mod recovery;
 pub mod s3_pack;
 mod s3_wire;
 
@@ -33,6 +34,7 @@ pub use manifest::{
     DEFAULT_COLD_TARGET_PACK_BYTES, DEFAULT_MULTIPART_PART_BYTES,
     DEFAULT_MULTIPART_THRESHOLD_BYTES, PACK_COLD_ARCHIVE_MANIFEST_DOMAIN,
 };
+pub use recovery::{MAX_COLD_MANIFEST_DOWNLOAD_BYTES, fetch_cold_pack_manifest};
 pub use s3_pack::{
     ColdGetResponse, ColdPackTransport, ColdPutReceipt, ColdRangeResponse, ColdS3Credentials,
     ColdS3Endpoint, ColdS3Limits, PACK_COLD_ENDPOINT_DOMAIN, S3CompatiblePackTransport,

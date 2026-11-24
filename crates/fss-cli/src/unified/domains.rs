@@ -1368,14 +1368,19 @@ const ARCHIVE_VERBS: &[VerbSpec] = &[
     VerbSpec {
         domain: "archive",
         verb: "restore",
-        summary: "Download, authenticate, decrypt, and atomically restore a cold-archived .fssp packfile",
-        usage: "fss archive restore --manifest-file <pack.manifest.fssc> --key-catalog <file.fskc> --peer <ip:port> --host <host> --bucket <name> --vault-dir <dir> --passphrase-file <0600-file> --kek-secret-id <id> --s3-secret-id <id> --access-key-id <id> [--root <deployment-dir>] [--json] [--help]",
+        summary: "Recover a cold archive from a local or independently pinned remote manifest, then decrypt and verify its packfile",
+        usage: "fss archive restore (--manifest-file <pack.manifest.fssc> | --manifest-object-key <key> --expected-manifest <sha256>) --key-catalog <file.fskc> --peer <ip:port> --host <host> --bucket <name> --vault-dir <dir> --passphrase-file <0600-file> --kek-secret-id <id> --s3-secret-id <id> --access-key-id <id> (--packs-dir <dir> | --root <deployment-dir>) [--json] [--help]",
         backend: UnifiedBackend::InProcessPackArchive,
         mutating: true,
         normalizes_preview: false,
         accepts_root: true,
         accepts_archive: false,
-        flags: &[F_ROOT_OPT, F_SITE, F_JSON, F_HELP],
+        flags: &[
+            flag("--manifest-file", Some("<file>"), "Local archive manifest", false),
+            flag("--manifest-object-key", Some("<key>"), "Remote root manifest from the upload receipt", false),
+            flag("--expected-manifest", Some("<sha256>"), "Independently retained manifest_digest for remote recovery", false),
+            F_ROOT_OPT, F_SITE, F_JSON, F_HELP,
+        ],
     },
     VerbSpec {
         domain: "archive",

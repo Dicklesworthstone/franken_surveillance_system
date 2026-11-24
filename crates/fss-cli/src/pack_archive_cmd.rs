@@ -27,7 +27,8 @@ use fss_pack::{
     EncryptedStreamKind, KeyEncryptionKey, KeyEnvelopeCatalog, KeyEpoch, PackConfig, PackError,
     PackId, PackStore, S3CompatiblePackTransport, SCHEMA_EPOCH_PACKFILE, archive_sealed_pack,
     decrypt_and_verify_pack_bytes, decrypt_and_verify_pack_file, encrypt_pack_file,
-    restore_cold_pack_to_dir, verify_sealed_pack,
+    MAX_COLD_MANIFEST_DOWNLOAD_BYTES, fetch_cold_pack_manifest, restore_cold_pack_to_dir,
+    verify_sealed_pack,
 };
 use fss_vault::{
     AdapterFamily, CAP_SECRET_READ_001, ERR_SECRET_INVALID_INPUT_001, LocalEncryptedVault,
@@ -61,6 +62,8 @@ struct ArchiveOpts {
     out_file: Option<PathBuf>,
     enc_file: Option<PathBuf>,
     manifest_file: Option<PathBuf>,
+    manifest_object_key: Option<String>,
+    expected_manifest: Option<ContentDigest>,
     local_manifest_dir: Option<PathBuf>,
     key_catalog: Option<PathBuf>,
     vault_dir: Option<PathBuf>,
@@ -119,7 +122,7 @@ pub fn execute_pack_archive_command(
         "seal" => exec_seal(args),
         "verify" => exec_verify(args),
         "upload" => exec_upload(args),
-        "restore" => exec_restore(args),
+        "restore" => exec_restore(args, control),
         "crypto-erase" => exec_crypto_erase(args),
         other => err_json(
             "ERR-CLI-UNKNOWN-COMMAND-001",
@@ -142,6 +145,8 @@ fn parse_archive_opts(
         out_file: None,
         enc_file: None,
         manifest_file: None,
+        manifest_object_key: None,
+        expected_manifest: None,
         local_manifest_dir: None,
         key_catalog: None,
         vault_dir: None,
@@ -200,7 +205,53 @@ fn parse_archive_opts(
             "--out" => opts.out_file = Some(PathBuf::from(next_val(&mut i, "--out")?)),
             "--enc-file" => opts.enc_file = Some(PathBuf::from(next_val(&mut i, "--enc-file")?)),
             "--manifest-file" => {
+                if opts.manifest_file.is_some() {
+                    return Err(err_json(
+                        "ERR-CLI-MALFORMED-VALUE-001",
+                        "--manifest-file must be supplied once",
+                        ExitIdentity::MALFORMED_VALUE,
+                    ));
+                }
                 opts.manifest_file = Some(PathBuf::from(next_val(&mut i, "--manifest-file")?));
+            }
+            "--manifest-object-key" if verb == "restore" => {
+                if opts.manifest_object_key.is_some() {
+                    return Err(err_json(
+                        "ERR-CLI-MALFORMED-VALUE-001",
+                        "--manifest-object-key must be supplied once",
+                        ExitIdentity::MALFORMED_VALUE,
+                    ));
+                }
+                let key = next_val(&mut i, "--manifest-object-key")?;
+                if key.is_empty() || key.len() > 1024 || key.chars().any(char::is_control) {
+                    return Err(err_json(
+                        "ERR-CLI-MALFORMED-VALUE-001",
+                        "--manifest-object-key must be a bounded nonempty object key",
+                        ExitIdentity::MALFORMED_VALUE,
+                    ));
+                }
+                opts.manifest_object_key = Some(key);
+            }
+            "--expected-manifest" if verb == "restore" => {
+                if opts.expected_manifest.is_some() {
+                    return Err(err_json(
+                        "ERR-CLI-MALFORMED-VALUE-001",
+                        "--expected-manifest must be supplied once",
+                        ExitIdentity::MALFORMED_VALUE,
+                    ));
+                }
+                let digest = parse_digest(
+                    "--expected-manifest",
+                    &next_val(&mut i, "--expected-manifest")?,
+                )?;
+                if digest.algorithm() != DigestAlgorithm::Sha256 || digest.bytes() == [0; 32] {
+                    return Err(err_json(
+                        "ERR-CLI-MALFORMED-VALUE-001",
+                        "--expected-manifest requires a nonzero SHA-256 manifest digest",
+                        ExitIdentity::MALFORMED_VALUE,
+                    ));
+                }
+                opts.expected_manifest = Some(digest);
             }
             "--local-manifest-dir" => {
                 opts.local_manifest_dir =
@@ -357,6 +408,21 @@ fn parse_archive_opts(
         i += 1;
     }
 
+    if verb == "restore" {
+        match (&opts.manifest_file, &opts.manifest_object_key, opts.expected_manifest) {
+            (Some(_), None, None) | (None, Some(_), Some(_)) => {}
+            (None, None, None) => return Err(err_json(
+                "ERR-CLI-MISSING-VALUE-001",
+                "restore requires --manifest-file or both --manifest-object-key and --expected-manifest",
+                ExitIdentity::MISSING_VALUE,
+            )),
+            _ => return Err(err_json(
+                "ERR-CLI-MALFORMED-VALUE-001",
+                "restore requires either --manifest-file or both --manifest-object-key and --expected-manifest",
+                ExitIdentity::MALFORMED_VALUE,
+            )),
+        }
+    }
     Ok(opts)
 }
 
@@ -786,7 +852,7 @@ fn exec_upload(args: &[ArgToken]) -> (String, ExitIdentity) {
     }
 }
 
-fn exec_restore(args: &[ArgToken]) -> (String, ExitIdentity) {
+fn exec_restore(args: &[ArgToken], control: &crate::RequestControl<'_>) -> (String, ExitIdentity) {
     let opts = match parse_archive_opts("restore", args) {
         Ok(o) => o,
         Err(e) => return e,
@@ -795,13 +861,6 @@ fn exec_restore(args: &[ArgToken]) -> (String, ExitIdentity) {
         Ok(d) => d,
         Err(e) => return e,
     };
-    let Some(manifest_path) = &opts.manifest_file else {
-        return err_json(
-            "ERR-CLI-MISSING-VALUE-001",
-            "`--manifest-file <pack.manifest.fssc>` is required",
-            ExitIdentity::MISSING_VALUE,
-        );
-    };
     let Some(catalog_path) = &opts.key_catalog else {
         return err_json(
             "ERR-CLI-MISSING-VALUE-001",
@@ -809,14 +868,18 @@ fn exec_restore(args: &[ArgToken]) -> (String, ExitIdentity) {
             ExitIdentity::MISSING_VALUE,
         );
     };
-    let manifest_bytes =
-        match read_bounded_regular_file(manifest_path, 1024 * 1024, "cold archive manifest") {
-            Ok(b) => b,
-            Err(err) => return err,
-        };
-    let manifest = match ColdPackArchiveManifest::from_canonical_bytes(&manifest_bytes) {
-        Ok(m) => m,
-        Err(err) => return pack_err_to_json(err),
+    let local_manifest = match &opts.manifest_file {
+        Some(path) => {
+            let bytes = match read_bounded_regular_file(path, 1024 * 1024, "cold archive manifest") {
+                Ok(bytes) => bytes,
+                Err(err) => return err,
+            };
+            match ColdPackArchiveManifest::from_canonical_bytes(&bytes) {
+                Ok(manifest) => Some(manifest),
+                Err(err) => return pack_err_to_json(err),
+            }
+        }
+        None => None,
     };
     let endpoint = match build_s3_endpoint(&opts) {
         Ok(e) => e,
@@ -842,7 +905,44 @@ fn exec_restore(args: &[ArgToken]) -> (String, ExitIdentity) {
                 return pack_err_to_json(err);
             }
         };
+    if control.is_cancelled() {
+        vault.lock();
+        return err_json(
+            "ERR-CLI-READ-CANCELLED-001",
+            "archive restore cancelled before download",
+            ExitIdentity::RUNTIME_FAILURE,
+        );
+    }
     let now = current_timestamp_ns();
+    let manifest = match local_manifest {
+        Some(manifest) => manifest,
+        None => {
+            // The parser admits this branch only with one remote key and an independent pin.
+            let (Some(key), Some(pin)) = (&opts.manifest_object_key, opts.expected_manifest) else {
+                vault.lock();
+                return err_json(
+                    "ERR-CLI-MISSING-VALUE-001",
+                    "remote manifest recovery requires its object key and independent digest",
+                    ExitIdentity::MISSING_VALUE,
+                );
+            };
+            match fetch_cold_pack_manifest(&mut transport, key, pin, now) {
+                Ok(manifest) => manifest,
+                Err(err) => {
+                    vault.lock();
+                    return pack_err_to_json(err);
+                }
+            }
+        }
+    };
+    if control.is_cancelled() {
+        vault.lock();
+        return err_json(
+            "ERR-CLI-READ-CANCELLED-001",
+            "archive restore cancelled before ciphertext download",
+            ExitIdentity::RUNTIME_FAILURE,
+        );
+    }
     let res = restore_cold_pack_to_dir(
         &mut transport,
         &manifest,
@@ -861,6 +961,27 @@ fn exec_restore(args: &[ArgToken]) -> (String, ExitIdentity) {
                 object(&[
                     ("schema", string(PACK_ARCHIVE_CLI_SCHEMA)),
                     ("action", string("restore")),
+                    (
+                        "manifest_source",
+                        string(if opts.manifest_object_key.is_some() {
+                            "remote_object"
+                        } else {
+                            "local_file"
+                        }),
+                    ),
+                    (
+                        "manifest_object_key",
+                        optional_string(opts.manifest_object_key.as_deref()),
+                    ),
+                    ("manifest_pin_verified", opts.expected_manifest.is_some().to_string()),
+                    (
+                        "manifest_download_limit_bytes",
+                        if opts.manifest_object_key.is_some() {
+                            MAX_COLD_MANIFEST_DOWNLOAD_BYTES
+                        } else {
+                            0
+                        }.to_string(),
+                    ),
                     ("pack_id", string(&manifest.pack_id.to_string())),
                     (
                         "manifest_digest",

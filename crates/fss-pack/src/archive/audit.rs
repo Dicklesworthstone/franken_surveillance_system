@@ -551,6 +551,12 @@ fn download_decrypt_and_verify_pack(
     now_ns: TimestampNs,
 ) -> Result<(Vec<u8>, Vec<VerifiedInnerRecord>), PackError> {
     manifest.verify_digest()?;
+    if manifest.ciphertext_bytes > max_download_bytes as u64 {
+        return Err(PackError::ObjectTooLarge {
+            length: manifest.ciphertext_bytes,
+            maximum: max_download_bytes as u64,
+        });
+    }
     let resp = transport.get_object(&manifest.object_key, max_download_bytes, now_ns)?;
     if resp.body.len() as u64 != manifest.ciphertext_bytes {
         return Err(PackError::ArchiveIntegrity {
