@@ -1477,6 +1477,22 @@ rustc +nightly-2026-08-31 --edition 2024 --test \
 /tmp/fss-linear-resize-coordinates
 ```
 
+## Native layout selection
+
+The scalar executor reads Slice and Transpose samples directly from the original
+validated tensor view. It respects byte offsets, actual element strides and
+zero-stride broadcast axes, and decodes the native-endian F32 storage bytes
+without numerical arithmetic. Strided and offset views therefore have the same
+logical output and exact sample bits as contiguous inputs.
+
+Selection no longer materializes a temporary copy of the entire logical input.
+This removes repeated full-input scans from the bounded Slice expansions used
+by reverse slicing, Gather, padding and Resize. Output buffers, declared
+execution work and byte accounting, the existing logical-input size ceiling,
+and cancellation checkpoints remain unchanged. Concat keeps its existing
+implementation. This is a storage-access improvement with unchanged operator
+semantics, graph formats and runtime dependencies.
+
 ## Static tensor controls and detector heads
 
 The importer lowers [Reshape-13](https://onnx.ai/onnx/operators/onnx__Reshape.html#reshape-13),

@@ -4,6 +4,38 @@
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
+## Native selection without full-input copies — 2026-11-24
+
+Scalar Slice and Transpose now read selected F32 samples directly from the
+original validated tensor storage, using its actual element strides and byte
+offset. Previously each selection first materialized every logical input sample
+into a temporary vector. Removing that copy avoids repeated full-input scans in
+reverse Slice, Gather and Resize expansions while preserving exact sample bits,
+output order, graph encodings, declared work/byte accounting and cancellation
+stages. Zero-stride broadcast views and noncontiguous subviews remain supported.
+The previous 256 MiB logical-input ceiling remains enforced; Concat is unchanged.
+
+**Native validation:** all 28 unfiltered `onnx_structure_execution` tests passed,
+including three new production-executor tests for strided/offset/broadcast/scalar
+views, signed-zero/subnormal/infinity/NaN bits, exact execution budgets, logical
+input overflow refusal and cancellation drain. The six reverse-Slice regressions
+and existing detector-head fixture also passed against the changed executor.
+Reproduce with `cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir
+--test onnx_structure_execution -- --test-threads=1`.
+
+The same changed executor also passed all 142 `onnx_attention_execution` tests
+(with one existing release-mode profiling experiment ignored) and all 18 scoped
+`onnx_pad_execution` tests. The latter exercise both production executors and
+canonical Model IR / Safetensors reload; 28 embedded module tests are filtered
+there, with those modules exercised by the other targets. All three commands
+completed with exit zero under the pinned toolchain and locked/offline
+dependencies. The optional standalone Resize suite was not run.
+
+Scoped pinned formatting, whitespace checks and independent source/bounds review
+passed. This does not establish full asynchronous reference or release
+qualification. FSS-139 / `fss-x4a.14.10` remains open, with one progress comment
+linking the completed importer commits and their bounded validation.
+
 ## Native ONNX reverse slicing — 2026-11-24
 
 The static F32 importer now executes negative-step `Slice`, including mixed
