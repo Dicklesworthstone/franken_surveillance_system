@@ -1,4 +1,3 @@
-import CopyCommand from "./CopyCommand";
 import { Mark, REPO } from "./TopBar";
 import { Badge, Figure, Section } from "./ui";
 
@@ -112,18 +111,13 @@ export default function Status({ measured, films }) {
         </div>
       </Figure>
 
-      <div className="figs-2">
-        <Figure className="nots" eyebrow="Scope" title="What it will not be." titleId="not-title">
-          <ul>
-            {NOT.map((row) => (
-              <li key={row}>{row}</li>
-            ))}
-          </ul>
-        </Figure>
-        <Figure className="inside" eyebrow="Look inside" title="Read it, build it, ask it what it can do." titleId="inside-title">
-          <CopyCommand />
-        </Figure>
-      </div>
+      <Figure className="nots" eyebrow="Scope" title="What it will not be." titleId="not-title">
+        <ul>
+          {NOT.map((row) => (
+            <li key={row}>{row}</li>
+          ))}
+        </ul>
+      </Figure>
     </Section>
   );
 }

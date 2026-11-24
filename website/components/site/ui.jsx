@@ -45,7 +45,8 @@ export function Badge({ kind, children }) {
  * A framed figure: what it is, where its numbers come from, the figure itself,
  * and the source note at its foot.
  */
-export function Figure({ as: Tag = "section", id, eyebrow, title, titleId, badge, note, className = "", children, ...rest }) {
+export function Figure({ as: Tag = "section", id, eyebrow, title, titleId, badge, note, level = 4, className = "", children, ...rest }) {
+  const Title = `h${level}`;
   return (
     <Tag id={id} className={"fig " + className} aria-labelledby={title ? titleId : undefined} {...rest}>
       <Reticle />
@@ -54,9 +55,9 @@ export function Figure({ as: Tag = "section", id, eyebrow, title, titleId, badge
           <div>
             {eyebrow && <p className="micro micro--chapter">{eyebrow}</p>}
             {title && (
-              <h4 className="fig__title" id={titleId}>
+              <Title className="fig__title" id={titleId}>
                 {title}
-              </h4>
+              </Title>
             )}
           </div>
           {badge}
