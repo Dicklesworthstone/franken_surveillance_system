@@ -906,6 +906,7 @@ All stable error identities and normative recovery guidance cataloged from `regi
 | `ERR-LEDGER-ORACLE-STATE-ROOT-MISMATCH-001` | declared successor state root does not match the applied deltas | reject input; never retry unchanged |
 | `ERR-LEDGER-ORACLE-SUCCESSOR-CONFLICT-001` | another batch already committed on the same basis (first committer wins) | rebase onto the current head and prepare a new batch |
 | `ERR-LEDGER-SEALED-NAMESPACE-001` | batch writes the sealed publication-lineage namespace (a lineage or proof-marker family or object) outside record_reference_publication, or the gated writer was handed an unsealed batch | reject input; record publications only through record_reference_publication |
+| `ERR-LEDGER-STORAGE-CHECKPOINT-001` | evidence batch committed durably but optional checkpoint maintenance failed; exact commit receipt retained | repair checkpoint storage and retry 'force_checkpoint'; do not submit the committed batch as new evidence |
 | `ERR-MODEL-GENERATION-001` | mixed or stale model/index generation | rebuild/retry at coherent generation |
 | `ERR-MODEL-OUTPUT-001` | malformed/out-of-bounds model output | reject output; terminate/quarantine generation |
 | `ERR-MODEL-PACKAGE-CANCELLED-001` | model package load cancelled by its owner before a complete verified package existed | retry when the owner permits; nothing was loaded |
@@ -937,6 +938,7 @@ All stable error identities and normative recovery guidance cataloged from `regi
 | `ERR-NEG-UNKNOWN-VERSION-001` | negative evidence binary ledger format version is unknown or unsupported | refuse unknown version; never guess ledger encoding format |
 | `ERR-NEG-VALIDATION-FAILED-001` | negative evidence entry semantic validation failed | provide valid required fields conforming to negative evidence contract |
 | `ERR-NON-MONOTONE-NARROWING-001` | attempted non-monotone uncertainty narrowing violating FORMAL-010 | preserve monotone widening; retain sync evidence |
+| `ERR-NOTIFY-JOURNAL-REQUIRED-001` | Real notification dispatch has no explicit durable effect-journal destination | Select exactly one of '--effects-journal' or '--root', retain that journal across retries, and preview the exact request again if it changed. No credential read or network dispatch occurs. |
 | `ERR-ONVIF-METADATA-ARGUMENT-001` | Missing, duplicate, unknown or malformed local options | Use --help and supply separate generation pins and an explicit ordered receive interval. |
 | `ERR-ONVIF-METADATA-AUTHORITY-001` | The replay I/O authority is invalid, belongs to another deployment, or a cleanup request names stale reviewed control state | Acquire explicit current authority for this deployment; inspect exact cleanup history and approve its current witness before a new attempt. Do not reuse revoked or differently scoped contexts. |
 | `ERR-ONVIF-METADATA-BINDING-001` | Owner attribution or a canonical contract is invalid | Correct the bounded site/sensor/profile identifiers, SHA-256 generation pins and receive interval. |

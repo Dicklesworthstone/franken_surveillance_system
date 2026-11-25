@@ -1897,6 +1897,11 @@
       "id": "ERR-LEDGER-SEALED-NAMESPACE-001"
     },
     {
+      "description": "evidence batch committed durably but optional checkpoint maintenance failed; exact commit receipt retained",
+      "guidance": "repair checkpoint storage and retry `force_checkpoint`; do not submit the committed batch as new evidence",
+      "id": "ERR-LEDGER-STORAGE-CHECKPOINT-001"
+    },
+    {
       "description": "mixed or stale model/index generation",
       "guidance": "rebuild/retry at coherent generation",
       "id": "ERR-MODEL-GENERATION-001"
@@ -2050,6 +2055,11 @@
       "description": "attempted non-monotone uncertainty narrowing violating FORMAL-010",
       "guidance": "preserve monotone widening; retain sync evidence",
       "id": "ERR-NON-MONOTONE-NARROWING-001"
+    },
+    {
+      "description": "Real notification dispatch has no explicit durable effect-journal destination",
+      "guidance": "Select exactly one of `--effects-journal` or `--root`, retain that journal across retries, and preview the exact request again if it changed. No credential read or network dispatch occurs.",
+      "id": "ERR-NOTIFY-JOURNAL-REQUIRED-001"
     },
     {
       "description": "Missing, duplicate, unknown or malformed local options",
