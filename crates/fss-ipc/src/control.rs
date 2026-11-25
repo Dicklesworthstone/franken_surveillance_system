@@ -126,7 +126,9 @@ pub enum StreamEndReason {
     Cancelled,
     /// The daemon is draining for shutdown.
     DaemonShuttingDown,
-    /// The requested `since_commit_seq` cursor is ahead of or inconsistent with ledger history.
+    /// The cursor is outside retained history, the subscriber lost buffered events, or the
+    /// batch boundary cannot be resumed safely with a commit-only cursor. Resnapshot before
+    /// subscribing again; retrying the unchanged request cannot establish complete delivery.
     CursorStale,
 }
 

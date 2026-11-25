@@ -2,8 +2,63 @@
 
 **As of:** 2026-11-25 America/New_York (dated feature sections retain their original verification scope)
 **Project state:** prior retained snapshots are locally qualified on `darwin-arm64` across policy, scale, crash-recovery, daemon soak, lab, media, archive, privacy, model, geometry, threat, agent, adapter-loopback, and macOS parity lanes; multi-target DSR release matrix (`linux-x86_64`, `windows-x86_64`) and physical hardware-tuple field qualification remain open
-**Current change qualification:** the daemon changes described below await native verification; prior receipts do not qualify these new bytes.
+**Current change qualification:** the daemon and dashboard changes below passed source review and pinned Rust formatting; native test execution remains unverified. Prior receipts do not qualify these new bytes.
 **Release authority:** repository-owned local qualification (`scripts/qualify.sh`) and retained DSR receipts, not hosted CI
+
+## Daemon follow continuity and dashboard delivery — 2026-11-25
+
+The bounded live summary bus now carries its replay floor and local bus
+sequence under the same mutex as its retained events. A cursor older than
+the startup ledger head or evicted history returns `CursorStale`; an attached
+subscriber that falls behind the retained bus also receives that terminal
+reason. Batches copy only the remaining requested allowance. A batch boundary
+that would strand a retained same-commit or earlier-commit notification
+requires resnapshotting instead of advertising a clean continuation.
+Publication/eviction during socket writes is checked again before a terminal
+response. The atomic live head never decreases when an older supervisor
+snapshot arrives, and summary publication inserts the row before advancing
+that head.
+
+The dashboard consumes the terminal frame even after its one-shot event
+target is met and reports incomplete history explicitly. Its continuous
+watcher requests bounded batches of 64, advances its cursor only from events
+it has consumed, and renders each arriving event without issuing another RPC
+on the borrowed subscription. It refreshes live status after consuming the
+terminal frame. This keeps the existing 450 ms subscription window, including
+multiple notifications published within one supervisor tick, while avoiding
+a full-window delay before SSE rendering.
+
+Fourteen delta-history regressions cover startup, exclusive replay floors,
+bounded retention, lag, reordered commits, same-commit truncation, terminal
+revalidation, sequence exhaustion, and the actual UDS handler/client path.
+A dashboard subprocess contract covers an event followed by a stale terminal
+frame at the exact one-shot event target. Existing multi-notification and SSE
+contracts remain relevant regression gates.
+
+**Verification boundary:** independent source/API review and pinned nightly
+Rust formatting with the repository configuration passed for the changed
+files. The focused native daemon test build and metadata checks were killed by
+SIGKILL while compiling the locked `asupersync 0.5.0` dependency, before the
+changed crate or any tests executed. Retrying with one Cargo job, one rustc
+frontend/backend thread, and debug information disabled did not complete.
+All ten distinct changed Rust files passed the pinned formatter, and
+`git diff --check` passed. No new native test pass, native compile pass,
+Clippy pass, full qualification, or release readiness is claimed.
+
+Focused reproduction commands after dependency compilation is available:
+
+```sh
+cargo +nightly-2026-08-31 test --locked --offline -p fss-daemon --lib control::delta_log::tests -- --test-threads=1
+cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --test dashboard_live_contract -- --test-threads=1
+cargo +nightly-2026-08-31 test --locked --offline -p fss-daemon --test real_network_and_control_e2e -- --test-threads=1
+```
+
+The IPC v1 wire format is unchanged. Its commit-only cursor still cannot
+identify a daemon lifetime or resume future same/earlier-commit notifications
+published after a clean terminal boundary. This change detects retained
+history loss and known ambiguous batch boundaries; generation-bound durable
+continuation remains open. The broader work tracked by `fss-x4a.24.8`,
+`fss-x4a.24.9`, and `fss-x4a.28.34` is not declared complete.
 
 ## Daemon control admission — 2026-11-25
 

@@ -27,6 +27,10 @@ pub use crate::control_client::{
 };
 use crate::error::{DaemonError, ERR_DAEMON_CONTROL_APPROVAL_001, ERR_DAEMON_UNKNOWN_CAMERA_001};
 
+mod delta_log;
+
+use delta_log::BufferedDeltaLog;
+
 #[cfg(test)]
 #[path = "control_tests.rs"]
 mod tests;
@@ -125,14 +129,6 @@ pub struct ControlStatusSnapshot {
     pub scrub: ActiveScrubStatus,
 }
 
-#[derive(Clone, Debug)]
-struct BufferedDeltaEvent {
-    bus_seq: u64,
-    commit_sequence: u64,
-    delta_digest: ContentDigest,
-    summary_canonical: Vec<u8>,
-}
-
 /// Shared zero-contention control-plane state bridging `IpcServer` workers and `DaemonSupervisor`.
 pub struct ControlPlaneShared {
     started_at: Instant,
@@ -140,11 +136,10 @@ pub struct ControlPlaneShared {
     deployment_root_digest: ContentDigest,
     known_cameras: Vec<String>,
     head_commit_sequence: AtomicU64,
-    next_bus_seq: AtomicU64,
     next_op_seq: AtomicU64,
     shutdown_requested: AtomicBool,
     status_snapshot: RwLock<ControlStatusSnapshot>,
-    delta_log: Mutex<VecDeque<BufferedDeltaEvent>>,
+    delta_log: Mutex<BufferedDeltaLog>,
     delta_notify: Condvar,
     control_queue: Mutex<VecDeque<PendingControlCommand>>,
     idempotency_cache: Mutex<BTreeMap<ContentDigest, (u64, ContentDigest, ContentDigest)>>,
@@ -168,11 +163,10 @@ impl ControlPlaneShared {
             deployment_root_digest,
             known_cameras,
             head_commit_sequence: AtomicU64::new(initial_seq),
-            next_bus_seq: AtomicU64::new(1),
             next_op_seq: AtomicU64::new(1),
             shutdown_requested: AtomicBool::new(false),
             status_snapshot: RwLock::new(initial_status),
-            delta_log: Mutex::new(VecDeque::with_capacity(256)),
+            delta_log: Mutex::new(BufferedDeltaLog::new(initial_seq)),
             delta_notify: Condvar::new(),
             control_queue: Mutex::new(VecDeque::new()),
             idempotency_cache: Mutex::new(BTreeMap::new()),
@@ -183,7 +177,7 @@ impl ControlPlaneShared {
     /// Publishes an updated live status snapshot for O(1) IPC reads.
     pub fn publish_status(&self, snapshot: ControlStatusSnapshot) {
         self.head_commit_sequence
-            .store(snapshot.head_commit_sequence, Ordering::Release);
+            .fetch_max(snapshot.head_commit_sequence, Ordering::AcqRel);
         if let Ok(mut guard) = self.status_snapshot.write() {
             *guard = snapshot;
         }
@@ -206,19 +200,11 @@ impl ControlPlaneShared {
         let Ok(summary_canonical) = event.try_canonical_bytes() else {
             return;
         };
-        self.head_commit_sequence
-            .fetch_max(commit_sequence, Ordering::AcqRel);
         if let Ok(mut log) = self.delta_log.lock() {
-            if log.len() >= MAX_DELTA_BUS_EVENTS {
-                log.pop_front();
-            }
-            let bus_seq = self.next_bus_seq.fetch_add(1, Ordering::AcqRel);
-            log.push_back(BufferedDeltaEvent {
-                bus_seq,
-                commit_sequence,
-                delta_digest,
-                summary_canonical,
-            });
+            log.push(commit_sequence, delta_digest, summary_canonical);
+            // A subscriber opening against this head must also see its retained summary.
+            self.head_commit_sequence
+                .fetch_max(commit_sequence, Ordering::AcqRel);
             self.delta_notify.notify_all();
         }
     }
@@ -381,30 +367,20 @@ impl DaemonIpcHandler for DaemonIpcHandlerAdapter {
         max_batch: u32,
         sink: &mut DeltaStreamSink<'_>,
     ) -> StreamEndReason {
-        let head = self.shared.head_commit_sequence.load(Ordering::Acquire);
-        if since_commit_seq > head {
-            return StreamEndReason::CursorStale;
-        }
-        if max_batch == 0 {
-            return StreamEndReason::BatchLimitReached;
-        }
-
-        let mut bus_cursor: u64 = match self.shared.delta_log.lock() {
+        let mut bus_cursor = match self.shared.delta_log.lock() {
             Ok(guard) => {
-                // Replay any already-buffered event strictly newer than `since_commit_seq`;
-                // otherwise start strictly after the latest already-seen bus sequence so live
-                // control-op deltas emitted at the current commit sequence are never dropped.
-                if let Some(first_new) = guard
-                    .iter()
-                    .find(|ev| ev.commit_sequence > since_commit_seq)
-                {
-                    first_new.bus_seq.saturating_sub(1)
-                } else {
-                    guard.back().map_or(0, |ev| ev.bus_seq)
+                let head = self.shared.head_commit_sequence.load(Ordering::Acquire);
+                match guard.start(since_commit_seq, head) {
+                    Ok(cursor) => cursor,
+                    Err(reason) => return reason,
                 }
             }
             Err(_) => return StreamEndReason::DaemonShuttingDown,
         };
+        if max_batch == 0 {
+            return StreamEndReason::BatchLimitReached;
+        }
+
         let deadline = Instant::now() + SUBSCRIBE_IDLE_WINDOW;
         loop {
             if ctx.is_cancelled() {
@@ -413,37 +389,43 @@ impl DaemonIpcHandler for DaemonIpcHandlerAdapter {
             if self.shared.is_shutdown_requested() {
                 return StreamEndReason::DaemonShuttingDown;
             }
-            let pending: Vec<BufferedDeltaEvent> = match self.shared.delta_log.lock() {
-                Ok(guard) => guard
-                    .iter()
-                    .filter(|ev| ev.bus_seq > bus_cursor)
-                    .cloned()
-                    .collect(),
+            let batch = match self.shared.delta_log.lock() {
+                Ok(guard) => {
+                    match guard.read_after(bus_cursor, max_batch.saturating_sub(sink.emitted())) {
+                        Ok(batch) => batch,
+                        Err(reason) => return reason,
+                    }
+                }
                 Err(_) => return StreamEndReason::DaemonShuttingDown,
             };
-            for ev in pending {
-                if sink.emitted() >= max_batch {
-                    return StreamEndReason::BatchLimitReached;
-                }
+            for event in batch.events {
                 if sink
-                    .emit_delta(ev.commit_sequence, ev.delta_digest, ev.summary_canonical)
+                    .emit_delta(
+                        event.commit_sequence,
+                        event.delta_digest,
+                        event.summary_canonical,
+                    )
                     .is_err()
                 {
                     return StreamEndReason::Cancelled;
                 }
-                bus_cursor = ev.bus_seq;
-                if sink.emitted() >= max_batch {
-                    return StreamEndReason::BatchLimitReached;
-                }
-            }
-            if Instant::now() >= deadline {
-                return StreamEndReason::Completed;
+                bus_cursor.advance(event.bus_seq, event.commit_sequence);
             }
             let Ok(guard) = self.shared.delta_log.lock() else {
                 return StreamEndReason::DaemonShuttingDown;
             };
-            if guard.back().is_some_and(|ev| ev.bus_seq > bus_cursor) {
-                continue;
+            if let Some(reason) = batch.end_reason {
+                // Socket writes release the log lock. Recheck any loss or same-commit
+                // remainder that appeared while the previously copied batch was delivered.
+                return guard.finish(bus_cursor, reason);
+            }
+            match guard.has_pending(bus_cursor) {
+                Ok(true) => continue,
+                Err(reason) => return reason,
+                Ok(false) => {}
+            }
+            if Instant::now() >= deadline {
+                return StreamEndReason::Completed;
             }
             let wait = deadline
                 .saturating_duration_since(Instant::now())

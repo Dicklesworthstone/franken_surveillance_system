@@ -156,9 +156,8 @@ pub fn collect_live_frame(options: &Options, lease: &Lease) -> io::Result<LiveCo
                                 summary,
                                 latency_ms: Some(elapsed_ms),
                             });
-                            if deltas_received >= target_events {
-                                break;
-                            }
+                            // Consume StreamEnd even when the event target is met. It carries
+                            // continuation validity and must not leak into the next RPC.
                         }
                         Ok(DeltaSubscriptionItem::End { reason, .. }) => {
                             end_reason = Some(reason);
@@ -172,6 +171,11 @@ pub fn collect_live_frame(options: &Options, lease: &Lease) -> io::Result<LiveCo
                 }
             }
             Err(_) => break,
+        }
+        if end_reason == Some(StreamEndReason::CursorStale) {
+            return Err(io::Error::other(
+                "live delta history is incomplete; resnapshot before requesting more events",
+            ));
         }
         if matches!(
             end_reason,
@@ -385,7 +389,7 @@ pub fn run_delta_watcher_loop(options: &Options, lease: &Lease, hub: &LiveCockpi
             let wait_started = Instant::now();
             let mut reconnect = false;
             let mut saw_event = false;
-            match client.subscribe_deltas(req_id, cursor, 1) {
+            match client.subscribe_deltas(req_id, cursor, 64) {
                 Ok(sub) => {
                     for item in sub {
                         match item {
@@ -415,6 +419,21 @@ pub fn run_delta_watcher_loop(options: &Options, lease: &Lease, hub: &LiveCockpi
                                     summary,
                                     latency_ms: Some(elapsed_ms),
                                 });
+                                // Render each arrival promptly while the bounded stream stays
+                                // attached. Refresh status on this client only after StreamEnd.
+                                let rows: Vec<_> = recent.iter().cloned().collect();
+                                if let Ok(frame) = assemble_live_frame(
+                                    root,
+                                    site,
+                                    Some((&descriptor, &status)),
+                                    None,
+                                    &rows,
+                                    deltas_received,
+                                    max_latency_ms,
+                                    last_latency_ms,
+                                ) {
+                                    hub.publish(render_live_frame_json(&frame));
+                                }
                             }
                             Ok(DeltaSubscriptionItem::End { reason, .. }) => {
                                 if matches!(
@@ -440,8 +459,9 @@ pub fn run_delta_watcher_loop(options: &Options, lease: &Lease, hub: &LiveCockpi
                 break;
             }
             if let Some(refreshed) = query_status_on_client(&mut client) {
+                // Status can be ahead of unconsumed summaries. Only received events advance
+                // the exclusive follow cursor.
                 status = refreshed;
-                cursor = cursor.max(status.head_commit_sequence);
             }
             if saw_event {
                 let rows: Vec<_> = recent.iter().cloned().collect();
