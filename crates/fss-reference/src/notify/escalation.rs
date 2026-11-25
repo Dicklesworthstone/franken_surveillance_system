@@ -303,7 +303,7 @@ pub fn dispatch_prepared_notification<S: NotifyEffectStore>(
     vault: &dyn SecretStore,
     secret_cx: &SecretAccessCx,
     dns: &dyn DnsResolver,
-    deadline: &NotifyDeadlineCx,
+    deadline: &NotifyDeadlineCx<'_>,
     limits: NotifyLimits,
     entropy: &mut dyn EntropySource,
 ) -> Result<DispatchedNotification, NotifyError> {
@@ -348,6 +348,7 @@ pub fn dispatch_prepared_notification<S: NotifyEffectStore>(
     let expected_req = compute_notification_request_digest(payload, target.route_digest());
     if existing.intent.request_digest != expected_req
         || existing.intent.idempotency_key != payload.idempotency_key
+        || existing.intent.effect_class != NOTIFY_EFFECT_CLASS
     {
         return Err(NotifyError::pre_send(
             ERR_NOTIFY_TRANSPORT_001,
@@ -355,6 +356,9 @@ pub fn dispatch_prepared_notification<S: NotifyEffectStore>(
         ));
     }
 
+    // Cancellation before commitment leaves the prepared obligation available for an explicit
+    // later retry. Once committed, the adapter classifies failures by whether bytes were sent.
+    let _ = deadline.remaining(false)?;
     let committed = store.commit_effect(
         &payload.operation_id,
         monotonic_next(existing.updated_at, deadline.now()),
@@ -861,7 +865,12 @@ impl DeliveryAuditRecord {
     }
 }
 
-fn compute_notification_request_digest(
+/// Binds the route and complete payload semantics under the current effect-request domain.
+///
+/// Metadata is included even when the selected route omits it on the wire, so a prepared
+/// payload cannot be changed in place. A verified visual receipt binds its redacted JPEG bytes.
+#[must_use]
+pub fn compute_notification_request_digest(
     payload: &NotifyPayload,
     route_digest: ContentDigest,
 ) -> ContentDigest {
@@ -873,6 +882,18 @@ fn compute_notification_request_digest(
     enc.digest(payload.event_revision_digest);
     enc.text(&payload.channel);
     enc.digest(route_digest);
+    enc.bool(payload.event_metadata.is_some());
+    if let Some(metadata) = &payload.event_metadata {
+        metadata.event_id.encode_canonical(&mut enc);
+        enc.u64(metadata.revision);
+        enc.text(&metadata.kind);
+        enc.text(&metadata.lifecycle);
+        enc.u64(metadata.zone_ids.len() as u64);
+        for zone_id in &metadata.zone_ids {
+            enc.text(zone_id);
+        }
+        enc.text(&metadata.summary);
+    }
     enc.bool(payload.visual_attachment.is_some());
     if let Some(vis) = &payload.visual_attachment {
         enc.digest(vis.receipt_digest);

@@ -69,8 +69,11 @@ pub const NOTIFY_RELAY_ROUTE_DOMAIN: &str = "fss.notify.relay_route.v1";
 pub const NOTIFY_ESCALATION_POLICY_DOMAIN: &str = "fss.notify.escalation_policy.v1";
 /// Canonical digest domain for [`escalation::EscalationLineage`].
 pub const NOTIFY_ESCALATION_LINEAGE_DOMAIN: &str = "fss.notify.escalation_lineage.v1";
-/// Canonical digest domain for notification effect request intents.
-pub const NOTIFY_EFFECT_REQUEST_DOMAIN: &str = "fss.notify.effect_request.v1";
+/// Canonical digest domain binding complete notification payloads and their routes.
+///
+/// The retired v1 domain omitted event metadata. Existing journal intents retain their original
+/// digest; they are never reinterpreted or automatically dispatched under this v2 contract.
+pub const NOTIFY_EFFECT_REQUEST_DOMAIN: &str = "fss.notify.effect_request.v2";
 
 /// Required privacy redaction transform marker for H3 visual notification attachments.
 pub const REQUIRED_H3_REDACTION_TRANSFORM: &str = "transform:bounding_box_redact";
@@ -510,15 +513,28 @@ impl DnsResolver for PinnedDnsResolver {
 }
 
 /// Explicit cooperative deadline and cancellation boundary for network dispatch.
-#[derive(Clone, Debug)]
-pub struct NotifyDeadlineCx {
+#[derive(Clone)]
+pub struct NotifyDeadlineCx<'a> {
     started_at: Instant,
     timeout: Duration,
     logical_now: TimestampNs,
     cancelled_reason: Option<String>,
+    cancellation_probe: Option<&'a (dyn Fn() -> bool + Sync)>,
 }
 
-impl NotifyDeadlineCx {
+impl fmt::Debug for NotifyDeadlineCx<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NotifyDeadlineCx")
+            .field("started_at", &self.started_at)
+            .field("timeout", &self.timeout)
+            .field("logical_now", &self.logical_now)
+            .field("cancelled_reason", &self.cancelled_reason)
+            .field("has_cancellation_probe", &self.cancellation_probe.is_some())
+            .finish()
+    }
+}
+
+impl<'a> NotifyDeadlineCx<'a> {
     /// Creates a new deadline context with explicit logical timestamp and bounded wall timeout.
     pub fn new(logical_now: TimestampNs, timeout: Duration) -> Result<Self, NotifyError> {
         if timeout.is_zero() || timeout > Duration::from_secs(60) {
@@ -532,6 +548,7 @@ impl NotifyDeadlineCx {
             timeout,
             logical_now,
             cancelled_reason: None,
+            cancellation_probe: None,
         })
     }
 
@@ -539,6 +556,16 @@ impl NotifyDeadlineCx {
     #[must_use]
     pub fn with_cancelled(mut self, reason: impl Into<String>) -> Self {
         self.cancelled_reason = Some(reason.into());
+        self
+    }
+
+    /// Borrows the existing request owner's live cancellation probe.
+    ///
+    /// The owner must keep the probe alive until dispatch returns and keep it true once
+    /// cancelled. This introduces no independent cancellation tree or effect authority.
+    #[must_use]
+    pub fn with_cancellation_probe(mut self, probe: &'a (dyn Fn() -> bool + Sync)) -> Self {
+        self.cancellation_probe = Some(probe);
         self
     }
 
@@ -555,6 +582,16 @@ impl NotifyDeadlineCx {
                 NotifyError::indeterminate(format!("cancelled after send: {reason}"))
             } else {
                 NotifyError::pre_send(ERR_NOTIFY_TIMEOUT_001, format!("cancelled: {reason}"))
+            });
+        }
+        if self.cancellation_probe.is_some_and(|probe| probe()) {
+            return Err(if post_write {
+                NotifyError::indeterminate("request owner cancelled after send")
+            } else {
+                NotifyError::pre_send(
+                    ERR_NOTIFY_TIMEOUT_001,
+                    "request owner cancelled before send",
+                )
             });
         }
         match self.timeout.checked_sub(self.started_at.elapsed()) {

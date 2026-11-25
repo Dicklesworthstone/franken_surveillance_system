@@ -289,10 +289,11 @@ pub fn dispatch_https_webhook(
     vault: &dyn SecretStore,
     secret_cx: &SecretAccessCx,
     dns: &dyn DnsResolver,
-    deadline: &NotifyDeadlineCx,
+    deadline: &NotifyDeadlineCx<'_>,
     limits: NotifyLimits,
     entropy: &mut dyn EntropySource,
 ) -> Result<DeliveryReceipt, NotifyError> {
+    let _ = deadline.remaining(false)?;
     target
         .disclosure_profile
         .validate_approvals(target.metadata_approval, target.visual_approval)?;
@@ -454,7 +455,7 @@ pub(crate) fn send_tls_http_request(
     body: &[u8],
     tls_trust: &TlsTrustPolicy,
     dns: &dyn DnsResolver,
-    deadline: &NotifyDeadlineCx,
+    deadline: &NotifyDeadlineCx<'_>,
     limits: NotifyLimits,
     entropy: &mut dyn EntropySource,
 ) -> Result<TlsHttpReply, NotifyError> {
@@ -488,8 +489,11 @@ pub(crate) fn send_tls_http_request(
         ));
     }
 
-    let rem = deadline.remaining(false)?;
+    let _ = deadline.remaining(false)?;
     let dns_receipt = dns.resolve(&url.host, url.port, deadline.now())?;
+    let rem = deadline
+        .remaining(false)
+        .map_err(|e| e.with_dns_receipt(dns_receipt.clone()))?;
     let tcp = TcpStream::connect_timeout(&dns_receipt.resolved_addrs[0], rem).map_err(|_| {
         NotifyError::pre_send(ERR_NOTIFY_TRANSPORT_001, "TCP connect failed")
             .with_dns_receipt(dns_receipt.clone())
@@ -568,7 +572,7 @@ pub(crate) fn map_tls_error(err: Tls13Error, post_write: bool) -> NotifyError {
 
 fn read_http_response(
     tls: &mut Tls13Stream<TcpStream>,
-    deadline: &NotifyDeadlineCx,
+    deadline: &NotifyDeadlineCx<'_>,
     max_bytes: usize,
 ) -> Result<(u16, Vec<(String, String)>), NotifyError> {
     let mut raw = Vec::new();

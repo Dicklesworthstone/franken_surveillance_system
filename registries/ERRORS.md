@@ -6,6 +6,7 @@ operation states rather than generic errors.
 
 | ID | Meaning | Retry policy |
 |---|---|---|
+| `ERR-NOTIFY-JOURNAL-REQUIRED-001` | Real notification dispatch has no explicit durable effect-journal destination | Select exactly one of `--effects-journal` or `--root`, retain that journal across retries, and preview the exact request again if it changed. No credential read or network dispatch occurs. |
 | `ERR-LEDGER-STORAGE-CHECKPOINT-001` | evidence batch committed durably but optional checkpoint maintenance failed; exact commit receipt retained | repair checkpoint storage and retry `force_checkpoint`; do not submit the committed batch as new evidence |
 | `ERR-MPEGTS-IMPORT-REQUEST-001` | Explicit finite MPEG-TS import scope, capture assumption, selection or resource ceiling is invalid | Correct the complete request; no automatic limit widening. |
 | `ERR-MPEGTS-IMPORT-SOURCE-001` | Native transport parsing or extraction-receipt verification refused the source | Inspect the original recording and declared program/PID; do not strip packets or bypass provenance. |

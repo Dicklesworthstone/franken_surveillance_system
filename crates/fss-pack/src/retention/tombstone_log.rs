@@ -86,7 +86,9 @@ impl ObjectTombstoneLog {
             let flags = u16::from_be_bytes([record[6], record[7]]);
             if flags != 0 {
                 return Err(PackError::CorruptCatalog {
-                    detail: format!("unsupported object tombstone flags {flags} at offset {offset}"),
+                    detail: format!(
+                        "unsupported object tombstone flags {flags} at offset {offset}"
+                    ),
                 });
             }
             let stored_crc = u32::from_be_bytes([record[72], record[73], record[74], record[75]]);

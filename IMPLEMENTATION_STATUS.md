@@ -5,6 +5,67 @@
 **Current change qualification:** each dated section below states its exact verification boundary. Native passes for one component do not qualify other changes, and prior receipts do not qualify new bytes.
 **Release authority:** repository-owned local qualification (`scripts/qualify.sh`) and retained DSR receipts, not hosted CI
 
+## Exact approved notification payloads and durable dispatch — 2026-11-25
+
+Real `fss notify dispatch` now requires exactly one durable destination:
+`--effects-journal` or `--root`. Missing custody is refused before credentials
+are read. The CLI obtains a nonblocking exclusive lock on the actual journal
+file before recovery, opens it without truncation and retains ownership through
+delivery and journal finalization. Recovery, verification, append and
+reconciliation all use that same locked handle, including under mandatory
+platform locks. Cooperating CLI processes using hard-link aliases contend on
+the same file. This does not serialize unrelated raw journal
+writers or create global exactly-once delivery across separate journals.
+
+Notification effect-request v2 binds every event metadata field as well as the
+existing operation, idempotency, event references, route and visual-receipt
+commitments. CLI approval v2 additionally binds the complete request digest,
+principal and original timeout. Preview exposes the request digest. A Prepared
+retry must retain its original complete intent and approval precondition.
+Historical v1 journal bytes remain immutable and are refused under v2; the old
+digest domains remain registered as retired identities. Obligation IDs derive
+from the complete operation-ID hash rather than a lossy replacement or shared
+fallback.
+
+The existing request owner's live cancellation probe reaches precommit,
+credential and transport boundaries. Cancellation before commitment preserves
+Prepared custody. Cancellation after request bytes were sent remains
+Indeterminate across reopen and cannot authorize a resend. Cancellation is
+cooperative; an in-progress blocking OS/DNS/TLS call still relies on its
+existing deadline bounds.
+
+Four new regression tests and an extended real TLS/HMAC CLI contract cover
+metadata substitutions and omission, historical v1 refusal, principal/timeout
+approval changes, exact Prepared retry authority, precommit cancellation,
+post-write uncertainty across reopen, and independent-process lock contention
+through a hard-link alias with byte-identical journal preservation.
+
+**Native ledger validation passed:** all three new `exclusive_journal_contract`
+tests on Linux x86_64, covering same-handle recovery/read/append, independent
+hard-link contention, protection of an owner's incomplete append from competing
+truncation, and byte preservation/lease release after failed recovery. This
+compiled the modified ledger and its core dependency. The exclusive durable
+effect constructor admits Reject-only recovery; existing repair APIs retain
+their prior behavior.
+
+Pinned rustfmt and whitespace checks passed for all 11 Rust files, and
+independent source/API review found no blocker. Focused native notification
+tests were attempted, but the host killed compilation of the unchanged registry
+dependency `asupersync 0.5.0` before these tests compiled or executed. No notification native pass, Clippy pass, full qualification or
+release readiness is claimed. Re-run on a host with sufficient resources:
+
+```sh
+cargo +nightly-2026-08-31 test --locked --offline -p fss-ledger --test exclusive_journal_contract
+cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test notify_tls_relays_contract
+cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --test vault_notify_archive_cli_e2e fss_notify_cli_
+```
+
+The repository-wide layered manifest audit reports 13 pre-existing proof/transcript
+hash mismatches and excluded or missing generated-state entries. Those proof
+bytes and the base manifest were confirmed unchanged from baseline `377e4374`.
+Changed-path integrity rows are verified separately; no full manifest-audit
+pass is claimed.
+
 ## Accepted-control ownership through failed ticks and shutdown — 2026-11-25
 
 The daemon now pops accepted controls one at a time within a fixed per-tick allowance.
@@ -153,9 +214,18 @@ ambiguous epoch refusal and fresh generations, retained HTTP tails, every
 split position of consecutive JPEG frames, complete-header limits and repeated
 interruption. Existing JPEG marker parsing is unchanged.
 
-**Verification:** pinned `nightly-2026-08-31` rustfmt and `git diff --check`
-passed; independent source/API review found no blocker. Native acquisition
-tests were attempted, but compilation of the registry dependency
+**Component validation passed:** an isolated native Rust harness ran all eight
+AVC decoder tests, including both new timestamp regressions, against the exact
+production decoder blob `8f53780ae46c8f1fa928d570e0971c0fcfd0e5fb` and test bodies
+from `bca8bd1623e3f9ac297046ff5a5dc9dc95336e0c`. It used the real local
+`fss-core`, `fss-packet` and `fss-codec-h264` crates and original binary fixtures.
+Only the separate `mod network;` test wiring was omitted. No production code,
+test bodies or dependency behavior was replaced. This does not qualify HTTP,
+daemon network loopback, supervisor integration or the complete daemon target.
+
+Pinned `nightly-2026-08-31` rustfmt and `git diff --check` passed; independent
+source/API review found no blocker. Full native acquisition tests were
+attempted, but compilation of the registry dependency
 `asupersync 0.5.0` was killed by the host before daemon compilation or test
 execution. A serial metadata-only storage check hit the same external build
 failure. These are unresolved validation limits, not passing tests. The earlier

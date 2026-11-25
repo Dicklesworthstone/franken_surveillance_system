@@ -175,10 +175,11 @@ pub fn dispatch_ntfy(
     vault: &dyn SecretStore,
     secret_cx: &SecretAccessCx,
     dns: &dyn DnsResolver,
-    deadline: &NotifyDeadlineCx,
+    deadline: &NotifyDeadlineCx<'_>,
     limits: NotifyLimits,
     entropy: &mut dyn EntropySource,
 ) -> Result<DeliveryReceipt, NotifyError> {
+    let _ = deadline.remaining(false)?;
     target
         .disclosure_profile
         .validate_approvals(target.metadata_approval, target.visual_approval)?;
@@ -392,10 +393,11 @@ pub fn dispatch_pushover(
     vault: &dyn SecretStore,
     secret_cx: &SecretAccessCx,
     dns: &dyn DnsResolver,
-    deadline: &NotifyDeadlineCx,
+    deadline: &NotifyDeadlineCx<'_>,
     limits: NotifyLimits,
     entropy: &mut dyn EntropySource,
 ) -> Result<DeliveryReceipt, NotifyError> {
+    let _ = deadline.remaining(false)?;
     target
         .disclosure_profile
         .validate_approvals(target.metadata_approval, target.visual_approval)?;

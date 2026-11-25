@@ -16,8 +16,11 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use fss_core::ContentDigest;
 use fss_core::json_input::{Value, parse as parse_json};
+use fss_core::{
+    ContentDigest, EffectIntent, EffectState, IdempotencyKey, ObligationId, OperationId,
+    TimestampNs,
+};
 use fss_pack::{PACK_KIND_RAW_PAYLOAD, PackConfig, PackId, PackObjectInput, PackStore};
 use fss_reference::notify::ed25519::Ed25519SigningKey;
 use fss_reference::notify::tls13::Tls13Stream;
@@ -295,6 +298,124 @@ fn read_http_req_over_tls(tls: &mut Tls13Stream<TcpStream>) -> Result<ParsedHttp
 }
 
 #[test]
+fn fss_notify_cli_binds_metadata_and_requires_durable_custody_before_secrets() -> TestResult {
+    let dir = TempDirGuard::new("notify-approval")?;
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    listener.set_nonblocking(true)?;
+    let url = format!("https://127.0.0.1:{}/alerts", listener.local_addr()?.port());
+    let pin = ContentDigest::sha256(b"approval-test-spki").to_text();
+    let metadata_approval = ContentDigest::sha256(b"metadata-disclosure-approved").to_text();
+    let journal = dir.path().join("effects.fssj");
+    let journal_arg = journal.to_string_lossy().into_owned();
+    let missing_pass = dir.path().join("missing-passphrase");
+    let missing_pass_arg = missing_pass.to_string_lossy().into_owned();
+    let missing_vault = dir.path().join("missing-vault");
+    let missing_vault_arg = missing_vault.to_string_lossy().into_owned();
+    let base = vec![
+        "notify",
+        "preview",
+        "--channel",
+        "https-webhook",
+        "--target-id",
+        "hook-approved",
+        "--url",
+        &url,
+        "--secret-id",
+        "secret:notify:approved",
+        "--operation-id",
+        "op:notify:approved",
+        "--idempotency-key",
+        "idem:notify:approved",
+        "--pin-spki",
+        &pin,
+        "--disclosure",
+        "event-metadata-v1",
+        "--metadata-approval",
+        &metadata_approval,
+        "--event-id",
+        "evt:notify:approved",
+        "--summary",
+        "Approved event summary",
+        "--principal",
+        "principal:local-operator",
+        "--timeout-ms",
+        "10000",
+        "--json",
+    ];
+    let (code, preview, stderr) = run_fss(&base)?;
+    assert_eq!(code, 0, "preview={preview} stderr={stderr}");
+    let preview_json = parse_json(&preview)?;
+    let approval = json_text(&preview_json, "approval_digest")?.to_owned();
+    assert!(json_text(&preview_json, "request_digest")?.starts_with("sha256:"));
+
+    // A valid approval cannot opt into an ephemeral journal, even when the supplied vault and
+    // passphrase paths are unreadable. Admission must fail before attempting either read.
+    let mut no_journal = base.clone();
+    no_journal[1] = "dispatch";
+    no_journal.extend([
+        "--approve",
+        &approval,
+        "--vault-dir",
+        &missing_vault_arg,
+        "--passphrase-file",
+        &missing_pass_arg,
+    ]);
+    let (code, refused, _) = run_fss(&no_journal)?;
+    assert_ne!(code, 0);
+    assert!(
+        refused.contains("ERR-NOTIFY-JOURNAL-REQUIRED-001"),
+        "{refused}"
+    );
+
+    // Changing disclosed event identity or summary used to preserve the same approval.
+    // The declared principal and original timeout are also part of the exact authorization.
+    for (flag, replacement) in [
+        ("--event-id", "evt:notify:substituted"),
+        ("--summary", "Unapproved replacement summary"),
+        ("--principal", "principal:another-operator"),
+        ("--timeout-ms", "20000"),
+    ] {
+        let mut changed = no_journal.clone();
+        let index = changed
+            .iter()
+            .position(|value| *value == flag)
+            .ok_or("missing fixture option")?;
+        changed[index + 1] = replacement;
+        changed.extend(["--effects-journal", &journal_arg]);
+        let (code, refused, _) = run_fss(&changed)?;
+        assert_ne!(code, 0, "{flag}");
+        assert!(
+            refused.contains("ERR-NOTIFY-APPROVAL-MISMATCH-001"),
+            "{flag}: {refused}"
+        );
+    }
+
+    // The in-process owner can cancel after initial admission; no credential read or journal
+    // creation is allowed just because the first cancellation check returned false.
+    let mut cancelled_args = no_journal.clone();
+    cancelled_args.extend(["--effects-journal", &journal_arg]);
+    let tokens: Vec<_> = cancelled_args[2..]
+        .iter()
+        .enumerate()
+        .map(|(index, arg)| fss_cli::token::ArgToken::new(index, (*arg).to_owned()))
+        .collect();
+    let probes = AtomicUsize::new(0);
+    let cancelled = || probes.fetch_add(1, Ordering::SeqCst) > 0;
+    let control = fss_cli::RequestControl::new(&cancelled);
+    let (refused, _) = fss_cli::notify_cmd::execute_notify_command("dispatch", &tokens, &control);
+    assert!(refused.contains("ERR-CLI-READ-CANCELLED-001"), "{refused}");
+
+    assert!(!journal.exists());
+    assert!(!missing_pass.exists());
+    assert!(!missing_vault.exists());
+    assert!(matches!(
+        listener.accept(),
+        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock
+    ));
+    Ok(())
+}
+
+#[test]
 fn fss_notify_cli_preview_and_tls13_hmac_dispatch_with_durable_journal() -> TestResult {
     let dir = TempDirGuard::new("notify")?;
     let vault_dir = dir.path().join("vault");
@@ -466,6 +587,146 @@ fn fss_notify_cli_preview_and_tls13_hmac_dispatch_with_durable_journal() -> Test
     ])?;
     assert_ne!(code, 0);
     assert!(no_app_out.contains("ERR-NOTIFY-APPROVAL-REQUIRED-001"));
+
+    // An operation prepared under a different approval cannot be silently adopted by this CLI.
+    // The request digest is identical; only the persisted authorization precondition differs.
+    let stale_path = dir.path().join("stale-approval.fssj");
+    let stale_arg = stale_path.to_string_lossy().into_owned();
+    let operation_id = OperationId::parse("op:notify:cli:1")?;
+    let mut stale_journal = fss_reference::DurableEffectJournal::open(
+        &stale_path,
+        fss_ledger::IncompleteTailPolicy::Reject,
+    )?;
+    let intent = EffectIntent::new(
+        operation_id.clone(),
+        IdempotencyKey::parse("idem:notify:cli:1")?,
+        "notify.tls_dispatch",
+        ContentDigest::parse(json_text(&preview_json, "request_digest")?)?,
+        ContentDigest::sha256(b"different-prepared-approval"),
+    )?;
+    let _ = stale_journal.prepare(
+        intent,
+        ObligationId::parse("obligation:notify:stale-approval")?,
+        "notification delivery independently reconciled",
+        TimestampNs(1),
+    )?;
+    drop(stale_journal);
+    let stale_before = fs::read(&stale_path)?;
+    let (code, stale_out, _) = run_fss(&[
+        "notify",
+        "dispatch",
+        "--channel",
+        "https-webhook",
+        "--target-id",
+        "hook-primary",
+        "--url",
+        &url,
+        "--secret-id",
+        "secret:webhook:cli-1",
+        "--operation-id",
+        operation_id.as_str(),
+        "--idempotency-key",
+        "idem:notify:cli:1",
+        "--ca-pem",
+        &cf,
+        "--resolve",
+        &resolve,
+        "--approve",
+        &approval_digest,
+        "--vault-dir",
+        &vd,
+        "--passphrase-file",
+        &pf,
+        "--effects-journal",
+        &stale_arg,
+        "--json",
+    ])?;
+    assert_ne!(code, 0);
+    assert!(stale_out.contains("prepare failed"), "{stale_out}");
+    assert_eq!(fs::read(&stale_path)?, stale_before);
+    let stale_journal = fss_reference::DurableEffectJournal::open(
+        &stale_path,
+        fss_ledger::IncompleteTailPolicy::Reject,
+    )?;
+    assert_eq!(
+        stale_journal.operation(&operation_id).map(|op| op.state),
+        Some(EffectState::Prepared)
+    );
+    drop(stale_journal);
+
+    // A second process must refuse the same journal, even through a different hard-link path.
+    // Seed a nonempty exact Prepared record so contention also proves no truncation occurs.
+    let mut prepared_journal = fss_reference::DurableEffectJournal::open(
+        &journal_file,
+        fss_ledger::IncompleteTailPolicy::Reject,
+    )?;
+    let intent = EffectIntent::new(
+        operation_id.clone(),
+        IdempotencyKey::parse("idem:notify:cli:1")?,
+        "notify.tls_dispatch",
+        ContentDigest::parse(json_text(&preview_json, "request_digest")?)?,
+        ContentDigest::parse(&approval_digest)?,
+    )?;
+    let _ = prepared_journal.prepare(
+        intent,
+        ObligationId::parse("obligation:notify:cli:1")?,
+        "notification delivery independently reconciled",
+        TimestampNs(1),
+    )?;
+    drop(prepared_journal);
+    let alias_path = dir.path().join("effects-alias.fssj");
+    fs::hard_link(&journal_file, &alias_path)?;
+    let alias_arg = alias_path.to_string_lossy().into_owned();
+    let before_contention = fs::read(&journal_file)?;
+    assert!(!before_contention.is_empty());
+    let lease = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&journal_file)?;
+    lease
+        .try_lock()
+        .map_err(|error| format!("test journal lock: {error:?}"))?;
+    let unreadable_pass = dir.path().join("missing-passphrase");
+    let unreadable_pass_arg = unreadable_pass.to_string_lossy().into_owned();
+    let (code, busy_out, _) = run_fss(&[
+        "notify",
+        "dispatch",
+        "--channel",
+        "https-webhook",
+        "--target-id",
+        "hook-primary",
+        "--url",
+        &url,
+        "--secret-id",
+        "secret:webhook:cli-1",
+        "--operation-id",
+        operation_id.as_str(),
+        "--idempotency-key",
+        "idem:notify:cli:1",
+        "--ca-pem",
+        &cf,
+        "--resolve",
+        &resolve,
+        "--approve",
+        &approval_digest,
+        "--vault-dir",
+        &vd,
+        "--passphrase-file",
+        &unreadable_pass_arg,
+        "--effects-journal",
+        &alias_arg,
+        "--json",
+    ])?;
+    assert_ne!(code, 0);
+    assert!(busy_out.contains("already in use"), "{busy_out}");
+    listener.set_nonblocking(true)?;
+    assert!(matches!(
+        listener.accept(),
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+    ));
+    listener.set_nonblocking(false)?;
+    drop(lease);
+    assert_eq!(fs::read(&journal_file)?, before_contention);
 
     // 4. Spawn real pure-Rust RFC 8446 TLS 1.3 loopback server verifying HMAC-SHA256!
     let hits = Arc::new(AtomicUsize::new(0));

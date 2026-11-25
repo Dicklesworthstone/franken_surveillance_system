@@ -385,6 +385,26 @@ impl DurableEffectJournal {
             .into());
         }
 
+        Self::from_verified_journal(journal, report)
+    }
+
+    /// Opens an exclusively owned effect writer without repairing or truncating any history.
+    ///
+    /// The actual journal file is locked before recovery, and byte verification and effect replay
+    /// finish before returning the writer; opening it grants no effect authority. Recovery and effect
+    /// transitions use the same retained file handle so mandatory platform locks do not block the
+    /// owner itself. The lock is released when this writer drops. Other handles, including
+    /// path-based custody inspectors, may be unable to read this file while the writer is held.
+    pub fn open_exclusive(path: impl AsRef<Path>) -> Result<Self, DurableEffectError> {
+        let mut journal = Journal::open_exclusive(path, IncompleteTailPolicy::Reject)?;
+        let report = journal.verify()?;
+        Self::from_verified_journal(journal, report)
+    }
+
+    fn from_verified_journal(
+        journal: Journal,
+        report: RecoveryReport,
+    ) -> Result<Self, DurableEffectError> {
         let memory = replay_report(&report)?;
         let store_pin = journal.store_pin(fss_ledger::STORE_ROLE_EFFECT_JOURNAL);
         Ok(Self {

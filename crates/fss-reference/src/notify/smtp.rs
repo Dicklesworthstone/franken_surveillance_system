@@ -197,10 +197,11 @@ pub fn dispatch_smtp_tls(
     vault: &dyn SecretStore,
     secret_cx: &SecretAccessCx,
     dns: &dyn DnsResolver,
-    deadline: &NotifyDeadlineCx,
+    deadline: &NotifyDeadlineCx<'_>,
     limits: NotifyLimits,
     entropy: &mut dyn EntropySource,
 ) -> Result<DeliveryReceipt, NotifyError> {
+    let _ = deadline.remaining(false)?;
     target
         .disclosure_profile
         .validate_approvals(target.metadata_approval, target.visual_approval)?;
@@ -243,8 +244,11 @@ pub fn dispatch_smtp_tls(
     }
     let request_digest = ContentDigest::sha256(&rfc5322);
 
-    let rem = deadline.remaining(false)?;
+    let _ = deadline.remaining(false)?;
     let dns_receipt = dns.resolve(&target.host, target.port, deadline.now())?;
+    let rem = deadline
+        .remaining(false)
+        .map_err(|e| e.with_dns_receipt(dns_receipt.clone()))?;
     let mut tcp =
         TcpStream::connect_timeout(&dns_receipt.resolved_addrs[0], rem).map_err(|_| {
             NotifyError::pre_send(ERR_NOTIFY_TRANSPORT_001, "SMTP TCP connect failed")
@@ -534,7 +538,7 @@ fn write_plain_cmd(tcp: &mut TcpStream, cmd: &str) -> Result<(), NotifyError> {
 fn send_tls_cmd(
     tls: &mut Tls13Stream<TcpStream>,
     data: &[u8],
-    deadline: &NotifyDeadlineCx,
+    deadline: &NotifyDeadlineCx<'_>,
     post_write: bool,
 ) -> Result<(), NotifyError> {
     let _ = tls
@@ -549,7 +553,7 @@ fn expect_tls_cmd(
     data: &[u8],
     expected: &[u16],
     err_code: &'static str,
-    deadline: &NotifyDeadlineCx,
+    deadline: &NotifyDeadlineCx<'_>,
 ) -> Result<String, NotifyError> {
     send_tls_cmd(tls, data, deadline, false)?;
     let (code, text) = read_tls_smtp_reply(tls, deadline, false)?;
@@ -564,7 +568,7 @@ fn expect_tls_cmd(
 
 fn read_plain_smtp_reply(
     tcp: &mut TcpStream,
-    deadline: &NotifyDeadlineCx,
+    deadline: &NotifyDeadlineCx<'_>,
 ) -> Result<(u16, String), NotifyError> {
     read_smtp_reply_generic(deadline, false, |buf, rem| {
         let _ = tcp.set_read_timeout(Some(rem));
@@ -575,7 +579,7 @@ fn read_plain_smtp_reply(
 
 fn read_tls_smtp_reply(
     tls: &mut Tls13Stream<TcpStream>,
-    deadline: &NotifyDeadlineCx,
+    deadline: &NotifyDeadlineCx<'_>,
     post_write: bool,
 ) -> Result<(u16, String), NotifyError> {
     read_smtp_reply_generic(deadline, post_write, |buf, rem| {
@@ -589,7 +593,7 @@ fn read_tls_smtp_reply(
 }
 
 fn read_smtp_reply_generic(
-    deadline: &NotifyDeadlineCx,
+    deadline: &NotifyDeadlineCx<'_>,
     post_write: bool,
     mut read_fn: impl FnMut(&mut [u8], Duration) -> Result<usize, NotifyError>,
 ) -> Result<(u16, String), NotifyError> {

@@ -5,20 +5,21 @@
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use fss_core::{
-    ContentDigest, ContextAuthority, EffectJournal, EffectState, EventId, IdempotencyKey,
-    ObligationId, OperationId, RootAuthoritySpec, TimestampNs,
+    CanonicalEncode, CanonicalEncoder, ContentDigest, ContextAuthority, EffectIntent,
+    EffectJournal, EffectState, EventId, IdempotencyKey, ObligationId, OperationId,
+    RootAuthoritySpec, TimestampNs,
 };
 use fss_ledger::IncompleteTailPolicy;
 use fss_reference::DurableEffectJournal;
 use fss_reference::notify::ed25519::Ed25519SigningKey;
 use fss_reference::notify::escalation::{
     DeliveryAuditRecord, EscalationPolicy, EscalationReason, NotificationChannelTarget,
-    dispatch_prepared_notification, prepare_escalation, prepare_notification_effect,
-    reconcile_notification_verified,
+    compute_notification_request_digest, dispatch_prepared_notification, prepare_escalation,
+    prepare_notification_effect, reconcile_notification_verified,
 };
 use fss_reference::notify::relays::{NtfyTarget, PushoverTarget};
 use fss_reference::notify::smtp::{SmtpSecurityMode, SmtpTlsTarget};
@@ -30,8 +31,9 @@ use fss_reference::notify::x509::{
 };
 use fss_reference::notify::{
     DisclosureProfile, ERR_NOTIFY_DISCLOSURE_001, ERR_NOTIFY_INDETERMINATE_001,
-    ERR_NOTIFY_PLAINTEXT_REFUSED_001, ERR_NOTIFY_REDIRECT_REFUSED_001, H3VisualAttachment,
-    NotifyDeadlineCx, NotifyEventMetadata, NotifyLimits, NotifyPayload, PinnedDnsResolver,
+    ERR_NOTIFY_PLAINTEXT_REFUSED_001, ERR_NOTIFY_REDIRECT_REFUSED_001, ERR_NOTIFY_TIMEOUT_001,
+    ERR_NOTIFY_TRANSPORT_001, H3VisualAttachment, NotifyDeadlineCx, NotifyEventMetadata,
+    NotifyLimits, NotifyPayload, PinnedDnsResolver,
 };
 use fss_vault::{
     CAP_SECRET_READ_001, CAP_SECRET_WRITE_001, CanaryLeakScanner, KdfParams, LabEntropy,
@@ -1528,6 +1530,389 @@ fn escalation_policy_ack_deadline_expiry_on_indeterminate_never_resends_parent()
         journal.operation(&parent_op).map(|r| r.state),
         Some(EffectState::Indeterminate)
     );
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+#[test]
+fn reopened_prepared_notification_refuses_metadata_substitution_and_legacy_digests()
+-> Result<(), Box<dyn std::error::Error>> {
+    let dir = make_temp_dir("prepared-payload")?;
+    let now = TimestampNs(1_750_000_000_i128 * 1_000_000_000);
+    let target = HttpsWebhookTarget::new(
+        "metadata-bound",
+        "https://hooks.fss.test/alerts",
+        SecretId::parse("secret:webhook:metadata-bound")?,
+        TlsTrustPolicy::from_pinned_leaf_spki(ContentDigest::sha256(b"test-spki")),
+        DisclosureProfile::EventMetadataV1,
+        Some(ContentDigest::sha256(b"metadata-approval")),
+        None,
+    )?;
+    let payload = NotifyPayload {
+        operation_id: OperationId::parse("op:notify:metadata-bound")?,
+        idempotency_key: IdempotencyKey::parse("idem:notify:metadata-bound")?,
+        event_root: ContentDigest::sha256(b"event-root"),
+        event_revision_digest: ContentDigest::sha256(b"event-revision"),
+        channel: target.target_id.clone(),
+        event_metadata: Some(sample_metadata()?),
+        visual_attachment: None,
+    };
+    let journal_path = dir.join("effects.journal");
+    let mut journal = DurableEffectJournal::open(&journal_path, IncompleteTailPolicy::Reject)?;
+    let precondition = ContentDigest::sha256(b"exact-preview-approval");
+    prepare_notification_effect(
+        &mut journal,
+        &payload,
+        target.route_digest,
+        precondition,
+        ObligationId::parse("obligation:notify:metadata-bound")?,
+        now,
+    )?;
+    drop(journal);
+    let before = std::fs::read(&journal_path)?;
+    let mut journal = DurableEffectJournal::open(&journal_path, IncompleteTailPolicy::Reject)?;
+
+    // No credentials or resolver entries exist: every changed payload must be refused by
+    // the prepared-intent boundary, while preserving the exact durable Prepared record.
+    let vault = LocalEncryptedVault::open(&dir.join("unused-vault"));
+    let secret_cx = make_secret_cx(target.secret_scope.clone(), now)?;
+    let dns = PinnedDnsResolver::new();
+    let mut variants = Vec::new();
+    for field in 0..7 {
+        let mut changed = payload.clone();
+        let metadata = changed.event_metadata.as_mut().ok_or("missing metadata")?;
+        match field {
+            0 => metadata.event_id = EventId::parse("evt:other")?,
+            1 => metadata.revision += 1,
+            2 => metadata.kind = "different_kind".to_owned(),
+            3 => metadata.lifecycle = "resolved".to_owned(),
+            4 => metadata.zone_ids[0] = "another-zone".to_owned(),
+            5 => metadata.zone_ids.reverse(),
+            _ => metadata.summary = "Unapproved replacement summary".to_owned(),
+        }
+        variants.push(changed);
+    }
+    let mut omitted = payload.clone();
+    omitted.event_metadata = None;
+    variants.push(omitted);
+    for changed in variants {
+        assert_ne!(
+            compute_notification_request_digest(&payload, target.route_digest),
+            compute_notification_request_digest(&changed, target.route_digest)
+        );
+        let deadline = NotifyDeadlineCx::new(now, Duration::from_secs(2))?;
+        let mut entropy = LabEntropy::from_seed([0xc1; 32]);
+        let result = dispatch_prepared_notification(
+            &mut journal,
+            NotificationChannelTarget::HttpsWebhook(&target),
+            &changed,
+            &vault,
+            &secret_cx,
+            &dns,
+            &deadline,
+            NotifyLimits::default(),
+            &mut entropy,
+        );
+        assert!(result.is_err_and(|err| {
+            err.code == ERR_NOTIFY_TRANSPORT_001
+                && err.is_pre_send_failure()
+                && err.detail.contains("does not match prepared")
+        }));
+        assert_eq!(
+            journal.operation(&payload.operation_id).map(|op| op.state),
+            Some(EffectState::Prepared)
+        );
+        assert_eq!(std::fs::read(&journal_path)?, before);
+    }
+
+    // A fresh approval cannot overwrite the authority bound into a previously prepared intent.
+    assert!(
+        prepare_notification_effect(
+            &mut journal,
+            &payload,
+            target.route_digest,
+            ContentDigest::sha256(b"replacement-approval"),
+            ObligationId::parse("obligation:notify:metadata-bound")?,
+            TimestampNs(now.0 + 1),
+        )
+        .is_err()
+    );
+    assert_eq!(std::fs::read(&journal_path)?, before);
+    drop(journal);
+
+    // Preserve v1 journal bytes but never reinterpret the old metadata-omitting digest as v2.
+    let legacy_path = dir.join("legacy-effects.journal");
+    let mut legacy = DurableEffectJournal::open(&legacy_path, IncompleteTailPolicy::Reject)?;
+    let mut enc = CanonicalEncoder::new();
+    enc.text("fss.notify.effect_request.v1");
+    payload.operation_id.encode_canonical(&mut enc);
+    payload.idempotency_key.encode_canonical(&mut enc);
+    enc.digest(payload.event_root);
+    enc.digest(payload.event_revision_digest);
+    enc.text(&payload.channel);
+    enc.digest(target.route_digest);
+    enc.bool(false);
+    let intent = EffectIntent::new(
+        payload.operation_id.clone(),
+        payload.idempotency_key.clone(),
+        "notify.tls_dispatch",
+        ContentDigest::sha256(&enc.finish()),
+        precondition,
+    )?;
+    let _ = legacy.prepare(
+        intent,
+        ObligationId::parse("obligation:notify:legacy")?,
+        "notification delivery independently reconciled",
+        now,
+    )?;
+    drop(legacy);
+    let legacy_before = std::fs::read(&legacy_path)?;
+    let mut legacy = DurableEffectJournal::open(&legacy_path, IncompleteTailPolicy::Reject)?;
+    let deadline = NotifyDeadlineCx::new(now, Duration::from_secs(2))?;
+    let mut entropy = LabEntropy::from_seed([0xc2; 32]);
+    let refused = dispatch_prepared_notification(
+        &mut legacy,
+        NotificationChannelTarget::HttpsWebhook(&target),
+        &payload,
+        &vault,
+        &secret_cx,
+        &dns,
+        &deadline,
+        NotifyLimits::default(),
+        &mut entropy,
+    );
+    assert!(refused.is_err_and(|err| {
+        err.code == ERR_NOTIFY_TRANSPORT_001 && err.detail.contains("does not match prepared")
+    }));
+    assert_eq!(std::fs::read(&legacy_path)?, legacy_before);
+    drop(legacy);
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+#[test]
+fn live_cancellation_before_commit_preserves_prepared_but_not_committed_uncertainty()
+-> Result<(), Box<dyn std::error::Error>> {
+    let dir = make_temp_dir("cancel-before-commit")?;
+    let now = TimestampNs(1_750_000_000_i128 * 1_000_000_000);
+    let target = HttpsWebhookTarget::new(
+        "cancel-before-commit",
+        "https://hooks.fss.test/alerts",
+        SecretId::parse("secret:webhook:cancel-before-commit")?,
+        TlsTrustPolicy::from_pinned_leaf_spki(ContentDigest::sha256(b"test-spki")),
+        DisclosureProfile::ReferencesV1,
+        None,
+        None,
+    )?;
+    let payload = NotifyPayload {
+        operation_id: OperationId::parse("op:notify:cancel-before-commit")?,
+        idempotency_key: IdempotencyKey::parse("idem:notify:cancel-before-commit")?,
+        event_root: ContentDigest::sha256(b"event-root"),
+        event_revision_digest: ContentDigest::sha256(b"event-revision"),
+        channel: target.target_id.clone(),
+        event_metadata: None,
+        visual_attachment: None,
+    };
+    let journal_path = dir.join("effects.journal");
+    let mut journal = DurableEffectJournal::open(&journal_path, IncompleteTailPolicy::Reject)?;
+    prepare_notification_effect(
+        &mut journal,
+        &payload,
+        target.route_digest,
+        ContentDigest::sha256(b"approved"),
+        ObligationId::parse("obligation:notify:cancel-before-commit")?,
+        now,
+    )?;
+    let prepared_bytes = std::fs::read(&journal_path)?;
+    let vault = LocalEncryptedVault::open(&dir.join("unused-vault"));
+    let secret_cx = make_secret_cx(target.secret_scope.clone(), now)?;
+    let dns = PinnedDnsResolver::new();
+    let cancelled = AtomicBool::new(false);
+    let probe = || cancelled.load(Ordering::SeqCst);
+    let deadline =
+        NotifyDeadlineCx::new(now, Duration::from_secs(2))?.with_cancellation_probe(&probe);
+    assert!(deadline.remaining(false).is_ok());
+    cancelled.store(true, Ordering::SeqCst);
+    let mut entropy = LabEntropy::from_seed([0xc3; 32]);
+    let refused = dispatch_prepared_notification(
+        &mut journal,
+        NotificationChannelTarget::HttpsWebhook(&target),
+        &payload,
+        &vault,
+        &secret_cx,
+        &dns,
+        &deadline,
+        NotifyLimits::default(),
+        &mut entropy,
+    );
+    assert!(
+        refused
+            .is_err_and(|err| { err.code == ERR_NOTIFY_TIMEOUT_001 && err.is_pre_send_failure() })
+    );
+    assert_eq!(std::fs::read(&journal_path)?, prepared_bytes);
+    drop(journal);
+    let mut reopened = DurableEffectJournal::open(&journal_path, IncompleteTailPolicy::Reject)?;
+    assert_eq!(
+        reopened.operation(&payload.operation_id).map(|op| op.state),
+        Some(EffectState::Prepared)
+    );
+
+    // Simulate a crash after durable commitment: cancellation cannot erase possible delivery.
+    let _ = reopened.transition(
+        &payload.operation_id,
+        EffectState::Committed,
+        TimestampNs(now.0 + 1),
+        None,
+        None,
+    )?;
+    drop(reopened);
+    let committed_bytes = std::fs::read(&journal_path)?;
+    let mut reopened = DurableEffectJournal::open(&journal_path, IncompleteTailPolicy::Reject)?;
+    let refused = dispatch_prepared_notification(
+        &mut reopened,
+        NotificationChannelTarget::HttpsWebhook(&target),
+        &payload,
+        &vault,
+        &secret_cx,
+        &dns,
+        &deadline,
+        NotifyLimits::default(),
+        &mut entropy,
+    );
+    assert!(refused.is_err_and(|err| {
+        err.code == ERR_NOTIFY_INDETERMINATE_001 && !err.is_pre_send_failure()
+    }));
+    assert_eq!(std::fs::read(&journal_path)?, committed_bytes);
+    drop(reopened);
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+#[test]
+fn cancellation_after_tls_request_stays_indeterminate_across_journal_reopen()
+-> Result<(), Box<dyn std::error::Error>> {
+    let dir = make_temp_dir("cancel-after-write")?;
+    let now = TimestampNs(1_750_000_000_i128 * 1_000_000_000);
+    let pki = build_test_pki(&["hooks.fss.test"], 1_700_000_000, 1_900_000_000, 0xc4);
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let addr = listener.local_addr()?;
+    let secret_id = SecretId::parse("secret:webhook:cancel-after-write")?;
+    let target = HttpsWebhookTarget::new(
+        "cancel-after-write",
+        &format!("https://hooks.fss.test:{}/alerts", addr.port()),
+        secret_id.clone(),
+        TlsTrustPolicy::from_pem_bundle(&pki.ca_pem)?,
+        DisclosureProfile::ReferencesV1,
+        None,
+        None,
+    )?;
+    let mut vault = open_test_vault(&dir.join("vault"))?;
+    let secret_cx = make_secret_cx(target.secret_scope.clone(), now)?;
+    vault.store(
+        &secret_cx,
+        &secret_id,
+        SecretBytes::from_slice(b"CANARY-CANCEL-AFTER-WRITE-HMAC")?,
+    )?;
+    let payload = NotifyPayload {
+        operation_id: OperationId::parse("op:notify:cancel-after-write")?,
+        idempotency_key: IdempotencyKey::parse("idem:notify:cancel-after-write")?,
+        event_root: ContentDigest::sha256(b"event-root"),
+        event_revision_digest: ContentDigest::sha256(b"event-revision"),
+        channel: target.target_id.clone(),
+        event_metadata: None,
+        visual_attachment: None,
+    };
+    let journal_path = dir.join("effects.journal");
+    let mut journal = DurableEffectJournal::open(&journal_path, IncompleteTailPolicy::Reject)?;
+    prepare_notification_effect(
+        &mut journal,
+        &payload,
+        target.route_digest,
+        ContentDigest::sha256(b"approved"),
+        ObligationId::parse("obligation:notify:cancel-after-write")?,
+        now,
+    )?;
+    let cancelled = AtomicBool::new(false);
+    let probe = || cancelled.load(Ordering::SeqCst);
+    let hits = AtomicUsize::new(0);
+    let dns = PinnedDnsResolver::new().with_entry("hooks.fss.test", addr);
+    std::thread::scope(|scope| -> Result<(), Box<dyn std::error::Error>> {
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let server_cancelled = &cancelled;
+        let server_hits = &hits;
+        let server_listener = &listener;
+        let chain = vec![pki.leaf_der.clone()];
+        let leaf_sk = pki.leaf_sk.clone();
+        let server = scope.spawn(move || -> Result<(), String> {
+            let (sock, _) = server_listener.accept().map_err(|e| e.to_string())?;
+            let _ = sock.set_read_timeout(Some(Duration::from_secs(5)));
+            let _ = sock.set_write_timeout(Some(Duration::from_secs(5)));
+            let mut entropy = LabEntropy::from_seed([0xc5; 32]);
+            let mut tls = Tls13Stream::accept_server(sock, &chain, &leaf_sk, &mut entropy)
+                .map_err(|e| e.to_string())?;
+            let _ = read_http_request_over_tls(&mut tls)?;
+            server_hits.fetch_add(1, Ordering::SeqCst);
+            server_cancelled.store(true, Ordering::SeqCst);
+            // Wake a client already blocked in response I/O without supplying a complete ACK.
+            // Keep the socket alive until the client has observed the cooperative cancellation.
+            let _ = tls.write_application_data(b"HTTP/1.1 202 Accepted\r\n");
+            done_rx
+                .recv_timeout(Duration::from_secs(5))
+                .map_err(|e| e.to_string())?;
+            Ok(())
+        });
+        let deadline =
+            NotifyDeadlineCx::new(now, Duration::from_secs(3))?.with_cancellation_probe(&probe);
+        let mut entropy = LabEntropy::from_seed([0xc6; 32]);
+        let result = dispatch_prepared_notification(
+            &mut journal,
+            NotificationChannelTarget::HttpsWebhook(&target),
+            &payload,
+            &vault,
+            &secret_cx,
+            &dns,
+            &deadline,
+            NotifyLimits::default(),
+            &mut entropy,
+        );
+        let _ = done_tx.send(());
+        server
+            .join()
+            .map_err(|_| "cancellation TLS server panicked")??;
+        assert!(result.is_err_and(|err| {
+            err.code == ERR_NOTIFY_INDETERMINATE_001
+                && !err.is_pre_send_failure()
+                && err.detail.contains("cancelled")
+        }));
+        Ok(())
+    })?;
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        journal.operation(&payload.operation_id).map(|op| op.state),
+        Some(EffectState::Indeterminate)
+    );
+    drop(journal);
+
+    // A fresh process/request owner cannot turn the ambiguous delivery into an automatic resend.
+    let before_retry = std::fs::read(&journal_path)?;
+    let mut reopened = DurableEffectJournal::open(&journal_path, IncompleteTailPolicy::Reject)?;
+    let deadline = NotifyDeadlineCx::new(TimestampNs(now.0 + 10), Duration::from_secs(2))?;
+    let mut entropy = LabEntropy::from_seed([0xc7; 32]);
+    let refused = dispatch_prepared_notification(
+        &mut reopened,
+        NotificationChannelTarget::HttpsWebhook(&target),
+        &payload,
+        &vault,
+        &secret_cx,
+        &dns,
+        &deadline,
+        NotifyLimits::default(),
+        &mut entropy,
+    );
+    assert!(refused.is_err_and(|err| err.code == ERR_NOTIFY_INDETERMINATE_001));
+    assert_eq!(std::fs::read(&journal_path)?, before_retry);
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    drop(reopened);
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }

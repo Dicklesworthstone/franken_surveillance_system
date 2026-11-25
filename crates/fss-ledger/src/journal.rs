@@ -1,6 +1,6 @@
 //! Writable two-phase journal publication with explicit ambiguous-append reconciliation.
 
-use std::fs::{File, OpenOptions};
+use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
@@ -45,10 +45,10 @@ struct PendingAppend {
 
 /// Writable crash-classifying reference journal.
 ///
-/// One `Journal` handle is the sole writer for its path. The handle checks for externally changed
-/// length before every append, but cross-process mutual exclusion belongs to the future
-/// Asupersync-owned production adapter. Any I/O failure after append bytes may have been written
-/// moves this handle into a reconciliation-required state.
+/// One `Journal` handle is the sole writer for its path. [`Journal::open_exclusive`] enforces
+/// cooperating cross-process writer ownership; [`Journal::open`] requires external coordination.
+/// The handle checks for external changes before every append. Any I/O failure after append bytes
+/// may have been written moves this handle into a reconciliation-required state.
 #[derive(Debug)]
 pub struct Journal {
     path: PathBuf,
@@ -69,6 +69,28 @@ impl Journal {
         path: impl AsRef<Path>,
         tail_policy: IncompleteTailPolicy,
     ) -> Result<Self, JournalError> {
+        Self::open_inner(path, tail_policy, false)
+    }
+
+    /// Opens or creates a journal while exclusively owning its actual file until this handle drops.
+    ///
+    /// A nonblocking lock is acquired before recovery reads or any admitted tail truncation.
+    /// Contention returns an I/O error with kind `WouldBlock`; it never waits or modifies history.
+    /// Recovery, append and reconciliation use the same locked handle, including on platforms
+    /// where the lock prevents other handles in this process from accessing the byte range.
+    /// Use [`Journal::verify`] to read this owner's history while the lock is held.
+    pub fn open_exclusive(
+        path: impl AsRef<Path>,
+        tail_policy: IncompleteTailPolicy,
+    ) -> Result<Self, JournalError> {
+        Self::open_inner(path, tail_policy, true)
+    }
+
+    fn open_inner(
+        path: impl AsRef<Path>,
+        tail_policy: IncompleteTailPolicy,
+        exclusive: bool,
+    ) -> Result<Self, JournalError> {
         let path = path.as_ref().to_path_buf();
         let mut file = OpenOptions::new()
             .create(true)
@@ -76,6 +98,18 @@ impl Journal {
             .write(true)
             .truncate(false)
             .open(&path)?;
+        if exclusive {
+            match file.try_lock() {
+                Ok(()) => {}
+                Err(TryLockError::WouldBlock) => {
+                    return Err(JournalError::Io(io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "journal is already in use; retry the same operation after its owner finishes",
+                    )));
+                }
+                Err(TryLockError::Error(error)) => return Err(JournalError::Io(error)),
+            }
+        }
         file.seek(SeekFrom::Start(0))?;
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;

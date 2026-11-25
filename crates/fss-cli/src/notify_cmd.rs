@@ -7,11 +7,11 @@
 //!
 //! # Safety & Security Invariants
 //! - Two-step approval required: `fss notify preview` computes exact `route_digest` and
-//!   `approval_digest` (`fss.notify.cli_approval.v1`) with ZERO network I/O and ZERO secret reads;
+//!   `approval_digest` (`fss.notify.cli_approval.v2`) with ZERO network I/O and ZERO secret reads;
 //!   `fss notify dispatch` requires `--approve <sha256>` matching that exact preview digest.
 //! - Plaintext `http://` targets fail closed with `ERR-NOTIFY-PLAINTEXT-REFUSED-001`.
 //! - Secrets are loaded exclusively from `fss-vault` under exact `SecretAccessCx` scoping.
-//! - Effects execute through `DurableEffectJournal` (when `--effects-journal` or `--root` is set)
+//! - Dispatch requires `--effects-journal` or `--root` and always uses `DurableEffectJournal`
 //!   so `Indeterminate` operations can NEVER be silently resent (`ERR-NOTIFY-INDETERMINATE-001`).
 
 use std::fs::{self, File};
@@ -21,12 +21,13 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use fss_core::{
-    CanonicalEncoder, ContentDigest, EffectJournal, EventId, IdempotencyKey, ObligationId,
+    CanonicalEncoder, ContentDigest, EffectState, EventId, IdempotencyKey, ObligationId,
     OperationId,
 };
 use fss_reference::DurableEffectJournal;
 use fss_reference::notify::escalation::{
-    NotificationChannelTarget, dispatch_prepared_notification, prepare_notification_effect,
+    NotificationChannelTarget, compute_notification_request_digest, dispatch_prepared_notification,
+    prepare_notification_effect,
 };
 use fss_reference::notify::relays::{NtfyTarget, PushoverTarget};
 use fss_reference::notify::smtp::{SmtpSecurityMode, SmtpTlsTarget};
@@ -46,7 +47,7 @@ use crate::vault_cmd::{build_secret_cx, current_timestamp_ns, read_secret_file_0
 /// Canonical JSON response schema for `fss notify preview|dispatch`.
 pub const NOTIFY_CLI_RESPONSE_SCHEMA: &str = "fss.notify_response.v1";
 /// Canonical digest domain for `fss notify` two-step CLI preview/dispatch approvals.
-pub const NOTIFY_CLI_APPROVAL_DOMAIN: &str = "fss.notify.cli_approval.v1";
+pub const NOTIFY_CLI_APPROVAL_DOMAIN: &str = "fss.notify.cli_approval.v2";
 
 const FORBIDDEN_SECRET_FLAGS: &[&str] = &[
     "--secret",
@@ -133,11 +134,7 @@ pub fn execute_notify_command(
     control: &crate::RequestControl<'_>,
 ) -> (String, ExitIdentity) {
     if control.is_cancelled() {
-        return err_json(
-            "ERR-CLI-READ-CANCELLED-001",
-            "notify operation cancelled before dispatch",
-            ExitIdentity::RUNTIME_FAILURE,
-        );
+        return cancelled_notify();
     }
     for tok in args {
         let s = tok.as_str();
@@ -152,7 +149,7 @@ pub fn execute_notify_command(
     }
     match verb {
         "preview" => exec_preview(args),
-        "dispatch" => exec_dispatch(args),
+        "dispatch" => exec_dispatch(args, control),
         other => err_json(
             "ERR-CLI-UNKNOWN-COMMAND-001",
             &format!("unknown notify verb `{other}` (expected preview or dispatch)"),
@@ -388,6 +385,14 @@ fn parse_notify_opts(
             ExitIdentity::MALFORMED_VALUE,
         )
     })?;
+
+    if timeout_ms == 0 || timeout_ms > 60_000 {
+        return Err(err_json(
+            "ERR-CLI-MALFORMED-VALUE-001",
+            "--timeout-ms must be within 1..=60000",
+            ExitIdentity::MALFORMED_VALUE,
+        ));
+    }
 
     Ok(NotifyOpts {
         channel,
@@ -718,7 +723,11 @@ fn build_payload(opts: &NotifyOpts) -> Result<NotifyPayload, (String, ExitIdenti
     Ok(payload)
 }
 
-fn compute_cli_approval(opts: &NotifyOpts, route_digest: ContentDigest) -> ContentDigest {
+fn compute_cli_approval(
+    opts: &NotifyOpts,
+    payload: &NotifyPayload,
+    route_digest: ContentDigest,
+) -> ContentDigest {
     let mut enc = CanonicalEncoder::new();
     enc.text("fss.canonical.v1");
     enc.text(NOTIFY_CLI_APPROVAL_DOMAIN);
@@ -730,6 +739,9 @@ fn compute_cli_approval(opts: &NotifyOpts, route_digest: ContentDigest) -> Conte
     enc.digest(opts.event_root);
     enc.digest(opts.event_revision_digest);
     enc.text(opts.disclosure.as_str());
+    enc.digest(compute_notification_request_digest(payload, route_digest));
+    enc.text(&opts.principal);
+    enc.u64(opts.timeout_ms);
     ContentDigest::sha256(&enc.finish())
 }
 
@@ -746,14 +758,15 @@ fn exec_preview(args: &[ArgToken]) -> (String, ExitIdentity) {
         Ok(t) => t,
         Err(e) => return e,
     };
-    let _payload = match build_payload(&opts) {
+    let payload = match build_payload(&opts) {
         Ok(p) => p,
         Err(e) => return e,
     };
     let route_digest = target.route_digest();
-    let approval_digest = compute_cli_approval(&opts, route_digest);
+    let request_digest = compute_notification_request_digest(&payload, route_digest);
+    let approval_digest = compute_cli_approval(&opts, &payload, route_digest);
     let approve_cmd = format!(
-        "fss notify dispatch --channel {} --target-id {} --secret-id {} --operation-id {} --idempotency-key {} --approve {} --vault-dir <vault-dir> --passphrase-file <0600-file> --json",
+        "fss notify dispatch --channel {} --target-id {} --secret-id {} --operation-id {} --idempotency-key {} --approve {} --effects-journal <journal-path> --vault-dir <vault-dir> --passphrase-file <0600-file> --json",
         opts.channel.as_str(),
         opts.target_id,
         opts.secret_id.as_str(),
@@ -770,6 +783,7 @@ fn exec_preview(args: &[ArgToken]) -> (String, ExitIdentity) {
             ("target_id", string(&opts.target_id)),
             ("disclosure_profile", string(opts.disclosure.as_str())),
             ("route_digest", string(&route_digest.to_text())),
+            ("request_digest", string(&request_digest.to_text())),
             ("approval_digest", string(&approval_digest.to_text())),
             ("approve_command", string(&approve_cmd)),
         ]),
@@ -777,7 +791,7 @@ fn exec_preview(args: &[ArgToken]) -> (String, ExitIdentity) {
     )
 }
 
-fn exec_dispatch(args: &[ArgToken]) -> (String, ExitIdentity) {
+fn exec_dispatch(args: &[ArgToken], control: &crate::RequestControl<'_>) -> (String, ExitIdentity) {
     let opts = match parse_notify_opts("dispatch", args) {
         Ok(o) => o,
         Err(e) => return e,
@@ -795,7 +809,7 @@ fn exec_dispatch(args: &[ArgToken]) -> (String, ExitIdentity) {
         Err(e) => return e,
     };
     let route_digest = target.route_digest();
-    let expected_approval = compute_cli_approval(&opts, route_digest);
+    let expected_approval = compute_cli_approval(&opts, &payload, route_digest);
     let Some(supplied_approval) = opts.approve else {
         return err_json(
             "ERR-NOTIFY-APPROVAL-REQUIRED-001",
@@ -817,6 +831,44 @@ fn exec_dispatch(args: &[ArgToken]) -> (String, ExitIdentity) {
         );
     }
 
+    let journal_path = match (&opts.effects_journal, &opts.root) {
+        (Some(path), None) => path.clone(),
+        (None, Some(root)) => root.join("effects/journal.fssj"),
+        (None, None) => {
+            return err_json(
+                "ERR-NOTIFY-JOURNAL-REQUIRED-001",
+                "dispatch requires --effects-journal <path> or --root <deployment-root> for durable idempotency",
+                ExitIdentity::MISSING_VALUE,
+            );
+        }
+        (Some(_), Some(_)) => {
+            return err_json(
+                "ERR-CLI-MALFORMED-VALUE-001",
+                "select exactly one of --effects-journal or --root",
+                ExitIdentity::MALFORMED_VALUE,
+            );
+        }
+    };
+    if control.is_cancelled() {
+        return cancelled_notify();
+    }
+
+    // The journal owns its lock and performs recovery and all writes through that same handle.
+    // Aliases of this file cannot dispatch concurrently, and custody is checked before secrets.
+    let mut journal = match DurableEffectJournal::open_exclusive(&journal_path) {
+        Ok(journal) => journal,
+        Err(error) => {
+            return err_json(
+                "ERR-NOTIFY-TRANSPORT-001",
+                &format!("failed opening exclusive durable effect journal: {error}"),
+                ExitIdentity::RUNTIME_FAILURE,
+            );
+        }
+    };
+    if control.is_cancelled() {
+        return cancelled_notify();
+    }
+
     let Some(vault_dir) = &opts.vault_dir else {
         return err_json(
             "ERR-NOTIFY-VAULT-001",
@@ -835,6 +887,9 @@ fn exec_dispatch(args: &[ArgToken]) -> (String, ExitIdentity) {
         Ok(p) => p,
         Err(e) => return e,
     };
+    if control.is_cancelled() {
+        return cancelled_notify();
+    }
     let mut vault = LocalEncryptedVault::open(vault_dir);
     if let Err(err) = vault.unlock(&passphrase) {
         return err_json(
@@ -842,6 +897,10 @@ fn exec_dispatch(args: &[ArgToken]) -> (String, ExitIdentity) {
             &err.to_string(),
             ExitIdentity::RUNTIME_FAILURE,
         );
+    }
+    if control.is_cancelled() {
+        vault.lock();
+        return cancelled_notify();
     }
     let secret_cx = match build_secret_cx(
         &opts.principal,
@@ -857,8 +916,9 @@ fn exec_dispatch(args: &[ArgToken]) -> (String, ExitIdentity) {
     };
 
     let now = current_timestamp_ns();
-    let deadline = match NotifyDeadlineCx::new(now, Duration::from_millis(opts.timeout_ms.max(1))) {
-        Ok(d) => d,
+    let cancelled = || control.is_cancelled();
+    let deadline = match NotifyDeadlineCx::new(now, Duration::from_millis(opts.timeout_ms)) {
+        Ok(d) => d.with_cancellation_probe(&cancelled),
         Err(err) => {
             vault.lock();
             return err_json(err.code, &err.to_string(), ExitIdentity::MALFORMED_VALUE);
@@ -875,12 +935,12 @@ fn exec_dispatch(args: &[ArgToken]) -> (String, ExitIdentity) {
     };
     let mut entropy = OsEntropy::new();
     let limits = NotifyLimits::default();
+    // Hash the full identity: replacing ':' with '-' aliases distinct operations, and a shared
+    // fallback obligation aliases every long operation ID.
     let ob_id = match ObligationId::parse(format!(
         "ob:notify:{}",
-        opts.operation_id.as_str().replace(':', "-")
-    ))
-    .or_else(|_| ObligationId::parse("ob:notify:dispatch"))
-    {
+        ContentDigest::sha256(opts.operation_id.as_str().as_bytes()).to_text()
+    )) {
         Ok(id) => id,
         Err(_) => {
             vault.lock();
@@ -892,83 +952,58 @@ fn exec_dispatch(args: &[ArgToken]) -> (String, ExitIdentity) {
         }
     };
 
-    let journal_path = opts
-        .effects_journal
-        .clone()
-        .or_else(|| opts.root.as_ref().map(|r| r.join("effects/journal.fssj")));
-
-    let outcome = if let Some(jpath) = journal_path {
-        let mut journal =
-            match DurableEffectJournal::open(&jpath, fss_ledger::IncompleteTailPolicy::Reject) {
-                Ok(j) => j,
-                Err(err) => {
-                    vault.lock();
-                    return err_json(
-                        "ERR-NOTIFY-TRANSPORT-001",
-                        &format!("failed opening durable effect journal: {err}"),
-                        ExitIdentity::RUNTIME_FAILURE,
-                    );
-                }
-            };
-        if journal.operation(&opts.operation_id).is_none()
-            && let Err(err) = prepare_notification_effect(
-                &mut journal,
-                &payload,
-                route_digest,
-                expected_approval,
-                ob_id,
-                now,
-            )
-        {
-            vault.lock();
-            return err_json(err.code, &err.to_string(), ExitIdentity::RUNTIME_FAILURE);
-        }
-        let res = dispatch_prepared_notification(
-            &mut journal,
-            target.as_channel_target(),
-            &payload,
-            &vault,
-            &secret_cx,
-            dns,
-            &deadline,
-            limits,
-            &mut entropy,
+    if let Err(err) = deadline.remaining(false) {
+        vault.lock();
+        return err_json(err.code, &err.to_string(), ExitIdentity::RUNTIME_FAILURE);
+    }
+    if journal.store_pin().is_some() && !journal.store_pin_is_current() {
+        vault.lock();
+        return err_json(
+            "ERR-NOTIFY-TRANSPORT-001",
+            "durable effect journal changed after acquiring its dispatch lease",
+            ExitIdentity::RUNTIME_FAILURE,
         );
-        (res, true)
-    } else {
-        let mut journal = EffectJournal::new();
-        if let Err(err) = prepare_notification_effect(
+    }
+    if let Err(err) = deadline.remaining(false) {
+        vault.lock();
+        return err_json(err.code, &err.to_string(), ExitIdentity::RUNTIME_FAILURE);
+    }
+    // Revalidate the exact intent, including the approval precondition, on a prepared retry.
+    // Other states go directly to the driver's terminal/indeterminate resend refusal.
+    if journal
+        .operation(&opts.operation_id)
+        .is_none_or(|operation| operation.state == EffectState::Prepared)
+        && let Err(err) = prepare_notification_effect(
             &mut journal,
             &payload,
             route_digest,
             expected_approval,
             ob_id,
             now,
-        ) {
-            vault.lock();
-            return err_json(err.code, &err.to_string(), ExitIdentity::RUNTIME_FAILURE);
-        }
-        let res = dispatch_prepared_notification(
-            &mut journal,
-            target.as_channel_target(),
-            &payload,
-            &vault,
-            &secret_cx,
-            dns,
-            &deadline,
-            limits,
-            &mut entropy,
-        );
-        (res, false)
-    };
+        )
+    {
+        vault.lock();
+        return err_json(err.code, &err.to_string(), ExitIdentity::RUNTIME_FAILURE);
+    }
+    let outcome = dispatch_prepared_notification(
+        &mut journal,
+        target.as_channel_target(),
+        &payload,
+        &vault,
+        &secret_cx,
+        dns,
+        &deadline,
+        limits,
+        &mut entropy,
+    );
     vault.lock();
 
-    match outcome.0 {
+    match outcome {
         Ok(dispatched) => (
             object(&[
                 ("schema", string(NOTIFY_CLI_RESPONSE_SCHEMA)),
                 ("action", string("dispatch")),
-                ("durable_journal", outcome.1.to_string()),
+                ("durable_journal", "true".to_owned()),
                 ("channel", string(opts.channel.as_str())),
                 ("target_id", string(&opts.target_id)),
                 ("operation_id", string(opts.operation_id.as_str())),
@@ -1010,6 +1045,14 @@ fn exec_dispatch(args: &[ArgToken]) -> (String, ExitIdentity) {
         ),
         Err(err) => err_json(err.code, &err.to_string(), ExitIdentity::RUNTIME_FAILURE),
     }
+}
+
+fn cancelled_notify() -> (String, ExitIdentity) {
+    err_json(
+        "ERR-CLI-READ-CANCELLED-001",
+        "notify operation cancelled before dispatch",
+        ExitIdentity::RUNTIME_FAILURE,
+    )
 }
 
 fn parse_opt_digest(
