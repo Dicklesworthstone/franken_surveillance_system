@@ -55,8 +55,11 @@ pub const MAX_TRANSFER_PATHS: usize = 64;
 /// Maximum append-only journal records retained for one transfer.
 pub const MAX_JOURNAL_RECORDS: usize = 8_192;
 
-/// Maximum UTF-8 bytes in labels (sender, receiver, path_id, failure_domain, reason).
+/// Maximum UTF-8 bytes in labels (sender, receiver, failure_domain, reason, provider_tuple).
 pub const MAX_LABEL_BYTES: usize = 256;
+
+/// Maximum UTF-8 bytes in schema-bounded identifiers (`pathId`, `obligationId`, `errorId`).
+pub const MAX_ID_LABEL_BYTES: usize = 128;
 
 /// Maximum distinct failure domains tracked per transfer.
 pub const MAX_FAILURE_DOMAINS: usize = 32;
@@ -468,7 +471,7 @@ impl IndeterminateTransferObligation {
         expected_fence: u64,
     ) -> Result<(), AtpLifecycleError> {
         if self.obligation_id.is_empty()
-            || self.obligation_id.len() > MAX_LABEL_BYTES
+            || self.obligation_id.len() > MAX_ID_LABEL_BYTES
             || self.reason.is_empty()
             || self.reason.len() > MAX_LABEL_BYTES
         {
@@ -855,7 +858,7 @@ impl LifecycleReceipt {
         fields.push(format!(
             "\"repair\":{{\"symbolsUsed\":{},\"postRepairDigest\":{}}}",
             self.counters.repair_symbols_used,
-            if self.counters.repair_symbols_used > 0 {
+            if self.counters.repair_symbols_used > 0 && objects_verified {
                 format!("\"{}\"", self.root_digest)
             } else {
                 "null".to_owned()

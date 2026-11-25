@@ -11,6 +11,7 @@ use fss_core::{
     ReferenceLedger,
 };
 
+use crate::oracle::{genesis_history_root, successor_history_root};
 use crate::sealed_lineage::{
     ERR_LEDGER_SEALED_NAMESPACE_001, first_sealed_lineage_delta, is_sealed_lineage_batch,
 };
@@ -304,6 +305,8 @@ pub struct DurableReferenceLedger {
     journal: Journal,
     ledger: ReferenceLedger,
     identities: BatchIdentityIndex,
+    /// Incremental canonical history-chain roots indexed by commit sequence (`0..=head`).
+    history_roots: Vec<ContentDigest>,
     pending: Option<PendingLedgerAppend>,
     /// Store pin of the journal file this handle opened (fss-1s6ac).
     store_pin: Option<ContentDigest>,
@@ -354,11 +357,13 @@ impl DurableReferenceLedger {
         }
 
         let (ledger, identities) = replay_report(&report, &site_lineage)?;
+        let history_roots = compute_history_roots(&site_lineage, ledger.batches())?;
         let store_pin = journal.store_pin(STORE_ROLE_AUTHORITY_LEDGER);
         Ok(Self {
             journal,
             ledger,
             identities,
+            history_roots,
             pending: None,
             store_pin,
         })
@@ -451,6 +456,23 @@ impl DurableReferenceLedger {
     #[must_use]
     pub const fn journal_root(&self) -> ContentDigest {
         self.journal.last_root()
+    }
+
+    /// Canonical history-chain root through the committed head (`fss.ledger_oracle_history.v1`).
+    #[must_use]
+    pub fn head_history_root(&self) -> ContentDigest {
+        self.history_roots
+            .last()
+            .copied()
+            .unwrap_or_else(|| ContentDigest::sha256(b"empty-durable-history"))
+    }
+
+    #[must_use]
+    pub(crate) fn history_root_at(&self, sequence: u64) -> Option<ContentDigest> {
+        usize::try_from(sequence)
+            .ok()
+            .and_then(|idx| self.history_roots.get(idx))
+            .copied()
     }
 
     /// Bounded fail-closed proof that the durable journal still ends exactly where this handle's
@@ -551,14 +573,23 @@ impl DurableReferenceLedger {
         }
 
         self.identities.check_not_reused(&batch)?;
+        let prev_history_root = self.head_history_root();
         let staged = self.ledger.stage_append(batch)?;
         let encoded = encode_batch(staged.batch())?;
         let batch_id = staged.batch().batch_id.clone();
         let identity = CommittedIdentity::of(staged.batch());
+        let next_history_root = successor_history_root(
+            prev_history_root,
+            staged.batch().new_anchor.commit_sequence,
+            staged.batch().batch_digest,
+            &staged.batch().new_anchor,
+        )
+        .map_err(|_| DurableLedgerError::Contract(ContractError::InvalidIdentifier))?;
         match self.journal.append(EVIDENCE_BATCH_RECORD_KIND, &encoded) {
             Ok(_record) => {
                 staged.commit();
                 self.identities.insert(batch_id, identity);
+                self.history_roots.push(next_history_root);
                 Ok(self.ledger.current())
             }
             Err(error) => {
@@ -591,6 +622,7 @@ impl DurableReferenceLedger {
             batch_id,
             identity,
         } = self.pending.take().ok_or(JournalError::NoPendingAppend)?;
+        let prev_history_root = self.head_history_root();
         let staged = match self.ledger.resume_append(candidate) {
             Ok(staged) => staged,
             Err(error) => {
@@ -606,8 +638,16 @@ impl DurableReferenceLedger {
         };
         match self.journal.reconcile_pending(tail_policy) {
             Ok(AppendReconciliation::Committed(_record)) => {
+                let next_history_root = successor_history_root(
+                    prev_history_root,
+                    staged.batch().new_anchor.commit_sequence,
+                    staged.batch().batch_digest,
+                    &staged.batch().new_anchor,
+                )
+                .map_err(|_| DurableLedgerError::Contract(ContractError::InvalidIdentifier))?;
                 staged.commit();
                 self.identities.insert(batch_id.clone(), identity);
+                self.history_roots.push(next_history_root);
                 Ok(DurableAppendReconciliation::Committed { sequence, batch_id })
             }
             Ok(AppendReconciliation::NotCommitted { sequence }) => {
@@ -631,9 +671,12 @@ impl DurableReferenceLedger {
         let report = self.journal.verify()?;
         let (replayed, identities) =
             replay_report(&report, &self.ledger.current().anchor.site_lineage)?;
+        let replayed_roots =
+            compute_history_roots(&self.ledger.current().anchor.site_lineage, replayed.batches())?;
         if report.last_root() != self.journal.last_root()
             || replayed.current() != self.ledger.current()
             || identities != self.identities
+            || replayed_roots != self.history_roots
         {
             return Err(DurableLedgerError::Journal(
                 JournalError::ExternalMutation {
@@ -693,6 +736,28 @@ fn replay_report(
         identities.insert(batch_id, identity);
     }
     Ok((ledger, identities))
+}
+
+fn compute_history_roots(
+    site_lineage: &str,
+    batches: &[EvidenceDeltaBatch],
+) -> Result<Vec<ContentDigest>, DurableLedgerError> {
+    let genesis = fss_core::LedgerAnchor::genesis(site_lineage.to_owned());
+    let mut roots = Vec::with_capacity(batches.len().saturating_add(1));
+    let mut current = genesis_history_root(&genesis)
+        .map_err(|_| DurableLedgerError::Contract(ContractError::InvalidIdentifier))?;
+    roots.push(current);
+    for batch in batches {
+        current = successor_history_root(
+            current,
+            batch.new_anchor.commit_sequence,
+            batch.batch_digest,
+            &batch.new_anchor,
+        )
+        .map_err(|_| DurableLedgerError::Contract(ContractError::InvalidIdentifier))?;
+        roots.push(current);
+    }
+    Ok(roots)
 }
 
 /// Resource limits for durable ledger inspection.

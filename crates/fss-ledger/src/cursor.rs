@@ -22,9 +22,7 @@ use fss_core::{
 
 use crate::batch_codec::encode_batch;
 use crate::durable::DurableReferenceLedger;
-use crate::oracle::{
-    LedgerOracle, MAX_ORACLE_TEXT_BYTES, genesis_history_root, successor_history_root,
-};
+use crate::oracle::{LedgerOracle, MAX_ORACLE_TEXT_BYTES};
 
 /// Registered digest domain for [`LedgerReplayCursor`] commitments (`FSS-102`).
 pub const LEDGER_REPLAY_CURSOR_DOMAIN: &str = "fss.ledger_replay_cursor.v1";
@@ -628,7 +626,9 @@ impl LedgerOracle {
         let has_more = remaining_batches > 0;
         let head_anchor = self.head_anchor().clone();
         let head_history_root = self.head_history_root();
-        let complete = !has_more && next_cursor.last_anchor == head_anchor;
+        let complete = !has_more
+            && next_cursor.last_anchor == head_anchor
+            && next_cursor.history_root == head_history_root;
 
         Ok(ReplayPage {
             batches,
@@ -644,27 +644,6 @@ impl LedgerOracle {
     }
 }
 
-fn durable_history_roots(
-    genesis: &LedgerAnchor,
-    batches: &[EvidenceDeltaBatch],
-) -> Result<Vec<ContentDigest>, ReplayCursorError> {
-    let mut roots = Vec::with_capacity(batches.len().saturating_add(1));
-    let mut current = genesis_history_root(genesis)
-        .map_err(|err| ReplayCursorError::Encoding(err.to_string()))?;
-    roots.push(current);
-    for batch in batches {
-        current = successor_history_root(
-            current,
-            batch.new_anchor.commit_sequence,
-            batch.batch_digest,
-            &batch.new_anchor,
-        )
-        .map_err(|err| ReplayCursorError::Encoding(err.to_string()))?;
-        roots.push(current);
-    }
-    Ok(roots)
-}
-
 impl DurableReferenceLedger {
     /// Returns the genesis [`LedgerReplayCursor`] (`sequence == 0`) for this durable ledger.
     ///
@@ -676,7 +655,7 @@ impl DurableReferenceLedger {
     /// Returns a [`LedgerReplayCursor`] pinned to the durable committed anchor at `sequence`.
     ///
     /// Refuses while an indeterminate append awaits reconciliation so uncommitted suffixes are
-    /// never exposed.
+    /// never exposed. Runs in O(1) against the incrementally cached canonical history chain.
     pub fn replay_cursor_at(&self, sequence: u64) -> Result<LedgerReplayCursor, ReplayCursorError> {
         if let Some(pending_seq) = self.pending_append_sequence() {
             return Err(ReplayCursorError::PendingReconciliation {
@@ -693,7 +672,6 @@ impl DurableReferenceLedger {
         }
         let genesis = LedgerAnchor::genesis(head.site_lineage.clone());
         let batches = self.batches();
-        let roots = durable_history_roots(&genesis, batches)?;
         let anchor = if sequence == 0 {
             genesis
         } else {
@@ -705,18 +683,17 @@ impl DurableReferenceLedger {
                 .new_anchor
                 .clone()
         };
-        let root_idx = usize::try_from(sequence)
-            .map_err(|_| ReplayCursorError::DivergentAnchor { sequence })?;
-        let history_root = *roots
-            .get(root_idx)
+        let history_root = self
+            .history_root_at(sequence)
             .ok_or(ReplayCursorError::DivergentAnchor { sequence })?;
         LedgerReplayCursor::new(anchor, history_root)
     }
 
     /// Reads one bounded canonical page of durable committed batches strictly following `cursor`.
     ///
-    /// Refuses while an indeterminate append awaits reconciliation, and produces cursors
-    /// bit-identical to [`LedgerOracle::replay_page`] over the same committed history.
+    /// Refuses while an indeterminate append awaits reconciliation, runs in O(page_size) against
+    /// the incrementally cached history chain, and produces cursors bit-identical to
+    /// [`LedgerOracle::replay_page`] over the same committed history.
     pub fn replay_page(
         &self,
         cursor: &LedgerReplayCursor,
@@ -732,7 +709,6 @@ impl DurableReferenceLedger {
         let head_sequence = head_anchor.commit_sequence;
         let genesis = LedgerAnchor::genesis(head_anchor.site_lineage.clone());
         let all_batches = self.batches();
-        let roots = durable_history_roots(&genesis, all_batches)?;
 
         let expected_anchor: Option<&LedgerAnchor> = if cursor.sequence() == 0 {
             Some(&genesis)
@@ -742,10 +718,7 @@ impl DurableReferenceLedger {
                 .and_then(|idx| all_batches.get(idx))
                 .map(|batch| &batch.new_anchor)
         };
-        let expected_history_root = usize::try_from(cursor.sequence())
-            .ok()
-            .and_then(|idx| roots.get(idx))
-            .copied();
+        let expected_history_root = self.history_root_at(cursor.sequence());
 
         validate_cursor_against(
             cursor,
@@ -790,7 +763,11 @@ impl DurableReferenceLedger {
             }
             bytes_accounted = bytes_accounted.saturating_add(encoded_len);
             next_anchor = batch.new_anchor.clone();
-            next_history_root = roots[idx + 1];
+            next_history_root = self
+                .history_root_at(batch.new_anchor.commit_sequence)
+                .ok_or_else(|| {
+                    ReplayCursorError::Encoding("missing cached history root".to_owned())
+                })?;
             batches.push(batch.clone());
             idx += 1;
         }
@@ -802,10 +779,10 @@ impl DurableReferenceLedger {
         };
         let remaining_batches = total_batches.saturating_sub(idx);
         let has_more = remaining_batches > 0;
-        let head_history_root = *roots
-            .last()
-            .ok_or_else(|| ReplayCursorError::Encoding("missing head history root".to_owned()))?;
-        let complete = !has_more && next_cursor.last_anchor == head_anchor;
+        let head_history_root = self.head_history_root();
+        let complete = !has_more
+            && next_cursor.last_anchor == head_anchor
+            && next_cursor.history_root == head_history_root;
 
         Ok(ReplayPage {
             batches,

@@ -410,7 +410,7 @@ pub struct ClosureMember {
     pub custody: CustodyLevel,
     /// Exact canonical payload bytes verified.
     pub byte_len: u64,
-    /// Minimum graph depth from root (`0` for root).
+    /// Traversal depth from root where this member was first verified (`0` for root).
     pub depth: u32,
     /// Number of direct outgoing edges verified from this member.
     pub child_edge_count: u32,
@@ -657,8 +657,93 @@ impl ClosureVerificationWitness {
         }
     }
 
+    /// Verifies structural, custody-floor, outcome-classification, and digest invariants.
+    pub fn verify_invariants(&self) -> Result<(), ClosureError> {
+        if self.format_version != CLOSURE_WITNESS_VERSION {
+            return Err(ClosureError::UnsupportedVersion {
+                version: self.format_version,
+            });
+        }
+        if self.required_custody_floor == CustodyLevel::Staged {
+            return Err(ClosureError::InvalidCustodyFloor);
+        }
+        if self.ordered_members.len() > MAX_CLOSURE_NODES {
+            return Err(ClosureError::BoundsExceeded {
+                observed: self.ordered_members.len(),
+                maximum: MAX_CLOSURE_NODES,
+            });
+        }
+        if self.defects.len() > MAX_CLOSURE_NODES {
+            return Err(ClosureError::BoundsExceeded {
+                observed: self.defects.len(),
+                maximum: MAX_CLOSURE_NODES,
+            });
+        }
+        let mut seen = BTreeSet::new();
+        let mut summed_bytes = 0u64;
+        for member in &self.ordered_members {
+            if !seen.insert(member.digest) {
+                return Err(ClosureError::MalformedWire(
+                    "duplicate member digest in closure witness".to_owned(),
+                ));
+            }
+            if member.custody == CustodyLevel::Staged
+                || member.custody < self.required_custody_floor
+            {
+                return Err(ClosureError::MalformedWire(
+                    "member custody violates witness required floor".to_owned(),
+                ));
+            }
+            if member.depth > MAX_CLOSURE_DEPTH {
+                return Err(ClosureError::BoundsExceeded {
+                    observed: member.depth as usize,
+                    maximum: MAX_CLOSURE_DEPTH as usize,
+                });
+            }
+            summed_bytes = summed_bytes.checked_add(member.byte_len).ok_or_else(|| {
+                ClosureError::MalformedWire("member byte_len sum overflow".to_owned())
+            })?;
+        }
+        for defect in &self.defects {
+            if defect.detail.len() > MAX_CLOSURE_LABEL_BYTES {
+                return Err(ClosureError::BoundsExceeded {
+                    observed: defect.detail.len(),
+                    maximum: MAX_CLOSURE_LABEL_BYTES,
+                });
+            }
+        }
+        if self.compute_digest()? != self.witness_digest {
+            return Err(ClosureError::ChecksumMismatch);
+        }
+        if self.total_verified_bytes != summed_bytes {
+            return Err(ClosureError::MalformedWire(
+                "total_verified_bytes disagrees with member byte lengths".to_owned(),
+            ));
+        }
+        if (self.verdict == ClosureVerdict::VerifiedComplete) != self.defects.is_empty() {
+            return Err(ClosureError::MalformedWire(
+                "witness verdict contradicts defect list".to_owned(),
+            ));
+        }
+        if self.verdict == ClosureVerdict::VerifiedComplete
+            && self.ordered_members.last().map(|m| m.digest) != Some(self.root)
+        {
+            return Err(ClosureError::MalformedWire(
+                "complete closure witness must end with root in bottom-up post-order".to_owned(),
+            ));
+        }
+        let expected_outcome = classify_outcome(&self.defects, false, false);
+        if (self.verdict, self.guidance) != expected_outcome {
+            return Err(ClosureError::MalformedWire(
+                "witness verdict or guidance contradicts defect classification".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Serializes this witness to canonical checksummed wire bytes.
     pub fn to_canonical_bytes(&self) -> Result<Vec<u8>, ClosureError> {
+        self.verify_invariants()?;
         let mut enc = CanonicalEncoder::new();
         self.encode_body(&mut enc);
         enc.digest(self.witness_digest);
@@ -755,21 +840,38 @@ impl ClosureVerificationWitness {
             });
         }
         let mut ordered_members = Vec::with_capacity(member_count);
+        let mut seen_members = BTreeSet::new();
         for _ in 0..member_count {
             let digest = dec
                 .digest()
                 .map_err(|err| ClosureError::MalformedWire(err.to_string()))?;
+            if !seen_members.insert(digest) {
+                return Err(ClosureError::MalformedWire(
+                    "duplicate member digest in closure witness".to_owned(),
+                ));
+            }
             let custody = CustodyLevel::from_tag(
                 dec.u8()
                     .map_err(|err| ClosureError::MalformedWire(err.to_string()))?,
             )
             .map_err(|err| ClosureError::MalformedWire(err.to_string()))?;
+            if custody == CustodyLevel::Staged || custody < required_custody_floor {
+                return Err(ClosureError::MalformedWire(
+                    "member custody violates witness required floor".to_owned(),
+                ));
+            }
             let byte_len = dec
                 .u64()
                 .map_err(|err| ClosureError::MalformedWire(err.to_string()))?;
             let depth = dec
                 .u32()
                 .map_err(|err| ClosureError::MalformedWire(err.to_string()))?;
+            if depth > MAX_CLOSURE_DEPTH {
+                return Err(ClosureError::BoundsExceeded {
+                    observed: depth as usize,
+                    maximum: MAX_CLOSURE_DEPTH as usize,
+                });
+            }
             let child_edge_count = dec
                 .u32()
                 .map_err(|err| ClosureError::MalformedWire(err.to_string()))?;
@@ -859,15 +961,7 @@ impl ClosureVerificationWitness {
             defects,
             witness_digest: stored_digest,
         };
-        let computed = witness.compute_digest()?;
-        if computed != stored_digest {
-            return Err(ClosureError::ChecksumMismatch);
-        }
-        if (witness.verdict == ClosureVerdict::VerifiedComplete) != witness.defects.is_empty() {
-            return Err(ClosureError::MalformedWire(
-                "witness verdict contradicts defect list".to_owned(),
-            ));
-        }
+        witness.verify_invariants()?;
         Ok(witness)
     }
 
@@ -1060,6 +1154,12 @@ impl ClosureVerifier {
         if required_custody_floor == CustodyLevel::Staged {
             return Err(ClosureError::InvalidCustodyFloor);
         }
+        let budget = ClosureBudget::new(
+            budget.max_nodes,
+            budget.max_edges,
+            budget.max_depth,
+            budget.max_bytes,
+        )?;
         authority.validate_session()?;
 
         let mut marks: BTreeMap<ContentDigest, VisitMark> = BTreeMap::new();
@@ -1238,7 +1338,14 @@ impl ClosureVerifier {
                         });
                         return EnterOutcome::Defect;
                     }
-                    let next_bytes = total_verified_bytes.saturating_add(byte_len);
+                    let Some(next_bytes) = total_verified_bytes.checked_add(byte_len) else {
+                        defects.push(ClosureDefect {
+                            digest,
+                            kind: ClosureDefectKind::BudgetExceeded,
+                            detail: "verified byte total overflowed u64".to_owned(),
+                        });
+                        return EnterOutcome::HaltBudget;
+                    };
                     if next_bytes > budget.max_bytes {
                         defects.push(ClosureDefect {
                             digest,

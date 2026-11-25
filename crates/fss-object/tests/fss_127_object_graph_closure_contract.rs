@@ -487,13 +487,55 @@ fn multi_tier_archive_edges_authority_before_expansion_cycles_cancel_and_wire_ho
         Err(ClosureError::BoundsExceeded { .. })
     ));
 
-    // Self-contradictory resealed witness (VerifiedComplete with non-empty defects) fails closed.
-    let mut forged = indet_w;
+    // Self-contradictory resealed witness (VerifiedComplete with non-empty defects) fails closed
+    // at serialization time AND at cold wire decode time.
+    let mut forged = indet_w.clone();
     forged.verdict = ClosureVerdict::VerifiedComplete;
     forged.witness_digest = forged.compute_digest()?;
-    let forged_wire = forged.to_canonical_bytes()?;
     assert!(matches!(
-        ClosureVerificationWitness::from_canonical_bytes(&forged_wire),
+        forged.to_canonical_bytes(),
+        Err(ClosureError::MalformedWire(_))
+    ));
+    assert!(matches!(
+        forged.verify_invariants(),
+        Err(ClosureError::MalformedWire(_))
+    ));
+
+    // Unvalidated struct-literal ClosureBudget cannot bypass hard ceilings in verify_closure.
+    let forged_budget = ClosureBudget {
+        max_nodes: 0,
+        max_edges: 0,
+        max_depth: 0,
+        max_bytes: 0,
+    };
+    assert_eq!(
+        ClosureVerifier::verify_closure(
+            &catalog,
+            root,
+            &auth,
+            CustodyLevel::Verified,
+            forged_budget,
+            |_| false,
+        ),
+        Err(ClosureError::InvalidBudget)
+    );
+
+    // Forged downgraded verdict (Corrupt/Cycle defect resealed as Incomplete) fails closed.
+    let mut downgraded = cyc_w;
+    downgraded.verdict = ClosureVerdict::Incomplete;
+    downgraded.guidance = ClosureRecoveryGuidance::WaitForMissingOrStagedChildren;
+    downgraded.witness_digest = downgraded.compute_digest()?;
+    assert!(matches!(
+        downgraded.to_canonical_bytes(),
+        Err(ClosureError::MalformedWire(_))
+    ));
+
+    // Forged total_verified_bytes mismatch fails closed.
+    let mut bad_bytes = ok_w;
+    bad_bytes.total_verified_bytes = bad_bytes.total_verified_bytes.saturating_add(1);
+    bad_bytes.witness_digest = bad_bytes.compute_digest()?;
+    assert!(matches!(
+        bad_bytes.to_canonical_bytes(),
         Err(ClosureError::MalformedWire(_))
     ));
 

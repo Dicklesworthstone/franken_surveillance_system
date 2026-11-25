@@ -750,6 +750,27 @@ fn semantic_only_and_indeterminate_receipts_conform_and_disk_faults_fail_closed(
     assert!(ind_json.contains("\"obligationId\":\"obl:fss126-reconcile\""));
     assert!(ind_json.contains("\"errorId\":\"ERR-ATP-INDETERMINATE-001\""));
 
+    // Oversize error_id (> 128 bytes) rejected before emitting non-conforming receipt JSON.
+    let too_long_err = "E".repeat(129);
+    assert!(matches!(
+        ind.to_transfer_receipt_v1_json(false, Some(&too_long_err)),
+        Err(AtpLifecycleError::InvalidInput(_))
+    ));
+    let mut path_check = AtpLifecycleCoordinator::new(spec_for(false), auth_for(&spec_for(false)))?;
+    assert!(matches!(
+        path_check.apply_event(
+            20,
+            TimestampNs(5),
+            LifecycleEvent::PathDiscover {
+                path_id: "p".repeat(129),
+                failure_domain: "fd-1".to_owned(),
+            },
+            0,
+            1,
+        ),
+        Err(AtpLifecycleError::InvalidInput(_))
+    ));
+
     // 3. On-disk symlink, truncation, checksum bit-flip, and wrong transfer_id all fail closed.
     let valid_path = dir.0.join("valid.journal");
     sem.journal().write_framed_file(&valid_path)?;

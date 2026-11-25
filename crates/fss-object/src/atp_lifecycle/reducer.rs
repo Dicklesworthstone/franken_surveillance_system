@@ -25,9 +25,9 @@ use super::journal::{
 use super::{
     ATP_LIFECYCLE_FORMAT_VERSION, ATP_LIFECYCLE_RECEIPT_DOMAIN, AtpLifecycleError,
     AuthoritySnapshot, ChildTransferRecord, IndeterminateTransferObligation, LifecycleReceipt,
-    MAX_CRITICAL_EXTENSIONS, MAX_FAILURE_DOMAINS, MAX_LABEL_BYTES, MAX_TRANSFER_CHILDREN,
-    MAX_TRANSFER_PATHS, PathRecord, ProofOfRetrievability, StagedChildDisposition,
-    TransferCounters, TransferId, TransferSpec,
+    MAX_CRITICAL_EXTENSIONS, MAX_FAILURE_DOMAINS, MAX_ID_LABEL_BYTES, MAX_LABEL_BYTES,
+    MAX_TRANSFER_CHILDREN, MAX_TRANSFER_PATHS, PathRecord, ProofOfRetrievability,
+    StagedChildDisposition, TransferCounters, TransferId, TransferSpec,
 };
 
 /// Deterministic reducer coordinating semantic transfer, optional archive publication, multipath
@@ -214,6 +214,13 @@ impl AtpLifecycleCoordinator {
         require_committed: bool,
         error_id: Option<&str>,
     ) -> Result<String, AtpLifecycleError> {
+        if let Some(eid) = error_id
+            && (eid.is_empty() || eid.len() > MAX_ID_LABEL_BYTES)
+        {
+            return Err(AtpLifecycleError::InvalidInput(format!(
+                "error_id length must be within 1..={MAX_ID_LABEL_BYTES}"
+            )));
+        }
         let receipt = self.build_receipt(require_committed)?;
         let mut timestamps: Vec<(&str, i128)> = Vec::new();
         if let Some(first) = self.journal.records().first() {
@@ -516,7 +523,7 @@ impl AtpLifecycleCoordinator {
             } => {
                 self.ensure_not_cancelling()?;
                 if path_id.is_empty()
-                    || path_id.len() > MAX_LABEL_BYTES
+                    || path_id.len() > MAX_ID_LABEL_BYTES
                     || failure_domain.is_empty()
                     || failure_domain.len() > MAX_LABEL_BYTES
                 {
