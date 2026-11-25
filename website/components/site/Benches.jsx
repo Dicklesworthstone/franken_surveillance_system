@@ -6,7 +6,10 @@ import { ellipse, information } from "../../lib/watch/geometry";
 import { lensOf, stamp } from "../../lib/watch/take";
 import { Badge, Figure } from "./ui";
 
-/** Moves the console's clock to a moment and brings the console into view. */
+/**
+ * Moves the console's clock to a moment and brings the console into view. Focus goes with it, so a
+ * keyboard user can press Space to play from there rather than staying on a button off screen.
+ */
 export function SeekLink({ t, clock, children }) {
   return (
     <button
@@ -14,7 +17,9 @@ export function SeekLink({ t, clock, children }) {
       className="seek"
       onClick={() => {
         window.dispatchEvent(new CustomEvent("fss:seek", { detail: t }));
-        (document.getElementById("console") ?? document.getElementById("minute"))?.scrollIntoView({ block: "start" });
+        const target = document.getElementById("console") ?? document.getElementById("minute");
+        target?.scrollIntoView({ block: "start" });
+        target?.focus({ preventScroll: true });
       }}
     >
       <span className="data">
