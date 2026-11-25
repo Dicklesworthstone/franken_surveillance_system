@@ -632,9 +632,11 @@ impl StorageEngine {
             if cx.is_cancel_requested(tree)? {
                 return Err(fss_projection_store::CombinerError::Cancelled.into());
             }
-            let resumed = self
-                .pack_store
-                .reclaim_superseded_packs(CompactionPolicy::default())?;
+            let policy = self.compaction_policy_for_current_usage()?;
+            if self.should_seal_active_pack_for_reclaim()? {
+                let _ = self.pack_store.seal_active_pack()?;
+            }
+            let resumed = self.pack_store.reclaim_superseded_packs(policy)?;
             bytes_reclaimed = bytes_reclaimed.saturating_add(resumed.total_bytes_reclaimed);
             packs_compacted = packs_compacted.saturating_add(
                 resumed
@@ -769,6 +771,35 @@ impl StorageEngine {
         })
     }
 
+    fn compaction_policy_for_current_usage(&self) -> Result<CompactionPolicy, DaemonError> {
+        let on_disk = self.pack_store.on_disk_pack_bytes()?;
+        let soft_bytes = self
+            .retention_config
+            .max_total_deployment_bytes
+            .saturating_mul(u64::from(self.retention_config.watermark_soft_pct))
+            / 100;
+        if on_disk >= soft_bytes {
+            // Once physical pack bytes reach the soft watermark, reclaim every sealed pack
+            // containing any tombstoned bytes (`live_ratio_ppm < 1_000_000`) while leaving
+            // 100%-live packs untouched.
+            Ok(CompactionPolicy {
+                min_live_ratio_ppm: 1_000_000,
+                ..CompactionPolicy::default()
+            })
+        } else {
+            Ok(CompactionPolicy::default())
+        }
+    }
+
+    fn should_seal_active_pack_for_reclaim(&self) -> Result<bool, DaemonError> {
+        let on_disk = self.pack_store.on_disk_pack_bytes()?;
+        let seal_threshold = self
+            .retention_config
+            .max_total_deployment_bytes
+            .saturating_add(24_576);
+        Ok(on_disk > seal_threshold)
+    }
+
     fn execute_eviction_and_compaction(
         &mut self,
         batch: &RetentionEvictionBatch,
@@ -792,9 +823,13 @@ impl StorageEngine {
             self.candidates.remove(&tomb.import_id);
             self.candidate_roots.remove(&tomb.import_id);
         }
-        let compact = self
-            .pack_store
-            .compact_sealed_packs(&proof, CompactionPolicy::default())?;
+        let policy = self.compaction_policy_for_current_usage()?;
+        if self.should_seal_active_pack_for_reclaim()? {
+            // Only force-seal the active pack when physical bytes rise past ring_cap + headroom,
+            // avoiding tiny-pack header fragmentation during normal ring wraparound.
+            let _ = self.pack_store.seal_active_pack()?;
+        }
+        let compact = self.pack_store.compact_sealed_packs(&proof, policy)?;
         Ok((
             evicted,
             compact.total_bytes_reclaimed,

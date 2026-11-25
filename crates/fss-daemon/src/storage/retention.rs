@@ -536,11 +536,16 @@ impl StorageEngine {
                 media_bytes = media_bytes.saturating_add(location.len);
             }
         }
-        Ok(self
+        let logical_protected = self
             .pack_store
             .telemetry_snapshot()?
             .total_payload_bytes
-            .saturating_sub(media_bytes))
+            .saturating_sub(media_bytes);
+        let physical_protected = self
+            .pack_store
+            .on_disk_pack_bytes()?
+            .saturating_sub(media_bytes);
+        Ok(logical_protected.max(physical_protected))
     }
 
     pub(super) fn accounted_ring_bytes(&self) -> Result<u64, DaemonError> {

@@ -258,7 +258,7 @@ fn verify_live_ipc_corroboration(
     let ipc_root = root.to_path_buf();
 
     let sub_thread = thread::spawn(
-        move || -> Result<(Duration, Vec<(u64, DeltaEventSummary)>), String> {
+        move || -> Result<(Duration, Instant, Vec<(u64, DeltaEventSummary)>), String> {
             let mut client = IpcClient::connect(IpcClientConfig {
                 deployment_root: ipc_root,
                 deployment_id: descriptor.site_id,
@@ -295,7 +295,8 @@ fn verify_live_ipc_corroboration(
                     DeltaSubscriptionItem::End { .. } => break,
                 }
             }
-            Ok((started.elapsed(), received))
+            let received_at = Instant::now();
+            Ok((received_at.saturating_duration_since(started), received_at, received))
         },
     );
 
@@ -329,11 +330,11 @@ fn verify_live_ipc_corroboration(
         assert!(*alert_eligible);
     }
 
-    let (sub_elapsed, received) = sub_thread
+    let (sub_elapsed, received_at, received) = sub_thread
         .join()
         .map_err(|_| "IPC subscriber thread panicked")?
         .map_err(|e| format!("IPC subscriber failed: {e}"))?;
-    let latency_ms = emit_start.elapsed().as_millis();
+    let latency_ms = received_at.saturating_duration_since(emit_start).as_millis();
     assert!(
         latency_ms < 500,
         "IPC corroboration delivery took {latency_ms} ms (>= 500 ms budget)"
@@ -415,10 +416,12 @@ fn continuous_540_tick_multi_camera_soak_osd_holds_gap_and_telemetry() -> TestRe
     let mut now_ns = t_base;
 
     for tick in 1..=SOAK_TICKS {
-        // Advance simulated time cleanly; step beyond sliding window before isolated corroboration
-        // checks and step across backoff window when testing wyze-51 recovery.
-        now_ns = if tick == 90 || tick == 110 || tick == 420 {
-            now_ns.saturating_add(12_000_000_000)
+        // Advance simulated time cleanly; step 3s twice (6s total > 5s sliding corroboration window,
+        // each step <= 5s stall timeout so two-sample camera continuity stays intact with zero
+        // spurious gap deltas) before isolated corroboration checks, and step across backoff window
+        // when testing wyze-51 recovery.
+        now_ns = if matches!(tick, 88 | 89 | 108 | 109 | 418 | 419) {
+            now_ns.saturating_add(3_000_000_000)
         } else if tick == 260 {
             // Advance 2.5s past max backoff so restored wyze-51 reconnects cleanly into gen 2.
             now_ns.saturating_add(2_500_000_000)

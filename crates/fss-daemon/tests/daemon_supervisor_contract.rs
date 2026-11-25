@@ -265,8 +265,14 @@ fn multi_camera_supervision_corroboration_shared_domain_and_sub_500ms_ipc() -> T
     }
 
     // Advance past sliding window so next test isolates independent cluster corroboration.
+    // Because the 11.6s jump exceeds stall_timeout_ms, take two contiguous ticks to re-establish
+    // observed two-sample continuity before attaching the live IPC corroboration subscriber.
     let t_indep = t_base + 12_000_000_000;
     let _ = supervisor.step_tick(t_indep)?;
+    let _ = supervisor.step_tick(t_indep + 100_000_000)?;
+    for view in supervisor.camera_views().values() {
+        assert_eq!(view.state, SensorState::Streaming);
+    }
 
     // Start live fss-ipc SubscribeDeltas client BEFORE triggering independent multi-camera motion.
     let head_before = supervisor.storage().head_snapshot()?.commit_sequence;
@@ -323,7 +329,7 @@ fn multi_camera_supervision_corroboration_shared_domain_and_sub_500ms_ipc() -> T
     let emit_instant = Instant::now();
     ctrl_51.inject_motion(motion_rect, "person", 930_000, None, 201);
     ctrl_177.inject_motion(motion_rect, "person", 940_000, None, 202);
-    let corr_tick = supervisor.step_tick(t_indep + 100_000_000)?;
+    let corr_tick = supervisor.step_tick(t_indep + 200_000_000)?;
     assert!(
         corr_tick.corroborated_events >= 1,
         "independent clusters wyze-51 + unifi-g4-177 must corroborate"
