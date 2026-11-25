@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 //! Ceil-mode averages through real import, native execution and artifact reload.
 //! Expected values come from original input coordinates, never generated weights.
+//! Explicit-pad divisor clipping follows the pinned ONNX reference implementation:
+//! https://github.com/onnx/onnx/blob/v1.23.2/onnx/reference/ops/op_pool_common.py
 
 use super::*;
 
@@ -54,6 +56,7 @@ fn oracle(
     kernel: [usize; 2],
     strides: [usize; 2],
     pads: [usize; 4],
+    include_pad: bool,
 ) -> Test<([usize; 4], Vec<f32>)> {
     let ys = starts(input[2], kernel[0], strides[0], pads[0], pads[2]);
     let xs = starts(input[3], kernel[1], strides[1], pads[1], pads[3]);
@@ -64,15 +67,24 @@ fn oracle(
             for &x in &xs {
                 let mut sum = 0_f32;
                 let mut count = 0;
-                for row in 0..input[2] {
-                    for col in 0..input[3] {
-                        if (row as isize) >= y
-                            && (row as isize) < y + kernel[0] as isize
-                            && (col as isize) >= x
-                            && (col as isize) < x + kernel[1] as isize
+                for row in -(pads[0] as isize)..(input[2] + pads[2]) as isize {
+                    for col in -(pads[1] as isize)..(input[3] + pads[3]) as isize {
+                        if row >= y
+                            && row < y + kernel[0] as isize
+                            && col >= x
+                            && col < x + kernel[1] as isize
                         {
-                            sum += values[(plane * input[2] + row) * input[3] + col];
-                            count += 1;
+                            let real = row >= 0
+                                && row < input[2] as isize
+                                && col >= 0
+                                && col < input[3] as isize;
+                            if real {
+                                sum += values
+                                    [(plane * input[2] + row as usize) * input[3] + col as usize];
+                            }
+                            if real || include_pad {
+                                count += 1;
+                            }
                         }
                     }
                 }
@@ -183,33 +195,36 @@ fn ceil_averages_match_coordinates_across_batches_channels_and_asymmetric_pads()
                     [0, kernel[1] - 1, kernel[0] - 1, 0],
                     [kernel[0] - 1, kernel[1] - 1, kernel[0] - 1, kernel[1] - 1],
                 ] {
-                    let (output, expected) = oracle(&values, input, kernel, strides, pads)?;
-                    if output[2] == 0 || output[3] == 0 {
-                        continue;
-                    }
-                    let source = pool_model(
-                        "AveragePool",
-                        &input,
-                        &output,
-                        &ceil_attrs(kernel, strides, pads, false),
-                    );
-                    let actual = roundtrip(&source, &[("input", tensor.clone())])?;
-                    assert_eq!(
-                        bits(&actual["output"]),
-                        bits(&expected),
-                        "input={input:?} kernel={kernel:?} strides={strides:?} pads={pads:?}",
-                    );
-                    executed += 1;
-                    if input[2] + pads[0] + pads[2] < kernel[0]
-                        || input[3] + pads[1] + pads[3] < kernel[1]
-                    {
-                        short_inputs += 1;
+                    for include_pad in [false, true] {
+                        let (output, expected) =
+                            oracle(&values, input, kernel, strides, pads, include_pad)?;
+                        if output[2] == 0 || output[3] == 0 {
+                            continue;
+                        }
+                        let source = pool_model(
+                            "AveragePool",
+                            &input,
+                            &output,
+                            &ceil_attrs(kernel, strides, pads, include_pad),
+                        );
+                        let actual = roundtrip(&source, &[("input", tensor.clone())])?;
+                        assert_eq!(
+                            bits(&actual["output"]),
+                            bits(&expected),
+                            "input={input:?} kernel={kernel:?} strides={strides:?} pads={pads:?} include_pad={include_pad}",
+                        );
+                        executed += 1;
+                        if input[2] + pads[0] + pads[2] < kernel[0]
+                            || input[3] + pads[1] + pads[3] < kernel[1]
+                        {
+                            short_inputs += 1;
+                        }
                     }
                 }
             }
         }
     }
-    assert!(executed > 80);
+    assert_eq!(executed, 204);
     assert!(short_inputs > 0);
     Ok(())
 }
@@ -254,7 +269,7 @@ fn ceil_one_dimensional_averages_restore_ncw_shape_and_keep_f32_sum_then_divide(
 }
 
 #[test]
-fn ceil_include_padding_accepts_complete_explicit_windows_and_refuses_ambiguous_tails() -> Test {
+fn ceil_include_padding_clips_partial_divisors_to_declared_padding() -> Test {
     let input = [1, 1, 4, 4];
     let values = (1..=16).map(|n| n as f32).collect::<Vec<_>>();
     let source = pool_model(
@@ -280,20 +295,43 @@ fn ceil_include_padding_accepts_complete_explicit_windows_and_refuses_ambiguous_
     )?;
     assert_eq!(bits(&actual["output"]), bits(&[10_f32 / 9.]));
 
-    for (input, output, kernel, strides, pads) in [
-        ([1, 1, 4, 4], [1, 1, 2, 2], [3, 3], [2, 2], [0; 4]),
-        ([1, 1, 2, 4], [1, 1, 1, 3], [2, 2], [2, 2], [0, 1, 0, 0]),
-        ([1, 1, 1, 2], [1, 1, 1, 1], [1, 3], [1, 2], [0; 4]),
+    for (input, output, kernel, strides, pads, expected) in [
+        (
+            [1, 1, 4, 4],
+            [1, 1, 2, 2],
+            [3, 3],
+            [2, 2],
+            [0; 4],
+            vec![6., 7.5, 12., 13.5],
+        ),
+        (
+            [1, 1, 2, 4],
+            [1, 1, 1, 3],
+            [2, 2],
+            [2, 2],
+            [0, 1, 0, 0],
+            vec![1.5, 4.5, 6.],
+        ),
+        (
+            [1, 1, 1, 2],
+            [1, 1, 1, 1],
+            [1, 3],
+            [1, 2],
+            [0; 4],
+            vec![1.5],
+        ),
     ] {
-        assert_eq!(
-            refusal(&pool_model(
-                "AveragePool",
-                &input,
-                &output,
-                &ceil_attrs(kernel, strides, pads, true)
-            )),
-            Some(OnnxError::Unsupported)
+        let values = (1..=input.iter().product::<usize>())
+            .map(|n| n as f32)
+            .collect::<Vec<_>>();
+        let source = pool_model(
+            "AveragePool",
+            &input,
+            &output,
+            &ceil_attrs(kernel, strides, pads, true),
         );
+        let actual = roundtrip(&source, &[("input", data(&input, &values)?)])?;
+        assert_eq!(bits(&actual["output"]), bits(&expected));
     }
     Ok(())
 }
@@ -387,106 +425,108 @@ fn ceil_profile_refuses_automatic_padding_empty_windows_and_wrong_output_shapes(
 
 #[test]
 fn ceil_partial_window_divisors_obey_import_limits_and_cancellation() -> Test {
-    let source = pool_model(
-        "AveragePool",
-        &[1, 2, 4, 4],
-        &[1, 2, 2, 2],
-        &ceil_attrs([3, 3], [2, 2], [0; 4], false),
-    );
-    let imported = import(&source)?;
-    let exact = OnnxLimits {
-        source_bytes: source.len(),
-        nodes: 2,
-        tensors: 5,
-        parameter_bytes: 2 * 3 * 3 * 4 + 2 * 2 * 4,
-        tensor_bytes: 2 * 4 * 4 * 4,
-        work_units: imported.work_units(),
-    };
-    import_onnx(
-        &source,
-        ContentDigest::sha256(&source),
-        GENERATION,
-        exact,
-        &|| false,
-    )?;
-    for limits in [
-        OnnxLimits { nodes: 1, ..exact },
-        OnnxLimits {
-            tensors: 4,
-            ..exact
-        },
-        OnnxLimits {
-            parameter_bytes: exact.parameter_bytes - 1,
-            ..exact
-        },
-        OnnxLimits {
-            tensor_bytes: exact.tensor_bytes - 1,
-            ..exact
-        },
-    ] {
-        assert_eq!(
-            import_onnx(
-                &source,
-                ContentDigest::sha256(&source),
-                GENERATION,
-                limits,
-                &|| false
-            )
-            .err(),
-            Some(OnnxError::Limit)
+    for include_pad in [false, true] {
+        let source = pool_model(
+            "AveragePool",
+            &[1, 2, 4, 4],
+            &[1, 2, 2, 2],
+            &ceil_attrs([3, 3], [2, 2], [0; 4], include_pad),
         );
-    }
-    assert_eq!(
+        let imported = import(&source)?;
+        let exact = OnnxLimits {
+            source_bytes: source.len(),
+            nodes: 2,
+            tensors: 5,
+            parameter_bytes: 2 * 3 * 3 * 4 + 2 * 2 * 4,
+            tensor_bytes: 2 * 4 * 4 * 4,
+            work_units: imported.work_units(),
+        };
         import_onnx(
             &source,
             ContentDigest::sha256(&source),
             GENERATION,
+            exact,
+            &|| false,
+        )?;
+        for limits in [
+            OnnxLimits { nodes: 1, ..exact },
             OnnxLimits {
-                work_units: exact.work_units - 1,
+                tensors: 4,
                 ..exact
             },
-            &|| false
-        )
-        .err(),
-        Some(OnnxError::WorkBudget)
-    );
-
-    // A short input and huge stride must not permit an enormous synthetic kernel.
-    let oversized = pool_model(
-        "AveragePool",
-        &[1, 1, 1, 1],
-        &[1, 1, 1, 1],
-        &ceil_attrs([16_777_217, 1], [16_777_218, 1], [0; 4], false),
-    );
-    assert_eq!(refusal(&oversized), Some(OnnxError::Limit));
-
-    let checkpoints = Cell::new(0_usize);
-    import_onnx(
-        &source,
-        ContentDigest::sha256(&source),
-        GENERATION,
-        exact,
-        &|| {
-            checkpoints.set(checkpoints.get() + 1);
-            false
-        },
-    )?;
-    for cancel_at in 1..=checkpoints.get() {
-        let calls = Cell::new(0_usize);
+            OnnxLimits {
+                parameter_bytes: exact.parameter_bytes - 1,
+                ..exact
+            },
+            OnnxLimits {
+                tensor_bytes: exact.tensor_bytes - 1,
+                ..exact
+            },
+        ] {
+            assert_eq!(
+                import_onnx(
+                    &source,
+                    ContentDigest::sha256(&source),
+                    GENERATION,
+                    limits,
+                    &|| false
+                )
+                .err(),
+                Some(OnnxError::Limit)
+            );
+        }
         assert_eq!(
             import_onnx(
                 &source,
                 ContentDigest::sha256(&source),
                 GENERATION,
-                exact,
-                &|| {
-                    calls.set(calls.get() + 1);
-                    calls.get() == cancel_at
-                }
+                OnnxLimits {
+                    work_units: exact.work_units - 1,
+                    ..exact
+                },
+                &|| false
             )
             .err(),
-            Some(OnnxError::Cancelled)
+            Some(OnnxError::WorkBudget)
         );
+
+        // A short input and huge stride must not permit an enormous synthetic kernel.
+        let oversized = pool_model(
+            "AveragePool",
+            &[1, 1, 1, 1],
+            &[1, 1, 1, 1],
+            &ceil_attrs([16_777_217, 1], [16_777_218, 1], [0; 4], false),
+        );
+        assert_eq!(refusal(&oversized), Some(OnnxError::Limit));
+
+        let checkpoints = Cell::new(0_usize);
+        import_onnx(
+            &source,
+            ContentDigest::sha256(&source),
+            GENERATION,
+            exact,
+            &|| {
+                checkpoints.set(checkpoints.get() + 1);
+                false
+            },
+        )?;
+        for cancel_at in 1..=checkpoints.get() {
+            let calls = Cell::new(0_usize);
+            assert_eq!(
+                import_onnx(
+                    &source,
+                    ContentDigest::sha256(&source),
+                    GENERATION,
+                    exact,
+                    &|| {
+                        calls.set(calls.get() + 1);
+                        calls.get() == cancel_at
+                    }
+                )
+                .err(),
+                Some(OnnxError::Cancelled)
+            );
+        }
     }
     Ok(())
 }

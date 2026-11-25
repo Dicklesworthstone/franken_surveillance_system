@@ -5,6 +5,38 @@
 **Current change qualification:** each dated section below states its exact verification boundary. Native passes for one component do not qualify other changes, and prior receipts do not qualify new bytes.
 **Release authority:** repository-owned local qualification (`scripts/qualify.sh`) and retained DSR receipts, not hosted CI
 
+## AveragePool partial-window padding and executor replay — 2026-11-25
+
+The existing ceil-mode importer now also admits `count_include_pad=1` when a
+partial final window requires execution padding beyond the caller's declared
+pads. It retains original pads separately from execution pads: the mean counts
+real samples and original declared padding, while excluding positions introduced
+only to execute the partial window. Existing ceil geometry, trailing-anchor
+discard and floor-mode graph/weight behavior are preserved.
+
+This divisor-clipping rule is explicitly pinned to the ONNX v1.23.2 reference
+implementation in `docs/onnx_import.md`; it is not a claim of equivalence with
+every upstream evaluator or mutable ONNX main. The native arithmetic remains
+row-major F32 accumulation followed by division, using existing Conv2d and Div
+operators.
+
+**Native validation passed on Linux x86_64:** all 22 tests in
+`onnx_pooling_execution` and all three new `averagepool_ceil` tests in
+`onnx_attention_execution`. The coordinate sweep covers 204 profiles across
+both padding-count modes. The new harness executes both production executors
+and canonical artifact replay for opsets 13/17/18, NCW/NCHW, partial windows,
+wide strides, composed pooling/global-context/dense-head graphs, allocation/work
+limits and cancellation. Scoped pinned rustfmt and whitespace checks also passed.
+
+```sh
+cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir --test onnx_pooling_execution
+cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir --test onnx_attention_execution averagepool_ceil
+```
+
+These 25 selected native passes advance FSS-139 / `fss-x4a.14.10`. They do not
+qualify the asynchronous reference, daemon or CLI changes, a trained detector,
+the full model suite or the release matrix.
+
 ## Long-running AVC and bounded HTTP acquisition — 2026-11-25
 
 The daemon now extends each generation's 32-bit, 90 kHz RTP presentation clock
@@ -85,9 +117,9 @@ or execution framework was added. Floor-mode graph bytes and weight payload
 bits remain unchanged for equivalent windows, while artifact metadata retains
 the exact identity of each original ONNX source.
 
-Include-padding ceil windows are admitted only when they fit within the
-original explicit padding. Windows needing additional tail positions refuse
-because upstream evaluators disagree on their divisor. Automatic padding with
+The original profile admitted include-padding ceil windows only when they fit
+within explicit padding. The later partial-window section above supersedes
+that restriction with a release-pinned divisor contract. Automatic padding with
 ceil sizing and later-schema dilations remain unsupported. Every admitted
 window has a positive real-sample divisor and remains subject to existing
 parameter, tensor, work and cancellation limits. The exact profile and examples

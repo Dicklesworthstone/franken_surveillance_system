@@ -4,6 +4,8 @@
 //! Layout/reduction oracles are independent; the composed attention oracle uses
 //! binary64 math on explicitly bounded ordinary fixtures, not trained weights.
 
+#[path = "onnx_attention_execution/averagepool_ceil.rs"]
+mod averagepool_ceil;
 #[path = "onnx_attention_execution/dfl_pyramid.rs"]
 mod dfl_pyramid;
 #[path = "onnx_attention_execution/gather_indices.rs"]

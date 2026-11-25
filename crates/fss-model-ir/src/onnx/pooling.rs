@@ -6,6 +6,9 @@
 //! A depthwise convolution with exact one weights accumulates each spatial window
 //! in the native scalar executor's row-major F32 order. A separate Div performs
 //! the mean; reciprocal weights would change rounding and intermediate overflow.
+//! Ceil execution padding never enters the divisor: count_include_pad counts
+//! only real samples and the originally declared pads, matching ONNX v1.23.2's
+//! reference pooling contract.
 
 use fss_tensor::{DType, Tensor};
 
@@ -34,7 +37,9 @@ struct Pool {
     kernel: [usize; 2],
     strides: [usize; 2],
     pads: [usize; 4],
+    execution_pads: [usize; 4],
     output: [usize; 4],
+    include_padding: bool,
     divisor_grid: bool,
     // Non-2-D global pooling temporarily flattens only spatial dimensions.
     restore: Option<Vec<usize>>,
@@ -60,7 +65,9 @@ fn plan(source: &mut SourceNode<'_>, dims: &[usize]) -> Result<Pool> {
             kernel: [input[2], input[3]],
             strides: [1, 1],
             pads: [0; 4],
+            execution_pads: [0; 4],
             output: [input[0], input[1], 1, 1],
+            include_padding: false,
             divisor_grid: false,
             restore,
         });
@@ -89,7 +96,7 @@ fn plan(source: &mut SourceNode<'_>, dims: &[usize]) -> Result<Pool> {
         strides,
         [1, 1],
     )?;
-    let mut pads = dimensions(&mut source.attrs, "pads", Some([0; 4]))?;
+    let pads = dimensions(&mut source.attrs, "pads", Some([0; 4]))?;
     let include_padding = match source.attrs.remove("count_include_pad") {
         None | Some(AttrValue::Int(0)) => false,
         Some(AttrValue::Int(1)) => true,
@@ -108,6 +115,7 @@ fn plan(source: &mut SourceNode<'_>, dims: &[usize]) -> Result<Pool> {
         return Err(OnnxError::Unsupported);
     }
     let mut output = input;
+    let mut execution_pads = pads;
     for axis in 0..2 {
         let padded = input[axis + 2]
             .checked_add(pads[axis])
@@ -148,14 +156,9 @@ fn plan(source: &mut SourceNode<'_>, dims: &[usize]) -> Result<Pool> {
             .and_then(|n| n.checked_add(kernel[axis]))
             .ok_or(OnnxError::Limit)?;
         if required > padded {
-            // ONNX implementations disagree about the include-padding divisor
-            // when a ceil window extends past the explicitly padded input.
-            // Admit the unambiguous exclude-padding profile; do not silently
-            // count generated tail padding as caller-declared padding.
-            if include_padding {
-                return Err(OnnxError::Unsupported);
-            }
-            pads[axis + 2] = pads[axis + 2]
+            // Extend only the execution domain. The divisor still clips against
+            // the original explicit pads, even when count_include_pad is set.
+            execution_pads[axis + 2] = pads[axis + 2]
                 .checked_add(required - padded)
                 .ok_or(OnnxError::Limit)?;
         }
@@ -166,8 +169,10 @@ fn plan(source: &mut SourceNode<'_>, dims: &[usize]) -> Result<Pool> {
         kernel,
         strides,
         pads,
+        execution_pads,
         output,
-        divisor_grid: !include_padding && pads != [0; 4],
+        include_padding,
+        divisor_grid: (!include_padding && pads != [0; 4]) || execution_pads != pads,
         restore: None,
     })
 }
@@ -238,8 +243,9 @@ fn attribute(values: &[usize]) -> Result<AttrValue> {
     ))
 }
 
-/// Count an axis's intersection with the unpadded input, in padded coordinates.
-fn valid_samples(index: usize, axis: usize, pool: &Pool) -> Result<usize> {
+/// Count the window's intersection with the real or explicitly padded input.
+/// Execution-only ceil padding is excluded even with count_include_pad = 1.
+fn divisor_samples(index: usize, axis: usize, pool: &Pool) -> Result<usize> {
     let start = index
         .checked_mul(pool.strides[axis])
         .ok_or(OnnxError::Limit)?;
@@ -249,9 +255,17 @@ fn valid_samples(index: usize, axis: usize, pool: &Pool) -> Result<usize> {
     let input_end = pool.pads[axis]
         .checked_add(pool.input[axis + 2])
         .ok_or(OnnxError::Limit)?;
-    Ok(end
-        .min(input_end)
-        .saturating_sub(start.max(pool.pads[axis])))
+    let (domain_start, domain_end) = if pool.include_padding {
+        (
+            0,
+            input_end
+                .checked_add(pool.pads[axis + 2])
+                .ok_or(OnnxError::Limit)?,
+        )
+    } else {
+        (pool.pads[axis], input_end)
+    };
+    Ok(end.min(domain_end).saturating_sub(start.max(domain_start)))
 }
 
 pub(super) fn lower(mut source: SourceNode<'_>, lowering: &mut Lowering<'_, '_>) -> Result<()> {
@@ -322,8 +336,8 @@ pub(super) fn lower(mut source: SourceNode<'_>, lowering: &mut Lowering<'_, '_>)
         divisor_shape,
         |index| {
             let count = if pool.divisor_grid {
-                valid_samples(index / pool.output[3], 0, &pool)?
-                    .checked_mul(valid_samples(index % pool.output[3], 1, &pool)?)
+                divisor_samples(index / pool.output[3], 0, &pool)?
+                    .checked_mul(divisor_samples(index % pool.output[3], 1, &pool)?)
                     .ok_or(OnnxError::Limit)?
             } else {
                 area
@@ -355,7 +369,7 @@ pub(super) fn lower(mut source: SourceNode<'_>, lowering: &mut Lowering<'_, '_>)
             "groups".into(),
             AttrValue::Int(i64::try_from(pool.input[1]).map_err(|_| OnnxError::Limit)?),
         ),
-        ("padding".into(), attribute(&pool.pads)?),
+        ("padding".into(), attribute(&pool.execution_pads)?),
         ("strides".into(), attribute(&pool.strides)?),
     ]);
     lowering.append(
