@@ -12,6 +12,7 @@ mod durable;
 pub mod epochs;
 mod error;
 mod format;
+mod high_water;
 mod journal;
 pub mod merkle;
 mod oracle;
@@ -19,6 +20,7 @@ mod recovery;
 mod repair;
 mod sealed_lineage;
 mod store_pin;
+mod witness;
 
 #[cfg(test)]
 mod durable_reconciliation_tests;
@@ -58,6 +60,17 @@ pub use epochs::{
 };
 pub use error::{
     AppendPhase, CorruptionKind, ERR_LEDGER_LENGTH_OVERFLOW_001, ExternalMutationKind, JournalError,
+};
+pub use high_water::{
+    DERIVED_HIGH_WATER_DOMAIN, DerivedCacheKind, DerivedGenerationPin, DerivedHighWaterState,
+    HIGH_WATER_MAGIC, HIGH_WATER_VERSION, HighWaterError, HighWaterGuidance, HighWaterPlan,
+    HighWaterProtocol, MAX_HIGH_WATER_WIRE_BYTES, RebuildReason,
+};
+pub use witness::{
+    HierarchicalWitness, LEDGER_SEMANTIC_WITNESS_DOMAIN, MAX_HIERARCHICAL_CHILDREN,
+    MAX_WITNESS_DEPTH, MAX_WITNESS_LABEL_BYTES, MAX_WITNESS_WIRE_BYTES, NegativeWitness,
+    PositiveWitness, SEMANTIC_WITNESS_MAGIC, SEMANTIC_WITNESS_VERSION, SemanticWitness,
+    WitnessError, WitnessGuidance,
 };
 pub use journal::{AppendReconciliation, IncompleteTailPolicy, Journal};
 pub use merkle::{
