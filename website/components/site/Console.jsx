@@ -178,7 +178,15 @@ export default function Console({ summary, story, spans, sceneUrl, sceneDigest, 
   };
 
   return (
-    <div className="console" id="console" ref={root} tabIndex={-1} onKeyDown={onConsoleKeyDown}>
+    <div
+      className="console"
+      id="console"
+      ref={root}
+      role="region"
+      aria-labelledby="console-title"
+      tabIndex={-1}
+      onKeyDown={onConsoleKeyDown}
+    >
       {positions.error && (
         <p className="console__error" role="alert">
           Staged positions unavailable. {positions.error} <button type="button" onClick={positions.retry}>Retry positions</button>
@@ -192,7 +200,9 @@ export default function Console({ summary, story, spans, sceneUrl, sceneDigest, 
       <div className="console__bar">
         <div className="console__id">
           <span className="console__rec" aria-hidden="true" />
-          <p className="micro">Replay, five films on one clock</p>
+          <p className="micro" id="console-title">
+            Replay, five films on one clock
+          </p>
         </div>
         <div className="console__controls-bar">
           {boxesUrl && (
