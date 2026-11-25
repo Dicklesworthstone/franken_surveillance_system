@@ -20,7 +20,7 @@ use fss_pack::{
     CapacityPressure, ERR_STORAGE_QUOTA_PINNED_001, MediaCodec, RetentionCandidate, RootStatus,
     VirtualRootRecord,
 };
-use fss_projection_store::ProjectionStore;
+use fss_projection_store::{CoverageStatus, ProjectionStore, SensorLivenessStatus};
 use fss_reference::agent_orient::projection_bridge::PROJECTION_SUBDIR;
 use fss_reference::ingest::model_pool::FramePixelInput;
 
@@ -402,6 +402,151 @@ fn corroborated_event(
 }
 
 #[test]
+fn health_transition_evidence_survives_restart_and_projection_rebuild() -> TestResult {
+    let dir = TempDirGuard::new("health-receipts")?;
+    let manifest = manifest(1_048_576)?;
+    let regions = DaemonRegionTree::initialize(&manifest, "principal:health-test", TimestampNs(0))?;
+    let sensor = SensorId::parse(SENSOR_A)?;
+    let mut storage = StorageEngine::open(&manifest, Some(dir.path()))?;
+    // Storage treats these as opaque canonical receipts. The health-screen integration
+    // separately proves their sensor, generation, policy, and exact source bindings.
+    let receipts: [&[u8]; 2] = [
+        b"health:test:source-1:degraded",
+        b"health:test:source-2:clear",
+    ];
+    let mut digests = Vec::new();
+    for (index, evidence) in receipts.into_iter().enumerate() {
+        let degraded = index == 0;
+        let status = if degraded {
+            CoverageStatus::NotObservable
+        } else {
+            CoverageStatus::Covered
+        };
+        let committed = storage.commit_health_coverage_and_liveness(
+            &sensor,
+            "driveway",
+            status,
+            if degraded {
+                SensorLivenessStatus::Degraded
+            } else {
+                SensorLivenessStatus::Online
+            },
+            u32::from(degraded),
+            u32::from(degraded),
+            TimestampNs(10 + index as i128),
+            TimestampNs(10 + index as i128),
+            evidence,
+            regions.storage_ledger_cx(),
+            regions.region_tree(),
+        )?;
+        let digest = ContentDigest::sha256(evidence);
+        assert_eq!(storage.pack_store().read_verified(&digest)?, evidence);
+        let snapshot = storage.projection().snapshot_latest();
+        let coverage = snapshot
+            .get_coverage(&sensor, "driveway")
+            .ok_or("coverage absent")?;
+        assert_eq!(coverage.status, status);
+        assert_eq!(coverage.health_conflicts, u32::from(degraded));
+        assert_eq!(coverage.committed_sequence, committed.commit_sequence);
+        digests.push(digest);
+    }
+    storage.shutdown_and_flush()?;
+
+    let inspection =
+        fss_ledger::inspect_epochs_readonly(&dir.path().join("ledger"), &manifest.site_id)?;
+    assert_eq!(inspection.batches.len(), 2);
+    for (batch, expected_witness) in inspection.batches.iter().zip(&digests) {
+        assert_eq!(batch.deltas.len(), 2);
+        for delta in &batch.deltas {
+            assert_eq!(delta.witness_digest, Some(*expected_witness));
+        }
+    }
+    fs::remove_dir_all(dir.path().join(PROJECTION_SUBDIR))?;
+    let mut reopened = StorageEngine::open(&manifest, Some(dir.path()))?;
+    for (evidence, digest) in receipts.into_iter().zip(&digests) {
+        assert_eq!(reopened.pack_store().read_verified(digest)?, evidence);
+    }
+    let snapshot = reopened.projection().snapshot_latest();
+    let coverage = snapshot
+        .get_coverage(&sensor, "driveway")
+        .ok_or("rebuilt coverage absent")?;
+    assert_eq!(coverage.status, CoverageStatus::Covered);
+    assert_eq!(coverage.health_conflicts, 0);
+    assert_eq!(coverage.active_gaps, 0);
+    reopened.shutdown_and_flush()?;
+    Ok(())
+}
+
+#[test]
+fn refused_health_transition_publishes_neither_state_nor_receipt() -> TestResult {
+    let dir = TempDirGuard::new("health-refusal")?;
+    let manifest = manifest(1_048_576)?;
+    let mut regions =
+        DaemonRegionTree::initialize(&manifest, "principal:health-test", TimestampNs(0))?;
+    let sensor = SensorId::parse(SENSOR_A)?;
+    let mut storage = StorageEngine::open(&manifest, Some(dir.path()))?;
+    let oversized = vec![0x5a; 64 * 1024 + 1];
+    for evidence in [&[][..], oversized.as_slice()] {
+        let result = storage.commit_health_coverage_and_liveness(
+            &sensor,
+            "driveway",
+            CoverageStatus::NotObservable,
+            SensorLivenessStatus::Degraded,
+            1,
+            1,
+            TimestampNs(10),
+            TimestampNs(10),
+            evidence,
+            regions.storage_ledger_cx(),
+            regions.region_tree(),
+        );
+        assert!(matches!(result, Err(DaemonError::InvalidConfig { .. })));
+        assert_eq!(storage.head_snapshot()?.commit_sequence, 0);
+        assert!(
+            storage
+                .pack_store()
+                .lookup(&ContentDigest::sha256(evidence))?
+                .is_none()
+        );
+    }
+    regions.request_shutdown(TimestampNs(11))?;
+    let evidence = b"health:test:cancelled-before-publication";
+    assert!(
+        storage
+            .commit_health_coverage_and_liveness(
+                &sensor,
+                "driveway",
+                CoverageStatus::NotObservable,
+                SensorLivenessStatus::Degraded,
+                1,
+                1,
+                TimestampNs(12),
+                TimestampNs(12),
+                evidence,
+                regions.storage_ledger_cx(),
+                regions.region_tree(),
+            )
+            .is_err()
+    );
+    assert_eq!(storage.head_snapshot()?.commit_sequence, 0);
+    assert!(
+        storage
+            .pack_store()
+            .lookup(&ContentDigest::sha256(evidence))?
+            .is_none()
+    );
+    assert!(
+        storage
+            .projection()
+            .snapshot_latest()
+            .get_coverage(&sensor, "driveway")
+            .is_none()
+    );
+    storage.shutdown_and_flush()?;
+    Ok(())
+}
+
+#[test]
 fn event_pins_remain_on_original_media_when_newer_gops_exist_after_restart() -> TestResult {
     let dir = TempDirGuard::new("event-pins")?;
     let manifest = manifest(1_048_576)?;
@@ -723,26 +868,40 @@ fn cancelled_gop_flush_keeps_source_frames_for_an_authorized_retry() -> TestResu
     ));
     assert_eq!(storage.head_snapshot()?.commit_sequence, 0);
 
-    let fresh_regions =
-        DaemonRegionTree::initialize(&manifest, "principal:retention-test", TimestampNs(4_000_000))?;
+    let fresh_regions = DaemonRegionTree::initialize(
+        &manifest,
+        "principal:retention-test",
+        TimestampNs(4_000_000),
+    )?;
     let receipt = storage.flush_camera_gop(
         &sensor_id,
         CameraAdapterKind::Synthetic,
         fresh_regions.storage_ledger_cx(),
         fresh_regions.region_tree(),
     )?;
-    assert!(receipt.is_some(), "the cancelled flush must retain its source GOP");
+    assert!(
+        receipt.is_some(),
+        "the cancelled flush must retain its source GOP"
+    );
     assert_eq!(storage.retention_candidates().len(), 1);
     let candidate = storage
         .retention_candidates()
         .values()
         .next()
         .ok_or("retry did not retain a GOP")?;
-    let source = storage.pack_store().read_verified(&media_digest(candidate)?)?;
+    let source = storage
+        .pack_store()
+        .read_verified(&media_digest(candidate)?)?;
     let chunk = fss_pack::MediaChunkView::parse(&source)?;
     assert_eq!(chunk.frame_count(), 2);
-    assert_eq!(chunk.frame_bytes_verified(0)?, source_a.encoded_payload.as_slice());
-    assert_eq!(chunk.frame_bytes_verified(1)?, source_b.encoded_payload.as_slice());
+    assert_eq!(
+        chunk.frame_bytes_verified(0)?,
+        source_a.encoded_payload.as_slice()
+    );
+    assert_eq!(
+        chunk.frame_bytes_verified(1)?,
+        source_b.encoded_payload.as_slice()
+    );
     assert!(
         storage
             .flush_camera_gop(
@@ -768,11 +927,13 @@ fn catalog_conflict_after_gop_commit_never_reappends_the_import() -> TestResult 
     // Another publisher occupies the exact initially reserved ID after the daemon opened.
     let foreign_bytes = b"independent publication";
     let foreign_digest = ContentDigest::sha256(foreign_bytes);
-    let _ = storage.pack_store().append_batch(&[fss_pack::PackObjectInput::new(
-        fss_pack::PACK_KIND_METADATA,
-        0,
-        foreign_bytes,
-    )])?;
+    let _ = storage
+        .pack_store()
+        .append_batch(&[fss_pack::PackObjectInput::new(
+            fss_pack::PACK_KIND_METADATA,
+            0,
+            foreign_bytes,
+        )])?;
     let _ = storage.pack_store().publish_root(VirtualRootRecord::new(
         "gop:sensor_retention-a:1:1",
         foreign_digest,
@@ -796,7 +957,10 @@ fn catalog_conflict_after_gop_commit_never_reappends_the_import() -> TestResult 
             .is_err()
     );
     let committed = storage.head_snapshot()?;
-    assert_eq!(committed.commit_sequence, 1, "the failure follows canonical commit");
+    assert_eq!(
+        committed.commit_sequence, 1,
+        "the failure follows canonical commit"
+    );
     let sensor_id = SensorId::parse(SENSOR_A)?;
     for _ in 0..2 {
         assert!(
@@ -810,8 +974,14 @@ fn catalog_conflict_after_gop_commit_never_reappends_the_import() -> TestResult 
                 .is_err(),
             "an unresolved catalog conflict must remain explicit"
         );
-        assert_eq!(storage.head_snapshot()?.history_root, committed.history_root);
-        assert_eq!(storage.head_snapshot()?.commit_sequence, committed.commit_sequence);
+        assert_eq!(
+            storage.head_snapshot()?.history_root,
+            committed.history_root
+        );
+        assert_eq!(
+            storage.head_snapshot()?.commit_sequence,
+            committed.commit_sequence
+        );
     }
     assert!(storage.retention_candidates().is_empty());
     assert!(matches!(
@@ -862,8 +1032,14 @@ fn restart_completes_missing_gop_catalog_root_without_another_canonical_commit()
 
     for _ in 0..2 {
         let reopened = StorageEngine::open(&manifest, Some(dir.path()))?;
-        assert_eq!(reopened.head_snapshot()?.history_root, committed.history_root);
-        assert_eq!(reopened.head_snapshot()?.commit_sequence, committed.commit_sequence);
+        assert_eq!(
+            reopened.head_snapshot()?.history_root,
+            committed.history_root
+        );
+        assert_eq!(
+            reopened.head_snapshot()?.commit_sequence,
+            committed.commit_sequence
+        );
         assert_eq!(reopened.retention_candidates().len(), 1);
         assert_eq!(
             reopened.retention_candidates().get(&candidate.import_id),
@@ -912,7 +1088,13 @@ fn missing_catalog_tail_does_not_revive_canonically_retired_footage() -> TestRes
     let reopened = StorageEngine::open(&manifest, Some(dir.path()))?;
     assert_eq!(reopened.head_snapshot()?.history_root, retired.history_root);
     assert!(reopened.retention_candidates().is_empty());
-    assert!(reopened.projection().snapshot_latest().get_footage_import(&digest).is_none());
+    assert!(
+        reopened
+            .projection()
+            .snapshot_latest()
+            .get_footage_import(&digest)
+            .is_none()
+    );
     assert!(reopened.pack_store().object_tombstone(&digest)?.is_some());
     assert!(reopened.pack_store().lookup(&digest)?.is_none());
     assert_eq!(reopened.pack_store().live_root_count()?, 0);
@@ -969,9 +1151,16 @@ fn missing_duplicate_gop_root_is_not_revived_by_a_later_same_content_import() ->
         .set_len(previous_catalog_len)?;
     fs::remove_dir_all(dir.path().join(PROJECTION_SUBDIR))?;
     let reopened = StorageEngine::open(&manifest, Some(dir.path()))?;
-    assert_eq!(reopened.head_snapshot()?.history_root, committed.history_root);
+    assert_eq!(
+        reopened.head_snapshot()?.history_root,
+        committed.history_root
+    );
     assert_eq!(reopened.retention_candidates().len(), 1);
-    assert!(reopened.retention_candidates().contains_key(&newer.import_id));
+    assert!(
+        reopened
+            .retention_candidates()
+            .contains_key(&newer.import_id)
+    );
     assert!(reopened.pack_store().get_root(&older.import_id)?.is_none());
     assert!(matches!(
         reopened
@@ -1012,7 +1201,10 @@ fn gop_recovery_preserves_a_superseded_root_with_an_active_import() -> TestResul
     storage.shutdown_and_flush()?;
 
     let reopened = StorageEngine::open(&manifest, Some(dir.path()))?;
-    assert_eq!(reopened.head_snapshot()?.history_root, committed.history_root);
+    assert_eq!(
+        reopened.head_snapshot()?.history_root,
+        committed.history_root
+    );
     assert!(reopened.retention_candidates().is_empty());
     assert!(matches!(
         reopened

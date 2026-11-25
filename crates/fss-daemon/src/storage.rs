@@ -22,9 +22,9 @@ use fss_core::{
 use fss_ipc::ActiveScrubStatus;
 use fss_ledger::{EpochLedgerConfig, IncompleteTailPolicy, MerkleEpochLedger};
 use fss_pack::{
-    BackgroundScrubber, CapacityPressure, CompactionPolicy, PACK_KIND_MEDIA_CHUNK, PACK_KIND_METADATA,
-    PackConfig, PackStore, RetentionCandidate, RetentionEvictionBatch, RetentionPlanOutcome,
-    RetentionRingConfig, ScrubBudget, plan_retention,
+    BackgroundScrubber, CapacityPressure, CompactionPolicy, PACK_KIND_MEDIA_CHUNK,
+    PACK_KIND_METADATA, PackConfig, PackStore, RetentionCandidate, RetentionEvictionBatch,
+    RetentionPlanOutcome, RetentionRingConfig, ScrubBudget, plan_retention,
 };
 use fss_projection_store::{
     CommitCombiner, CommitCombinerConfig, CommitProposal, CoverageStatus, CoverageWitnessPayload,
@@ -314,6 +314,77 @@ impl StorageEngine {
         cx: &AuthorityCx,
         tree: &RegionTree,
     ) -> Result<StorageCommitReceipt, DaemonError> {
+        self.commit_coverage_and_liveness_with_evidence(
+            sensor_id,
+            zone_id,
+            status,
+            liveness,
+            active_gaps,
+            0,
+            last_seen_ns,
+            now_ns,
+            None,
+            cx,
+            tree,
+        )
+    }
+
+    /// Commits a source-bound health-screen transition and its paired coverage/liveness state.
+    ///
+    /// The bounded canonical receipt is retained in the same publication as the state change.
+    /// Both deltas name its exact digest as their witness; a clear screen only removes the
+    /// declared health conflict and does not itself certify continuity or physical coverage.
+    #[allow(clippy::too_many_arguments)]
+    pub fn commit_health_coverage_and_liveness(
+        &mut self,
+        sensor_id: &SensorId,
+        zone_id: &str,
+        status: CoverageStatus,
+        liveness: SensorLivenessStatus,
+        active_gaps: u32,
+        health_conflicts: u32,
+        last_seen_ns: TimestampNs,
+        now_ns: TimestampNs,
+        evidence: &[u8],
+        cx: &AuthorityCx,
+        tree: &RegionTree,
+    ) -> Result<StorageCommitReceipt, DaemonError> {
+        if evidence.is_empty() || evidence.len() > 64 * 1024 {
+            return Err(DaemonError::InvalidConfig {
+                detail: "health transition evidence must contain 1..=65536 canonical bytes"
+                    .to_owned(),
+            });
+        }
+        self.commit_coverage_and_liveness_with_evidence(
+            sensor_id,
+            zone_id,
+            status,
+            liveness,
+            active_gaps,
+            health_conflicts,
+            last_seen_ns,
+            now_ns,
+            Some(evidence),
+            cx,
+            tree,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn commit_coverage_and_liveness_with_evidence(
+        &mut self,
+        sensor_id: &SensorId,
+        zone_id: &str,
+        status: CoverageStatus,
+        liveness: SensorLivenessStatus,
+        active_gaps: u32,
+        health_conflicts: u32,
+        last_seen_ns: TimestampNs,
+        now_ns: TimestampNs,
+        evidence: Option<&[u8]>,
+        cx: &AuthorityCx,
+        tree: &RegionTree,
+    ) -> Result<StorageCommitReceipt, DaemonError> {
         let start = if last_seen_ns <= now_ns {
             last_seen_ns
         } else {
@@ -326,7 +397,7 @@ impl StorageEngine {
             window,
             status,
             active_gaps,
-            health_conflicts: 0,
+            health_conflicts,
         })
         .encode_bytes()?;
         let cov_digest = ContentDigest::sha256(&cov_bytes);
@@ -348,16 +419,28 @@ impl StorageEngine {
         let (cov_prior, cov_new) = self.next_object_generation(&cov_obj)?;
         let (live_prior, live_new) = self.next_object_generation(&live_obj)?;
         let seq = self.alloc_delta_seq();
-        let req_digest = ContentDigest::sha256(
-            format!("{}:{}:{seq}", cov_digest.to_text(), live_digest.to_text()).as_bytes(),
-        );
+        let witness_digest = evidence.map(ContentDigest::sha256);
+        let mut objects = vec![
+            OwnedPackObject::with_digest(PACK_KIND_METADATA, 0, cov_bytes, cov_digest),
+            OwnedPackObject::with_digest(PACK_KIND_METADATA, 0, live_bytes, live_digest),
+        ];
+        let request = format!("{}:{}:{seq}", cov_digest.to_text(), live_digest.to_text());
+        let req_digest = if let Some((bytes, digest)) = evidence.zip(witness_digest) {
+            objects.push(OwnedPackObject::with_digest(
+                PACK_KIND_METADATA,
+                0,
+                bytes.to_vec(),
+                digest,
+            ));
+            ContentDigest::sha256(format!("{request}:{}", digest.to_text()).as_bytes())
+        } else {
+            // Preserve the identity of existing unscreened coverage publications.
+            ContentDigest::sha256(request.as_bytes())
+        };
         let proposal = CommitProposal {
             request_digest: req_digest,
             sensor_scope: sensor_id.as_str().to_owned(),
-            objects: vec![
-                OwnedPackObject::with_digest(PACK_KIND_METADATA, 0, cov_bytes, cov_digest),
-                OwnedPackObject::with_digest(PACK_KIND_METADATA, 0, live_bytes, live_digest),
-            ],
+            objects,
             deltas: vec![
                 EvidenceDelta {
                     delta_id: format!("delta:cov:{seq}"),
@@ -368,7 +451,7 @@ impl StorageEngine {
                     validity: window,
                     plane: Plane::Authority,
                     payload_digest: cov_digest,
-                    witness_digest: None,
+                    witness_digest,
                     operation_id: None,
                 },
                 EvidenceDelta {
@@ -380,7 +463,7 @@ impl StorageEngine {
                     validity: window,
                     plane: Plane::Authority,
                     payload_digest: live_digest,
-                    witness_digest: None,
+                    witness_digest,
                     operation_id: None,
                 },
             ],
