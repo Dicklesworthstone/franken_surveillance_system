@@ -565,7 +565,7 @@ fn continuous_540_tick_multi_camera_soak_osd_holds_gap_and_telemetry() -> TestRe
             assert_eq!(tick_reconnects, 1, "expected wyze-51 reconnect at tick 260");
             let views = supervisor.camera_views();
             let v51 = views.get(&wyze_51_id).ok_or("missing v51")?;
-            assert_eq!(v51.state, SensorState::Streaming);
+            assert_eq!(v51.state, SensorState::Connecting);
             assert_eq!(v51.stream_generation, 2);
             assert_eq!(v51.active_sessions, 1);
             assert_eq!(v51.peak_concurrent_sessions, 1);
@@ -575,7 +575,21 @@ fn continuous_540_tick_multi_camera_soak_osd_holds_gap_and_telemetry() -> TestRe
                     .storage()
                     .projection()
                     .query_coverage(&snap, Some(&wyze_51_id), None);
+            assert_eq!(cov51[0].status, CoverageStatus::NotObservable);
+            assert!(cov51[0].active_gaps >= 1);
+        }
+        if tick == 261 {
+            let views = supervisor.camera_views();
+            let v51 = views.get(&wyze_51_id).ok_or("missing v51")?;
+            assert_eq!(v51.state, SensorState::Streaming);
+            assert_eq!(v51.stream_generation, 2);
+            let snap = supervisor.storage().projection().snapshot_latest();
+            let cov51 = supervisor
+                .storage()
+                .projection()
+                .query_coverage(&snap, Some(&wyze_51_id), None);
             assert_eq!(cov51[0].status, CoverageStatus::Covered);
+            assert_eq!(cov51[0].active_gaps, 0);
             recovery_verified = true;
         }
 

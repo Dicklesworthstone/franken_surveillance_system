@@ -114,15 +114,16 @@ impl DaemonSupervisor {
                     let _ = storage.commit_coverage_and_liveness(
                         &entry.sensor_id,
                         &entry.primary_zone,
-                        CoverageStatus::Covered,
-                        SensorLivenessStatus::Online,
-                        0,
+                        CoverageStatus::NotObservable,
+                        SensorLivenessStatus::Unknown,
+                        1,
                         now,
                         now,
                         regions.storage_ledger_cx(),
                         regions.region_tree(),
                     )?;
-                    (SensorState::Streaming, 0, driver.active_session_count(), 0)
+                    // Transport acceptance is not evidence of a usable frame or continuity.
+                    (SensorState::Connecting, 0, driver.active_session_count(), 1)
                 }
                 Err(reason) => {
                     let _ = regions.drain_failed_sensor_region(
@@ -164,9 +165,11 @@ impl DaemonSupervisor {
                     backoff,
                     state,
                     stream_generation: 1,
+                    previous_frame: None,
+                    continuity_frames: 0,
                     last_frame_ns: now_ns,
                     next_reconnect_ns,
-                    reconnects: u64::from(active_gaps),
+                    reconnects: u64::from(state == SensorState::GapBackoff),
                     frames_ingested: 0,
                     frames_decoded: 0,
                     last_ingest_lag_ms: 0,

@@ -209,6 +209,11 @@ pub(crate) struct CameraSlot {
     pub(crate) backoff: BackoffSchedule,
     pub(crate) state: SensorState,
     pub(crate) stream_generation: u64,
+    // Source identity, sequence, and receive high-water for this generation, including
+    // valid frames shed locally. Retention loss must never permit source identity replay.
+    pub(crate) previous_frame: Option<(fss_core::StreamId, u64, i128)>,
+    // Contiguous admitted samples since the latest source or retention gap, capped at two.
+    pub(crate) continuity_frames: u8,
     pub(crate) last_frame_ns: i128,
     pub(crate) next_reconnect_ns: i128,
     pub(crate) reconnects: u64,

@@ -201,7 +201,7 @@ fn multi_camera_supervision_corroboration_shared_domain_and_sub_500ms_ipc() -> T
     let views = supervisor.camera_views();
     assert_eq!(views.len(), 3);
     for view in views.values() {
-        assert_eq!(view.state, SensorState::Streaming);
+        assert_eq!(view.state, SensorState::Connecting);
         assert_eq!(view.active_sessions, 1);
         assert_eq!(view.peak_concurrent_sessions, 1);
         assert_eq!(view.total_connections, 1);
@@ -498,7 +498,7 @@ fn camera_disconnect_emits_explicit_gap_and_backoff_recovers_new_generation() ->
 
     let recovered_views = supervisor.camera_views();
     let v39_rec = recovered_views.get(&wyze_39_id).ok_or("missing v39")?;
-    assert_eq!(v39_rec.state, SensorState::Streaming);
+    assert_eq!(v39_rec.state, SensorState::Connecting);
     assert_eq!(v39_rec.stream_generation, 2);
     assert_eq!(v39_rec.active_sessions, 1);
     assert_eq!(v39_rec.peak_concurrent_sessions, 1);
@@ -510,7 +510,23 @@ fn camera_disconnect_emits_explicit_gap_and_backoff_recovers_new_generation() ->
             .storage()
             .projection()
             .query_coverage(&snap2, Some(&wyze_39_id), None);
-    assert_eq!(cov39_rec[0].status, CoverageStatus::Covered);
+    assert_eq!(cov39_rec[0].status, CoverageStatus::NotObservable);
+    assert!(cov39_rec[0].active_gaps >= 1);
+
+    // A second contiguous frame, rather than successful connect, proves readiness.
+    let _ = supervisor.step_tick(t0 + 1_600_000_000)?;
+    let ready_views = supervisor.camera_views();
+    assert_eq!(
+        ready_views.get(&wyze_39_id).ok_or("missing v39")?.state,
+        SensorState::Streaming
+    );
+    let ready_snap = supervisor.storage().projection().snapshot_latest();
+    let ready_cov = supervisor
+        .storage()
+        .projection()
+        .query_coverage(&ready_snap, Some(&wyze_39_id), None);
+    assert_eq!(ready_cov[0].status, CoverageStatus::Covered);
+    assert_eq!(ready_cov[0].active_gaps, 0);
 
     let shutdown = supervisor.shutdown_graceful()?;
     assert_eq!(shutdown.active_tasks, 0);

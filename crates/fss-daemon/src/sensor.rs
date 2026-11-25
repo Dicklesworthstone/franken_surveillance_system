@@ -134,9 +134,10 @@ pub enum SensorDriverEvent {
 /// Lifecycle state of one supervised camera inside `fss-daemon`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SensorState {
-    /// Connecting initial upstream session.
+    /// Upstream accepted, but two contiguous current-generation frames are not yet witnessed.
+    /// Also used while reestablishing continuity after a source or local retention gap.
     Connecting,
-    /// Single upstream session active and delivering frames.
+    /// Single upstream session active with observed current-generation frame continuity.
     Streaming,
     /// Disconnected with explicit `not_observable` coverage gap; waiting for backoff window.
     GapBackoff,
