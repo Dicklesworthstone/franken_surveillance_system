@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use fss_core::{CanonicalEncoder, ContentDigest, ResourcePressure, SensorId};
+use fss_core::{CanonicalEncoder, ContentDigest, OperationId, ResourcePressure, SensorId};
 use fss_ipc::{CameraLiveStatus, RingWatermarkStatus};
 use fss_pack::CapacityPressure;
 use fss_reference::ingest::live_corroborate::LiveCorroborationDecision;
@@ -24,6 +24,8 @@ use crate::telemetry::{DaemonTelemetrySnapshot, escape_json};
 
 /// Canonical digest domain for [`DaemonShutdownReport::receipt_digest`].
 pub const DAEMON_SHUTDOWN_RECEIPT_DOMAIN: &str = "fss.daemon.shutdown_receipt.v1";
+/// Digest domain for process-local control disposition bound to a shutdown receipt.
+pub const DAEMON_CONTROL_DISPOSITION_DOMAIN: &str = "fss.daemon.control_disposition.v1";
 
 /// Configuration bundle for launching a [`crate::supervisor::DaemonSupervisor`].
 pub struct DaemonStartConfig {
@@ -140,6 +142,9 @@ pub struct DaemonShutdownReport {
     pub region_proof: RegionShutdownProof,
     /// Verified storage flush and chain verification summary.
     pub storage_summary: StorageShutdownSummary,
+    /// Separately digested disposition of unstarted or indeterminate controls. This
+    /// does not establish durable command recovery or completion of other controls.
+    pub control_disposition: DaemonControlDisposition,
     /// Domain-separated canonical SHA-256 digest under [`DAEMON_SHUTDOWN_RECEIPT_DOMAIN`].
     pub receipt_digest: ContentDigest,
 }
@@ -156,7 +161,7 @@ impl DaemonShutdownReport {
                 "\"head_commit_sequence\":{},\"history_root\":\"{}\",\"state_root\":\"{}\",",
                 "\"verified_epochs\":{},\"verified_batches\":{},\"corroborated_events\":{},",
                 "\"shared_domain_held_events\":{},\"coverage_gaps\":{},",
-                "\"receipt_digest\":\"{}\"}}"
+                "\"receipt_digest\":\"{}\",\"control_disposition\":{}}}"
             ),
             escape_json(&self.site_id),
             escape_json(&self.daemon_instance_id),
@@ -173,6 +178,120 @@ impl DaemonShutdownReport {
             self.corroborated_events,
             self.shared_domain_held_events,
             self.coverage_gaps,
+            self.receipt_digest.to_text(),
+            self.control_disposition.to_json(),
+        )
+    }
+}
+
+/// Process-local control ownership settled during shutdown. Successfully dispatched
+/// controls are outside this receipt: dispatch alone never proves semantic completion.
+/// This child receipt preserves the existing shutdown v1 digest encoding unchanged.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DaemonControlDisposition {
+    /// Exact verified storage/region shutdown receipt this disposition accompanies.
+    pub shutdown_receipt_digest: ContentDigest,
+    /// Accepted operations cancelled before their subsystem began execution.
+    pub cancelled_before_execution: Vec<OperationId>,
+    /// Operations that may have changed state and require inspection or reconciliation.
+    pub indeterminate: Vec<OperationId>,
+    /// Canonical digest under the daemon control disposition domain.
+    pub receipt_digest: ContentDigest,
+}
+
+impl DaemonControlDisposition {
+    pub(crate) fn new(
+        shutdown_receipt_digest: ContentDigest,
+        mut cancelled_before_execution: Vec<OperationId>,
+        mut indeterminate: Vec<OperationId>,
+    ) -> Self {
+        cancelled_before_execution.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        indeterminate.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        let receipt_digest = Self::compute_digest(
+            shutdown_receipt_digest,
+            &cancelled_before_execution,
+            &indeterminate,
+        );
+        Self {
+            shutdown_receipt_digest,
+            cancelled_before_execution,
+            indeterminate,
+            receipt_digest,
+        }
+    }
+
+    /// Checks the shutdown binding, canonical unique/disjoint ID lists, and digest.
+    /// Verification does not claim these process-local records survived a crash.
+    #[must_use]
+    pub fn verify(&self, shutdown_receipt_digest: ContentDigest) -> bool {
+        let strictly_ordered = |operations: &[OperationId]| {
+            operations
+                .windows(2)
+                .all(|pair| pair[0].as_str() < pair[1].as_str())
+        };
+        if self.shutdown_receipt_digest != shutdown_receipt_digest
+            || !strictly_ordered(&self.cancelled_before_execution)
+            || !strictly_ordered(&self.indeterminate)
+        {
+            return false;
+        }
+        if self.cancelled_before_execution.iter().any(|operation| {
+            self.indeterminate
+                .binary_search_by(|other| other.as_str().cmp(operation.as_str()))
+                .is_ok()
+        }) {
+            return false;
+        }
+        self.receipt_digest
+            == Self::compute_digest(
+                self.shutdown_receipt_digest,
+                &self.cancelled_before_execution,
+                &self.indeterminate,
+            )
+    }
+
+    fn compute_digest(
+        shutdown_receipt_digest: ContentDigest,
+        cancelled_before_execution: &[OperationId],
+        indeterminate: &[OperationId],
+    ) -> ContentDigest {
+        let mut enc = CanonicalEncoder::new();
+        enc.text("fss.canonical.v1");
+        enc.text(DAEMON_CONTROL_DISPOSITION_DOMAIN);
+        enc.digest(shutdown_receipt_digest);
+        enc.u64(cancelled_before_execution.len() as u64);
+        for operation in cancelled_before_execution {
+            enc.text(operation.as_str());
+        }
+        enc.u64(indeterminate.len() as u64);
+        for operation in indeterminate {
+            enc.text(operation.as_str());
+        }
+        ContentDigest::sha256(&enc.finish())
+    }
+
+    /// Renders bounded operation IDs, terminal reasons, and the child proof identity.
+    #[must_use]
+    pub fn to_json(&self) -> String {
+        let ids = |operations: &[OperationId]| {
+            operations
+                .iter()
+                .map(|operation| format!("\"{}\"", escape_json(operation.as_str())))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        format!(
+            concat!(
+                "{{\"schema\":\"fss.daemon_control_disposition.v1\",\"durable\":false,",
+                "\"shutdown_receipt_digest\":\"{}\",",
+                "\"cancellation_reason\":\"shutdown_before_execution\",",
+                "\"cancelled_before_execution\":[{}],\"indeterminate\":[{}],",
+                "\"indeterminate_retry\":\"reconcile_before_retry\",",
+                "\"receipt_digest\":\"{}\"}}"
+            ),
+            self.shutdown_receipt_digest.to_text(),
+            ids(&self.cancelled_before_execution),
+            ids(&self.indeterminate),
             self.receipt_digest.to_text(),
         )
     }

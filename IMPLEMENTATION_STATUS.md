@@ -5,6 +5,40 @@
 **Current change qualification:** each dated section below states its exact verification boundary. Native passes for one component do not qualify other changes, and prior receipts do not qualify new bytes.
 **Release authority:** repository-owned local qualification (`scripts/qualify.sh`) and retained DSR receipts, not hosted CI
 
+## Accepted-control ownership through failed ticks and shutdown — 2026-11-25
+
+The daemon now pops accepted controls one at a time within a fixed per-tick allowance.
+A failing command cannot discard the unstarted queue tail. A command that begins and
+errors is retained as indeterminate, admission closes, and caller-driven tick retries
+cannot blindly execute it again. Deferred TriggerScrub IDs remain owned until maintenance
+begins, so an earlier source/perception failure cannot silently lose them.
+
+Shutdown explicitly cancels commands whose subsystem execution never began. A separate
+control-disposition child receipt binds those IDs and indeterminate IDs to the unchanged
+shutdown v1 receipt. Its verifier checks strict ordering, uniqueness, disjoint dispositions
+and the parent/digest binding. JSON states durable:false and requires reconciliation for
+indeterminate work. Dispatch of other controls is not treated as semantic completion.
+
+Successful cleanup after a failed tick retains the control child receipt alongside the
+original error; failed cleanup retains both disposition lists and its independent error.
+The existing RunAndShutdown behavior from concurrent main remains intact. Search-reviewed
+shutdown JSON consumers select named fields; the legacy shutdown digest encoding is unchanged.
+
+Five focused tests cover partial stop effects and queue-tail preservation, requested
+shutdown, real GOP publication conflicts, cleanup receipts, and canonical/tamper vectors.
+The child digest vector was independently computed; that calculation is not a native
+execution result for the Rust tests.
+
+**Verification boundary:** guarded source reconstruction and source/API review. The execution
+environment is unavailable, so Rust compilation, native tests, rustfmt, Clippy and repository
+qualification remain unverified. These process-local dispositions do not provide durable
+queued-command crash recovery, and the broader runtime/effect invariant remains open.
+
+```sh
+cargo +nightly-2026-08-31 test --locked --offline -p fss-daemon --lib supervisor::failure_tests
+cargo +nightly-2026-08-31 test --locked --offline -p fss-daemon --test camera_readiness_contract
+```
+
 ## Durable forwarded-request identity and retry receipts — 2026-11-25
 
 Forwarded canonical batches now bind their idempotency key to the exact batch, approval

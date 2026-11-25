@@ -285,6 +285,53 @@ impl ControlPlaneShared {
         }
     }
 
+    /// Freezes the size of one supervisor turn without removing unstarted work.
+    pub(crate) fn queued_control_command_count(&self) -> Result<usize, DaemonError> {
+        self.control_queue
+            .lock()
+            .map(|queue| queue.len())
+            .map_err(|_| DaemonError::LockPoisoned {
+                component: "control_queue",
+            })
+    }
+
+    /// Transfers only the next command; later commands retain their queue owner if
+    /// execution fails after this transfer.
+    pub(crate) fn take_control_command(
+        &self,
+    ) -> Result<Option<PendingControlCommand>, DaemonError> {
+        let mut queue = self
+            .control_queue
+            .lock()
+            .map_err(|_| DaemonError::LockPoisoned {
+                component: "control_queue",
+            })?;
+        if self.is_shutdown_requested() {
+            return Ok(None);
+        }
+        Ok(queue.pop_front())
+    }
+
+    /// Closes admission and transfers definitely unstarted commands to shutdown.
+    /// Recover the owned queue even when poisoned, while preserving the error.
+    pub(crate) fn cancel_unstarted_controls(
+        &self,
+    ) -> (Vec<PendingControlCommand>, Option<DaemonError>) {
+        let (mut queue, error) = match self.control_queue.lock() {
+            Ok(queue) => (queue, None),
+            Err(poisoned) => (
+                poisoned.into_inner(),
+                Some(DaemonError::LockPoisoned {
+                    component: "control_queue",
+                }),
+            ),
+        };
+        self.shutdown_requested.store(true, Ordering::Release);
+        let commands = queue.drain(..).collect();
+        self.delta_notify.notify_all();
+        (commands, error)
+    }
+
     /// Returns the expected canonical shutdown approval digest for this daemon.
     #[must_use]
     pub fn expected_stop_approval(&self) -> ContentDigest {

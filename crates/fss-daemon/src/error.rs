@@ -6,7 +6,7 @@
 use std::fmt;
 use std::io;
 
-use fss_core::{ContractError, RegionError};
+use fss_core::{ContractError, OperationId, RegionError};
 use fss_ipc::IpcError;
 use fss_ledger::EpochLedgerError;
 use fss_pack::{ERR_STORAGE_QUOTA_PINNED_001, PackError};
@@ -16,6 +16,8 @@ use fss_reference::ingest::model_pool::ModelPoolError;
 use fss_reference::ingest::osd_mask::OsdMaskError;
 use fss_runtime::authority::AuthorityError;
 use fss_vault::SecretError;
+
+use crate::supervisor_types::DaemonShutdownReport;
 
 /// Plaintext secret or inline credential detected in a site manifest (`site.json`).
 pub const ERR_DAEMON_SECRET_IN_MANIFEST_001: &str = "ERR-DAEMON-SECRET-IN-MANIFEST-001";
@@ -108,6 +110,34 @@ pub enum DaemonError {
         /// Non-secret description of the unclosed work or leaked obligation.
         detail: String,
     },
+    /// New supervision work was refused after admission closed for shutdown.
+    ShutdownRequested,
+    /// A command failed after transfer to its executor and may have changed state.
+    /// It must not be automatically redispatched without reconciliation.
+    ControlExecutionIndeterminate {
+        /// Exact accepted command whose effects require inspection or reconciliation.
+        operation_id: OperationId,
+        /// Original execution error, without implying no effect occurred.
+        cause: Box<DaemonError>,
+    },
+    /// A tick failed, but cleanup succeeded and settled accepted control ownership.
+    /// Retain the verified receipt instead of losing its operation dispositions.
+    RunWithControlDisposition {
+        /// Original supervision failure.
+        run: Box<DaemonError>,
+        /// Verified cleanup and process-local control disposition.
+        shutdown: Box<DaemonShutdownReport>,
+    },
+    /// Cleanup failed while also settling accepted control ownership. These lists
+    /// describe process-local disposition, not durable recovery or effect completion.
+    ShutdownWithControlDisposition {
+        /// Original cleanup failure.
+        cause: Box<DaemonError>,
+        /// Commands cancelled before their subsystem started executing them.
+        cancelled_before_execution: Vec<OperationId>,
+        /// Commands whose effects require reconciliation before retry.
+        indeterminate: Vec<OperationId>,
+    },
     /// A supervision tick failed and its mandatory drain/finalization also failed.
     RunAndShutdown {
         /// Original supervision failure, retained as the primary machine error identity.
@@ -147,7 +177,11 @@ impl DaemonError {
             Self::Vault(err) => err.error_id(),
             Self::LockPoisoned { .. } | Self::ShutdownViolation { .. } => ERR_DAEMON_SHUTDOWN_001,
             Self::Io { .. } => ERR_DAEMON_IO_001,
-            Self::RunAndShutdown { run, .. } => run.error_id(),
+            Self::ShutdownRequested => fss_ipc::ERR_IPC_SERVER_SHUTDOWN_001,
+            Self::ControlExecutionIndeterminate { .. } => "ERR-EFFECT-INDETERMINATE-001",
+            Self::RunWithControlDisposition { run, .. }
+            | Self::RunAndShutdown { run, .. } => run.error_id(),
+            Self::ShutdownWithControlDisposition { cause, .. } => cause.error_id(),
         }
     }
 }
@@ -205,6 +239,30 @@ impl fmt::Display for DaemonError {
                     "{ERR_DAEMON_SHUTDOWN_001}: shutdown quiescence failed: {detail}"
                 )
             }
+            Self::ShutdownRequested => {
+                write!(f, "daemon shutdown requested; no new supervision tick admitted")
+            }
+            Self::ControlExecutionIndeterminate {
+                operation_id,
+                cause,
+            } => write!(
+                f,
+                "ERR-EFFECT-INDETERMINATE-001: operation {operation_id} may have changed state: {cause}; inspect or reconcile before retry"
+            ),
+            Self::RunWithControlDisposition { run, shutdown } => write!(
+                f,
+                "{run}; daemon cleanup verified: receipt={} control_disposition={}",
+                shutdown.receipt_digest.to_text(),
+                shutdown.control_disposition.to_json(),
+            ),
+            Self::ShutdownWithControlDisposition {
+                cause,
+                cancelled_before_execution,
+                indeterminate,
+            } => write!(
+                f,
+                "{cause}; process-local controls cancelled_before_execution={cancelled_before_execution:?} indeterminate={indeterminate:?}; no durable control recovery claimed"
+            ),
             Self::RunAndShutdown { run, shutdown } => {
                 write!(f, "{run}; daemon shutdown also failed: {shutdown}")
             }
@@ -215,7 +273,10 @@ impl fmt::Display for DaemonError {
 impl std::error::Error for DaemonError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::RunAndShutdown { run, .. } => Some(run.as_ref()),
+            Self::RunWithControlDisposition { run, .. }
+            | Self::RunAndShutdown { run, .. } => Some(run.as_ref()),
+            Self::ControlExecutionIndeterminate { cause, .. }
+            | Self::ShutdownWithControlDisposition { cause, .. } => Some(cause.as_ref()),
             _ => None,
         }
     }

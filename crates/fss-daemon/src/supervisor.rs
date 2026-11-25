@@ -33,8 +33,8 @@ use crate::sensor::{
 };
 use crate::storage::{StorageEngine, StorageHeadSnapshot};
 pub use crate::supervisor_types::{
-    CameraRuntimeView, DAEMON_SHUTDOWN_RECEIPT_DOMAIN, DaemonShutdownReport, DaemonStartConfig,
-    TickReport,
+    CameraRuntimeView, DAEMON_CONTROL_DISPOSITION_DOMAIN, DAEMON_SHUTDOWN_RECEIPT_DOMAIN,
+    DaemonControlDisposition, DaemonShutdownReport, DaemonStartConfig, TickReport,
 };
 use crate::supervisor_types::{
     CameraSlot, build_control_status, combined_pressure_label, compute_shutdown_digest,
@@ -43,6 +43,10 @@ use crate::supervisor_types::{
 use crate::telemetry::{DaemonTelemetrySnapshot, SensorTelemetryRecord};
 
 const MAX_TELEMETRY_LINES: usize = 512;
+
+#[cfg(test)]
+#[path = "supervisor_failure_tests.rs"]
+mod failure_tests;
 
 /// Always-on multi-camera supervisor owning regions, storage, perception, sensors, and IPC.
 pub struct DaemonSupervisor {
@@ -58,6 +62,10 @@ pub struct DaemonSupervisor {
     pub(crate) sensors: BTreeMap<SensorId, CameraSlot>,
     pub(crate) control: Option<ControlPlaneServer>,
     pub(crate) control_shared: Option<Arc<ControlPlaneShared>>,
+    // At most one bounded control turn can be outstanding. These are cleared after
+    // maintenance or settled in shutdown; a control failure closes new admission.
+    pub(crate) pending_scrub_operations: Vec<OperationId>,
+    pub(crate) indeterminate_control_operations: Vec<OperationId>,
     pub(crate) corroborated_events: u64,
     pub(crate) shared_domain_held_events: u64,
     pub(crate) coverage_gaps: u64,
@@ -229,6 +237,8 @@ impl DaemonSupervisor {
             sensors,
             control,
             control_shared: Some(shared),
+            pending_scrub_operations: Vec::new(),
+            indeterminate_control_operations: Vec::new(),
             corroborated_events: 0,
             shared_domain_held_events: 0,
             coverage_gaps,
@@ -240,6 +250,20 @@ impl DaemonSupervisor {
     /// storage group-commit, perception cascade + live corroboration, retention compaction,
     /// incremental scrubbing, and telemetry publication.
     pub fn step_tick(&mut self, now_ns: i128) -> Result<TickReport, DaemonError> {
+        if self.is_shutdown_requested() {
+            return Err(DaemonError::ShutdownRequested);
+        }
+        let result = self.step_tick_inner(now_ns);
+        if result.is_err() && !self.pending_scrub_operations.is_empty() {
+            // An earlier failure prevented deferred maintenance from starting. Keep
+            // those accepted IDs for cancellation, rather than silently moving them
+            // into another manually invoked tick alongside new admissions.
+            self.request_shutdown();
+        }
+        result
+    }
+
+    fn step_tick_inner(&mut self, now_ns: i128) -> Result<TickReport, DaemonError> {
         self.tick_count = self.tick_count.saturating_add(1);
         self.last_now_ns = now_ns;
         let now = TimestampNs(now_ns);
@@ -261,12 +285,28 @@ impl DaemonSupervisor {
             .saturating_add(tick_shared_held);
         self.coverage_gaps = self.coverage_gaps.saturating_add(coverage_gaps_emitted);
 
-        let maint = self.storage.run_maintenance_tick(
+        let maintenance = self.storage.run_maintenance_tick(
             self.regions.storage_pack_cx(),
             self.regions.region_tree(),
             now,
             force_scrub,
-        )?;
+        );
+        let maint = match maintenance {
+            Ok(report) => {
+                // The subsystem processed these requests; this does not prove that
+                // a multi-pass integrity scrub has reached a clean result.
+                self.pending_scrub_operations.clear();
+                report
+            }
+            Err(error) => {
+                if !self.pending_scrub_operations.is_empty() {
+                    self.indeterminate_control_operations
+                        .append(&mut self.pending_scrub_operations);
+                    self.request_shutdown();
+                }
+                return Err(error);
+            }
+        };
         if maint.quota_pinned {
             let head_seq = self.storage.head_snapshot()?.commit_sequence;
             self.broadcast_delta(
@@ -318,8 +358,11 @@ impl DaemonSupervisor {
                 break Ok(());
             }
             let now_ns = monotonic_wall_ns().max(self.last_now_ns.saturating_add(1_000_000));
-            if let Err(error) = self.step_tick(now_ns) {
-                break Err(error);
+            match self.step_tick(now_ns) {
+                Ok(_) => {}
+                // IPC stop can race the loop check and the tick admission check.
+                Err(DaemonError::ShutdownRequested) => break Ok(()),
+                Err(error) => break Err(error),
             }
             if self.is_shutdown_requested() || max_ticks.is_some_and(|lim| self.tick_count >= lim) {
                 break Ok(());
@@ -345,7 +388,18 @@ impl DaemonSupervisor {
         let shutdown_result = self.shutdown_graceful();
         match (run_result, shutdown_result) {
             (Ok(()), result) => result,
-            (Err(run), Ok(_)) => Err(run),
+            (Err(run), Ok(report)) => {
+                if report.control_disposition.cancelled_before_execution.is_empty()
+                    && report.control_disposition.indeterminate.is_empty()
+                {
+                    Err(run)
+                } else {
+                    Err(DaemonError::RunWithControlDisposition {
+                        run: Box::new(run),
+                        shutdown: Box::new(report),
+                    })
+                }
+            }
             (Err(run), Err(shutdown)) => Err(DaemonError::RunAndShutdown {
                 run: Box::new(run),
                 shutdown: Box::new(shutdown),
@@ -361,7 +415,19 @@ impl DaemonSupervisor {
         let drain_start = Instant::now();
         let now = TimestampNs(self.last_now_ns.saturating_add(1_000));
 
-        let mut first_error = None;
+        // Transfer accepted work before the first blocking source drain. Deferred
+        // scrub requests have not entered maintenance and are cancelled as unstarted.
+        let (cancelled_commands, mut first_error) = self.control_shared.as_ref().map_or_else(
+            || (Vec::new(), None),
+            |shared| shared.cancel_unstarted_controls(),
+        );
+        let mut cancelled_before_execution = std::mem::take(&mut self.pending_scrub_operations);
+        cancelled_before_execution.extend(
+            cancelled_commands
+                .into_iter()
+                .map(|command| command.operation_id),
+        );
+        let indeterminate = std::mem::take(&mut self.indeterminate_control_operations);
         let cameras: Vec<(SensorId, CameraAdapterKind, usize)> = self
             .sensors
             .iter()
@@ -407,11 +473,25 @@ impl DaemonSupervisor {
         // ingest error nor a storage shutdown error may bypass region finalization.
         let storage_result = self.storage.shutdown_and_flush();
         let region_result = self.regions.drain_and_finalize(now);
-        if let Some(err) = first_error {
-            return Err(err);
-        }
-        let storage_summary = storage_result?;
-        let region_proof = region_result?;
+        let cleanup = (|| {
+            if let Some(err) = first_error {
+                return Err(err);
+            }
+            Ok((storage_result?, region_result?))
+        })();
+        let (storage_summary, region_proof) = match cleanup {
+            Ok(summary) => summary,
+            Err(cause) => {
+                if cancelled_before_execution.is_empty() && indeterminate.is_empty() {
+                    return Err(cause);
+                }
+                return Err(DaemonError::ShutdownWithControlDisposition {
+                    cause: Box::new(cause),
+                    cancelled_before_execution,
+                    indeterminate,
+                });
+            }
+        };
         let drain_duration_ms =
             u64::try_from(drain_start.elapsed().as_millis()).unwrap_or(u64::MAX);
         let receipt_digest = compute_shutdown_digest(
@@ -420,6 +500,11 @@ impl DaemonSupervisor {
             self.tick_count,
             &storage_summary,
             &region_proof,
+        );
+        let control_disposition = DaemonControlDisposition::new(
+            receipt_digest,
+            cancelled_before_execution,
+            indeterminate,
         );
 
         Ok(DaemonShutdownReport {
@@ -440,6 +525,7 @@ impl DaemonSupervisor {
             coverage_gaps: self.coverage_gaps,
             region_proof,
             storage_summary,
+            control_disposition,
             receipt_digest,
         })
     }

@@ -10,6 +10,7 @@ use fss_ipc::BoundedControlOp;
 use fss_projection_store::{CoverageStatus, SensorLivenessStatus};
 use fss_reference::ingest::live_corroborate::{CorroborationOutcome, LiveCorroborationDecision};
 
+use crate::control::PendingControlCommand;
 use crate::error::DaemonError;
 use crate::manifest::CameraAdapterKind;
 use crate::sensor::{CameraFrame, SensorDisconnectReason, SensorDriverEvent, SensorState};
@@ -38,79 +39,111 @@ impl DaemonSupervisor {
         now_ns: i128,
         now: TimestampNs,
     ) -> Result<(bool, u64), DaemonError> {
-        let mut force_scrub = false;
         let mut coverage_gaps = 0_u64;
-        let pending = self
-            .control_shared
-            .as_ref()
-            .map_or_else(Vec::new, |s| s.drain_control_commands());
-        for cmd in pending {
-            match cmd.op {
-                BoundedControlOp::TriggerScrub => force_scrub = true,
-                BoundedControlOp::StopCamera => {
-                    if let Some(target) = cmd.target_camera_id.as_deref()
-                        && let Ok(sid) = SensorId::parse(target)
-                        && let Some(slot) = self.sensors.get_mut(&sid)
-                    {
-                        slot.driver.disconnect();
-                        slot.state = SensorState::Stopped;
-                        slot.previous_frame = None;
-                        slot.continuity_frames = 0;
-                        if let Some(health) = &mut slot.health {
-                            health.reset();
-                        }
-                        self.perception.invalidate_sensor(&slot.entry)?;
-                        slot.active_gaps = slot.active_gaps.saturating_add(1);
-                        let zone = slot.entry.primary_zone.clone();
-                        let last = TimestampNs(slot.last_frame_ns);
-                        let _ = self.regions.drain_failed_sensor_region(
-                            &sid,
-                            SensorDisconnectReason::OperatorStopped.as_str(),
-                            now,
-                        )?;
-                        let receipt = self.storage.commit_coverage_and_liveness(
-                            &sid,
-                            &zone,
-                            CoverageStatus::NotObservable,
-                            SensorLivenessStatus::Offline,
-                            slot.active_gaps,
-                            last,
-                            now,
-                            self.regions.storage_ledger_cx(),
-                            self.regions.region_tree(),
-                        )?;
-                        self.broadcast_delta(
-                            receipt.commit_sequence,
-                            receipt.batch_digest,
-                            MeaningfulDeltaClass::CoverageLoss,
-                            DeltaPriority::High,
-                            format!("camera_stopped sensor={target}"),
-                        );
-                        coverage_gaps = coverage_gaps.saturating_add(1);
-                    }
-                }
-                BoundedControlOp::StartCamera => {
-                    if let Some(target) = cmd.target_camera_id.as_deref()
-                        && let Ok(sid) = SensorId::parse(target)
-                        && let Some(slot) = self.sensors.get_mut(&sid)
-                        && slot.state == SensorState::Stopped
-                    {
-                        slot.state = SensorState::GapBackoff;
-                        slot.next_reconnect_ns = now_ns;
-                    }
-                }
-                BoundedControlOp::SnapshotCamera => {
-                    self.handle_snapshot_camera(cmd.target_camera_id.as_deref())?;
-                }
-                BoundedControlOp::ReloadManifest => {
-                    self.handle_reload_manifest(&cmd.operation_id)?;
-                }
-                BoundedControlOp::ProbeDetect => {
-                    self.handle_probe_detect(cmd.target_camera_id.as_deref())?;
+        let Some(shared) = self.control_shared.as_ref().map(Arc::clone) else {
+            return Ok((false, 0));
+        };
+        // Snapshot the allowance, not the contents: later admissions cannot extend
+        // this turn indefinitely, and an execution error cannot drop an unstarted tail.
+        let allowance = shared.queued_control_command_count()?;
+        for _ in 0..allowance {
+            let Some(cmd) = shared.take_control_command()? else {
+                break;
+            };
+            match self.execute_control_command_step(&cmd, now_ns, now) {
+                Ok(gaps) => coverage_gaps = coverage_gaps.saturating_add(gaps),
+                Err(cause) => {
+                    // The subsystem may have changed state before returning the error.
+                    // Keep its identity for reconciliation and prohibit blind replay.
+                    self.indeterminate_control_operations
+                        .push(cmd.operation_id.clone());
+                    shared.request_shutdown();
+                    return Err(DaemonError::ControlExecutionIndeterminate {
+                        operation_id: cmd.operation_id,
+                        cause: Box::new(cause),
+                    });
                 }
             }
         }
-        Ok((force_scrub, coverage_gaps))
+        Ok((!self.pending_scrub_operations.is_empty(), coverage_gaps))
+    }
+
+    fn execute_control_command_step(
+        &mut self,
+        cmd: &PendingControlCommand,
+        now_ns: i128,
+        now: TimestampNs,
+    ) -> Result<u64, DaemonError> {
+        let mut coverage_gaps = 0_u64;
+        match cmd.op {
+            BoundedControlOp::TriggerScrub => {
+                // Maintenance runs after sensor/perception work. Until it starts,
+                // this is unexecuted work, not a completed scrub operation.
+                self.pending_scrub_operations.push(cmd.operation_id.clone());
+            }
+            BoundedControlOp::StopCamera => {
+                if let Some(target) = cmd.target_camera_id.as_deref()
+                    && let Ok(sid) = SensorId::parse(target)
+                    && let Some(slot) = self.sensors.get_mut(&sid)
+                {
+                    slot.driver.disconnect();
+                    slot.state = SensorState::Stopped;
+                    slot.previous_frame = None;
+                    slot.continuity_frames = 0;
+                    if let Some(health) = &mut slot.health {
+                        health.reset();
+                    }
+                    self.perception.invalidate_sensor(&slot.entry)?;
+                    slot.active_gaps = slot.active_gaps.saturating_add(1);
+                    let zone = slot.entry.primary_zone.clone();
+                    let last = TimestampNs(slot.last_frame_ns);
+                    let _ = self.regions.drain_failed_sensor_region(
+                        &sid,
+                        SensorDisconnectReason::OperatorStopped.as_str(),
+                        now,
+                    )?;
+                    let receipt = self.storage.commit_coverage_and_liveness(
+                        &sid,
+                        &zone,
+                        CoverageStatus::NotObservable,
+                        SensorLivenessStatus::Offline,
+                        slot.active_gaps,
+                        last,
+                        now,
+                        self.regions.storage_ledger_cx(),
+                        self.regions.region_tree(),
+                    )?;
+                    self.broadcast_delta(
+                        receipt.commit_sequence,
+                        receipt.batch_digest,
+                        MeaningfulDeltaClass::CoverageLoss,
+                        DeltaPriority::High,
+                        format!("camera_stopped sensor={target}"),
+                    );
+                    coverage_gaps = coverage_gaps.saturating_add(1);
+                }
+            }
+            BoundedControlOp::StartCamera => {
+                if let Some(target) = cmd.target_camera_id.as_deref()
+                    && let Ok(sid) = SensorId::parse(target)
+                    && let Some(slot) = self.sensors.get_mut(&sid)
+                    && slot.state == SensorState::Stopped
+                {
+                    slot.state = SensorState::GapBackoff;
+                    slot.next_reconnect_ns = now_ns;
+                }
+            }
+            BoundedControlOp::SnapshotCamera => {
+                self.handle_snapshot_camera(cmd.target_camera_id.as_deref())?;
+            }
+            BoundedControlOp::ReloadManifest => {
+                self.handle_reload_manifest(&cmd.operation_id)?;
+            }
+            BoundedControlOp::ProbeDetect => {
+                self.handle_probe_detect(cmd.target_camera_id.as_deref())?;
+            }
+        }
+        Ok(coverage_gaps)
     }
 
     fn handle_snapshot_camera(
