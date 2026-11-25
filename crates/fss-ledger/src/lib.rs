@@ -8,6 +8,8 @@
 mod backend;
 mod batch_codec;
 mod combiner;
+/// Counterfactual branch overlay and live-intent recompilation (`FSS-108`, `fss-x4a.9.15`).
+pub mod counterfactual;
 mod cursor;
 mod durable;
 pub mod epochs;
@@ -22,6 +24,8 @@ mod oracle;
 mod recovery;
 mod repair;
 mod sealed_lineage;
+/// Negative-read phantom and SSI write-skew schedule corpus (`FSS-106`, `fss-x4a.9.13`).
+pub mod ssi_corpus;
 mod store_pin;
 mod witness;
 
@@ -42,6 +46,13 @@ pub use combiner::{
     IntentOutcome, LEDGER_COMMIT_COMBINER_ROUND_DOMAIN, LEDGER_COMMIT_INTENT_DOMAIN,
     MAX_COMBINER_ROUND_INTENTS, MAX_IDEMPOTENCY_HISTORY, MAX_INTENT_CHILDREN, MAX_INTENT_ID_BYTES,
     MAX_INTENT_READ_WITNESSES, MAX_INTENT_WRITES,
+};
+pub use counterfactual::{
+    BranchAuthorityContext, COUNTERFACTUAL_RECEIPT_MAGIC, COUNTERFACTUAL_RECEIPT_VERSION,
+    CounterfactualBranchOverlay, CounterfactualError, CounterfactualGuidance,
+    CounterfactualRecompileReceipt, LEDGER_COUNTERFACTUAL_RECEIPT_DOMAIN,
+    MAX_COUNTERFACTUAL_LABEL_BYTES, MAX_COUNTERFACTUAL_WIRE_BYTES, MAX_OVERLAY_DELTAS,
+    OverlayReadState, RecompileOutcome, RecompileRefusalReason, RecompileStrategy,
 };
 pub use cursor::{
     LEDGER_REPLAY_CURSOR_DOMAIN, LEDGER_REPLAY_CURSOR_MAGIC, LEDGER_REPLAY_CURSOR_VERSION,
@@ -108,6 +119,12 @@ pub use sealed_lineage::{
     ERR_LEDGER_SEALED_NAMESPACE_001, LINEAGE_WRITE_SEAL_DOMAIN, SEALED_LINEAGE_FAMILIES,
     SEALED_LINEAGE_OBJECT_PREFIX, first_sealed_lineage_delta, is_sealed_lineage_batch,
     is_sealed_lineage_delta, lineage_write_seal,
+};
+pub use ssi_corpus::{
+    LEDGER_SSI_CORPUS_RECEIPT_DOMAIN, MAX_CORPUS_CASES, MAX_CORPUS_LABEL_BYTES,
+    MAX_EXCLUDED_DIMENSIONS, MAX_SSI_CORPUS_WIRE_BYTES, SSI_CORPUS_MAGIC, SSI_CORPUS_VERSION,
+    ScheduleCaseResult, ScheduleCorpusReceipt, ScheduleVerdict, SsiCorpusError, SsiCorpusGuidance,
+    SsiCorpusRunner,
 };
 pub use store_pin::{
     STORE_PIN_DOMAIN, STORE_ROLE_AUTHORITY_LEDGER, STORE_ROLE_EFFECT_JOURNAL, pin_is_current,
