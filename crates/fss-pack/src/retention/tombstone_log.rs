@@ -41,8 +41,12 @@ pub struct ObjectTombstoneLog {
 }
 
 impl ObjectTombstoneLog {
-    /// Opens or creates `path`, replaying all CRC32C-verified tombstones and truncating any torn
-    /// trailing bytes deterministically.
+    /// Opens or creates `path`, replaying all CRC32C-verified tombstones.
+    ///
+    /// An incomplete trailing record is an interrupted append and is truncated. A complete
+    /// record with invalid framing, version, flags, or checksum fails closed without changing
+    /// the log: silently dropping it could make previously deleted evidence readable again.
+    /// Read failures also propagate without truncating deletion history.
     pub fn open(path: &Path, durability: DurabilityMode) -> Result<Self, PackError> {
         let mut file = OpenOptions::new()
             .create(true)
@@ -65,25 +69,31 @@ impl ObjectTombstoneLog {
             if remaining < OBJECT_TOMBSTONE_RECORD_LEN as u64 {
                 break;
             }
-            if read_exact_at_bounded(&file, offset, &mut record).is_err() {
-                break;
-            }
+            read_exact_at_bounded(&file, offset, &mut record)?;
             if record[0..4] != OBJECT_TOMBSTONE_MAGIC {
-                break;
+                return Err(PackError::CorruptCatalog {
+                    detail: format!("invalid object tombstone magic at offset {offset}"),
+                });
             }
             let version = u16::from_be_bytes([record[4], record[5]]);
             if version != OBJECT_TOMBSTONE_VERSION {
                 return Err(PackError::CorruptCatalog {
-                    detail: format!("unsupported object tombstone version {version}"),
+                    detail: format!(
+                        "unsupported object tombstone version {version} at offset {offset}"
+                    ),
                 });
             }
             let flags = u16::from_be_bytes([record[6], record[7]]);
             if flags != 0 {
-                break;
+                return Err(PackError::CorruptCatalog {
+                    detail: format!("unsupported object tombstone flags {flags} at offset {offset}"),
+                });
             }
             let stored_crc = u32::from_be_bytes([record[72], record[73], record[74], record[75]]);
             if crc32c(&record[..72]) != stored_crc {
-                break;
+                return Err(PackError::CorruptCatalog {
+                    detail: format!("object tombstone checksum mismatch at offset {offset}"),
+                });
             }
             let mut deleted_sha = [0_u8; 32];
             deleted_sha.copy_from_slice(&record[8..40]);

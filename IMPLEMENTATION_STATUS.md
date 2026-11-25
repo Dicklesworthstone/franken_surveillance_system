@@ -2,8 +2,41 @@
 
 **As of:** 2026-11-25 America/New_York (dated feature sections retain their original verification scope)
 **Project state:** prior retained snapshots are locally qualified on `darwin-arm64` across policy, scale, crash-recovery, daemon soak, lab, media, archive, privacy, model, geometry, threat, agent, adapter-loopback, and macOS parity lanes; multi-target DSR release matrix (`linux-x86_64`, `windows-x86_64`) and physical hardware-tuple field qualification remain open
-**Current change qualification:** the daemon and dashboard changes below passed source review and pinned Rust formatting; native test execution remains unverified. Prior receipts do not qualify these new bytes.
+**Current change qualification:** each dated section below states its own verification boundary. The latest deletion-history change has source review but no native execution; the unavailable execution host prevents claiming tests, formatting, Clippy, or qualification. Prior receipts do not qualify new bytes.
 **Release authority:** repository-owned local qualification (`scripts/qualify.sh`) and retained DSR receipts, not hosted CI
+
+## Deletion-history corruption recovery — 2026-11-25
+
+Pack storage now refuses to open a deletion journal containing a complete record
+with invalid magic, version, flags, or CRC32C. Positional-read failures propagate
+without truncating the journal. Previously these failures could discard the
+corrupt record and every subsequent deletion; rebuilding the content index could
+then make logically deleted source bytes readable again.
+
+Only an incomplete trailing record remains eligible for automatic truncation.
+Valid records retain their first deletion reason, and retrying an interrupted
+append resumes at the verified boundary. The durable FSTD v1 record format and
+successful-read semantics are unchanged. A corrupt complete record requires
+explicit repair from verified evidence rather than silent recovery.
+
+Four native regression tests cover 18 complete-record corruptions, all 75
+incomplete-tail lengths with append/reopen and duplicate-reason checks, corruption
+followed by an incomplete tail, and a real PackStore reopen that must refuse
+instead of resurrecting source bytes. This addresses the deletion-preservation
+boundary in INV-025 / `fss-x4a.30.1.25`; the broader invariant remains open.
+
+**Verification boundary:** source/API review and changed-content consistency
+checks were performed through the GitHub connector. Native tests, rustfmt,
+Clippy, and full local qualification have not run for these changes because the
+execution host became unavailable during exact pinned-toolchain provisioning.
+No prior receipt qualifies these bytes.
+
+Reproduce when a native execution host is available:
+
+```sh
+cargo +nightly-2026-08-31 test --locked --offline -p fss-pack --test tombstone_recovery_contract -- --test-threads=1
+cargo +nightly-2026-08-31 test --locked --offline -p fss-pack --test retention_compaction_contract -- --test-threads=1
+```
 
 ## Daemon follow continuity and dashboard delivery — 2026-11-25
 
