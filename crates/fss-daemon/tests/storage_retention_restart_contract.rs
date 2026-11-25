@@ -685,3 +685,350 @@ fn foreign_catalog_source_and_metadata_aliases_block_expiry_until_retired() -> T
     }
     Ok(())
 }
+
+#[test]
+fn cancelled_gop_flush_keeps_source_frames_for_an_authorized_retry() -> TestResult {
+    let dir = TempDirGuard::new("cancelled-gop")?;
+    let manifest = manifest(1_048_576)?;
+    let mut regions =
+        DaemonRegionTree::initialize(&manifest, "principal:retention-test", TimestampNs(0))?;
+    let mut storage = StorageEngine::open(&manifest, Some(dir.path()))?;
+    let source_a = frame(SENSOR_A, 1, 1_000_000, 128)?;
+    let source_b = frame(SENSOR_A, 2, 2_000_000, 128)?;
+    for source in [&source_a, &source_b] {
+        assert!(
+            storage
+                .ingest_frame(
+                    Arc::clone(source),
+                    CameraAdapterKind::Synthetic,
+                    3,
+                    regions.storage_ledger_cx(),
+                    regions.region_tree(),
+                )?
+                .is_none()
+        );
+    }
+    regions.request_shutdown(TimestampNs(3_000_000))?;
+    let sensor_id = SensorId::parse(SENSOR_A)?;
+    assert!(matches!(
+        storage.flush_camera_gop(
+            &sensor_id,
+            CameraAdapterKind::Synthetic,
+            regions.storage_ledger_cx(),
+            regions.region_tree(),
+        ),
+        Err(DaemonError::Combiner(
+            fss_projection_store::CombinerError::Cancelled
+        ))
+    ));
+    assert_eq!(storage.head_snapshot()?.commit_sequence, 0);
+
+    let fresh_regions =
+        DaemonRegionTree::initialize(&manifest, "principal:retention-test", TimestampNs(4_000_000))?;
+    let receipt = storage.flush_camera_gop(
+        &sensor_id,
+        CameraAdapterKind::Synthetic,
+        fresh_regions.storage_ledger_cx(),
+        fresh_regions.region_tree(),
+    )?;
+    assert!(receipt.is_some(), "the cancelled flush must retain its source GOP");
+    assert_eq!(storage.retention_candidates().len(), 1);
+    let candidate = storage
+        .retention_candidates()
+        .values()
+        .next()
+        .ok_or("retry did not retain a GOP")?;
+    let source = storage.pack_store().read_verified(&media_digest(candidate)?)?;
+    let chunk = fss_pack::MediaChunkView::parse(&source)?;
+    assert_eq!(chunk.frame_count(), 2);
+    assert_eq!(chunk.frame_bytes_verified(0)?, source_a.encoded_payload.as_slice());
+    assert_eq!(chunk.frame_bytes_verified(1)?, source_b.encoded_payload.as_slice());
+    assert!(
+        storage
+            .flush_camera_gop(
+                &sensor_id,
+                CameraAdapterKind::Synthetic,
+                fresh_regions.storage_ledger_cx(),
+                fresh_regions.region_tree(),
+            )?
+            .is_none(),
+        "a successful retry must consume the buffer exactly once"
+    );
+    assert_eq!(storage.shutdown_and_flush()?.verified_batches, 1);
+    Ok(())
+}
+
+#[test]
+fn catalog_conflict_after_gop_commit_never_reappends_the_import() -> TestResult {
+    let dir = TempDirGuard::new("catalog-conflict")?;
+    let manifest = manifest(1_048_576)?;
+    let regions =
+        DaemonRegionTree::initialize(&manifest, "principal:retention-test", TimestampNs(0))?;
+    let mut storage = StorageEngine::open(&manifest, Some(dir.path()))?;
+    // Another publisher occupies the exact initially reserved ID after the daemon opened.
+    let foreign_bytes = b"independent publication";
+    let foreign_digest = ContentDigest::sha256(foreign_bytes);
+    let _ = storage.pack_store().append_batch(&[fss_pack::PackObjectInput::new(
+        fss_pack::PACK_KIND_METADATA,
+        0,
+        foreign_bytes,
+    )])?;
+    let _ = storage.pack_store().publish_root(VirtualRootRecord::new(
+        "gop:sensor_retention-a:1:1",
+        foreign_digest,
+        "independent-publication",
+        1,
+        foreign_bytes.len() as u64,
+        1,
+        TimestampNs(0),
+        None,
+    )?)?;
+
+    assert!(
+        storage
+            .ingest_frame(
+                frame(SENSOR_A, 1, 1_000_000, 128)?,
+                CameraAdapterKind::Synthetic,
+                1,
+                regions.storage_ledger_cx(),
+                regions.region_tree(),
+            )
+            .is_err()
+    );
+    let committed = storage.head_snapshot()?;
+    assert_eq!(committed.commit_sequence, 1, "the failure follows canonical commit");
+    let sensor_id = SensorId::parse(SENSOR_A)?;
+    for _ in 0..2 {
+        assert!(
+            storage
+                .flush_camera_gop(
+                    &sensor_id,
+                    CameraAdapterKind::Synthetic,
+                    regions.storage_ledger_cx(),
+                    regions.region_tree(),
+                )
+                .is_err(),
+            "an unresolved catalog conflict must remain explicit"
+        );
+        assert_eq!(storage.head_snapshot()?.history_root, committed.history_root);
+        assert_eq!(storage.head_snapshot()?.commit_sequence, committed.commit_sequence);
+    }
+    assert!(storage.retention_candidates().is_empty());
+    assert!(matches!(
+        storage.shutdown_and_flush(),
+        Err(DaemonError::ShutdownViolation { .. })
+    ));
+    assert!(
+        StorageEngine::open(&manifest, Some(dir.path())).is_err(),
+        "recovery must refuse a colliding live descriptor instead of hiding the import"
+    );
+    Ok(())
+}
+
+#[test]
+fn restart_completes_missing_gop_catalog_root_without_another_canonical_commit() -> TestResult {
+    let dir = TempDirGuard::new("missing-root")?;
+    let manifest = manifest(1_048_576)?;
+    let regions =
+        DaemonRegionTree::initialize(&manifest, "principal:retention-test", TimestampNs(0))?;
+    let mut storage = StorageEngine::open(&manifest, Some(dir.path()))?;
+    let journal = dir.path().join("objects/roots/catalog.fssr");
+    let previous_catalog_len = fs::metadata(&journal)?.len();
+    let mut candidate = ingest(&mut storage, &regions, SENSOR_A, 1, 1_000_000, 128)?;
+    let digest = media_digest(&candidate)?;
+    let original = storage.pack_store().read_verified(&digest)?;
+    let mut expected_root = storage
+        .pack_store()
+        .get_root(&candidate.import_id)?
+        .ok_or("committed GOP root is missing")?
+        .record;
+    let committed = storage.head_snapshot()?;
+    storage.shutdown_and_flush()?;
+    // Without a catalog descriptor, the canonical import alone cannot prove this was not a
+    // legacy GOP with an in-memory hold. Recovery keeps that uncertainty explicitly pinned.
+    expected_root.kind = "media-gop-v1".to_owned();
+    candidate
+        .held_by
+        .push("recovery:legacy-hold-state-unverified".to_owned());
+
+    // Retain the durable packs and ledger but remove just the catalog publication tail:
+    // the exact on-disk boundary of a crash after ledger fsync and before root append.
+    assert!(!dir.path().join("objects/roots/catalog.snap").exists());
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&journal)?
+        .set_len(previous_catalog_len)?;
+    fs::remove_dir_all(dir.path().join(PROJECTION_SUBDIR))?;
+
+    for _ in 0..2 {
+        let reopened = StorageEngine::open(&manifest, Some(dir.path()))?;
+        assert_eq!(reopened.head_snapshot()?.history_root, committed.history_root);
+        assert_eq!(reopened.head_snapshot()?.commit_sequence, committed.commit_sequence);
+        assert_eq!(reopened.retention_candidates().len(), 1);
+        assert_eq!(
+            reopened.retention_candidates().get(&candidate.import_id),
+            Some(&candidate)
+        );
+        assert_eq!(reopened.pack_store().read_verified(&digest)?, original);
+        let recovered_root = reopened
+            .pack_store()
+            .get_root(&candidate.import_id)?
+            .ok_or("recovery did not complete the catalog publication")?;
+        assert_eq!(recovered_root.record, expected_root);
+        assert!(matches!(recovered_root.status, RootStatus::Live));
+        assert_eq!(reopened.pack_store().live_root_count()?, 1);
+        assert_eq!(reopened.shutdown_and_flush()?.verified_batches, 1);
+    }
+    Ok(())
+}
+
+#[test]
+fn missing_catalog_tail_does_not_revive_canonically_retired_footage() -> TestResult {
+    let dir = TempDirGuard::new("retired-missing-root")?;
+    let manifest = manifest(1_048_576)?;
+    let regions =
+        DaemonRegionTree::initialize(&manifest, "principal:retention-test", TimestampNs(0))?;
+    let mut storage = StorageEngine::open(&manifest, Some(dir.path()))?;
+    let journal = dir.path().join("objects/roots/catalog.fssr");
+    let previous_catalog_len = fs::metadata(&journal)?.len();
+    let candidate = ingest(&mut storage, &regions, SENSOR_A, 1, 1_000_000, 128)?;
+    let digest = media_digest(&candidate)?;
+    let maintenance = storage.run_maintenance_tick(
+        regions.storage_ledger_cx(),
+        regions.region_tree(),
+        EXPIRED_AT,
+        false,
+    )?;
+    assert_eq!(maintenance.evicted_imports, 1);
+    let retired = storage.head_snapshot()?;
+    storage.shutdown_and_flush()?;
+    assert!(!dir.path().join("objects/roots/catalog.snap").exists());
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&journal)?
+        .set_len(previous_catalog_len)?;
+    fs::remove_dir_all(dir.path().join(PROJECTION_SUBDIR))?;
+
+    let reopened = StorageEngine::open(&manifest, Some(dir.path()))?;
+    assert_eq!(reopened.head_snapshot()?.history_root, retired.history_root);
+    assert!(reopened.retention_candidates().is_empty());
+    assert!(reopened.projection().snapshot_latest().get_footage_import(&digest).is_none());
+    assert!(reopened.pack_store().object_tombstone(&digest)?.is_some());
+    assert!(reopened.pack_store().lookup(&digest)?.is_none());
+    assert_eq!(reopened.pack_store().live_root_count()?, 0);
+    reopened.shutdown_and_flush()?;
+    Ok(())
+}
+
+#[test]
+fn storage_shutdown_refuses_unpublished_buffered_source() -> TestResult {
+    let dir = TempDirGuard::new("unflushed-shutdown")?;
+    let manifest = manifest(1_048_576)?;
+    let regions =
+        DaemonRegionTree::initialize(&manifest, "principal:retention-test", TimestampNs(0))?;
+    let mut storage = StorageEngine::open(&manifest, Some(dir.path()))?;
+    assert!(
+        storage
+            .ingest_frame(
+                frame(SENSOR_A, 1, 1_000_000, 128)?,
+                CameraAdapterKind::Synthetic,
+                3,
+                regions.storage_ledger_cx(),
+                regions.region_tree(),
+            )?
+            .is_none()
+    );
+    assert!(matches!(
+        storage.shutdown_and_flush(),
+        Err(DaemonError::ShutdownViolation { .. })
+    ));
+    Ok(())
+}
+
+#[test]
+fn missing_duplicate_gop_root_is_not_revived_by_a_later_same_content_import() -> TestResult {
+    let dir = TempDirGuard::new("duplicate-missing-root")?;
+    let manifest = manifest(1_048_576)?;
+    let regions =
+        DaemonRegionTree::initialize(&manifest, "principal:retention-test", TimestampNs(0))?;
+    let mut storage = StorageEngine::open(&manifest, Some(dir.path()))?;
+    let journal = dir.path().join("objects/roots/catalog.fssr");
+    let previous_catalog_len = fs::metadata(&journal)?.len();
+    let older = ingest(&mut storage, &regions, SENSOR_A, 1, 1_000_000, 128)?;
+    let newer = ingest(&mut storage, &regions, SENSOR_A, 1, 1_000_000, 128)?;
+    let digest = media_digest(&newer)?;
+    assert_eq!(media_digest(&older)?, digest);
+    assert_ne!(older.import_id, newer.import_id);
+    let committed = storage.head_snapshot()?;
+    assert_eq!(committed.commit_sequence, 2);
+    storage.shutdown_and_flush()?;
+
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&journal)?
+        .set_len(previous_catalog_len)?;
+    fs::remove_dir_all(dir.path().join(PROJECTION_SUBDIR))?;
+    let reopened = StorageEngine::open(&manifest, Some(dir.path()))?;
+    assert_eq!(reopened.head_snapshot()?.history_root, committed.history_root);
+    assert_eq!(reopened.retention_candidates().len(), 1);
+    assert!(reopened.retention_candidates().contains_key(&newer.import_id));
+    assert!(reopened.pack_store().get_root(&older.import_id)?.is_none());
+    assert!(matches!(
+        reopened
+            .pack_store()
+            .get_root(&newer.import_id)?
+            .ok_or("current import publication was not recovered")?
+            .status,
+        RootStatus::Live
+    ));
+    let snapshot = reopened.projection().snapshot_latest();
+    let current = snapshot
+        .get_footage_import(&digest)
+        .ok_or("current import disappeared during root recovery")?;
+    assert_eq!(current.committed_sequence, 2);
+    assert_eq!(reopened.shutdown_and_flush()?.verified_batches, 2);
+    Ok(())
+}
+
+#[test]
+fn gop_recovery_preserves_a_superseded_root_with_an_active_import() -> TestResult {
+    let dir = TempDirGuard::new("superseded-root")?;
+    let manifest = manifest(1_048_576)?;
+    let regions =
+        DaemonRegionTree::initialize(&manifest, "principal:retention-test", TimestampNs(0))?;
+    let mut storage = StorageEngine::open(&manifest, Some(dir.path()))?;
+    let candidate = ingest(&mut storage, &regions, SENSOR_A, 1, 1_000_000, 128)?;
+    let mut replacement = storage
+        .pack_store()
+        .get_root(&candidate.import_id)?
+        .ok_or("original GOP root is missing")?
+        .record;
+    replacement.root_id = "external:replacement".to_owned();
+    replacement.generation += 1;
+    let _ = storage
+        .pack_store()
+        .supersede_root(&candidate.import_id, replacement.clone())?;
+    let committed = storage.head_snapshot()?;
+    storage.shutdown_and_flush()?;
+
+    let reopened = StorageEngine::open(&manifest, Some(dir.path()))?;
+    assert_eq!(reopened.head_snapshot()?.history_root, committed.history_root);
+    assert!(reopened.retention_candidates().is_empty());
+    assert!(matches!(
+        reopened
+            .pack_store()
+            .get_root(&candidate.import_id)?
+            .ok_or("superseded catalog history was removed")?
+            .status,
+        RootStatus::Superseded { .. }
+    ));
+    let replacement_entry = reopened
+        .pack_store()
+        .get_root(&replacement.root_id)?
+        .ok_or("replacement root disappeared during recovery")?;
+    assert_eq!(replacement_entry.record, replacement);
+    assert!(matches!(replacement_entry.status, RootStatus::Live));
+    assert_eq!(reopened.pack_store().live_root_count()?, 1);
+    assert_eq!(reopened.shutdown_and_flush()?.verified_batches, 1);
+    Ok(())
+}

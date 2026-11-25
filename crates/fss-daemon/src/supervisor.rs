@@ -340,39 +340,57 @@ impl DaemonSupervisor {
         let drain_start = Instant::now();
         let now = TimestampNs(self.last_now_ns.saturating_add(1_000));
 
-        if !self.storage.is_quota_pinned() {
-            let pairs: Vec<(SensorId, crate::manifest::CameraAdapterKind)> = self
-                .sensors
-                .iter()
-                .map(|(id, slot)| (id.clone(), slot.entry.adapter))
-                .collect();
-            for (sid, adapter) in pairs {
-                let _ = self.storage.flush_camera_gop(
-                    &sid,
-                    adapter,
-                    self.regions.storage_ledger_cx(),
-                    self.regions.region_tree(),
-                );
+        let mut first_error = None;
+        let cameras: Vec<(SensorId, CameraAdapterKind, usize)> = self
+            .sensors
+            .iter()
+            .map(|(id, slot)| (id.clone(), slot.entry.adapter, slot.entry.ring_max_frames))
+            .collect();
+        // Drain only already admitted frames, including a manually paused ingest cursor.
+        // Storage authority must remain live until the bounded drain and GOP flush finish.
+        for (sid, adapter, max_frames) in cameras {
+            let (_, drain_error) = self.ingest_camera_ring_step(&sid, max_frames);
+            if first_error.is_none() {
+                first_error = drain_error;
+            }
+            if let Err(err) = self.storage.flush_camera_gop(
+                &sid,
+                adapter,
+                self.regions.storage_ledger_cx(),
+                self.regions.region_tree(),
+            ) {
+                first_error.get_or_insert(err);
             }
         }
 
-        self.regions.request_shutdown(now)?;
+        if let Err(err) = self.regions.request_shutdown(now) {
+            first_error.get_or_insert(err);
+        }
         for slot in self.sensors.values_mut() {
             slot.driver.disconnect();
             slot.state = SensorState::Draining;
         }
         self.perception.request_cancellation();
 
-        if let Some(server) = self.control.take() {
-            server.shutdown()?;
+        if let Some(server) = self.control.take()
+            && let Err(err) = server.shutdown()
+        {
+            first_error.get_or_insert(err);
         }
         if let Some(shared) = self.control_shared.take() {
             shared.request_shutdown();
             drop(shared);
         }
 
-        let storage_summary = self.storage.shutdown_and_flush()?;
-        let region_proof = self.regions.drain_and_finalize(now)?;
+        // Attempt every cleanup phase before returning the earliest failure. Neither an
+        // ingest error nor a storage shutdown error may bypass region finalization.
+        let storage_result = self.storage.shutdown_and_flush();
+        let region_result = self.regions.drain_and_finalize(now);
+        if let Some(err) = first_error {
+            return Err(err);
+        }
+        let storage_summary = storage_result?;
+        let region_proof = region_result?;
         let drain_duration_ms =
             u64::try_from(drain_start.elapsed().as_millis()).unwrap_or(u64::MAX);
         let receipt_digest = compute_shutdown_digest(

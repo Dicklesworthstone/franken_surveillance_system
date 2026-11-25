@@ -5,9 +5,10 @@
 //!
 //! Semantic plane: `"authority"`.
 
+mod gop;
 mod retention;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -15,23 +16,22 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use fss_core::{
-    CanonicalEncode, CaptureInterval, ClockBasis, ContentDigest, EventHypothesis, EventState,
-    EvidenceDelta, ObjectId, Plane, RegionTree, SensorId, TimestampNs,
+    CanonicalEncode, CaptureInterval, ContentDigest, EventHypothesis, EventState, EvidenceDelta,
+    ObjectId, Plane, RegionTree, SensorId, TimestampNs,
 };
 use fss_ipc::ActiveScrubStatus;
 use fss_ledger::{EpochLedgerConfig, IncompleteTailPolicy, MerkleEpochLedger};
 use fss_pack::{
-    BackgroundScrubber, CapacityPressure, CompactionPolicy, MEDIA_FRAME_FLAG_DISCONTINUITY,
-    MEDIA_FRAME_FLAG_KEYFRAME, MediaChunkBuilder, PACK_KIND_MEDIA_CHUNK, PACK_KIND_METADATA,
+    BackgroundScrubber, CapacityPressure, CompactionPolicy, PACK_KIND_MEDIA_CHUNK, PACK_KIND_METADATA,
     PackConfig, PackStore, RetentionCandidate, RetentionEvictionBatch, RetentionPlanOutcome,
-    RetentionRingConfig, ScrubBudget, VirtualRootRecord, plan_retention,
+    RetentionRingConfig, ScrubBudget, plan_retention,
 };
 use fss_projection_store::{
     CommitCombiner, CommitCombinerConfig, CommitProposal, CoverageStatus, CoverageWitnessPayload,
     DoctorScrubReceipt, EventRevisionPayload, FAMILY_COVERAGE_WITNESS, FAMILY_EVENT_REVISION,
-    FAMILY_FOOTAGE_IMPORT, FAMILY_SENSOR_LIVENESS, FootageImportPayload, LedgerPackProjectionSink,
-    MvccProjectionStore, OwnedPackObject, PackStorePayloadResolver, ProjectionRecordPayload,
-    ProjectionStore, SensorLivenessPayload, SensorLivenessStatus,
+    FAMILY_SENSOR_LIVENESS, LedgerPackProjectionSink, MvccProjectionStore, OwnedPackObject,
+    PackStorePayloadResolver, ProjectionRecordPayload, ProjectionStore, SensorLivenessPayload,
+    SensorLivenessStatus,
 };
 use fss_reference::agent_orient::projection_bridge::PROJECTION_SUBDIR;
 use fss_reference::migration::DeploymentLayoutV2;
@@ -42,12 +42,12 @@ use fss_runtime::authority::AuthorityCx;
 
 use crate::control::ForwardBatchWriter;
 use crate::error::DaemonError;
-use crate::manifest::{CameraAdapterKind, SiteManifest};
+use crate::manifest::SiteManifest;
 use crate::sensor::CameraFrame;
 use crate::storage_types::{
-    CombinerForwardWriter, map_footage_adapter, map_scrub_verdict, sanitize_object_part,
-    scrub_report_to_ipc_status,
+    CombinerForwardWriter, map_scrub_verdict, sanitize_object_part, scrub_report_to_ipc_status,
 };
+use gop::{PendingGopPublication, recover_unpublished_gops};
 use retention::{RetainedRoot, RetiredRoot, recover_retained_roots};
 
 pub use crate::storage_types::{
@@ -71,6 +71,8 @@ pub struct StorageEngine {
     candidate_roots: BTreeMap<String, RetainedRoot>,
     pending_deletions: Vec<RetiredRoot>,
     gop_buffers: BTreeMap<SensorId, Vec<Arc<CameraFrame>>>,
+    pending_gop_publications: BTreeMap<SensorId, PendingGopPublication>,
+    indeterminate_gop_commits: BTreeSet<SensorId>,
     scrubber: BackgroundScrubber,
     scrub_budget_bytes: u64,
     last_scrub_status: ActiveScrubStatus,
@@ -143,11 +145,7 @@ impl StorageEngine {
             EpochLedgerConfig::default(),
             IncompleteTailPolicy::Reject,
         )?;
-        let initial_gens: BTreeMap<ObjectId, u64> = ledger
-            .snapshot_objects()
-            .into_iter()
-            .map(|(id, rev)| (id, rev.generation))
-            .collect();
+        let canonical_objects = ledger.snapshot_objects();
 
         let resolver = PackStorePayloadResolver::new(&pack_store);
         let projection = Arc::new(MvccProjectionStore::open_or_rebuild(
@@ -155,6 +153,11 @@ impl StorageEngine {
             &ledger,
             &resolver,
         )?);
+        recover_unpublished_gops(&pack_store, &canonical_objects, &projection, &ledger)?;
+        let initial_gens: BTreeMap<ObjectId, u64> = canonical_objects
+            .into_iter()
+            .map(|(id, rev)| (id, rev.generation))
+            .collect();
         let effects_path =
             root_dir.join(fss_reference::reference_deployment::RELATIVE_PATH_EFFECTS);
         if let Some(effects_parent) = effects_path.parent() {
@@ -209,6 +212,8 @@ impl StorageEngine {
             candidate_roots,
             pending_deletions,
             gop_buffers: BTreeMap::new(),
+            pending_gop_publications: BTreeMap::new(),
+            indeterminate_gop_commits: BTreeSet::new(),
             scrubber: BackgroundScrubber::new(),
             scrub_budget_bytes: manifest.scrub_budget_bytes_per_tick,
             last_scrub_status: ActiveScrubStatus::Idle,
@@ -293,179 +298,6 @@ impl StorageEngine {
     #[must_use]
     pub fn retention_candidates(&self) -> &BTreeMap<String, RetentionCandidate> {
         &self.candidates
-    }
-
-    /// Buffers one frame toward the camera's coarse-grained `FSMC` GOP chunk, flushing once
-    /// `gop_frames` is reached or a new stream generation begins.
-    pub fn ingest_frame(
-        &mut self,
-        frame: Arc<CameraFrame>,
-        adapter: CameraAdapterKind,
-        gop_frames: usize,
-        cx: &AuthorityCx,
-        tree: &RegionTree,
-    ) -> Result<Option<StorageCommitReceipt>, DaemonError> {
-        if self.is_quota_pinned() {
-            return Err(DaemonError::StorageQuotaPinned {
-                pinned_bytes: self.pinned_bytes.load(Ordering::Acquire),
-                cap_bytes: self.retention_config.max_total_deployment_bytes,
-            });
-        }
-        let sensor_id = frame.sensor_id.clone();
-        let gen_changed = self
-            .gop_buffers
-            .get(&sensor_id)
-            .and_then(|buf| buf.first())
-            .is_some_and(|first| first.stream_generation != frame.stream_generation);
-        let mut receipt = if gen_changed {
-            self.flush_camera_gop(&sensor_id, adapter, cx, tree)?
-        } else {
-            None
-        };
-        let buf = self.gop_buffers.entry(sensor_id.clone()).or_default();
-        buf.push(frame);
-        if buf.len() >= gop_frames.max(1) {
-            receipt = self.flush_camera_gop(&sensor_id, adapter, cx, tree)?;
-        }
-        Ok(receipt)
-    }
-
-    /// Packs any buffered frames for `sensor_id` into one `FSMC` `MediaChunk` and commits it
-    /// atomically through `CommitCombiner` (`PackStore` + `MerkleEpochLedger` + `MvccProjectionStore`).
-    pub fn flush_camera_gop(
-        &mut self,
-        sensor_id: &SensorId,
-        adapter: CameraAdapterKind,
-        cx: &AuthorityCx,
-        tree: &RegionTree,
-    ) -> Result<Option<StorageCommitReceipt>, DaemonError> {
-        let Some(frames) = self.gop_buffers.remove(sensor_id) else {
-            return Ok(None);
-        };
-        if frames.is_empty() {
-            return Ok(None);
-        }
-        if self.is_quota_pinned() {
-            self.gop_buffers.insert(sensor_id.clone(), frames);
-            return Err(DaemonError::StorageQuotaPinned {
-                pinned_bytes: self.pinned_bytes.load(Ordering::Acquire),
-                cap_bytes: self.retention_config.max_total_deployment_bytes,
-            });
-        }
-
-        let first = &frames[0];
-        let mut builder = MediaChunkBuilder::new(
-            first.stream_id.as_str(),
-            first.codec,
-            ClockBasis::HostMonotonic,
-        )?;
-        for frame in &frames {
-            let mut flags = 0_u16;
-            if frame.is_keyframe {
-                flags |= MEDIA_FRAME_FLAG_KEYFRAME;
-            }
-            if frame.discontinuity_before {
-                flags |= MEDIA_FRAME_FLAG_DISCONTINUITY;
-            }
-            let _ = builder.push_frame(
-                frame.sequence,
-                TimestampNs(frame.host_receive_ns),
-                flags,
-                &frame.encoded_payload,
-            )?;
-        }
-        let chunk = builder.build()?;
-        let interval = CaptureInterval::new(chunk.window_start_ns, chunk.window_end_ns)?;
-        let import_payload = ProjectionRecordPayload::FootageImport(FootageImportPayload {
-            import_id: chunk.chunk_digest,
-            adapter_kind: map_footage_adapter(adapter),
-            sensor_id: sensor_id.clone(),
-            stream_id: first.stream_id.clone(),
-            capture_interval: interval,
-            manifest_digest: chunk.chunk_digest,
-            capsule_count: chunk.frame_count as u64,
-            total_bytes: chunk.bytes.len() as u64,
-            adapter_id: format!("adapter:{}", adapter.as_str()),
-            adapter_generation: format!("gen:{}", first.stream_generation),
-            completed: true,
-        });
-        let proj_bytes = import_payload.encode_bytes()?;
-        let proj_digest = ContentDigest::sha256(&proj_bytes);
-        let total_accounted = (chunk.bytes.len() as u64).saturating_add(proj_bytes.len() as u64);
-        let media_bytes = chunk.bytes.len() as u64;
-
-        let chunk_seq = self.alloc_chunk_seq();
-        let root_id = format!(
-            "gop:{}:{}:{chunk_seq}",
-            sanitize_object_part(sensor_id.as_str()),
-            first.stream_generation
-        );
-        let object_id = ObjectId::parse(format!("obj:footage:{root_id}"))?;
-        let (prior_gen, new_gen) = self.next_object_generation(&object_id)?;
-        let delta = EvidenceDelta {
-            delta_id: format!("delta:footage:{chunk_seq}"),
-            family: FAMILY_FOOTAGE_IMPORT.to_owned(),
-            object_id: object_id.clone(),
-            prior_generation: prior_gen,
-            new_generation: new_gen,
-            validity: interval,
-            plane: Plane::Authority,
-            payload_digest: proj_digest,
-            witness_digest: Some(chunk.chunk_digest),
-            operation_id: None,
-        };
-        let proposal = CommitProposal {
-            request_digest: chunk.chunk_digest,
-            sensor_scope: sensor_id.as_str().to_owned(),
-            objects: vec![
-                OwnedPackObject::with_digest(
-                    PACK_KIND_MEDIA_CHUNK,
-                    0,
-                    chunk.bytes,
-                    chunk.chunk_digest,
-                ),
-                OwnedPackObject::with_digest(PACK_KIND_METADATA, 0, proj_bytes, proj_digest),
-            ],
-            deltas: vec![delta],
-            batch_id_prefix: format!("gop-{chunk_seq}"),
-        };
-        let committed = self.combiner.submit_with_authority(cx, tree, proposal)?;
-        self.record_object_generation(object_id, new_gen)?;
-
-        let root_record = VirtualRootRecord::new(
-            root_id.clone(),
-            chunk.chunk_digest,
-            "media-gop-v2",
-            chunk.frame_count as u64,
-            total_accounted,
-            1,
-            chunk.window_end_ns,
-            Some(proj_digest),
-        )?;
-        let _ = self.pack_store.publish_root(root_record)?;
-        self.candidate_roots.insert(
-            root_id.clone(),
-            RetainedRoot {
-                media_digest: chunk.chunk_digest,
-                metadata_digest: proj_digest,
-                legacy_hold_state: false,
-            },
-        );
-        self.candidates.insert(
-            root_id.clone(),
-            RetentionCandidate {
-                import_id: root_id,
-                sensor_id: sensor_id.as_str().to_owned(),
-                capture_end_ns: chunk.window_end_ns,
-                byte_size: media_bytes,
-                object_digests: vec![chunk.chunk_digest],
-                is_derived_proxy: false,
-                held_by: Vec::new(),
-                active_obligation_ids: Vec::new(),
-                active_event_ids: Vec::new(),
-            },
-        );
-        Ok(Some(receipt_from_coalesced(committed)))
     }
 
     /// Atomically commits paired `coverage_witness` and `sensor_liveness` authority deltas.
@@ -814,6 +646,23 @@ impl StorageEngine {
     /// emits a verified ledger checkpoint, verifies the full Merkle chain from genesis, and
     /// compacts the MVCC projection snapshot.
     pub fn shutdown_and_flush(self) -> Result<StorageShutdownSummary, DaemonError> {
+        let buffered = self
+            .gop_buffers
+            .values()
+            .filter(|frames| !frames.is_empty())
+            .count();
+        if buffered != 0
+            || !self.pending_gop_publications.is_empty()
+            || !self.indeterminate_gop_commits.is_empty()
+        {
+            return Err(DaemonError::ShutdownViolation {
+                detail: format!(
+                    "unresolved source publication: buffered_cameras={buffered} pending_roots={} indeterminate_commits={}; flush or reconcile before shutdown",
+                    self.pending_gop_publications.len(),
+                    self.indeterminate_gop_commits.len()
+                ),
+            });
+        }
         let _ = self.combiner.shutdown()?;
         let combiner = Arc::try_unwrap(self.combiner).map_err(|_| DaemonError::ShutdownViolation {
             detail: "CommitCombiner still referenced during storage shutdown (stop ControlPlaneServer first)".to_owned(),

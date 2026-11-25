@@ -753,54 +753,88 @@ impl DaemonSupervisor {
         let mut perception_batch: Vec<Arc<CameraFrame>> = Vec::new();
         let mut frames_committed = 0_u64;
         for sid in sensor_ids {
-            let (ingest_frames, adapter, gop_frames) = {
+            let (ingest_enabled, batch_size) = {
                 let Some(slot) = self.sensors.get_mut(sid) else {
                     continue;
                 };
                 let (perc_frames, _) = slot.ring.read_for_cursor(&mut slot.perception_cursor, 8);
                 slot.frames_decoded = slot.frames_decoded.saturating_add(perc_frames.len() as u64);
                 perception_batch.extend(perc_frames);
-
                 let _ = slot.ring.read_for_cursor(&mut slot.preview_cursor, 16);
-
-                let ingest_frames = if !slot.ingest_paused && !self.storage.is_quota_pinned() {
-                    let (frames, _) = slot
-                        .ring
-                        .read_for_cursor(&mut slot.ingest_cursor, slot.entry.gop_frames.max(8));
-                    frames
-                } else {
-                    Vec::new()
-                };
-
-                let min_seq = slot
-                    .ingest_cursor
-                    .next_sequence
-                    .min(slot.perception_cursor.next_sequence)
-                    .min(slot.preview_cursor.next_sequence);
-                slot.ring.reclaim_consumed_before(min_seq);
-                (ingest_frames, slot.entry.adapter, slot.entry.gop_frames)
+                (
+                    !slot.ingest_paused && !self.storage.is_quota_pinned(),
+                    slot.entry.gop_frames.max(8),
+                )
             };
 
-            for frame in ingest_frames {
-                match self.storage.ingest_frame(
-                    frame,
-                    adapter,
-                    gop_frames,
-                    self.regions.storage_ledger_cx(),
-                    self.regions.region_tree(),
-                ) {
-                    Ok(_) => {
-                        frames_committed = frames_committed.saturating_add(1);
-                        if let Some(slot) = self.sensors.get_mut(sid) {
-                            slot.frames_ingested = slot.frames_ingested.saturating_add(1);
-                        }
-                    }
-                    Err(DaemonError::StorageQuotaPinned { .. }) => break,
-                    Err(err) => return Err(err),
+            if ingest_enabled {
+                let (accepted, error) = self.ingest_camera_ring_step(sid, batch_size);
+                frames_committed = frames_committed.saturating_add(accepted);
+                match error {
+                    None | Some(DaemonError::StorageQuotaPinned { .. }) => {}
+                    Some(err) => return Err(err),
                 }
+            } else {
+                self.reclaim_camera_ring(sid);
             }
         }
         Ok((perception_batch, frames_committed))
+    }
+
+    /// Transfers source ownership one frame at a time. A tentative batch read must not
+    /// acknowledge or reclaim frames that storage has not accepted when an earlier flush fails.
+    pub(crate) fn ingest_camera_ring_step(
+        &mut self,
+        sid: &SensorId,
+        max_frames: usize,
+    ) -> (u64, Option<DaemonError>) {
+        let (frames, read_cursor, adapter, gop_frames) = {
+            let Some(slot) = self.sensors.get(sid) else {
+                return (0, None);
+            };
+            let mut cursor = slot.ingest_cursor;
+            let (frames, _) = slot.ring.read_for_cursor(&mut cursor, max_frames);
+            (frames, cursor, slot.entry.adapter, slot.entry.gop_frames)
+        };
+        let mut accepted = 0_u64;
+        let mut failure = None;
+        for frame in frames {
+            let generation = frame.stream_generation;
+            let next_sequence = frame.sequence.saturating_add(1);
+            let outcome = self.storage.ingest_frame_with_outcome(
+                frame,
+                adapter,
+                gop_frames,
+                self.regions.storage_ledger_cx(),
+                self.regions.region_tree(),
+            );
+            if outcome.accepted {
+                accepted = accepted.saturating_add(1);
+                if let Some(slot) = self.sensors.get_mut(sid) {
+                    slot.ingest_cursor.generation = generation;
+                    slot.ingest_cursor.next_sequence = next_sequence;
+                    slot.ingest_cursor.lagged_frames = read_cursor.lagged_frames;
+                    slot.frames_ingested = slot.frames_ingested.saturating_add(1);
+                }
+            }
+            if let Err(err) = outcome.result {
+                failure = Some(err);
+                break;
+            }
+        }
+        self.reclaim_camera_ring(sid);
+        (accepted, failure)
+    }
+
+    fn reclaim_camera_ring(&mut self, sid: &SensorId) {
+        if let Some(slot) = self.sensors.get_mut(sid) {
+            let min_seq = slot
+                .ingest_cursor
+                .next_sequence
+                .min(slot.perception_cursor.next_sequence)
+                .min(slot.preview_cursor.next_sequence);
+            slot.ring.reclaim_consumed_before(min_seq);
+        }
     }
 
     pub(crate) fn run_perception_step(

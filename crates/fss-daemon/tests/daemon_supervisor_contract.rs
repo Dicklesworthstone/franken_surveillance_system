@@ -582,7 +582,7 @@ fn disk_critical_pinned_quota_pauses_ingest_without_evicting_holds() -> TestResu
     let cap_bytes = 8_192_u64;
     let manifest =
         SiteManifest::parse_json(&three_camera_manifest_json(dir.path(), cap_bytes, 64))?;
-    let (drivers, _controls) = wire_synthetic_drivers(&manifest);
+    let (drivers, controls) = wire_synthetic_drivers(&manifest);
 
     let t0: i128 = 1_700_000_000_000_000_000;
     let mut cfg = DaemonStartConfig::new(manifest);
@@ -633,9 +633,20 @@ fn disk_critical_pinned_quota_pauses_ingest_without_evicting_holds() -> TestResu
             .contains_key(&held_import_id)
     );
 
-    let shutdown = supervisor.shutdown_graceful()?;
-    assert_eq!(shutdown.active_tasks, 0);
-    assert_eq!(shutdown.leaked_obligations, 0);
+    // Tick 1 admitted source frames before capacity became pinned. A shutdown cannot
+    // certify success while those frames remain buffered and cannot be published.
+    let shutdown = supervisor.shutdown_graceful();
+    assert!(
+        matches!(shutdown, Err(DaemonError::StorageQuotaPinned { .. })),
+        "unpublished source custody must prevent a clean shutdown receipt: {shutdown:?}"
+    );
+    for control in controls.values() {
+        assert_eq!(
+            control.active_session_count(),
+            0,
+            "a storage shutdown refusal must still disconnect every source"
+        );
+    }
     Ok(())
 }
 

@@ -5,6 +5,45 @@ roots when opening a deployment. A restart preserves logical occupancy, stable
 root identifiers, durable operator holds and the exact recording roots selected
 for corroborated events. It does not start a new empty accounting ring.
 
+## Source handoff and interrupted publication
+
+The ingest cursor advances only after storage accepts ownership of each frame.
+A tentative ring read cannot acknowledge the unaccepted remainder of a batch when
+an earlier flush fails. Accepted source stays in the GOP buffer through a known
+precommit failure; retrying the flush reuses those shared source allocations.
+
+After the canonical commit is acknowledged, storage keeps a pending publication
+receipt until the matching catalog root and retention candidate are established.
+Retrying that phase does not append another canonical import. An opaque sink
+failure has an indeterminate commit outcome: new source submission stops until
+storage reopens and replays the ledger. An uncertain catalog append similarly
+requires reopen instead of a blind journal retry.
+
+Startup completes a missing daemon GOP root only after verifying its canonical
+metadata, bounded source bytes and frame digests, stream identity, frame count,
+capture interval, and exact active import batch. The active import's ledger batch
+must contain the same object identity, payload digest, generation, family, and
+plane. Sharing source bytes with a later import cannot revive an older missing
+root. Existing retired or superseded catalog identities keep their lifecycle,
+and canonically retired or physically tombstoned footage is never reconstructed
+as live evidence.
+
+The canonical import does not identify the original catalog version. A missing
+descriptor therefore cannot prove the absence of legacy in-memory holds.
+Reconstructed roots retain the existing
+`recovery:legacy-hold-state-unverified` blocker; ordinary successful publications
+continue to use `media-gop-v2`.
+
+Graceful supervisor shutdown drains the remaining bounded ingest ring before
+cancelling storage authority, then flushes each GOP. Drain, publication, or cleanup
+failures are reported while source sessions, IPC, and owned regions still receive
+cleanup attempts. Storage refuses a clean shutdown receipt while buffered source,
+pending publications, or indeterminate commits remain.
+
+These guarantees cover running-process ownership and canonical commits whose
+catalog publication was interrupted. Frames that never reached a canonical
+commit are not made durable against process termination by this mechanism.
+
 ## Recorded media and durable pins
 
 New daemon GOP roots use the semantic kind `media-gop-v2`. Their FSMC source
@@ -99,6 +138,11 @@ deletion authority. This change cannot recover payloads already removed by an
 older daemon, and does not migrate such recordings into an assertion of no hold.
 
 ## Focused contracts
+
+The daemon contracts also exercise cancelled flush retries, postcommit catalog
+conflicts, exact-once missing-root recovery, retired/superseded and duplicate-content
+non-resurrection, partial ring handoff, and shutdown draining beyond the per-tick
+ingest budget.
 
 The daemon restart contracts exercise restored occupancy and root identities,
 durable hold/release behavior, canonical query retirement and rebuild without

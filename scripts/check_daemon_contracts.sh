@@ -10,3 +10,7 @@ export CARGO_NET_OFFLINE=true
 export RUSTUP_AUTO_INSTALL=0
 
 cargo test --locked --offline -p fss-daemon --all-targets
+
+cargo test --locked --offline -p fss-cli \
+    --test dashboard_live_contract \
+    --test mcp_14_ops_adversarial_e2e

@@ -151,6 +151,10 @@ struct Fixture {
 
 impl Fixture {
     fn new(ring_max_frames: usize) -> Result<Self, TestError> {
+        Self::with_gop_frames(ring_max_frames, 4)
+    }
+
+    fn with_gop_frames(ring_max_frames: usize, gop_frames: usize) -> Result<Self, TestError> {
         let dir = TempDir::new()?;
         let root = dir.0.to_string_lossy();
         let manifest = SiteManifest::parse_json(&format!(
@@ -173,7 +177,7 @@ impl Fixture {
     "stall_timeout_ms": 5000,
     "ring_max_frames": {ring_max_frames},
     "ring_max_bytes": 32768,
-    "gop_frames": 4
+    "gop_frames": {gop_frames}
   }}]
 }}"#
         ))?;
@@ -517,4 +521,79 @@ fn accepted_sessions_without_frames_keep_backoff_until_continuity_recovers() -> 
     assert_eq!(fixture.view()?.total_connections, 4);
     assert_eq!(fixture.view()?.state, SensorState::Connecting);
     fixture.finish()
+}
+
+#[test]
+fn failed_storage_handoff_keeps_unaccepted_ring_frames_without_duplicate_imports() -> TestResult {
+    let mut fixture = Fixture::with_gop_frames(64, 1)?;
+    let foreign_bytes = b"independent catalog publication";
+    let foreign_digest = fss_core::ContentDigest::sha256(foreign_bytes);
+    let packs = Arc::clone(fixture.supervisor.storage().pack_store());
+    packs.append_batch(&[fss_pack::PackObjectInput::new(
+        fss_pack::PACK_KIND_METADATA,
+        0,
+        foreign_bytes,
+    )])?;
+    packs.publish_root(fss_pack::VirtualRootRecord::new(
+        "gop:sensor_readiness:1:1",
+        foreign_digest,
+        "independent-publication",
+        1,
+        foreign_bytes.len() as u64,
+        1,
+        TimestampNs(START_NS),
+        None,
+    )?)?;
+
+    fixture.queue([Input::frame(), Input::frame(), Input::frame()])?;
+    assert!(fixture.supervisor.step_tick(START_NS + 100_000_000).is_err());
+    let after_failure = fixture.view()?;
+    assert_eq!(after_failure.ring.total_enqueued, 3);
+    assert_eq!(after_failure.frames_ingested, 1);
+    assert_eq!(
+        after_failure.ring.current_frames, 2,
+        "only the frame accepted into canonical custody may leave the ingest ring"
+    );
+    let committed = fixture.supervisor.storage().head_snapshot()?;
+
+    // The pending first publication fails before storage accepts the next ring frame.
+    assert!(fixture.supervisor.step_tick(START_NS + 200_000_000).is_err());
+    assert_eq!(fixture.view()?.frames_ingested, 1);
+    assert_eq!(fixture.view()?.ring.current_frames, 2);
+    let retried = fixture.supervisor.storage().head_snapshot()?;
+    assert_eq!(retried.commit_sequence, committed.commit_sequence);
+    assert_eq!(retried.history_root, committed.history_root);
+    assert!(fixture.supervisor.shutdown_graceful().is_err());
+    Ok(())
+}
+
+#[test]
+fn graceful_shutdown_drains_retained_frames_beyond_the_tick_ingest_budget() -> TestResult {
+    let mut fixture = Fixture::with_gop_frames(64, 4)?;
+    fixture.queue((0..12).map(|_| Input::frame()))?;
+    let tick = fixture.supervisor.step_tick(START_NS + 100_000_000)?;
+    assert_eq!(tick.frames_received, 12);
+    assert_eq!(fixture.view()?.frames_ingested, 8);
+    assert_eq!(fixture.view()?.ring.current_frames, 4);
+    let packs = Arc::clone(fixture.supervisor.storage().pack_store());
+
+    let shutdown = fixture.supervisor.shutdown_graceful()?;
+    assert_eq!(shutdown.active_tasks, 0);
+    assert_eq!(shutdown.leaked_obligations, 0);
+    let roots = packs.list_roots(None, 32)?;
+    assert!(!roots.has_more);
+    let mut retained_frames = 0_u64;
+    for entry in roots.entries {
+        if entry.record.kind == "media-gop-v2" {
+            let bytes = packs.read_verified(&entry.record.root_digest)?;
+            let chunk = fss_pack::MediaChunkView::parse(&bytes)?;
+            chunk.verify_all_frames()?;
+            retained_frames += chunk.frame_count() as u64;
+        }
+    }
+    assert_eq!(
+        retained_frames, 12,
+        "shutdown must commit the ring remainder before cancelling storage authority"
+    );
+    Ok(())
 }
