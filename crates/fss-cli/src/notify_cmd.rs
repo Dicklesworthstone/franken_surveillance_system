@@ -485,6 +485,20 @@ fn load_trust_policy(opts: &NotifyOpts) -> Result<TlsTrustPolicy, (String, ExitI
                 ExitIdentity::RUNTIME_FAILURE,
             )
         })?;
+        let opened_meta = file.metadata().map_err(|err| {
+            err_json(
+                "ERR-NOTIFY-TLS-CERT-001",
+                &format!("cannot stat --ca-pem: {err}"),
+                ExitIdentity::RUNTIME_FAILURE,
+            )
+        })?;
+        if !opened_meta.file_type().is_file() {
+            return Err(err_json(
+                "ERR-NOTIFY-TLS-CERT-001",
+                "--ca-pem must be a regular non-symlink file <= 256 KiB",
+                ExitIdentity::MALFORMED_VALUE,
+            ));
+        }
         let mut pem_bytes = Vec::new();
         file.take((MAX_PEM_BUNDLE_BYTES as u64).saturating_add(1))
             .read_to_end(&mut pem_bytes)

@@ -222,6 +222,9 @@ impl DaemonSupervisor {
                 slot.entry.reconnect_max_ms = new_entry.reconnect_max_ms;
                 slot.entry.stall_timeout_ms = new_entry.stall_timeout_ms;
                 slot.entry.gop_frames = new_entry.gop_frames;
+                slot.entry.endpoint = new_entry.endpoint.clone();
+                slot.entry.adapter = new_entry.adapter;
+                slot.entry.secret_id = new_entry.secret_id.clone();
                 slot.entry.auth_realm = new_entry.auth_realm.clone();
                 slot.entry.allow_inband_sps_pps = new_entry.allow_inband_sps_pps;
                 slot.entry.setup_companion_tracks = new_entry.setup_companion_tracks;

@@ -26,21 +26,23 @@ use fss_codec_jpeg_encode::{EncodeBudget, EncodeConfig, EncodeLimits, PixelForma
 use fss_core::{AgentView, CanonicalDecode, ContentDigest, PrincipalId, SensorId};
 use fss_daemon::{
     CameraAdapterKind, CameraManifestEntry, DaemonRuntimeDescriptor, DaemonStartConfig,
-    DaemonSupervisor, NetworkAdapterDriver, PerceptionConfig, SensorDisconnectReason, SensorDriver,
-    SensorDriverEvent, SiteManifest, SyntheticCameraControl, SyntheticCameraDriver,
-    control_op_approval_digest,
+    DaemonSupervisor, NetworkAdapterDriver, PerceptionConfig, PerceptionEngine,
+    SensorDisconnectReason, SensorDriver, SensorDriverEvent, SiteManifest, SyntheticCameraControl,
+    SyntheticCameraDriver, control_op_approval_digest,
 };
 use fss_fusion::ScoreCalibration;
 use fss_ipc::{
     BoundedControlOp, DeltaEventSummary, DeltaSubscriptionItem, IpcClient, IpcClientConfig,
     IpcResponse,
 };
+use fss_pack::PACK_FOOTER_END_MAGIC;
 use fss_reference::agent_orient::{
     OrientLimits, OrientRequest, orient_deployment, read_deployment,
 };
 use fss_reference::doctor::{DoctorVerdict, inspect_deployment};
 use fss_reference::ingest::model_pool::{CameraPriorityTier, FramePixelInput};
 use fss_reference::ingest::osd_mask::ImageRect;
+use fss_vault::SecretBytes;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -642,7 +644,61 @@ fn daemon_v2_root_passes_fss_doctor_and_fss_orient_live_and_stopped() -> TestRes
         );
         let _ = fs::remove_file(&sym_pack);
         let _ = fs::remove_file(&bogus_target);
+
+        // 4. Symlinked mvcc.snap inside projections/mvcc must trigger AttentionRequired + projection_symlink_entry.
+        let proj_dir = dir.path().join("projections").join("mvcc");
+        let snap_path = proj_dir.join("mvcc.snap");
+        let snap_backup = proj_dir.join("mvcc.snap.bak");
+        let had_snap = snap_path.exists();
+        if had_snap {
+            fs::rename(&snap_path, &snap_backup)?;
+        }
+        let dummy_snap_target = dir.path().join("outside-snap.bin");
+        fs::write(&dummy_snap_target, b"dummy")?;
+        std::os::unix::fs::symlink(&dummy_snap_target, &snap_path)?;
+        let sym_proj_doc = inspect_deployment(dir.path());
+        assert_eq!(
+            sym_proj_doc.verdict,
+            DoctorVerdict::AttentionRequired,
+            "symlinked mvcc.snap must trigger AttentionRequired: {}",
+            sym_proj_doc.to_json()
+        );
+        assert!(
+            sym_proj_doc.to_json().contains("projection_symlink_entry"),
+            "doctor JSON must report projection_symlink_entry: {}",
+            sym_proj_doc.to_json()
+        );
+        let _ = fs::remove_file(&snap_path);
+        let _ = fs::remove_file(&dummy_snap_target);
+        if had_snap {
+            fs::rename(&snap_backup, &snap_path)?;
+        }
     }
+
+    // 5. Sealed `.fssp` pack with unrecognized filename stem must trigger AttentionRequired.
+    let bad_name_pack = dir
+        .path()
+        .join("objects")
+        .join("packs")
+        .join("bogus-unparseable.fssp");
+    let mut bad_pack_bytes = vec![0_u8; 16];
+    bad_pack_bytes.extend_from_slice(&PACK_FOOTER_END_MAGIC);
+    fs::write(&bad_name_pack, &bad_pack_bytes)?;
+    let bad_name_doc = inspect_deployment(dir.path());
+    assert_eq!(
+        bad_name_doc.verdict,
+        DoctorVerdict::AttentionRequired,
+        "unrecognized sealed pack filename must trigger AttentionRequired: {}",
+        bad_name_doc.to_json()
+    );
+    assert!(
+        bad_name_doc
+            .to_json()
+            .contains("unrecognized_pack_filename"),
+        "doctor JSON must report unrecognized_pack_filename: {}",
+        bad_name_doc.to_json()
+    );
+    let _ = fs::remove_file(&bad_name_pack);
 
     Ok(())
 }
@@ -713,5 +769,44 @@ fn site_manifest_parses_rtsp_realm_and_rejects_invalid_realm_or_symlink_file() -
             "SiteManifest::from_file must reject symlink manifest paths"
         );
     }
+
+    // Orphan detector_package_digest override without detector_package_path must fail closed.
+    let bad_cfg = PerceptionConfig {
+        detector_package_digest: Some(ContentDigest::sha256(b"orphan-digest")),
+        ..PerceptionConfig::default()
+    };
+    assert!(
+        PerceptionEngine::new(&m, bad_cfg).is_err(),
+        "orphan detector_package_digest without detector_package_path must be rejected"
+    );
+
+    // Non-UTF-8 vault password must fail closed with AuthFailure (never send unauthenticated HTTP).
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let addr = listener.local_addr()?;
+    let mut cam = m.cameras[0].clone();
+    cam.adapter = CameraAdapterKind::OnvifHttp;
+    cam.endpoint = format!("http://{addr}/mjpeg");
+    let mut bad_drv = NetworkAdapterDriver::new(&cam)
+        .with_vault_credentials("admin", SecretBytes::new(vec![0xFF, 0xFE, 0xFD])?);
+    assert_eq!(
+        bad_drv.connect(1),
+        Err(SensorDisconnectReason::AuthFailure),
+        "non-UTF-8 vault password must fail closed with AuthFailure"
+    );
+
+    // Hot-reloading transport fields updates endpoint and disconnects active sessions cleanly.
+    let mut ok_drv = NetworkAdapterDriver::new(&cam);
+    ok_drv.connect(1).map_err(|e| format!("{e:?}"))?;
+    assert_eq!(ok_drv.active_session_count(), 1);
+    let mut updated_cam = cam;
+    updated_cam.endpoint = format!("http://{addr}/mjpeg-v2");
+    ok_drv.update_manifest_entry(&updated_cam);
+    assert_eq!(ok_drv.endpoint(), updated_cam.endpoint);
+    assert_eq!(
+        ok_drv.active_session_count(),
+        0,
+        "changing endpoint on hot-reload must disconnect stale active session"
+    );
+    drop(listener);
     Ok(())
 }

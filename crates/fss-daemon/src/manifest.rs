@@ -266,6 +266,14 @@ impl SiteManifest {
             });
         }
         let file = File::open(path).map_err(|err| DaemonError::io("open_site_manifest", err))?;
+        let opened_meta = file
+            .metadata()
+            .map_err(|err| DaemonError::io("stat_site_manifest", err))?;
+        if !opened_meta.file_type().is_file() {
+            return Err(DaemonError::InvalidManifest {
+                detail: "site manifest must be a regular non-symlink file".to_owned(),
+            });
+        }
         let mut bytes = Vec::new();
         file.take(MAX_SITE_MANIFEST_BYTES.saturating_add(1))
             .read_to_end(&mut bytes)

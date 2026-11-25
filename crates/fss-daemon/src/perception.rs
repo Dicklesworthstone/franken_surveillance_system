@@ -397,13 +397,21 @@ fn resolve_resident_model(
     config: &PerceptionConfig,
     scalar_cx: &ScalarExecCx,
 ) -> Result<(ResidentModelKey, bool), DaemonError> {
-    let pkg_path = config
-        .detector_package_path
-        .as_ref()
-        .or(manifest.detector_package_path.as_ref());
-    let pkg_digest = config
-        .detector_package_digest
-        .or(manifest.detector_package_digest);
+    if config.detector_package_path.is_none() && config.detector_package_digest.is_some() {
+        return Err(DaemonError::InvalidConfig {
+            detail: "detector_package_digest override requires detector_package_path".to_owned(),
+        });
+    }
+    // Select (path, digest) atomically from either CLI config override or manifest so a CLI path
+    // can never be silently paired with a different manifest's digest.
+    let (pkg_path, pkg_digest) = if let Some(path) = config.detector_package_path.as_ref() {
+        (Some(path), config.detector_package_digest)
+    } else {
+        (
+            manifest.detector_package_path.as_ref(),
+            manifest.detector_package_digest,
+        )
+    };
     let min_score_ppm = config
         .detector_min_score_ppm
         .or(manifest.detector_min_score_ppm);
@@ -448,6 +456,14 @@ fn read_bounded_detector_package(path: &Path) -> Result<Vec<u8>, DaemonError> {
         });
     }
     let file = File::open(path).map_err(|err| DaemonError::io("open_detector_package", err))?;
+    let opened_meta = file
+        .metadata()
+        .map_err(|err| DaemonError::io("stat_detector_package", err))?;
+    if !opened_meta.file_type().is_file() {
+        return Err(DaemonError::InvalidConfig {
+            detail: "detector_package_path must be a non-symlink regular file".to_owned(),
+        });
+    }
     let mut bytes = Vec::with_capacity(usize::try_from(meta.len()).unwrap_or(0));
     file.take(MAX_DETECTOR_PACKAGE_BYTES.saturating_add(1))
         .read_to_end(&mut bytes)

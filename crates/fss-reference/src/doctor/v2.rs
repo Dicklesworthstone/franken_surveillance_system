@@ -215,10 +215,12 @@ fn inspect_packs_readonly(packs_dir: &Path) -> DoctorCheck {
 
     let mut total_packs = 0_u64;
     let mut sealed_packs = 0_u64;
+    let mut attempted_sealed = 0_u64;
     let mut verified_sealed = 0_u64;
     let mut total_bytes = 0_u64;
     let mut corrupt_packs = 0_u64;
     let mut symlink_packs = 0_u64;
+    let mut unrecognized_pack_names = 0_u64;
 
     for path in &paths {
         let Ok(meta) = fs::symlink_metadata(path) else {
@@ -243,7 +245,8 @@ fn inspect_packs_readonly(packs_dir: &Path) -> DoctorCheck {
         let is_sealed = File::open(path)
             .ok()
             .and_then(|mut f| {
-                if meta.len() < 4 {
+                let opened_meta = f.metadata().ok()?;
+                if !opened_meta.file_type().is_file() || opened_meta.len() < 4 {
                     return None;
                 }
                 f.seek(SeekFrom::End(-4)).ok()?;
@@ -255,31 +258,47 @@ fn inspect_packs_readonly(packs_dir: &Path) -> DoctorCheck {
 
         if is_sealed {
             sealed_packs = sealed_packs.saturating_add(1);
-            if verified_sealed < MAX_SEALED_PACKS_VERIFIED_PER_DOCTOR as u64
-                && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
-                && let Some(pack_id) = parse_pack_id_stem(stem)
-            {
-                match verify_sealed_pack(packs_dir, pack_id) {
-                    Ok(_) => verified_sealed = verified_sealed.saturating_add(1),
-                    Err(err) => {
-                        corrupt_packs = corrupt_packs.saturating_add(1);
-                        check.field(
-                            "last_pack_error",
-                            DoctorValue::String(format!("pack {pack_id}: {err}")),
-                        );
-                        check.find(
-                            "sealed_pack_corrupt",
-                            DoctorSeverity::Attention,
-                            Some(usize::try_from(corrupt_packs).unwrap_or(usize::MAX)),
-                            None,
-                        );
+            let parsed_id = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .and_then(parse_pack_id_stem);
+            match parsed_id {
+                Some(pack_id) => {
+                    if attempted_sealed < MAX_SEALED_PACKS_VERIFIED_PER_DOCTOR as u64 {
+                        attempted_sealed = attempted_sealed.saturating_add(1);
+                        match verify_sealed_pack(packs_dir, pack_id) {
+                            Ok(_) => verified_sealed = verified_sealed.saturating_add(1),
+                            Err(err) => {
+                                corrupt_packs = corrupt_packs.saturating_add(1);
+                                check.field(
+                                    "last_pack_error",
+                                    DoctorValue::String(format!("pack {pack_id}: {err}")),
+                                );
+                                check.find(
+                                    "sealed_pack_corrupt",
+                                    DoctorSeverity::Attention,
+                                    Some(usize::try_from(corrupt_packs).unwrap_or(usize::MAX)),
+                                    None,
+                                );
+                            }
+                        }
                     }
+                }
+                None => {
+                    unrecognized_pack_names = unrecognized_pack_names.saturating_add(1);
+                    check.find(
+                        "unrecognized_pack_filename",
+                        DoctorSeverity::Attention,
+                        Some(usize::try_from(unrecognized_pack_names).unwrap_or(usize::MAX)),
+                        None,
+                    );
                 }
             }
         }
     }
 
-    let verification_bounded = sealed_packs > MAX_SEALED_PACKS_VERIFIED_PER_DOCTOR as u64;
+    let recognized_sealed = sealed_packs.saturating_sub(unrecognized_pack_names);
+    let verification_bounded = recognized_sealed > attempted_sealed;
     if verification_bounded {
         check.find(
             "pack_verification_bounded",
@@ -299,6 +318,10 @@ fn inspect_packs_readonly(packs_dir: &Path) -> DoctorCheck {
     check.field("on_disk_pack_bytes", num64(total_bytes));
     check.field("corrupt_pack_count", num64(corrupt_packs));
     check.field("symlink_pack_count", num64(symlink_packs));
+    check.field(
+        "unrecognized_pack_name_count",
+        num64(unrecognized_pack_names),
+    );
     check
 }
 
@@ -314,58 +337,123 @@ fn inspect_projection_readonly(proj_dir: &Path) -> DoctorCheck {
     let mut check = DoctorCheck::new("projections.mvcc");
     let snap_path = proj_dir.join("mvcc.snap");
     let wal_path = proj_dir.join("mvcc.wal");
-    let has_snap = fs::symlink_metadata(&snap_path)
-        .map(|m| m.file_type().is_file() && !m.file_type().is_symlink())
-        .unwrap_or(false);
-    let has_wal = fs::symlink_metadata(&wal_path)
-        .map(|m| m.file_type().is_file() && !m.file_type().is_symlink())
-        .unwrap_or(false);
+    let snap_meta = fs::symlink_metadata(&snap_path).ok();
+    let wal_meta = fs::symlink_metadata(&wal_path).ok();
+    let snap_is_symlink = snap_meta
+        .as_ref()
+        .is_some_and(|m| m.file_type().is_symlink());
+    let wal_is_symlink = wal_meta
+        .as_ref()
+        .is_some_and(|m| m.file_type().is_symlink());
+    if snap_is_symlink || wal_is_symlink {
+        check.field("symlink_projection_entry", DoctorValue::Bool(true));
+        check.find(
+            "projection_symlink_entry",
+            DoctorSeverity::Attention,
+            None,
+            None,
+        );
+    }
+    let has_snap = snap_meta
+        .as_ref()
+        .is_some_and(|m| m.file_type().is_file() && !m.file_type().is_symlink());
+    let has_wal = wal_meta
+        .as_ref()
+        .is_some_and(|m| m.file_type().is_file() && !m.file_type().is_symlink());
     check.field("snapshot_present", DoctorValue::Bool(has_snap));
     check.field("wal_present", DoctorValue::Bool(has_wal));
     if !has_snap && !has_wal {
-        check.field(
-            "reason",
-            text("derived MVCC projection directory has no snapshot or WAL yet (rebuildable)"),
-        );
-        check.find(
-            "projection_not_materialized",
-            DoctorSeverity::Info,
-            None,
-            None,
-        );
+        if !snap_is_symlink && !wal_is_symlink {
+            check.field(
+                "reason",
+                text("derived MVCC projection directory has no snapshot or WAL yet (rebuildable)"),
+            );
+            check.find(
+                "projection_not_materialized",
+                DoctorSeverity::Info,
+                None,
+                None,
+            );
+        }
         return check;
     }
 
     let mut snap_seq = 0_u64;
     let mut has_scrub_receipt = false;
-    if has_snap
-        && let Ok(meta) = fs::symlink_metadata(&snap_path)
-        && meta.len() <= MAX_MVCC_SNAP_READ_BYTES
-        && let Ok(file) = File::open(&snap_path)
-    {
-        let mut bytes = Vec::new();
-        let read_ok = file
-            .take(MAX_MVCC_SNAP_READ_BYTES.saturating_add(1))
-            .read_to_end(&mut bytes)
-            .is_ok()
-            && (bytes.len() as u64) <= MAX_MVCC_SNAP_READ_BYTES;
-        if read_ok {
-            match ProjectionSnapshot::decode_snapshot_bytes(&bytes) {
-                Ok(snap) => {
-                    snap_seq = snap.anchor.commit_sequence;
-                    has_scrub_receipt |= snap.scrub_receipt.is_some();
-                    check.field("snapshot_commit_sequence", num64(snap_seq));
-                    check.evidence("snapshot_history_root", snap.anchor.history_root);
+    if has_snap {
+        let snap_len = snap_meta.as_ref().map_or(0, fs::Metadata::len);
+        if snap_len > MAX_MVCC_SNAP_READ_BYTES {
+            check.field(
+                "reason",
+                DoctorValue::String(format!(
+                    "derived mvcc.snap size {snap_len} exceeds read-only inspection bound {MAX_MVCC_SNAP_READ_BYTES} (rebuildable)"
+                )),
+            );
+            check.find(
+                "projection_snapshot_oversize",
+                DoctorSeverity::Info,
+                None,
+                None,
+            );
+        } else {
+            match File::open(&snap_path) {
+                Ok(file) => {
+                    let regular_after_open = file
+                        .metadata()
+                        .map(|m| m.file_type().is_file())
+                        .unwrap_or(false);
+                    let mut bytes = Vec::new();
+                    let read_ok = regular_after_open
+                        && file
+                            .take(MAX_MVCC_SNAP_READ_BYTES.saturating_add(1))
+                            .read_to_end(&mut bytes)
+                            .is_ok()
+                        && (bytes.len() as u64) <= MAX_MVCC_SNAP_READ_BYTES;
+                    if !read_ok {
+                        check.field(
+                            "reason",
+                            text("derived mvcc.snap unreadable or exceeded bound during read (rebuildable)"),
+                        );
+                        check.find(
+                            "projection_snapshot_unreadable",
+                            DoctorSeverity::Info,
+                            None,
+                            None,
+                        );
+                    } else {
+                        match ProjectionSnapshot::decode_snapshot_bytes(&bytes) {
+                            Ok(snap) => {
+                                snap_seq = snap.anchor.commit_sequence;
+                                has_scrub_receipt |= snap.scrub_receipt.is_some();
+                                check.field("snapshot_commit_sequence", num64(snap_seq));
+                                check.evidence("snapshot_history_root", snap.anchor.history_root);
+                            }
+                            Err(err) => {
+                                check.field(
+                                    "reason",
+                                    DoctorValue::String(format!(
+                                        "derived mvcc.snap failed verification (rebuildable): {err}"
+                                    )),
+                                );
+                                check.find(
+                                    "projection_snapshot_corrupt",
+                                    DoctorSeverity::Info,
+                                    None,
+                                    None,
+                                );
+                            }
+                        }
+                    }
                 }
                 Err(err) => {
                     check.field(
                         "reason",
                         DoctorValue::String(format!(
-                            "derived mvcc.snap failed verification (rebuildable): {err}"
+                            "derived mvcc.snap could not be opened (rebuildable): {err}"
                         )),
                     );
                     check.find(
-                        "projection_snapshot_corrupt",
+                        "projection_snapshot_unreadable",
                         DoctorSeverity::Info,
                         None,
                         None,

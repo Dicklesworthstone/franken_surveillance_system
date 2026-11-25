@@ -368,6 +368,15 @@ pub fn inspect_wal_readonly(
     }
     let file =
         File::open(path).map_err(|err| ProjectionError::io(ProjectionIoOperation::Open, err))?;
+    let opened_meta = file
+        .metadata()
+        .map_err(|err| ProjectionError::io(ProjectionIoOperation::Metadata, err))?;
+    if !opened_meta.file_type().is_file() {
+        return Err(ProjectionError::CorruptDerivedStore {
+            artifact: WAL_FILENAME,
+            detail: "mvcc.wal is not a regular non-symlink file".to_owned(),
+        });
+    }
     let mut raw = Vec::new();
     file.take(max_bytes.saturating_add(1))
         .read_to_end(&mut raw)

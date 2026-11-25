@@ -294,9 +294,11 @@ impl NetworkAdapterDriver {
         req_bytes.extend_from_slice(
             b"\r\nAccept: multipart/x-mixed-replace, image/jpeg\r\nConnection: keep-alive\r\n",
         );
-        if let (Some(user), Some(pass)) = (&self.vault_username, &self.vault_password)
-            && let Ok(pass_str) = std::str::from_utf8(pass.as_slice())
-        {
+        if let (Some(user), Some(pass)) = (&self.vault_username, &self.vault_password) {
+            let Ok(pass_str) = std::str::from_utf8(pass.as_slice()) else {
+                req_bytes.fill(0);
+                return Err(SensorDisconnectReason::AuthFailure);
+            };
             let mut encoded = encode_basic_auth_bytes(user, pass_str);
             req_bytes.extend_from_slice(b"Authorization: Basic ");
             req_bytes.extend_from_slice(&encoded);
@@ -343,7 +345,13 @@ impl NetworkAdapterDriver {
     fn poll_rtsp(&mut self, now_ns: i128) -> SensorDriverEvent {
         let has_creds = self.vault_username.is_some() && self.vault_password.is_some();
         let (user_str, pass_str) = match (&self.vault_username, &self.vault_password) {
-            (Some(u), Some(p)) => (u.as_str(), std::str::from_utf8(p.as_slice()).unwrap_or("")),
+            (Some(u), Some(p)) => match std::str::from_utf8(p.as_slice()) {
+                Ok(pass) => (u.as_str(), pass),
+                Err(_) => {
+                    self.disconnect();
+                    return SensorDriverEvent::Disconnected(SensorDisconnectReason::AuthFailure);
+                }
+            },
             _ => ("unauthenticated", ""),
         };
         let Ok(creds) = DigestCredentials::new(user_str, pass_str) else {
@@ -794,11 +802,30 @@ impl SensorDriver for NetworkAdapterDriver {
     }
 
     fn update_manifest_entry(&mut self, entry: &CameraManifestEntry) {
+        let secret_changed = self.secret_id != entry.secret_id;
+        let transport_changed = self.endpoint != entry.endpoint
+            || self.adapter != entry.adapter
+            || secret_changed
+            || self.auth_realm != entry.auth_realm
+            || self.allow_inband_sps_pps != entry.allow_inband_sps_pps
+            || self.setup_companion_tracks != entry.setup_companion_tracks;
+        self.adapter = entry.adapter;
+        self.endpoint = entry.endpoint.clone();
+        self.peer_addr = parse_endpoint_socket_addr(&entry.endpoint, entry.adapter);
+        self.secret_id = entry.secret_id.clone();
+        if secret_changed {
+            // Never reuse cached vault credentials across a rotated or changed secret_id.
+            self.vault_username = None;
+            self.vault_password = None;
+        }
         self.primary_zone = entry.primary_zone.clone();
         self.dimensions = entry.dimensions;
         self.auth_realm = entry.auth_realm.clone();
         self.allow_inband_sps_pps = entry.allow_inband_sps_pps;
         self.setup_companion_tracks = entry.setup_companion_tracks;
+        if transport_changed && self.active_session_count() > 0 {
+            self.disconnect();
+        }
     }
 }
 
