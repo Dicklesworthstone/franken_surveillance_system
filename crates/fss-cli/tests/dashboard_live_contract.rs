@@ -260,9 +260,12 @@ fn live_cockpit_subscribes_to_daemon_sub_500ms_and_renders_all_six_panes() -> Te
     ctrl_51.inject_motion(motion_rect, "person", 920_000, None, 102);
     let _ = sup.step_tick(t_base + 400_000_000)?;
 
-    // Advance past sliding window and emit Delta 2: Independent clusters -> Corroborated.
+    // Keep quiescent observations continuous while advancing past the sliding window.
+    // The two-delta subscription then observes the two intended motion decisions.
     let t_indep = t_base + 12_000_000_000;
-    let _ = sup.step_tick(t_indep)?;
+    for elapsed_s in (2_i128..=12).step_by(2) {
+        let _ = sup.step_tick(t_base + elapsed_s * 1_000_000_000)?;
+    }
     let emit_started = Instant::now();
     ctrl_51.inject_motion(motion_rect, "person", 930_000, None, 201);
     ctrl_177.inject_motion(motion_rect, "person", 940_000, None, 202);

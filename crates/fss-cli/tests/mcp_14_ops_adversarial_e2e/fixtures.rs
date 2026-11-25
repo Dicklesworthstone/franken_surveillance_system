@@ -524,11 +524,15 @@ impl LiveDaemonHandle {
         let runner = thread::spawn(move || {
             let mut telemetry_tail = Vec::new();
             let mut sup = supervisor;
+            let mut last_tick_ns = now_ns + 100_000_000;
             loop {
                 if sup.is_shutdown_requested() {
                     break;
                 }
-                let tick_ns = wall_now_ns().unwrap_or(now_ns + 200_000_000);
+                // Warmup advances simulated time ahead of wall time; preserve receive
+                // ordering until the wall clock catches up, including on clock rollback.
+                let tick_ns = wall_now_ns().unwrap_or(last_tick_ns).max(last_tick_ns);
+                last_tick_ns = tick_ns;
                 if let Err(err) = sup.step_tick(tick_ns) {
                     return Err(format!("daemon step_tick failed: {err}"));
                 }

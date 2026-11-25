@@ -92,7 +92,14 @@ fn build_cameras_from_mvcc(
             } else if c.running {
                 "degraded"
             } else {
-                "offline"
+                // A live worker awaiting frame continuity is still connected. Retained
+                // liveness distinguishes that state from an observed disconnection.
+                match liveness.as_ref().map(|l| l.state) {
+                    Some(SensorLivenessStatus::Unknown) => "connecting",
+                    Some(SensorLivenessStatus::Degraded) => "degraded",
+                    Some(SensorLivenessStatus::Offline) => "offline",
+                    Some(SensorLivenessStatus::Online) | None => "unknown",
+                }
             }
         } else if let Some(l) = liveness {
             match l.state {
