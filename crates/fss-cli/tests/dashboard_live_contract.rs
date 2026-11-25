@@ -757,3 +757,150 @@ fn offline_mvcc_readonly_loader_replays_post_checkpoint_wal_batches() -> TestRes
     assert_eq!(shutdown2.leaked_obligations, 0);
     Ok(())
 }
+
+#[test]
+fn one_shot_observes_stale_stream_end_after_its_event_target() -> TestResult {
+    use fss_core::{CanonicalEncode, ContentDigest, DeltaPriority, MeaningfulDeltaClass};
+    use fss_ipc::{
+        ActiveScrubStatus, BoundedControlOp, DaemonIpcHandler, DeltaEventSummary, DeltaStreamSink,
+        IpcResponse, IpcServer, IpcServerConfig, LiveDaemonStatus, RequestContext, StreamEndReason,
+    };
+
+    // A deterministic real-UDS peer isolates the event/end boundary from camera timing.
+    // It emits exactly the requested event count, then declares that continuation was lost.
+    struct LostContinuation {
+        subscriptions: AtomicU64,
+        status_queries: AtomicU64,
+        summary: Vec<u8>,
+    }
+    impl DaemonIpcHandler for LostContinuation {
+        fn submit_delta_batch(
+            &self,
+            ctx: &RequestContext,
+            _key: ContentDigest,
+            _bytes: &[u8],
+            _approval: Option<ContentDigest>,
+        ) -> IpcResponse {
+            IpcResponse::Cancelled {
+                request_id: ctx.request_id,
+            }
+        }
+
+        fn query_live_status(
+            &self,
+            ctx: &RequestContext,
+            _include_cameras: bool,
+            _include_ring: bool,
+        ) -> IpcResponse {
+            self.status_queries.fetch_add(1, Ordering::Relaxed);
+            IpcResponse::LiveStatus(LiveDaemonStatus {
+                request_id: ctx.request_id,
+                daemon_uptime_ms: 1,
+                head_commit_sequence: 0,
+                history_root: ContentDigest::sha256(b"dashboard-stream-history"),
+                state_root: ContentDigest::sha256(b"dashboard-stream-state"),
+                active_connections: 1,
+                cameras: Vec::new(),
+                ring: None,
+                scrub: ActiveScrubStatus::Idle,
+            })
+        }
+
+        fn subscribe_deltas(
+            &self,
+            _ctx: &RequestContext,
+            since_commit_seq: u64,
+            max_batch: u32,
+            sink: &mut DeltaStreamSink<'_>,
+        ) -> StreamEndReason {
+            self.subscriptions.fetch_add(1, Ordering::Relaxed);
+            assert_eq!(since_commit_seq, 0);
+            assert_eq!(max_batch, 1);
+            if sink
+                .emit_delta(
+                    1,
+                    ContentDigest::sha256(b"dashboard-stream-delta"),
+                    self.summary.clone(),
+                )
+                .is_err()
+            {
+                return StreamEndReason::Cancelled;
+            }
+            StreamEndReason::CursorStale
+        }
+
+        fn submit_bounded_control(
+            &self,
+            ctx: &RequestContext,
+            _op: BoundedControlOp,
+            _target: Option<&str>,
+            _approval: ContentDigest,
+        ) -> IpcResponse {
+            IpcResponse::Cancelled {
+                request_id: ctx.request_id,
+            }
+        }
+    }
+
+    let dir = TempDirGuard::new("delta-end")?;
+    let site = "site-dashboard-stream-end";
+    let instance = "daemon:dashboard-stream-end";
+    let basis = fss_core::reference_contract_basis().basis_digest();
+    let handler = Arc::new(LostContinuation {
+        subscriptions: AtomicU64::new(0),
+        status_queries: AtomicU64::new(0),
+        summary: DeltaEventSummary {
+            delta_class: MeaningfulDeltaClass::CoverageLoss,
+            priority: DeltaPriority::High,
+            summary: "coverage loss before an unavailable continuation".to_owned(),
+        }
+        .try_canonical_bytes()?,
+    });
+    let server = IpcServer::bind(
+        IpcServerConfig::new(dir.path(), site, basis, instance),
+        handler.clone(),
+    )?;
+    let descriptor = fss_daemon::DaemonRuntimeDescriptor {
+        site_id: site.to_owned(),
+        daemon_instance_id: instance.to_owned(),
+        pid: std::process::id(),
+        manifest_digest: ContentDigest::sha256(b"dashboard-stream-manifest"),
+        contract_basis_digest: basis,
+        socket_path: server.socket_path().to_owned(),
+        started_at_ns: 0,
+    };
+    descriptor.write_atomic(dir.path())?;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_fss-dashboard"))
+        .args(["--live", "--root"])
+        .arg(dir.path())
+        .args([
+            "--site",
+            site,
+            "--allow-local-metadata",
+            "yes",
+            "--once-events",
+            "1",
+            "--json",
+            "--serve-seconds",
+            "2",
+        ])
+        .output()?;
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(
+        !output.status.success(),
+        "incomplete event history must be explicit"
+    );
+    assert!(
+        stderr.contains("live delta history is incomplete"),
+        "expected the terminal loss reason after the event target, got: {stderr}"
+    );
+    assert_eq!(handler.subscriptions.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        handler.status_queries.load(Ordering::Relaxed),
+        1,
+        "do not reuse the stream for another RPC before honoring its terminal reason"
+    );
+    server.shutdown()?;
+    Ok(())
+}
