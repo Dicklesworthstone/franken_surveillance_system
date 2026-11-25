@@ -44,6 +44,8 @@ pub mod evidence_brief;
 /// Exact historical event references with complete-lineage validation and witnessed support.
 pub mod evidence_history;
 pub mod factorized_join;
+/// Capability-projected factorized graph-relational query reference planner (`FSS-162`, `fss-x4a.23.12`).
+pub mod factorized_planner;
 pub mod failure_domains;
 pub mod flow;
 pub mod gomory_hu;

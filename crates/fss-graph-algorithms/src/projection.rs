@@ -369,7 +369,7 @@ impl AbsenceBoundary {
         matches!(self, Self::CertifiedComplete { .. })
     }
 
-    fn encode_canonical(&self, enc: &mut CanonicalEncoder) {
+    pub(crate) fn encode_canonical(&self, enc: &mut CanonicalEncoder) {
         match self {
             Self::CertifiedComplete {
                 coverage_witness_digest,
@@ -390,7 +390,9 @@ impl AbsenceBoundary {
         }
     }
 
-    fn decode_canonical(dec: &mut CanonicalDecoder<'_>) -> Result<Self, ProjectionError> {
+    pub(crate) fn decode_canonical(
+        dec: &mut CanonicalDecoder<'_>,
+    ) -> Result<Self, ProjectionError> {
         match dec
             .u8()
             .map_err(|e| ProjectionError::MalformedWire(e.to_string()))?
