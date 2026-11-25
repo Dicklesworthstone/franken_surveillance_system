@@ -482,9 +482,11 @@ impl CounterfactualBranchOverlay {
         candidate_intent.validate_structure()?;
         self.ensure_oracle_matches_basis(oracle)?;
 
-        // Verify candidate intent authority/privacy/planes match active scope!
+        // Verify candidate intent authority/privacy/planes/contract_basis match active scope!
         if !candidate_intent.authority.capability_active
             || !candidate_intent.authority.privacy_active
+            || candidate_intent.authority.contract_basis_digest
+                != self.authority.contract_basis_digest
             || candidate_intent.authority.authority_generation
                 != candidate_intent.authority.expected_authority_generation
             || candidate_intent.authority.authority_generation
@@ -644,15 +646,25 @@ impl CounterfactualBranchOverlay {
                 rebased_intent,
                 certificate,
             } => {
-                if rebased_intent
-                    .writes
-                    .iter()
-                    .any(|w| !self.authority.allowed_planes.contains(&w.plane))
+                if rebased_intent.authority.contract_basis_digest
+                    != self.authority.contract_basis_digest
+                    || rebased_intent.authority.authority_generation
+                        != self.authority.authority_generation
+                    || rebased_intent.authority.privacy_epoch != self.authority.privacy_epoch
+                    || !rebased_intent
+                        .authority
+                        .allowed_planes
+                        .is_subset(&self.authority.allowed_planes)
+                    || rebased_intent
+                        .writes
+                        .iter()
+                        .any(|w| !self.authority.allowed_planes.contains(&w.plane))
                 {
                     return Ok(RecompileOutcome::Refused {
                         reason: RecompileRefusalReason::AuthorityOrPrivacyRefused,
                         offending_object: None,
-                        detail: "rebased intent escaped branch semantic plane boundary".to_owned(),
+                        detail: "rebased intent escaped branch authority, contract basis, or semantic plane boundary"
+                            .to_owned(),
                         guidance: CounterfactualGuidance::ReauthorizeBranch,
                     });
                 }
@@ -894,25 +906,46 @@ impl CounterfactualRecompileReceipt {
                     .to_owned(),
             ));
         }
+        for (name, digest) in [
+            ("contract_basis_digest", self.contract_basis_digest),
+            ("basis_history_root", self.basis_history_root),
+            ("overlay_digest", self.overlay_digest),
+            ("live_head_history_root", self.live_head_history_root),
+            ("source_intent_digest", self.source_intent_digest),
+            ("live_intent_digest", self.live_intent_digest),
+        ] {
+            if digest.bytes().iter().all(|&b| b == 0) {
+                return Err(CounterfactualError::MalformedWire(format!(
+                    "{name} cannot be zero"
+                )));
+            }
+        }
         match self.strategy {
             RecompileStrategy::DirectHeadMatch => {
                 if self.merge_certificate_digest.is_some()
                     || self.live_head_anchor != self.basis_anchor
                     || self.live_head_history_root != self.basis_history_root
+                    || self.source_intent_digest != self.live_intent_digest
                 {
                     return Err(CounterfactualError::MalformedWire(
-                        "DirectHeadMatch requires identical basis/head anchor and no merge certificate"
+                        "DirectHeadMatch requires identical basis/head anchor, matching intent digests, and no merge certificate"
                             .to_owned(),
                     ));
                 }
             }
-            RecompileStrategy::MergeLadderRebased(_) => {
-                if self.merge_certificate_digest.is_none() {
+            RecompileStrategy::MergeLadderRebased(_) => match self.merge_certificate_digest {
+                None => {
                     return Err(CounterfactualError::MalformedWire(
                         "MergeLadderRebased requires a sealed merge_certificate_digest".to_owned(),
                     ));
                 }
-            }
+                Some(d) if d.bytes().iter().all(|&b| b == 0) => {
+                    return Err(CounterfactualError::MalformedWire(
+                        "merge_certificate_digest cannot be zero".to_owned(),
+                    ));
+                }
+                Some(_) => {}
+            },
         }
         if self.compute_digest()? != self.receipt_digest {
             return Err(CounterfactualError::ChecksumMismatch);

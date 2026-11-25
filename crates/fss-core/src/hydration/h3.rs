@@ -616,6 +616,9 @@ impl H3SourceEvidence {
         if self.retention_until <= self.published_at {
             return Err(ContractError::InvertedTimeInterval.into());
         }
+        if !self.estimated_cost.is_valid() {
+            return Err(ContractError::EvidenceRequired.into());
+        }
         if matches!(
             self.completeness,
             Completeness::Unknown

@@ -916,6 +916,7 @@ impl ModelAtpActivationReceipt {
 pub struct ModelAtpActivator {
     active_by_model: BTreeMap<String, ModelAtpActivationReceipt>,
     prior_by_model: BTreeMap<String, ModelAtpActivationReceipt>,
+    seen_generation_roots: BTreeMap<(String, String), (ContentDigest, ModelExecutionGenerationPin)>,
 }
 
 impl ModelAtpActivator {
@@ -951,18 +952,24 @@ impl ModelAtpActivator {
         package.verify_package_bindings()?;
         let model_id = package.manifest.model_id().as_str().to_owned();
 
-        // Guard immutable generation identity and preserve rollback target on duplicate activation!
+        // Guard immutable generation identity across ALL previously activated generations
+        // (including superseded or rolled-back generations!) and preserve rollback target on duplicate activation!
+        let gen_key = (
+            model_id.clone(),
+            package.generation_pin.model_generation.clone(),
+        );
+        if let Some((seen_root, seen_pin)) = self.seen_generation_roots.get(&gen_key)
+            && (*seen_root != package.package_root_manifest.root()
+                || *seen_pin != package.generation_pin)
+        {
+            return Err(ModelAtpError::IntegrityOrRepairFailed(
+                "immutable model_generation cannot be rebound to a different package root or pin"
+                    .to_owned(),
+            ));
+        }
         if let Some(current) = self.active_by_model.get(&model_id)
             && current.generation_pin.model_generation == package.generation_pin.model_generation
         {
-            if current.package_root_digest != package.package_root_manifest.root()
-                || current.generation_pin != package.generation_pin
-            {
-                return Err(ModelAtpError::IntegrityOrRepairFailed(
-                    "immutable model_generation cannot be rebound to a different package root or pin"
-                        .to_owned(),
-                ));
-            }
             return Err(ModelAtpError::InvalidInput(
                 "model generation is already active".to_owned(),
             ));
@@ -1006,6 +1013,13 @@ impl ModelAtpActivator {
         if let Some(prev) = prior {
             self.prior_by_model.insert(model_id.clone(), prev);
         }
+        self.seen_generation_roots.insert(
+            gen_key,
+            (
+                package.package_root_manifest.root(),
+                package.generation_pin.clone(),
+            ),
+        );
         self.active_by_model.insert(model_id, receipt.clone());
         package.state = ModelPackageAtpState::Active;
         Ok(receipt)

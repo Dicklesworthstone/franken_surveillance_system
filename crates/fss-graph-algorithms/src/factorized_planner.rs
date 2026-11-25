@@ -288,6 +288,19 @@ impl FactorizedQueryPlanReceipt {
                 ));
             }
         }
+        for (name, digest) in [
+            ("history_root", self.history_root),
+            ("projection_digest", self.projection_digest),
+            ("plan_digest", self.plan_digest),
+            ("output_digest", self.output_digest),
+            ("decision_path_digest", self.decision_path_digest),
+        ] {
+            if digest.bytes().iter().all(|&b| b == 0) {
+                return Err(PlannerError::MalformedWire(format!(
+                    "{name} cannot be zero"
+                )));
+            }
+        }
         if self.compute_digest()? != self.receipt_digest {
             return Err(PlannerError::ChecksumMismatch);
         }
