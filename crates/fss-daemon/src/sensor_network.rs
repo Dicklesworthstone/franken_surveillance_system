@@ -11,21 +11,17 @@
 //! Adapters whose session bootstrap credentials are not provisioned (`Tutk`, `UniFiProtect`) fail
 //! closed with an explicit typed [`SensorDisconnectReason::DriverError`].
 
-use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use fss_codec_h264::{Decoder as H264Decoder, DecoderLimits as H264DecoderLimits};
 use fss_codec_mjpeg::color::{RgbDecodeLimits, decode_rgb};
 use fss_codec_mjpeg::{ComponentInterpretation, DecodeBudget, DecodeError as JpegDecodeError};
 use fss_core::{ContentDigest, SensorId, StreamId};
 use fss_pack::MediaCodec;
 use fss_packet::StreamKey;
-use fss_packet::avc::{
-    AvcAssemblyOutput, AvcAssemblyStep, AvcPictureGroup, AvcReceiveLimits, AvcReceivePoll,
-};
+use fss_packet::avc::AvcReceiveLimits;
 use fss_reference::ingest::model_pool::FramePixelInput;
 use fss_reference::ingest::recorded_decode::video_rgb::i420_to_rgb;
 use fss_reference::rtsp::authentication::{DigestCredentials, DigestPolicy};
@@ -43,6 +39,9 @@ use crate::manifest::{CameraAdapterKind, CameraManifestEntry};
 use crate::sensor::{
     CameraFrame, SensorDisconnectReason, SensorDriver, SensorDriverEvent, sanitize_stream_segment,
 };
+
+mod avc_decode;
+use avc_decode::{AvcSourceDecoder, collect_avc_media};
 
 const MAX_RTSP_POLL_STEPS_PER_TICK: usize = 32;
 const MAX_HTTP_HEADER_BYTES: usize = 16 * 1024;
@@ -77,10 +76,9 @@ impl TcpAuthority for DaemonRtspAuthority {
 struct RtspSessionState {
     conn: AutomaticAvcConnection,
     authority: DaemonRtspAuthority,
-    decoder: H264Decoder,
+    decoder: AvcSourceDecoder,
     started: Instant,
     last_elapsed_ns: u64,
-    sent_param_sets: bool,
 }
 
 struct HttpMjpegSessionState {
@@ -127,7 +125,7 @@ pub struct NetworkAdapterDriver {
     peer_addr: Option<SocketAddr>,
     stream_id: Option<StreamId>,
     session: ActiveSession,
-    pending_frames: VecDeque<Arc<CameraFrame>>,
+    pending_disconnect: Option<SensorDisconnectReason>,
     step_counter: u64,
 }
 
@@ -154,7 +152,7 @@ impl NetworkAdapterDriver {
             peer_addr,
             stream_id: None,
             session: ActiveSession::Disconnected,
-            pending_frames: VecDeque::new(),
+            pending_disconnect: None,
             step_counter: 0,
         }
     }
@@ -260,18 +258,13 @@ impl NetworkAdapterDriver {
                 )
             })?;
         }
-        let decoder = H264Decoder::new(H264DecoderLimits::default()).map_err(|_| {
-            SensorDisconnectReason::DriverError(
-                "failed initializing pure-Rust H.264 decoder".to_owned(),
-            )
-        })?;
+        let decoder = AvcSourceDecoder::new().map_err(avc_driver_error)?;
         self.session = ActiveSession::Rtsp(Box::new(RtspSessionState {
             conn,
             authority,
             decoder,
             started: Instant::now(),
             last_elapsed_ns: 0,
-            sent_param_sets: false,
         }));
         Ok(())
     }
@@ -359,8 +352,9 @@ impl NetworkAdapterDriver {
             return SensorDriverEvent::Disconnected(SensorDisconnectReason::AuthFailure);
         };
 
-        let mut extracted_groups: Vec<AvcPictureGroup> = Vec::new();
-        let mut disconnect_reason: Option<SensorDisconnectReason> = None;
+        let mut extracted_group = None;
+        let mut disconnect_reason = None;
+        let mut clean_end = false;
 
         if let ActiveSession::Rtsp(state) = &mut self.session {
             for _ in 0..MAX_RTSP_POLL_STEPS_PER_TICK {
@@ -391,47 +385,55 @@ impl NetworkAdapterDriver {
                     Ok(AutomaticAvcStep::Live(LiveAvcStep::Wire(_)))
                     | Ok(AutomaticAvcStep::Live(LiveAvcStep::Write(_))) => {}
                     Ok(AutomaticAvcStep::Live(LiveAvcStep::Pending(_))) => break,
-                    Ok(AutomaticAvcStep::Live(LiveAvcStep::InputEnded | LiveAvcStep::Ended)) => {
-                        disconnect_reason = Some(SensorDisconnectReason::NetworkDrop);
+                    // Socket EOF is not protocol EOF: accepted RTP/NAL/picture input still
+                    // belongs to this generation and must drain before the codec is flushed.
+                    Ok(AutomaticAvcStep::Live(LiveAvcStep::InputEnded)) => {}
+                    Ok(AutomaticAvcStep::Live(LiveAvcStep::Ended)) => {
+                        clean_end = true;
                         break;
                     }
                     Ok(AutomaticAvcStep::Live(LiveAvcStep::Protocol { event, transport })) => {
-                        match event {
+                        let media_result = match event {
                             DigestAvcPoll::AuthenticationRequired { .. } => {
-                                if !has_creds {
-                                    disconnect_reason = Some(SensorDisconnectReason::AuthFailure);
-                                    break;
+                                if has_creds {
+                                    Ok(false)
+                                } else {
+                                    Err(SensorDisconnectReason::AuthFailure)
                                 }
                             }
-                            DigestAvcPoll::Fault { .. } => {
-                                disconnect_reason = Some(SensorDisconnectReason::AuthFailure);
+                            DigestAvcPoll::Fault { .. } => Err(SensorDisconnectReason::AuthFailure),
+                            DigestAvcPoll::Client { event, .. } => match *event {
+                                AvcClientPoll::Media(media) => {
+                                    collect_avc_media(media, &mut extracted_group)
+                                        .map_err(avc_driver_error)
+                                }
+                                AvcClientPoll::Ended { media, .. } => {
+                                    if let Some(media) = media {
+                                        collect_avc_media(media, &mut extracted_group)
+                                            .map(|_| true)
+                                            .map_err(avc_driver_error)
+                                    } else {
+                                        Ok(true)
+                                    }
+                                }
+                                AvcClientPoll::Fault { .. } => {
+                                    Err(SensorDisconnectReason::NetworkDrop)
+                                }
+                                _ => Ok(false),
+                            },
+                        };
+                        match media_result {
+                            Ok(ended) => clean_end = ended,
+                            Err(reason) => {
+                                disconnect_reason = Some(reason);
                                 break;
                             }
-                            DigestAvcPoll::Client { event, .. } => match *event {
-                                AvcClientPoll::Media(AvcReceivePoll::Picture(pic)) => {
-                                    extracted_groups.push(pic);
-                                    break;
-                                }
-                                AvcClientPoll::Media(AvcReceivePoll::Assembly(
-                                    AvcAssemblyStep::Accepted(AvcAssemblyOutput {
-                                        picture: Some(pic),
-                                        ..
-                                    }),
-                                )) => {
-                                    extracted_groups.push(pic);
-                                    break;
-                                }
-                                AvcClientPoll::Media(AvcReceivePoll::Ended { .. })
-                                | AvcClientPoll::Ended { .. }
-                                | AvcClientPoll::Fault { .. } => {
-                                    disconnect_reason = Some(SensorDisconnectReason::NetworkDrop);
-                                    break;
-                                }
-                                _ => {}
-                            },
                         }
-                        if transport.is_some() {
+                        if transport.is_some() && !clean_end {
                             disconnect_reason = Some(SensorDisconnectReason::NetworkDrop);
+                            break;
+                        }
+                        if extracted_group.is_some() || clean_end {
                             break;
                         }
                     }
@@ -444,90 +446,95 @@ impl NetworkAdapterDriver {
                     }
                 }
             }
+            if disconnect_reason.is_none() {
+                if let Some(group) = extracted_group
+                    && let Err(reason) = state.decoder.push(&group, now_ns)
+                {
+                    disconnect_reason = Some(avc_driver_error(reason));
+                }
+                if clean_end && disconnect_reason.is_none() {
+                    match state.decoder.finish() {
+                        Ok(()) => {
+                            // Deliver validated delayed pictures first, then expose EOF to
+                            // SensorRegion so reconnect/backoff and coverage-gap handling run.
+                            self.pending_disconnect = Some(SensorDisconnectReason::NetworkDrop);
+                        }
+                        Err(reason) => disconnect_reason = Some(avc_driver_error(reason)),
+                    }
+                }
+            }
         }
 
         if let Some(reason) = disconnect_reason {
             self.disconnect();
             return SensorDriverEvent::Disconnected(reason);
         }
-
-        for group in extracted_groups {
-            self.decode_rtsp_picture_group(group, now_ns);
-        }
-
-        if let Some(frame) = self.pending_frames.pop_front() {
-            SensorDriverEvent::Frame(frame)
-        } else {
-            SensorDriverEvent::Idle
-        }
+        self.buffered_rtsp_event()
+            .unwrap_or(SensorDriverEvent::Idle)
     }
 
-    fn decode_rtsp_picture_group(&mut self, group: AvcPictureGroup, now_ns: i128) {
-        let Some(stream_id) = self.stream_id.clone() else {
-            return;
-        };
+    fn ready_rtsp_frame(&mut self) -> Result<Option<Arc<CameraFrame>>, SensorDisconnectReason> {
         let ActiveSession::Rtsp(state) = &mut self.session else {
-            return;
+            return Ok(None);
         };
+        let Some(decoded) = state.decoder.take_ready() else {
+            return Ok(None);
+        };
+        let stream_id = self
+            .stream_id
+            .clone()
+            .ok_or_else(|| avc_driver_error("AVC decoded picture has no active stream identity"))?;
+        self.sequence = self
+            .sequence
+            .checked_add(1)
+            .ok_or_else(|| avc_driver_error("AVC frame sequence exhausted its generation"))?;
+        let pic = decoded.picture;
+        let source = decoded.source;
+        let dims = [pic.width(), pic.height()];
+        self.dimensions = dims;
+        // Convert full 4:2:0 YCbCr planes via declared Q16 BT.601 limited-range RGB so RGB
+        // object detectors (e.g. YOLOX-Nano) receive true color pixels from live RTSP streams.
+        let pixels = match i420_to_rgb(pic.luma(), pic.cb(), pic.cr(), dims) {
+            Ok(rgb) => FramePixelInput::Rgb { pixels: rgb },
+            Err(_) => FramePixelInput::Luma {
+                pixels: pic.luma().to_vec(),
+            },
+        };
+        Ok(Some(Arc::new(CameraFrame {
+            sensor_id: self.sensor_id.clone(),
+            stream_generation: self.generation,
+            stream_id,
+            sequence: self.sequence,
+            media_pts_ns: source.media_pts_ns,
+            host_receive_ns: source.host_receive_ns,
+            rtt_jitter_ns: 10_000_000,
+            node_clock_uncertainty_ns: 2_000_000,
+            codec: MediaCodec::H264,
+            is_keyframe: pic.is_idr(),
+            discontinuity_before: source.discontinuity_before
+                || (self.generation > 1 && self.sequence == 1),
+            dimensions: dims,
+            encoded_payload: source.encoded,
+            pixels,
+            source_digest: source.digest,
+            zone_id: self.primary_zone.clone(),
+            synthetic_detections: Vec::new(),
+        })))
+    }
 
-        let contains_idr = group.nals().iter().any(|n| n.nal_type() == 5);
-        let mut annex_b = Vec::with_capacity(group.byte_len().saturating_add(128));
-        if !state.sent_param_sets || contains_idr {
-            annex_b.extend_from_slice(&[0, 0, 0, 1]);
-            annex_b.extend_from_slice(group.sps().nal_bytes());
-            annex_b.extend_from_slice(&[0, 0, 0, 1]);
-            annex_b.extend_from_slice(group.pps().nal_bytes());
-            state.sent_param_sets = true;
-        }
-        for nal in group.nals() {
-            annex_b.extend_from_slice(&[0, 0, 0, 1]);
-            annex_b.extend_from_slice(nal.bytes());
-        }
-
-        let pictures = match state.decoder.decode_annex_b(&annex_b) {
-            Ok(pics) => pics,
-            Err(_) => {
-                // Force parameter-set retransmission on the next recovery IDR after any rejected NAL.
-                state.sent_param_sets = false;
-                return;
+    fn buffered_rtsp_event(&mut self) -> Option<SensorDriverEvent> {
+        match self.ready_rtsp_frame() {
+            Ok(Some(frame)) => return Some(SensorDriverEvent::Frame(frame)),
+            Err(reason) => {
+                self.disconnect();
+                return Some(SensorDriverEvent::Disconnected(reason));
             }
-        };
-        let source_digest = ContentDigest::sha256(&annex_b);
-        let media_pts_ns = (i128::from(group.timestamp()).saturating_mul(1_000_000_000)) / 90_000;
-        let discontinuity = group.discontinuity_before();
-
-        for pic in pictures {
-            self.sequence = self.sequence.saturating_add(1);
-            let dims = [pic.width(), pic.height()];
-            self.dimensions = dims;
-            // Convert full 4:2:0 YCbCr planes via declared Q16 BT.601 limited-range RGB so RGB
-            // object detectors (e.g. YOLOX-Nano) receive true color pixels from live RTSP streams.
-            let pixels = match i420_to_rgb(pic.luma(), pic.cb(), pic.cr(), dims) {
-                Ok(rgb) => FramePixelInput::Rgb { pixels: rgb },
-                Err(_) => FramePixelInput::Luma {
-                    pixels: pic.luma().to_vec(),
-                },
-            };
-            self.pending_frames.push_back(Arc::new(CameraFrame {
-                sensor_id: self.sensor_id.clone(),
-                stream_generation: self.generation,
-                stream_id: stream_id.clone(),
-                sequence: self.sequence,
-                media_pts_ns,
-                host_receive_ns: now_ns,
-                rtt_jitter_ns: 10_000_000,
-                node_clock_uncertainty_ns: 2_000_000,
-                codec: MediaCodec::H264,
-                is_keyframe: pic.is_idr(),
-                discontinuity_before: discontinuity || (self.generation > 1 && self.sequence == 1),
-                dimensions: dims,
-                encoded_payload: annex_b.clone(),
-                pixels,
-                source_digest,
-                zone_id: self.primary_zone.clone(),
-                synthetic_detections: Vec::new(),
-            }));
+            Ok(None) => {}
         }
+        self.pending_disconnect.take().map(|reason| {
+            self.disconnect();
+            SensorDriverEvent::Disconnected(reason)
+        })
     }
 
     fn poll_http_mjpeg(&mut self, now_ns: i128) -> SensorDriverEvent {
@@ -762,14 +769,14 @@ impl SensorDriver for NetworkAdapterDriver {
         self.stream_id = Some(stream_id);
         self.generation = generation;
         self.sequence = 0;
-        self.pending_frames.clear();
+        self.pending_disconnect = None;
         self.total_connections = self.total_connections.saturating_add(1);
         Ok(())
     }
 
     fn poll_frame(&mut self, now_ns: i128) -> SensorDriverEvent {
-        if let Some(frame) = self.pending_frames.pop_front() {
-            return SensorDriverEvent::Frame(frame);
+        if let Some(event) = self.buffered_rtsp_event() {
+            return event;
         }
         match self.session {
             ActiveSession::Disconnected => {
@@ -786,7 +793,7 @@ impl SensorDriver for NetworkAdapterDriver {
         {
             let _ = state.conn.cancel();
         }
-        self.pending_frames.clear();
+        self.pending_disconnect = None;
     }
 
     fn active_session_count(&self) -> u32 {
@@ -827,6 +834,10 @@ impl SensorDriver for NetworkAdapterDriver {
             self.disconnect();
         }
     }
+}
+
+fn avc_driver_error(reason: &'static str) -> SensorDisconnectReason {
+    SensorDisconnectReason::DriverError(reason.to_owned())
 }
 
 enum HttpHeaderOutcome {
