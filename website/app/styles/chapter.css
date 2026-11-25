@@ -593,8 +593,28 @@
 .status__col--planned {
   --tone: var(--unseen);
 }
-.effects__row--demo .effects__status::before {
+.effects__row--demo .effects__status::before,
+.standing__row--demo strong::before {
   border-style: dashed;
+}
+/* High-contrast modes drop background colours and gradients, which would leave every node an empty
+   ring. Fill them with the system text colour so full, half and empty still read apart. */
+@media (forced-colors: active) {
+  .standing__row strong::before,
+  .effects__status::before,
+  .status__col h4::before {
+    forced-color-adjust: none;
+    border-color: CanvasText;
+  }
+  .standing__row--runs strong::before,
+  .effects__row--runs .effects__status::before,
+  .status__col--runs h4::before {
+    background: CanvasText;
+  }
+  .standing__row--built strong::before,
+  .status__col--built h4::before {
+    background: linear-gradient(90deg, CanvasText 50%, transparent 50%);
+  }
 }
 
 @media (max-width: 1080px) {

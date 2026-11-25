@@ -1,5 +1,6 @@
 import { ArrowUp, ArrowUpRight } from "lucide-react";
 import CopyCommand from "./CopyCommand";
+import ReplayLink from "./ReplayLink";
 import { REPO } from "./TopBar";
 import { Figure, Lit } from "./ui";
 
@@ -45,9 +46,9 @@ export default function Finale({ last }) {
             <a className="button button--lamp" href={REPO}>
               Read the source on GitHub <ArrowUpRight aria-hidden="true" />
             </a>
-            <a className="button button--line" href="#console">
+            <ReplayLink className="button button--line">
               Watch the minute again <ArrowUp aria-hidden="true" />
-            </a>
+            </ReplayLink>
           </div>
         </div>
         <Figure

@@ -336,8 +336,8 @@ export default function Story({ summary, story, native, architecture, status }) 
           title="A probability you can [take apart]."
           when={when(b.a_leaves_drive + 2.2, "The agent weighs what this is")}
           standing={[
-            ["runs", "Exact integer milliban fusion with Wilson score intervals, split conformal prediction, sequential e-processes and automatic counterfactual recomputation without each shared failure domain."],
-            ["built", "Pure-Rust frozen Model IR, offline ONNX importer and a CPU executor 16x faster than the scalar reference and bit-identical to it (0 ULP), shipping YOLOX-Nano COCO-80. Accuracy on real camera footage has not been measured."],
+            ["runs", "Exact integer milliban fusion with Wilson score intervals, split conformal prediction, sequential e-processes and automatic counterfactual recomputation without each shared failure domain. A pure-Rust frozen Model IR, offline ONNX importer and a CPU executor 16x faster than the scalar reference and bit-identical to it (0 ULP), shipping YOLOX-Nano COCO-80."],
+            ["built", "Real-footage detection recall, AUPRC and score calibration for YOLOX-Nano. Accuracy on real camera footage has not been measured."],
           ]}
           words={
             <>
