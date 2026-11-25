@@ -199,7 +199,18 @@ fn agent_query_plan_v1_refuses_duplicates_neg_time_bad_json_and_hostile_wire() -
     let wrong_schema = json.replace("fss.agent_query_plan.v1", "fss.agent_query_plan.v9");
     assert!(matches!(
         AgentQueryPlan::from_json_with_basis(&wrong_schema, &basis),
-        Err(AgentQueryPlanCodecError::SchemaMismatch { .. })
+        Err(AgentQueryPlanCodecError::SchemaMismatch {
+            expected: "fss.agent_query_plan.v1",
+            ..
+        })
+    ));
+    let wrong_anchor_schema = json.replace("fss.evidence_anchor.v1", "fss.evidence_anchor.v9");
+    assert!(matches!(
+        AgentQueryPlan::from_json_with_basis(&wrong_anchor_schema, &basis),
+        Err(AgentQueryPlanCodecError::SchemaMismatch {
+            expected: "fss.evidence_anchor.v1",
+            ..
+        })
     ));
     let effectful = json.replace("\"AOP-005\"", "\"AOP-008\"");
     assert!(matches!(

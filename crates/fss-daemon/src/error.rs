@@ -179,8 +179,9 @@ impl DaemonError {
             Self::Io { .. } => ERR_DAEMON_IO_001,
             Self::ShutdownRequested => fss_ipc::ERR_IPC_SERVER_SHUTDOWN_001,
             Self::ControlExecutionIndeterminate { .. } => "ERR-EFFECT-INDETERMINATE-001",
-            Self::RunWithControlDisposition { run, .. }
-            | Self::RunAndShutdown { run, .. } => run.error_id(),
+            Self::RunWithControlDisposition { run, .. } | Self::RunAndShutdown { run, .. } => {
+                run.error_id()
+            }
             Self::ShutdownWithControlDisposition { cause, .. } => cause.error_id(),
         }
     }
@@ -240,7 +241,10 @@ impl fmt::Display for DaemonError {
                 )
             }
             Self::ShutdownRequested => {
-                write!(f, "daemon shutdown requested; no new supervision tick admitted")
+                write!(
+                    f,
+                    "daemon shutdown requested; no new supervision tick admitted"
+                )
             }
             Self::ControlExecutionIndeterminate {
                 operation_id,
@@ -273,8 +277,9 @@ impl fmt::Display for DaemonError {
 impl std::error::Error for DaemonError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::RunWithControlDisposition { run, .. }
-            | Self::RunAndShutdown { run, .. } => Some(run.as_ref()),
+            Self::RunWithControlDisposition { run, .. } | Self::RunAndShutdown { run, .. } => {
+                Some(run.as_ref())
+            }
             Self::ControlExecutionIndeterminate { cause, .. }
             | Self::ShutdownWithControlDisposition { cause, .. } => Some(cause.as_ref()),
             _ => None,

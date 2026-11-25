@@ -55,7 +55,9 @@ fn quarantine_tail_bytes(
         quarantine_path = quarantine_dir.join(format!(
             "epoch-{epoch_id:016}-offset-{committed_len}.{attempt}.tail"
         ));
-        attempt = attempt.checked_add(1).ok_or(EpochLedgerError::SequenceExhausted)?;
+        attempt = attempt
+            .checked_add(1)
+            .ok_or(EpochLedgerError::SequenceExhausted)?;
     }
     {
         let mut qfile = OpenOptions::new()
@@ -296,7 +298,10 @@ impl EpochSegmentWriter {
         let mut phase = AppendPhase::ReconcileRead;
         let result = (|| -> Result<bool, EpochLedgerError> {
             self.verify_committed_boundary()?;
-            let pending = self.pending.as_ref().ok_or(EpochLedgerError::NoPendingAppend)?;
+            let pending = self
+                .pending
+                .as_ref()
+                .ok_or(EpochLedgerError::NoPendingAppend)?;
             let file_len = self.file.metadata()?.len();
             if file_len < self.committed_len || file_len > pending.next_committed_len {
                 return Err(EpochLedgerError::LiveStateDivergence(
@@ -332,12 +337,8 @@ impl EpochSegmentWriter {
                     });
                 }
                 phase = AppendPhase::ReconcileTruncate;
-                let _quarantine = quarantine_tail_bytes(
-                    root_dir,
-                    self.epoch_id,
-                    self.committed_len,
-                    &observed,
-                )?;
+                let _quarantine =
+                    quarantine_tail_bytes(root_dir, self.epoch_id, self.committed_len, &observed)?;
                 self.file.set_len(self.committed_len)?;
                 self.maybe_fail(phase)?;
             }
@@ -375,7 +376,9 @@ impl EpochSegmentWriter {
     fn maybe_fail(&mut self, phase: AppendPhase) -> io::Result<()> {
         if self.fail_after == Some(phase) {
             self.fail_after = None;
-            Err(io::Error::other(format!("injected failure after {phase:?}")))
+            Err(io::Error::other(format!(
+                "injected failure after {phase:?}"
+            )))
         } else {
             Ok(())
         }

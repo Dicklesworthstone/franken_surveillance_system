@@ -46,7 +46,10 @@ fn open(dir: &Path) -> Result<MerkleEpochLedger, EpochLedgerError> {
     MerkleEpochLedger::open(dir, SITE, config(), IncompleteTailPolicy::Reject)
 }
 
-fn prepare(ledger: &MerkleEpochLedger, sequence: u64) -> Result<EvidenceDeltaBatch, Box<dyn Error>> {
+fn prepare(
+    ledger: &MerkleEpochLedger,
+    sequence: u64,
+) -> Result<EvidenceDeltaBatch, Box<dyn Error>> {
     Ok(ledger.prepare_batch(
         BatchId::parse(format!("batch:{sequence}"))?,
         vec![EvidenceDelta {
@@ -305,8 +308,7 @@ fn torn_attempt_prefixes_preserve_history_and_quarantine_exact_bytes() -> TestRe
         if suffix_len == 0 {
             assert!(!dir.join("quarantine").exists());
         } else {
-            let entries = fs::read_dir(dir.join("quarantine"))?
-                .collect::<Result<Vec<_>, _>>()?;
+            let entries = fs::read_dir(dir.join("quarantine"))?.collect::<Result<Vec<_>, _>>()?;
             assert_eq!(entries.len(), 1);
             assert_eq!(
                 fs::read(entries[0].path())?,
@@ -417,7 +419,10 @@ fn handle_loss_recovers_acknowledged_records_and_explicit_incomplete_tails() -> 
         ));
         drop(ledger);
         if phase == AppendPhase::BodyWrite {
-            assert!(matches!(open(&dir), Err(EpochLedgerError::IncompleteTail { .. })));
+            assert!(matches!(
+                open(&dir),
+                Err(EpochLedgerError::IncompleteTail { .. })
+            ));
         }
         let mut recovered =
             MerkleEpochLedger::open(&dir, SITE, config(), IncompleteTailPolicy::Truncate)?;
@@ -552,8 +557,9 @@ fn periodic_checkpoint_failure_returns_durable_receipt_and_can_be_repaired() -> 
     let mut ledger = MerkleEpochLedger::open(&dir, SITE, cfg, IncompleteTailPolicy::Reject)?;
     let blocked = block_checkpoint(&dir, 1)?;
     let batch = prepare(&ledger, 1)?;
-    let EpochLedgerError::CommittedCheckpointFailed { receipt, source } =
-        ledger.append_batch(batch.clone()).expect_err("checkpoint path is blocked")
+    let EpochLedgerError::CommittedCheckpointFailed { receipt, source } = ledger
+        .append_batch(batch.clone())
+        .expect_err("checkpoint path is blocked")
     else {
         return Err("durable append must not become a generic checkpoint error".into());
     };
@@ -627,10 +633,16 @@ fn storage_checkpoint_failure_preserves_receipt_and_idempotent_retry() -> TestRe
         storage.force_checkpoint(&authority, true),
         Err(StorageError::Cancelled)
     ));
-    assert_eq!(storage.force_checkpoint(&authority, false)?.commit_sequence, 1);
+    assert_eq!(
+        storage.force_checkpoint(&authority, false)?.commit_sequence,
+        1
+    );
     let duplicate =
         storage.commit_witnessed_batch(&authority, batch, &[], TimestampNs(2), false)?;
-    assert_eq!(duplicate.commit_state, StorageCommitState::ReconciledDuplicate);
+    assert_eq!(
+        duplicate.commit_state,
+        StorageCommitState::ReconciledDuplicate
+    );
     assert_eq!(duplicate.committed_anchor, receipt.anchor);
     assert_eq!(duplicate.history_root, receipt.history_root);
     assert_eq!(storage.ledger().verify_full_chain()?.batches_verified, 1);

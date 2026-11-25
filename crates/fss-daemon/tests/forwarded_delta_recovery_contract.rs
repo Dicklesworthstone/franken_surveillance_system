@@ -36,8 +36,8 @@ impl Drop for TempDir {
     }
 }
 
-fn manifest() -> Result<SiteManifest, fss_daemon::DaemonError> {
-    SiteManifest::parse_json(
+fn manifest() -> Result<SiteManifest, Box<dyn std::error::Error>> {
+    Ok(SiteManifest::parse_json(
         r#"{
   "schema": "fss.site_manifest.v1",
   "site_id": "site-forward-recovery",
@@ -51,7 +51,7 @@ fn manifest() -> Result<SiteManifest, fss_daemon::DaemonError> {
     "sensor_id": "sensor:forward",
     "adapter": "synthetic",
     "endpoint": "synthetic://forward",
-    "secret_id": "secret:forward",
+    "secret_id": "secret:test:forward",
     "priority_tier": "standard",
     "zone_id": "test",
     "dimensions": [32, 32],
@@ -59,17 +59,15 @@ fn manifest() -> Result<SiteManifest, fss_daemon::DaemonError> {
     "gop_frames": 1
   }]
 }"#,
-    )
+    )?)
 }
 
 fn batch(storage: &StorageEngine) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let payload = b"synthetic canonical forwarding metadata";
-    storage.pack_store().append_batch(&[PackObjectInput::new(
-        PACK_KIND_METADATA,
-        0,
-        payload,
-    )])?;
-    let oracle = LedgerOracle::new("site-forward-recovery", OracleLimits::default())?;
+    storage
+        .pack_store()
+        .append_batch(&[PackObjectInput::new(PACK_KIND_METADATA, 0, payload)])?;
+    let oracle = LedgerOracle::new("site-forward-recovery", OracleLimits::CEILING)?;
     let batch = oracle.prepare_batch(
         BatchId::parse("batch:forward:recovery")?,
         vec![EvidenceDelta {
@@ -116,7 +114,10 @@ fn forwarding_receipt_survives_new_writer_handles_and_storage_restart() -> TestR
 
     let reopened = StorageEngine::open(&manifest, Some(&dir.0))?;
     let writer = reopened.forward_writer();
-    assert_eq!(writer.forward_delta_batch_idempotent(key, request, &bytes)?, replay);
+    assert_eq!(
+        writer.forward_delta_batch_idempotent(key, request, &bytes)?,
+        replay
+    );
     let conflict = writer
         .forward_delta_batch_idempotent(key, ContentDigest::sha256(b"other context"), &bytes)
         .expect_err("changed request identity cannot replay");
@@ -150,7 +151,9 @@ fn committed_ledger_without_a_completion_record_requires_reconciliation() -> Tes
 
     // Reproduce the persisted cut after ledger commit but before completion publication.
     // This is a deterministic disk-state fixture, not a claim of a killed-process test.
-    let completion = dir.0.join("forwarded-requests")
+    let completion = dir
+        .0
+        .join("forwarded-requests")
         .join(format!("{:02x}", key.bytes()[0]))
         .join(format!("{}.committed", key.to_text().replace(':', "_")));
     fs::remove_file(completion)?;
@@ -179,7 +182,11 @@ fn malformed_wire_bytes_do_not_reserve_a_fresh_key() -> TestResult {
     let key = ContentDigest::sha256(b"invalid-wire");
     let request = ContentDigest::sha256(&bytes);
     let writer = storage.forward_writer();
-    assert!(writer.forward_delta_batch_idempotent(key, request, b"truncated").is_err());
+    assert!(
+        writer
+            .forward_delta_batch_idempotent(key, request, b"truncated")
+            .is_err()
+    );
     assert_eq!(storage.head_snapshot()?.commit_sequence, 0);
     let receipt = writer.forward_delta_batch_idempotent(key, request, &bytes)?;
     assert!(!receipt.replayed);
@@ -199,7 +206,12 @@ fn completion_from_a_later_ledger_cannot_replay_against_an_older_head() -> TestR
     let key = ContentDigest::sha256(b"copied-future-receipt");
     let request = ContentDigest::sha256(&bytes);
     let writer = storage.forward_writer();
-    assert_eq!(writer.forward_delta_batch_idempotent(key, request, &bytes)?.commit_sequence, 1);
+    assert_eq!(
+        writer
+            .forward_delta_batch_idempotent(key, request, &bytes)?
+            .commit_sequence,
+        1
+    );
     drop(writer);
     storage.shutdown_and_flush()?;
 

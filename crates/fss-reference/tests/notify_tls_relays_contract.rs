@@ -1574,7 +1574,7 @@ fn reopened_prepared_notification_refuses_metadata_substitution_and_legacy_diges
 
     // No credentials or resolver entries exist: every changed payload must be refused by
     // the prepared-intent boundary, while preserving the exact durable Prepared record.
-    let vault = LocalEncryptedVault::open(&dir.join("unused-vault"));
+    let vault = LocalEncryptedVault::open(dir.join("unused-vault"));
     let secret_cx = make_secret_cx(target.secret_scope.clone(), now)?;
     let dns = PinnedDnsResolver::new();
     let mut variants = Vec::new();
@@ -1724,7 +1724,7 @@ fn live_cancellation_before_commit_preserves_prepared_but_not_committed_uncertai
         now,
     )?;
     let prepared_bytes = std::fs::read(&journal_path)?;
-    let vault = LocalEncryptedVault::open(&dir.join("unused-vault"));
+    let vault = LocalEncryptedVault::open(dir.join("unused-vault"));
     let secret_cx = make_secret_cx(target.secret_scope.clone(), now)?;
     let dns = PinnedDnsResolver::new();
     let cancelled = AtomicBool::new(false);

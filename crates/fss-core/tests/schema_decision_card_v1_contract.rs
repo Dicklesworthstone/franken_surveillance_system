@@ -164,6 +164,16 @@ fn decision_card_v1_refuses_clamp_bypass_malformed_json_and_hostile_wire() -> Te
         Err(DecisionCardError::HardConstraintViolation(_))
     ));
 
+    // 2b. Contradictory admissible alternative carrying rejectionReasons MUST fail closed!
+    let mut admissible_with_rejections = base.clone();
+    admissible_with_rejections.alternatives[1]
+        .rejection_reasons
+        .push("clamp:contradictory".to_owned());
+    assert!(matches!(
+        admissible_with_rejections.validate(),
+        Err(DecisionCardError::HardConstraintViolation(_))
+    ));
+
     // 3. Non-finite utility & invalid regex pattern MUST fail closed!
     let mut nan_util = base.clone();
     nan_util.alternatives[1].utility = f64::NAN;

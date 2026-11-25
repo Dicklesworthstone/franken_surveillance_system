@@ -63,7 +63,8 @@ pub use storage::{
 };
 pub use supervisor::{
     CameraRuntimeView, DAEMON_CONTROL_DISPOSITION_DOMAIN, DAEMON_SHUTDOWN_RECEIPT_DOMAIN,
-    DaemonControlDisposition, DaemonShutdownReport, DaemonStartConfig, DaemonSupervisor, TickReport,
+    DaemonControlDisposition, DaemonShutdownReport, DaemonStartConfig, DaemonSupervisor,
+    TickReport,
 };
 pub use telemetry::{
     DaemonTelemetrySnapshot, SensorTelemetryRecord, escape_json, render_live_status_json,

@@ -140,7 +140,10 @@ impl ForwardBatchWriter for CombinerForwardWriter {
         binding.digest(request_digest);
         binding.digest(ContentDigest::sha256(batch_bytes));
         let request_digest = ContentDigest::sha256(&binding.finish_checked()?);
-        if let Some(receipt) = self.forward_requests.reserve(idempotency_key, request_digest)? {
+        if let Some(receipt) = self
+            .forward_requests
+            .reserve(idempotency_key, request_digest)?
+        {
             let head = self.projection.head_anchor();
             if receipt.commit_sequence > head.commit_sequence
                 || (receipt.commit_sequence == head.commit_sequence
@@ -164,7 +167,8 @@ impl ForwardBatchWriter for CombinerForwardWriter {
             state_root,
             replayed: false,
         };
-        self.forward_requests.complete(idempotency_key, request_digest, receipt)?;
+        self.forward_requests
+            .complete(idempotency_key, request_digest, receipt)?;
         Ok(receipt)
     }
 

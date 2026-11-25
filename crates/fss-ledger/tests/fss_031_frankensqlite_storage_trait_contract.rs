@@ -221,8 +221,13 @@ fn storage_trait_proves_oracle_durable_and_merkle_equivalence_migrations_and_wit
         TimestampNs(1_100),
         false,
     )?;
-    let r2_dur =
-        dur_store.commit_witnessed_batch(&auth, b2, &[pos_w, neg_w], TimestampNs(1_100), false)?;
+    let r2_dur = dur_store.commit_witnessed_batch(
+        &auth,
+        b2,
+        &[pos_w.clone(), neg_w],
+        TimestampNs(1_100),
+        false,
+    )?;
     assert_eq!(r2_ref.verified_witness_count, 2);
     assert_eq!(r2_dur.verified_witness_count, 2);
     assert_eq!(
@@ -234,13 +239,44 @@ fn storage_trait_proves_oracle_durable_and_merkle_equivalence_migrations_and_wit
         dur_store.read_object_at(&auth, 1, &ObjectId::parse("obj:cam-1")?, false)?
     );
 
-    // Historical duplicate retry of batch 1 AFTER batch 2 committed MUST return seq-1 history_root identically!
-    let hist_dup_ref =
-        ref_store.commit_witnessed_batch(&auth, b1.clone(), &[], TimestampNs(1_150), false)?;
-    let hist_dup_dur =
-        dur_store.commit_witnessed_batch(&auth, b1, &[], TimestampNs(1_150), false)?;
+    // Historical duplicate retry of batch 1 AFTER batch 2 committed MUST return seq-1 history_root identically
+    // and report verified_witness_count == 0 (never falsely claiming witnesses were re-verified on duplicate short-circuit)!
+    let hist_dup_ref = ref_store.commit_witnessed_batch(
+        &auth,
+        b1.clone(),
+        std::slice::from_ref(&pos_w),
+        TimestampNs(1_150),
+        false,
+    )?;
+    let hist_dup_dur = dur_store.commit_witnessed_batch(
+        &auth,
+        b1.clone(),
+        std::slice::from_ref(&pos_w),
+        TimestampNs(1_150),
+        false,
+    )?;
     assert_eq!(hist_dup_ref.history_root, hist_dup_dur.history_root);
     assert_eq!(hist_dup_ref.committed_anchor.commit_sequence, 1);
+    assert_eq!(hist_dup_ref.verified_witness_count, 0);
+    assert_eq!(hist_dup_dur.verified_witness_count, 0);
+
+    // Tampered batch_digest on a duplicate BatchId MUST fail closed rather than reconciling!
+    let mut tampered_b1 = b1;
+    tampered_b1.batch_digest = d("forged-batch-digest");
+    assert!(matches!(
+        ref_store.commit_witnessed_batch(
+            &auth,
+            tampered_b1.clone(),
+            &[],
+            TimestampNs(1_160),
+            false
+        ),
+        Err(StorageError::InvalidInput(_))
+    ));
+    assert!(matches!(
+        dur_store.commit_witnessed_batch(&auth, tampered_b1, &[], TimestampNs(1_160), false),
+        Err(StorageError::InvalidInput(_))
+    ));
 
     // 5. MerkleEpochStorage emits standalone O(log N) inclusion + non-inclusion proofs!
     assert!(merkle_store.supports_merkle_proofs());

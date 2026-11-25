@@ -389,7 +389,10 @@ impl DaemonSupervisor {
         match (run_result, shutdown_result) {
             (Ok(()), result) => result,
             (Err(run), Ok(report)) => {
-                if report.control_disposition.cancelled_before_execution.is_empty()
+                if report
+                    .control_disposition
+                    .cancelled_before_execution
+                    .is_empty()
                     && report.control_disposition.indeterminate.is_empty()
                 {
                     Err(run)

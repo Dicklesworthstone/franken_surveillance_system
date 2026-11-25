@@ -1269,8 +1269,12 @@ fn parse_interpretation_json(val: &Value) -> Result<QueryInterpretation, AgentQu
 }
 
 fn parse_basis_anchor(val: &Value) -> Result<LedgerAnchor, AgentQueryPlanCodecError> {
-    let rec = EvidenceAnchorRecordV1::from_json_value(val)
-        .map_err(|e| AgentQueryPlanCodecError::MalformedPayload(e.to_string()))?;
+    let rec = EvidenceAnchorRecordV1::from_json_value(val).map_err(|e| match e {
+        crate::decision_card_v1::DecisionCardError::SchemaMismatch { expected, observed } => {
+            AgentQueryPlanCodecError::SchemaMismatch { expected, observed }
+        }
+        other => AgentQueryPlanCodecError::MalformedPayload(other.to_string()),
+    })?;
     let state_root = ContentDigest::parse(&rec.authority_root)
         .map_err(|e| AgentQueryPlanCodecError::Contract(ContractBasisError::Contract(e)))?;
     Ok(LedgerAnchor {
@@ -1280,7 +1284,7 @@ fn parse_basis_anchor(val: &Value) -> Result<LedgerAnchor, AgentQueryPlanCodecEr
         adapter_registry_epoch: rec.adapter_epoch,
         schema_epoch: rec.schema_epoch,
         policy_epoch: rec.policy_epoch,
-        privacy_epoch: rec.privacy_epoch.unwrap_or(0),
+        privacy_epoch: rec.privacy_epoch.unwrap_or(1),
         state_root,
     })
 }

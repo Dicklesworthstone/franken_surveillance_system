@@ -470,6 +470,12 @@ impl DecisionAlternativeV1 {
                 self.id
             )));
         }
+        if self.admissible && !self.rejection_reasons.is_empty() {
+            return Err(DecisionCardError::HardConstraintViolation(format!(
+                "admissible alternative '{}' must not carry rejection_reasons",
+                self.id
+            )));
+        }
         for reason in &self.rejection_reasons {
             if reason.is_empty()
                 || reason.len() > MAX_DECISION_REASON_LEN

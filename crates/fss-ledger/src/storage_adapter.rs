@@ -865,7 +865,7 @@ impl FrankenSqliteStorageAdapter for ReferenceOracleStorage {
                         .unwrap_or_else(|| self.oracle.head_history_root()),
                     existing.batch_id.as_str(),
                     existing.batch_digest,
-                    witnesses.len() as u32,
+                    0,
                     StorageCommitState::ReconciledDuplicate,
                     now,
                 );
@@ -1112,7 +1112,7 @@ impl FrankenSqliteStorageAdapter for DurableJournalStorage {
                     seq_root,
                     existing.batch_id.as_str(),
                     existing.batch_digest,
-                    witnesses.len() as u32,
+                    0,
                     StorageCommitState::ReconciledDuplicate,
                     now,
                 );
@@ -1389,7 +1389,7 @@ impl FrankenSqliteStorageAdapter for MerkleEpochStorage {
                     *prev_hist,
                     batch.batch_id.as_str(),
                     *prev_digest,
-                    witnesses.len() as u32,
+                    0,
                     StorageCommitState::ReconciledDuplicate,
                     now,
                 );
@@ -1416,7 +1416,11 @@ impl FrankenSqliteStorageAdapter for MerkleEpochStorage {
             Err(EpochLedgerError::CommittedCheckpointFailed { receipt, source }) => {
                 self.committed_ids.insert(
                     receipt.batch_id.clone(),
-                    (receipt.anchor.clone(), receipt.history_root, receipt.batch_digest),
+                    (
+                        receipt.anchor.clone(),
+                        receipt.history_root,
+                        receipt.batch_digest,
+                    ),
                 );
                 return Err(StorageError::CommittedCheckpointFailed {
                     receipt,
@@ -1493,6 +1497,7 @@ impl FrankenSqliteStorageAdapter for MerkleEpochStorage {
                 .map_err(map_epoch_error)?
             {
                 EpochAppendReconciliation::Committed(receipt) => {
+                    let receipt = *receipt;
                     self.committed_ids.insert(
                         receipt.batch_id,
                         (receipt.anchor, receipt.history_root, receipt.batch_digest),
@@ -1544,6 +1549,11 @@ fn validate_batch_scope_and_witness_bounds(
     if batch.deltas.is_empty() {
         return Err(StorageError::InvalidInput(
             "cannot commit empty EvidenceDeltaBatch".to_owned(),
+        ));
+    }
+    if batch.batch_digest != batch.computed_digest() {
+        return Err(StorageError::InvalidInput(
+            "batch_digest does not match canonical computed_digest".to_owned(),
         ));
     }
     for d in &batch.deltas {

@@ -40,10 +40,12 @@ impl Drop for TempDir {
     }
 }
 
+type SupervisorFixture = (DaemonSupervisor, Vec<Arc<SyntheticCameraControl>>);
+
 fn start_supervisor(
     dir: &TempDir,
     gop_frames: usize,
-) -> Result<(DaemonSupervisor, Vec<Arc<SyntheticCameraControl>>), Box<dyn std::error::Error>> {
+) -> Result<SupervisorFixture, Box<dyn std::error::Error>> {
     let camera = |name: &str| {
         format!(
             r#"{{
@@ -185,7 +187,10 @@ fn failed_control_preserves_later_commands_and_never_replays_partial_effects() -
         vec![0, 1],
         "the later accepted stop must remain unexecuted"
     );
-    let shared = supervisor.control_shared.as_ref().ok_or("missing controls")?;
+    let shared = supervisor
+        .control_shared
+        .as_ref()
+        .ok_or("missing controls")?;
     assert_eq!(shared.queued_control_command_count()?, 1);
     assert!(supervisor.is_shutdown_requested());
     assert_eq!(supervisor.pending_scrub_operations, vec![scrub.clone()]);
@@ -205,7 +210,11 @@ fn failed_control_preserves_later_commands_and_never_replays_partial_effects() -
 
     let report = supervisor.shutdown_graceful()?;
     assert_disposition(&report, vec![scrub, later], vec![failed]);
-    assert!(controls.iter().all(|control| control.active_session_count() == 0));
+    assert!(
+        controls
+            .iter()
+            .all(|control| control.active_session_count() == 0)
+    );
     Ok(())
 }
 
@@ -241,8 +250,15 @@ fn run_loop_preserves_control_disposition_after_successful_error_cleanup() -> Te
         Some(run.to_string())
     );
     assert_disposition(shutdown, vec![later], vec![failed]);
-    assert!(controls.iter().all(|control| control.active_session_count() == 0));
-    assert!(!socket.exists(), "failure cleanup must remove the IPC listener");
+    assert!(
+        controls
+            .iter()
+            .all(|control| control.active_session_count() == 0)
+    );
+    assert!(
+        !socket.exists(),
+        "failure cleanup must remove the IPC listener"
+    );
     Ok(())
 }
 
@@ -258,7 +274,11 @@ fn requested_shutdown_cancels_all_queued_work_without_executing_a_tick() -> Test
     let report = supervisor.run_until_stopped(None, Duration::ZERO)?;
     assert_eq!(report.ticks_executed, 0);
     assert_disposition(&report, vec![stop, scrub], Vec::new());
-    assert!(controls.iter().all(|control| control.active_session_count() == 0));
+    assert!(
+        controls
+            .iter()
+            .all(|control| control.active_session_count() == 0)
+    );
     let json = report.to_json();
     assert!(json.contains(r#""schema":"fss.daemon_shutdown.v1""#));
     assert!(json.contains(r#""cancellation_reason":"shutdown_before_execution""#));
@@ -319,7 +339,11 @@ fn source_failure_before_maintenance_retains_unstarted_scrub_on_cleanup_error() 
     assert_eq!(error.error_id(), run.error_id());
     assert!(run.to_string().contains("GOP publication conflicts"));
     assert!(cause.to_string().contains("GOP publication conflicts"));
-    assert!(controls.iter().all(|control| control.active_session_count() == 0));
+    assert!(
+        controls
+            .iter()
+            .all(|control| control.active_session_count() == 0)
+    );
     assert!(!socket.exists(), "cleanup errors must still close IPC");
     Ok(())
 }
@@ -331,18 +355,15 @@ fn disposition_digest_binds_the_shutdown_and_each_cancellation_class() -> TestRe
     let b = OperationId::parse("op:ctrl:b")?;
     let c = OperationId::parse("op:ctrl:c")?;
     let receipt = DaemonControlDisposition::new(parent, vec![b.clone(), a.clone()], vec![c]);
-    let reordered = DaemonControlDisposition::new(
-        parent,
-        vec![a, b],
-        receipt.indeterminate.clone(),
-    );
+    let reordered =
+        DaemonControlDisposition::new(parent, vec![a, b], receipt.indeterminate.clone());
     assert_eq!(receipt, reordered, "receipt encoding must be canonical");
     assert_eq!(
         receipt.receipt_digest.bytes(),
         [
-            0xce, 0x86, 0x4a, 0x4d, 0x73, 0x41, 0xad, 0x99, 0xa2, 0xb4, 0x27, 0xf6,
-            0x1f, 0x5a, 0x7f, 0xce, 0x0f, 0xc7, 0xa1, 0xc9, 0x25, 0xb8, 0xd4, 0x3b,
-            0x9c, 0x91, 0x4d, 0xb8, 0x6c, 0xa6, 0x4c, 0x09,
+            0xce, 0x86, 0x4a, 0x4d, 0x73, 0x41, 0xad, 0x99, 0xa2, 0xb4, 0x27, 0xf6, 0x1f, 0x5a,
+            0x7f, 0xce, 0x0f, 0xc7, 0xa1, 0xc9, 0x25, 0xb8, 0xd4, 0x3b, 0x9c, 0x91, 0x4d, 0xb8,
+            0x6c, 0xa6, 0x4c, 0x09,
         ],
         "control disposition v1 known-answer vector"
     );
@@ -353,7 +374,10 @@ fn disposition_digest_binds_the_shutdown_and_each_cancellation_class() -> TestRe
         vec![duplicate.clone(), duplicate.clone()],
         Vec::new(),
     );
-    assert!(!repeated.verify(parent), "duplicate operation IDs are not canonical");
+    assert!(
+        !repeated.verify(parent),
+        "duplicate operation IDs are not canonical"
+    );
     let contradictory =
         DaemonControlDisposition::new(parent, vec![duplicate.clone()], vec![duplicate]);
     assert!(
@@ -367,15 +391,14 @@ fn disposition_digest_binds_the_shutdown_and_each_cancellation_class() -> TestRe
         .pop()
         .ok_or("missing test operation")?;
     altered.indeterminate.push(operation);
-    assert!(!altered.verify(parent), "changed disposition must invalidate proof");
+    assert!(
+        !altered.verify(parent),
+        "changed disposition must invalidate proof"
+    );
     assert_ne!(
         receipt.receipt_digest,
-        DaemonControlDisposition::new(
-            parent,
-            receipt.cancelled_before_execution,
-            Vec::new(),
-        )
-        .receipt_digest
+        DaemonControlDisposition::new(parent, receipt.cancelled_before_execution, Vec::new(),)
+            .receipt_digest
     );
     Ok(())
 }

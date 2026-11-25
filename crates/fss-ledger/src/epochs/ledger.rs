@@ -26,8 +26,8 @@ use super::segment::{
     verify_checkpoint_epoch_anchor,
 };
 use super::validate::{
-    ValidatedBatch, apply_deltas_incremental, check_counts, check_deltas, check_texts, delta_order_key,
-    validate_and_apply_batch,
+    ValidatedBatch, apply_deltas_incremental, check_counts, check_deltas, check_texts,
+    delta_order_key, validate_and_apply_batch,
 };
 use super::verify::{ReplayState, replay_epoch_records, verify_full_chain_from_disk};
 use super::writer::{EpochSegmentWriter, quarantine_and_truncate_tail};
@@ -62,7 +62,7 @@ pub struct MerkleEpochLedger {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EpochAppendReconciliation {
     /// The attempted batch is durably committed and is now published exactly once.
-    Committed(CommitReceipt),
+    Committed(Box<CommitReceipt>),
     /// The attempted batch did not commit; its proven incomplete tail was quarantined if present.
     NotCommitted {
         /// Sequence still available for a safe retry.
@@ -437,9 +437,9 @@ impl MerkleEpochLedger {
         }
 
         let seq = validated.batch.new_anchor.commit_sequence;
-        if let Err(error) = self
-            .active_writer
-            .append_record(seq, &encoded, validated.next_history_root)
+        if let Err(error) =
+            self.active_writer
+                .append_record(seq, &encoded, validated.next_history_root)
         {
             if matches!(&error, EpochLedgerError::AppendIndeterminate { .. }) {
                 self.pending = Some(validated);
@@ -493,12 +493,18 @@ impl MerkleEpochLedger {
         &mut self,
         tail_policy: IncompleteTailPolicy,
     ) -> Result<EpochAppendReconciliation, EpochLedgerError> {
-        let pending = self.pending.take().ok_or(EpochLedgerError::NoPendingAppend)?;
+        let pending = self
+            .pending
+            .take()
+            .ok_or(EpochLedgerError::NoPendingAppend)?;
         let sequence = pending.batch.new_anchor.commit_sequence;
-        match self.active_writer.reconcile_pending(&self.root_dir, tail_policy) {
-            Ok(true) => Ok(EpochAppendReconciliation::Committed(
+        match self
+            .active_writer
+            .reconcile_pending(&self.root_dir, tail_policy)
+        {
+            Ok(true) => Ok(EpochAppendReconciliation::Committed(Box::new(
                 self.publish_validated(pending),
-            )),
+            ))),
             Ok(false) => Ok(EpochAppendReconciliation::NotCommitted { sequence }),
             Err(error) => {
                 self.pending = Some(pending);

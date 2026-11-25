@@ -201,11 +201,13 @@ fn capability_order_and_duplicates_do_not_change_the_authenticated_set() -> Test
     let writer = Arc::new(CountingWriter::default());
     let handler = handler(writer.clone());
     let mut ctx = context()?;
-    ctx.granted_capabilities.push("CAP-AGENT-HYDRATE-H3-001".to_owned());
+    ctx.granted_capabilities
+        .push("CAP-AGENT-HYDRATE-H3-001".to_owned());
     let key = ContentDigest::sha256(b"grant-set");
     assert_committed(handler.submit_delta_batch(&ctx, key, b"batch", None), 7, 1);
     ctx.granted_capabilities.reverse();
-    ctx.granted_capabilities.push(ctx.granted_capabilities[0].clone());
+    ctx.granted_capabilities
+        .push(ctx.granted_capabilities[0].clone());
     assert_committed(handler.submit_delta_batch(&ctx, key, b"batch", None), 7, 1);
     assert_eq!(writer.calls.load(Ordering::Acquire), 1);
     Ok(())
@@ -372,7 +374,15 @@ fn cancellation_before_dispatch_does_not_reserve_but_after_commit_keeps_receipt(
         IpcResponse::Cancelled { request_id: 7 }
     );
     assert_eq!(before.calls.load(Ordering::Acquire), 0);
-    assert!(before_handler.shared.forwarded_batches.entries.lock().expect("cache").is_empty());
+    assert!(
+        before_handler
+            .shared
+            .forwarded_batches
+            .entries
+            .lock()
+            .expect("cache")
+            .is_empty()
+    );
     assert_committed(
         before_handler.submit_delta_batch(&context()?, key, b"batch", None),
         7,
@@ -385,7 +395,11 @@ fn cancellation_before_dispatch_does_not_reserve_but_after_commit_keeps_receipt(
         cancel: ctx.cancel.clone(),
     });
     let after_handler = handler(after.clone());
-    assert_committed(after_handler.submit_delta_batch(&ctx, key, b"batch", None), 7, 1);
+    assert_committed(
+        after_handler.submit_delta_batch(&ctx, key, b"batch", None),
+        7,
+        1,
+    );
     assert!(ctx.is_cancelled());
     assert_committed(
         after_handler.submit_delta_batch(&context()?, key, b"batch", None),
@@ -402,7 +416,12 @@ fn unavailable_cache_fails_closed_without_forwarding() -> TestResult {
     let writer = Arc::new(CountingWriter::default());
     let handler = handler(writer.clone());
     let poisoned = catch_unwind(AssertUnwindSafe(|| {
-        let _guard = handler.shared.forwarded_batches.entries.lock().expect("cache");
+        let _guard = handler
+            .shared
+            .forwarded_batches
+            .entries
+            .lock()
+            .expect("cache");
         panic!("injected cache poison");
     }));
     assert!(poisoned.is_err());
@@ -430,7 +449,12 @@ fn shutdown_still_returns_retained_receipts_but_refuses_new_writes() -> TestResu
         false,
     );
     assert_refused(
-        handler.submit_delta_batch(&ctx, ContentDigest::sha256(b"after-shutdown"), b"batch", None),
+        handler.submit_delta_batch(
+            &ctx,
+            ContentDigest::sha256(b"after-shutdown"),
+            b"batch",
+            None,
+        ),
         ERR_IPC_SERVER_SHUTDOWN_001,
         true,
     );
@@ -456,8 +480,20 @@ fn oversized_batch_and_unencodable_context_never_admit_a_write() -> TestResult {
         false,
     );
     assert_eq!(writer.calls.load(Ordering::Acquire), 0);
-    assert!(handler.shared.forwarded_batches.entries.lock().expect("cache").is_empty());
-    assert_committed(handler.submit_delta_batch(&context()?, key, b"batch", None), 7, 1);
+    assert!(
+        handler
+            .shared
+            .forwarded_batches
+            .entries
+            .lock()
+            .expect("cache")
+            .is_empty()
+    );
+    assert_committed(
+        handler.submit_delta_batch(&context()?, key, b"batch", None),
+        7,
+        1,
+    );
     Ok(())
 }
 
@@ -514,11 +550,20 @@ fn durable_receipts_outlive_hot_cache_without_a_lifetime_write_limit() -> TestRe
         let batch = format!("batch-{index}").into_bytes();
         let key = ContentDigest::sha256(&batch);
         let sequence = u64::try_from(index)? + 1;
-        assert_committed(handler.submit_delta_batch(&ctx, key, &batch, None), 7, sequence);
+        assert_committed(
+            handler.submit_delta_batch(&ctx, key, &batch, None),
+            7,
+            sequence,
+        );
         requests.push((key, batch, sequence));
     }
     let (evicted_key, evicted_batch, evicted_sequence) = {
-        let cache = handler.shared.forwarded_batches.entries.lock().expect("cache");
+        let cache = handler
+            .shared
+            .forwarded_batches
+            .entries
+            .lock()
+            .expect("cache");
         assert_eq!(cache.len(), MAX_FORWARDED_BATCHES);
         requests
             .iter()
@@ -537,7 +582,10 @@ fn durable_receipts_outlive_hot_cache_without_a_lifetime_write_limit() -> TestRe
         7,
         evicted_sequence,
     );
-    assert_eq!(writer.mutations.load(Ordering::Acquire), u64::try_from(requests.len())?);
+    assert_eq!(
+        writer.mutations.load(Ordering::Acquire),
+        u64::try_from(requests.len())?
+    );
     assert_eq!(summary_count(&handler), requests.len());
 
     let reopened = self::handler(writer.clone());
@@ -549,7 +597,10 @@ fn durable_receipts_outlive_hot_cache_without_a_lifetime_write_limit() -> TestRe
         80,
         evicted_sequence,
     );
-    assert_eq!(writer.mutations.load(Ordering::Acquire), u64::try_from(requests.len())?);
+    assert_eq!(
+        writer.mutations.load(Ordering::Acquire),
+        u64::try_from(requests.len())?
+    );
     assert_eq!(summary_count(&reopened), 0);
     Ok(())
 }
@@ -582,6 +633,9 @@ fn legacy_writer_capacity_retains_every_acknowledged_replay_record() -> TestResu
         7,
         1,
     );
-    assert_eq!(writer.calls.load(Ordering::Acquire), u64::try_from(MAX_FORWARDED_BATCHES)?);
+    assert_eq!(
+        writer.calls.load(Ordering::Acquire),
+        u64::try_from(MAX_FORWARDED_BATCHES)?
+    );
     Ok(())
 }

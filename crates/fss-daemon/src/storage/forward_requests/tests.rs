@@ -62,7 +62,13 @@ fn completed_receipt_replays_exactly_after_reopen() -> TestResult {
 
     let reopened = ForwardRequestStore::open(&dir.0)?;
     let replay = reopened.reserve(key, request)?.expect("retained receipt");
-    assert_eq!(replay, ForwardBatchReceipt { replayed: true, ..receipt() });
+    assert_eq!(
+        replay,
+        ForwardBatchReceipt {
+            replayed: true,
+            ..receipt()
+        }
+    );
     assert_refused(reopened.reserve(key, digest("different request")), CONFLICT);
     Ok(())
 }
@@ -116,7 +122,12 @@ fn all_incomplete_record_prefixes_are_refused_and_preserved() -> TestResult {
     let store = ForwardRequestStore::open(&dir.0)?;
     let key = digest("truncated");
     let request = digest("request");
-    let record = Record { key, request, receipt: None }.encode()?;
+    let record = Record {
+        key,
+        request,
+        receipt: None,
+    }
+    .encode()?;
     let (path, _) = store.paths(key)?;
     for len in 0..record.len() {
         if path.exists() {
@@ -151,7 +162,10 @@ fn corrupt_or_oversized_completions_never_replay() -> TestResult {
     assert_refused(store.reserve(key, request), RECONCILE);
     assert_eq!(fs::read(&completed)?, bytes);
 
-    OpenOptions::new().write(true).open(&completed)?.set_len(MAX_RECORD_BYTES + 1)?;
+    OpenOptions::new()
+        .write(true)
+        .open(&completed)?
+        .set_len(MAX_RECORD_BYTES + 1)?;
     assert_refused(store.reserve(key, request), RECONCILE);
     assert_eq!(fs::metadata(completed)?.len(), MAX_RECORD_BYTES + 1);
     Ok(())
@@ -170,7 +184,14 @@ fn missing_or_mismatched_reservation_cannot_acquire_a_completion() -> TestResult
 
     let (pending, completed) = store.paths(key)?;
     fs::remove_file(pending)?;
-    write_new_record(&completed, &Record { key, request, receipt: Some(receipt()) })?;
+    write_new_record(
+        &completed,
+        &Record {
+            key,
+            request,
+            receipt: Some(receipt()),
+        },
+    )?;
     assert_refused(store.reserve(key, request), RECONCILE);
     Ok(())
 }
@@ -179,7 +200,11 @@ fn missing_or_mismatched_reservation_cannot_acquire_a_completion() -> TestResult
 fn lifecycle_and_trailing_bytes_are_checked_even_with_a_valid_checksum() -> TestResult {
     let key = digest("key");
     let request = digest("request");
-    let record = Record { key, request, receipt: Some(receipt()) };
+    let record = Record {
+        key,
+        request,
+        receipt: Some(receipt()),
+    };
     let mut bytes = record.encode()?;
     bytes.truncate(bytes.len() - 32);
     bytes.push(0);
@@ -209,7 +234,10 @@ fn older_receipts_survive_more_than_the_hot_cache_capacity() -> TestResult {
     let reopened = ForwardRequestStore::open(&dir.0)?;
     assert_eq!(
         reopened.reserve(digest("key-0"), digest("request-0"))?,
-        Some(ForwardBatchReceipt { replayed: true, ..receipt() })
+        Some(ForwardBatchReceipt {
+            replayed: true,
+            ..receipt()
+        })
     );
     Ok(())
 }

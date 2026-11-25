@@ -246,7 +246,11 @@ fn request_digest(
     encoder.text(&ctx.deployment_id);
     encoder.digest(ctx.contract_basis_digest);
     encoder.text(ctx.principal.as_str());
-    let mut capabilities: Vec<_> = ctx.granted_capabilities.iter().map(String::as_str).collect();
+    let mut capabilities: Vec<_> = ctx
+        .granted_capabilities
+        .iter()
+        .map(String::as_str)
+        .collect();
     capabilities.sort_unstable();
     capabilities.dedup();
     encoder.u64(u64::try_from(capabilities.len()).ok()?);

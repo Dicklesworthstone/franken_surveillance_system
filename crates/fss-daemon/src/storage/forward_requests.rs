@@ -70,7 +70,10 @@ impl ForwardRequestStore {
             return Ok(Some(receipt));
         }
         if read_record(&completed_path)?.is_some() {
-            return Err(refused(RECONCILE, "completion exists without its reservation"));
+            return Err(refused(
+                RECONCILE,
+                "completion exists without its reservation",
+            ));
         }
         write_new_record(
             &pending_path,
@@ -148,7 +151,12 @@ impl Record {
     }
 
     fn decode(bytes: &[u8]) -> Result<Self, DaemonError> {
-        let invalid = || refused(RECONCILE, "forwarded request record is corrupt or unsupported");
+        let invalid = || {
+            refused(
+                RECONCILE,
+                "forwarded request record is corrupt or unsupported",
+            )
+        };
         if bytes.len() < 32 || bytes.len() as u64 > MAX_RECORD_BYTES {
             return Err(invalid());
         }
@@ -199,16 +207,22 @@ fn ensure_private_dir(path: &Path) -> Result<(), DaemonError> {
         Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(err) => return Err(DaemonError::io("create_forward_request_dir", err)),
     }
-    let metadata =
-        fs::symlink_metadata(path).map_err(|err| DaemonError::io("stat_forward_request_dir", err))?;
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|err| DaemonError::io("stat_forward_request_dir", err))?;
     if !metadata.is_dir() || metadata.file_type().is_symlink() {
-        return Err(refused(RECONCILE, "forwarded request directory is not a real directory"));
+        return Err(refused(
+            RECONCILE,
+            "forwarded request directory is not a real directory",
+        ));
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         if metadata.permissions().mode() & 0o077 != 0 {
-            return Err(refused(RECONCILE, "forwarded request directory must be owner-only"));
+            return Err(refused(
+                RECONCILE,
+                "forwarded request directory must be owner-only",
+            ));
         }
     }
     // Also settle a directory whose creation survived an earlier failed parent sync.
@@ -224,21 +238,24 @@ fn read_record(path: &Path) -> Result<Option<Record>, DaemonError> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(DaemonError::io("stat_forward_request", err)),
     };
-    if !metadata.is_file()
-        || metadata.file_type().is_symlink()
-        || metadata.len() > MAX_RECORD_BYTES
+    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > MAX_RECORD_BYTES
     {
-        return Err(refused(RECONCILE, "forwarded request is not a bounded regular file"));
+        return Err(refused(
+            RECONCILE,
+            "forwarded request is not a bounded regular file",
+        ));
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         if metadata.permissions().mode() & 0o077 != 0 {
-            return Err(refused(RECONCILE, "forwarded request record must be owner-only"));
+            return Err(refused(
+                RECONCILE,
+                "forwarded request record must be owner-only",
+            ));
         }
     }
-    let mut file =
-        File::open(path).map_err(|err| DaemonError::io("open_forward_request", err))?;
+    let mut file = File::open(path).map_err(|err| DaemonError::io("open_forward_request", err))?;
     let mut bytes = Vec::new();
     (&mut file)
         .take(MAX_RECORD_BYTES + 1)
@@ -267,7 +284,10 @@ fn write_new_record(path: &Path, record: &Record) -> Result<(), DaemonError> {
     let mut file = match options.open(path) {
         Ok(file) => file,
         Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-            return Err(refused(RECONCILE, "forwarded request is already reserved or completed"));
+            return Err(refused(
+                RECONCILE,
+                "forwarded request is already reserved or completed",
+            ));
         }
         Err(err) => return Err(DaemonError::io("create_forward_request", err)),
     };
