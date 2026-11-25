@@ -164,6 +164,14 @@ fn gf256_multi_erasure_reconstruction_closure_bridge_and_durability_gated_refres
     let refresh_token = published.authorize_symbol_refresh(&plan, &auth, CustodyLevel::Durable)?;
     assert_eq!(refresh_token, published.receipt_digest);
 
+    // Fresh-eyes regression: privacy-epoch drift fails closed on authorize_symbol_refresh!
+    let mut drifted_privacy_auth = auth.clone();
+    drifted_privacy_auth.privacy_epoch = 99;
+    assert!(matches!(
+        published.authorize_symbol_refresh(&plan, &drifted_privacy_auth, CustodyLevel::Durable),
+        Err(RepairGateError::StaleAuthorityOrBasis { .. })
+    ));
+
     // 5. Direct composition with FSS-127 (`ClosureVerifier`): feed `published.to_inspected_object`
     //    into `AtpArchiveGraphCatalog` and verify closure passes with `post_repair_verified == true`!
     let mut graph = AtpArchiveGraphCatalog::new();

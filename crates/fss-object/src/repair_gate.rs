@@ -55,6 +55,8 @@ pub const MAX_GF256_BLOCK_SYMBOLS: u32 = 255;
 pub const MAX_RECONSTRUCTED_OBJECT_BYTES: usize = 16 * 1024 * 1024;
 /// Hard ceiling on serialized receipt wire bytes (512 KiB).
 pub const MAX_REPAIR_RECEIPT_WIRE_BYTES: usize = 512 * 1024;
+/// Hard ceiling on candidate symbol envelopes admitted into one bounded repair gate pass.
+pub const MAX_REPAIR_INPUT_ENVELOPES: usize = 4_096;
 /// Hard ceiling on diagnostic label/reason bytes.
 pub const MAX_REPAIR_LABEL_BYTES: usize = 256;
 
@@ -717,14 +719,7 @@ impl PostRepairReceipt {
         self.verify_self()?;
         authority.validate_against(plan)?;
         lease.validate(plan, authority, min_fence, now)?;
-        if self.plan_digest != plan.plan_digest
-            || self.target_object_digest != plan.target_object_digest
-            || self.source_generation != plan.source_generation
-        {
-            return Err(RepairGateError::InvalidPlan(
-                "receipt does not match supplied repair plan".to_owned(),
-            ));
-        }
+        self.verify_matches_plan_and_authority(plan, authority)?;
         if self.state != RepairGateState::VerifiedCanonicalMatch {
             return Err(RepairGateError::UnverifiedPublicationRefused { state: self.state });
         }
@@ -756,11 +751,7 @@ impl PostRepairReceipt {
         plan.verify_self()?;
         self.verify_self()?;
         authority.validate_against(plan)?;
-        if self.plan_digest != plan.plan_digest {
-            return Err(RepairGateError::InvalidPlan(
-                "receipt does not match supplied repair plan".to_owned(),
-            ));
-        }
+        self.verify_matches_plan_and_authority(plan, authority)?;
         if !matches!(
             self.state,
             RepairGateState::VerifiedCanonicalMatch | RepairGateState::Published
@@ -774,6 +765,38 @@ impl PostRepairReceipt {
             });
         }
         Ok(self.receipt_digest)
+    }
+
+    fn verify_matches_plan_and_authority(
+        &self,
+        plan: &RepairPlan,
+        authority: &RepairAuthorityContext,
+    ) -> Result<(), RepairGateError> {
+        if self.plan_digest != plan.plan_digest
+            || self.sealed_root_digest != plan.sealed_root_digest
+            || self.target_object_digest != plan.target_object_digest
+            || self.expected_byte_len != plan.expected_byte_len
+            || self.source_generation != plan.source_generation
+            || self.contract_basis_digest != plan.contract_basis_digest
+        {
+            return Err(RepairGateError::InvalidPlan(
+                "receipt does not match supplied sealed repair plan".to_owned(),
+            ));
+        }
+        if self.authority_generation != authority.authority_generation
+            || self.privacy_epoch != authority.privacy_epoch
+        {
+            return Err(RepairGateError::StaleAuthorityOrBasis {
+                detail: format!(
+                    "receipt authority/privacy ({}/{}) differs from active ({}/{})",
+                    self.authority_generation,
+                    self.privacy_epoch,
+                    authority.authority_generation,
+                    authority.privacy_epoch
+                ),
+            });
+        }
+        Ok(())
     }
 
     /// Projects this post-repair receipt directly into `FSS-127` [`InspectedObject`] without
@@ -838,9 +861,11 @@ impl PostRepairReceipt {
         }
         if self.expected_byte_len == 0
             || self.expected_byte_len > MAX_RECONSTRUCTED_OBJECT_BYTES as u64
+            || self.observed_byte_len > self.expected_byte_len
+            || self.observed_reconstructed_digest.is_some() != (self.observed_byte_len > 0)
         {
             return Err(RepairGateError::MalformedWire(
-                "expected_byte_len outside 1..=MAX_RECONSTRUCTED_OBJECT_BYTES".to_owned(),
+                "byte length and observed digest invariants violated".to_owned(),
             ));
         }
         let accounted_symbols =
@@ -862,6 +887,13 @@ impl PostRepairReceipt {
                 "verified/published receipt must match target_object_digest, expected_byte_len, and non-empty ESIs"
                     .to_owned(),
             ));
+        }
+        for &esi in &self.consumed_esis {
+            if esi >= MAX_GF256_BLOCK_SYMBOLS {
+                return Err(RepairGateError::MalformedWire(format!(
+                    "consumed ESI {esi} exceeds GF(256) ceiling {MAX_GF256_BLOCK_SYMBOLS}"
+                )));
+            }
         }
         for pair in self.consumed_esis.windows(2) {
             if pair[0] >= pair[1] {
@@ -1113,6 +1145,12 @@ impl PostRepairDigestGate {
     ) -> Result<GateExecutionResult, RepairGateError> {
         if cancelled {
             return Err(RepairGateError::Cancelled);
+        }
+        if symbols.len() > MAX_REPAIR_INPUT_ENVELOPES {
+            return Err(RepairGateError::BoundsExceeded {
+                observed: symbols.len(),
+                maximum: MAX_REPAIR_INPUT_ENVELOPES,
+            });
         }
         plan.verify_self()?;
         authority.validate_against(plan)?;
