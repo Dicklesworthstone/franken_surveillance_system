@@ -342,6 +342,33 @@ fn non_collapse_replication_ladder_retrievability_freshness_and_repair_loop() ->
     assert_eq!(degraded.state, ArchiveReadinessState::RepairRequired);
     assert_eq!(degraded.open_repair_obligations, 1);
 
+    // A later TimeoutOrIndeterminate sample on a Quarantined replica MUST NOT downgrade
+    // Quarantined -> Indeterminate (which would otherwise allow a quarantine bypass!).
+    ledger.record_challenge(
+        &auth,
+        RetrievabilityChallengeInput {
+            challenge_id: "chal:west:timeout-after-quarantine".to_owned(),
+            replica_id: "rep-west".to_owned(),
+            replica_generation: 1,
+            ranges: vec![ChallengeRange {
+                offset: 0,
+                length: 4096,
+            }],
+            expected_digest: root,
+            observed_digest: None,
+            latency_ms: 9_000,
+            egress_bytes: 0,
+            class_b_ops: 1,
+            outcome: ChallengeOutcome::TimeoutOrIndeterminate,
+            challenged_at: TimestampNs(63_000),
+        },
+        false,
+    )?;
+    assert_eq!(
+        ledger.replicas()["rep-west"].readiness,
+        ReplicaReadiness::Quarantined
+    );
+
     // A quarantined generation 1 CANNOT silently clear quarantine via a Passed challenge without
     // rotating to a freshly repaired generation.
     assert!(matches!(
@@ -368,14 +395,14 @@ fn non_collapse_replication_ladder_retrievability_freshness_and_repair_loop() ->
         Err(ReplicationError::InvalidInput(_))
     ));
 
-    // Repair loop: rotate rep-west to generation 2; obligation stays open until new gen passes proof!
+    // Repair loop: rotate rep-west to generation 2; both open obligations stay open until new gen passes proof!
     ledger.begin_replica_repair_generation(&auth, "rep-west", TimestampNs(70_000), false)?;
     assert_eq!(ledger.replicas()["rep-west"].replica_generation, 2);
     assert_eq!(
         ledger
             .evaluate_readiness(TimestampNs(70_000))
             .open_repair_obligations,
-        1
+        2
     );
     for state in [
         ArchiveObjectState::RemoteChildrenVerified,
@@ -558,6 +585,71 @@ fn indeterminate_authority_revocation_cancellation_and_hostile_wire_fail_closed(
     assert_eq!(summary.state, ArchiveReadinessState::Indeterminate);
     assert_eq!(summary.indeterminate_replicas, 1);
     assert_eq!(summary.open_repair_obligations, 1);
+
+    // A delayed older Passed challenge (challenged_at < opened_at) MUST NOT resolve the newer
+    // open repair obligation or falsely mark the replica Healthy!
+    ledger.record_challenge(
+        &auth,
+        RetrievabilityChallengeInput {
+            challenge_id: "chal:east:pre-timeout-late-pass".to_owned(),
+            replica_id: "rep-east".to_owned(),
+            replica_generation: 1,
+            ranges: vec![ChallengeRange {
+                offset: 0,
+                length: 2048,
+            }],
+            expected_digest: root,
+            observed_digest: Some(root),
+            latency_ms: 12,
+            egress_bytes: 2048,
+            class_b_ops: 1,
+            outcome: ChallengeOutcome::Passed,
+            challenged_at: TimestampNs(5_500),
+        },
+        false,
+    )?;
+    assert_eq!(
+        ledger.replicas()["rep-east"].readiness,
+        ReplicaReadiness::Indeterminate
+    );
+    assert_eq!(
+        ledger.evaluate_readiness(TimestampNs(7_000)).open_repair_obligations,
+        1
+    );
+
+    // Max-length 128-byte replica_id + 128-byte challenge_id produces a 264-byte obligation_id
+    // that must round-trip cleanly through binary wire encode/decode.
+    let long_rep = "r".repeat(128);
+    let long_chal = "c".repeat(128);
+    ledger.register_replica(
+        &auth,
+        &long_rep,
+        "r2:us-west-long",
+        "domain:cf-long",
+        "us-west",
+        TimestampNs(8_000),
+        false,
+    )?;
+    ledger.record_challenge(
+        &auth,
+        RetrievabilityChallengeInput {
+            challenge_id: long_chal,
+            replica_id: long_rep,
+            replica_generation: 1,
+            ranges: vec![ChallengeRange {
+                offset: 0,
+                length: 512,
+            }],
+            expected_digest: root,
+            observed_digest: None,
+            latency_ms: 500,
+            egress_bytes: 0,
+            class_b_ops: 1,
+            outcome: ChallengeOutcome::MissingOrTruncated,
+            challenged_at: TimestampNs(8_500),
+        },
+        false,
+    )?;
 
     // 3. Forged Passed challenge (zero bytes or mismatched observed_digest) fails closed.
     assert!(matches!(

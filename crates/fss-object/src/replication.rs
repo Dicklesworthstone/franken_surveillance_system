@@ -45,6 +45,8 @@ pub const MAX_REPLICATION_LEDGER_WIRE_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_REPLICA_ID_BYTES: usize = 128;
 /// Maximum UTF-8 bytes in descriptive labels (`provider_tuple`, reasons).
 pub const MAX_REPLICA_LABEL_BYTES: usize = 256;
+/// Maximum UTF-8 bytes in repair obligation identifiers (`repair:<replica_id>:<challenge_id>`).
+pub const MAX_OBLIGATION_ID_BYTES: usize = 288;
 /// Maximum UTF-8 bytes in residency region identifiers.
 pub const MAX_RESIDENCY_REGION_BYTES: usize = 64;
 
@@ -272,16 +274,19 @@ impl ReplicationPolicy {
             });
         }
         let mut required_providers = BTreeSet::new();
+        let mut prev_provider: Option<String> = None;
         for _ in 0..req_count {
             let p = dec
                 .text()
                 .map_err(|e| ReplicationError::MalformedWire(e.to_string()))?;
             validate_bounded_text(p, MAX_REPLICA_LABEL_BYTES, "required_provider")?;
-            if !required_providers.insert(p.to_owned()) {
+            if prev_provider.as_deref().is_some_and(|prev| p <= prev) {
                 return Err(ReplicationError::MalformedWire(
-                    "duplicate required_provider in policy".to_owned(),
+                    "required_providers must be strictly canonically ordered and unique".to_owned(),
                 ));
             }
+            prev_provider = Some(p.to_owned());
+            required_providers.insert(p.to_owned());
         }
         let res_count = usize::try_from(
             dec.u64()
@@ -298,16 +303,20 @@ impl ReplicationPolicy {
             });
         }
         let mut allowed_residency_regions = BTreeSet::new();
+        let mut prev_region: Option<String> = None;
         for _ in 0..res_count {
             let r = dec
                 .text()
                 .map_err(|e| ReplicationError::MalformedWire(e.to_string()))?;
             validate_bounded_text(r, MAX_RESIDENCY_REGION_BYTES, "residency_region")?;
-            if !allowed_residency_regions.insert(r.to_owned()) {
+            if prev_region.as_deref().is_some_and(|prev| r <= prev) {
                 return Err(ReplicationError::MalformedWire(
-                    "duplicate allowed_residency_region in policy".to_owned(),
+                    "allowed_residency_regions must be strictly canonically ordered and unique"
+                        .to_owned(),
                 ));
             }
+            prev_region = Some(r.to_owned());
+            allowed_residency_regions.insert(r.to_owned());
         }
         let max_retrievability_staleness_ns = dec
             .i128()
@@ -993,7 +1002,7 @@ impl RepairObligation {
         let obligation_id = dec
             .text()
             .map_err(|e| ReplicationError::MalformedWire(e.to_string()))?;
-        validate_bounded_text(obligation_id, MAX_REPLICA_LABEL_BYTES, "obligation_id")?;
+        validate_bounded_text(obligation_id, MAX_OBLIGATION_ID_BYTES, "obligation_id")?;
         let replica_id = dec
             .text()
             .map_err(|e| ReplicationError::MalformedWire(e.to_string()))?;
@@ -1398,7 +1407,9 @@ impl ArchiveReplicationLedger {
         replica.readiness = ReplicaReadiness::Healthy;
         replica.last_verified_at = None;
         replica.last_challenge_digest = None;
-        replica.last_updated_at = now_ns;
+        if now_ns > replica.last_updated_at {
+            replica.last_updated_at = now_ns;
+        }
         self.head_digest = self.compute_head_digest()?;
         Ok(&self.replicas[replica_id])
     }
@@ -1544,8 +1555,30 @@ impl ArchiveReplicationLedger {
         // Apply state transition according to challenge outcome.
         match receipt.outcome {
             ChallengeOutcome::Passed => {
+                // Only resolve obligations that predate this proof (newer generation OR same
+                // generation observed at/after the obligation opened). A delayed older Passed
+                // sample from before a failure can never resolve a newer open repair obligation.
+                for obligation in self.repair_obligations.values_mut() {
+                    if obligation.replica_id == receipt.replica_id
+                        && !obligation.resolved
+                        && (receipt.replica_generation > obligation.failed_generation
+                            || (receipt.replica_generation == obligation.failed_generation
+                                && receipt.challenged_at >= obligation.opened_at))
+                    {
+                        obligation.resolved = true;
+                        obligation.resolved_by_challenge_digest = Some(receipt.receipt_digest);
+                    }
+                }
+                let has_remaining_open_obligation = self
+                    .repair_obligations
+                    .values()
+                    .any(|o| o.replica_id == receipt.replica_id && !o.resolved);
                 if let Some(target) = self.replicas.get_mut(&receipt.replica_id) {
-                    target.readiness = ReplicaReadiness::Healthy;
+                    if !has_remaining_open_obligation
+                        && target.readiness != ReplicaReadiness::Quarantined
+                    {
+                        target.readiness = ReplicaReadiness::Healthy;
+                    }
                     if target
                         .last_verified_at
                         .is_none_or(|prev| receipt.challenged_at >= prev)
@@ -1556,14 +1589,10 @@ impl ArchiveReplicationLedger {
                     if receipt.challenged_at > target.last_updated_at {
                         target.last_updated_at = receipt.challenged_at;
                     }
-                    if target.custody_state == ArchiveObjectState::ReplicationPolicySatisfied {
+                    if !has_remaining_open_obligation
+                        && target.custody_state == ArchiveObjectState::ReplicationPolicySatisfied
+                    {
                         target.custody_state = ArchiveObjectState::RetrievabilitySamplePassed;
-                    }
-                }
-                for obligation in self.repair_obligations.values_mut() {
-                    if obligation.replica_id == receipt.replica_id && !obligation.resolved {
-                        obligation.resolved = true;
-                        obligation.resolved_by_challenge_digest = Some(receipt.receipt_digest);
                     }
                 }
             }
@@ -1581,17 +1610,26 @@ impl ArchiveReplicationLedger {
                     });
                 }
                 if let Some(target) = self.replicas.get_mut(&receipt.replica_id) {
-                    target.readiness = match receipt.outcome {
+                    // Quarantine is sticky for a corrupt generation: a later Timeout or Missing
+                    // sample must NEVER downgrade Quarantined to Indeterminate/RepairScheduled.
+                    let next_readiness = match receipt.outcome {
                         ChallengeOutcome::DigestMismatch => ReplicaReadiness::Quarantined,
                         ChallengeOutcome::MissingOrTruncated => ReplicaReadiness::RepairScheduled,
                         ChallengeOutcome::TimeoutOrIndeterminate => ReplicaReadiness::Indeterminate,
                         ChallengeOutcome::Passed => ReplicaReadiness::Healthy,
                     };
+                    if target.readiness != ReplicaReadiness::Quarantined
+                        || next_readiness == ReplicaReadiness::Quarantined
+                    {
+                        target.readiness = next_readiness;
+                    }
                     // Demote retrievability custody on failure so stale passed status never lingers.
                     if target.custody_state == ArchiveObjectState::RetrievabilitySamplePassed {
                         target.custody_state = ArchiveObjectState::RemoteRootPublished;
                     }
-                    target.last_updated_at = receipt.challenged_at;
+                    if receipt.challenged_at > target.last_updated_at {
+                        target.last_updated_at = receipt.challenged_at;
+                    }
                 }
                 self.repair_obligations.insert(
                     obligation_id.clone(),
@@ -1845,8 +1883,18 @@ impl ArchiveReplicationLedger {
             });
         }
         let mut replicas = BTreeMap::new();
+        let mut prev_replica_id: Option<String> = None;
         for _ in 0..replica_count {
             let r = ReplicaRecord::decode_canonical(&mut dec)?;
+            if prev_replica_id
+                .as_deref()
+                .is_some_and(|prev| r.replica_id.as_str() <= prev)
+            {
+                return Err(ReplicationError::MalformedWire(
+                    "replicas must be strictly canonically ordered and unique by replica_id"
+                        .to_owned(),
+                ));
+            }
             if !policy.allowed_residency_regions.is_empty()
                 && !policy
                     .allowed_residency_regions
@@ -1856,11 +1904,8 @@ impl ArchiveReplicationLedger {
                     "decoded replica violates policy residency regions".to_owned(),
                 ));
             }
-            if replicas.insert(r.replica_id.clone(), r).is_some() {
-                return Err(ReplicationError::MalformedWire(
-                    "duplicate replica_id in wire ledger".to_owned(),
-                ));
-            }
+            prev_replica_id = Some(r.replica_id.clone());
+            replicas.insert(r.replica_id.clone(), r);
         }
 
         let challenge_count = usize::try_from(
@@ -1912,36 +1957,54 @@ impl ArchiveReplicationLedger {
                 maximum: MAX_REPAIR_OBLIGATIONS,
             });
         }
-        let challenge_digests: BTreeSet<ContentDigest> =
-            challenges.iter().map(|c| c.receipt_digest).collect();
+        let challenge_by_digest: BTreeMap<ContentDigest, &RetrievabilityChallengeReceipt> =
+            challenges.iter().map(|c| (c.receipt_digest, c)).collect();
         let mut repair_obligations = BTreeMap::new();
+        let mut prev_obligation_id: Option<String> = None;
         for _ in 0..obligation_count {
             let o = RepairObligation::decode_canonical(&mut dec)?;
+            if prev_obligation_id
+                .as_deref()
+                .is_some_and(|prev| o.obligation_id.as_str() <= prev)
+            {
+                return Err(ReplicationError::MalformedWire(
+                    "repair obligations must be strictly canonically ordered and unique".to_owned(),
+                ));
+            }
             if !replicas.contains_key(&o.replica_id) {
                 return Err(ReplicationError::MalformedWire(
                     "repair obligation references unknown replica_id".to_owned(),
                 ));
             }
-            if !challenge_digests.contains(&o.triggering_challenge_digest) {
+            let Some(trigger) = challenge_by_digest.get(&o.triggering_challenge_digest) else {
                 return Err(ReplicationError::MalformedWire(
                     "repair obligation references unknown triggering challenge digest".to_owned(),
                 ));
-            }
-            if let Some(resolved_digest) = o.resolved_by_challenge_digest
-                && !challenge_digests.contains(&resolved_digest)
-            {
+            };
+            if trigger.replica_id != o.replica_id || trigger.outcome == ChallengeOutcome::Passed {
                 return Err(ReplicationError::MalformedWire(
-                    "repair obligation references unknown resolving challenge digest".to_owned(),
+                    "repair obligation triggering challenge must be a non-passed challenge on the same replica"
+                        .to_owned(),
                 ));
             }
-            if repair_obligations
-                .insert(o.obligation_id.clone(), o)
-                .is_some()
-            {
-                return Err(ReplicationError::MalformedWire(
-                    "duplicate obligation_id in wire ledger".to_owned(),
-                ));
+            if let Some(resolved_digest) = o.resolved_by_challenge_digest {
+                let Some(resolver) = challenge_by_digest.get(&resolved_digest) else {
+                    return Err(ReplicationError::MalformedWire(
+                        "repair obligation references unknown resolving challenge digest"
+                            .to_owned(),
+                    ));
+                };
+                if resolver.replica_id != o.replica_id
+                    || resolver.outcome != ChallengeOutcome::Passed
+                {
+                    return Err(ReplicationError::MalformedWire(
+                        "repair obligation resolving challenge must be a passed challenge on the same replica"
+                            .to_owned(),
+                    ));
+                }
             }
+            prev_obligation_id = Some(o.obligation_id.clone());
+            repair_obligations.insert(o.obligation_id.clone(), o);
         }
 
         let stored_head = dec
