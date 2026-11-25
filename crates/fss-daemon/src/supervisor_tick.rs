@@ -17,6 +17,13 @@ use crate::supervisor::DaemonSupervisor;
 
 const MAX_POLLS_PER_CAMERA_PER_TICK: usize = 128;
 
+#[path = "manifest_reload.rs"]
+mod manifest_reload;
+
+#[cfg(test)]
+#[path = "manifest_reload_tests.rs"]
+mod manifest_reload_tests;
+
 pub(crate) struct CameraPollCounters {
     pub(crate) frames_received: u64,
     pub(crate) frames_shed: u64,
@@ -89,7 +96,7 @@ impl DaemonSupervisor {
                     self.handle_snapshot_camera(cmd.target_camera_id.as_deref())?;
                 }
                 BoundedControlOp::ReloadManifest => {
-                    self.handle_reload_manifest()?;
+                    self.handle_reload_manifest(&cmd.operation_id)?;
                 }
                 BoundedControlOp::ProbeDetect => {
                     self.handle_probe_detect(cmd.target_camera_id.as_deref())?;
@@ -162,7 +169,10 @@ impl DaemonSupervisor {
         Ok(())
     }
 
-    fn handle_reload_manifest(&mut self) -> Result<(), DaemonError> {
+    fn handle_reload_manifest(
+        &mut self,
+        operation_id: &fss_core::OperationId,
+    ) -> Result<(), DaemonError> {
         let head = self.storage.head_snapshot()?;
         let Some(path) = self.manifest_path.clone() else {
             self.broadcast_delta(
@@ -170,7 +180,11 @@ impl DaemonSupervisor {
                 self.manifest.digest(),
                 MeaningfulDeltaClass::SensorHealth,
                 DeltaPriority::High,
-                "manifest_reload_refused reason=no_manifest_path_configured".to_owned(),
+                format!(
+                    "manifest_reload_refused reason=no_manifest_path_configured error_id={} operation_id={}",
+                    crate::ERR_DAEMON_MANIFEST_INVALID_001,
+                    operation_id.as_str()
+                ),
             );
             return Ok(());
         };
@@ -182,58 +196,87 @@ impl DaemonSupervisor {
                     self.manifest.digest(),
                     MeaningfulDeltaClass::SensorHealth,
                     DeltaPriority::High,
-                    format!("manifest_reload_refused error_id={}", err.error_id()),
+                    format!(
+                        "manifest_reload_refused error_id={} operation_id={}",
+                        err.error_id(),
+                        operation_id.as_str()
+                    ),
                 );
                 return Ok(());
             }
         };
-        if reloaded.site_id != self.manifest.site_id {
-            self.broadcast_delta(
-                head.commit_sequence,
-                self.manifest.digest(),
-                MeaningfulDeltaClass::SensorHealth,
-                DeltaPriority::High,
-                "manifest_reload_refused reason=site_id_mismatch".to_owned(),
-            );
-            return Ok(());
-        }
-        if let Err(err) = self.perception.reload_manifest(&reloaded) {
+
+        // The runtime has fixed storage, IPC, region, ring, source, and vault owners.
+        // Validate the whole candidate before changing any driver's metadata or cognition.
+        if let Some(field) = manifest_reload::restart_required_field(&self.manifest, &reloaded) {
             self.broadcast_delta(
                 head.commit_sequence,
                 self.manifest.digest(),
                 MeaningfulDeltaClass::SensorHealth,
                 DeltaPriority::High,
                 format!(
-                    "manifest_reload_refused reason=perception_reload_failed error_id={}",
-                    err.error_id()
+                    "manifest_reload_refused reason=restart_required field={field} error_id={} operation_id={}",
+                    crate::ERR_DAEMON_MANIFEST_INVALID_001,
+                    operation_id.as_str()
                 ),
             );
             return Ok(());
         }
+        if self.manifest == reloaded {
+            self.broadcast_delta(
+                head.commit_sequence,
+                self.manifest.digest(),
+                MeaningfulDeltaClass::MaterialState,
+                DeltaPriority::Normal,
+                format!(
+                    "manifest_reload_unchanged site={} digest={} operation_id={}",
+                    self.manifest.site_id,
+                    self.manifest.digest().to_text(),
+                    operation_id.as_str()
+                ),
+            );
+            return Ok(());
+        }
+        if manifest_reload::perception_changed(&self.manifest, &reloaded)
+            && let Err(err) = self.perception.reload_manifest(&reloaded)
+        {
+            self.broadcast_delta(
+                head.commit_sequence,
+                self.manifest.digest(),
+                MeaningfulDeltaClass::SensorHealth,
+                DeltaPriority::High,
+                format!(
+                    "manifest_reload_refused reason=perception_reload_failed error_id={} operation_id={}",
+                    err.error_id(),
+                    operation_id.as_str()
+                ),
+            );
+            return Ok(());
+        }
+
         let mut updated_cameras = 0_usize;
         for new_entry in &reloaded.cameras {
             if let Some(slot) = self.sensors.get_mut(&new_entry.sensor_id) {
-                slot.entry.osd_ignore_rects = new_entry.osd_ignore_rects.clone();
-                slot.entry.priority_tier = new_entry.priority_tier;
-                slot.entry.primary_zone = new_entry.primary_zone.clone();
-                slot.entry.zones = new_entry.zones.clone();
-                slot.entry.failure_domains = new_entry.failure_domains.clone();
-                slot.entry.reconnect_min_ms = new_entry.reconnect_min_ms;
-                slot.entry.reconnect_max_ms = new_entry.reconnect_max_ms;
-                slot.entry.stall_timeout_ms = new_entry.stall_timeout_ms;
-                slot.entry.gop_frames = new_entry.gop_frames;
-                slot.entry.endpoint = new_entry.endpoint.clone();
-                slot.entry.adapter = new_entry.adapter;
-                slot.entry.secret_id = new_entry.secret_id.clone();
-                slot.entry.auth_realm = new_entry.auth_realm.clone();
-                slot.entry.allow_inband_sps_pps = new_entry.allow_inband_sps_pps;
-                slot.entry.setup_companion_tracks = new_entry.setup_companion_tracks;
+                if slot.entry == *new_entry {
+                    continue;
+                }
+                let reconnect_changed = slot.entry.reconnect_min_ms != new_entry.reconnect_min_ms
+                    || slot.entry.reconnect_max_ms != new_entry.reconnect_max_ms;
                 slot.driver.update_manifest_entry(new_entry);
-                slot.backoff = crate::sensor::BackoffSchedule::new(
-                    new_entry.sensor_id.as_str(),
-                    new_entry.reconnect_min_ms,
-                    new_entry.reconnect_max_ms,
-                );
+                slot.entry = new_entry.clone();
+                if reconnect_changed {
+                    slot.backoff = crate::sensor::BackoffSchedule::new(
+                        new_entry.sensor_id.as_str(),
+                        new_entry.reconnect_min_ms,
+                        new_entry.reconnect_max_ms,
+                    );
+                    if slot.state == SensorState::GapBackoff {
+                        let delay_ms = slot.backoff.next_delay_ms();
+                        slot.next_reconnect_ns = self
+                            .last_now_ns
+                            .saturating_add(i128::from(delay_ms) * 1_000_000);
+                    }
+                }
                 updated_cameras = updated_cameras.saturating_add(1);
             }
         }
@@ -246,8 +289,9 @@ impl DaemonSupervisor {
             MeaningfulDeltaClass::MaterialState,
             DeltaPriority::Normal,
             format!(
-                "manifest_reloaded site={site} digest={} updated_cameras={updated_cameras}",
-                digest.to_text()
+                "manifest_reloaded site={site} digest={} updated_cameras={updated_cameras} operation_id={}",
+                digest.to_text(),
+                operation_id.as_str()
             ),
         );
         Ok(())
