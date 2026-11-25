@@ -392,6 +392,73 @@ impl ArchiveDecisionCard {
                 "nondominated_frontier must be non-empty".to_owned(),
             ));
         }
+        let total_options = self
+            .clamped_rejections
+            .len()
+            .saturating_add(self.nondominated_frontier.len())
+            .saturating_add(self.dominated_options.len());
+        if total_options > MAX_ARCHIVE_CARD_OPTIONS {
+            return Err(ArchiveCardError::BoundsExceeded {
+                observed: total_options,
+                maximum: MAX_ARCHIVE_CARD_OPTIONS,
+            });
+        }
+        if self.invalidators.len() > MAX_CARD_INVALIDATORS {
+            return Err(ArchiveCardError::BoundsExceeded {
+                observed: self.invalidators.len(),
+                maximum: MAX_CARD_INVALIDATORS,
+            });
+        }
+        for inv in &self.invalidators {
+            validate_label(inv, MAX_CARD_LABEL_BYTES, "invalidator")
+                .map_err(|e| ArchiveCardError::MalformedWire(e.to_string()))?;
+        }
+        for pair in self.invalidators.windows(2) {
+            if pair[0] >= pair[1] {
+                return Err(ArchiveCardError::MalformedWire(
+                    "invalidators must be strictly sorted and deduplicated".to_owned(),
+                ));
+            }
+        }
+        for opt in &self.nondominated_frontier {
+            validate_label(&opt.option_id, MAX_CARD_LABEL_BYTES, "option_id")
+                .map_err(|e| ArchiveCardError::MalformedWire(e.to_string()))?;
+            validate_label(&opt.residency_zone, MAX_CARD_LABEL_BYTES, "residency_zone")
+                .map_err(|e| ArchiveCardError::MalformedWire(e.to_string()))?;
+            validate_label(&opt.expected_proof, MAX_CARD_LABEL_BYTES, "expected_proof")
+                .map_err(|e| ArchiveCardError::MalformedWire(e.to_string()))?;
+            if !opt.privacy_authorized
+                || !opt.integrity_verified
+                || opt.failure_domains == 0
+                || opt.chunk_bytes == 0
+                || opt.loss_tolerance_bps > 10_000
+            {
+                return Err(ArchiveCardError::MalformedWire(format!(
+                    "frontier option '{}' violates mandatory invariants",
+                    opt.option_id
+                )));
+            }
+            if let Some((sym_sz, k, r)) = opt.repair_geometry
+                && (sym_sz == 0
+                    || (sym_sz as usize) > MAX_SYMBOL_SIZE
+                    || k == 0
+                    || r == 0
+                    || k.saturating_add(r) > MAX_GF256_BLOCK_SYMBOLS)
+            {
+                return Err(ArchiveCardError::MalformedWire(format!(
+                    "frontier option '{}' carries invalid GF(256) repair_geometry",
+                    opt.option_id
+                )));
+            }
+        }
+        for pair in self.nondominated_frontier.windows(2) {
+            if frontier_sort_key(&pair[0]) >= frontier_sort_key(&pair[1]) {
+                return Err(ArchiveCardError::MalformedWire(
+                    "nondominated_frontier must be strictly ordered in canonical Pareto key order"
+                        .to_owned(),
+                ));
+            }
+        }
         // Verify frontier is genuinely mutually nondominated!
         for (i, a) in self.nondominated_frontier.iter().enumerate() {
             for (j, b) in self.nondominated_frontier.iter().enumerate() {
@@ -726,6 +793,7 @@ impl ArchiveDecisionCardBuilder {
         )?;
         if clamps.allowed_residency_zones.is_empty()
             || clamps.min_failure_domains == 0
+            || clamps.min_loss_tolerance_bps > 10_000
             || clamps.max_verification_memory_bytes == 0
             || !clamps.require_privacy_authorized
             || !clamps.require_integrity_verified
@@ -791,29 +859,17 @@ impl ArchiveDecisionCardBuilder {
         }
 
         // Canonical sort before Pareto decomposition so results are 100% submission-order invariant!
-        feasible.sort_by(|a, b| {
-            (
-                a.total_cost_micros,
-                a.latency_ms,
-                a.overhead_bps,
-                a.verification_memory_bytes,
-                a.option_id.as_str(),
-            )
-                .cmp(&(
-                    b.total_cost_micros,
-                    b.latency_ms,
-                    b.overhead_bps,
-                    b.verification_memory_bytes,
-                    b.option_id.as_str(),
-                ))
-        });
+        feasible.sort_by(|a, b| frontier_sort_key(a).cmp(&frontier_sort_key(b)));
 
         let mut nondominated_frontier = Vec::new();
         let mut dominated_options = Vec::new();
         for candidate in &feasible {
-            if let Some(dom) = feasible
+            // Because `feasible` is sorted in ascending lexicographic objective order, any
+            // option dominating `candidate` (or its nondominated ancestor by transitivity)
+            // already resides in `nondominated_frontier`.
+            if let Some(dom) = nondominated_frontier
                 .iter()
-                .find(|other| other.option_id != candidate.option_id && dominates(other, candidate))
+                .find(|other| dominates(other, candidate))
             {
                 dominated_options.push(DominatedOptionRecord {
                     option_id: candidate.option_id.clone(),
@@ -889,6 +945,16 @@ fn evaluate_hard_clamps(opt: &ArchiveOptionSpec, clamps: &ArchiveHardClamps) -> 
         return Some("repair_geometry_exceeds_gf256_bounds".to_owned());
     }
     None
+}
+
+fn frontier_sort_key(opt: &ArchiveOptionSpec) -> (u64, u64, u32, u64, &str) {
+    (
+        opt.total_cost_micros,
+        opt.latency_ms,
+        opt.overhead_bps,
+        opt.verification_memory_bytes,
+        opt.option_id.as_str(),
+    )
 }
 
 /// True iff option `a` is `<=` option `b` on ALL four cost/risk objectives and strictly `<` on at

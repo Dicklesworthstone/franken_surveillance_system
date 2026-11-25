@@ -307,6 +307,12 @@ impl MergeCertificate {
         }
         let expected_span =
             (self.target_anchor.commit_sequence - self.source_anchor.commit_sequence) as usize;
+        if expected_span > MAX_MERGE_INTERVENING_BATCHES {
+            return Err(MergeLadderError::BoundsExceeded {
+                observed: expected_span,
+                maximum: MAX_MERGE_INTERVENING_BATCHES,
+            });
+        }
         if self.intervening_batch_digests.len() != expected_span {
             return Err(MergeLadderError::MalformedWire(format!(
                 "intervening_batch_digests len {} != sequence delta {expected_span}",
@@ -769,6 +775,20 @@ impl MergeLadder {
                         "deterministic intent replay output failed head anchor or authority binding"
                             .to_owned(),
                     guidance: MergeGuidance::EscalateSemanticConflict,
+                });
+            }
+            if replayed
+                .writes
+                .iter()
+                .any(|d| !replayed.authority.allowed_planes.contains(&d.plane))
+            {
+                return Ok(MergeOutcome::Refused {
+                    reason: MergeRefusalReason::AuthorityOrPrivacyRefused,
+                    conflicting_object: stale_read_obj
+                        .or_else(|| write_overlap_objs.into_iter().next()),
+                    detail: "replayed intent attempted write outside authorized semantic planes"
+                        .to_owned(),
+                    guidance: MergeGuidance::ReauthorizeAndReplan,
                 });
             }
             let mut replayed_pos = Vec::new();

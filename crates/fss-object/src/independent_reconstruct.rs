@@ -201,8 +201,7 @@ pub struct RepairFallbackBundle {
 pub struct ColdArchiveBlobSet {
     /// Raw immutable blobs (both `ObjectManifest` bytes and opaque leaf chunk bytes) keyed by claimed digest.
     pub blobs: BTreeMap<ContentDigest, Vec<u8>>,
-    /// Explicit set of digests known to be manifest blobs (root is always parsed as a manifest if
-    /// parseable, and any child whose raw bytes parse as `fss.object_manifest.v1` is recursed!).
+    /// Optional GF(256) repair fallback bundles keyed by missing target digest.
     pub repair_fallbacks: BTreeMap<ContentDigest, RepairFallbackBundle>,
 }
 
@@ -325,6 +324,14 @@ impl IndependentReconstructionProof {
         if self.verdict != ReconstructionVerdict::VerifiedComplete && self.defects.is_empty() {
             return Err(ReconstructionError::MalformedWire(
                 "non-complete reconstruction proof must record at least one typed defect"
+                    .to_owned(),
+            ));
+        }
+        if self.verdict == ReconstructionVerdict::IncompleteMissingBlobs
+            && self.defects.iter().any(|d| d.kind != "missing_blob")
+        {
+            return Err(ReconstructionError::MalformedWire(
+                "IncompleteMissingBlobs verdict cannot conceal corruption or quarantine defects"
                     .to_owned(),
             ));
         }

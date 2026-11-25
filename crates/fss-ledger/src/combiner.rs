@@ -464,6 +464,7 @@ struct RoundWinner {
     intent_id: String,
     intent_digest: ContentDigest,
     read_objects: BTreeSet<ObjectId>,
+    negative_read_objects: BTreeSet<ObjectId>,
     write_objects: BTreeSet<ObjectId>,
     writes: Vec<EvidenceDelta>,
     child_roots: Vec<ContentDigest>,
@@ -904,6 +905,7 @@ impl DeterministicCommitCombiner {
 
             // 5. Evaluate positive & negative read witnesses against committed history AND earlier winners.
             let mut read_objects: BTreeSet<ObjectId> = BTreeSet::new();
+            let mut negative_read_objects: BTreeSet<ObjectId> = BTreeSet::new();
             for pos in &extracted.positives {
                 read_objects.insert(pos.object_id.clone());
                 if source.object_mutated_after(&pos.object_id, basis_seq) {
@@ -961,6 +963,7 @@ impl DeterministicCommitCombiner {
                     break;
                 }
                 read_objects.insert(neg.object_id.clone());
+                negative_read_objects.insert(neg.object_id.clone());
                 if source.object_existed_at(&neg.object_id, basis_seq) {
                     read_conflict = Some(conflict(
                         ConflictKind::InvalidReadWitness,
@@ -1060,6 +1063,7 @@ impl DeterministicCommitCombiner {
                 intent_id,
                 intent_digest,
                 read_objects,
+                negative_read_objects,
                 write_objects,
                 writes: intent.writes,
                 child_roots: intent.child_roots,
@@ -1127,6 +1131,22 @@ fn detect_ssi_write_skew(
     //    violating W's snapshot serializability if T also depends on pre-batch state or if W has
     //    an incoming rw-edge from another winner!
     for w in winners {
+        // Symmetric same-batch negative-phantom protection: a single coalesced atomic batch
+        // MUST NEVER simultaneously admit an absence-conditioned write (backed by a certified
+        // NegativeWitness for `obj`) and a concurrent insert of `obj`, even when the inserter
+        // carries an empty read set (eliminating SHA-256 intent-digest order asymmetry!).
+        if let Some(obj) = w
+            .negative_read_objects
+            .iter()
+            .find(|r| candidate_writes.contains(*r))
+        {
+            return Some(conflict(
+                ConflictKind::NegativePhantomWrite,
+                Some(obj.clone()),
+                Some(w.intent_id.clone()),
+                "same-round phantom insert collides with earlier winner's certified negative read witness",
+            ));
+        }
         if let Some(obj) = w
             .read_objects
             .iter()
