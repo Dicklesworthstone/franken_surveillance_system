@@ -2,8 +2,40 @@
 
 **As of:** 2026-11-25 America/New_York (dated feature sections retain their original verification scope)
 **Project state:** prior retained snapshots are locally qualified on `darwin-arm64` across policy, scale, crash-recovery, daemon soak, lab, media, archive, privacy, model, geometry, threat, agent, adapter-loopback, and macOS parity lanes; multi-target DSR release matrix (`linux-x86_64`, `windows-x86_64`) and physical hardware-tuple field qualification remain open
-**Current change qualification:** each dated section below states its own verification boundary. The latest deletion-history change has source review but no native execution; the unavailable execution host prevents claiming tests, formatting, Clippy, or qualification. Prior receipts do not qualify new bytes.
+**Current change qualification:** each dated section below states its exact verification boundary. Native passes for one component do not qualify other changes, and prior receipts do not qualify new bytes.
 **Release authority:** repository-owned local qualification (`scripts/qualify.sh`) and retained DSR receipts, not hosted CI
+
+## ONNX ceiling-mode average pooling — 2026-11-25
+
+The first-party ONNX importer now admits `AveragePool ceil_mode=1` for static
+NCW and NCHW inputs with explicit padding. Partial final windows average only
+their real samples, final anchors wholly beyond the input are removed, and
+generated padding extends only the trailing edge. Existing native Conv2d and
+Div operators implement the result; no operator, dependency, model wire format,
+or execution framework was added. Floor-mode graph bytes and weight payload
+bits remain unchanged for equivalent windows, while artifact metadata retains
+the exact identity of each original ONNX source.
+
+Include-padding ceil windows are admitted only when they fit within the
+original explicit padding. Windows needing additional tail positions refuse
+because upstream evaluators disagree on their divisor. Automatic padding with
+ceil sizing and later-schema dilations remain unsupported. Every admitted
+window has a positive real-sample divisor and remains subject to existing
+parameter, tensor, work and cancellation limits. The exact profile and examples
+are documented in `docs/onnx_import.md`.
+
+**Native validation passed:** all 22 tests in the pinned nightly's
+`onnx_pooling_execution` target passed on Linux x86_64, including seven new ceil
+tests, 102 coordinate profiles, hand-computed partial means, NCW batch/channel
+preservation, F32 subnormals and intermediate overflow, graph reload, padding
+refusals, exact resource limits and cancellation checkpoints. Pinned Rust
+formatting and whitespace checks passed. This bounded native importer result
+does not establish trained detector quality, full workspace qualification, or
+release readiness. FSS-139 / `fss-x4a.14.10` remains open.
+
+```sh
+cargo +nightly-2026-08-31 test --locked --offline -j1 -p fss-model-ir --test onnx_pooling_execution
+```
 
 ## Deletion-history corruption recovery — 2026-11-25
 

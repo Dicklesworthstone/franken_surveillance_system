@@ -13,6 +13,9 @@ use fss_model_ir::{
 };
 use fss_tensor::{Shape, Tensor};
 
+#[path = "onnx_pooling_execution/ceil.rs"]
+mod ceil;
+
 #[path = "../../fss-reference/src/ingest/model_import/safetensors.rs"]
 mod safetensors;
 #[path = "../../fss-reference/src/scalar_executor.rs"]
@@ -639,7 +642,7 @@ fn malformed_and_unimplemented_pooling_attributes_refuse() {
             OnnxError::Graph,
         ),
         (
-            [ints_attr("kernel_shape", &[2, 2]), int_attr("ceil_mode", 1)].concat(),
+            [ints_attr("kernel_shape", &[2, 2]), int_attr("ceil_mode", 2)].concat(),
             OnnxError::Unsupported,
         ),
         (
@@ -715,13 +718,7 @@ fn malformed_and_unimplemented_pooling_attributes_refuse() {
 
 #[test]
 fn pooling_bad_ranks_bindings_output_shapes_and_generated_name_collisions_refuse() -> Test {
-    for dims in [
-        vec![],
-        vec![4],
-        vec![2, 4],
-        vec![1, 2, 4],
-        vec![1, 2, 2, 2, 2],
-    ] {
+    for dims in [vec![], vec![4], vec![2, 4], vec![1, 2, 2, 2, 2]] {
         assert_eq!(
             refusal(&pool_model(
                 "AveragePool",
@@ -732,6 +729,16 @@ fn pooling_bad_ranks_bindings_output_shapes_and_generated_name_collisions_refuse
             Some(OnnxError::Unsupported)
         );
     }
+    // NCW inputs are supported, but declaring two kernel axes is malformed.
+    assert_eq!(
+        refusal(&pool_model(
+            "AveragePool",
+            &[1, 2, 4],
+            &[1, 2, 3],
+            &ints_attr("kernel_shape", &[2, 2])
+        )),
+        Some(OnnxError::Graph)
+    );
     for dims in [vec![], vec![4], vec![2, 4]] {
         assert_eq!(
             refusal(&pool_model("GlobalAveragePool", &dims, &dims, &[])),

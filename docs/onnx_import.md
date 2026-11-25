@@ -66,10 +66,12 @@ including hand-computed dense and convolution/pooling results.
   `auto_pad=NOTSET`; other automatic modes retain floor sizing only.
   Concat requires an explicit axis.
   Softmax uses opset 13's last-axis default, without the older flattening behavior.
-- AveragePool admits 1-D and 2-D inputs with explicit padding, positive strides, floor output sizing,
-  and either include-padding or exclude-padding means. GlobalAveragePool reduces
-  all spatial dimensions of a rank-three-through-eight input to singleton dimensions.
-  Both use the bounded native lowering described below.
+- AveragePool admits 1-D and 2-D inputs with explicit padding, positive strides,
+  floor sizing and bounded ceil sizing. Exclude-padding means admit partial ceil
+  windows; include-padding means require each surviving window to fit within the
+  explicitly padded input. GlobalAveragePool reduces all spatial dimensions of
+  a rank-three-through-eight input to singleton dimensions. Both use the bounded
+  native lowering described below.
 
 Unknown features refuse rather than being skipped or approximated. In particular,
 runtime or data-dependent shape inputs/computation,
@@ -141,16 +143,16 @@ model without adding an operator, foreign runtime or model wire format.
 |---|---|
 | Conv | F32 weights `[M,C/group,K]`, constant or runtime; optional `[M]` bias; groups, depthwise filters, stride and dilation. |
 | MaxPool | One value output, unit dilation, floor or ceil sizing; index outputs remain unsupported. |
-| AveragePool | Floor sizing and explicit `count_include_pad=0` or `1`, with the existing default of zero. |
+| AveragePool | Floor sizing with either padding-count mode; ceil sizing with the default exclude-padding mean, or include-padding when no extra tail positions are needed. |
 
 Spatial `kernel_shape`, `strides` and Conv `dilations` contain one integer;
 explicit `pads` contains `[before,after]`. `VALID`, `SAME_UPPER` and
 `SAME_LOWER` retain their existing static padding semantics. Automatic padding
-cannot be combined with explicit pads, and MaxPool ceil sizing accepts only
-explicit/absent pads or `auto_pad=NOTSET`. Pooling pads must remain smaller than
-the corresponding kernel. AveragePool ceil sizing and later-schema dilations
-remain refusals. Invalid attributes, empty/dynamic dimensions and unsupported
-dtypes retain the ordinary typed import failures.
+cannot be combined with explicit pads. MaxPool and AveragePool ceil sizing accept
+only explicit/absent pads or `auto_pad=NOTSET`. Pooling pads must remain smaller
+than the corresponding kernel. AveragePool include-padding partial ceil windows
+and later-schema dilations remain refusals. Invalid attributes, empty/dynamic
+dimensions and unsupported dtypes retain the ordinary typed import failures.
 
 Conv lowers to four native nodes (input and filter reshapes, Conv2d, output reshape);
 MaxPool uses three; AveragePool uses four and its two existing bounded parameters.
@@ -992,10 +994,11 @@ shape refuse conversion. Existing size, work and cancellation ceilings apply.
 
 Automatic MaxPool padding skips padded positions, including for entirely negative
 input, and admits only unit dilation and floor output sizing. Its explicit-padding
-profile also admits ceil sizing as described below. AveragePool keeps its explicit
-include/exclude-padding denominator and floor sizing. Both preserve the rule that every admitted pooling
-window contains a real sample. Existing grouped/dilated Conv, bias, parameter
-bits and scalar accumulation order remain intact.
+profile also admits ceil sizing as described below. Automatic AveragePool padding
+keeps its explicit include/exclude-padding denominator and floor sizing; its
+explicit-padding profile admits the bounded ceil cases below. Both preserve the
+rule that every admitted pooling window contains a real sample. Existing
+grouped/dilated Conv, bias, parameter bits and scalar accumulation order remain intact.
 
 The `onnx_padding_execution` target compares real native execution with an
 independent spatial oracle, then repeats execution after canonical graph and
@@ -1012,17 +1015,39 @@ the schemas selected by opset 13. This supports average downsampling and global
 context heads in an original convolutional graph, including a subsequent Flatten,
 Gemm or activation, through the existing native execution and packaging path.
 
-AveragePool requires static F32 `N,C,H,W` input and a positive two-element
-`kernel_shape`. `strides` defaults to `[1,1]`; `pads` defaults to four zeros in
-top, left, bottom, right order. Each explicit pad must be nonnegative and smaller
-than its corresponding kernel dimension. The padded extent must contain a kernel.
-Output dimensions use floor sizing, so these conditions guarantee that every
-admitted window contains a real input sample. `count_include_pad=0`, the default,
-divides each window's sum by its real sample count. Setting it to one divides by
-the full kernel area, including padded positions. Asymmetric padding and spatial
-strides apply independently. `auto_pad` can select the static automatic modes
-above; `ceil_mode` must be absent or zero. Ceil mode, dilation attributes from
-later AveragePool schemas and malformed attribute types explicitly refuse.
+AveragePool admits static F32 `N,C,H,W` input and a positive two-element
+`kernel_shape`, or the equivalent `N,C,W` one-dimensional profile above.
+`strides` defaults to one per spatial axis; `pads` defaults to zero and lists all
+beginning pads before all ending pads. Each declared pad must be nonnegative and
+smaller than its corresponding kernel dimension. Asymmetric padding and strides
+apply independently. `count_include_pad=0`, the default, divides each window's
+sum by its real sample count. Setting it to one divides by the full kernel area
+for the admitted profile.
+
+Absent or zero `ceil_mode` preserves floor sizing and requires the padded extent
+to contain a kernel. `ceil_mode=1` uses ceiling sizing, drops the final window if
+its anchor starts at or beyond the end of the real input, and admits a partial
+window even when the kernel is larger than the padded input by less than one
+stride. A zero-output dimension refuses. Every admitted window still contains
+a real sample, so its divisor is positive.
+
+Ceil sizing accepts explicit/absent pads and `auto_pad=NOTSET`. The importer
+extends only the trailing native convolution padding when a surviving ceil
+window reaches past the padded extent; it never moves the input or its first
+window. With `count_include_pad=0`, those extra positions are excluded from the
+mean. For example, a length-five input `[1,2,3,4,5]` with kernel four and stride
+three produces `[2.5,4.5]`: the windows contain `[1,2,3,4]` and `[4,5]`.
+
+With `count_include_pad=1`, ceil sizing is admitted only when every surviving
+window fits inside the original explicitly padded extent. A window requiring
+extra tail padding refuses as unsupported: upstream evaluators disagree about
+whether those additional positions count in the divisor, as documented in
+[ONNX's divisor discussion](https://github.com/onnx/onnx/issues/5276) and the
+[reference evaluator's ceil-padding correction](https://github.com/onnx/onnx/pull/8595).
+This boundary avoids silently selecting one conflicting interpretation.
+Automatic padding modes `VALID`, `SAME_UPPER` and `SAME_LOWER` keep floor sizing
+only. Other ceil values, dilation attributes from later AveragePool schemas and
+malformed attribute types explicitly refuse.
 
 GlobalAveragePool accepts rank three through eight in `N,C,D1,...` layout and
 has no attributes. It produces the same rank, batch count and channel count,
@@ -1033,10 +1058,11 @@ output rank. No batch or channel values are mixed into a spatial mean.
 Both operations lower to a depthwise Conv2d with exactly one-valued weights,
 followed by Div. The native scalar numerical contract is a row-major F32 spatial
 sum from a zero accumulator, the convolution's existing zero-bias addition, then
-F32 division. A scalar denominator suffices for global pooling, unpadded windows
-and include-padding means. Exclude-padding means with nonzero pads use a static
-`[1,1,Hout,Wout]` denominator tensor, broadcast across batches and channels. Every
-denominator is a strictly positive integer represented exactly as F32. The importer
+F32 division. A scalar denominator suffices for global pooling, complete unpadded
+windows and admitted include-padding means. Exclude-padding means with declared
+or generated tail pads use a static `[1,1,Hout,Wout]` denominator tensor,
+broadcast across batches and channels. Every denominator is a strictly positive
+integer represented exactly as F32. The importer
 does not replace division with reciprocal weights or widen accumulation: those
 changes can lose subnormal values, avoid an intermediate overflow, or alter
 rounding. Runtime nonfinite-result handling remains the ordinary native executor
@@ -1065,9 +1091,13 @@ export and after the real canonical graph and Safetensors loaders reconstruct
 the model. Separate tests cover both padding denominators over 84 window profiles,
 ranks three through eight, subnormal preservation, F32 reduction order and
 intermediate overflow, exact cumulative quotas, name collisions, source identity,
-every pooling import cancellation checkpoint and native execution limits. These
-numerical checks do not establish trained detector quality or full package/CLI
-qualification. Run the focused suite with:
+every pooling import cancellation checkpoint and native execution limits.
+The `onnx_pooling_execution/ceil.rs` module adds hand-computed partial windows,
+independent coordinate enumeration, one-dimensional shape restoration, unchanged
+floor graph bytes and weight payload bits, include-padding boundary refusals, and
+the additional denominator's quota and cancellation checks. These numerical checks do not
+establish trained detector quality or full package/CLI qualification. Run the
+focused suite with:
 
 ```sh
 cargo test -p fss-model-ir --test onnx_pooling_execution

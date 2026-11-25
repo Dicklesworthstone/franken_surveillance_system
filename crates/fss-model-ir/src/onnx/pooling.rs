@@ -68,6 +68,20 @@ fn plan(source: &mut SourceNode<'_>, dims: &[usize]) -> Result<Pool> {
     let input: [usize; 4] = dims.try_into().map_err(|_| OnnxError::Unsupported)?;
     let kernel = dimensions(&mut source.attrs, "kernel_shape", None::<[usize; 2]>)?;
     let strides = dimensions(&mut source.attrs, "strides", Some([1, 1]))?;
+    let ceil_mode = match source.attrs.remove("ceil_mode") {
+        None | Some(AttrValue::Int(0)) => false,
+        Some(AttrValue::Int(1)) => true,
+        Some(AttrValue::Int(_)) => return Err(OnnxError::Unsupported),
+        Some(_) => return Err(OnnxError::Graph),
+    };
+    if ceil_mode
+        && matches!(
+            source.attrs.get("auto_pad"),
+            Some(AttrValue::String(mode)) if mode != "NOTSET"
+        )
+    {
+        return Err(OnnxError::Unsupported);
+    }
     padding::resolve(
         &mut source.attrs,
         [input[2], input[3]],
@@ -75,17 +89,12 @@ fn plan(source: &mut SourceNode<'_>, dims: &[usize]) -> Result<Pool> {
         strides,
         [1, 1],
     )?;
-    let pads = dimensions(&mut source.attrs, "pads", Some([0; 4]))?;
+    let mut pads = dimensions(&mut source.attrs, "pads", Some([0; 4]))?;
     let include_padding = match source.attrs.remove("count_include_pad") {
         None | Some(AttrValue::Int(0)) => false,
         Some(AttrValue::Int(1)) => true,
         Some(_) => return Err(OnnxError::Graph),
     };
-    match source.attrs.remove("ceil_mode") {
-        None | Some(AttrValue::Int(0)) => {}
-        Some(AttrValue::Int(_)) => return Err(OnnxError::Unsupported),
-        Some(_) => return Err(OnnxError::Graph),
-    }
     // In particular, dilations belongs to a later AveragePool schema.
     if !source.attrs.is_empty() {
         return Err(OnnxError::Unsupported);
@@ -93,8 +102,8 @@ fn plan(source: &mut SourceNode<'_>, dims: &[usize]) -> Result<Pool> {
     if kernel.contains(&0) || strides.contains(&0) {
         return Err(OnnxError::Graph);
     }
-    // Together with floor output sizing, this proves every admitted window has
-    // a real input sample. There is no empty-window mean or zero divisor.
+    // Together with the output sizing and rightmost-anchor check below, this
+    // proves every admitted window has a real sample and a nonzero divisor.
     if (0..4).any(|index| pads[index] >= kernel[index % 2]) {
         return Err(OnnxError::Unsupported);
     }
@@ -104,8 +113,53 @@ fn plan(source: &mut SourceNode<'_>, dims: &[usize]) -> Result<Pool> {
             .checked_add(pads[axis])
             .and_then(|n| n.checked_add(pads[axis + 2]))
             .ok_or(OnnxError::Limit)?;
-        output[axis + 2] =
-            padded.checked_sub(kernel[axis]).ok_or(OnnxError::Graph)? / strides[axis] + 1;
+        if !ceil_mode {
+            // Preserve the existing floor-mode graph, parameters and work charges.
+            output[axis + 2] =
+                padded.checked_sub(kernel[axis]).ok_or(OnnxError::Graph)? / strides[axis] + 1;
+            continue;
+        }
+        let mut windows = if padded < kernel[axis] {
+            // A negative numerator still yields one partial window when its
+            // magnitude is smaller than a stride. Larger deficits yield none.
+            if kernel[axis] - padded >= strides[axis] {
+                return Err(OnnxError::Graph);
+            }
+            1
+        } else {
+            (padded - kernel[axis])
+                .div_ceil(strides[axis])
+                .checked_add(1)
+                .ok_or(OnnxError::Limit)?
+        };
+        let input_end = input[axis + 2]
+            .checked_add(pads[axis])
+            .ok_or(OnnxError::Limit)?;
+        let last_start = (windows - 1)
+            .checked_mul(strides[axis])
+            .ok_or(OnnxError::Limit)?;
+        if last_start >= input_end {
+            windows -= 1;
+        }
+        let required = windows
+            .checked_sub(1)
+            .ok_or(OnnxError::Graph)?
+            .checked_mul(strides[axis])
+            .and_then(|n| n.checked_add(kernel[axis]))
+            .ok_or(OnnxError::Limit)?;
+        if required > padded {
+            // ONNX implementations disagree about the include-padding divisor
+            // when a ceil window extends past the explicitly padded input.
+            // Admit the unambiguous exclude-padding profile; do not silently
+            // count generated tail padding as caller-declared padding.
+            if include_padding {
+                return Err(OnnxError::Unsupported);
+            }
+            pads[axis + 2] = pads[axis + 2]
+                .checked_add(required - padded)
+                .ok_or(OnnxError::Limit)?;
+        }
+        output[axis + 2] = windows;
     }
     Ok(Pool {
         input,
