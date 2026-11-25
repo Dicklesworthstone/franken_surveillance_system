@@ -3,7 +3,7 @@
 //! and an incremental `O(log N)` Radix-Merkle accumulator.
 
 use std::collections::BTreeMap;
-use std::fs;
+use std::fs::{self, File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
 
 use fss_core::{
@@ -12,6 +12,7 @@ use fss_core::{
 };
 
 use crate::batch_codec::encode_batch;
+use crate::error::AppendPhase;
 use crate::journal::IncompleteTailPolicy;
 use crate::merkle::{MerkleProof, RadixMerkleTrie, merkle_genesis_anchor};
 use crate::oracle::{CommitReceipt, MAX_ORACLE_TEXT_BYTES};
@@ -25,7 +26,7 @@ use super::segment::{
     verify_checkpoint_epoch_anchor,
 };
 use super::validate::{
-    apply_deltas_incremental, check_counts, check_deltas, check_texts, delta_order_key,
+    ValidatedBatch, apply_deltas_incremental, check_counts, check_deltas, check_texts, delta_order_key,
     validate_and_apply_batch,
 };
 use super::verify::{ReplayState, replay_epoch_records, verify_full_chain_from_disk};
@@ -51,6 +52,22 @@ pub struct MerkleEpochLedger {
     active_writer: EpochSegmentWriter,
     recovery_summary: OpenRecoverySummary,
     latest_checkpoint: Option<CheckpointSummary>,
+    pending: Option<ValidatedBatch>,
+    // Drop the writer before releasing exclusive root ownership. The lock file stays on disk;
+    // unlinking it would permit independent locks on different inodes for the same ledger root.
+    _lock_file: File,
+}
+
+/// Exact outcome of resolving one previously indeterminate v2 evidence-batch append.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum EpochAppendReconciliation {
+    /// The attempted batch is durably committed and is now published exactly once.
+    Committed(CommitReceipt),
+    /// The attempted batch did not commit; its proven incomplete tail was quarantined if present.
+    NotCommitted {
+        /// Sequence still available for a safe retry.
+        sequence: u64,
+    },
 }
 
 impl MerkleEpochLedger {
@@ -60,6 +77,11 @@ impl MerkleEpochLedger {
     /// epoch-mismatched newer checkpoints and falling back cleanly to the prior valid checkpoint
     /// or genesis), then replays ONLY the post-checkpoint epoch tail. Truncated tails at the
     /// active epoch end honor `tail_policy` strictly after semantic preflight of all prior records.
+    ///
+    /// An exclusive operating-system lock on `<dir>/LOCK` is acquired before recovery or file
+    /// creation inside the ledger and remains held until this handle is dropped. A competing
+    /// writer fails immediately with [`EpochLedgerError::WriterLocked`]. Read-only inspection
+    /// remains available through [`super::inspect_epochs_readonly`].
     pub fn open(
         dir: impl AsRef<Path>,
         site_lineage: impl Into<String>,
@@ -75,6 +97,18 @@ impl MerkleEpochLedger {
         }
 
         let root_dir = dir.as_ref().to_path_buf();
+        fs::create_dir_all(&root_dir)?;
+        let lock_file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(root_dir.join("LOCK"))?;
+        match lock_file.try_lock() {
+            Ok(()) => {}
+            Err(TryLockError::WouldBlock) => return Err(EpochLedgerError::WriterLocked),
+            Err(TryLockError::Error(error)) => return Err(error.into()),
+        }
         let epochs_dir = root_dir.join("epochs");
         let checkpoints_dir = root_dir.join("checkpoints");
         fs::create_dir_all(&epochs_dir)?;
@@ -201,6 +235,7 @@ impl MerkleEpochLedger {
             active_header,
             active_committed_len,
             active_batch_count,
+            state.history_root,
         )?;
 
         let recovery_summary = OpenRecoverySummary {
@@ -223,6 +258,8 @@ impl MerkleEpochLedger {
             active_writer,
             recovery_summary,
             latest_checkpoint,
+            pending: None,
+            _lock_file: lock_file,
         })
     }
 
@@ -286,6 +323,12 @@ impl MerkleEpochLedger {
         self.active_writer.committed_len()
     }
 
+    /// Sequence of the unresolved append, if this handle is fenced pending reconciliation.
+    #[must_use]
+    pub fn pending_append_sequence(&self) -> Option<u64> {
+        self.active_writer.pending_sequence()
+    }
+
     /// Recovery summary observed when this handle opened.
     #[must_use]
     pub const fn recovery_summary(&self) -> &OpenRecoverySummary {
@@ -327,6 +370,7 @@ impl MerkleEpochLedger {
         mut deltas: Vec<EvidenceDelta>,
         child_roots: impl IntoIterator<Item = ContentDigest>,
     ) -> Result<EvidenceDeltaBatch, EpochLedgerError> {
+        self.active_writer.ensure_reconciled()?;
         deltas.sort_by(|left, right| delta_order_key(left).cmp(&delta_order_key(right)));
         let mut children: Vec<ContentDigest> = child_roots.into_iter().collect();
         children.sort_unstable();
@@ -361,11 +405,15 @@ impl MerkleEpochLedger {
     ///
     /// Triggers atomic epoch rollover (with checkpoint emission) whenever `max_epoch_bytes` or
     /// `max_batches_per_epoch` is reached, and emits a verified checkpoint snapshot every
-    /// `checkpoint_stride` commits.
+    /// `checkpoint_stride` commits. Record write/sync failures retain the exact candidate and
+    /// fence later preparation, appends, checkpoints, and verification until reconciliation.
+    /// A failed periodic checkpoint returns [`EpochLedgerError::CommittedCheckpointFailed`]
+    /// carrying the durable receipt; that batch must not be treated as an uncommitted attempt.
     pub fn append_batch(
         &mut self,
         batch: EvidenceDeltaBatch,
     ) -> Result<CommitReceipt, EpochLedgerError> {
+        self.active_writer.ensure_reconciled()?;
         let validated = validate_and_apply_batch(
             &self.head_anchor,
             self.history_root,
@@ -389,10 +437,32 @@ impl MerkleEpochLedger {
         }
 
         let seq = validated.batch.new_anchor.commit_sequence;
-        let _new_offset =
-            self.active_writer
-                .append_record(seq, &encoded, validated.next_history_root)?;
+        if let Err(error) = self
+            .active_writer
+            .append_record(seq, &encoded, validated.next_history_root)
+        {
+            if matches!(&error, EpochLedgerError::AppendIndeterminate { .. }) {
+                self.pending = Some(validated);
+            }
+            return Err(error);
+        }
 
+        let receipt = self.publish_validated(validated);
+        if self.config.checkpoint_stride > 0
+            && seq.is_multiple_of(self.config.checkpoint_stride)
+            && let Err(source) = self.emit_checkpoint()
+        {
+            return Err(EpochLedgerError::CommittedCheckpointFailed {
+                receipt: Box::new(receipt),
+                source: Box::new(source),
+            });
+        }
+
+        Ok(receipt)
+    }
+
+    fn publish_validated(&mut self, validated: ValidatedBatch) -> CommitReceipt {
+        let seq = validated.batch.new_anchor.commit_sequence;
         let receipt = CommitReceipt {
             sequence: seq,
             batch_id: validated.batch.batch_id.clone(),
@@ -409,21 +479,50 @@ impl MerkleEpochLedger {
         self.history_root = validated.next_history_root;
         self.trie = validated.next_trie;
 
-        if self.config.checkpoint_stride > 0 && seq.is_multiple_of(self.config.checkpoint_stride) {
-            let _ = self.emit_checkpoint()?;
-        }
+        receipt
+    }
 
-        Ok(receipt)
+    /// Resolves the exact retained candidate without releasing writer ownership.
+    ///
+    /// A complete byte-for-byte match is synchronized before publication. A matching incomplete
+    /// suffix remains blocked under `Reject`, or is quarantined and durably truncated under
+    /// `Truncate`. Divergent bytes, changed committed boundaries, and reconciliation I/O failures
+    /// preserve the fence. At most the bounded attempted record is read; historical replay is
+    /// unnecessary. Losing the handle instead uses the normal open/recovery rules.
+    pub fn reconcile_pending(
+        &mut self,
+        tail_policy: IncompleteTailPolicy,
+    ) -> Result<EpochAppendReconciliation, EpochLedgerError> {
+        let pending = self.pending.take().ok_or(EpochLedgerError::NoPendingAppend)?;
+        let sequence = pending.batch.new_anchor.commit_sequence;
+        match self.active_writer.reconcile_pending(&self.root_dir, tail_policy) {
+            Ok(true) => Ok(EpochAppendReconciliation::Committed(
+                self.publish_validated(pending),
+            )),
+            Ok(false) => Ok(EpochAppendReconciliation::NotCommitted { sequence }),
+            Err(error) => {
+                self.pending = Some(pending);
+                Err(error)
+            }
+        }
+    }
+
+    /// Injects one post-I/O failure at an append or reconciliation phase for fault qualification.
+    #[doc(hidden)]
+    pub fn fail_journal_after_phase(&mut self, phase: AppendPhase) {
+        self.active_writer.fail_after_phase(phase);
     }
 
     /// Explicitly emits an immutable verified checkpoint snapshot at the current head commit.
     pub fn force_checkpoint(&mut self) -> Result<CheckpointSummary, EpochLedgerError> {
+        self.active_writer.ensure_reconciled()?;
         self.emit_checkpoint()
     }
 
     /// Independently verifies EVERY epoch segment file and EVERY committed batch from genesis
     /// through the current head, recomputing every Merkle hash from scratch.
     pub fn verify_full_chain(&self) -> Result<EpochVerificationReport, EpochLedgerError> {
+        self.active_writer.ensure_reconciled()?;
         verify_full_chain_from_disk(
             &self.epochs_dir,
             &self.genesis,
@@ -462,8 +561,17 @@ impl MerkleEpochLedger {
             prev_history_root: self.history_root,
         };
         let _ = create_epoch_file_atomic(&self.epochs_dir, &next_header)?;
-        self.active_writer =
-            EpochSegmentWriter::open(&self.epochs_dir, next_header, EPOCH_HEADER_LEN as u64, 0)?;
+        let mut next_writer = EpochSegmentWriter::open(
+            &self.epochs_dir,
+            next_header,
+            EPOCH_HEADER_LEN as u64,
+            0,
+            self.history_root,
+        )?;
+        if let Some(phase) = self.active_writer.take_failure_injection() {
+            next_writer.fail_after_phase(phase);
+        }
+        self.active_writer = next_writer;
         Ok(())
     }
 

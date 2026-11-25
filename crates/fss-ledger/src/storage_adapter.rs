@@ -36,11 +36,13 @@ use fss_core::{
 };
 
 use crate::durable::{DurableAppendReconciliation, DurableLedgerError, DurableReferenceLedger};
-use crate::epochs::{EpochLedgerError, MerkleEpochLedger};
+use crate::epochs::{
+    CheckpointSummary, EpochAppendReconciliation, EpochLedgerError, MerkleEpochLedger,
+};
 use crate::error::JournalError;
 use crate::journal::IncompleteTailPolicy;
 use crate::merkle::MerkleProof;
-use crate::oracle::{LedgerOracle, ObjectRead, OracleError};
+use crate::oracle::{CommitReceipt, LedgerOracle, ObjectRead, OracleError};
 use crate::witness::{NegativeWitness, PositiveWitness, SemanticWitness, WitnessError};
 
 /// Registered digest domain for sealed [`StorageCommitReceipt`] commitments (`FSS-031`).
@@ -265,6 +267,8 @@ pub enum StorageGuidance {
     AllocateFreshBatchId,
     /// Run `reconcile_after_crash` before attempting any further mutations.
     ReconcileIndeterminateAppend,
+    /// The batch committed; repair checkpoint storage and retry checkpoint maintenance only.
+    RetryCheckpoint,
     /// Upgrade reader/engine rather than downgrading storage schema versions.
     UpgradeInsteadOfDowngrade,
     /// Quarantine corrupt storage and run doctor/repair from a healthy replica.
@@ -302,6 +306,13 @@ pub enum StorageError {
         /// Sequence of the ambiguous append.
         sequence: u64,
         /// Secret-free diagnostic detail.
+        detail: String,
+    },
+    /// The evidence batch committed durably, but periodic checkpoint maintenance failed.
+    CommittedCheckpointFailed {
+        /// Exact durable batch receipt; never retry this as a fresh uncommitted batch.
+        receipt: Box<CommitReceipt>,
+        /// Secret-free checkpoint diagnostic detail.
         detail: String,
     },
     /// Attempted schema version downgrade or incompatible starting version.
@@ -350,6 +361,7 @@ impl StorageError {
             Self::AnchorOrGenerationConflict(_) => "ERR-LEDGER-STORAGE-CONFLICT-001",
             Self::BatchIdConflict { .. } => "ERR-LEDGER-STORAGE-BATCH-ID-CONFLICT-001",
             Self::IndeterminateAppend { .. } => "ERR-LEDGER-STORAGE-INDETERMINATE-001",
+            Self::CommittedCheckpointFailed { .. } => "ERR-LEDGER-STORAGE-CHECKPOINT-001",
             Self::UnsupportedSchemaDowngrade { .. } => "ERR-LEDGER-STORAGE-DOWNGRADE-001",
             Self::CorruptionDetected(_) => "ERR-LEDGER-STORAGE-CORRUPT-001",
             Self::NotFound(_) => "ERR-LEDGER-STORAGE-NOT-FOUND-001",
@@ -376,6 +388,7 @@ impl StorageError {
             Self::UncertifiedAbsenceWitness => StorageGuidance::WaitForCertifiedCoverage,
             Self::BatchIdConflict { .. } => StorageGuidance::AllocateFreshBatchId,
             Self::IndeterminateAppend { .. } => StorageGuidance::ReconcileIndeterminateAppend,
+            Self::CommittedCheckpointFailed { .. } => StorageGuidance::RetryCheckpoint,
             Self::UnsupportedSchemaDowngrade { .. } => StorageGuidance::UpgradeInsteadOfDowngrade,
             Self::CorruptionDetected(_) => StorageGuidance::QuarantineAndRepairStorage,
             Self::InvalidMagic
@@ -1234,6 +1247,23 @@ impl MerkleEpochStorage {
     pub const fn ledger(&self) -> &MerkleEpochLedger {
         &self.ledger
     }
+
+    /// Retries checkpoint maintenance without resubmitting evidence or releasing writer ownership.
+    ///
+    /// This is the recovery operation for [`StorageError::CommittedCheckpointFailed`] once
+    /// checkpoint storage has been repaired. Cancellation, revoked authority, and unresolved
+    /// appends still refuse mutation.
+    pub fn force_checkpoint(
+        &mut self,
+        authority: &StorageAuthorityScope,
+        cancelled: bool,
+    ) -> Result<CheckpointSummary, StorageError> {
+        if cancelled {
+            return Err(StorageError::Cancelled);
+        }
+        authority.validate()?;
+        self.ledger.force_checkpoint().map_err(map_epoch_error)
+    }
 }
 
 impl FrankenSqliteStorageAdapter for MerkleEpochStorage {
@@ -1340,6 +1370,12 @@ impl FrankenSqliteStorageAdapter for MerkleEpochStorage {
             return Err(StorageError::Cancelled);
         }
         authority.validate()?;
+        if let Some(sequence) = self.ledger.pending_append_sequence() {
+            return Err(StorageError::IndeterminateAppend {
+                sequence,
+                detail: "pending epoch append requires reconcile_after_crash first".to_owned(),
+            });
+        }
         validate_batch_scope_and_witness_bounds(&batch, witnesses, authority)?;
 
         if let Some((prev_anchor, prev_hist, prev_digest)) = self.committed_ids.get(&batch.batch_id)
@@ -1375,7 +1411,20 @@ impl FrankenSqliteStorageAdapter for MerkleEpochStorage {
         }
 
         let batch_id = batch.batch_id.clone();
-        let receipt = self.ledger.append_batch(batch).map_err(map_epoch_error)?;
+        let receipt = match self.ledger.append_batch(batch) {
+            Ok(receipt) => receipt,
+            Err(EpochLedgerError::CommittedCheckpointFailed { receipt, source }) => {
+                self.committed_ids.insert(
+                    receipt.batch_id.clone(),
+                    (receipt.anchor.clone(), receipt.history_root, receipt.batch_digest),
+                );
+                return Err(StorageError::CommittedCheckpointFailed {
+                    receipt,
+                    detail: source.to_string(),
+                });
+            }
+            Err(error) => return Err(map_epoch_error(error)),
+        };
         self.committed_ids.insert(
             batch_id.clone(),
             (
@@ -1405,6 +1454,16 @@ impl FrankenSqliteStorageAdapter for MerkleEpochStorage {
         now: TimestampNs,
         cancelled: bool,
     ) -> Result<StorageCommitReceipt, StorageError> {
+        if cancelled {
+            return Err(StorageError::Cancelled);
+        }
+        authority.validate()?;
+        if let Some(sequence) = self.ledger.pending_append_sequence() {
+            return Err(StorageError::IndeterminateAppend {
+                sequence,
+                detail: "pending epoch append requires reconcile_after_crash first".to_owned(),
+            });
+        }
         apply_checked_migration(
             self.adapter_id(),
             &mut self.schema_version,
@@ -1427,10 +1486,30 @@ impl FrankenSqliteStorageAdapter for MerkleEpochStorage {
             return Err(StorageError::Cancelled);
         }
         authority.validate()?;
-        let _ = self.ledger.verify_full_chain().map_err(map_epoch_error)?;
+        let outcome = if self.ledger.pending_append_sequence().is_some() {
+            match self
+                .ledger
+                .reconcile_pending(IncompleteTailPolicy::Truncate)
+                .map_err(map_epoch_error)?
+            {
+                EpochAppendReconciliation::Committed(receipt) => {
+                    self.committed_ids.insert(
+                        receipt.batch_id,
+                        (receipt.anchor, receipt.history_root, receipt.batch_digest),
+                    );
+                    StorageRecoveryOutcome::PendingCommitted
+                }
+                EpochAppendReconciliation::NotCommitted { .. } => {
+                    StorageRecoveryOutcome::PendingNotCommitted
+                }
+            }
+        } else {
+            let _ = self.ledger.verify_full_chain().map_err(map_epoch_error)?;
+            StorageRecoveryOutcome::CleanNoPending
+        };
         Ok(StorageRecoverySummary {
             adapter_id: self.adapter_id().to_owned(),
-            outcome: StorageRecoveryOutcome::CleanNoPending,
+            outcome,
             head_anchor: self.ledger.head_anchor().clone(),
             history_root: self.ledger.history_root(),
             reconciled_at: now,
@@ -1697,7 +1776,38 @@ fn map_durable_error(err: DurableLedgerError) -> StorageError {
 }
 
 fn map_epoch_error(err: EpochLedgerError) -> StorageError {
-    StorageError::AnchorOrGenerationConflict(err.to_string())
+    match err {
+        EpochLedgerError::AppendIndeterminate { sequence, .. }
+        | EpochLedgerError::ReconciliationRequired { sequence } => {
+            StorageError::IndeterminateAppend {
+                sequence,
+                detail: "epoch append requires exact reconciliation before retry".to_owned(),
+            }
+        }
+        EpochLedgerError::CommittedCheckpointFailed { receipt, source } => {
+            StorageError::CommittedCheckpointFailed {
+                receipt,
+                detail: source.to_string(),
+            }
+        }
+        EpochLedgerError::BatchIdConflict {
+            batch_id,
+            committed_sequence,
+            ..
+        } => StorageError::BatchIdConflict {
+            batch_id,
+            committed_sequence,
+        },
+        EpochLedgerError::Io(_)
+        | EpochLedgerError::CorruptEpoch { .. }
+        | EpochLedgerError::CorruptCheckpoint { .. }
+        | EpochLedgerError::IncompleteTail { .. }
+        | EpochLedgerError::MissingEpoch { .. }
+        | EpochLedgerError::LiveStateDivergence(_) => {
+            StorageError::CorruptionDetected(err.to_string())
+        }
+        other => StorageError::AnchorOrGenerationConflict(other.to_string()),
+    }
 }
 
 fn history_root_through_sequence(

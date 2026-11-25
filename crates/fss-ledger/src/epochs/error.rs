@@ -9,8 +9,9 @@ use std::path::PathBuf;
 use fss_core::{BatchId, ContentDigest, ContractError, ObjectId, Plane};
 
 use crate::batch_codec::BatchCodecError;
+use crate::error::AppendPhase;
 use crate::merkle::MerkleError;
-use crate::oracle::{AnchorField, OracleBoundField};
+use crate::oracle::{AnchorField, CommitReceipt, OracleBoundField};
 
 /// Stable classification of corruption detected in an epoch segment file.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -91,6 +92,33 @@ pub enum EpochLedgerError {
     InvalidConfig(&'static str),
     /// Host filesystem I/O failure.
     Io(io::Error),
+    /// Another writable handle owns this ledger root; recovery and mutation were not started.
+    WriterLocked,
+    /// Record bytes may have reached storage; reconcile this exact append before further writes.
+    AppendIndeterminate {
+        /// Epoch containing the attempted append.
+        epoch_id: u64,
+        /// Attempted canonical commit sequence.
+        sequence: u64,
+        /// I/O phase whose outcome is unresolved.
+        phase: AppendPhase,
+        /// Original I/O failure.
+        source: io::Error,
+    },
+    /// A prior append remains unresolved and fences new preparation, mutation, and verification.
+    ReconciliationRequired {
+        /// Sequence of the unresolved append.
+        sequence: u64,
+    },
+    /// Reconciliation was requested without an unresolved append.
+    NoPendingAppend,
+    /// The batch is durably committed, but its optional periodic checkpoint failed.
+    CommittedCheckpointFailed {
+        /// Exact durable result; callers must not treat this batch as uncommitted.
+        receipt: Box<CommitReceipt>,
+        /// Checkpoint maintenance failure, safe to retry separately with `force_checkpoint`.
+        source: Box<EpochLedgerError>,
+    },
     /// Verified corruption in an epoch segment file.
     CorruptEpoch {
         /// Epoch segment identifier.
@@ -240,6 +268,26 @@ impl fmt::Display for EpochLedgerError {
         match self {
             Self::InvalidConfig(msg) => write!(formatter, "invalid epoch ledger config: {msg}"),
             Self::Io(error) => write!(formatter, "epoch ledger I/O error: {error}"),
+            Self::WriterLocked => formatter.write_str("epoch ledger already has a writer"),
+            Self::AppendIndeterminate {
+                epoch_id,
+                sequence,
+                phase,
+                source,
+            } => write!(
+                formatter,
+                "epoch {epoch_id:016} append {sequence} indeterminate at {phase:?}: {source}; reconcile before retry"
+            ),
+            Self::ReconciliationRequired { sequence } => write!(
+                formatter,
+                "epoch append {sequence} requires reconciliation before further work"
+            ),
+            Self::NoPendingAppend => formatter.write_str("no epoch append requires reconciliation"),
+            Self::CommittedCheckpointFailed { receipt, source } => write!(
+                formatter,
+                "epoch append {} committed durably, but checkpoint failed: {source}; repair checkpoint storage and retry force_checkpoint",
+                receipt.sequence
+            ),
             Self::CorruptEpoch {
                 epoch_id,
                 offset,
@@ -361,7 +409,8 @@ impl fmt::Display for EpochLedgerError {
 impl Error for EpochLedgerError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Io(error) => Some(error),
+            Self::Io(error) | Self::AppendIndeterminate { source: error, .. } => Some(error),
+            Self::CommittedCheckpointFailed { source, .. } => Some(source.as_ref()),
             Self::Codec(error) => Some(error),
             Self::Merkle(error) => Some(error),
             Self::Contract(error) => Some(error),

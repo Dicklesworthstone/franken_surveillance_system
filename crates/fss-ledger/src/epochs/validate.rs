@@ -16,6 +16,7 @@ use crate::oracle::{
 
 use super::{EpochLedgerError, successor_history_root_v2};
 
+#[derive(Debug)]
 pub(crate) struct ValidatedBatch {
     pub(crate) batch: EvidenceDeltaBatch,
     pub(crate) next_trie: RadixMerkleTrie,

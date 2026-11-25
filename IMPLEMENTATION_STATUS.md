@@ -5,6 +5,36 @@
 **Current change qualification:** each dated section below states its exact verification boundary. Native passes for one component do not qualify other changes, and prior receipts do not qualify new bytes.
 **Release authority:** repository-owned local qualification (`scripts/qualify.sh`) and retained DSR receipts, not hosted CI
 
+## Exclusive epoch writers and recoverable append outcomes — 2026-11-25
+
+Writable v2 ledger opens now acquire an OS lock before recovery. A competing handle
+cannot recover or truncate another writer's active tail. Failed body/trailer writes or
+syncs retain the exact candidate and fence new appends, checkpoints and migrations.
+Reconciliation compares the bounded observed suffix against that candidate, durably adopts
+an exact complete record, or quarantines a proven incomplete prefix before authorized
+truncation. Changed bytes and failed reconciliation preserve the fence.
+
+A periodic checkpoint failure after commit now carries the durable CommitReceipt rather
+than implying rollback. MerkleEpochStorage retains duplicate identity and exposes an
+authority- and cancellation-checked force_checkpoint repair on the same handle. The
+direct pack/ledger/projection combiner still propagates checkpoint failure before applying
+the projection; durable canonical evidence may therefore require projection replay.
+
+Thirteen focused test functions (including the child-process helper) cover writer exclusion,
+append/reconciliation failure phases, exact quarantine, corruption refusal, rollover,
+handle loss, adapter authority, and committed-checkpoint repair. Existing epoch reopen
+tests were reviewed for handle lifetime compatibility. See docs/epoch_append_recovery.md.
+
+**Verification boundary:** source/API review only for these changed bytes. The pinned-nightly
+native attempt was killed by SIGKILL while compiling unchanged fss-core, before the changed
+ledger tests executed; the execution environment then became unavailable. Rust compilation,
+test execution, rustfmt, Clippy and repository qualification are not claimed. No wire format
+or dependency changes were introduced, and the broader crash/retry invariant remains open.
+
+```sh
+cargo +nightly-2026-08-31 test --locked --offline -p fss-ledger --test merkle_writer_recovery_contract -- --test-threads=1
+```
+
 ## AveragePool partial-window padding and executor replay — 2026-11-25
 
 The existing ceil-mode importer now also admits `count_include_pad=1` when a

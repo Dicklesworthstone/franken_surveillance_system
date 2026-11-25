@@ -6,6 +6,7 @@ operation states rather than generic errors.
 
 | ID | Meaning | Retry policy |
 |---|---|---|
+| `ERR-LEDGER-STORAGE-CHECKPOINT-001` | evidence batch committed durably but optional checkpoint maintenance failed; exact commit receipt retained | repair checkpoint storage and retry `force_checkpoint`; do not submit the committed batch as new evidence |
 | `ERR-MPEGTS-IMPORT-REQUEST-001` | Explicit finite MPEG-TS import scope, capture assumption, selection or resource ceiling is invalid | Correct the complete request; no automatic limit widening. |
 | `ERR-MPEGTS-IMPORT-SOURCE-001` | Native transport parsing or extraction-receipt verification refused the source | Inspect the original recording and declared program/PID; do not strip packets or bypass provenance. |
 | `ERR-MPEGTS-IMPORT-CUSTODY-001` | Existing source, cancellation, aggregate-work or root-last publication owner refused the MPEG-TS import | Preserve visible roots and committed originals; retry only under fresh authorized bounds and intact exact custody. |
