@@ -7,6 +7,7 @@
 
 mod backend;
 mod batch_codec;
+mod combiner;
 mod cursor;
 mod durable;
 pub mod epochs;
@@ -33,6 +34,13 @@ mod tests;
 
 pub use backend::CanonicalLedgerBackend;
 pub use batch_codec::{BatchCodecError, decode_batch, encode_batch};
+pub use combiner::{
+    CombinerGuidance, CombiningRoundOutcome, CommitCombinerError, CommitIntent, ConflictKind,
+    ConflictWitness, DeterministicCommitCombiner, IntentAuthorityContext, IntentCommitReceipt,
+    IntentOutcome, LEDGER_COMMIT_COMBINER_ROUND_DOMAIN, LEDGER_COMMIT_INTENT_DOMAIN,
+    MAX_COMBINER_ROUND_INTENTS, MAX_IDEMPOTENCY_HISTORY, MAX_INTENT_CHILDREN, MAX_INTENT_ID_BYTES,
+    MAX_INTENT_READ_WITNESSES, MAX_INTENT_WRITES,
+};
 pub use cursor::{
     LEDGER_REPLAY_CURSOR_DOMAIN, LEDGER_REPLAY_CURSOR_MAGIC, LEDGER_REPLAY_CURSOR_VERSION,
     LedgerReplayCursor, MAX_REPLAY_CURSOR_BYTES, MAX_REPLAY_PAGE_BATCHES, MAX_REPLAY_PAGE_BYTES,
