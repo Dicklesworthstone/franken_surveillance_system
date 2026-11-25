@@ -240,8 +240,25 @@ fn positive_negative_and_hierarchical_witnesses_verify_roundtrip_and_preserve_no
     );
 
     // 7. Mutated public fields fail closed before wire serialization and before composition.
+    //    (a) Forging sequence 0 (genesis cannot contain committed deltas) fails structural check.
+    let mut forged_pos_zero = pos_a.clone();
+    forged_pos_zero.committed_sequence = 0;
+    assert!(matches!(
+        SemanticWitness::Positive(forged_pos_zero.clone()).to_canonical_bytes(),
+        Err(WitnessError::AnchorMismatch { sequence: 0, .. })
+    ));
+    assert!(matches!(
+        HierarchicalWitness::compose(
+            "zone:tampered-zero",
+            vec![SemanticWitness::Positive(forged_pos_zero)],
+            false,
+        ),
+        Err(WitnessError::AnchorMismatch { sequence: 0, .. })
+    ));
+
+    //    (b) Mutating to another in-range sequence (2 <= anchor 2) without resealing fails checksum.
     let mut forged_pos = pos_a;
-    forged_pos.committed_sequence = 0;
+    forged_pos.committed_sequence = 2;
     assert_eq!(
         SemanticWitness::Positive(forged_pos.clone()).to_canonical_bytes(),
         Err(WitnessError::ChecksumMismatch)

@@ -613,7 +613,9 @@ fn indeterminate_authority_revocation_cancellation_and_hostile_wire_fail_closed(
         ReplicaReadiness::Indeterminate
     );
     assert_eq!(
-        ledger.evaluate_readiness(TimestampNs(7_000)).open_repair_obligations,
+        ledger
+            .evaluate_readiness(TimestampNs(7_000))
+            .open_repair_obligations,
         1
     );
 
