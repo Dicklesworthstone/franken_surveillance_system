@@ -107,6 +107,11 @@ impl BranchAuthorityContext {
                 "branch capability or privacy authorization revoked".to_owned(),
             ));
         }
+        if self.contract_basis_digest.bytes().iter().all(|&b| b == 0) {
+            return Err(CounterfactualError::AuthorityRefused(
+                "branch contract_basis_digest cannot be zero".to_owned(),
+            ));
+        }
         if self.authority_generation != self.expected_authority_generation {
             return Err(CounterfactualError::AuthorityRefused(format!(
                 "stale authority generation {} != expected {}",
@@ -482,11 +487,9 @@ impl CounterfactualBranchOverlay {
         candidate_intent.validate_structure()?;
         self.ensure_oracle_matches_basis(oracle)?;
 
-        // Verify candidate intent authority/privacy/planes/contract_basis match active scope!
+        // Verify candidate intent authority/privacy/planes match active scope!
         if !candidate_intent.authority.capability_active
             || !candidate_intent.authority.privacy_active
-            || candidate_intent.authority.contract_basis_digest
-                != self.authority.contract_basis_digest
             || candidate_intent.authority.authority_generation
                 != candidate_intent.authority.expected_authority_generation
             || candidate_intent.authority.authority_generation
@@ -646,10 +649,8 @@ impl CounterfactualBranchOverlay {
                 rebased_intent,
                 certificate,
             } => {
-                if rebased_intent.authority.contract_basis_digest
-                    != self.authority.contract_basis_digest
-                    || rebased_intent.authority.authority_generation
-                        != self.authority.authority_generation
+                if rebased_intent.authority.authority_generation
+                    != self.authority.authority_generation
                     || rebased_intent.authority.privacy_epoch != self.authority.privacy_epoch
                     || !rebased_intent
                         .authority
@@ -663,8 +664,9 @@ impl CounterfactualBranchOverlay {
                     return Ok(RecompileOutcome::Refused {
                         reason: RecompileRefusalReason::AuthorityOrPrivacyRefused,
                         offending_object: None,
-                        detail: "rebased intent escaped branch authority, contract basis, or semantic plane boundary"
-                            .to_owned(),
+                        detail:
+                            "rebased intent escaped branch authority or semantic plane boundary"
+                                .to_owned(),
                         guidance: CounterfactualGuidance::ReauthorizeBranch,
                     });
                 }
