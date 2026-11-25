@@ -26,8 +26,9 @@ pub use control::{
     ControlPlaneServer, ControlPlaneShared, ControlStatusSnapshot,
     DAEMON_RUNTIME_DESCRIPTOR_DOMAIN, DAEMON_RUNTIME_DESCRIPTOR_SCHEMA,
     DAEMON_RUNTIME_META_FILENAME, DAEMON_SHUTDOWN_APPROVAL_DOMAIN, DAEMON_STOP_TARGET,
-    DaemonRuntimeDescriptor, ForwardBatchWriter, PendingControlCommand, control_op_approval_digest,
-    daemon_stop_approval_digest, query_live_daemon_status, request_live_daemon_stop,
+    DaemonRuntimeDescriptor, ForwardBatchReceipt, ForwardBatchWriter, PendingControlCommand,
+    control_op_approval_digest, daemon_stop_approval_digest, query_live_daemon_status,
+    request_live_daemon_stop,
 };
 pub use error::{
     DaemonError, ERR_DAEMON_CONTROL_APPROVAL_001, ERR_DAEMON_IO_001, ERR_DAEMON_IPC_001,

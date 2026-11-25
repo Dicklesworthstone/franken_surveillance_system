@@ -7,18 +7,19 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use fss_core::{BatchId, ContentDigest, ErrorId, ObjectId};
+use fss_core::{BatchId, CanonicalEncoder, ContentDigest, ErrorId, ObjectId};
 use fss_ipc::ActiveScrubStatus;
 use fss_ledger::decode_batch;
 use fss_pack::{CapacityPressure, PackScrubReport, ScrubVerdict as PackScrubVerdict};
 use fss_projection_store::{
     CommitCombiner, CommitProposal, FootageAdapterKind, LedgerPackProjectionSink,
-    ScrubVerdict as ProjectionScrubVerdict,
+    MvccProjectionStore, ProjectionStore, ScrubVerdict as ProjectionScrubVerdict,
 };
 
-use crate::control::ForwardBatchWriter;
+use crate::control::{ForwardBatchReceipt, ForwardBatchWriter};
 use crate::error::DaemonError;
 use crate::manifest::CameraAdapterKind;
+use crate::storage::forward_requests::ForwardRequestStore;
 
 /// Receipt returned after one group-committed storage wave succeeds.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -106,6 +107,8 @@ pub struct StorageHeadSnapshot {
 
 pub(crate) struct CombinerForwardWriter {
     pub(crate) combiner: Arc<CommitCombiner<LedgerPackProjectionSink>>,
+    pub(crate) forward_requests: Arc<ForwardRequestStore>,
+    pub(crate) projection: Arc<MvccProjectionStore>,
     pub(crate) object_generations: Arc<Mutex<BTreeMap<ObjectId, u64>>>,
     pub(crate) retention_gate: Arc<Mutex<()>>,
     pub(crate) quota_pinned: Arc<AtomicBool>,
@@ -115,6 +118,56 @@ pub(crate) struct CombinerForwardWriter {
 }
 
 impl ForwardBatchWriter for CombinerForwardWriter {
+    fn supports_durable_idempotency(&self) -> bool {
+        true
+    }
+
+    fn forward_delta_batch_idempotent(
+        &self,
+        idempotency_key: ContentDigest,
+        request_digest: ContentDigest,
+        batch_bytes: &[u8],
+    ) -> Result<ForwardBatchReceipt, DaemonError> {
+        // Invalid wire bytes cannot have produced an effect and need no reservation.
+        decode_batch(batch_bytes).map_err(|err| DaemonError::InvalidConfig {
+            detail: format!("forwarded batch decode failed: {err}"),
+        })?;
+        // Enforce the payload binding here as well as in the IPC handler: direct
+        // trait callers cannot pair an old caller digest with different batch bytes.
+        let mut binding = CanonicalEncoder::new();
+        binding.text("fss.canonical.v1");
+        binding.text("fss.daemon.forwarded_payload_binding.v1");
+        binding.digest(request_digest);
+        binding.digest(ContentDigest::sha256(batch_bytes));
+        let request_digest = ContentDigest::sha256(&binding.finish_checked()?);
+        if let Some(receipt) = self.forward_requests.reserve(idempotency_key, request_digest)? {
+            let head = self.projection.head_anchor();
+            if receipt.commit_sequence > head.commit_sequence
+                || (receipt.commit_sequence == head.commit_sequence
+                    && (receipt.history_root != head.history_root
+                        || receipt.state_root != head.authority_root))
+            {
+                return Err(DaemonError::Ipc(fss_ipc::IpcError::Refused {
+                    request_id: 0,
+                    error_id: ErrorId::parse("ERR-OP-RECONCILIATION-REQUIRED-001")?,
+                    reason: "forwarded completion is inconsistent with the current canonical head"
+                        .to_owned(),
+                    retryable: false,
+                }));
+            }
+            return Ok(receipt);
+        }
+        let (commit_sequence, history_root, state_root) = self.forward_delta_batch(batch_bytes)?;
+        let receipt = ForwardBatchReceipt {
+            commit_sequence,
+            history_root,
+            state_root,
+            replayed: false,
+        };
+        self.forward_requests.complete(idempotency_key, request_digest, receipt)?;
+        Ok(receipt)
+    }
+
     fn forward_delta_batch(
         &self,
         batch_bytes: &[u8],

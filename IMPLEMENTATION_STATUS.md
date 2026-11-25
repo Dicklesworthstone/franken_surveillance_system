@@ -5,6 +5,39 @@
 **Current change qualification:** each dated section below states its exact verification boundary. Native passes for one component do not qualify other changes, and prior receipts do not qualify new bytes.
 **Release authority:** repository-owned local qualification (`scripts/qualify.sh`) and retained DSR receipts, not hosted CI
 
+## Durable forwarded-request identity and retry receipts — 2026-11-25
+
+Forwarded canonical batches now bind their idempotency key to the exact batch, approval
+and normalized authenticated request context. Concurrent identical requests have one
+dispatch owner; changed bytes or authority under an existing key are refused. Storage I/O
+runs outside the shared replay-cache mutex, and cancellation after verified commit retains
+the committed response. Non-durable writer implementations cannot silently evict uncertainty.
+
+The production writer syncs an immutable reservation before dispatch and a bounded,
+checksummed completion receipt after verified ledger/projection publication. Exact completed
+retries replay their original sequence and roots after storage reopen; production cache
+eviction retains on-disk identity. The backend independently binds actual batch bytes and
+rejects saved receipts ahead of or inconsistent with the current head. A pending or corrupt
+record requires reconciliation and is never automatically redispatched.
+
+Twenty-four test functions cover handler races/cancellation, context binding, persistent
+record corruption and lifecycle, concurrent reservation, more than 1024 retained identities,
+and real StorageEngine handles/reopen with missing or mismatched completion records.
+See docs/forwarded_request_recovery.md for the persisted cut and recovery assumptions.
+
+**Verification boundary:** independent source review and guarded source reconstruction;
+no Rust compilation, native test execution, rustfmt, Clippy or full qualification for these
+bytes because the execution environment became unavailable. Pending-request resolution has
+no operator command yet; existing backup formats do not capture these retry records, and
+arbitrary mixed-generation restores are not certified. Durable queued-control lifecycle
+remains separate. This advances fss-x4a.30.1.7 / INV-007 without closing that broad invariant.
+
+```sh
+cargo +nightly-2026-08-31 test --locked --offline -p fss-daemon --lib control::forwarding::tests
+cargo +nightly-2026-08-31 test --locked --offline -p fss-daemon --lib storage::forward_requests::tests
+cargo +nightly-2026-08-31 test --locked --offline -p fss-daemon --test forwarded_delta_recovery_contract
+```
+
 ## Exclusive epoch writers and recoverable append outcomes — 2026-11-25
 
 Writable v2 ledger opens now acquire an OS lock before recovery. A competing handle

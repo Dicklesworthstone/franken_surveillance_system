@@ -4,7 +4,7 @@
 //!
 //! Semantic plane: `"authority"`.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
@@ -28,8 +28,10 @@ pub use crate::control_client::{
 use crate::error::{DaemonError, ERR_DAEMON_CONTROL_APPROVAL_001, ERR_DAEMON_UNKNOWN_CAMERA_001};
 
 mod delta_log;
+mod forwarding;
 
 use delta_log::BufferedDeltaLog;
+use forwarding::ForwardedBatches;
 
 #[cfg(test)]
 #[path = "control_tests.rs"]
@@ -47,7 +49,6 @@ pub const DAEMON_RUNTIME_META_FILENAME: &str = "daemon.meta.json";
 pub const DAEMON_STOP_TARGET: &str = "daemon:all";
 
 const MAX_DELTA_BUS_EVENTS: usize = 4_096;
-const MAX_IDEMPOTENCY_ENTRIES: usize = 1_024;
 // Accepted work remains FIFO until the supervisor drains it; pressure never evicts a command.
 const MAX_QUEUED_CONTROL_COMMANDS: usize = 1_024;
 const SUBSCRIBE_WAIT_SLICE: Duration = Duration::from_millis(20);
@@ -110,6 +111,49 @@ pub trait ForwardBatchWriter: Send + Sync + 'static {
         &self,
         batch_bytes: &[u8],
     ) -> Result<(u64, ContentDigest, ContentDigest), DaemonError>;
+
+    /// Forwards one exact request using a stable caller key and complete request digest.
+    ///
+    /// The digest binds the canonical batch bytes, approval and authenticated context.
+    /// The default supports only this process's retained admission records. Durable
+    /// implementations must reject changed requests, reserve before mutation and retain
+    /// ambiguous attempts without redispatching them.
+    fn forward_delta_batch_idempotent(
+        &self,
+        _idempotency_key: ContentDigest,
+        _request_digest: ContentDigest,
+        batch_bytes: &[u8],
+    ) -> Result<ForwardBatchReceipt, DaemonError> {
+        let (commit_sequence, history_root, state_root) = self.forward_delta_batch(batch_bytes)?;
+        Ok(ForwardBatchReceipt {
+            commit_sequence,
+            history_root,
+            state_root,
+            replayed: false,
+        })
+    }
+
+    /// Whether exact-request reservations and receipts survive cache eviction and restart.
+    ///
+    /// Returning true permits the handler to evict settled in-memory records. The writer
+    /// must retain both conflicts and unresolved outcomes, including an unwind or crash
+    /// after dispatch, so another lookup can never silently perform the write again.
+    fn supports_durable_idempotency(&self) -> bool {
+        false
+    }
+}
+
+/// Verified result of a forwarded canonical batch or an exact durable replay.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ForwardBatchReceipt {
+    /// Original authoritative commit sequence.
+    pub commit_sequence: u64,
+    /// Original committed history root.
+    pub history_root: ContentDigest,
+    /// Original committed state root.
+    pub state_root: ContentDigest,
+    /// True when the writer returned an existing receipt without a new mutation.
+    pub replayed: bool,
 }
 
 /// Point-in-time status snapshot published lock-free from supervisor to IPC readers.
@@ -142,7 +186,7 @@ pub struct ControlPlaneShared {
     delta_log: Mutex<BufferedDeltaLog>,
     delta_notify: Condvar,
     control_queue: Mutex<VecDeque<PendingControlCommand>>,
-    idempotency_cache: Mutex<BTreeMap<ContentDigest, (u64, ContentDigest, ContentDigest)>>,
+    forwarded_batches: ForwardedBatches,
     forward_writer: Arc<dyn ForwardBatchWriter>,
 }
 
@@ -169,7 +213,7 @@ impl ControlPlaneShared {
             delta_log: Mutex::new(BufferedDeltaLog::new(initial_seq)),
             delta_notify: Condvar::new(),
             control_queue: Mutex::new(VecDeque::new()),
-            idempotency_cache: Mutex::new(BTreeMap::new()),
+            forwarded_batches: ForwardedBatches::default(),
             forward_writer,
         })
     }
@@ -274,57 +318,15 @@ impl DaemonIpcHandler for DaemonIpcHandlerAdapter {
         ctx: &RequestContext,
         idempotency_key: ContentDigest,
         batch_bytes: &[u8],
-        _approval_digest: Option<ContentDigest>,
+        approval_digest: Option<ContentDigest>,
     ) -> IpcResponse {
-        if self.shared.is_shutdown_requested() {
-            return make_refused(
-                ctx.request_id,
-                ERR_IPC_SERVER_SHUTDOWN_001,
-                "daemon is draining for shutdown",
-                true,
-            );
-        }
-        if let Ok(cache) = self.shared.idempotency_cache.lock()
-            && let Some(&(commit_sequence, history_root, state_root)) = cache.get(&idempotency_key)
-        {
-            return IpcResponse::DeltaBatchCommitted {
-                request_id: ctx.request_id,
-                commit_sequence,
-                history_root,
-                state_root,
-            };
-        }
-        match self.shared.forward_writer.forward_delta_batch(batch_bytes) {
-            Ok((commit_sequence, history_root, state_root)) => {
-                if let Ok(mut cache) = self.shared.idempotency_cache.lock() {
-                    if cache.len() >= MAX_IDEMPOTENCY_ENTRIES
-                        && let Some(first_key) = cache.keys().next().copied()
-                    {
-                        cache.remove(&first_key);
-                    }
-                    cache.insert(idempotency_key, (commit_sequence, history_root, state_root));
-                }
-                self.shared.publish_delta_summary(
-                    commit_sequence,
-                    ContentDigest::sha256(batch_bytes),
-                    MeaningfulDeltaClass::MaterialState,
-                    DeltaPriority::Normal,
-                    format!("forwarded_batch seq={commit_sequence}"),
-                );
-                IpcResponse::DeltaBatchCommitted {
-                    request_id: ctx.request_id,
-                    commit_sequence,
-                    history_root,
-                    state_root,
-                }
-            }
-            Err(err) => make_refused(
-                ctx.request_id,
-                err.error_id(),
-                &err.to_string(),
-                matches!(err, DaemonError::StorageQuotaPinned { .. }),
-            ),
-        }
+        self.shared.forwarded_batches.submit(
+            &self.shared,
+            ctx,
+            idempotency_key,
+            batch_bytes,
+            approval_digest,
+        )
     }
 
     fn query_live_status(

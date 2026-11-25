@@ -5,6 +5,7 @@
 //!
 //! Semantic plane: `"authority"`.
 
+pub(crate) mod forward_requests;
 mod gop;
 mod retention;
 
@@ -47,6 +48,7 @@ use crate::sensor::CameraFrame;
 use crate::storage_types::{
     CombinerForwardWriter, map_scrub_verdict, sanitize_object_part, scrub_report_to_ipc_status,
 };
+use forward_requests::ForwardRequestStore;
 use gop::{PendingGopPublication, recover_unpublished_gops};
 use retention::{RetainedRoot, RetiredRoot, recover_retained_roots};
 
@@ -62,6 +64,7 @@ pub struct StorageEngine {
     pack_store: Arc<PackStore>,
     projection: Arc<MvccProjectionStore>,
     combiner: Arc<CommitCombiner<LedgerPackProjectionSink>>,
+    forward_requests: Arc<ForwardRequestStore>,
     object_generations: Arc<Mutex<BTreeMap<ObjectId, u64>>>,
     retention_gate: Arc<Mutex<()>>,
     quota_pinned: Arc<AtomicBool>,
@@ -181,6 +184,7 @@ impl StorageEngine {
         let sink =
             LedgerPackProjectionSink::new(ledger, Arc::clone(&pack_store), Arc::clone(&projection));
         let combiner = Arc::new(CommitCombiner::new(sink, CommitCombinerConfig::default())?);
+        let forward_requests = Arc::new(ForwardRequestStore::open(&root_dir)?);
 
         let retention_config = RetentionRingConfig::new(
             manifest.retain_hot_ns,
@@ -203,6 +207,7 @@ impl StorageEngine {
             pack_store,
             projection,
             combiner,
+            forward_requests,
             object_generations: Arc::new(Mutex::new(initial_gens)),
             retention_gate: Arc::new(Mutex::new(())),
             quota_pinned: Arc::new(AtomicBool::new(false)),
@@ -249,6 +254,8 @@ impl StorageEngine {
     pub fn forward_writer(&self) -> Arc<dyn ForwardBatchWriter> {
         Arc::new(CombinerForwardWriter {
             combiner: Arc::clone(&self.combiner),
+            forward_requests: Arc::clone(&self.forward_requests),
+            projection: Arc::clone(&self.projection),
             object_generations: Arc::clone(&self.object_generations),
             retention_gate: Arc::clone(&self.retention_gate),
             quota_pinned: Arc::clone(&self.quota_pinned),
