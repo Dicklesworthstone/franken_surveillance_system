@@ -154,7 +154,7 @@ fn paginated_cursor_replay_matches_oracle_and_durable_across_page_sizes_and_rest
 
         loop {
             let cursor = LedgerReplayCursor::from_canonical_bytes(&cursor_bytes)?;
-            let page = if page_index % 2 == 0 {
+            let page = if page_index.is_multiple_of(2) {
                 oracle.replay_page(&cursor, budget, false)?
             } else {
                 durable.replay_page(&cursor, budget, false)?
