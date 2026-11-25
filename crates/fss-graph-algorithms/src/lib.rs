@@ -64,6 +64,8 @@ pub mod robust_placement;
 pub mod scc;
 /// Bounded unit-cost set cover with exact-small and explicitly heuristic selection.
 pub mod set_cover;
+/// O(1) `Arc`-shared graph snapshot views and deterministic invalidation (`FSS-152`, `fss-x4a.23.2`).
+pub mod snapshot_view;
 pub mod spanning;
 pub mod spectral;
 pub mod steiner;
