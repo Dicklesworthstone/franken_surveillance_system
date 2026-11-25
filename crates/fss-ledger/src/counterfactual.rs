@@ -371,6 +371,16 @@ impl CounterfactualBranchOverlay {
                 delta.plane
             )));
         }
+        if self
+            .overlay_deltas
+            .iter()
+            .any(|existing| existing.delta_id == delta.delta_id)
+        {
+            return Err(CounterfactualError::InvalidInput(format!(
+                "duplicate hypothetical delta_id '{}'",
+                delta.delta_id
+            )));
+        }
         if self.overlay_deltas.len() >= self.max_overlay_deltas {
             return Err(CounterfactualError::BoundsExceeded {
                 observed: self.overlay_deltas.len().saturating_add(1),
@@ -480,6 +490,10 @@ impl CounterfactualBranchOverlay {
             || candidate_intent.authority.authority_generation
                 != self.authority.authority_generation
             || candidate_intent.authority.privacy_epoch != self.authority.privacy_epoch
+            || !candidate_intent
+                .authority
+                .allowed_planes
+                .is_subset(&self.authority.allowed_planes)
             || candidate_intent.writes.iter().any(|w| {
                 !candidate_intent.authority.allowed_planes.contains(&w.plane)
                     || !self.authority.allowed_planes.contains(&w.plane)
@@ -507,11 +521,26 @@ impl CounterfactualBranchOverlay {
             });
         }
 
-        // Guard: NEVER allow a live-recompiled intent to launder hypothetical overlay generations
-        // that do NOT exist in canonical history at `basis_anchor`!
+        // Guard: NEVER allow a live-recompiled intent to launder hypothetical overlay state
+        // (either read witnesses or write generations) that does NOT exist in canonical history!
         let basis_view = oracle
             .view_at(self.basis_anchor.commit_sequence)
             .map_err(|e| CounterfactualError::Ledger(e.to_string()))?;
+        for w in &candidate_intent.read_witnesses {
+            if let Some(offending) =
+                find_counterfactual_read_laundering(w, &basis_view, &self.overlay_objects)
+            {
+                return Ok(RecompileOutcome::Refused {
+                    reason: RecompileRefusalReason::CounterfactualAssumptionNotCanonical,
+                    offending_object: Some(offending.clone()),
+                    detail: format!(
+                        "read witness for '{}' matches unpromoted counterfactual overlay state rather than canonical basis",
+                        offending.as_str()
+                    ),
+                    guidance: CounterfactualGuidance::RemoveCounterfactualDependency,
+                });
+            }
+        }
         for delta in &candidate_intent.writes {
             let canonical_gen = match basis_view.object(&delta.object_id) {
                 ObjectRead::Present { revision, .. } => Some(revision.generation),
@@ -615,6 +644,18 @@ impl CounterfactualBranchOverlay {
                 rebased_intent,
                 certificate,
             } => {
+                if rebased_intent
+                    .writes
+                    .iter()
+                    .any(|w| !self.authority.allowed_planes.contains(&w.plane))
+                {
+                    return Ok(RecompileOutcome::Refused {
+                        reason: RecompileRefusalReason::AuthorityOrPrivacyRefused,
+                        offending_object: None,
+                        detail: "rebased intent escaped branch semantic plane boundary".to_owned(),
+                        guidance: CounterfactualGuidance::ReauthorizeBranch,
+                    });
+                }
                 let live_digest = rebased_intent.canonical_digest()?;
                 let strategy = RecompileStrategy::MergeLadderRebased(certificate.rung);
                 let receipt = seal_recompile_receipt(
@@ -1076,6 +1117,38 @@ fn seal_recompile_receipt(
     };
     receipt.receipt_digest = receipt.compute_digest()?;
     Ok(receipt)
+}
+
+fn find_counterfactual_read_laundering(
+    w: &SemanticWitness,
+    basis_view: &crate::oracle::AnchoredView<'_>,
+    overlay_objects: &BTreeMap<ObjectId, ObjectRevision>,
+) -> Option<ObjectId> {
+    match w {
+        SemanticWitness::Positive(pos) => {
+            let overlay_rev = overlay_objects.get(&pos.object_id)?;
+            let canonical_matches = match basis_view.object(&pos.object_id) {
+                ObjectRead::Present { revision, .. } => {
+                    revision.generation == pos.revision.generation
+                        && revision.payload_digest == pos.revision.payload_digest
+                }
+                ObjectRead::AbsentAtAnchor { .. } => false,
+            };
+            if !canonical_matches
+                && overlay_rev.generation == pos.revision.generation
+                && overlay_rev.payload_digest == pos.revision.payload_digest
+            {
+                Some(pos.object_id.clone())
+            } else {
+                None
+            }
+        }
+        SemanticWitness::Negative(_) => None,
+        SemanticWitness::Hierarchical(h) => h
+            .children
+            .iter()
+            .find_map(|c| find_counterfactual_read_laundering(c, basis_view, overlay_objects)),
+    }
 }
 
 fn all_negative_certified(w: &SemanticWitness) -> bool {

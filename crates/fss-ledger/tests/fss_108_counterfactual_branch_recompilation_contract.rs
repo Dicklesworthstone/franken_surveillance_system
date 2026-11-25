@@ -364,6 +364,86 @@ fn counterfactual_refuses_effect_authority_laundering_cancel_and_hostile_wire() 
         }
     ));
 
+    // 3b. Counterfactual read-witness laundering (PositiveWitness carrying unpromoted overlay rev)
+    //     and branch semantic-plane escalation MUST fail closed!
+    let forged_overlay_read = PositiveWitness::seal(
+        anchor1.clone(),
+        hist1,
+        ObjectId::parse("obj:cam-a")?,
+        fss_core::ObjectRevision {
+            family: "source_evidence".to_owned(),
+            generation: 2,
+            plane: Plane::Authority,
+            payload_digest: d("hl1:obj:cam-a:2"),
+            validity: CaptureInterval::new(TimestampNs(100), TimestampNs(200))?,
+        },
+        1,
+        None,
+    )?;
+    let read_launder_intent = CommitIntent {
+        intent_id: "intent:read-launder".to_owned(),
+        basis_anchor: anchor1.clone(),
+        basis_history_root: hist1,
+        read_witnesses: vec![SemanticWitness::Positive(forged_overlay_read)],
+        writes: vec![delta(
+            "wrl",
+            "source_evidence",
+            "obj:downstream",
+            None,
+            1,
+            Plane::Authority,
+        )?],
+        child_roots: vec![],
+        authority: IntentAuthorityContext::active(1, 1, [Plane::Authority]),
+    };
+    assert!(matches!(
+        branch.recompile_for_live_head(
+            &oracle,
+            &read_launder_intent,
+            &comm_reg,
+            None,
+            TimestampNs(1_700_000_108_320),
+            false,
+        )?,
+        RecompileOutcome::Refused {
+            reason: RecompileRefusalReason::CounterfactualAssumptionNotCanonical,
+            guidance: CounterfactualGuidance::RemoveCounterfactualDependency,
+            ..
+        }
+    ));
+
+    let wider_plane_intent = CommitIntent {
+        intent_id: "intent:wider-planes".to_owned(),
+        basis_anchor: anchor1.clone(),
+        basis_history_root: hist1,
+        read_witnesses: vec![],
+        writes: vec![delta(
+            "wwp",
+            "source_evidence",
+            "obj:wp-new",
+            None,
+            1,
+            Plane::Authority,
+        )?],
+        child_roots: vec![],
+        authority: IntentAuthorityContext::active(1, 1, [Plane::Authority, Plane::Effect]),
+    };
+    assert!(matches!(
+        branch.recompile_for_live_head(
+            &oracle,
+            &wider_plane_intent,
+            &comm_reg,
+            None,
+            TimestampNs(1_700_000_108_330),
+            false,
+        )?,
+        RecompileOutcome::Refused {
+            reason: RecompileRefusalReason::AuthorityOrPrivacyRefused,
+            guidance: CounterfactualGuidance::ReauthorizeBranch,
+            ..
+        }
+    ));
+
     // 4. Hostile wire decoding on `FSSCFBR1`.
     let clean_intent = CommitIntent {
         intent_id: "intent:clean".to_owned(),

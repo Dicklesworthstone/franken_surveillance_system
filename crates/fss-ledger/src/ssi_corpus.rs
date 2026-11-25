@@ -807,7 +807,7 @@ fn run_two_actor_disjoint_write_skew() -> Result<ScheduleCaseResult, SsiCorpusEr
         committed_intents: committed,
         aborted_intents: aborted,
         reproducer_digest,
-        summary: "2-actor disjoint write-skew serialized: 1 committed, 1 aborted with ssi_dangerous_write_skew across both orders"
+        summary: "2-actor disjoint write-skew serialized: 1 committed, 1 aborted with ssi_dangerous_write_skew or positive_read_stale across both orders"
             .to_owned(),
     })
 }
