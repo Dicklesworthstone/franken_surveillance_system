@@ -527,10 +527,11 @@ fn camera_disconnect_emits_explicit_gap_and_backoff_recovers_new_generation() ->
         SensorState::Streaming
     );
     let ready_snap = supervisor.storage().projection().snapshot_latest();
-    let ready_cov = supervisor
-        .storage()
-        .projection()
-        .query_coverage(&ready_snap, Some(&wyze_39_id), None);
+    let ready_cov =
+        supervisor
+            .storage()
+            .projection()
+            .query_coverage(&ready_snap, Some(&wyze_39_id), None);
     assert_eq!(ready_cov[0].status, CoverageStatus::Covered);
     assert_eq!(ready_cov[0].active_gaps, 0);
 

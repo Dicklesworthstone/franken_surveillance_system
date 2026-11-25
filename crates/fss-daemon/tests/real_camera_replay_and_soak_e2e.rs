@@ -257,48 +257,51 @@ fn verify_live_ipc_corroboration(
     let descriptor = DaemonRuntimeDescriptor::read_from_root(root)?;
     let ipc_root = root.to_path_buf();
 
-    let sub_thread = thread::spawn(
-        move || -> Result<(Duration, Instant, Vec<(u64, DeltaEventSummary)>), String> {
-            let mut client = IpcClient::connect(IpcClientConfig {
-                deployment_root: ipc_root,
-                deployment_id: descriptor.site_id,
-                contract_basis_digest: descriptor.contract_basis_digest,
-                principal: PrincipalId::parse("principal:soak-agent").map_err(|e| e.to_string())?,
-                capabilities: vec!["CAP-OBSERVE-STATUS-001".to_owned()],
-                io_timeout: Duration::from_secs(3),
-            })
+    type IpcSubscriptionResult = Result<(Duration, Instant, Vec<(u64, DeltaEventSummary)>), String>;
+
+    let sub_thread = thread::spawn(move || -> IpcSubscriptionResult {
+        let mut client = IpcClient::connect(IpcClientConfig {
+            deployment_root: ipc_root,
+            deployment_id: descriptor.site_id,
+            contract_basis_digest: descriptor.contract_basis_digest,
+            principal: PrincipalId::parse("principal:soak-agent").map_err(|e| e.to_string())?,
+            capabilities: vec!["CAP-OBSERVE-STATUS-001".to_owned()],
+            io_timeout: Duration::from_secs(3),
+        })
+        .map_err(|e| e.to_string())?;
+        let req_id = client.next_request_id();
+        let started = Instant::now();
+        let mut received = Vec::new();
+        let sub = client
+            .subscribe_deltas(req_id, head_before, 8)
             .map_err(|e| e.to_string())?;
-            let req_id = client.next_request_id();
-            let started = Instant::now();
-            let mut received = Vec::new();
-            let sub = client
-                .subscribe_deltas(req_id, head_before, 8)
-                .map_err(|e| e.to_string())?;
-            for item in sub {
-                match item.map_err(|e| e.to_string())? {
-                    DeltaSubscriptionItem::Event {
-                        commit_sequence,
-                        summary_canonical,
-                        ..
-                    } => {
-                        if let Ok(summary) =
-                            DeltaEventSummary::from_canonical_bytes(&summary_canonical)
-                        {
-                            let is_corr = summary.delta_class == MeaningfulDeltaClass::Hypothesis
-                                && summary.summary.contains("corroborated");
-                            received.push((commit_sequence, summary));
-                            if is_corr {
-                                break;
-                            }
+        for item in sub {
+            match item.map_err(|e| e.to_string())? {
+                DeltaSubscriptionItem::Event {
+                    commit_sequence,
+                    summary_canonical,
+                    ..
+                } => {
+                    if let Ok(summary) = DeltaEventSummary::from_canonical_bytes(&summary_canonical)
+                    {
+                        let is_corr = summary.delta_class == MeaningfulDeltaClass::Hypothesis
+                            && summary.summary.contains("corroborated");
+                        received.push((commit_sequence, summary));
+                        if is_corr {
+                            break;
                         }
                     }
-                    DeltaSubscriptionItem::End { .. } => break,
                 }
+                DeltaSubscriptionItem::End { .. } => break,
             }
-            let received_at = Instant::now();
-            Ok((received_at.saturating_duration_since(started), received_at, received))
-        },
-    );
+        }
+        let received_at = Instant::now();
+        Ok((
+            received_at.saturating_duration_since(started),
+            received_at,
+            received,
+        ))
+    });
 
     thread::sleep(Duration::from_millis(20));
 
@@ -334,7 +337,9 @@ fn verify_live_ipc_corroboration(
         .join()
         .map_err(|_| "IPC subscriber thread panicked")?
         .map_err(|e| format!("IPC subscriber failed: {e}"))?;
-    let latency_ms = received_at.saturating_duration_since(emit_start).as_millis();
+    let latency_ms = received_at
+        .saturating_duration_since(emit_start)
+        .as_millis();
     assert!(
         latency_ms < 500,
         "IPC corroboration delivery took {latency_ms} ms (>= 500 ms budget)"
@@ -587,10 +592,11 @@ fn continuous_540_tick_multi_camera_soak_osd_holds_gap_and_telemetry() -> TestRe
             assert_eq!(v51.state, SensorState::Streaming);
             assert_eq!(v51.stream_generation, 2);
             let snap = supervisor.storage().projection().snapshot_latest();
-            let cov51 = supervisor
-                .storage()
-                .projection()
-                .query_coverage(&snap, Some(&wyze_51_id), None);
+            let cov51 =
+                supervisor
+                    .storage()
+                    .projection()
+                    .query_coverage(&snap, Some(&wyze_51_id), None);
             assert_eq!(cov51[0].status, CoverageStatus::Covered);
             assert_eq!(cov51[0].active_gaps, 0);
             recovery_verified = true;

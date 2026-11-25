@@ -69,8 +69,7 @@ impl StorageEngine {
         tree: &RegionTree,
     ) -> FrameIngestOutcome {
         let mut accepted = false;
-        let result =
-            self.ingest_frame_inner(frame, adapter, gop_frames, cx, tree, &mut accepted);
+        let result = self.ingest_frame_inner(frame, adapter, gop_frames, cx, tree, &mut accepted);
         FrameIngestOutcome { accepted, result }
     }
 
@@ -100,9 +99,9 @@ impl StorageEngine {
         // Do not grow a full GOP whose previous flush was rejected.
         let needs_flush = self.gop_buffers.get(&sensor_id).is_some_and(|buf| {
             buf.len() >= gop_frames.max(1)
-                || buf.first().is_some_and(|first| {
-                    first.stream_generation != frame.stream_generation
-                })
+                || buf
+                    .first()
+                    .is_some_and(|first| first.stream_generation != frame.stream_generation)
         });
         if needs_flush {
             receipt = self.flush_camera_gop(&sensor_id, adapter, cx, tree)?;
@@ -135,7 +134,11 @@ impl StorageEngine {
         if self.pending_gop_publications.contains_key(sensor_id) {
             return self.finish_gop_publication(sensor_id).map(Some);
         }
-        let Some(frames) = self.gop_buffers.get(sensor_id).filter(|buf| !buf.is_empty()) else {
+        let Some(frames) = self
+            .gop_buffers
+            .get(sensor_id)
+            .filter(|buf| !buf.is_empty())
+        else {
             return Ok(None);
         };
         if self.is_quota_pinned() {
@@ -264,11 +267,12 @@ impl StorageEngine {
         &mut self,
         sensor_id: &SensorId,
     ) -> Result<StorageCommitReceipt, DaemonError> {
-        let pending = self.pending_gop_publications.get(sensor_id).ok_or_else(|| {
-            DaemonError::InvalidConfig {
+        let pending = self
+            .pending_gop_publications
+            .get(sensor_id)
+            .ok_or_else(|| DaemonError::InvalidConfig {
                 detail: "missing acknowledged GOP publication receipt".to_owned(),
-            }
-        })?;
+            })?;
         if pending.reopen_required {
             return Err(CombinerError::SinkFailure(
                 "GOP canonical commit is acknowledged but catalog publication is indeterminate; reopen storage to reconcile before retry".to_owned(),
@@ -296,8 +300,7 @@ impl StorageEngine {
                         .ok()
                         .flatten()
                         .is_some_and(|entry| {
-                            entry.record == pending.root
-                                && matches!(entry.status, RootStatus::Live)
+                            entry.record == pending.root && matches!(entry.status, RootStatus::Live)
                         });
                     // A journal write/fsync failure can be indeterminate if rollback also
                     // failed. Reopen, rather than append another uncertain journal record.
@@ -310,11 +313,13 @@ impl StorageEngine {
                 }
             }
         }
-        let metadata_digest = pending.root.metadata_digest.ok_or_else(|| {
-            DaemonError::InvalidConfig {
-                detail: "acknowledged GOP publication lacks canonical metadata".to_owned(),
-            }
-        })?;
+        let metadata_digest =
+            pending
+                .root
+                .metadata_digest
+                .ok_or_else(|| DaemonError::InvalidConfig {
+                    detail: "acknowledged GOP publication lacks canonical metadata".to_owned(),
+                })?;
         let root_id = pending.root.root_id.clone();
         self.candidate_roots.insert(
             root_id.clone(),
@@ -390,7 +395,10 @@ pub(super) fn recover_unpublished_gops(
         if let Some(existing) = packs.get_root(&root_id)? {
             if matches!(existing.status, RootStatus::Live)
                 && (existing.record.metadata_digest != Some(revision.payload_digest)
-                    || !matches!(existing.record.kind.as_str(), "media-gop-v1" | "media-gop-v2"))
+                    || !matches!(
+                        existing.record.kind.as_str(),
+                        "media-gop-v1" | "media-gop-v2"
+                    ))
             {
                 return Err(invalid());
             }
@@ -448,8 +456,7 @@ pub(super) fn recover_unpublished_gops(
             || import.capture_interval != revision.validity
             || packs.object_tombstone(&import.import_id)?.is_some()
             || packs.lookup(&import.import_id)?.is_none_or(|location| {
-                location.object_kind != PACK_KIND_MEDIA_CHUNK
-                    || location.len != import.total_bytes
+                location.object_kind != PACK_KIND_MEDIA_CHUNK || location.len != import.total_bytes
             })
         {
             return Err(invalid());

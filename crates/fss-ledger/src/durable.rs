@@ -671,8 +671,10 @@ impl DurableReferenceLedger {
         let report = self.journal.verify()?;
         let (replayed, identities) =
             replay_report(&report, &self.ledger.current().anchor.site_lineage)?;
-        let replayed_roots =
-            compute_history_roots(&self.ledger.current().anchor.site_lineage, replayed.batches())?;
+        let replayed_roots = compute_history_roots(
+            &self.ledger.current().anchor.site_lineage,
+            replayed.batches(),
+        )?;
         if report.last_root() != self.journal.last_root()
             || replayed.current() != self.ledger.current()
             || identities != self.identities

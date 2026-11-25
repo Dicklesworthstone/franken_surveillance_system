@@ -462,7 +462,7 @@ fn health_transition_evidence_survives_restart_and_projection_rebuild() -> TestR
         }
     }
     fs::remove_dir_all(dir.path().join(PROJECTION_SUBDIR))?;
-    let mut reopened = StorageEngine::open(&manifest, Some(dir.path()))?;
+    let reopened = StorageEngine::open(&manifest, Some(dir.path()))?;
     for (evidence, digest) in receipts.into_iter().zip(&digests) {
         assert_eq!(reopened.pack_store().read_verified(digest)?, evidence);
     }

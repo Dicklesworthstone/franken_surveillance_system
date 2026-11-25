@@ -240,13 +240,14 @@ impl PositiveWitness {
     ) -> Result<Self, WitnessError> {
         let anchor = ledger.head_anchor().clone();
         let history_root = ledger.history_root();
-        let revision = ledger
-            .get_object(object_id)
-            .cloned()
-            .ok_or_else(|| WitnessError::ObjectAbsent {
-                object_id: object_id.clone(),
-                sequence: anchor.commit_sequence,
-            })?;
+        let revision =
+            ledger
+                .get_object(object_id)
+                .cloned()
+                .ok_or_else(|| WitnessError::ObjectAbsent {
+                    object_id: object_id.clone(),
+                    sequence: anchor.commit_sequence,
+                })?;
         let proof = ledger
             .prove_object(object_id)
             .map_err(|err| WitnessError::InvalidMerkleProof(err.to_string()))?;
@@ -339,12 +340,13 @@ impl PositiveWitness {
     /// against `oracle`.
     pub fn verify_against_oracle(&self, oracle: &LedgerOracle) -> Result<(), WitnessError> {
         self.verify_self_invariants()?;
-        let view = oracle
-            .view_at_anchor(&self.anchor)
-            .map_err(|err| WitnessError::AnchorMismatch {
-                sequence: self.anchor.commit_sequence,
-                detail: err.to_string(),
-            })?;
+        let view =
+            oracle
+                .view_at_anchor(&self.anchor)
+                .map_err(|err| WitnessError::AnchorMismatch {
+                    sequence: self.anchor.commit_sequence,
+                    detail: err.to_string(),
+                })?;
         if view.history_root() != self.history_root {
             return Err(WitnessError::AnchorMismatch {
                 sequence: self.anchor.commit_sequence,
@@ -502,7 +504,13 @@ impl NegativeWitness {
         let proof = ledger
             .prove_object(object_id)
             .map_err(|err| WitnessError::InvalidMerkleProof(err.to_string()))?;
-        Self::seal(anchor, history_root, object_id.clone(), coverage, Some(proof))
+        Self::seal(
+            anchor,
+            history_root,
+            object_id.clone(),
+            coverage,
+            Some(proof),
+        )
     }
 
     /// Seals and validates a negative witness, binding `coverage.anchor == anchor` and
@@ -597,12 +605,13 @@ impl NegativeWitness {
     /// against `oracle`.
     pub fn verify_against_oracle(&self, oracle: &LedgerOracle) -> Result<(), WitnessError> {
         self.verify_self_invariants()?;
-        let view = oracle
-            .view_at_anchor(&self.anchor)
-            .map_err(|err| WitnessError::AnchorMismatch {
-                sequence: self.anchor.commit_sequence,
-                detail: err.to_string(),
-            })?;
+        let view =
+            oracle
+                .view_at_anchor(&self.anchor)
+                .map_err(|err| WitnessError::AnchorMismatch {
+                    sequence: self.anchor.commit_sequence,
+                    detail: err.to_string(),
+                })?;
         if view.history_root() != self.history_root {
             return Err(WitnessError::AnchorMismatch {
                 sequence: self.anchor.commit_sequence,
@@ -1192,8 +1201,7 @@ fn decode_object_revision(dec: &mut CanonicalDecoder<'_>) -> Result<ObjectRevisi
             maximum: MAX_ORACLE_TEXT_BYTES,
         });
     }
-    let plane = decode_plane(dec)
-        .map_err(|err| WitnessError::MalformedWire(err.to_string()))?;
+    let plane = decode_plane(dec).map_err(|err| WitnessError::MalformedWire(err.to_string()))?;
     let payload_digest = dec
         .digest()
         .map_err(|err| WitnessError::MalformedWire(err.to_string()))?;

@@ -66,12 +66,6 @@ pub use high_water::{
     HIGH_WATER_MAGIC, HIGH_WATER_VERSION, HighWaterError, HighWaterGuidance, HighWaterPlan,
     HighWaterProtocol, MAX_HIGH_WATER_WIRE_BYTES, RebuildReason,
 };
-pub use witness::{
-    HierarchicalWitness, LEDGER_SEMANTIC_WITNESS_DOMAIN, MAX_HIERARCHICAL_CHILDREN,
-    MAX_WITNESS_DEPTH, MAX_WITNESS_LABEL_BYTES, MAX_WITNESS_WIRE_BYTES, NegativeWitness,
-    PositiveWitness, SEMANTIC_WITNESS_MAGIC, SEMANTIC_WITNESS_VERSION, SemanticWitness,
-    WitnessError, WitnessGuidance,
-};
 pub use journal::{AppendReconciliation, IncompleteTailPolicy, Journal};
 pub use merkle::{
     KEY_NIBBLE_LEN, MERKLE_EMPTY_DOMAIN, MERKLE_KEY_DOMAIN, MERKLE_LEAF_DOMAIN, MERKLE_NODE_DOMAIN,
@@ -102,6 +96,12 @@ pub use sealed_lineage::{
 pub use store_pin::{
     STORE_PIN_DOMAIN, STORE_ROLE_AUTHORITY_LEDGER, STORE_ROLE_EFFECT_JOURNAL, pin_is_current,
     store_pin_at, store_pin_of,
+};
+pub use witness::{
+    HierarchicalWitness, LEDGER_SEMANTIC_WITNESS_DOMAIN, MAX_HIERARCHICAL_CHILDREN,
+    MAX_WITNESS_DEPTH, MAX_WITNESS_LABEL_BYTES, MAX_WITNESS_WIRE_BYTES, NegativeWitness,
+    PositiveWitness, SEMANTIC_WITNESS_MAGIC, SEMANTIC_WITNESS_VERSION, SemanticWitness,
+    WitnessError, WitnessGuidance,
 };
 
 /// Maximum payload accepted by one reference-journal record.

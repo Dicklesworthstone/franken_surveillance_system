@@ -26,8 +26,7 @@ impl TempDir {
     fn new() -> Result<Self, TestError> {
         static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let path = PathBuf::from("/tmp")
-            .join(format!("fssd-readiness-{}-{n}", std::process::id()));
+        let path = PathBuf::from("/tmp").join(format!("fssd-readiness-{}-{n}", std::process::id()));
         fs::create_dir_all(&path)?;
         Ok(Self(path))
     }
@@ -96,11 +95,9 @@ impl SensorDriver for ReadinessDriver {
                 self.control
                     .push_spec(SyntheticFrameSpec::Quiescent { is_keyframe: true });
                 let SensorDriverEvent::Frame(mut frame) = self.inner.poll_frame(now_ns) else {
-                    return SensorDriverEvent::Disconnected(
-                        SensorDisconnectReason::DriverError(
-                            "synthetic frame unavailable".to_owned(),
-                        ),
-                    );
+                    return SensorDriverEvent::Disconnected(SensorDisconnectReason::DriverError(
+                        "synthetic frame unavailable".to_owned(),
+                    ));
                 };
                 let frame_mut = Arc::make_mut(&mut frame);
                 match mutation {
@@ -273,7 +270,10 @@ fn readiness_requires_two_retained_samples_and_reconnect_proves_it_again() -> Te
     let covered = fixture.coverage()?;
     assert_eq!(covered.status, CoverageStatus::Covered);
     assert_eq!(covered.active_gaps, 0);
-    assert_eq!(covered.window, CaptureInterval::point(TimestampNs(second_at)));
+    assert_eq!(
+        covered.window,
+        CaptureInterval::point(TimestampNs(second_at))
+    );
 
     fixture.queue([Input::Disconnect])?;
     fixture.supervisor.step_tick(START_NS + 300_000_000)?;
@@ -353,7 +353,11 @@ fn invalid_source_identity_order_or_time_cannot_enter_the_ring() -> TestResult {
         let tick = fixture.supervisor.step_tick(now_ns)?;
         assert_eq!(tick.frames_received, 0, "{mutation:?}");
         assert_eq!(fixture.view()?.ring.total_enqueued, 1, "{mutation:?}");
-        assert_eq!(fixture.view()?.state, SensorState::GapBackoff, "{mutation:?}");
+        assert_eq!(
+            fixture.view()?.state,
+            SensorState::GapBackoff,
+            "{mutation:?}"
+        );
         assert_eq!(
             fixture.coverage()?.status,
             CoverageStatus::NotObservable,
@@ -546,7 +550,12 @@ fn failed_storage_handoff_keeps_unaccepted_ring_frames_without_duplicate_imports
     )?)?;
 
     fixture.queue([Input::frame(), Input::frame(), Input::frame()])?;
-    assert!(fixture.supervisor.step_tick(START_NS + 100_000_000).is_err());
+    assert!(
+        fixture
+            .supervisor
+            .step_tick(START_NS + 100_000_000)
+            .is_err()
+    );
     let after_failure = fixture.view()?;
     assert_eq!(after_failure.ring.total_enqueued, 3);
     assert_eq!(after_failure.frames_ingested, 1);
@@ -557,7 +566,12 @@ fn failed_storage_handoff_keeps_unaccepted_ring_frames_without_duplicate_imports
     let committed = fixture.supervisor.storage().head_snapshot()?;
 
     // The pending first publication fails before storage accepts the next ring frame.
-    assert!(fixture.supervisor.step_tick(START_NS + 200_000_000).is_err());
+    assert!(
+        fixture
+            .supervisor
+            .step_tick(START_NS + 200_000_000)
+            .is_err()
+    );
     assert_eq!(fixture.view()?.frames_ingested, 1);
     assert_eq!(fixture.view()?.ring.current_frames, 2);
     let retried = fixture.supervisor.storage().head_snapshot()?;
@@ -668,7 +682,12 @@ fn failed_old_generation_handoff_blocks_reconnect_without_clearing_source() -> T
         None,
     )?)?;
 
-    assert!(fixture.supervisor.step_tick(START_NS + 1_000_000_000).is_err());
+    assert!(
+        fixture
+            .supervisor
+            .step_tick(START_NS + 1_000_000_000)
+            .is_err()
+    );
     assert_eq!(fixture.view()?.state, SensorState::GapBackoff);
     assert_eq!(fixture.view()?.stream_generation, 1);
     assert_eq!(fixture.view()?.total_connections, 1);
@@ -676,7 +695,12 @@ fn failed_old_generation_handoff_blocks_reconnect_without_clearing_source() -> T
     assert_eq!(fixture.view()?.ring.current_frames, 8);
     let committed = fixture.supervisor.storage().head_snapshot()?;
 
-    assert!(fixture.supervisor.step_tick(START_NS + 1_100_000_000).is_err());
+    assert!(
+        fixture
+            .supervisor
+            .step_tick(START_NS + 1_100_000_000)
+            .is_err()
+    );
     assert_eq!(fixture.view()?.stream_generation, 1);
     assert_eq!(fixture.view()?.total_connections, 1);
     assert_eq!(fixture.view()?.ring.current_frames, 8);
@@ -711,7 +735,12 @@ fn pinned_capacity_defers_reconnect_without_discarding_the_old_ring() -> TestRes
             active_event_ids: Vec::new(),
         })?;
     fixture.queue((0..12).map(|_| Input::frame()))?;
-    assert!(fixture.supervisor.step_tick(START_NS + 100_000_000)?.quota_pinned);
+    assert!(
+        fixture
+            .supervisor
+            .step_tick(START_NS + 100_000_000)?
+            .quota_pinned
+    );
     fixture.queue([Input::Disconnect])?;
     fixture.supervisor.step_tick(START_NS + 200_000_000)?;
 

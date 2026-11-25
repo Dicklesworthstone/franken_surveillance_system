@@ -16,13 +16,9 @@
 use std::error::Error;
 use std::fmt;
 
-use fss_core::{
-    CanonicalDecoder, CanonicalEncoder, ContentDigest, ContractError, LedgerAnchor,
-};
+use fss_core::{CanonicalDecoder, CanonicalEncoder, ContentDigest, ContractError, LedgerAnchor};
 
-use crate::cursor::{
-    LedgerReplayCursor, ReplayCursorError, ReplayPage, ReplayPageBudget,
-};
+use crate::cursor::{LedgerReplayCursor, ReplayCursorError, ReplayPage, ReplayPageBudget};
 use crate::durable::DurableReferenceLedger;
 use crate::oracle::LedgerOracle;
 
@@ -605,7 +601,7 @@ pub enum HighWaterPlan {
     /// Derived cache can soundly catch up incrementally using `page`.
     IncrementalCatchUp {
         /// Bounded replay page strictly following the watermark cursor.
-        page: ReplayPage,
+        page: Box<ReplayPage>,
         /// Remaining batches after this page.
         remaining_after_page: usize,
     },
@@ -646,7 +642,9 @@ impl HighWaterProtocol {
                 cursor_sequence: watermark.cursor.sequence(),
             });
         }
-        if let Some(reason) = precheck_rebuild_reason(watermark, expected_generation, oracle.head_anchor()) {
+        if let Some(reason) =
+            precheck_rebuild_reason(watermark, expected_generation, oracle.head_anchor())
+        {
             let genesis_cursor = oracle
                 .replay_cursor_genesis()
                 .map_err(|err| HighWaterError::Encoding(err.to_string()))?;
@@ -774,13 +772,15 @@ fn plan_from_page(page: ReplayPage) -> HighWaterPlan {
     } else {
         let remaining_after_page = page.remaining_batches;
         HighWaterPlan::IncrementalCatchUp {
-            page,
+            page: Box::new(page),
             remaining_after_page,
         }
     }
 }
 
-fn rebuild_reason_from_cursor_error(err: &ReplayCursorError) -> Result<RebuildReason, HighWaterError> {
+fn rebuild_reason_from_cursor_error(
+    err: &ReplayCursorError,
+) -> Result<RebuildReason, HighWaterError> {
     match err {
         ReplayCursorError::LineageMismatch { .. } | ReplayCursorError::EpochMismatch { .. } => {
             Ok(RebuildReason::LineageOrEpochDiverged)

@@ -13,8 +13,9 @@ use fss_core::{
 use fss_ledger::{
     AppendPhase, DerivedCacheKind, DerivedGenerationPin, DerivedHighWaterState,
     DurableAppendReconciliation, DurableReferenceLedger, HIGH_WATER_VERSION, HighWaterError,
-    HighWaterPlan, HighWaterProtocol, IncompleteTailPolicy, LedgerOracle, MAX_HIGH_WATER_WIRE_BYTES,
-    MAX_REPLAY_PAGE_BYTES, OracleLimits, RebuildReason, ReplayPageBudget,
+    HighWaterPlan, HighWaterProtocol, IncompleteTailPolicy, LedgerOracle,
+    MAX_HIGH_WATER_WIRE_BYTES, MAX_REPLAY_PAGE_BYTES, OracleLimits, RebuildReason,
+    ReplayPageBudget,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -183,11 +184,8 @@ fn generation_drift_corruption_fork_pending_cancel_and_wire_hostility_fail_close
 
     let pin = base_pin(DerivedCacheKind::Model, "model:detector-v1");
     let budget = ReplayPageBudget::new(4, MAX_REPLAY_PAGE_BYTES)?;
-    let wm2 = DerivedHighWaterState::new(
-        pin.clone(),
-        oracle.replay_cursor_at(2)?,
-        d("state-at-2"),
-    )?;
+    let wm2 =
+        DerivedHighWaterState::new(pin.clone(), oracle.replay_cursor_at(2)?, d("state-at-2"))?;
 
     // 1. Any generation drift (kernel, calibration, model_digest, schema_epoch, cache_id) -> RebuildRequired.
     let mut drifted_kernel = pin.clone();
@@ -249,7 +247,7 @@ fn generation_drift_corruption_fork_pending_cancel_and_wire_hostility_fail_close
         );
         // Forged non-monotonic page (next_cursor rewinds to start_cursor while claiming batches)
         // must fail closed with CursorContinuityViolation.
-        let mut forged_page = page;
+        let mut forged_page = *page;
         forged_page.next_cursor = forged_page.start_cursor.clone();
         assert!(matches!(
             wm2.commit_advance(&forged_page, d("x"), &pin),

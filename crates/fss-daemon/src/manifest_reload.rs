@@ -26,7 +26,10 @@ pub(super) fn restart_required_field(
             current.ipc_socket_override != candidate.ipc_socket_override,
             "ipc_socket_override",
         ),
-        (current.ring_cap_bytes != candidate.ring_cap_bytes, "ring_cap_bytes"),
+        (
+            current.ring_cap_bytes != candidate.ring_cap_bytes,
+            "ring_cap_bytes",
+        ),
         (
             current.soft_watermark_pct != candidate.soft_watermark_pct,
             "soft_watermark_pct",
@@ -43,7 +46,10 @@ pub(super) fn restart_required_field(
             current.scrub_budget_bytes_per_tick != candidate.scrub_budget_bytes_per_tick,
             "scrub_budget_bytes_per_tick",
         ),
-        (current.retain_hot_ns != candidate.retain_hot_ns, "retain_hot_ns"),
+        (
+            current.retain_hot_ns != candidate.retain_hot_ns,
+            "retain_hot_ns",
+        ),
         // The resident model cache does not key its immutable contract by threshold.
         // Reusing that package would retain the old score policy despite new metadata.
         (
@@ -73,8 +79,14 @@ pub(super) fn restart_required_field(
             (previous.adapter != camera.adapter, "camera_adapter"),
             (previous.endpoint != camera.endpoint, "camera_endpoint"),
             (previous.secret_id != camera.secret_id, "camera_secret_id"),
-            (previous.dimensions != camera.dimensions, "camera_dimensions"),
-            (previous.primary_zone != camera.primary_zone, "camera_primary_zone"),
+            (
+                previous.dimensions != camera.dimensions,
+                "camera_dimensions",
+            ),
+            (
+                previous.primary_zone != camera.primary_zone,
+                "camera_primary_zone",
+            ),
             (
                 previous.ring_max_frames != camera.ring_max_frames,
                 "camera_ring_max_frames",
@@ -83,7 +95,10 @@ pub(super) fn restart_required_field(
                 previous.ring_max_bytes != camera.ring_max_bytes,
                 "camera_ring_max_bytes",
             ),
-            (previous.auth_realm != camera.auth_realm, "camera_auth_realm"),
+            (
+                previous.auth_realm != camera.auth_realm,
+                "camera_auth_realm",
+            ),
             (
                 previous.allow_inband_sps_pps != camera.allow_inband_sps_pps,
                 "camera_allow_inband_sps_pps",

@@ -285,7 +285,13 @@ fn merkle_backed_witnesses_and_hostile_wire_payloads_fail_closed() -> TestResult
     let obj_absent = ObjectId::parse("obj:merkle-missing")?;
     let batch = merkle.prepare_batch(
         BatchId::parse("batch:merkle-1")?,
-        vec![make_delta("dm1", "obj:merkle-1", None, 1, Plane::Authority)?],
+        vec![make_delta(
+            "dm1",
+            "obj:merkle-1",
+            None,
+            1,
+            Plane::Authority,
+        )?],
         vec![],
     )?;
     merkle.append_batch(batch)?;
