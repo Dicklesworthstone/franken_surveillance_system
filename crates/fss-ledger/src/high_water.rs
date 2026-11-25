@@ -383,6 +383,7 @@ impl DerivedHighWaterState {
         derived_state_digest: ContentDigest,
     ) -> Result<Self, HighWaterError> {
         generation.validate()?;
+        validate_generation_matches_anchor(&generation, cursor.last_anchor())?;
         let format_version = HIGH_WATER_VERSION;
         let corrupted = false;
         let watermark_digest = compute_watermark_digest(
@@ -450,12 +451,15 @@ impl DerivedHighWaterState {
             .checked_add(page.batches.len() as u64);
         if expected_next_seq != Some(page.next_cursor.sequence())
             || (page.batches.is_empty() && page.next_cursor != page.start_cursor)
+            || page.next_cursor.site_lineage() != self.cursor.site_lineage()
+            || page.next_cursor.ledger_epoch() != self.cursor.ledger_epoch()
         {
             return Err(HighWaterError::CursorContinuityViolation {
                 expected_sequence: expected_next_seq.unwrap_or(u64::MAX),
                 supplied_sequence: page.next_cursor.sequence(),
             });
         }
+        validate_generation_matches_anchor(expected_generation, page.next_cursor.last_anchor())?;
         Self::new(
             expected_generation.clone(),
             page.next_cursor.clone(),
@@ -554,6 +558,8 @@ impl DerivedHighWaterState {
             .bytes()
             .map_err(|err| HighWaterError::MalformedWire(err.to_string()))?;
         let cursor = LedgerReplayCursor::from_canonical_bytes(cursor_bytes)
+            .map_err(|err| HighWaterError::MalformedWire(err.to_string()))?;
+        validate_generation_matches_anchor(&generation, cursor.last_anchor())
             .map_err(|err| HighWaterError::MalformedWire(err.to_string()))?;
         let derived_state_digest = dec
             .digest()
@@ -740,6 +746,22 @@ impl HighWaterProtocol {
             }
         }
     }
+}
+
+fn validate_generation_matches_anchor(
+    generation: &DerivedGenerationPin,
+    anchor: &LedgerAnchor,
+) -> Result<(), HighWaterError> {
+    if generation.schema_epoch != anchor.schema_epoch
+        || generation.policy_epoch != anchor.policy_epoch
+        || generation.privacy_epoch != anchor.privacy_epoch
+        || generation.adapter_registry_epoch != anchor.adapter_registry_epoch
+    {
+        return Err(HighWaterError::InvalidGeneration(
+            "generation pin ledger epochs disagree with cursor anchor epochs".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn precheck_rebuild_reason(

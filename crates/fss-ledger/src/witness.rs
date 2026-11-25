@@ -271,11 +271,14 @@ impl PositiveWitness {
         merkle_proof: Option<MerkleProof>,
     ) -> Result<Self, WitnessError> {
         validate_anchor_bounds(&anchor)?;
-        if committed_sequence > anchor.commit_sequence {
+        if committed_sequence == 0 || committed_sequence > anchor.commit_sequence {
             return Err(WitnessError::AnchorMismatch {
                 sequence: committed_sequence,
-                detail: "committed_sequence exceeds witness anchor commit_sequence".to_owned(),
+                detail: "committed_sequence must be within 1..=anchor.commit_sequence".to_owned(),
             });
+        }
+        if revision.generation == 0 {
+            return Err(WitnessError::RevisionMismatch { object_id });
         }
         let mut witness = Self {
             anchor,
@@ -323,10 +326,15 @@ impl PositiveWitness {
     /// Verifies local structural invariants, optional Merkle proof, and self-commitment digest.
     pub fn verify_self_invariants(&self) -> Result<(), WitnessError> {
         validate_anchor_bounds(&self.anchor)?;
-        if self.committed_sequence > self.anchor.commit_sequence {
+        if self.committed_sequence == 0 || self.committed_sequence > self.anchor.commit_sequence {
             return Err(WitnessError::AnchorMismatch {
                 sequence: self.committed_sequence,
-                detail: "committed_sequence exceeds witness anchor commit_sequence".to_owned(),
+                detail: "committed_sequence must be within 1..=anchor.commit_sequence".to_owned(),
+            });
+        }
+        if self.revision.generation == 0 {
+            return Err(WitnessError::RevisionMismatch {
+                object_id: self.object_id.clone(),
             });
         }
         self.verify_merkle_proof()?;
@@ -399,9 +407,9 @@ impl PositiveWitness {
         let committed_sequence = dec
             .u64()
             .map_err(|err| WitnessError::MalformedWire(err.to_string()))?;
-        if committed_sequence > anchor.commit_sequence {
+        if committed_sequence == 0 || committed_sequence > anchor.commit_sequence {
             return Err(WitnessError::MalformedWire(
-                "committed_sequence exceeds anchor commit_sequence".to_owned(),
+                "committed_sequence must be within 1..=anchor.commit_sequence".to_owned(),
             ));
         }
         let has_proof = dec
@@ -1192,6 +1200,11 @@ fn decode_object_revision(dec: &mut CanonicalDecoder<'_>) -> Result<ObjectRevisi
     let generation = dec
         .u64()
         .map_err(|err| WitnessError::MalformedWire(err.to_string()))?;
+    if generation == 0 {
+        return Err(WitnessError::MalformedWire(
+            "object revision generation must be >= 1".to_owned(),
+        ));
+    }
     let family = dec
         .text()
         .map_err(|err| WitnessError::MalformedWire(err.to_string()))?;
