@@ -25,6 +25,8 @@ mod error;
 pub mod independent_reconstruct;
 mod manifest;
 mod memory;
+/// Model package RaptorQ/GF(256) protection and root-last ATP activation (`FSS-147`, `fss-x4a.14.18`).
+pub mod model_atp_activation;
 pub mod model_license_policy;
 pub mod model_manifest;
 pub mod model_package;
