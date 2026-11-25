@@ -23,11 +23,15 @@ pub mod merkle;
 mod oracle;
 mod recovery;
 mod repair;
+/// Versioned ledger schema catalog and crash-safe root-last v1 -> v2 durable migration engine (`FSS-033`, `fss-x4a.9.3`).
+pub mod schema_migrations;
 mod sealed_lineage;
 /// Negative-read phantom and SSI write-skew schedule corpus (`FSS-106`, `fss-x4a.9.13`).
 pub mod ssi_corpus;
 /// FrankenSQLite storage integration trait and reference/durable/Merkle adapters (`FSS-031`, `fss-x4a.9.1`).
 pub mod storage_adapter;
+/// Deterministic FrankenSQLite API qualification suite and certificate (`FSS-032`, `fss-x4a.9.2`).
+pub mod storage_qualification;
 mod store_pin;
 mod witness;
 
@@ -117,6 +121,13 @@ pub use repair::{
     doctor_bounded, doctor_bounded_with_io, doctor_path, plan, plan_with_cut, quarantine_path_for,
     quarantine_temp_path_for,
 };
+pub use schema_migrations::{
+    LEDGER_MIGRATION_RECEIPT_MAGIC, LEDGER_MIGRATION_RECEIPT_VERSION, LEDGER_SCHEMA_CATALOG,
+    LEDGER_SCHEMA_MIGRATION_RECEIPT_DOMAIN, LedgerMigrationError, LedgerMigrationReceipt,
+    LedgerSchemaCatalog, LedgerSchemaEntry, LedgerSchemaMigrator, MAX_LEDGER_MIGRATION_WIRE_BYTES,
+    MIGRATION_RECEIPT_FILENAME, MigrationGuidance, MigrationOutcomeState, MigrationStage,
+    SchemaLifecycleState,
+};
 pub use sealed_lineage::{
     ERR_LEDGER_SEALED_NAMESPACE_001, LINEAGE_WRITE_SEAL_DOMAIN, SEALED_LINEAGE_FAMILIES,
     SEALED_LINEAGE_OBJECT_PREFIX, first_sealed_lineage_delta, is_sealed_lineage_batch,
@@ -134,6 +145,12 @@ pub use storage_adapter::{
     MerkleEpochStorage, ReferenceOracleStorage, STORAGE_RECEIPT_MAGIC, STORAGE_RECEIPT_VERSION,
     StorageAuthorityScope, StorageCommitReceipt, StorageCommitState, StorageError, StorageGuidance,
     StorageMigrationPlan, StorageRecoveryOutcome, StorageRecoverySummary, StorageSchemaVersion,
+};
+pub use storage_qualification::{
+    ApiCheckOutcome, ApiCheckResult, LEDGER_STORAGE_API_QUALIFICATION_DOMAIN,
+    MAX_STORAGE_QUALIFICATION_WIRE_BYTES, QualificationVerdict, STORAGE_QUALIFICATION_MAGIC,
+    STORAGE_QUALIFICATION_VERSION, StorageApiCapability, StorageApiQualificationCertificate,
+    StorageApiQualifier, StorageQualificationError,
 };
 pub use store_pin::{
     STORE_PIN_DOMAIN, STORE_ROLE_AUTHORITY_LEDGER, STORE_ROLE_EFFECT_JOURNAL, pin_is_current,

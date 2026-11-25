@@ -76,6 +76,12 @@ impl StorageSchemaVersion {
     pub const V2_0: Self = Self { major: 2, minor: 0 };
     /// Additive v2.1 schema (`2.1`).
     pub const V2_1: Self = Self { major: 2, minor: 1 };
+
+    /// Constructs a schema version `(major, minor)`.
+    #[must_use]
+    pub const fn new(major: u32, minor: u32) -> Self {
+        Self { major, minor }
+    }
 }
 
 /// Explicit forward-only schema migration descriptor (`FSS-031`).
@@ -705,6 +711,14 @@ pub trait FrankenSqliteStorageAdapter {
         cancelled: bool,
     ) -> Result<(), StorageError>;
 
+    /// Prepares a canonical [`EvidenceDeltaBatch`] against the adapter's current head anchor
+    /// and state-root commitment semantics without mutating storage.
+    fn prepare_batch(
+        &self,
+        batch_id: BatchId,
+        deltas: Vec<fss_core::EvidenceDelta>,
+    ) -> Result<EvidenceDeltaBatch, StorageError>;
+
     /// Validates authority, semantic planes, witnesses (including certified absence!), and
     /// atomically commits one canonical [`EvidenceDeltaBatch`], distinguishing idempotent duplicate
     /// retries (`ReconciledDuplicate`) from conflicting `BatchId` reuse (`BatchIdConflict`).
@@ -835,6 +849,16 @@ impl FrankenSqliteStorageAdapter for ReferenceOracleStorage {
         witness
             .verify_against_oracle(&self.oracle, false)
             .map_err(map_witness_error)
+    }
+
+    fn prepare_batch(
+        &self,
+        batch_id: BatchId,
+        deltas: Vec<fss_core::EvidenceDelta>,
+    ) -> Result<EvidenceDeltaBatch, StorageError> {
+        self.oracle
+            .prepare_batch(batch_id, deltas, Vec::new())
+            .map_err(map_oracle_error)
     }
 
     fn commit_witnessed_batch(
@@ -1070,6 +1094,16 @@ impl FrankenSqliteStorageAdapter for DurableJournalStorage {
         )
     }
 
+    fn prepare_batch(
+        &self,
+        batch_id: BatchId,
+        deltas: Vec<fss_core::EvidenceDelta>,
+    ) -> Result<EvidenceDeltaBatch, StorageError> {
+        self.durable
+            .prepare_batch(batch_id, deltas, Vec::new())
+            .map_err(map_durable_error)
+    }
+
     fn commit_witnessed_batch(
         &mut self,
         authority: &StorageAuthorityScope,
@@ -1219,7 +1253,8 @@ impl FrankenSqliteStorageAdapter for DurableJournalStorage {
             return Err(StorageError::Cancelled);
         }
         authority.validate()?;
-        self.durable.verify_storage().map_err(map_durable_error)
+        let _journal_root = self.durable.verify_storage().map_err(map_durable_error)?;
+        Ok(self.durable.head_history_root())
     }
 }
 
@@ -1246,6 +1281,11 @@ impl MerkleEpochStorage {
     #[must_use]
     pub const fn ledger(&self) -> &MerkleEpochLedger {
         &self.ledger
+    }
+
+    /// Exposes a mutable reference to the underlying [`MerkleEpochLedger`] (e.g. for fault-injection qualification).
+    pub fn ledger_mut(&mut self) -> &mut MerkleEpochLedger {
+        &mut self.ledger
     }
 
     /// Retries checkpoint maintenance without resubmitting evidence or releasing writer ownership.
@@ -1356,6 +1396,16 @@ impl FrankenSqliteStorageAdapter for MerkleEpochStorage {
             self.ledger.history_root(),
             |id| self.ledger.get_object(id),
         )
+    }
+
+    fn prepare_batch(
+        &self,
+        batch_id: BatchId,
+        deltas: Vec<fss_core::EvidenceDelta>,
+    ) -> Result<EvidenceDeltaBatch, StorageError> {
+        self.ledger
+            .prepare_batch(batch_id, deltas, Vec::new())
+            .map_err(map_epoch_error)
     }
 
     fn commit_witnessed_batch(
