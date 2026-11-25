@@ -597,3 +597,135 @@ fn graceful_shutdown_drains_retained_frames_beyond_the_tick_ingest_budget() -> T
     );
     Ok(())
 }
+
+#[test]
+fn reconnect_hands_off_paused_old_generation_frames_before_resetting_the_ring() -> TestResult {
+    let mut fixture = Fixture::with_gop_frames(64, 4)?;
+    assert!(
+        fixture
+            .supervisor
+            .set_ingest_consumer_paused(&fixture.sensor_id, true)
+    );
+    fixture.queue((0..12).map(|_| Input::frame()))?;
+    fixture.supervisor.step_tick(START_NS + 100_000_000)?;
+    assert_eq!(fixture.view()?.frames_ingested, 0);
+    fixture.queue([Input::Disconnect])?;
+    fixture.supervisor.step_tick(START_NS + 200_000_000)?;
+    assert_eq!(fixture.view()?.ring.current_frames, 12);
+
+    let reconnect = fixture.supervisor.step_tick(START_NS + 1_000_000_000)?;
+    assert_eq!(reconnect.reconnects_completed, 1);
+    assert_eq!(reconnect.frames_committed, 12);
+    assert_eq!(fixture.view()?.stream_generation, 2);
+    assert_eq!(fixture.view()?.frames_ingested, 12);
+    assert_eq!(fixture.view()?.ring.current_frames, 0);
+    let packs = fixture.supervisor.storage().pack_store();
+    let roots = packs.list_roots(None, 32)?;
+    assert!(!roots.has_more);
+    let mut retained_frames = 0_u64;
+    for entry in roots.entries {
+        if entry.record.kind == "media-gop-v2" {
+            let bytes = packs.read_verified(&entry.record.root_digest)?;
+            let chunk = fss_pack::MediaChunkView::parse(&bytes)?;
+            chunk.verify_all_frames()?;
+            assert!(chunk.stream_id().ends_with(":g1"));
+            retained_frames += chunk.frame_count() as u64;
+        }
+    }
+    assert_eq!(retained_frames, 12);
+    fixture.finish()
+}
+
+#[test]
+fn failed_old_generation_handoff_blocks_reconnect_without_clearing_source() -> TestResult {
+    let mut fixture = Fixture::with_gop_frames(64, 4)?;
+    assert!(
+        fixture
+            .supervisor
+            .set_ingest_consumer_paused(&fixture.sensor_id, true)
+    );
+    fixture.queue((0..12).map(|_| Input::frame()))?;
+    fixture.supervisor.step_tick(START_NS + 100_000_000)?;
+    fixture.queue([Input::Disconnect])?;
+    fixture.supervisor.step_tick(START_NS + 200_000_000)?;
+
+    let foreign_bytes = b"reconnect catalog conflict";
+    let foreign_digest = fss_core::ContentDigest::sha256(foreign_bytes);
+    let packs = Arc::clone(fixture.supervisor.storage().pack_store());
+    packs.append_batch(&[fss_pack::PackObjectInput::new(
+        fss_pack::PACK_KIND_METADATA,
+        0,
+        foreign_bytes,
+    )])?;
+    packs.publish_root(fss_pack::VirtualRootRecord::new(
+        "gop:sensor_readiness:1:1",
+        foreign_digest,
+        "independent-publication",
+        1,
+        foreign_bytes.len() as u64,
+        1,
+        TimestampNs(START_NS),
+        None,
+    )?)?;
+
+    assert!(fixture.supervisor.step_tick(START_NS + 1_000_000_000).is_err());
+    assert_eq!(fixture.view()?.state, SensorState::GapBackoff);
+    assert_eq!(fixture.view()?.stream_generation, 1);
+    assert_eq!(fixture.view()?.total_connections, 1);
+    assert_eq!(fixture.view()?.frames_ingested, 4);
+    assert_eq!(fixture.view()?.ring.current_frames, 8);
+    let committed = fixture.supervisor.storage().head_snapshot()?;
+
+    assert!(fixture.supervisor.step_tick(START_NS + 1_100_000_000).is_err());
+    assert_eq!(fixture.view()?.stream_generation, 1);
+    assert_eq!(fixture.view()?.total_connections, 1);
+    assert_eq!(fixture.view()?.ring.current_frames, 8);
+    assert_eq!(
+        fixture.supervisor.storage().head_snapshot()?.history_root,
+        committed.history_root
+    );
+    assert!(fixture.supervisor.shutdown_graceful().is_err());
+    Ok(())
+}
+
+#[test]
+fn pinned_capacity_defers_reconnect_without_discarding_the_old_ring() -> TestResult {
+    let mut fixture = Fixture::with_gop_frames(64, 4)?;
+    assert!(
+        fixture
+            .supervisor
+            .set_ingest_consumer_paused(&fixture.sensor_id, true)
+    );
+    fixture
+        .supervisor
+        .storage_mut()
+        .register_retention_candidate(fss_pack::RetentionCandidate {
+            import_id: "gop:readiness-held-capacity".to_owned(),
+            sensor_id: fixture.sensor_id.as_str().to_owned(),
+            capture_end_ns: TimestampNs(START_NS),
+            byte_size: 67_108_864,
+            object_digests: vec![fss_core::ContentDigest::sha256(b"held-capacity")],
+            is_derived_proxy: false,
+            held_by: vec!["hold:readiness-capacity".to_owned()],
+            active_obligation_ids: Vec::new(),
+            active_event_ids: Vec::new(),
+        })?;
+    fixture.queue((0..12).map(|_| Input::frame()))?;
+    assert!(fixture.supervisor.step_tick(START_NS + 100_000_000)?.quota_pinned);
+    fixture.queue([Input::Disconnect])?;
+    fixture.supervisor.step_tick(START_NS + 200_000_000)?;
+
+    let deferred = fixture.supervisor.step_tick(START_NS + 1_000_000_000)?;
+    assert!(deferred.quota_pinned);
+    assert_eq!(deferred.reconnects_completed, 0);
+    assert_eq!(fixture.view()?.state, SensorState::GapBackoff);
+    assert_eq!(fixture.view()?.stream_generation, 1);
+    assert_eq!(fixture.view()?.total_connections, 1);
+    assert_eq!(fixture.view()?.frames_ingested, 0);
+    assert_eq!(fixture.view()?.ring.current_frames, 12);
+    assert!(matches!(
+        fixture.supervisor.shutdown_graceful(),
+        Err(fss_daemon::DaemonError::StorageQuotaPinned { .. })
+    ));
+    Ok(())
+}

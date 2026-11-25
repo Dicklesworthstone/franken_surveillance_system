@@ -244,7 +244,8 @@ impl DaemonSupervisor {
 
         let (force_scrub, cmd_gaps) = self.process_control_commands_step(now_ns, now)?;
         let poll = self.poll_all_cameras_step(&sensor_ids, now_ns, now)?;
-        let (perception_batch, frames_committed) = self.fanout_rings_step(&sensor_ids)?;
+        let (perception_batch, fanout_frames_committed) = self.fanout_rings_step(&sensor_ids)?;
+        let frames_committed = poll.frames_handed_off.saturating_add(fanout_frames_committed);
         let (tick_corroborated, tick_shared_held, decisions) =
             self.run_perception_step(&perception_batch)?;
 

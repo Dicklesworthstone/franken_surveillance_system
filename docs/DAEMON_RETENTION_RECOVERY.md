@@ -12,6 +12,12 @@ A tentative ring read cannot acknowledge the unaccepted remainder of a batch whe
 an earlier flush fails. Accepted source stays in the GOP buffer through a known
 precommit failure; retrying the flush reuses those shared source allocations.
 
+Before a due reconnect can replace its ring generation, the supervisor performs
+the same bounded handoff of the old ring. A storage failure preserves the
+unaccepted remainder and prevents generation replacement. Pinned capacity defers
+that camera's reconnect while the daemon continues ordinary maintenance; it does
+not clear the ring to make the new session appear ready.
+
 After the canonical commit is acknowledged, storage keeps a pending publication
 receipt until the matching catalog root and retention candidate are established.
 Retrying that phase does not append another canonical import. An opaque sink

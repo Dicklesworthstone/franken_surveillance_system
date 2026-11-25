@@ -19,6 +19,12 @@ An accepted connection without usable frames remains subject to the stall timeou
 and bounded reconnect backoff. A reconnect starts a fresh generation and must
 establish continuity again; connection count alone cannot establish readiness.
 
+Accepted sessions that never establish continuity retain the growing reconnect
+backoff. The retry schedule resets only after an unblocked continuity recovery.
+Before replacing a ring generation, the supervisor transfers the old retained
+frames into storage ownership. Pinned capacity can defer that reconnect until
+the handoff can succeed.
+
 ## Losing and recovering readiness
 
 An explicit source discontinuity, skipped source sequence, excessive time between

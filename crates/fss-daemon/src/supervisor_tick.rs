@@ -26,6 +26,7 @@ mod manifest_reload_tests;
 
 pub(crate) struct CameraPollCounters {
     pub(crate) frames_received: u64,
+    pub(crate) frames_handed_off: u64,
     pub(crate) frames_shed: u64,
     pub(crate) coverage_gaps_emitted: u64,
     pub(crate) reconnects_completed: u64,
@@ -374,12 +375,32 @@ impl DaemonSupervisor {
     ) -> Result<CameraPollCounters, DaemonError> {
         let mut out = CameraPollCounters {
             frames_received: 0,
+            frames_handed_off: 0,
             frames_shed: 0,
             coverage_gaps_emitted: 0,
             reconnects_completed: 0,
         };
 
         for sid in sensor_ids {
+            let reconnect_drain_limit = self
+                .sensors
+                .get(sid)
+                .filter(|slot| {
+                    slot.state == SensorState::GapBackoff && now_ns >= slot.next_reconnect_ns
+                })
+                .map(|slot| slot.entry.ring_max_frames);
+            if let Some(max_frames) = reconnect_drain_limit {
+                // Replacing a ring generation must not discard source frames still owned
+                // only by that ring. Drain its bounded remainder even when ingest is paused.
+                let (accepted, failure) = self.ingest_camera_ring_step(sid, max_frames);
+                out.frames_handed_off = out.frames_handed_off.saturating_add(accepted);
+                match failure {
+                    Some(DaemonError::StorageQuotaPinned { .. }) => continue,
+                    Some(err) => return Err(err),
+                    None => {}
+                }
+            }
+
             let mut disconnect_ev: Option<(SensorDisconnectReason, String, TimestampNs, u32)> =
                 None;
             let mut reconnect_ev: Option<(u64, String, u32)> = None;
