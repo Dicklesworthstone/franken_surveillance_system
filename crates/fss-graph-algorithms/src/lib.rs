@@ -53,6 +53,8 @@ pub mod min_cost_flow;
 pub mod oracles;
 pub mod paths;
 pub mod ppr;
+/// Immutable graph projection and generational-handle core (`FSS-151`, `fss-x4a.23.1`).
+pub mod projection;
 pub mod reference;
 pub mod registry;
 pub mod reliability;
