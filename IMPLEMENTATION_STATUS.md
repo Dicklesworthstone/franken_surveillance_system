@@ -5,6 +5,41 @@
 **Current change qualification:** each dated section below states its exact verification boundary. Native passes for one component do not qualify other changes, and prior receipts do not qualify new bytes.
 **Release authority:** repository-owned local qualification (`scripts/qualify.sh`) and retained DSR receipts, not hosted CI
 
+## Long-running AVC and bounded HTTP acquisition — 2026-11-25
+
+The daemon now extends each generation's 32-bit, 90 kHz RTP presentation clock
+across wraparound while preserving legitimate B-picture presentation reordering.
+Clock state advances only after successful source/picture admission. An exact
+half-cycle timestamp difference or a receive gap too long to select a unique
+epoch refuses the generation instead of silently inventing continuity.
+
+HTTP acquisition now asks the socket for at most the bytes its bounded buffer
+can retain. A full buffer leaves unread bytes in the socket until extraction
+makes room. Both complete and incomplete response headers obey the same 16 KiB
+bound, and interrupted reads consume the existing bounded per-tick allowance.
+
+Six regression tests cover real reordered AVC fixtures across both directions
+of timestamp wrap, exact retained-source digests and independent pixel replay,
+ambiguous epoch refusal and fresh generations, retained HTTP tails, every
+split position of consecutive JPEG frames, complete-header limits and repeated
+interruption. Existing JPEG marker parsing is unchanged.
+
+**Verification:** pinned `nightly-2026-08-31` rustfmt and `git diff --check`
+passed; independent source/API review found no blocker. Native acquisition
+tests were attempted, but compilation of the registry dependency
+`asupersync 0.5.0` was killed by the host before daemon compilation or test
+execution. A serial metadata-only storage check hit the same external build
+failure. These are unresolved validation limits, not passing tests. The earlier
+deletion-history tests also remain unexecuted. Re-run on a host with sufficient
+memory:
+
+```sh
+cargo +nightly-2026-08-31 test --locked --offline -p fss-daemon --lib sensor_network:: -- --test-threads=1
+cargo +nightly-2026-08-31 test --locked --offline -p fss-pack --test tombstone_recovery_contract --test retention_compaction_contract -- --test-threads=1
+```
+
+No physical-camera, full qualification or release-matrix pass is claimed.
+
 ## Daemon failure-path source draining — 2026-11-25
 
 A failed supervision tick now executes the same request, drain and finalization

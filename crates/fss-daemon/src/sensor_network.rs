@@ -574,32 +574,17 @@ impl NetworkAdapterDriver {
                 state.write_offset = 0;
             }
 
-            // 2. Read available bytes into the bounded buffer.
-            if disconnect_reason.is_none() && !state.eof_observed {
-                let mut tmp = [0_u8; HTTP_READ_CHUNK_BYTES];
-                for _ in 0..MAX_HTTP_READ_CALLS_PER_TICK {
-                    if state.read_buf.len() >= MAX_HTTP_BUFFER_BYTES {
-                        break;
-                    }
-                    match state.stream.read(&mut tmp) {
-                        Ok(0) => {
-                            state.eof_observed = true;
-                            break;
-                        }
-                        Ok(n) => {
-                            let allowed =
-                                MAX_HTTP_BUFFER_BYTES.saturating_sub(state.read_buf.len());
-                            let take = n.min(allowed);
-                            state.read_buf.extend_from_slice(&tmp[..take]);
-                        }
-                        Err(err) if err.kind() == io::ErrorKind::WouldBlock => break,
-                        Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
-                        Err(_) => {
-                            disconnect_reason = Some(SensorDisconnectReason::NetworkDrop);
-                            break;
-                        }
-                    }
-                }
+            // Read only what this bounded owner can retain. Unread tail bytes remain in
+            // the socket until frame extraction makes room; they are never silently dropped.
+            if disconnect_reason.is_none()
+                && !state.eof_observed
+                && let Err(reason) = read_http_into_buffer(
+                    &mut state.stream,
+                    &mut state.read_buf,
+                    &mut state.eof_observed,
+                )
+            {
+                disconnect_reason = Some(reason);
             }
 
             // 3. Parse HTTP response headers once.
@@ -624,7 +609,7 @@ impl NetworkAdapterDriver {
                             disconnect_reason = Some(SensorDisconnectReason::DriverError(reason));
                         }
                     }
-                } else if state.read_buf.len() > MAX_HTTP_HEADER_BYTES {
+                } else if state.read_buf.len() >= MAX_HTTP_HEADER_BYTES {
                     disconnect_reason = Some(SensorDisconnectReason::DriverError(
                         "HTTP response header exceeded 16 KiB bound".to_owned(),
                     ));
@@ -840,6 +825,38 @@ fn avc_driver_error(reason: &'static str) -> SensorDisconnectReason {
     SensorDisconnectReason::DriverError(reason.to_owned())
 }
 
+/// Bounded transport admission shared by the live socket and deterministic byte schedules.
+/// An exhausted buffer is backpressure, not EOF; no call consumes bytes it cannot retain.
+fn read_http_into_buffer(
+    stream: &mut impl Read,
+    read_buf: &mut Vec<u8>,
+    eof_observed: &mut bool,
+) -> Result<(), SensorDisconnectReason> {
+    if *eof_observed {
+        return Ok(());
+    }
+    let mut tmp = [0_u8; HTTP_READ_CHUNK_BYTES];
+    for _ in 0..MAX_HTTP_READ_CALLS_PER_TICK {
+        let allowed = MAX_HTTP_BUFFER_BYTES
+            .saturating_sub(read_buf.len())
+            .min(tmp.len());
+        if allowed == 0 {
+            break;
+        }
+        match stream.read(&mut tmp[..allowed]) {
+            Ok(0) => {
+                *eof_observed = true;
+                break;
+            }
+            Ok(n) => read_buf.extend_from_slice(&tmp[..n]),
+            Err(err) if err.kind() == io::ErrorKind::WouldBlock => break,
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
+            Err(_) => return Err(SensorDisconnectReason::NetworkDrop),
+        }
+    }
+    Ok(())
+}
+
 enum HttpHeaderOutcome {
     Ok { is_single_jpeg: bool },
     Unauthorized,
@@ -847,6 +864,10 @@ enum HttpHeaderOutcome {
 }
 
 fn parse_http_response_headers(raw: &[u8]) -> Result<HttpHeaderOutcome, String> {
+    // Include the terminating CRLF pair even when it arrived in the same read as the body.
+    if raw.len() > MAX_HTTP_HEADER_BYTES - 4 {
+        return Err("HTTP response header exceeded 16 KiB bound".to_owned());
+    }
     let text = std::str::from_utf8(raw).map_err(|_| "non-UTF-8 HTTP response header".to_owned())?;
     let mut lines = text.split("\r\n");
     let status_line = lines
@@ -1057,4 +1078,100 @@ fn encode_basic_auth_bytes(username: &str, password: &str) -> Vec<u8> {
     // Zeroize temporary raw credential buffer before dropping.
     raw.fill(0);
     out
+}
+
+#[cfg(test)]
+mod http_tests {
+    use std::io::Cursor;
+
+    use super::*;
+
+    // Marker-only framing fixture: an APP thumbnail contains its own SOI/EOI; the scan
+    // contains a stuffed 0xFF and a restart marker. Decoding remains a separate contract.
+    const JPEG: &[u8] = &[
+        0xff, 0xd8, 0xff, 0xe1, 0x00, 0x08, 0xff, 0xd8, 0xff, 0xd9, 0x00, 0x00, 0xff, 0xda, 0x00,
+        0x02, 0x17, 0xff, 0x00, 0x28, 0xff, 0xd0, 0x39, 0xff, 0xd9,
+    ];
+
+    #[test]
+    fn bounded_http_read_preserves_unread_tail_and_split_jpeg_boundaries() {
+        let mut wire = JPEG.to_vec();
+        wire.extend_from_slice(b"\r\n--frame\r\nContent-Type: image/jpeg\r\n\r\n");
+        wire.extend_from_slice(JPEG);
+        let wire_len = wire.len();
+        let mut stream = Cursor::new(wire);
+        let mut buf = vec![b'x'; MAX_HTTP_BUFFER_BYTES - 5];
+        let mut eof = false;
+
+        assert!(read_http_into_buffer(&mut stream, &mut buf, &mut eof).is_ok());
+        assert_eq!(buf.len(), MAX_HTTP_BUFFER_BYTES);
+        assert_eq!(
+            stream.position(),
+            5,
+            "tail bytes must remain in the transport"
+        );
+        assert!(!eof, "capacity exhaustion is not EOF");
+        assert!(extract_next_jpeg_frame(&mut buf).is_none());
+        assert_eq!(buf.as_slice(), &JPEG[..5]);
+
+        assert!(read_http_into_buffer(&mut stream, &mut buf, &mut eof).is_ok());
+        assert_eq!(stream.position(), wire_len as u64);
+        assert!(eof);
+        assert_eq!(extract_next_jpeg_frame(&mut buf).as_deref(), Some(JPEG));
+        assert_eq!(extract_next_jpeg_frame(&mut buf).as_deref(), Some(JPEG));
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn jpeg_framing_is_invariant_at_every_split_and_keeps_a_following_frame() {
+        for split in 0..=JPEG.len() {
+            let mut buf = JPEG[..split].to_vec();
+            if split < JPEG.len() {
+                assert!(extract_next_jpeg_frame(&mut buf).is_none());
+                buf.extend_from_slice(&JPEG[split..]);
+            }
+            buf.extend_from_slice(JPEG);
+            assert_eq!(extract_next_jpeg_frame(&mut buf).as_deref(), Some(JPEG));
+            assert_eq!(extract_next_jpeg_frame(&mut buf).as_deref(), Some(JPEG));
+            assert!(buf.is_empty());
+        }
+    }
+
+    #[test]
+    fn http_header_limit_includes_terminator_even_when_complete() {
+        let prefix = b"HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nX-Padding: ";
+        let mut raw = prefix.to_vec();
+        raw.resize(MAX_HTTP_HEADER_BYTES - 4, b'x');
+        assert!(matches!(
+            parse_http_response_headers(&raw),
+            Ok(HttpHeaderOutcome::Ok {
+                is_single_jpeg: true
+            })
+        ));
+        raw.push(b'x');
+        assert!(matches!(
+            parse_http_response_headers(&raw),
+            Err(reason) if reason == "HTTP response header exceeded 16 KiB bound"
+        ));
+    }
+
+    #[test]
+    fn interrupted_http_reads_exhaust_the_work_allowance_without_inventing_eof() {
+        struct Interrupted {
+            calls: usize,
+        }
+        impl Read for Interrupted {
+            fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+                self.calls += 1;
+                Err(io::Error::from(io::ErrorKind::Interrupted))
+            }
+        }
+        let mut stream = Interrupted { calls: 0 };
+        let mut buf = Vec::new();
+        let mut eof = false;
+        assert!(read_http_into_buffer(&mut stream, &mut buf, &mut eof).is_ok());
+        assert_eq!(stream.calls, MAX_HTTP_READ_CALLS_PER_TICK);
+        assert!(buf.is_empty());
+        assert!(!eof);
+    }
 }

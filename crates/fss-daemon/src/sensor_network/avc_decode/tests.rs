@@ -207,6 +207,107 @@ fn b_pictures_keep_original_pixels_pts_source_and_decodable_archive_order() -> T
 }
 
 #[test]
+fn rtp_timestamp_wrap_preserves_reordered_presentation_times_and_source_order() -> Test {
+    let mut groups = Groups::fixture(B_PICTURES)?;
+    let mut decoder = AvcSourceDecoder::new()?;
+    let units = access_units(B_PICTURES)?;
+    assert!(
+        units.len() >= 3,
+        "fixture must cover both directions of wrap"
+    );
+    let origin = i128::from(u32::MAX) - 4_500;
+    let mut output = Vec::new();
+    let mut expected_ticks = Vec::new();
+    for (index, unit) in units.iter().enumerate() {
+        // Exercise both directions across the wire wrap while preserving real B pictures.
+        let presentation_index = match index {
+            1 => 2,
+            2 => 1,
+            _ => index,
+        };
+        let ticks = origin + presentation_index as i128 * 3_000;
+        let group = groups.picture(&unit.nals, ticks as u32)?;
+        decoder.push(&group, 1_000_000 + index as i128 * 10_000)?;
+        expected_ticks.push(ticks);
+        drain(&mut decoder, &mut output);
+    }
+    assert!(
+        expected_ticks
+            .iter()
+            .any(|ticks| *ticks > i128::from(u32::MAX))
+    );
+    assert!(expected_ticks.windows(2).any(|pair| pair[0] > pair[1]));
+    decoder.finish()?;
+    drain(&mut decoder, &mut output);
+    assert_eq!(output.len(), units.len());
+
+    let mut archive = Vec::new();
+    for (index, (decoded, ticks)) in output.iter().zip(expected_ticks).enumerate() {
+        assert_eq!(decoded.picture.decode_index(), index as u64);
+        assert_eq!(decoded.source.media_pts_ns, ticks * 1_000_000_000 / 90_000);
+        assert_eq!(
+            decoded.source.host_receive_ns,
+            1_000_000 + index as i128 * 10_000
+        );
+        assert_eq!(
+            decoded.source.digest,
+            ContentDigest::sha256(&decoded.source.encoded)
+        );
+        archive.extend_from_slice(&decoded.source.encoded);
+    }
+    let mut replay = Decoder::new(DecoderLimits::default())?;
+    let mut replayed = replay.decode_annex_b(&archive)?;
+    replayed.extend(replay.finish()?);
+    let replayed: BTreeMap<_, _> = replayed
+        .into_iter()
+        .map(|picture| (picture.decode_index(), picture.i420_sha256()))
+        .collect();
+    let original: BTreeMap<_, _> = output
+        .into_iter()
+        .map(|decoded| {
+            (
+                decoded.picture.decode_index(),
+                decoded.picture.i420_sha256(),
+            )
+        })
+        .collect();
+    assert_eq!(replayed, original);
+    Ok(())
+}
+
+#[test]
+fn ambiguous_rtp_epoch_refuses_and_a_new_decoder_starts_its_own_clock() -> Test {
+    for (timestamp, receive_ns) in [
+        (90_000_u32.wrapping_add(0x8000_0000), 101),
+        (93_000, 100 + RTP_HALF_CYCLE_NS),
+        (93_000, i128::MAX),
+    ] {
+        let mut groups = Groups::new(&sps(2), &Pps::default().nal())?;
+        let first = groups.picture(&[Frame::idr(10, false).nal()], 90_000)?;
+        let second = groups.picture(&[Frame::reference(1, 2, 20).nal()], timestamp)?;
+        let mut decoder = AvcSourceDecoder::new()?;
+        decoder.push(&first, 100)?;
+        assert_eq!(
+            decoder.push(&second, receive_ns),
+            Err("AVC source timestamp epoch is ambiguous; new generation required")
+        );
+        assert!(decoder.take_ready().is_none());
+        assert!(decoder.push(&second, receive_ns).is_err());
+        assert!(decoder.finish().is_err());
+
+        let mut fresh_groups = Groups::new(&sps(0), &Pps::default().nal())?;
+        let idr = fresh_groups.picture(&[Frame::idr(30, false).nal()], 123)?;
+        let mut fresh = AvcSourceDecoder::new()?;
+        fresh.push(&idr, receive_ns)?;
+        fresh.finish()?;
+        let decoded = fresh.take_ready().ok_or("new generation picture missing")?;
+        assert_eq!(decoded.source.media_pts_ns, 123 * 1_000_000_000 / 90_000);
+        assert_eq!(decoded.picture.decode_index(), 0);
+    }
+    Ok(())
+}
+
+#[test]
 fn marked_partial_multislice_picture_closes_decoder_without_emitting_pixels() -> Test {
     let units = access_units(MULTISLICE)?;
     let first = units.first().ok_or("multislice fixture is empty")?;

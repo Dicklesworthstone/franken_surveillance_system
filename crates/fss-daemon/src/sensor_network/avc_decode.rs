@@ -14,6 +14,8 @@ use fss_packet::avc::{
 const MAX_PENDING_PICTURES: usize = 32;
 const MAX_PENDING_BYTES: usize = 128 * 1_024 * 1_024;
 const MAX_ACCESS_UNIT_BYTES: usize = 32 * 1_024 * 1_024;
+// Beyond half an RTP cycle, receive time cannot select a unique nearby wrap epoch.
+const RTP_HALF_CYCLE_NS: i128 = ((1_i128 << 31) * 1_000_000_000 + 89_999) / 90_000;
 
 pub(super) struct SourcePicture {
     pub(super) encoded: Vec<u8>,
@@ -35,6 +37,7 @@ pub(super) struct AvcSourceDecoder {
     pending_bytes: usize,
     sent_parameter_sets: bool,
     last_receive_ns: Option<i128>,
+    last_media_timestamp: Option<(u32, i128)>,
     closed: bool,
 }
 
@@ -48,6 +51,7 @@ impl AvcSourceDecoder {
             pending_bytes: 0,
             sent_parameter_sets: false,
             last_receive_ns: None,
+            last_media_timestamp: None,
             closed: false,
         })
     }
@@ -88,6 +92,11 @@ impl AvcSourceDecoder {
             return Err("AVC source reorder window exceeded its picture bound");
         }
 
+        let media_ticks = self.extend_media_timestamp(group.timestamp(), host_receive_ns)?;
+        let media_pts_ns = media_ticks
+            .checked_mul(1_000_000_000)
+            .ok_or("AVC source media time exhausted its numeric bound")?
+            / 90_000;
         let idr = group.nals().iter().any(|nal| nal.nal_type() == 5);
         let include_parameters = !self.sent_parameter_sets || idr;
         let parameter_bytes = if include_parameters {
@@ -157,7 +166,7 @@ impl AvcSourceDecoder {
         let source = SourcePicture {
             digest: ContentDigest::sha256(&encoded),
             encoded,
-            media_pts_ns: i128::from(group.timestamp()) * 1_000_000_000 / 90_000,
+            media_pts_ns,
             host_receive_ns,
             discontinuity_before: group.discontinuity_before(),
         };
@@ -177,7 +186,34 @@ impl AvcSourceDecoder {
         }
         self.sent_parameter_sets = true;
         self.last_receive_ns = Some(host_receive_ns);
+        self.last_media_timestamp = Some((group.timestamp(), media_ticks));
         Ok(())
+    }
+
+    /// Extend the sender's 32-bit presentation clock within this decoder generation.
+    /// Signed nearby differences preserve B-picture reordering on either side of a wrap;
+    /// neither a wrap nor a decode-order inversion is a physical capture-time assertion.
+    fn extend_media_timestamp(
+        &self,
+        timestamp: u32,
+        host_receive_ns: i128,
+    ) -> Result<i128, &'static str> {
+        let Some((previous, extended)) = self.last_media_timestamp else {
+            return Ok(i128::from(timestamp));
+        };
+        let previous_receive_ns = self
+            .last_receive_ns
+            .ok_or("AVC source clock state is incomplete")?;
+        let receive_delta = host_receive_ns
+            .checked_sub(previous_receive_ns)
+            .ok_or("AVC source receive time exhausted its numeric bound")?;
+        let delta = timestamp.wrapping_sub(previous);
+        if receive_delta >= RTP_HALF_CYCLE_NS || delta == 0x8000_0000 {
+            return Err("AVC source timestamp epoch is ambiguous; new generation required");
+        }
+        extended
+            .checked_add(i128::from(delta as i32))
+            .ok_or("AVC source media time exhausted its numeric bound")
     }
 
     fn store_pictures(&mut self, output: Vec<Picture>) -> Result<(), &'static str> {
