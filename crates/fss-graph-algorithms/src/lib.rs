@@ -26,6 +26,8 @@
 
 pub mod assignment;
 pub mod bridges;
+/// Canonical graph serialization and cryptographic hash verification (`FSS-153`, `fss-x4a.23.3`).
+pub mod canonical_codec;
 pub mod centrality;
 pub mod certified;
 pub mod community;
