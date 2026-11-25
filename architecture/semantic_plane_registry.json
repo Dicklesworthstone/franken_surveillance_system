@@ -283,6 +283,7 @@
     "crates/fss-graph-algorithms/src/coverage/builder.rs": "cognition",
     "crates/fss-graph-algorithms/src/coverage_build.rs": "cognition",
     "crates/fss-graph-algorithms/src/coverage_timeline.rs": "cognition",
+    "crates/fss-graph-algorithms/src/d_separation.rs": "cognition",
     "crates/fss-graph-algorithms/src/dominators.rs": "cognition",
     "crates/fss-graph-algorithms/src/dynconn.rs": "cognition",
     "crates/fss-graph-algorithms/src/evidence.rs": "cognition",

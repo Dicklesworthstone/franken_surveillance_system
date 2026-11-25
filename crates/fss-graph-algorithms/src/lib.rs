@@ -35,6 +35,8 @@ pub mod community;
 pub mod continuity;
 pub mod coverage;
 pub mod coverage_timeline;
+/// Certified d-separation and shared-failure-domain causal independence analysis (`FSS-161`, `fss-x4a.23.11`).
+pub mod d_separation;
 pub mod dominators;
 pub mod dynconn;
 /// Active event-revision support dependencies with certified structural bottlenecks.
