@@ -15,6 +15,8 @@ mod error;
 mod format;
 mod high_water;
 mod journal;
+/// Intent-replay / structural / commutative merge certificate ladder (`FSS-105`, `fss-x4a.9.12`).
+pub mod merge_ladder;
 pub mod merkle;
 mod oracle;
 mod recovery;
@@ -75,6 +77,12 @@ pub use high_water::{
     HighWaterProtocol, MAX_HIGH_WATER_WIRE_BYTES, RebuildReason,
 };
 pub use journal::{AppendReconciliation, IncompleteTailPolicy, Journal};
+pub use merge_ladder::{
+    CommutativeFamilyRegistry, IntentReplayFn, LEDGER_MERGE_CERTIFICATE_DOMAIN,
+    MAX_MERGE_CERT_WIRE_BYTES, MAX_MERGE_INTERVENING_BATCHES, MAX_MERGE_LABEL_BYTES,
+    MERGE_CERT_MAGIC, MERGE_CERT_VERSION, MergeCertificate, MergeGuidance, MergeLadder,
+    MergeLadderError, MergeOutcome, MergeRefusalReason, MergeRung,
+};
 pub use merkle::{
     KEY_NIBBLE_LEN, MERKLE_EMPTY_DOMAIN, MERKLE_KEY_DOMAIN, MERKLE_LEAF_DOMAIN, MERKLE_NODE_DOMAIN,
     MerkleError, MerkleNodeSnapshot, MerkleProof, MerkleProofError, MerkleProofKind,

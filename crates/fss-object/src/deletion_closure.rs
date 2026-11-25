@@ -602,18 +602,21 @@ impl DeletionClosureReceipt {
             && (self.tombstone_root_digest.is_none()
                 || !self.indeterminate_digests.is_empty()
                 || !self.surviving_hidden_references.is_empty()
-                || self.deleted_digests.is_empty())
+                || self.deleted_digests.is_empty()
+                || !self.deleted_digests.contains(&self.root_digest))
         {
             return Err(DeletionClosureError::MalformedWire(
-                "UnreachabilityVerified receipt requires tombstone root, non-empty deletions, zero indeterminate, and zero leaked references"
+                "UnreachabilityVerified receipt requires tombstone root, root in deleted_digests, zero indeterminate, and zero leaked references"
                     .to_owned(),
             ));
         }
         if self.state == DeletionClosureState::HiddenReferenceLeakDetected
-            && self.surviving_hidden_references.is_empty()
+            && (self.surviving_hidden_references.is_empty()
+                || self.tombstone_root_digest.is_none()
+                || !self.indeterminate_digests.is_empty())
         {
             return Err(DeletionClosureError::MalformedWire(
-                "HiddenReferenceLeakDetected requires non-empty surviving_hidden_references"
+                "HiddenReferenceLeakDetected requires tombstone root, zero indeterminate, and non-empty surviving_hidden_references"
                     .to_owned(),
             ));
         }
@@ -952,6 +955,9 @@ impl DeletionClosureExecutor {
                 if visited.contains_key(next) {
                     continue;
                 }
+                if !catalog.nodes.get(next).is_some_and(|n| n.reachable) {
+                    continue;
+                }
                 if next_depth > MAX_DELETION_CLOSURE_DEPTH {
                     return Err(DeletionClosureError::BoundsExceeded {
                         observed: next_depth as usize,
@@ -964,10 +970,8 @@ impl DeletionClosureExecutor {
                         maximum: MAX_DELETION_CLOSURE_NODES,
                     });
                 }
-                if catalog.nodes.get(next).is_some_and(|n| n.reachable) {
-                    visited.insert(*next, next_depth);
-                    queue.push_back((*next, next_depth));
-                }
+                visited.insert(*next, next_depth);
+                queue.push_back((*next, next_depth));
             }
         }
 

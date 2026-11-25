@@ -327,6 +327,31 @@ fn anchor_regression_revocation_universe_isolation_cancel_and_hostile_wire() -> 
         SnapshotFreshness::Current
     );
 
+    // Pass-1 fresh-eyes regressions:
+    // (a) Post-revocation anchor rollback (`seq 9 < previous 10`) STILL fails closed!
+    let proj_stale_after_revoke = build_sensor_proj(9, &auth, false)?;
+    assert_eq!(
+        catalog.publish(proj_stale_after_revoke, &auth, false),
+        Err(SnapshotViewError::AnchorRegression {
+            previous_sequence: 10,
+            attempted_sequence: 9,
+        })
+    );
+    // (b) Narrower plane/redaction scope at the SAME `(auth_gen, privacy_epoch)` CANNOT acquire
+    //     an O(1) Arc handle to a more-permissive published projection!
+    let mut restricted_phys = phys_auth.clone();
+    restricted_phys
+        .redacted_node_ids
+        .insert("room-1".to_owned());
+    assert!(matches!(
+        catalog.acquire_view(GraphUniverse::GPhys, &restricted_phys, false),
+        Err(SnapshotViewError::AuthorityMismatch(_))
+    ));
+    assert!(matches!(
+        catalog.require_current(&phys_view, &restricted_phys),
+        Err(SnapshotViewError::AuthorityMismatch(_))
+    ));
+
     // 5. Hostile wire decoding on `FSSGSV01`.
     let wire = receipt.to_canonical_bytes()?;
     let mut bad_magic = wire.clone();

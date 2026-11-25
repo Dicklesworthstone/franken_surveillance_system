@@ -7,6 +7,8 @@
 //! [`upload_journal`] composes it into bounded multipart restart custody; neither backend
 //! alone claims archive visibility, replication or retrievability.
 
+/// Archive Decision Cards for path, repair, and object sizing (`FSS-134`, `fss-x4a.13.18`).
+pub mod archive_decision_card;
 /// Canonical ATP transfer, path, and archive lifecycles (`fss-x4a.13.31`).
 pub mod atp_lifecycle;
 pub mod belief_verification;
@@ -19,6 +21,8 @@ pub mod effect_journal;
 /// Encryption-context manifest (FSS-065).
 pub mod encryption;
 mod error;
+/// Independent manifest-only archive root reconstruction (`FSS-135`, `fss-x4a.13.19`).
+pub mod independent_reconstruct;
 mod manifest;
 mod memory;
 pub mod model_license_policy;

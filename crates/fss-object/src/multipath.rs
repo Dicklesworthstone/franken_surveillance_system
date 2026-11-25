@@ -688,6 +688,31 @@ impl MultipathRaceReceipt {
                 ));
             }
         }
+        let clamped_set: BTreeSet<&str> = self
+            .clamped_rejections
+            .iter()
+            .map(|r| r.path_id.as_str())
+            .collect();
+        if self
+            .path_outcomes
+            .iter()
+            .any(|p| clamped_set.contains(p.path_id.as_str()))
+        {
+            return Err(MultipathError::MalformedWire(
+                "clamped_rejections and path_outcomes must be disjoint".to_owned(),
+            ));
+        }
+        let actual_quarantined = self
+            .path_outcomes
+            .iter()
+            .filter(|p| p.role == RacePathRole::Quarantined)
+            .count() as u32;
+        if actual_quarantined != self.paths_quarantined {
+            return Err(MultipathError::MalformedWire(format!(
+                "paths_quarantined ({}) disagrees with Quarantined path count ({actual_quarantined})",
+                self.paths_quarantined
+            )));
+        }
         if matches!(
             self.state,
             MultipathRaceState::Complete
@@ -1504,10 +1529,15 @@ impl MultipathRaceCoordinator {
             .paths
             .get_mut(path_id)
             .ok_or_else(|| MultipathError::UnknownPath(path_id.to_owned()))?;
-        if entry.resources.is_clean() && entry.state.is_terminal() {
+        if !matches!(entry.state, PathState::Draining | PathState::Suspect)
+            || entry.resources.is_clean()
+        {
             return Err(MultipathError::InvalidStateTransition {
                 state: self.state,
-                detail: format!("path '{path_id}' is already closed and clean"),
+                detail: format!(
+                    "path '{path_id}' is not draining unreleased resources (state {})",
+                    entry.state.canonical_id()
+                ),
             });
         }
         entry.note = Some(reason.to_owned());

@@ -24,7 +24,7 @@ use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
 
-use fss_core::{CanonicalDecoder, CanonicalEncoder, ContentDigest, LedgerAnchor};
+use fss_core::{CanonicalDecoder, CanonicalEncode, CanonicalEncoder, ContentDigest, LedgerAnchor};
 
 use crate::bridges::{BridgeAnalysis, GraphBudget, analyse_bridges};
 use crate::graph::GraphError;
@@ -243,6 +243,7 @@ impl From<GraphError> for SnapshotViewError {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GraphSnapshotView {
     view_generation: u64,
+    scope_fingerprint: ContentDigest,
     projection: Arc<ImmutableGraphProjection>,
 }
 
@@ -538,6 +539,9 @@ impl SnapshotPublicationReceipt {
 #[derive(Clone, Debug)]
 struct UniverseSlot {
     next_generation: u64,
+    /// Persists the highest published `(site_lineage, commit_sequence)` even across explicit
+    /// revocations so a revoked universe cannot be rolled back to a stale anchor!
+    last_published_anchor: Option<(String, u64)>,
     active: Option<GraphSnapshotView>,
     revocation_reason: Option<String>,
     history: VecDeque<SnapshotPublicationReceipt>,
@@ -547,6 +551,7 @@ impl Default for UniverseSlot {
     fn default() -> Self {
         Self {
             next_generation: 1,
+            last_published_anchor: None,
             active: None,
             revocation_reason: None,
             history: VecDeque::new(),
@@ -597,24 +602,36 @@ impl GraphSnapshotCatalog {
                 authority.privacy_epoch
             )));
         }
+        // Verify projection itself contains zero nodes violating `authority` planes or redactions!
+        for h in projection.node_handles() {
+            let n = projection.node(h)?;
+            if !authority.allowed_planes.contains(&n.plane)
+                || authority.redacted_node_ids.contains(&n.node_id)
+            {
+                return Err(SnapshotViewError::AuthorityMismatch(format!(
+                    "projection contains node '{}' disallowed by active authority scope",
+                    n.node_id
+                )));
+            }
+        }
+        let scope_fingerprint = authority_scope_fingerprint(authority)?;
 
         let universe = projection.universe();
         let slot = self.slots.entry(universe).or_default();
+        if let Some((ref prev_lineage, prev_seq)) = slot.last_published_anchor
+            && prev_lineage == &projection.anchor().site_lineage
+            && projection.anchor().commit_sequence < prev_seq
+        {
+            return Err(SnapshotViewError::AnchorRegression {
+                previous_sequence: prev_seq,
+                attempted_sequence: projection.anchor().commit_sequence,
+            });
+        }
         let (previous_view_generation, superseded_projection_digest) = match &slot.active {
-            Some(prev) => {
-                if prev.anchor().site_lineage == projection.anchor().site_lineage
-                    && projection.anchor().commit_sequence < prev.anchor().commit_sequence
-                {
-                    return Err(SnapshotViewError::AnchorRegression {
-                        previous_sequence: prev.anchor().commit_sequence,
-                        attempted_sequence: projection.anchor().commit_sequence,
-                    });
-                }
-                (
-                    prev.view_generation,
-                    Some(prev.generation().projection_digest),
-                )
-            }
+            Some(prev) => (
+                prev.view_generation,
+                Some(prev.generation().projection_digest),
+            ),
             None => (0, None),
         };
 
@@ -622,12 +639,15 @@ impl GraphSnapshotCatalog {
         slot.next_generation = slot.next_generation.saturating_add(1);
         let certifies_absence = projection.absence_boundary().certifies_absence();
         let anchor_sequence = projection.anchor().commit_sequence;
+        let site_lineage = projection.anchor().site_lineage.clone();
         let projection_digest = p_gen.projection_digest;
 
         let new_view = GraphSnapshotView {
             view_generation,
+            scope_fingerprint,
             projection: Arc::new(projection),
         };
+        slot.last_published_anchor = Some((site_lineage, anchor_sequence));
         slot.active = Some(new_view);
         slot.revocation_reason = None;
 
@@ -677,11 +697,13 @@ impl GraphSnapshotCatalog {
             });
         };
         let a_gen = active.generation();
+        let caller_scope = authority_scope_fingerprint(authority)?;
         if a_gen.authority_generation != authority.authority_generation
             || a_gen.privacy_epoch != authority.privacy_epoch
+            || active.scope_fingerprint != caller_scope
         {
             return Err(SnapshotViewError::AuthorityMismatch(format!(
-                "active snapshot auth/privacy ({}/{}) does not match caller ({}/{}); re-project before reading",
+                "active snapshot auth/privacy/scope ({}/{}) does not match caller ({}/{}); re-project before reading",
                 a_gen.authority_generation,
                 a_gen.privacy_epoch,
                 authority.authority_generation,
@@ -801,6 +823,11 @@ impl GraphSnapshotCatalog {
                 },
             });
         }
+        if view.scope_fingerprint != authority_scope_fingerprint(authority)? {
+            return Err(SnapshotViewError::AuthorityMismatch(
+                "caller plane or redaction scope differs from snapshot view scope".to_owned(),
+            ));
+        }
         match self.check_freshness(view) {
             SnapshotFreshness::Current => Ok(()),
             SnapshotFreshness::Invalidated { reason, .. } => {
@@ -817,6 +844,27 @@ impl GraphSnapshotCatalog {
             .map(|s| s.history.iter().cloned().collect())
             .unwrap_or_default()
     }
+}
+
+fn authority_scope_fingerprint(
+    authority: &ProjectionAuthorityScope,
+) -> Result<ContentDigest, SnapshotViewError> {
+    let mut enc = CanonicalEncoder::new();
+    enc.text("fss.graph.snapshot_authority_scope.v1");
+    enc.u64(authority.authority_generation);
+    enc.u64(authority.privacy_epoch);
+    enc.u64(authority.allowed_planes.len() as u64);
+    for plane in &authority.allowed_planes {
+        plane.encode_canonical(&mut enc);
+    }
+    enc.u64(authority.redacted_node_ids.len() as u64);
+    for id in &authority.redacted_node_ids {
+        enc.text(id);
+    }
+    let bytes = enc
+        .finish_checked()
+        .map_err(|e| SnapshotViewError::Encoding(e.to_string()))?;
+    Ok(ContentDigest::sha256(&bytes))
 }
 
 fn validate_authority_for_universe(
