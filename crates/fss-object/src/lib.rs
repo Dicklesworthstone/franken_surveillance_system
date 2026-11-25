@@ -12,6 +12,8 @@ pub mod atp_lifecycle;
 pub mod belief_verification;
 /// Deterministic ATP object-graph closure verifier (`FSS-127`, `fss-x4a.13.11`).
 pub mod closure;
+/// Graph-complete archive deletion traversal (`FSS-133`, `fss-x4a.13.17`).
+pub mod deletion_closure;
 /// Bounded local custody of the runtime effect coordinator's canonical history.
 pub mod effect_journal;
 /// Encryption-context manifest (FSS-065).
@@ -24,6 +26,8 @@ pub mod model_manifest;
 pub mod model_package;
 /// Focused S3-compatible multipart/conditional protocol (FSS-130).
 pub mod multipart;
+/// Multipath transfer race and loser-drain protocol (`FSS-129`, `fss-x4a.13.13`).
+pub mod multipath;
 /// Archive cost/chunk planner (FSS-067).
 pub mod planner;
 pub mod provider;
