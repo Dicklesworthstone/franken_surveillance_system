@@ -23,6 +23,7 @@ mod error;
 mod h0;
 pub mod h1;
 pub mod h2;
+pub mod h3;
 pub mod h4;
 mod handle;
 mod receipt;
@@ -36,6 +37,11 @@ pub use h0::{
 };
 pub use h1::*;
 pub use h2::*;
+pub use h3::{
+    H3_CONTENT, H3_CONTENT_TYPE, H3_LEVEL_ID, H3_LEVEL_NAME, H3_OWNER, H3_SCHEMA, H3SourceEvidence,
+    H3SourceEvidenceParams, H3SourcePayload, MAX_H3_LABEL_LEN, MAX_H3_METADATA_ENTRIES,
+    MAX_H3_PROOF_ROOTS, MAX_H3_RAW_BYTES,
+};
 pub use h4::{
     AlternateSystem, H4_CONTENT, H4_LEVEL_ID, H4_LEVEL_NAME, H4_OWNER, H4_SCHEMA,
     H4LaboratoryExpansion, H4LaboratoryExpansionParams, IntermediateArtifact, LaboratoryArtifact,
