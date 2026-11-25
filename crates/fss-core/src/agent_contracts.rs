@@ -12,6 +12,16 @@
 
 use std::collections::BTreeSet;
 
+mod codec;
+pub use codec::{
+    AGENT_SESSION_FORMAT_VERSION, AGENT_SESSION_WIRE_MAGIC, AgentContractCodecError,
+    MAX_AGENT_SESSION_CAPABILITIES, MAX_AGENT_SESSION_CONTINUATIONS,
+    MAX_AGENT_SESSION_PRIVACY_SCOPES, MAX_AGENT_SESSION_SUBSCRIPTIONS, MAX_AGENT_SESSION_SYMBOLS,
+    MAX_AGENT_SESSION_TOKEN_BUDGET, MAX_AGENT_SESSION_WIRE_BYTES, MAX_CAPSULE_EPISTEMIC_DEBT,
+    MAX_CAPSULE_ITEM_BYTES, MAX_CAPSULE_LIST_ITEMS, MAX_SESSION_CAPSULE_WIRE_BYTES,
+    NO_ACKNOWLEDGED_SITUATION_REASON, SESSION_CAPSULE_FORMAT_VERSION, SESSION_CAPSULE_WIRE_MAGIC,
+};
+
 use crate::agent_view::AgentView;
 use crate::canonical::{CanonicalEncode, CanonicalEncoder};
 use crate::contract::ContractError;
@@ -30,9 +40,42 @@ fn validate_portable(value: &str, max_len: usize) -> Result<(), ContractError> {
     Ok(())
 }
 
+/// Validates the schema token pattern `^[A-Za-z0-9][A-Za-z0-9:._+/-]*$` (1..=256 bytes).
+pub(crate) fn validate_schema_token(value: &str) -> Result<(), ContractError> {
+    let bytes = value.as_bytes();
+    if bytes.is_empty() || bytes.len() > 256 || !bytes[0].is_ascii_alphanumeric() {
+        return Err(ContractError::InvalidIdentifier);
+    }
+    if !bytes[1..]
+        .iter()
+        .all(|&b| b.is_ascii_alphanumeric() || matches!(b, b':' | b'.' | b'_' | b'+' | b'/' | b'-'))
+    {
+        return Err(ContractError::InvalidIdentifier);
+    }
+    Ok(())
+}
+
+pub(crate) fn has_disallowed_control(value: &str) -> bool {
+    value
+        .chars()
+        .any(|ch| ch.is_control() && !matches!(ch, '\n' | '\t'))
+}
+
+fn validate_capsule_string_list(items: &[String], max_items: usize) -> Result<(), ContractError> {
+    if items.len() > max_items {
+        return Err(ContractError::CountBoundExceeded);
+    }
+    for item in items {
+        if item.len() > MAX_CAPSULE_ITEM_BYTES || has_disallowed_control(item) {
+            return Err(ContractError::InvalidIdentifier);
+        }
+    }
+    Ok(())
+}
+
 /// Validates the lowercase decision-digest spelling
 /// (`^[a-z0-9][a-z0-9:+._-]{7,255}$`).
-fn validate_decision_digest(value: &str) -> Result<(), ContractError> {
+pub(crate) fn validate_decision_digest(value: &str) -> Result<(), ContractError> {
     let bytes = value.as_bytes();
     let alphanumeric = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit();
     if bytes.is_empty()
@@ -555,8 +598,25 @@ impl AgentSession {
             expires_at_ns,
         } = params;
         let view = AgentView::from_id(&view_id)?;
+        if created_at_ns < 0 {
+            return Err(ContractError::InvalidIdentifier);
+        }
         if token_budget == 0 || expires_at_ns <= created_at_ns {
             return Err(ContractError::InvertedTimeInterval);
+        }
+        if token_budget > MAX_AGENT_SESSION_TOKEN_BUDGET {
+            return Err(ContractError::CountBoundExceeded);
+        }
+        if capabilities.len() > MAX_AGENT_SESSION_CAPABILITIES
+            || privacy_scope.len() > MAX_AGENT_SESSION_PRIVACY_SCOPES
+        {
+            return Err(ContractError::CountBoundExceeded);
+        }
+        for capability in &capabilities {
+            validate_schema_token(capability)?;
+        }
+        for scope in &privacy_scope {
+            validate_schema_token(scope)?;
         }
         Ok(Self {
             session_id,
@@ -578,6 +638,33 @@ impl AgentSession {
     #[must_use]
     pub fn session_digest(&self) -> ContentDigest {
         self.canonical_digest(Self::SCHEMA)
+    }
+
+    /// Re-validates all schema invariants on an existing [`AgentSession`] (defense against
+    /// post-construction public-field mutation prior to serialization).
+    pub fn validate(&self) -> Result<(), ContractError> {
+        let _ = AgentView::from_id(self.view.id())?;
+        if self.created_at_ns < 0 {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        if self.token_budget == 0 || self.expires_at_ns <= self.created_at_ns {
+            return Err(ContractError::InvertedTimeInterval);
+        }
+        if self.token_budget > MAX_AGENT_SESSION_TOKEN_BUDGET {
+            return Err(ContractError::CountBoundExceeded);
+        }
+        if self.capabilities.len() > MAX_AGENT_SESSION_CAPABILITIES
+            || self.privacy_scope.len() > MAX_AGENT_SESSION_PRIVACY_SCOPES
+        {
+            return Err(ContractError::CountBoundExceeded);
+        }
+        for capability in &self.capabilities {
+            validate_schema_token(capability)?;
+        }
+        for scope in &self.privacy_scope {
+            validate_schema_token(scope)?;
+        }
+        Ok(())
     }
 }
 
@@ -724,13 +811,31 @@ impl SessionCapsule {
             next_actions,
             decision_digest,
         } = params;
-        if principal.is_empty() || principal.len() > 256 {
+        if principal.is_empty() || principal.len() > 256 || principal.chars().any(char::is_control)
+        {
             return Err(ContractError::InvalidIdentifier);
         }
         validate_decision_digest(&objective_digest)?;
-        validate_decision_digest(&objective_digest)?;
         validate_decision_digest(&situation_capsule_digest)?;
         validate_decision_digest(&decision_digest)?;
+        if !budget_ledger.is_valid() {
+            return Err(ContractError::EvidenceRequired);
+        }
+        for group in [
+            &capability_projection,
+            &active_hypotheses,
+            &assumptions,
+            &unknowns,
+            &not_observable_domains,
+            &open_obligations,
+            &next_actions,
+        ] {
+            validate_capsule_string_list(group, MAX_CAPSULE_LIST_ITEMS)?;
+        }
+        validate_capsule_string_list(&epistemic_debt, MAX_CAPSULE_EPISTEMIC_DEBT)?;
+        if bookmarked_evidence.len() > MAX_CAPSULE_LIST_ITEMS {
+            return Err(ContractError::CountBoundExceeded);
+        }
         if base_anchor.site_lineage != current_anchor.site_lineage
             || base_anchor.ledger_epoch != current_anchor.ledger_epoch
             || (
@@ -769,6 +874,51 @@ impl SessionCapsule {
     #[must_use]
     pub fn capsule_digest(&self) -> ContentDigest {
         self.canonical_digest(Self::SCHEMA)
+    }
+
+    /// Re-validates all schema invariants on an existing [`SessionCapsule`] (defense against
+    /// post-construction public-field mutation prior to serialization).
+    pub fn validate(&self) -> Result<(), ContractError> {
+        if self.principal.is_empty()
+            || self.principal.len() > 256
+            || self.principal.chars().any(char::is_control)
+        {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        validate_decision_digest(&self.objective_digest)?;
+        validate_decision_digest(&self.situation_capsule_digest)?;
+        validate_decision_digest(&self.decision_digest)?;
+        if !self.budget_ledger.is_valid() {
+            return Err(ContractError::EvidenceRequired);
+        }
+        for group in [
+            &self.capability_projection,
+            &self.active_hypotheses,
+            &self.assumptions,
+            &self.unknowns,
+            &self.not_observable_domains,
+            &self.open_obligations,
+            &self.next_actions,
+        ] {
+            validate_capsule_string_list(group, MAX_CAPSULE_LIST_ITEMS)?;
+        }
+        validate_capsule_string_list(&self.epistemic_debt, MAX_CAPSULE_EPISTEMIC_DEBT)?;
+        if self.bookmarked_evidence.len() > MAX_CAPSULE_LIST_ITEMS {
+            return Err(ContractError::CountBoundExceeded);
+        }
+        if self.base_anchor.site_lineage != self.current_anchor.site_lineage
+            || self.base_anchor.ledger_epoch != self.current_anchor.ledger_epoch
+            || (
+                self.current_anchor.commit_sequence,
+                self.current_anchor.adapter_registry_epoch,
+            ) < (
+                self.base_anchor.commit_sequence,
+                self.base_anchor.adapter_registry_epoch,
+            )
+        {
+            return Err(ContractError::InvalidAnchorSuccessor);
+        }
+        Ok(())
     }
 }
 

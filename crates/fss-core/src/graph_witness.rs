@@ -13,13 +13,118 @@
 //! and validated against the registered schema grammar before a witness can be constructed.
 
 use std::collections::BTreeMap;
+use std::error::Error;
+use std::fmt;
 
-use crate::{CanonicalEncode, CanonicalEncoder, ContentDigest, ContractError, LedgerAnchor};
+use crate::decision_card_v1::{DecisionCardError, EvidenceAnchorRecordV1};
+use crate::digest::Sha256Hasher;
+use crate::json_input::{self, Value};
+use crate::{
+    CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, ContentDigest,
+    ContractError, LedgerAnchor,
+};
 
 /// Maximum entries in each count map of a witness.
 pub const MAX_GRAPH_WITNESS_COUNTERS: usize = 32;
 /// Maximum byte length of one count-map key.
 pub const MAX_GRAPH_WITNESS_COUNTER_NAME_LEN: usize = 64;
+/// Magic 8-byte header for canonical `GraphAlgorithmWitness` binary wire envelopes.
+pub const GRAPH_WITNESS_WIRE_MAGIC: [u8; 8] = *b"FSSGWT01";
+/// Current format version for `GraphAlgorithmWitness` binary wire envelopes.
+pub const GRAPH_WITNESS_FORMAT_VERSION: u32 = 1;
+/// Hard upper bound on serialized `GraphAlgorithmWitness` binary wire bytes (64 KiB).
+pub const MAX_GRAPH_WITNESS_WIRE_BYTES: usize = 64 * 1024;
+const GRAPH_WITNESS_WIRE_HEADER_BYTES: usize = 16;
+const GRAPH_WITNESS_WIRE_CHECKSUM_BYTES: usize = 32;
+
+/// Typed codec and compatibility errors for `SCHEMA-GRAPH-WITNESS-001`
+/// (`fss.graph_algorithm_witness.v1`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GraphWitnessCodecError {
+    /// Underlying contract validation failure.
+    Contract(ContractError),
+    /// Schema identity in JSON did not match the expected schema URI.
+    SchemaMismatch {
+        /// Expected schema identity.
+        expected: &'static str,
+        /// Observed schema identity.
+        observed: String,
+    },
+    /// Wire envelope magic header did not match [`GRAPH_WITNESS_WIRE_MAGIC`].
+    InvalidMagic,
+    /// Wire envelope carried an unsupported format version.
+    UnsupportedVersion {
+        /// Unsupported version tag observed on the wire.
+        version: u32,
+    },
+    /// Trailing SHA-256 checksum verification failed.
+    ChecksumMismatch,
+    /// Encoded or offered wire payload exceeded [`MAX_GRAPH_WITNESS_WIRE_BYTES`].
+    WireTooLarge {
+        /// Observed wire length in bytes.
+        observed: usize,
+        /// Configured hard maximum in bytes.
+        maximum: usize,
+    },
+    /// Structural JSON or binary envelope error.
+    MalformedPayload(String),
+    /// Compatibility rule violated (algorithm, projection, policy, or output digest drift).
+    CompatibilityViolation(String),
+}
+
+impl GraphWitnessCodecError {
+    /// Stable error identity aligned with `registries/ERRORS.md`.
+    #[must_use]
+    pub const fn error_id(&self) -> &'static str {
+        match self {
+            Self::Contract(_) => "ERR-GRAPH-WITNESS-CONTRACT-001",
+            Self::SchemaMismatch { .. }
+            | Self::InvalidMagic
+            | Self::UnsupportedVersion { .. }
+            | Self::WireTooLarge { .. } => "ERR-SCHEMA-UNSUPPORTED-001",
+            Self::ChecksumMismatch => "ERR-NEG-CHECKSUM-MISMATCH-001",
+            Self::MalformedPayload(_) => "ERR-GRAPH-WITNESS-MALFORMED-001",
+            Self::CompatibilityViolation(_) => "ERR-GRAPH-WITNESS-COMPAT-001",
+        }
+    }
+}
+
+impl fmt::Display for GraphWitnessCodecError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Contract(err) => write!(f, "graph witness contract error: {err}"),
+            Self::SchemaMismatch { expected, observed } => {
+                write!(
+                    f,
+                    "graph witness schema mismatch: expected '{expected}', observed '{observed}'"
+                )
+            }
+            Self::InvalidMagic => write!(f, "graph witness wire magic mismatch"),
+            Self::UnsupportedVersion { version } => {
+                write!(f, "unsupported graph witness wire version {version}")
+            }
+            Self::ChecksumMismatch => write!(f, "graph witness wire checksum mismatch"),
+            Self::WireTooLarge { observed, maximum } => {
+                write!(
+                    f,
+                    "graph witness wire length {observed} exceeds maximum {maximum}"
+                )
+            }
+            Self::MalformedPayload(detail) => write!(f, "malformed graph witness: {detail}"),
+            Self::CompatibilityViolation(detail) => {
+                write!(f, "graph witness compatibility violation: {detail}")
+            }
+        }
+    }
+}
+
+impl Error for GraphWitnessCodecError {}
+
+impl From<ContractError> for GraphWitnessCodecError {
+    fn from(value: ContractError) -> Self {
+        Self::Contract(value)
+    }
+}
 
 /// One registered graph algorithm execution witness (`fss.graph_algorithm_witness.v1`).
 #[derive(Clone, Debug, PartialEq)]
@@ -157,6 +262,9 @@ impl GraphAlgorithmWitness {
         {
             return Err(ContractError::InvalidDigest);
         }
+        let error_bound = params
+            .error_bound
+            .map(|bound| if bound == 0.0 { 0.0 } else { bound });
         Ok(Self {
             algorithm_id: params.algorithm_id,
             implementation_id: params.implementation_id,
@@ -170,7 +278,7 @@ impl GraphAlgorithmWitness {
             peak_working_bytes: params.peak_working_bytes,
             budget_consumed: params.budget_consumed,
             exactness: params.exactness,
-            error_bound: params.error_bound,
+            error_bound,
             stop_reason: params.stop_reason,
             decision_path_digest: params.decision_path_digest,
             output_digest: params.output_digest,
@@ -280,6 +388,325 @@ impl GraphAlgorithmWitness {
         self.encode_canonical(&mut encoder);
         ContentDigest::sha256(&encoder.finish())
     }
+
+    /// Derived graph witnesses never grant effect authority (`GRAPH-INV-004`).
+    #[must_use]
+    pub const fn grants_effect_authority(&self) -> bool {
+        false
+    }
+
+    /// Enforces `SCHEMA-GRAPH-WITNESS-001` compatibility rule:
+    /// algorithm, projection, policy identity, and output digest are preserved across
+    /// replay or implementation migration of the same projection input.
+    pub fn verify_preserves_identity(&self, baseline: &Self) -> Result<(), GraphWitnessCodecError> {
+        if self.algorithm_id != baseline.algorithm_id {
+            return Err(GraphWitnessCodecError::CompatibilityViolation(format!(
+                "algorithm_id drifted from '{}' to '{}'",
+                baseline.algorithm_id, self.algorithm_id
+            )));
+        }
+        if self.projection_id != baseline.projection_id {
+            return Err(GraphWitnessCodecError::CompatibilityViolation(format!(
+                "projection_id drifted from '{}' to '{}'",
+                baseline.projection_id, self.projection_id
+            )));
+        }
+        if self.policy_id != baseline.policy_id {
+            return Err(GraphWitnessCodecError::CompatibilityViolation(format!(
+                "policy_id drifted from '{}' to '{}'",
+                baseline.policy_id, self.policy_id
+            )));
+        }
+        if self.output_digest != baseline.output_digest {
+            return Err(GraphWitnessCodecError::CompatibilityViolation(format!(
+                "output_digest drifted from '{}' to '{}'",
+                baseline.output_digest.to_text(),
+                self.output_digest.to_text()
+            )));
+        }
+        Ok(())
+    }
+
+    /// Encodes this witness into its versioned, checksummed canonical binary wire envelope
+    /// (`FSSGWT01` v1 + domain-separated trailing SHA-256).
+    pub fn to_canonical_bytes(&self) -> Result<Vec<u8>, GraphWitnessCodecError> {
+        let mut encoder = CanonicalEncoder::new();
+        self.encode_canonical(&mut encoder);
+        let payload = encoder.finish_checked()?;
+        let total_len = GRAPH_WITNESS_WIRE_HEADER_BYTES
+            .checked_add(payload.len())
+            .and_then(|n| n.checked_add(GRAPH_WITNESS_WIRE_CHECKSUM_BYTES))
+            .ok_or(GraphWitnessCodecError::WireTooLarge {
+                observed: usize::MAX,
+                maximum: MAX_GRAPH_WITNESS_WIRE_BYTES,
+            })?;
+        if total_len > MAX_GRAPH_WITNESS_WIRE_BYTES {
+            return Err(GraphWitnessCodecError::WireTooLarge {
+                observed: total_len,
+                maximum: MAX_GRAPH_WITNESS_WIRE_BYTES,
+            });
+        }
+        let payload_len_u32 =
+            u32::try_from(payload.len()).map_err(|_| GraphWitnessCodecError::WireTooLarge {
+                observed: total_len,
+                maximum: MAX_GRAPH_WITNESS_WIRE_BYTES,
+            })?;
+        let mut out = Vec::with_capacity(total_len);
+        out.extend_from_slice(&GRAPH_WITNESS_WIRE_MAGIC);
+        out.extend_from_slice(&GRAPH_WITNESS_FORMAT_VERSION.to_be_bytes());
+        out.extend_from_slice(&payload_len_u32.to_be_bytes());
+        out.extend_from_slice(&payload);
+        let mut hasher = Sha256Hasher::new();
+        hasher.update(Self::DIGEST_DOMAIN.as_bytes());
+        hasher.update(&out);
+        let checksum = hasher.finalize()?;
+        out.extend_from_slice(&checksum);
+        Ok(out)
+    }
+
+    /// Strictly decodes a versioned, checksummed canonical binary wire envelope (`FSSGWT01` v1).
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, GraphWitnessCodecError> {
+        let min_len = GRAPH_WITNESS_WIRE_HEADER_BYTES + GRAPH_WITNESS_WIRE_CHECKSUM_BYTES;
+        if bytes.len() < min_len {
+            return Err(GraphWitnessCodecError::MalformedPayload(format!(
+                "wire envelope length {} below minimum {min_len}",
+                bytes.len()
+            )));
+        }
+        if bytes.len() > MAX_GRAPH_WITNESS_WIRE_BYTES {
+            return Err(GraphWitnessCodecError::WireTooLarge {
+                observed: bytes.len(),
+                maximum: MAX_GRAPH_WITNESS_WIRE_BYTES,
+            });
+        }
+        if bytes[..8] != GRAPH_WITNESS_WIRE_MAGIC {
+            return Err(GraphWitnessCodecError::InvalidMagic);
+        }
+        let version = u32::from_be_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
+        if version != GRAPH_WITNESS_FORMAT_VERSION {
+            return Err(GraphWitnessCodecError::UnsupportedVersion { version });
+        }
+        let declared_len =
+            u32::from_be_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]) as usize;
+        let expected_total = GRAPH_WITNESS_WIRE_HEADER_BYTES
+            .checked_add(declared_len)
+            .and_then(|n| n.checked_add(GRAPH_WITNESS_WIRE_CHECKSUM_BYTES))
+            .ok_or_else(|| {
+                GraphWitnessCodecError::MalformedPayload(
+                    "declared payload length overflow".to_owned(),
+                )
+            })?;
+        if bytes.len() != expected_total {
+            return Err(GraphWitnessCodecError::MalformedPayload(format!(
+                "wire length {} disagrees with declared payload length {declared_len}",
+                bytes.len()
+            )));
+        }
+        let split_at = bytes.len() - GRAPH_WITNESS_WIRE_CHECKSUM_BYTES;
+        let (body, trailer) = bytes.split_at(split_at);
+        let mut hasher = Sha256Hasher::new();
+        hasher.update(Self::DIGEST_DOMAIN.as_bytes());
+        hasher.update(body);
+        let computed = hasher.finalize()?;
+        if computed.as_slice() != trailer {
+            return Err(GraphWitnessCodecError::ChecksumMismatch);
+        }
+        let payload = &body[GRAPH_WITNESS_WIRE_HEADER_BYTES..];
+        let mut decoder = CanonicalDecoder::new(payload);
+        let witness = <Self as CanonicalDecode>::decode_canonical(&mut decoder)?;
+        decoder.ensure_finished()?;
+        Ok(witness)
+    }
+
+    /// Emits deterministic canonical JSON strictly conforming to
+    /// `schemas/graph_algorithm_witness.v1.json` (sorted keys, finite normalized floats).
+    pub fn to_canonical_json(
+        &self,
+        device_generation: &str,
+        stream_generation: &str,
+    ) -> Result<String, GraphWitnessCodecError> {
+        let anchor_rec = EvidenceAnchorRecordV1::from_ledger_anchor(
+            &self.anchor,
+            device_generation,
+            stream_generation,
+        )
+        .map_err(|e| GraphWitnessCodecError::MalformedPayload(e.to_string()))?;
+        let mut out = String::with_capacity(1024);
+        out.push('{');
+        push_kv_str(&mut out, "algorithmId", &self.algorithm_id);
+        out.push(',');
+        push_key(&mut out, "anchor");
+        anchor_rec.write_canonical_json(&mut out);
+        out.push(',');
+        push_key(&mut out, "budgetConsumed");
+        write_counter_map(&mut out, &self.budget_consumed);
+        out.push(',');
+        push_kv_str(
+            &mut out,
+            "decisionPathDigest",
+            &self.decision_path_digest.to_text(),
+        );
+        out.push(',');
+        push_key(&mut out, "dominantOperationCounts");
+        write_counter_map(&mut out, &self.dominant_operation_counts);
+        out.push(',');
+        push_key(&mut out, "edgeCount");
+        out.push_str(&self.edge_count.to_string());
+        out.push(',');
+        push_key(&mut out, "errorBound");
+        match self.error_bound {
+            None => out.push_str("null"),
+            Some(bound) => {
+                let norm = if bound == 0.0 { 0.0 } else { bound };
+                out.push_str(&norm.to_string());
+            }
+        }
+        out.push(',');
+        push_kv_str(&mut out, "exactness", &self.exactness);
+        out.push(',');
+        push_kv_str(&mut out, "implementationId", &self.implementation_id);
+        out.push(',');
+        push_kv_str(&mut out, "inputDigest", &self.input_digest.to_text());
+        out.push(',');
+        push_key(&mut out, "nodeCount");
+        out.push_str(&self.node_count.to_string());
+        out.push(',');
+        push_kv_str(&mut out, "outputDigest", &self.output_digest.to_text());
+        out.push(',');
+        push_key(&mut out, "peakWorkingBytes");
+        out.push_str(&self.peak_working_bytes.to_string());
+        out.push(',');
+        push_kv_str(&mut out, "policyId", &self.policy_id);
+        out.push(',');
+        push_kv_str(&mut out, "projectionId", &self.projection_id);
+        out.push(',');
+        push_kv_str(&mut out, "schema", Self::SCHEMA);
+        out.push(',');
+        push_kv_str(&mut out, "stopReason", &self.stop_reason);
+        out.push('}');
+        Ok(out)
+    }
+
+    /// Strictly parses and validates a JSON document against
+    /// `schemas/graph_algorithm_witness.v1.json`, rejecting unknown properties,
+    /// duplicate keys, schema mismatches, negative/non-finite bounds, and malformed fields.
+    pub fn from_json(text: &str) -> Result<Self, GraphWitnessCodecError> {
+        const ALLOWED: &[&str] = &[
+            "schema",
+            "algorithmId",
+            "implementationId",
+            "projectionId",
+            "anchor",
+            "nodeCount",
+            "edgeCount",
+            "inputDigest",
+            "policyId",
+            "dominantOperationCounts",
+            "peakWorkingBytes",
+            "budgetConsumed",
+            "exactness",
+            "errorBound",
+            "stopReason",
+            "decisionPathDigest",
+            "outputDigest",
+        ];
+        let val = json_input::parse(text)
+            .map_err(|e| GraphWitnessCodecError::MalformedPayload(e.to_string()))?;
+        let obj = val.object().ok_or_else(|| {
+            GraphWitnessCodecError::MalformedPayload("root must be a JSON object".to_owned())
+        })?;
+        for k in obj.keys() {
+            if !ALLOWED.contains(&k.as_str()) {
+                return Err(GraphWitnessCodecError::MalformedPayload(format!(
+                    "unknown property '{k}' in graph_algorithm_witness (additionalProperties: false)"
+                )));
+            }
+        }
+        let schema = req_str(obj, "schema")?;
+        if schema != Self::SCHEMA {
+            return Err(GraphWitnessCodecError::SchemaMismatch {
+                expected: Self::SCHEMA,
+                observed: schema.to_owned(),
+            });
+        }
+        let algorithm_id = req_str(obj, "algorithmId")?.to_owned();
+        let implementation_id = req_str(obj, "implementationId")?.to_owned();
+        let projection_id = req_str(obj, "projectionId")?.to_owned();
+        let anchor_val = obj
+            .get("anchor")
+            .ok_or_else(|| GraphWitnessCodecError::MalformedPayload("missing anchor".to_owned()))?;
+        let anchor_rec =
+            EvidenceAnchorRecordV1::from_json_value(anchor_val).map_err(|e| match e {
+                DecisionCardError::SchemaMismatch { expected, observed } => {
+                    GraphWitnessCodecError::SchemaMismatch { expected, observed }
+                }
+                other => GraphWitnessCodecError::MalformedPayload(other.to_string()),
+            })?;
+        let state_root = ContentDigest::parse(&anchor_rec.authority_root)?;
+        let anchor = LedgerAnchor {
+            site_lineage: anchor_rec.deployment_id,
+            ledger_epoch: anchor_rec.observation_epoch,
+            commit_sequence: anchor_rec.capsule_sequence,
+            adapter_registry_epoch: anchor_rec.adapter_epoch,
+            schema_epoch: anchor_rec.schema_epoch,
+            policy_epoch: anchor_rec.policy_epoch,
+            privacy_epoch: anchor_rec.privacy_epoch.unwrap_or(1),
+            state_root,
+        };
+        let node_count = req_u64(obj, "nodeCount")?;
+        let edge_count = req_u64(obj, "edgeCount")?;
+        let input_digest = ContentDigest::parse(req_str(obj, "inputDigest")?)?;
+        let policy_id = req_str(obj, "policyId")?.to_owned();
+        let dominant_operation_counts = req_counter_map(obj, "dominantOperationCounts")?;
+        let peak_working_bytes = req_u64(obj, "peakWorkingBytes")?;
+        let budget_consumed = req_counter_map(obj, "budgetConsumed")?;
+        let exactness = req_str(obj, "exactness")?.to_owned();
+        let error_bound = match obj.get("errorBound").ok_or_else(|| {
+            GraphWitnessCodecError::MalformedPayload("missing errorBound".to_owned())
+        })? {
+            Value::Null => None,
+            Value::Number(raw) => {
+                let parsed = raw.parse::<f64>().map_err(|_| {
+                    GraphWitnessCodecError::MalformedPayload(
+                        "errorBound must be a finite number or null".to_owned(),
+                    )
+                })?;
+                if !parsed.is_finite() || parsed < 0.0 {
+                    return Err(GraphWitnessCodecError::Contract(
+                        ContractError::InvalidDigest,
+                    ));
+                }
+                Some(if parsed == 0.0 { 0.0 } else { parsed })
+            }
+            _ => {
+                return Err(GraphWitnessCodecError::MalformedPayload(
+                    "errorBound must be a number or null".to_owned(),
+                ));
+            }
+        };
+        let stop_reason = req_str(obj, "stopReason")?.to_owned();
+        let decision_path_digest = ContentDigest::parse(req_str(obj, "decisionPathDigest")?)?;
+        let output_digest = ContentDigest::parse(req_str(obj, "outputDigest")?)?;
+
+        Ok(Self::new(GraphAlgorithmWitnessParams {
+            algorithm_id,
+            implementation_id,
+            projection_id,
+            anchor,
+            node_count,
+            edge_count,
+            input_digest,
+            policy_id,
+            dominant_operation_counts,
+            peak_working_bytes,
+            budget_consumed,
+            exactness,
+            error_bound,
+            stop_reason,
+            decision_path_digest,
+            output_digest,
+        })?)
+    }
 }
 
 impl CanonicalEncode for GraphAlgorithmWitness {
@@ -300,14 +727,199 @@ impl CanonicalEncode for GraphAlgorithmWitness {
         match self.error_bound {
             None => encoder.tag(0),
             Some(bound) => {
+                let norm = if bound == 0.0 { 0.0 } else { bound };
                 encoder.tag(1);
-                encoder.u64(bound.to_bits());
+                encoder.u64(norm.to_bits());
             }
         }
         encoder.text(&self.stop_reason);
         encoder.digest(self.decision_path_digest);
         encoder.digest(self.output_digest);
     }
+}
+
+fn decode_counters(
+    decoder: &mut CanonicalDecoder<'_>,
+) -> Result<BTreeMap<String, u64>, ContractError> {
+    let raw_count = decoder.u64()?;
+    let count = usize::try_from(raw_count).map_err(|_| ContractError::CountBoundExceeded)?;
+    if count > MAX_GRAPH_WITNESS_COUNTERS || count.saturating_mul(16) > decoder.remaining() {
+        return Err(ContractError::CountBoundExceeded);
+    }
+    let mut map = BTreeMap::new();
+    for _ in 0..count {
+        let name = decoder.text()?;
+        if !is_counter_name(name) {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        if map
+            .keys()
+            .next_back()
+            .is_some_and(|prev: &String| prev.as_str() >= name)
+        {
+            return Err(ContractError::NonCanonicalOrdering);
+        }
+        let value = decoder.u64()?;
+        map.insert(name.to_owned(), value);
+    }
+    Ok(map)
+}
+
+impl CanonicalDecode for GraphAlgorithmWitness {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        let domain = decoder.text()?;
+        if domain != Self::DIGEST_DOMAIN {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        let algorithm_id = decoder.text()?.to_owned();
+        let implementation_id = decoder.text()?.to_owned();
+        let projection_id = decoder.text()?.to_owned();
+        let anchor = LedgerAnchor::decode_canonical(decoder)?;
+        let node_count = decoder.u64()?;
+        let edge_count = decoder.u64()?;
+        let input_digest = decoder.digest()?;
+        let policy_id = decoder.text()?.to_owned();
+        let dominant_operation_counts = decode_counters(decoder)?;
+        let peak_working_bytes = decoder.u64()?;
+        let budget_consumed = decode_counters(decoder)?;
+        let exactness = decoder.text()?.to_owned();
+        let error_bound = match decoder.u8()? {
+            0 => None,
+            1 => {
+                let bits = decoder.u64()?;
+                let val = f64::from_bits(bits);
+                if !val.is_finite() || val < 0.0 || (val == 0.0 && bits != 0.0_f64.to_bits()) {
+                    return Err(ContractError::InvalidDigest);
+                }
+                Some(val)
+            }
+            tag => return Err(ContractError::UnknownEntryTag(tag)),
+        };
+        let stop_reason = decoder.text()?.to_owned();
+        let decision_path_digest = decoder.digest()?;
+        let output_digest = decoder.digest()?;
+        Self::new(GraphAlgorithmWitnessParams {
+            algorithm_id,
+            implementation_id,
+            projection_id,
+            anchor,
+            node_count,
+            edge_count,
+            input_digest,
+            policy_id,
+            dominant_operation_counts,
+            peak_working_bytes,
+            budget_consumed,
+            exactness,
+            error_bound,
+            stop_reason,
+            decision_path_digest,
+            output_digest,
+        })
+    }
+}
+
+fn push_escaped_str(out: &mut String, s: &str) {
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                use std::fmt::Write;
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+}
+
+fn push_key(out: &mut String, key: &str) {
+    push_escaped_str(out, key);
+    out.push(':');
+}
+
+fn push_kv_str(out: &mut String, key: &str, val: &str) {
+    push_key(out, key);
+    push_escaped_str(out, val);
+}
+
+fn write_counter_map(out: &mut String, map: &BTreeMap<String, u64>) {
+    out.push('{');
+    for (idx, (k, v)) in map.iter().enumerate() {
+        if idx > 0 {
+            out.push(',');
+        }
+        push_key(out, k);
+        out.push_str(&v.to_string());
+    }
+    out.push('}');
+}
+
+fn req_str<'a>(
+    obj: &'a BTreeMap<String, Value>,
+    key: &str,
+) -> Result<&'a str, GraphWitnessCodecError> {
+    obj.get(key)
+        .ok_or_else(|| GraphWitnessCodecError::MalformedPayload(format!("missing {key}")))?
+        .text()
+        .ok_or_else(|| GraphWitnessCodecError::MalformedPayload(format!("{key} must be string")))
+}
+
+fn req_u64(obj: &BTreeMap<String, Value>, key: &str) -> Result<u64, GraphWitnessCodecError> {
+    match obj
+        .get(key)
+        .ok_or_else(|| GraphWitnessCodecError::MalformedPayload(format!("missing {key}")))?
+    {
+        Value::Number(raw) => raw
+            .parse::<u64>()
+            .map_err(|_| GraphWitnessCodecError::MalformedPayload(format!("{key} must be u64"))),
+        _ => Err(GraphWitnessCodecError::MalformedPayload(format!(
+            "{key} must be integer"
+        ))),
+    }
+}
+
+fn req_counter_map(
+    obj: &BTreeMap<String, Value>,
+    key: &str,
+) -> Result<BTreeMap<String, u64>, GraphWitnessCodecError> {
+    let map = obj
+        .get(key)
+        .ok_or_else(|| GraphWitnessCodecError::MalformedPayload(format!("missing {key}")))?
+        .object()
+        .ok_or_else(|| {
+            GraphWitnessCodecError::MalformedPayload(format!("{key} must be JSON object"))
+        })?;
+    if map.len() > MAX_GRAPH_WITNESS_COUNTERS {
+        return Err(GraphWitnessCodecError::Contract(
+            ContractError::CountBoundExceeded,
+        ));
+    }
+    let mut out = BTreeMap::new();
+    for (k, v) in map {
+        if !is_counter_name(k) {
+            return Err(GraphWitnessCodecError::Contract(
+                ContractError::InvalidIdentifier,
+            ));
+        }
+        let n = match v {
+            Value::Number(raw) => raw.parse::<u64>().map_err(|_| {
+                GraphWitnessCodecError::MalformedPayload(format!("{key}.{k} must be u64"))
+            })?,
+            _ => {
+                return Err(GraphWitnessCodecError::MalformedPayload(format!(
+                    "{key}.{k} must be integer"
+                )));
+            }
+        };
+        out.insert(k.clone(), n);
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

@@ -1591,4 +1591,62 @@ mod tests {
         assert_eq!(protected_loss_class(0), "low");
         assert_eq!(protected_loss_class(4), "high");
     }
+
+    #[test]
+    fn cli_agent_session_and_capsule_json_roundtrip_through_fss_core_strict_parsers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let basis = fss_core::reference_contract_basis();
+        let mut anchor = LedgerAnchor::genesis("site:cli-producer-test");
+        anchor.commit_sequence = 9;
+        let session = AgentSession::new(fss_core::AgentSessionParams {
+            session_id: fss_core::SessionId::parse("session:cli-rt")?,
+            mission_id: fss_core::MissionId::parse("mission:cli-rt")?,
+            principal_id: fss_core::PrincipalId::parse("principal:cli-owner")?,
+            capabilities: BTreeSet::from(["capability:situation.read".to_owned()]),
+            privacy_scope: BTreeSet::from(["privacy:property-only".to_owned()]),
+            current_anchor: anchor.clone(),
+            view_id: "AVIEW-001".to_owned(),
+            token_budget: 16_000,
+            symbol_table_generation: 2,
+            last_acknowledged_situation_fingerprint: None,
+            created_at_ns: 1_000,
+            expires_at_ns: 9_000,
+        })?;
+        let cli_session_json = agent_session(&session, &basis);
+        let (parsed_session, parsed_basis) = AgentSession::from_json(&cli_session_json)?;
+        assert_eq!(parsed_session, session);
+        assert_eq!(parsed_basis, basis);
+
+        let capsule = SessionCapsule::new(fss_core::SessionCapsuleParams {
+            session_id: session.session_id.clone(),
+            revision: 3,
+            principal: "principal:cli-owner".to_owned(),
+            capability_projection: vec!["capability:situation.read".to_owned()],
+            objective_digest: "objective:cli-rt:0001".to_owned(),
+            base_anchor: LedgerAnchor::genesis("site:cli-producer-test"),
+            current_anchor: anchor,
+            situation_capsule_digest: "situation:cli-rt:0001".to_owned(),
+            active_hypotheses: vec!["hypothesis:gate".to_owned()],
+            assumptions: vec!["assumption:clear-lens".to_owned()],
+            unknowns: vec!["unknown:rear-yard".to_owned()],
+            not_observable_domains: vec!["domain:rear-yard".to_owned()],
+            epistemic_debt: vec![
+                "debt:stale-cal".to_owned(),
+                "claim:1: calibration older than 12h".to_owned(),
+            ],
+            open_obligations: vec!["obligation:verify-alert".to_owned()],
+            budget_ledger: BudgetVector::builder().tokens(500).bytes(4096).build()?,
+            bookmarked_evidence: vec![ContentDigest::sha256(b"cli-frame-1")],
+            next_actions: vec!["action:probe-gate".to_owned()],
+            decision_digest: "decision:cli-rt:0001".to_owned(),
+        })?;
+        let invalidated = vec!["action:old-probe".to_owned()];
+        let cli_capsule_json = session_capsule(&capsule, &basis, &invalidated);
+        let (parsed_capsule, parsed_cap_basis, parsed_inv) =
+            SessionCapsule::from_json(&cli_capsule_json)?;
+        assert_eq!(parsed_capsule, capsule);
+        assert_eq!(parsed_cap_basis, basis);
+        assert_eq!(parsed_inv, invalidated);
+        Ok(())
+    }
 }

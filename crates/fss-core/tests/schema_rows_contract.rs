@@ -19,9 +19,9 @@ use std::error::Error;
 const SCHEMAS_MD: &str = include_str!("../../../registries/SCHEMAS.md");
 const DIGEST_DOMAINS_MD: &str = include_str!("../../../registries/DIGEST_DOMAINS.md");
 
-/// The six rows this artifact anchors:
+/// The nine rows this artifact anchors:
 /// (row id, schema name, file, authority, distinctive compat-rule text).
-const NORMATIVE_SCHEMA_ROWS: [(&str, &str, &str, &str, &str); 6] = [
+const NORMATIVE_SCHEMA_ROWS: [(&str, &str, &str, &str, &str); 9] = [
     (
         "SCHEMA-SENSOR-CAPSULE-001",
         "fss.sensor_capsule.v1",
@@ -51,11 +51,32 @@ const NORMATIVE_SCHEMA_ROWS: [(&str, &str, &str, &str, &str); 6] = [
         "restoration requires trusted checkpoint + request digests",
     ),
     (
+        "SCHEMA-GRAPH-WITNESS-001",
+        "fss.graph_algorithm_witness.v1",
+        "schemas/graph_algorithm_witness.v1.json",
+        "derived/evidence",
+        "algorithm/projection/policy identity and output digest preserved",
+    ),
+    (
         "SCHEMA-DECISION-CARD-001",
         "fss.decision_card.v1",
         "schemas/decision_card.v1.json",
         "policy/evidence",
         "hard constraints and alternatives retained; no silent rewrite",
+    ),
+    (
+        "SCHEMA-AGENT-SESSION-001",
+        "fss.agent_session.v1",
+        "schemas/agent_session.v1.json",
+        "session/runtime",
+        "session identity, authority, privacy projection, view, continuations, and expiry remain explicit",
+    ),
+    (
+        "SCHEMA-AGENT-WORKSPACE-001",
+        "fss.agent_session_capsule.v1",
+        "schemas/agent_session_capsule.v1.json",
+        "workspace continuity",
+        "workspace revisions are immutable and resume records stale and invalidated state",
     ),
     (
         "SCHEMA-AGENT-QUERY-001",
@@ -143,6 +164,15 @@ fn rust_owner_types_declare_matching_schema_consts() {
         fss_core::EvidenceAnchorRecordV1::SCHEMA,
         "fss.evidence_anchor.v1"
     );
+    assert_eq!(
+        fss_core::GraphAlgorithmWitness::SCHEMA,
+        "fss.graph_algorithm_witness.v1"
+    );
+    assert_eq!(fss_core::AgentSession::SCHEMA, "fss.agent_session.v1");
+    assert_eq!(
+        fss_core::SessionCapsule::SCHEMA,
+        "fss.agent_session_capsule.v1"
+    );
     assert_eq!(fss_core::AgentQueryPlan::SCHEMA, "fss.agent_query_plan.v1");
 }
 
@@ -156,5 +186,13 @@ fn digest_domains_are_registered_where_present() {
     assert!(
         DIGEST_DOMAINS_MD.contains("SCHEMA-DOMAIN-SENSOR-METADATA-001"),
         "sensor metadata domain row id missing"
+    );
+    assert!(
+        DIGEST_DOMAINS_MD.contains("`fss.graph_algorithm_witness.receipt.v1`"),
+        "graph algorithm witness digest domain unregistered"
+    );
+    assert!(
+        DIGEST_DOMAINS_MD.contains("SCHEMA-DOMAIN-GRAPH-ALGORITHM-WITNESS-001"),
+        "graph algorithm witness domain row id missing"
     );
 }

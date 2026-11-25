@@ -83,9 +83,14 @@ pub use agent_cognitive::{
 };
 pub use agent_cognitive_context::AgentCognitiveEnvelopeV2;
 pub use agent_contracts::{
-    AgentSession, AgentSessionParams, MissionContract, MissionContractParams, MissionState,
-    ObjectiveContract, ObjectiveContractParams, ObjectiveScope, SessionCapsule,
-    SessionCapsuleParams,
+    AGENT_SESSION_FORMAT_VERSION, AGENT_SESSION_WIRE_MAGIC, AgentContractCodecError, AgentSession,
+    AgentSessionParams, MAX_AGENT_SESSION_CAPABILITIES, MAX_AGENT_SESSION_CONTINUATIONS,
+    MAX_AGENT_SESSION_PRIVACY_SCOPES, MAX_AGENT_SESSION_SUBSCRIPTIONS, MAX_AGENT_SESSION_SYMBOLS,
+    MAX_AGENT_SESSION_TOKEN_BUDGET, MAX_AGENT_SESSION_WIRE_BYTES, MAX_CAPSULE_EPISTEMIC_DEBT,
+    MAX_CAPSULE_ITEM_BYTES, MAX_CAPSULE_LIST_ITEMS, MAX_SESSION_CAPSULE_WIRE_BYTES,
+    MissionContract, MissionContractParams, MissionState, NO_ACKNOWLEDGED_SITUATION_REASON,
+    ObjectiveContract, ObjectiveContractParams, ObjectiveScope, SESSION_CAPSULE_FORMAT_VERSION,
+    SESSION_CAPSULE_WIRE_MAGIC, SessionCapsule, SessionCapsuleParams,
 };
 pub use agent_investigation::{
     CaseDiscriminator, CaseHypothesis, INVESTIGATION_STATE_DIGEST_DOMAIN, InvestigationLifecycle,
@@ -217,8 +222,9 @@ pub use evidence::{
     SensorSourceBytesSpec,
 };
 pub use graph_witness::{
-    GraphAlgorithmWitness, GraphAlgorithmWitnessParams, MAX_GRAPH_WITNESS_COUNTER_NAME_LEN,
-    MAX_GRAPH_WITNESS_COUNTERS,
+    GRAPH_WITNESS_FORMAT_VERSION, GRAPH_WITNESS_WIRE_MAGIC, GraphAlgorithmWitness,
+    GraphAlgorithmWitnessParams, GraphWitnessCodecError, MAX_GRAPH_WITNESS_COUNTER_NAME_LEN,
+    MAX_GRAPH_WITNESS_COUNTERS, MAX_GRAPH_WITNESS_WIRE_BYTES,
 };
 pub use hydration::{
     AlternateSystem, AudioFeaturesArtifact, BoundingBox, CropArtifact, DecisionArtifactKind,

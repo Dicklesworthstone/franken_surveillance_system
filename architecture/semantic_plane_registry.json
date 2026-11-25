@@ -218,6 +218,7 @@
     "crates/fss-core/src/agent.rs": "authority",
     "crates/fss-core/src/agent_cognitive.rs": "authority",
     "crates/fss-core/src/agent_contracts.rs": "authority",
+    "crates/fss-core/src/agent_contracts/codec.rs": "authority",
     "crates/fss-core/src/agent_investigation.rs": "cognition",
     "crates/fss-core/src/agent_operation.rs": "authority",
     "crates/fss-core/src/agent_query_plan.rs": "authority",
