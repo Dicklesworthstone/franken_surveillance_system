@@ -27,6 +27,8 @@ pub mod multipart;
 /// Archive cost/chunk planner (FSS-067).
 pub mod planner;
 pub mod provider;
+/// RaptorQ / systematic GF(256) post-repair canonical digest gate (`FSS-128`, `fss-x4a.13.12`).
+pub mod repair_gate;
 /// Archive replication-state and retrievability challenge ledger (`FSS-131`, `fss-x4a.13.15`).
 pub mod replication;
 /// Graph-aware local retention, evidence holds, and bounded expiry execution.
