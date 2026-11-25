@@ -6,14 +6,18 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use fss_core::{CaptureInterval, SensorId, StreamId, TimestampNs};
 use fss_daemon::{
-    BackoffSchedule, CameraAdapterKind, CameraManifestEntry, CameraRuntimeView, DaemonStartConfig,
-    DaemonSupervisor, SensorDisconnectReason, SensorDriver, SensorDriverEvent, SensorState,
-    SiteManifest, SyntheticCameraControl, SyntheticCameraDriver, SyntheticFrameSpec,
+    BackoffSchedule, CameraAdapterKind, CameraManifestEntry, CameraRuntimeView, DaemonError,
+    DaemonStartConfig, DaemonSupervisor, SensorDisconnectReason, SensorDriver, SensorDriverEvent,
+    SensorState, SiteManifest, SyntheticCameraControl, SyntheticCameraDriver, SyntheticFrameSpec,
 };
-use fss_projection_store::{CoverageStatus, ProjectedCoverageState, ProjectionStore};
+use fss_projection_store::{
+    CombinerError, CoverageStatus, ProjectedCoverageState, ProjectionStore,
+};
+use fss_reference::ingest::model_pool::{FramePixelInput, ModelPoolError};
 
 type TestError = Box<dyn std::error::Error>;
 type TestResult = Result<(), TestError>;
@@ -47,6 +51,7 @@ enum FrameMutation {
     Stream(StreamId),
     ReceiveTime(i128),
     Discontinuity,
+    MalformedPixels,
 }
 
 #[derive(Clone, Debug)]
@@ -112,6 +117,10 @@ impl SensorDriver for ReadinessDriver {
                         frame_mut.host_receive_ns = received_ns;
                     }
                     FrameMutation::Discontinuity => frame_mut.discontinuity_before = true,
+                    FrameMutation::MalformedPixels => {
+                        // Only the derived pixels are invalid; retain the exact source payload.
+                        frame_mut.pixels = FramePixelInput::Luma { pixels: vec![0] };
+                    }
                 }
                 SensorDriverEvent::Frame(frame)
             }
@@ -141,6 +150,7 @@ impl SensorDriver for ReadinessDriver {
 
 struct Fixture {
     supervisor: DaemonSupervisor,
+    control: Arc<SyntheticCameraControl>,
     inputs: InputQueue,
     sensor_id: SensorId,
     _dir: TempDir,
@@ -152,6 +162,14 @@ impl Fixture {
     }
 
     fn with_gop_frames(ring_max_frames: usize, gop_frames: usize) -> Result<Self, TestError> {
+        Self::with_gop_frames_and_ipc(ring_max_frames, gop_frames, false)
+    }
+
+    fn with_gop_frames_and_ipc(
+        ring_max_frames: usize,
+        gop_frames: usize,
+        enable_ipc: bool,
+    ) -> Result<Self, TestError> {
         let dir = TempDir::new()?;
         let root = dir.0.to_string_lossy();
         let manifest = SiteManifest::parse_json(&format!(
@@ -184,15 +202,16 @@ impl Fixture {
         let inputs: InputQueue = Arc::new(Mutex::new(VecDeque::new()));
         let driver: Box<dyn SensorDriver> = Box::new(ReadinessDriver {
             inner: SyntheticCameraDriver::new(entry, Arc::clone(&control)),
-            control,
+            control: Arc::clone(&control),
             inputs: Arc::clone(&inputs),
         });
         let mut config = DaemonStartConfig::new(manifest);
         config.custom_drivers = BTreeMap::from([(sensor_id.clone(), driver)]);
         config.started_at_ns = START_NS;
-        config.enable_ipc = false;
+        config.enable_ipc = enable_ipc;
         Ok(Self {
             supervisor: DaemonSupervisor::start(config)?,
+            control,
             inputs,
             sensor_id,
             _dir: dir,
@@ -609,6 +628,140 @@ fn graceful_shutdown_drains_retained_frames_beyond_the_tick_ingest_budget() -> T
         retained_frames, 12,
         "shutdown must commit the ring remainder before cancelling storage authority"
     );
+    Ok(())
+}
+
+#[test]
+fn failed_supervision_drains_source_frames_and_closes_owned_resources() -> TestResult {
+    let fixture = Fixture::with_gop_frames_and_ipc(64, 7, true)?;
+    fixture.queue(
+        std::iter::once(Input::Frame(FrameMutation::MalformedPixels))
+            .chain((1..12).map(|_| Input::frame())),
+    )?;
+    let packs = Arc::clone(fixture.supervisor.storage().pack_store());
+    let socket_path = fixture
+        .supervisor
+        .ipc_socket_path()
+        .ok_or("IPC socket missing")?
+        .to_path_buf();
+    assert!(socket_path.exists());
+    assert_eq!(fixture.control.active_session_count(), 1);
+
+    // The tick commits seven frames, buffers one, and leaves four in the ingest ring.
+    // Perception then rejects the derived pixels, after source custody has begun.
+    let error = fixture
+        .supervisor
+        .run_until_stopped(Some(1), Duration::ZERO)
+        .err()
+        .ok_or("malformed derived pixels must fail supervision")?;
+    assert!(matches!(
+        error,
+        DaemonError::ModelPool(ModelPoolError::InvalidInput(_))
+    ));
+    assert_eq!(fixture.control.active_session_count(), 0);
+    assert!(
+        !socket_path.exists(),
+        "shutdown must remove the IPC listener"
+    );
+
+    let roots = packs.list_roots(None, 32)?;
+    assert!(!roots.has_more);
+    let mut sequences = Vec::new();
+    for entry in roots.entries {
+        if entry.record.kind != "media-gop-v2" {
+            continue;
+        }
+        let bytes = packs.read_verified(&entry.record.root_digest)?;
+        let chunk = fss_pack::MediaChunkView::parse(&bytes)?;
+        for index in 0..chunk.frame_count() {
+            let sequence = chunk.frame_entry(index)?.sequence;
+            let mut expected = b"FSSA".to_vec();
+            expected.extend_from_slice(&1_u64.to_be_bytes());
+            expected.extend_from_slice(&sequence.to_be_bytes());
+            expected.extend_from_slice(&[32_u8; 32 * 32]);
+            assert_eq!(chunk.frame_bytes_verified(index)?, expected.as_slice());
+            sequences.push(sequence);
+        }
+    }
+    sequences.sort_unstable();
+    assert_eq!(
+        sequences,
+        (1_u64..=12).collect::<Vec<_>>(),
+        "a perception failure must not discard buffered or ring-retained source frames"
+    );
+    Ok(())
+}
+
+#[test]
+fn failed_supervision_preserves_the_original_and_shutdown_errors() -> TestResult {
+    let fixture = Fixture::with_gop_frames_and_ipc(64, 7, true)?;
+    let packs = Arc::clone(fixture.supervisor.storage().pack_store());
+    let socket_path = fixture
+        .supervisor
+        .ipc_socket_path()
+        .ok_or("IPC socket missing")?
+        .to_path_buf();
+
+    // GOP 1 can publish during the tick. Only the final GOP encounters a real catalog
+    // conflict during cleanup, after perception has failed for an independent reason.
+    let foreign_bytes = b"independent catalog publication";
+    let foreign_digest = fss_core::ContentDigest::sha256(foreign_bytes);
+    packs.append_batch(&[fss_pack::PackObjectInput::new(
+        fss_pack::PACK_KIND_METADATA,
+        0,
+        foreign_bytes,
+    )])?;
+    packs.publish_root(fss_pack::VirtualRootRecord::new(
+        "gop:sensor_readiness:1:2",
+        foreign_digest,
+        "independent-publication",
+        1,
+        foreign_bytes.len() as u64,
+        1,
+        TimestampNs(START_NS),
+        None,
+    )?)?;
+    fixture.queue(
+        std::iter::once(Input::Frame(FrameMutation::MalformedPixels))
+            .chain((1..12).map(|_| Input::frame())),
+    )?;
+
+    let error = fixture
+        .supervisor
+        .run_until_stopped(Some(1), Duration::ZERO)
+        .err()
+        .ok_or("both supervision and final GOP publication must fail")?;
+    let DaemonError::RunAndShutdown { run, shutdown } = &error else {
+        return Err(format!("both failures must remain inspectable: {error}").into());
+    };
+    assert!(matches!(
+        run.as_ref(),
+        DaemonError::ModelPool(ModelPoolError::InvalidInput(_))
+    ));
+    assert!(matches!(
+        shutdown.as_ref(),
+        DaemonError::Combiner(CombinerError::SinkFailure(detail))
+            if detail.contains("GOP publication conflicts")
+    ));
+    assert_eq!(error.error_id(), run.error_id());
+    assert_eq!(
+        std::error::Error::source(&error).map(ToString::to_string),
+        Some(run.to_string())
+    );
+    let detail = error.to_string();
+    assert!(detail.contains(&run.to_string()));
+    assert!(detail.contains(&shutdown.to_string()));
+    assert_eq!(fixture.control.active_session_count(), 0);
+    assert!(
+        !socket_path.exists(),
+        "a storage cleanup failure must still close the IPC listener"
+    );
+    let foreign_root = packs
+        .get_root("gop:sensor_readiness:1:2")?
+        .ok_or("conflicting root disappeared")?;
+    assert_eq!(foreign_root.record.root_digest, foreign_digest);
+    let foreign_source = packs.read_verified(&foreign_digest)?;
+    assert_eq!(foreign_source.as_slice(), foreign_bytes);
     Ok(())
 }
 

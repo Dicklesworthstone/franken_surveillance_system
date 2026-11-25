@@ -5,6 +5,40 @@
 **Current change qualification:** each dated section below states its exact verification boundary. Native passes for one component do not qualify other changes, and prior receipts do not qualify new bytes.
 **Release authority:** repository-owned local qualification (`scripts/qualify.sh`) and retained DSR receipts, not hosted CI
 
+## Daemon failure-path source draining — 2026-11-25
+
+A failed supervision tick now executes the same request, drain and finalization
+path as a requested shutdown. Control admission closes before draining while
+storage authority remains live for retained ring frames and pending GOPs.
+Previously the early error return could abandon already admitted source data
+and skip explicit resource cleanup.
+
+The original typed runtime error is returned unchanged when cleanup succeeds.
+If cleanup also fails, `DaemonError::RunAndShutdown` retains both typed errors;
+the original failure remains the stable machine error identity and standard
+error source. Cleanup continues through the existing resource finalization
+sequence rather than stopping at the first drain error.
+
+Two regression contracts induce a real perception failure by corrupting only
+derived pixels while retaining twelve original encoded payloads. They check
+that source data already committed, buffered in the current GOP and retained
+in the ingest ring is drained exactly, camera sessions close, and the IPC
+socket disappears. A separate final-GOP catalog conflict verifies that both
+failures remain inspectable and the conflicting publication is preserved.
+
+**Verification boundary:** independent source/API review, pinned Rust
+formatting and whitespace checks passed. The focused native test attempt was
+killed by SIGKILL while compiling unchanged `fss-core` with `test-support`,
+before the changed daemon target or these tests executed. The execution host
+then disconnected. No daemon compile/test pass, Clippy pass, full qualification
+or release readiness is claimed. This advances the source-preserving failure
+boundary in `fss-x4a.27.2` / GOAL-008; the broader runtime qualification remains
+open.
+
+```sh
+cargo +nightly-2026-08-31 test --locked --offline -j1 -p fss-daemon --test camera_readiness_contract failed_supervision -- --test-threads=1
+```
+
 ## ONNX ceiling-mode average pooling — 2026-11-25
 
 The first-party ONNX importer now admits `AveragePool ceil_mode=1` for static

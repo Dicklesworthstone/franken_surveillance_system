@@ -108,6 +108,13 @@ pub enum DaemonError {
         /// Non-secret description of the unclosed work or leaked obligation.
         detail: String,
     },
+    /// A supervision tick failed and its mandatory drain/finalization also failed.
+    RunAndShutdown {
+        /// Original supervision failure, retained as the primary machine error identity.
+        run: Box<DaemonError>,
+        /// Independent failure encountered while draining and finalizing the daemon.
+        shutdown: Box<DaemonError>,
+    },
 }
 
 impl DaemonError {
@@ -140,6 +147,7 @@ impl DaemonError {
             Self::Vault(err) => err.error_id(),
             Self::LockPoisoned { .. } | Self::ShutdownViolation { .. } => ERR_DAEMON_SHUTDOWN_001,
             Self::Io { .. } => ERR_DAEMON_IO_001,
+            Self::RunAndShutdown { run, .. } => run.error_id(),
         }
     }
 }
@@ -197,11 +205,21 @@ impl fmt::Display for DaemonError {
                     "{ERR_DAEMON_SHUTDOWN_001}: shutdown quiescence failed: {detail}"
                 )
             }
+            Self::RunAndShutdown { run, shutdown } => {
+                write!(f, "{run}; daemon shutdown also failed: {shutdown}")
+            }
         }
     }
 }
 
-impl std::error::Error for DaemonError {}
+impl std::error::Error for DaemonError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::RunAndShutdown { run, .. } => Some(run.as_ref()),
+            _ => None,
+        }
+    }
+}
 
 impl From<ContractError> for DaemonError {
     fn from(value: ContractError) -> Self {

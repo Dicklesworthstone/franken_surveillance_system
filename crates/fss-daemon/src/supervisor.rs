@@ -306,19 +306,23 @@ impl DaemonSupervisor {
 
     /// Runs the supervision loop until shutdown is requested (via IPC `Stop`, caller signal, or
     /// `max_ticks` completion), then executes strict `request -> drain -> finalize` shutdown.
+    /// A failed tick also drains admitted source frames and finalizes owned resources. If
+    /// shutdown fails as well, both failures remain available in the returned error.
     pub fn run_until_stopped(
         mut self,
         max_ticks: Option<u64>,
         tick_interval: Duration,
     ) -> Result<DaemonShutdownReport, DaemonError> {
-        loop {
+        let run_result = loop {
             if self.is_shutdown_requested() || max_ticks.is_some_and(|lim| self.tick_count >= lim) {
-                break;
+                break Ok(());
             }
             let now_ns = monotonic_wall_ns().max(self.last_now_ns.saturating_add(1_000_000));
-            let _ = self.step_tick(now_ns)?;
+            if let Err(error) = self.step_tick(now_ns) {
+                break Err(error);
+            }
             if self.is_shutdown_requested() || max_ticks.is_some_and(|lim| self.tick_count >= lim) {
-                break;
+                break Ok(());
             }
             if !tick_interval.is_zero() {
                 let slice = Duration::from_millis(10);
@@ -337,12 +341,23 @@ impl DaemonSupervisor {
                     );
                 }
             }
+        };
+        let shutdown_result = self.shutdown_graceful();
+        match (run_result, shutdown_result) {
+            (Ok(()), result) => result,
+            (Err(run), Ok(_)) => Err(run),
+            (Err(run), Err(shutdown)) => Err(DaemonError::RunAndShutdown {
+                run: Box::new(run),
+                shutdown: Box::new(shutdown),
+            }),
         }
-        self.shutdown_graceful()
     }
 
     /// Executes strict `request -> drain -> finalize` quiescence across all regions and stores.
     pub fn shutdown_graceful(mut self) -> Result<DaemonShutdownReport, DaemonError> {
+        // Close control admission before draining. Storage authority stays live until every
+        // already admitted source frame has been handed off and its GOP flush attempted.
+        self.request_shutdown();
         let drain_start = Instant::now();
         let now = TimestampNs(self.last_now_ns.saturating_add(1_000));
 
