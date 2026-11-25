@@ -26,6 +26,8 @@ mod repair;
 mod sealed_lineage;
 /// Negative-read phantom and SSI write-skew schedule corpus (`FSS-106`, `fss-x4a.9.13`).
 pub mod ssi_corpus;
+/// FrankenSQLite storage integration trait and reference/durable/Merkle adapters (`FSS-031`, `fss-x4a.9.1`).
+pub mod storage_adapter;
 mod store_pin;
 mod witness;
 
@@ -125,6 +127,13 @@ pub use ssi_corpus::{
     MAX_EXCLUDED_DIMENSIONS, MAX_SSI_CORPUS_WIRE_BYTES, SSI_CORPUS_MAGIC, SSI_CORPUS_VERSION,
     ScheduleCaseResult, ScheduleCorpusReceipt, ScheduleVerdict, SsiCorpusError, SsiCorpusGuidance,
     SsiCorpusRunner,
+};
+pub use storage_adapter::{
+    DurableJournalStorage, FrankenSqliteStorageAdapter, LEDGER_STORAGE_ADAPTER_RECEIPT_DOMAIN,
+    MAX_STORAGE_COMMIT_WITNESSES, MAX_STORAGE_LABEL_BYTES, MAX_STORAGE_WIRE_BYTES,
+    MerkleEpochStorage, ReferenceOracleStorage, STORAGE_RECEIPT_MAGIC, STORAGE_RECEIPT_VERSION,
+    StorageAuthorityScope, StorageCommitReceipt, StorageCommitState, StorageError, StorageGuidance,
+    StorageMigrationPlan, StorageRecoveryOutcome, StorageRecoverySummary, StorageSchemaVersion,
 };
 pub use store_pin::{
     STORE_PIN_DOMAIN, STORE_ROLE_AUTHORITY_LEDGER, STORE_ROLE_EFFECT_JOURNAL, pin_is_current,

@@ -255,6 +255,42 @@ fn model_package_gf256_protection_erasure_recovery_root_last_activation_and_roll
         Some("model:rfdetr:v1")
     );
 
+    // Even after rolling back from v2 to v1, rebinding immutable `model:rfdetr:v2` to DIFFERENT
+    // weights MUST fail closed with IntegrityOrRepairFailed!
+    let tampered_weights_v2: Vec<u8> = (0..1024_usize)
+        .map(|i| ((i * 61 + 3) % 251) as u8)
+        .collect();
+    let tampered_lic_v2 = b"MIT License (model v2 tampered)".to_vec();
+    let tampered_manifest_v2 = build_manifest(
+        "model:rfdetr:v2",
+        "MIT",
+        &tampered_weights_v2,
+        &tampered_lic_v2,
+        true,
+    )?;
+    let mut tampered_pkg_v2 = ProtectedModelPackage::protect_package(
+        tampered_manifest_v2,
+        pin_for("model:rfdetr:v2"),
+        tampered_weights_v2,
+        Some(tampered_lic_v2),
+        256,
+        2,
+        3,
+        cb,
+        5,
+        false,
+    )?;
+    assert!(matches!(
+        activator.activate_generation(
+            &mut tampered_pkg_v2,
+            &policy,
+            &auth,
+            TimestampNs(1_700_000_147_450),
+            false,
+        ),
+        Err(ModelAtpError::IntegrityOrRepairFailed(_))
+    ));
+
     // Binary wire codec round-trip (`FSSMATP1` v1).
     let wire = rb.to_canonical_bytes()?;
     assert_eq!(&wire[..8], &MODEL_ATP_RECEIPT_MAGIC);

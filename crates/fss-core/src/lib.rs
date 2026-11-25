@@ -30,6 +30,7 @@ mod continuation;
 mod contract;
 pub mod contract_basis;
 pub mod decision_card;
+pub mod decision_card_v1;
 mod delta;
 mod digest;
 pub mod durable;
@@ -105,7 +106,11 @@ pub use agent_operation::{
     admit_follow_read, admit_handoff, admit_query_read, advance_follow_cursor,
     classify_session_resume, orient_projection, require_reconciliation_before_retry,
 };
-pub use agent_query_plan::{AgentQueryPlan, QueryCompletenessRequested, QueryInterpretation};
+pub use agent_query_plan::{
+    AGENT_QUERY_PLAN_FORMAT_VERSION, AGENT_QUERY_PLAN_WIRE_MAGIC, AgentQueryPlan,
+    AgentQueryPlanCodecError, MAX_AGENT_QUERY_PLAN_WIRE_BYTES, QueryCompletenessRequested,
+    QueryInterpretation,
+};
 pub use agent_records::{
     AgentFinding, AttributionCauseClass, AttributionHypothesis, EpisodeOutcome,
     EpisodeOutcomeState, EpisodePrediction, EvidenceStrength, ExecutionEpisode, ExperienceCapsule,
@@ -168,6 +173,13 @@ pub use contract_basis::{
     is_hydration_contract_basis, negotiate_basis, negotiate_basis_with_superseded,
     reference_contract_basis, refuse_stale_anchor, registered_operation,
     superseded_registry_digests, validate_contract_basis,
+};
+pub use decision_card_v1::{
+    DECISION_CARD_CANONICAL_DOMAIN, DECISION_CARD_FORMAT_VERSION, DECISION_CARD_V1_SCHEMA,
+    DECISION_CARD_WIRE_MAGIC, DecisionAlternativeV1, DecisionCardError, DecisionCardGuidance,
+    DecisionCardV1, DecisionTimestampV1, EvidenceAnchorRecordV1, MAX_DECISION_ALTERNATIVES,
+    MAX_DECISION_CARD_WIRE_BYTES, MAX_DECISION_EVIDENCE_IDS, MAX_DECISION_LABEL_LEN,
+    MAX_DECISION_REASON_LEN, MAX_HARD_CONSTRAINTS, MAX_REJECTION_REASONS_PER_ALT,
 };
 pub use delta::{DeltaPriority, MeaningfulDelta, MeaningfulDeltaClass, SilenceCertificate};
 pub use digest::{ContentDigest, DigestAlgorithm, Sha256Hasher, sha256};

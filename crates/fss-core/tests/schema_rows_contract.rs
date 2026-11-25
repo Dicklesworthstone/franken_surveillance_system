@@ -19,9 +19,9 @@ use std::error::Error;
 const SCHEMAS_MD: &str = include_str!("../../../registries/SCHEMAS.md");
 const DIGEST_DOMAINS_MD: &str = include_str!("../../../registries/DIGEST_DOMAINS.md");
 
-/// The four rows this artifact anchors:
+/// The six rows this artifact anchors:
 /// (row id, schema name, file, authority, distinctive compat-rule text).
-const NORMATIVE_SCHEMA_ROWS: [(&str, &str, &str, &str, &str); 4] = [
+const NORMATIVE_SCHEMA_ROWS: [(&str, &str, &str, &str, &str); 6] = [
     (
         "SCHEMA-SENSOR-CAPSULE-001",
         "fss.sensor_capsule.v1",
@@ -49,6 +49,20 @@ const NORMATIVE_SCHEMA_ROWS: [(&str, &str, &str, &str, &str); 4] = [
         "schemas/acquisition_session_checkpoint.v1.json",
         "authority",
         "restoration requires trusted checkpoint + request digests",
+    ),
+    (
+        "SCHEMA-DECISION-CARD-001",
+        "fss.decision_card.v1",
+        "schemas/decision_card.v1.json",
+        "policy/evidence",
+        "hard constraints and alternatives retained; no silent rewrite",
+    ),
+    (
+        "SCHEMA-AGENT-QUERY-001",
+        "fss.agent_query_plan.v1",
+        "schemas/agent_query_plan.v1.json",
+        "query cognition",
+        "compiled interpretation, targets, authority, privacy, cost, and output view are reviewable and bounded",
     ),
 ];
 
@@ -124,6 +138,12 @@ fn rust_owner_types_declare_matching_schema_consts() {
         fss_core::acquisition::AcquisitionSession::CHECKPOINT_SCHEMA,
         "fss.acquisition.session_checkpoint.v1"
     );
+    assert_eq!(fss_core::DecisionCardV1::SCHEMA, "fss.decision_card.v1");
+    assert_eq!(
+        fss_core::EvidenceAnchorRecordV1::SCHEMA,
+        "fss.evidence_anchor.v1"
+    );
+    assert_eq!(fss_core::AgentQueryPlan::SCHEMA, "fss.agent_query_plan.v1");
 }
 
 #[test]
