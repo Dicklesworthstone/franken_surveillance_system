@@ -10,6 +10,11 @@ A camera becomes ready after two contiguous admitted frames from its current
 sensor, stream, and generation. The first usable frame is reported as a separate
 observation while coverage remains unobservable.
 
+An explicitly selected visual-degradation policy adds an independent hold and
+fresh-observation requirement. See
+[DAEMON_SENSOR_HEALTH.md](DAEMON_SENSOR_HEALTH.md) for enabling the policy,
+suspected-degradation findings, recovery, and continued source recording.
+
 Frames are rejected before ring admission if their sensor or generation is wrong,
 their stream identity changes within a generation, their sequence is zero or does
 not increase, or their host receive timestamp is before session acceptance,
@@ -42,6 +47,10 @@ backdate coverage across the preceding blind interval. This is acquisition
 readiness, not a complete persisted gap-interval model. Calibration, image
 quality, privacy, model operating envelope, and query coverage retain their own
 requirements; these witnesses alone do not establish event absence.
+
+Live AVC pictures retain their originating access unit and timestamps even when
+the codec delays or reorders output. The decode-order custody and EOF contract is
+described in [DAEMON_AVC_SOURCE_BINDING.md](DAEMON_AVC_SOURCE_BINDING.md).
 
 ## Regression checks
 

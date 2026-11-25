@@ -170,6 +170,30 @@ impl PerceptionEngine {
         Ok(())
     }
 
+    /// Drops a sensor's matching window and motion baseline after source or visual-health
+    /// exclusion. The pinned model and observations from other cameras remain resident.
+    pub(crate) fn invalidate_sensor(
+        &mut self,
+        entry: &crate::CameraManifestEntry,
+    ) -> Result<(), DaemonError> {
+        let (stream_order, priority) = self
+            .model_engine
+            .cascade()
+            .stream_metadata(&entry.sensor_id)?;
+        self.model_engine
+            .cascade_mut()
+            .register_stream(StreamRegistration {
+                sensor_id: entry.sensor_id.clone(),
+                stream_order,
+                priority,
+                dimensions: entry.dimensions,
+                ignore_regions: entry.osd_ignore_rects.clone(),
+            })?;
+        self.corroborator
+            .invalidate_camera(entry.sensor_id.as_str())?;
+        Ok(())
+    }
+
     /// Runs an explicit operator-triggered Stage-2 ML probe over the provided frames by forcing
     /// Stage-2 sentinel admission through the already-pinned `ResidentModelPool` (zero weight
     /// reloads) without mutating source custody bytes.

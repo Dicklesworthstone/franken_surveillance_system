@@ -304,6 +304,20 @@ impl ObservationWindow {
         self.per_camera.get(sensor_id).map_or(0, VecDeque::len)
     }
 
+    /// Removes all retained observations from one invalidated source. The watermark
+    /// remains monotonic; excluded observations cannot corroborate later camera frames.
+    pub fn invalidate_camera(&mut self, sensor_id: &str) -> usize {
+        let Some(entries) = self.per_camera.remove(sensor_id) else {
+            return 0;
+        };
+        let removed = entries.len();
+        for entry in entries {
+            self.present_digests.remove(&entry.digest);
+        }
+        self.total_count = self.total_count.saturating_sub(removed);
+        removed
+    }
+
     /// Returns the current monotonic watermark timestamp (ns), if initialized.
     #[must_use]
     pub const fn watermark_ns(&self) -> Option<i128> {

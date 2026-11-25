@@ -14,6 +14,8 @@ use crate::ReplayCx;
 
 /// Custody-verified screening of complete retained recording ranges.
 pub mod retained;
+/// Constant-memory screening for a strictly ordered live source generation.
+pub mod sequential;
 
 /// Immutable name of the only admitted reference screening policy.
 pub const POLICY_NAME: &str = "conservative-v1";
@@ -321,23 +323,23 @@ impl HealthScreen {
             - percentile(&histogram, (count * 5).div_ceil(100));
         let textured_before = predecessor.is_some_and(|p| p.textured);
         let dark_run = if dark {
-            predecessor.map_or(1, |p| p.dark_run + 1)
+            predecessor.map_or(1, |p| p.dark_run.saturating_add(1))
         } else {
             0
         };
         let bright_run = if bright {
-            predecessor.map_or(1, |p| p.bright_run + 1)
+            predecessor.map_or(1, |p| p.bright_run.saturating_add(1))
         } else {
             0
         };
         let contrast_run = if textured_before && contrast_span <= 2 {
-            predecessor.map_or(1, |p| p.contrast_run + 1)
+            predecessor.map_or(1, |p| p.contrast_run.saturating_add(1))
         } else {
             0
         };
         let repeated_frames = predecessor
             .filter(|p| p.observation.luma_digest == luma_digest)
-            .map_or(1, |p| p.observation.repeated_frames + 1);
+            .map_or(1, |p| p.observation.repeated_frames.saturating_add(1));
         let mut findings = Vec::new();
         if dark_run >= 3 {
             findings.push(HealthFinding::PersistentDarkField);

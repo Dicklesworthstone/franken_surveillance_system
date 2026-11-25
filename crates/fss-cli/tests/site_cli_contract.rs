@@ -17,6 +17,62 @@ use fss_reference::site::parse_manifest;
 
 type Test<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
+#[test]
+fn site_run_requires_explicit_exact_visual_health_policy() -> Test {
+    use fss_cli::{FssCommand, SiteCommand, parse_fss_args};
+    use fss_daemon::SensorHealthPolicy;
+
+    let command = parse_fss_args(
+        [
+            "site",
+            "run",
+            "--manifest",
+            "/tmp/site.json",
+            "--sensor-health",
+            "conservative-v1",
+        ]
+        .map(OsString::from),
+    )?;
+    let FssCommand::Site(site) = command else {
+        return Err("expected site command".into());
+    };
+    let SiteCommand::Run(run) = *site else {
+        return Err("expected site run".into());
+    };
+    assert_eq!(
+        run.sensor_health_policy,
+        Some(SensorHealthPolicy::ConservativeV1)
+    );
+    assert!(
+        parse_fss_args(
+            [
+                "site",
+                "run",
+                "--manifest",
+                "/tmp/site.json",
+                "--sensor-health",
+                "healthy",
+            ]
+            .map(OsString::from)
+        )
+        .is_err()
+    );
+    assert!(
+        parse_fss_args(
+            [
+                "site",
+                "run",
+                "--manifest",
+                "/tmp/site.json",
+                "--sensor-health",
+            ]
+            .map(OsString::from)
+        )
+        .is_err()
+    );
+    Ok(())
+}
+
 struct Directory(PathBuf);
 
 impl Directory {

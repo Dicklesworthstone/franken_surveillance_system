@@ -296,7 +296,7 @@ const SITE_VERBS: &[VerbSpec] = &[
         domain: "site",
         verb: "run",
         summary: "Run the always-on Asupersync-owned fss-daemon supervisor",
-        usage: "fss site run --manifest <site.json> [--root <deployment-dir>] [--vault-dir <dir> --passphrase-file <0600-file>] [--once-ticks <n>] [--tick-ms <n>] [--json] [--help]",
+        usage: "fss site run --manifest <site.json> [--root <deployment-dir>] [--vault-dir <dir> --passphrase-file <0600-file>] [--once-ticks <n>] [--tick-ms <n>] [--sensor-health conservative-v1] [--json] [--help]",
         backend: UnifiedBackend::InProcessSite,
         mutating: true,
         normalizes_preview: false,

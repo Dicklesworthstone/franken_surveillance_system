@@ -745,6 +745,7 @@
     "crates/fss-reference/src/ingest/sensor_health.rs": "support",
     "crates/fss-reference/src/ingest/sensor_health/long_tests.rs": "support",
     "crates/fss-reference/src/ingest/sensor_health/retained.rs": "support",
+    "crates/fss-reference/src/ingest/sensor_health/sequential.rs": "support",
     "crates/fss-reference/src/ingest/sensor_health/tests.rs": "support",
     "crates/fss-reference/src/ingest/site_calibration.rs": "support",
     "crates/fss-reference/src/ingest/source_coverage.rs": "support",

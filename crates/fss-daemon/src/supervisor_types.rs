@@ -13,6 +13,7 @@ use fss_pack::CapacityPressure;
 use fss_reference::ingest::live_corroborate::LiveCorroborationDecision;
 
 use crate::control::ControlStatusSnapshot;
+use crate::health::{CameraHealth, CameraHealthStatus, SensorHealthPolicy};
 use crate::manifest::{CameraManifestEntry, SiteManifest};
 use crate::perception::PerceptionConfig;
 use crate::regions::RegionShutdownProof;
@@ -36,6 +37,8 @@ pub struct DaemonStartConfig {
     pub principal: String,
     /// Live perception (`C3` + `C5` + `C8`) configuration.
     pub perception_config: PerceptionConfig,
+    /// Optional visual-degradation screen, independent of model inference.
+    pub sensor_health_policy: Option<SensorHealthPolicy>,
     /// Optional custom camera drivers keyed by `SensorId` (e.g., synthetic fault-injection drivers).
     pub custom_drivers: BTreeMap<SensorId, Box<dyn SensorDriver>>,
     /// Deterministic start timestamp in nanoseconds.
@@ -60,6 +63,7 @@ impl DaemonStartConfig {
             root_override: None,
             principal: "principal:local-daemon".to_owned(),
             perception_config: PerceptionConfig::default(),
+            sensor_health_policy: None,
             custom_drivers: BTreeMap::new(),
             started_at_ns: monotonic_wall_ns(),
             enable_ipc: true,
@@ -197,6 +201,8 @@ pub struct CameraRuntimeView {
     pub frames_decoded: u64,
     /// Current ring accounting stats.
     pub ring: RingStats,
+    /// Optional visual-screen state; clear does not independently certify coverage.
+    pub sensor_health: Option<CameraHealthStatus>,
 }
 
 pub(crate) struct CameraSlot {
@@ -214,6 +220,7 @@ pub(crate) struct CameraSlot {
     pub(crate) previous_frame: Option<(fss_core::StreamId, u64, i128)>,
     // Contiguous admitted samples since the latest source or retention gap, capped at two.
     pub(crate) continuity_frames: u8,
+    pub(crate) health: Option<CameraHealth>,
     pub(crate) last_frame_ns: i128,
     pub(crate) next_reconnect_ns: i128,
     pub(crate) reconnects: u64,

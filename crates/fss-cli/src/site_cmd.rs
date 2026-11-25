@@ -16,9 +16,9 @@ use std::time::Duration;
 use fss_core::PrincipalId;
 use fss_core::json_input::MAX_INPUT_BYTES;
 use fss_daemon::{
-    DaemonError, DaemonStartConfig, DaemonSupervisor, SiteManifest as DaemonSiteManifest,
-    query_live_daemon_status, render_live_status_json, render_stop_accepted_json,
-    request_live_daemon_stop,
+    DaemonError, DaemonStartConfig, DaemonSupervisor, SensorHealthPolicy,
+    SiteManifest as DaemonSiteManifest, query_live_daemon_status, render_live_status_json,
+    render_stop_accepted_json, request_live_daemon_stop,
 };
 use fss_reference::site::{MAX_SITE_SOURCES, SiteManifest, parse_manifest, parse_probe_receipts};
 
@@ -52,6 +52,8 @@ pub struct SiteRunArgs {
     pub once_ticks: Option<u64>,
     /// Inter-tick poll interval in milliseconds (default `50`).
     pub tick_ms: u64,
+    /// Optional fixed visual-degradation policy; clear measurements never certify coverage.
+    pub sensor_health_policy: Option<SensorHealthPolicy>,
     /// Emit structured JSON output instead of human-readable text.
     pub json: bool,
 }
@@ -713,6 +715,7 @@ fn parse_site_run_args(tokens: &[ArgToken]) -> Result<SiteRunArgs, CliError> {
             "--passphrase-file",
             "--once-ticks",
             "--tick-ms",
+            "--sensor-health",
         ],
     )?;
     let cmd = Some("site run".to_owned());
@@ -733,6 +736,18 @@ fn parse_site_run_args(tokens: &[ArgToken]) -> Result<SiteRunArgs, CliError> {
         .map(|(raw, i)| parse_u64_flag(&raw, "--tick-ms", i, &cmd, false))
         .transpose()?
         .unwrap_or(50);
+    let sensor_health_policy = opts
+        .remove("--sensor-health")
+        .map(|(value, index)| {
+            SensorHealthPolicy::parse(&value).map_err(|_| CliError::MalformedValue {
+                option: "--sensor-health".to_owned(),
+                value,
+                reason: "expected conservative-v1".to_owned(),
+                command: cmd.clone(),
+                index,
+            })
+        })
+        .transpose()?;
     Ok(SiteRunArgs {
         manifest,
         root: opts.remove("--root").map(|(v, _)| PathBuf::from(v)),
@@ -742,6 +757,7 @@ fn parse_site_run_args(tokens: &[ArgToken]) -> Result<SiteRunArgs, CliError> {
             .map(|(v, _)| PathBuf::from(v)),
         once_ticks,
         tick_ms,
+        sensor_health_policy,
         json,
     })
 }
@@ -796,6 +812,7 @@ fn execute_site_run(args: &SiteRunArgs) -> (String, ExitIdentity) {
     cfg.root_override = args.root.clone();
     cfg.vault_dir = args.vault_dir.clone();
     cfg.vault_passphrase_file = args.passphrase_file.clone();
+    cfg.sensor_health_policy = args.sensor_health_policy;
     let sup = match DaemonSupervisor::start(cfg) {
         Ok(s) => s,
         Err(e) => return daemon_error_response(&e, "site run", args.json),

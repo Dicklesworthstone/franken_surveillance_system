@@ -462,6 +462,17 @@ impl DaemonRegionTree {
         &self.tree
     }
 
+    /// Binds pure synchronous visual measurement work to the existing process owner.
+    /// Cancellation or an invalid/finalized region fails closed before the next row.
+    pub(crate) fn sensor_health_checkpoint(
+        &self,
+    ) -> Result<(), fss_reference::ingest::sensor_health::HealthError> {
+        match self.process_cx.is_cancel_requested(&self.tree) {
+            Ok(false) => Ok(()),
+            Ok(true) | Err(_) => Err(fss_reference::ingest::sensor_health::HealthError::Cancelled),
+        }
+    }
+
     /// Borrows the storage packfile [`AuthorityCx`] for `PackStore`/`BackgroundScrubber` calls.
     #[must_use]
     pub const fn storage_pack_cx(&self) -> &AuthorityCx {
@@ -816,5 +827,36 @@ fn sanitize_id_part(raw: &str) -> String {
         "site".to_owned()
     } else {
         out
+    }
+}
+
+#[cfg(test)]
+mod sensor_health_tests {
+    use super::*;
+    use fss_reference::ingest::sensor_health::HealthError;
+
+    #[test]
+    fn pure_health_work_stops_at_parent_cancellation() -> Result<(), DaemonError> {
+        let manifest = SiteManifest::parse_json(
+            r#"{
+            "schema":"fss.site_manifest.v1","site_id":"site-health-cancel",
+            "deployment_root":"/tmp/fss-health-cancel",
+            "cameras":[{"sensor_id":"sensor:health-cancel","adapter":"synthetic",
+                "endpoint":"synthetic://health-cancel","zone_id":"yard",
+                "dimensions":[32,32],"failure_domains":["power:health-cancel"]}]
+        }"#,
+        )?;
+        let mut regions =
+            DaemonRegionTree::initialize(&manifest, "principal:health-contract", TimestampNs(100))?;
+        assert_eq!(regions.sensor_health_checkpoint(), Ok(()));
+        regions.request_shutdown(TimestampNs(101))?;
+        assert_eq!(
+            regions.sensor_health_checkpoint(),
+            Err(HealthError::Cancelled)
+        );
+        let proof = regions.drain_and_finalize(TimestampNs(102))?;
+        assert_eq!(proof.active_tasks, 0);
+        assert_eq!(proof.leaked_obligations, 0);
+        Ok(())
     }
 }

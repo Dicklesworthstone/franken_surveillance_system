@@ -6,6 +6,7 @@
 pub mod control;
 mod control_client;
 pub mod error;
+pub mod health;
 pub mod manifest;
 mod manifest_parse;
 pub mod perception;
@@ -33,6 +34,9 @@ pub use error::{
     ERR_DAEMON_MANIFEST_INVALID_001, ERR_DAEMON_PERCEPTION_001, ERR_DAEMON_REGION_ERROR_001,
     ERR_DAEMON_SECRET_IN_MANIFEST_001, ERR_DAEMON_SHUTDOWN_001, ERR_DAEMON_STORAGE_001,
     ERR_DAEMON_UNKNOWN_CAMERA_001, ERR_DAEMON_VAULT_001,
+};
+pub use health::{
+    CameraHealthStatus, SENSOR_HEALTH_CLEAR_FRAMES, SensorHealthPolicy, SensorHealthState,
 };
 pub use manifest::{
     CameraAdapterKind, CameraManifestEntry, DAEMON_SITE_MANIFEST_DOMAIN, DEFAULT_CAMERA_DIMENSIONS,

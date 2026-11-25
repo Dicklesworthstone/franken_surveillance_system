@@ -56,6 +56,10 @@ impl DaemonSupervisor {
                         slot.state = SensorState::Stopped;
                         slot.previous_frame = None;
                         slot.continuity_frames = 0;
+                        if let Some(health) = &mut slot.health {
+                            health.reset();
+                        }
+                        self.perception.invalidate_sensor(&slot.entry)?;
                         slot.active_gaps = slot.active_gaps.saturating_add(1);
                         let zone = slot.entry.primary_zone.clone();
                         let last = TimestampNs(slot.last_frame_ns);
@@ -312,6 +316,10 @@ impl DaemonSupervisor {
         for sid in &targets {
             if let Some(slot) = self.sensors.get(sid)
                 && let Some(frame) = slot.ring.latest()
+                && slot
+                    .health
+                    .as_ref()
+                    .is_none_or(|health| health.admits_frame(&frame))
             {
                 probe_batch.push(frame);
             }
@@ -324,7 +332,9 @@ impl DaemonSupervisor {
                 head.history_root,
                 MeaningfulDeltaClass::SensorHealth,
                 DeltaPriority::Normal,
-                format!("probe_detect_unavailable target={label} reason=no_buffered_frames"),
+                format!(
+                    "probe_detect_unavailable target={label} reason=no_admissible_buffered_frames"
+                ),
             );
             return Ok(());
         }
@@ -408,6 +418,10 @@ impl DaemonSupervisor {
             let mut recovery_ev: Option<(String, TimestampNs)> = None;
             let mut source_gap_ev: Option<(String, TimestampNs, u32)> = None;
             let mut shed_ev: Option<(u64, String, TimestampNs, u32, ResourcePressure)> = None;
+            // At most one transition per poll, bounded by the camera's 128-poll limit.
+            // Retain every boundary; bursts must not overwrite earlier hold evidence.
+            let mut health_events = Vec::new();
+            let mut invalidate_perception = false;
 
             if let Some(slot) = self.sensors.get_mut(sid) {
                 if slot.state == SensorState::GapBackoff && now_ns >= slot.next_reconnect_ns {
@@ -418,6 +432,10 @@ impl DaemonSupervisor {
                             slot.state = SensorState::Connecting;
                             slot.previous_frame = None;
                             slot.continuity_frames = 0;
+                            if let Some(health) = &mut slot.health {
+                                health.reset();
+                            }
+                            invalidate_perception = true;
                             slot.last_frame_ns = now_ns;
                             slot.active_gaps = slot.active_gaps.max(1);
                             slot.peak_concurrent_sessions = slot
@@ -427,11 +445,8 @@ impl DaemonSupervisor {
                             slot.ingest_cursor.reset_for_generation(next_gen);
                             slot.perception_cursor.reset_for_generation(next_gen);
                             slot.preview_cursor.reset_for_generation(next_gen);
-                            reconnect_ev = Some((
-                                next_gen,
-                                slot.entry.primary_zone.clone(),
-                                slot.active_gaps,
-                            ));
+                            reconnect_ev =
+                                Some((next_gen, slot.entry.primary_zone.clone(), slot.active_gaps));
                         }
                         Err(_) => {
                             let delay_ms = slot.backoff.next_delay_ms();
@@ -466,6 +481,10 @@ impl DaemonSupervisor {
                                     slot.state = SensorState::GapBackoff;
                                     slot.previous_frame = None;
                                     slot.continuity_frames = 0;
+                                    if let Some(health) = &mut slot.health {
+                                        health.reset();
+                                    }
+                                    invalidate_perception = true;
                                     slot.active_gaps = slot.active_gaps.saturating_add(1);
                                     slot.reconnects = slot.reconnects.saturating_add(1);
                                     let delay_ms = slot.backoff.next_delay_ms();
@@ -492,11 +511,8 @@ impl DaemonSupervisor {
                                     },
                                 );
                                 let received_ns = frame.host_receive_ns;
-                                slot.previous_frame = Some((
-                                    frame.stream_id.clone(),
-                                    frame.sequence,
-                                    received_ns,
-                                ));
+                                slot.previous_frame =
+                                    Some((frame.stream_id.clone(), frame.sequence, received_ns));
                                 slot.peak_concurrent_sessions = slot
                                     .peak_concurrent_sessions
                                     .max(slot.driver.active_session_count());
@@ -505,12 +521,35 @@ impl DaemonSupervisor {
                                 slot.last_ingest_lag_ms =
                                     u64::try_from(lag_ns / 1_000_000).unwrap_or(u64::MAX);
                                 out.frames_received = out.frames_received.saturating_add(1);
+                                if let Some(health) = &mut slot.health
+                                    && let Some(transition) =
+                                        health.observe(&frame, contiguous, || {
+                                            self.regions.sensor_health_checkpoint()
+                                        })
+                                {
+                                    if transition.held {
+                                        slot.state = SensorState::Connecting;
+                                        slot.active_gaps = slot.active_gaps.max(1);
+                                        recovery_ev = None;
+                                        invalidate_perception = true;
+                                    }
+                                    health_events.push((
+                                        transition,
+                                        slot.entry.primary_zone.clone(),
+                                        TimestampNs(received_ns),
+                                        slot.active_gaps,
+                                    ));
+                                }
                                 let push = slot.ring.push(frame);
                                 if push.shed_frames > 0 {
                                     out.frames_shed =
                                         out.frames_shed.saturating_add(push.shed_frames);
                                     slot.state = SensorState::Connecting;
                                     slot.continuity_frames = 0;
+                                    if let Some(health) = &mut slot.health {
+                                        health.reset();
+                                    }
+                                    invalidate_perception = true;
                                     recovery_ev = None;
                                     slot.active_gaps = slot.active_gaps.saturating_add(1);
                                     shed_ev = Some((
@@ -527,6 +566,7 @@ impl DaemonSupervisor {
                                         1
                                     };
                                     if had_frame && !contiguous {
+                                        invalidate_perception = true;
                                         slot.state = SensorState::Connecting;
                                         recovery_ev = None;
                                         slot.active_gaps = slot.active_gaps.saturating_add(1);
@@ -538,6 +578,10 @@ impl DaemonSupervisor {
                                     } else if slot.continuity_frames >= 2
                                         && slot.state == SensorState::Connecting
                                         && shed_ev.is_none()
+                                        && slot
+                                            .health
+                                            .as_ref()
+                                            .is_none_or(|health| health.allows_coverage())
                                     {
                                         slot.state = SensorState::Streaming;
                                         slot.active_gaps = 0;
@@ -562,6 +606,10 @@ impl DaemonSupervisor {
                                     slot.state = SensorState::GapBackoff;
                                     slot.previous_frame = None;
                                     slot.continuity_frames = 0;
+                                    if let Some(health) = &mut slot.health {
+                                        health.reset();
+                                    }
+                                    invalidate_perception = true;
                                     slot.active_gaps = slot.active_gaps.saturating_add(1);
                                     slot.reconnects = slot.reconnects.saturating_add(1);
                                     let delay_ms = slot.backoff.next_delay_ms();
@@ -581,6 +629,10 @@ impl DaemonSupervisor {
                                 slot.state = SensorState::GapBackoff;
                                 slot.previous_frame = None;
                                 slot.continuity_frames = 0;
+                                if let Some(health) = &mut slot.health {
+                                    health.reset();
+                                }
+                                invalidate_perception = true;
                                 slot.active_gaps = slot.active_gaps.saturating_add(1);
                                 slot.reconnects = slot.reconnects.saturating_add(1);
                                 let delay_ms = slot.backoff.next_delay_ms();
@@ -597,6 +649,10 @@ impl DaemonSupervisor {
                         }
                     }
                 }
+            }
+
+            if invalidate_perception && let Some(slot) = self.sensors.get(sid) {
+                self.perception.invalidate_sensor(&slot.entry)?;
             }
 
             if let Some((generation, zone, gaps)) = reconnect_ev {
@@ -646,6 +702,39 @@ impl DaemonSupervisor {
                     format!("source_continuity_gap sensor={}", sid.as_str()),
                 );
                 out.coverage_gaps_emitted = out.coverage_gaps_emitted.saturating_add(1);
+            }
+
+            let health_transition_observed = !health_events.is_empty();
+            for (transition, zone, last_seen, gaps) in health_events {
+                // A clear measurement only releases this screen's hold. Keep coverage
+                // withheld until the final continuity check below, so a later loss in
+                // this same poll can never emit a transient Covered recovery.
+                let receipt = self.storage.commit_health_coverage_and_liveness(
+                    sid,
+                    &zone,
+                    CoverageStatus::NotObservable,
+                    SensorLivenessStatus::Degraded,
+                    gaps,
+                    u32::from(transition.held),
+                    last_seen,
+                    now,
+                    &transition.evidence,
+                    self.regions.storage_ledger_cx(),
+                    self.regions.region_tree(),
+                )?;
+                self.broadcast_delta(
+                    receipt.commit_sequence,
+                    receipt.batch_digest,
+                    if transition.held { MeaningfulDeltaClass::CoverageLoss } else { MeaningfulDeltaClass::SensorHealth },
+                    if transition.held { DeltaPriority::High } else { DeltaPriority::Normal },
+                    format!(
+                        "sensor_visual_screen sensor={} policy=conservative-v1 held={} reason={} clear_does_not_certify_coverage",
+                        sid.as_str(), transition.held, transition.reason
+                    ),
+                );
+                if transition.held {
+                    out.coverage_gaps_emitted = out.coverage_gaps_emitted.saturating_add(1);
+                }
             }
 
             let readiness_blocked = shed_ev.is_some() || disconnect_ev.is_some();
@@ -722,17 +811,39 @@ impl DaemonSupervisor {
                         // Accepted transport alone must not erase repeated no-frame failures.
                         slot.backoff.reset();
                     }
-                    let receipt = self.storage.commit_coverage_and_liveness(
-                        sid,
-                        &zone,
-                        CoverageStatus::Covered,
-                        SensorLivenessStatus::Online,
-                        0,
-                        observed_at,
-                        observed_at,
-                        self.regions.storage_ledger_cx(),
-                        self.regions.region_tree(),
-                    )?;
+                    let health_evidence = self
+                        .sensors
+                        .get(sid)
+                        .and_then(|slot| slot.health.as_ref())
+                        .and_then(|health| health.evidence())
+                        .map(<[u8]>::to_vec);
+                    let receipt = if let Some(evidence) = health_evidence {
+                        self.storage.commit_health_coverage_and_liveness(
+                            sid,
+                            &zone,
+                            CoverageStatus::Covered,
+                            SensorLivenessStatus::Online,
+                            0,
+                            0,
+                            observed_at,
+                            observed_at,
+                            &evidence,
+                            self.regions.storage_ledger_cx(),
+                            self.regions.region_tree(),
+                        )?
+                    } else {
+                        self.storage.commit_coverage_and_liveness(
+                            sid,
+                            &zone,
+                            CoverageStatus::Covered,
+                            SensorLivenessStatus::Online,
+                            0,
+                            observed_at,
+                            observed_at,
+                            self.regions.storage_ledger_cx(),
+                            self.regions.region_tree(),
+                        )?
+                    };
                     self.broadcast_delta(
                         receipt.commit_sequence,
                         receipt.batch_digest,
@@ -741,25 +852,51 @@ impl DaemonSupervisor {
                         format!("sensor_continuity_observed sensor={}", sid.as_str()),
                     );
                 } else if !source_gap_observed
+                    && !health_transition_observed
                     && let Some((zone, observed_at, gaps)) = first_frame_ev
                 {
-                    let receipt = self.storage.commit_coverage_and_liveness(
-                        sid,
-                        &zone,
-                        CoverageStatus::NotObservable,
-                        SensorLivenessStatus::Degraded,
-                        gaps,
-                        observed_at,
-                        observed_at,
-                        self.regions.storage_ledger_cx(),
-                        self.regions.region_tree(),
-                    )?;
+                    let health_evidence = self
+                        .sensors
+                        .get(sid)
+                        .and_then(|slot| slot.health.as_ref())
+                        .and_then(|health| health.evidence())
+                        .map(<[u8]>::to_vec);
+                    let receipt = if let Some(evidence) = health_evidence {
+                        self.storage.commit_health_coverage_and_liveness(
+                            sid,
+                            &zone,
+                            CoverageStatus::NotObservable,
+                            SensorLivenessStatus::Degraded,
+                            gaps,
+                            1,
+                            observed_at,
+                            observed_at,
+                            &evidence,
+                            self.regions.storage_ledger_cx(),
+                            self.regions.region_tree(),
+                        )?
+                    } else {
+                        self.storage.commit_coverage_and_liveness(
+                            sid,
+                            &zone,
+                            CoverageStatus::NotObservable,
+                            SensorLivenessStatus::Degraded,
+                            gaps,
+                            observed_at,
+                            observed_at,
+                            self.regions.storage_ledger_cx(),
+                            self.regions.region_tree(),
+                        )?
+                    };
                     self.broadcast_delta(
                         receipt.commit_sequence,
                         receipt.batch_digest,
                         MeaningfulDeltaClass::SensorHealth,
                         DeltaPriority::Normal,
-                        format!("sensor_first_frame sensor={} awaiting_continuity", sid.as_str()),
+                        format!(
+                            "sensor_first_frame sensor={} awaiting_continuity",
+                            sid.as_str()
+                        ),
                     );
                 }
             }
@@ -778,7 +915,13 @@ impl DaemonSupervisor {
                 let Some(slot) = self.sensors.get_mut(sid) else {
                     continue;
                 };
-                let (perc_frames, _) = slot.ring.read_for_cursor(&mut slot.perception_cursor, 8);
+                let (mut perc_frames, _) =
+                    slot.ring.read_for_cursor(&mut slot.perception_cursor, 8);
+                if let Some(health) = &slot.health {
+                    perc_frames.retain(|frame| {
+                        slot.state == SensorState::Streaming && health.admits_frame(frame)
+                    });
+                }
                 slot.frames_decoded = slot.frames_decoded.saturating_add(perc_frames.len() as u64);
                 perception_batch.extend(perc_frames);
                 let _ = slot.ring.read_for_cursor(&mut slot.preview_cursor, 16);

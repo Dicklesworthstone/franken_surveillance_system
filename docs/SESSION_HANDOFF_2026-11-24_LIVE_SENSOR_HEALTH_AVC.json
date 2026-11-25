@@ -1,0 +1,132 @@
+{
+  "format": "engineering-session-handoff",
+  "date": "2026-11-24",
+  "date_timezone": "America/New_York",
+  "mission": "Implement consequential remaining functionality from the comprehensive plan and beads, committing meaningful increments directly to main through the authorized GitHub connector without PRs.",
+  "basis": {
+    "started_at": "2ba62548d94208c8a626d1d74b98e7f2b253fe69",
+    "plan": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+    "backlog": ".beads/issues.jsonl",
+    "priority_findings": [
+      "Advancing source sequences could establish usable coverage even when decoded images were frozen, persistently clipped, or otherwise degraded; existing fixed health screening was not integrated into live daemon admission.",
+      "The RTSP driver assigned delayed or reordered AVC pictures the bytes, digest and timestamp of the access unit that released them, and discarded delayed output at EOF."
+    ],
+    "requirements_advanced": [
+      "fss-x4a.5.58.3 / NS-3",
+      "fss-x4a.30.1.16 / INV-016",
+      "INV-003",
+      "INV-004",
+      "INV-005"
+    ],
+    "bead_disposition": "Broad proof and qualification beads remain open. Live implementation advances are not a claim that every physical-camera or absence-evidence requirement has been qualified.",
+    "concurrent_main_preserved": [
+      "844f5449cf5e13de5228600fe9529261e0ac6a1d",
+      "762c336d6682af0cc6d9386fadcef45d739562da"
+    ]
+  },
+  "delivered": [
+    {
+      "commit": "648541141612b34f0f7d356d9fb6bb6400ba4086",
+      "feature": "Atomic retained health transition evidence",
+      "behavior": "Bounded receipts are packed in the same publication as paired coverage/liveness deltas, both naming the exact receipt digest. Empty/oversized evidence is refused before publication; existing unscreened request identity is preserved."
+    },
+    {
+      "commit": "05737a3bcf1574cd60be2a6cc3cec59268f0356d",
+      "feature": "Original AVC source binding, decode-order custody, and clean EOF drain",
+      "operator_guide": "docs/DAEMON_AVC_SOURCE_BINDING.md",
+      "behavior": "Native decode indexes join each picture to original access-unit bytes, digest, RTP PTS and host receipt. Bounded decode-order emission keeps the archive independently decodable. Clean EOF drains accepted input and delayed pictures; malformed/ambiguous/lost input explicitly closes the generation."
+    },
+    {
+      "commit": "the commit containing this handoff",
+      "feature": "Opt-in live visual-degradation coverage and perception holds",
+      "operator_guide": "docs/DAEMON_SENSOR_HEALTH.md",
+      "behavior": "The existing conservative-v1 screen runs independently of inference. Findings and refusals withhold coverage and cognition while source recording continues. Eight fresh clear measurements and independent continuity are required for recovery. Old camera observations are invalidated, excluded buffered frames cannot re-enter cognition, and each same-poll health transition retains an ordered receipt. Parent cancellation and fixed work/memory limits remain explicit."
+    }
+  ],
+  "authority": {
+    "repository": "Direct-main commits explicitly authorized; reference updates use observed expected heads with force=false. Concurrent commits were merged and preserved.",
+    "runtime": "No new independent authority root. Pure measurement checks existing process cancellation; publication uses existing storage authority. The visual policy remains explicit opt-in.",
+    "network": "No real camera, vendor cloud, or device-management operation was performed. The actual-driver loopback regression was authored but not executed.",
+    "release": "No dependency features, toolchain pins, qualification gates, or release claims were weakened. No additional dependencies were introduced."
+  },
+  "validation": {
+    "pinned_toolchain": "nightly-2026-08-31; rustc 1.100.0-nightly (908501772 2026-08-30)",
+    "native_avc_helper": {
+      "result": "6 passed, 0 failed",
+      "build_seconds": 20.49,
+      "test_seconds": 0.30,
+      "scope": "Exact production avc_decode.rs and its six helper tests with real fss-core, fss-packet and fss-codec-h264 path dependencies. Real checked-in B-pyramid and multislice fixtures. No mocked codec or packet behavior.",
+      "helper_sha256": "ebfc60bf3a97426075304db0d8302f1465b05b57226aac17c9e92793a1136709",
+      "normalized_test_sha256": "ca7fd36a8948e10e50b31b0ff9cce99ee8f70cc5b2e646f572d4bbc881f621fb",
+      "harness_changes": "Only the daemon-dependent network test submodule was omitted and fixture include paths were made absolute in a temporary harness. Production files were unchanged.",
+      "cases": [
+        "Real B-picture pixel/source/PTS/receive-time association and independent archive replay",
+        "Incomplete marked multislice refusal",
+        "IDR prior-picture discard versus ordinary draining",
+        "EOF tail native completeness verification",
+        "Picture loss versus parameter-only retirement",
+        "Source time reversal and pending-byte admission bound"
+      ]
+    },
+    "native_daemon": {
+      "status": "blocked_before_changed_daemon_targets",
+      "result": "Repeated rustc SIGKILL during unchanged upstream asupersync 0.5.0 compilation; first full-test build also hit SIGKILL in fss-core. No successful changed-daemon typecheck or integration-test execution.",
+      "final_attempt": "cargo check --locked --offline -p fss-daemon --all-targets",
+      "final_attempt_seconds": 99.06,
+      "final_attempt_max_child_rss_kib": 935824,
+      "settings": "One Cargo worker, debug info disabled, incremental disabled, exact pinned compiler and dependencies; final attempt additionally used -Zthreads=1 -Zmir-opt-level=0 --jobs-backend=1.",
+      "environment": "Shared memory and disk pressure caused executor disconnects. Builds were moved to disk-backed cache/target storage; the executor recovered, but the Asupersync boundary remained blocked. Visible limits did not expose a confirmable hard memory cap.",
+      "not_executed": [
+        "Actual-daemon AVC loopback regression",
+        "Eight new daemon sensor-health contracts",
+        "Two new storage health-receipt contracts",
+        "Three sequential health-screen unit tests",
+        "Parent cancellation unit test",
+        "Corroborator invalidation regression",
+        "CLI sensor-health parser regression"
+      ]
+    },
+    "static_review": [
+      "Pinned rustfmt on changed Rust files and whitespace checks.",
+      "Full semantic-plane checker passed after registering the sequential screen alongside the existing support-classified policy modules.",
+      "Independent review against actual API definitions, ownership, cancellation, codec semantics and test fixtures.",
+      "Identified and repaired same-poll health-transition coalescing before publication.",
+      "Reviewed receipt protection through normal retention and compaction.",
+      "Staged layered SHA-256 integrity checks accompany each commit."
+    ],
+    "repository_integrity": {
+      "changed_paths": "Staged layered integrity checks passed for all changed paths.",
+      "full_audit": "Failed on pre-existing baseline evidence/proof artifacts, not the changed source paths.",
+      "baseline_digest_mismatches": 13,
+      "baseline_missing_paths": 2478,
+      "scope": "All thirteen mismatched evidence files were compared byte-for-byte with committed HEAD and are unchanged. Missing baseline entries are under evidence/ and proofs/. Their recorded integrity claims were not rewritten or silently repaired."
+    },
+    "hosted_actions": "Push-triggered runs were queued or pending at last observation; no passing hosted Rust result was used as qualification evidence."
+  },
+  "obligations": [
+    {
+      "state": "pending",
+      "action": "Compile the changed daemon, reference and CLI targets and execute all new integration contracts on a runner that can compile the unchanged Asupersync dependency."
+    },
+    {
+      "state": "pending",
+      "action": "Retain repository-owned DSR and physical-camera qualification before upgrading live interoperability, optical screening or release claims."
+    }
+  ],
+  "continuations": [
+    "bash scripts/check_daemon_contracts.sh",
+    "cargo test --locked --offline -p fss-reference --lib ingest::sensor_health::sequential",
+    "cargo test --locked --offline -p fss-reference --test live_corroborate_contract invalidat",
+    "cargo test --locked --offline -p fss-cli --test site_cli_contract sensor_health"
+  ],
+  "unknowns": [
+    "Full daemon/reference/CLI native typechecking and the authored integration tests remain unverified.",
+    "Conservative optical findings can describe legitimate static or dark scenes; the screen does not prove tampering, health, visibility, or event absence.",
+    "Real-camera, platform, resource-soak and release qualification remain outside this session's successful native proof."
+  ],
+  "valid_next_affordances": [
+    "Review the direct-main commits and operator guides.",
+    "Execute the pending native contracts without weakening dependencies or gates.",
+    "Continue the open NS-3 and INV-016 proof obligations from current main."
+  ]
+}

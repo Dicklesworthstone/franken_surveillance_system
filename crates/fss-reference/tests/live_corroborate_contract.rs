@@ -77,6 +77,81 @@ fn obs(
 }
 
 #[test]
+fn invalidated_camera_tracks_and_clock_cannot_match_later_observations()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut topology = SiteTopologyRegistry::new("site:health-invalidation");
+    for sensor in ["sensor:health-a", "sensor:health-b"] {
+        topology.register_camera(CameraTopologyEntry {
+            sensor_id: sensor.to_owned(),
+            failure_domains: domains(&[sensor]),
+            homography: Some(identity_homography(2.0)),
+            zones: domains(&["yard"]),
+        });
+    }
+    let mut engine =
+        LiveCorroborationEngine::new(topology, LiveCorroborationConfig::default_config()?)?;
+    let sample = ClockObservationSample {
+        media_pts_ns: 1_000_000,
+        host_receive_ns: 2_000_000,
+        rtt_jitter_ns: 10_000,
+        node_clock_uncertainty_ns: 1_000,
+    };
+    let capture_a = engine.observe_clock_sample("sensor:health-a", sample)?;
+    let capture_b = engine.observe_clock_sample("sensor:health-b", sample)?;
+    engine.ingest_observation(obs(
+        "sensor:health-a",
+        "yard",
+        1,
+        Some([1.0, 1.0]),
+        950_000,
+        capture_a,
+        b"health-a",
+    ))?;
+    engine.ingest_observation(obs(
+        "sensor:health-b",
+        "yard",
+        2,
+        Some([1.0, 1.0]),
+        950_000,
+        capture_b,
+        b"health-b",
+    ))?;
+    assert_eq!(engine.window_len(), 2);
+    assert_eq!(engine.invalidate_camera("sensor:health-a")?, 1);
+    assert_eq!(engine.window_len(), 1);
+    assert_eq!(
+        engine
+            .clock_estimator("sensor:health-a")
+            .ok_or("missing clock")?
+            .sample_count(),
+        0
+    );
+    assert_eq!(
+        engine
+            .clock_estimator("sensor:health-b")
+            .ok_or("missing clock")?
+            .sample_count(),
+        1
+    );
+    assert!(
+        engine
+            .ingest_observation(obs(
+                "sensor:health-b",
+                "yard",
+                3,
+                Some([1.0, 1.0]),
+                950_000,
+                capture_b,
+                b"health-b-later"
+            ))?
+            .is_empty()
+    );
+    assert!(engine.invalidate_camera("sensor:unknown").is_err());
+    assert_eq!(engine.window_len(), 2);
+    Ok(())
+}
+
+#[test]
 fn scenario_a_wyze_and_unifi_independent_clusters_corroborate_under_10ms()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut topology = SiteTopologyRegistry::new("site:live-scenario-a");

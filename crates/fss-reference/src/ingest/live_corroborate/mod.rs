@@ -255,6 +255,18 @@ impl LiveCorroborationEngine {
     pub const fn window_len(&self) -> usize {
         self.window.len()
     }
+
+    /// Invalidates a camera after a health hold, source gap, or generation change.
+    /// Other cameras retain their observations; clock estimation restarts with fresh
+    /// samples, and excluded old tracks cannot match future observations.
+    pub fn invalidate_camera(&mut self, sensor_id: &str) -> Result<usize, LiveCorroborateError> {
+        let clock = self
+            .clocks
+            .get_mut(sensor_id)
+            .ok_or_else(|| LiveCorroborateError::UnknownCamera(sensor_id.to_owned()))?;
+        *clock = CameraClockEstimator::new(sensor_id.to_owned(), self.config.clock)?;
+        Ok(self.window.invalidate_camera(sensor_id))
+    }
     /// Returns the bounded ring buffer of structured JSONL audit trace records.
     #[must_use]
     pub const fn recent_traces(&self) -> &VecDeque<String> {

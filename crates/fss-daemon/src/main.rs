@@ -10,8 +10,9 @@ use std::time::Duration;
 
 use fss_core::PrincipalId;
 use fss_daemon::{
-    DaemonStartConfig, DaemonSupervisor, SiteManifest, escape_json, query_live_daemon_status,
-    render_live_status_json, render_stop_accepted_json, request_live_daemon_stop,
+    DaemonStartConfig, DaemonSupervisor, SensorHealthPolicy, SiteManifest, escape_json,
+    query_live_daemon_status, render_live_status_json, render_stop_accepted_json,
+    request_live_daemon_stop,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -53,6 +54,7 @@ fn run_cmd(args: &[String]) -> ExitCode {
     let mut vault_passphrase_file: Option<PathBuf> = None;
     let mut once_ticks: Option<u64> = None;
     let mut tick_ms: u64 = 50;
+    let mut sensor_health_policy = None;
     let mut json = false;
 
     let mut idx = 0_usize;
@@ -119,6 +121,20 @@ fn run_cmd(args: &[String]) -> ExitCode {
                 };
                 once_ticks = Some(val);
             }
+            "--sensor-health" => {
+                idx += 1;
+                let Some(value) = args.get(idx) else {
+                    return fail_json(
+                        json,
+                        "ERR-DAEMON-MANIFEST-INVALID-001",
+                        "missing --sensor-health policy",
+                    );
+                };
+                sensor_health_policy = match SensorHealthPolicy::parse(value) {
+                    Ok(policy) => Some(policy),
+                    Err(error) => return fail_json(json, error.error_id(), &error.to_string()),
+                };
+            }
             "--tick-ms" => {
                 idx += 1;
                 let Some(val) = args.get(idx).and_then(|s| s.parse::<u64>().ok()) else {
@@ -158,6 +174,7 @@ fn run_cmd(args: &[String]) -> ExitCode {
     cfg.root_override = root_override;
     cfg.vault_dir = vault_dir;
     cfg.vault_passphrase_file = vault_passphrase_file;
+    cfg.sensor_health_policy = sensor_health_policy;
     let supervisor = match DaemonSupervisor::start(cfg) {
         Ok(s) => s,
         Err(err) => return fail_json(json, err.error_id(), &err.to_string()),
@@ -297,5 +314,5 @@ fn fail_json(json: bool, error_id: &str, message: &str) -> ExitCode {
 }
 
 const fn help_text() -> &'static str {
-    "fss-daemon — Always-on Asupersync-owned multi-camera supervisor\n\nUSAGE:\n  fss-daemon run --manifest <site.json> [--root <deploy>] [--once-ticks <N>] [--tick-ms <N>] [--json]\n  fss-daemon status --root <deploy> [--site-id <id>] [--json]\n  fss-daemon stop --root <deploy> [--site-id <id>] [--json]\n  fss-daemon version\n  fss-daemon help"
+    "fss-daemon — Always-on Asupersync-owned multi-camera supervisor\n\nUSAGE:\n  fss-daemon run --manifest <site.json> [--root <deploy>] [--once-ticks <N>] [--tick-ms <N>] [--sensor-health conservative-v1] [--json]\n  fss-daemon status --root <deploy> [--site-id <id>] [--json]\n  fss-daemon stop --root <deploy> [--site-id <id>] [--json]\n  fss-daemon version\n  fss-daemon help"
 }

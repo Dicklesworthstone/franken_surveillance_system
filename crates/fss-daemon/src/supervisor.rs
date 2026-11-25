@@ -167,6 +167,9 @@ impl DaemonSupervisor {
                     stream_generation: 1,
                     previous_frame: None,
                     continuity_frames: 0,
+                    health: config
+                        .sensor_health_policy
+                        .map(|policy| crate::health::CameraHealth::new(policy, entry.dimensions)),
                     last_frame_ns: now_ns,
                     next_reconnect_ns,
                     reconnects: u64::from(state == SensorState::GapBackoff),
@@ -245,7 +248,9 @@ impl DaemonSupervisor {
         let (force_scrub, cmd_gaps) = self.process_control_commands_step(now_ns, now)?;
         let poll = self.poll_all_cameras_step(&sensor_ids, now_ns, now)?;
         let (perception_batch, fanout_frames_committed) = self.fanout_rings_step(&sensor_ids)?;
-        let frames_committed = poll.frames_handed_off.saturating_add(fanout_frames_committed);
+        let frames_committed = poll
+            .frames_handed_off
+            .saturating_add(fanout_frames_committed);
         let (tick_corroborated, tick_shared_held, decisions) =
             self.run_perception_step(&perception_batch)?;
 
@@ -486,6 +491,10 @@ impl DaemonSupervisor {
                         frames_ingested: slot.frames_ingested,
                         frames_decoded: slot.frames_decoded,
                         ring: slot.ring.stats(),
+                        sensor_health: slot
+                            .health
+                            .as_ref()
+                            .map(crate::health::CameraHealth::status),
                     },
                 )
             })
