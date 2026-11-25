@@ -802,10 +802,10 @@ struct TempJournalDir(PathBuf);
 impl TempJournalDir {
     fn new() -> io::Result<Self> {
         static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+        let base = fs::canonicalize(std::env::temp_dir())?;
         for _ in 0..16 {
             let n = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir()
-                .join(format!("fss-132-sim-journal-{}-{n}", std::process::id()));
+            let path = base.join(format!("fss-132-sim-journal-{}-{n}", std::process::id()));
             match fs::create_dir(&path) {
                 Ok(()) => return Ok(Self(path)),
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}

@@ -33,8 +33,9 @@ struct Directory(PathBuf);
 
 impl Directory {
     fn new() -> io::Result<Self> {
+        let base = fs::canonicalize(std::env::temp_dir())?;
         for _ in 0..32 {
-            let path = std::env::temp_dir().join(format!(
+            let path = base.join(format!(
                 "fss-recovered-authority-{}-{}",
                 std::process::id(),
                 NEXT.fetch_add(1, Ordering::Relaxed),

@@ -41,9 +41,10 @@ struct Directory(PathBuf);
 
 impl Directory {
     fn new() -> io::Result<Self> {
+        let base = fs::canonicalize(std::env::temp_dir())?;
         for _ in 0..16 {
             let ordinal = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!(
+            let path = base.join(format!(
                 "fss-durable-upload-{}-{ordinal}",
                 std::process::id(),
             ));

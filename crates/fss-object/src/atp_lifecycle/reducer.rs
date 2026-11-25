@@ -1016,23 +1016,35 @@ impl AtpLifecycleCoordinator {
                         "quarantine reason must be non-empty".to_owned(),
                     ));
                 }
-                for digest in affected_children {
-                    if let Some(child) = self.children.get_mut(digest) {
-                        child.disposition = StagedChildDisposition::Quarantined;
-                        child.verified = false;
-                    }
-                }
+                let mut transitioned = false;
                 if !self.semantic_state.is_terminal()
                     && self
                         .semantic_state
                         .can_transition_to(SemanticTransferState::Quarantined)
                 {
                     self.transition_semantic(SemanticTransferState::Quarantined)?;
+                    transitioned = true;
                 }
                 if let Some(arch) = self.archive_state
                     && !arch.is_terminal()
                 {
                     self.transition_archive(ArchivePublicationState::Quarantined)?;
+                    transitioned = true;
+                }
+                if !transitioned {
+                    return Err(AtpLifecycleError::SkippedTransition {
+                        layer: LifecycleLayer::SemanticTransfer,
+                        from: self.semantic_state.canonical_id(),
+                        to: SemanticTransferState::Quarantined.canonical_id(),
+                    });
+                }
+                for digest in affected_children {
+                    let child = self
+                        .children
+                        .get_mut(digest)
+                        .ok_or(AtpLifecycleError::UndeclaredChild { child: *digest })?;
+                    child.disposition = StagedChildDisposition::Quarantined;
+                    child.verified = false;
                 }
                 self.terminal_reason = Some(reason.clone());
             }
