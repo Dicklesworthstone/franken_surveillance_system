@@ -28,7 +28,10 @@ pub use crosswalk::{
     LegacyMappingKind, LifecycleLayer, NON_COLLAPSE_TERMS, PathState, SemanticTransferState,
     resolve_state_spelling,
 };
-pub use journal::{JournalRecord, LifecycleEvent, MAX_JOURNAL_RECORD_BYTES, TransferJournal};
+pub use journal::{
+    JournalRecord, LifecycleEvent, MAX_JOURNAL_FILE_BYTES, MAX_JOURNAL_RECORD_BYTES,
+    TransferJournal,
+};
 pub use reducer::AtpLifecycleCoordinator;
 
 /// Canonical digest domain for deterministic transfer identities (`XFER-INV-002`).
@@ -599,9 +602,7 @@ impl LifecycleReceipt {
             Some(a) => format!("\"{}\"", a.canonical_id()),
             None => "null".to_owned(),
         };
-        let state_str = self
-            .archive_state
-            .map_or("planned", ArchivePublicationState::receipt_state_str);
+        let state_str = self.receipt_state_str();
         let provider_json = match &self.provider_tuple {
             Some(pt) => format!("\"{}\"", json_escape(pt)),
             None => "null".to_owned(),
@@ -673,6 +674,206 @@ impl LifecycleReceipt {
             self.receipt_digest,
             json_escape(repro_cmd),
         )
+    }
+    /// Returns the `schemas/transfer_receipt.v1.json` `state` enum spelling for this receipt.
+    #[must_use]
+    pub const fn receipt_state_str(&self) -> &'static str {
+        if let Some(archive) = self.archive_state {
+            return archive.receipt_state_str();
+        }
+        match self.semantic_state {
+            SemanticTransferState::Proposed => "planned",
+            SemanticTransferState::Reserved | SemanticTransferState::Offered => "reserved",
+            SemanticTransferState::Receiving => "fetching",
+            SemanticTransferState::ChildrenVerified => "object_verified",
+            SemanticTransferState::GraphClosed => "graph_closed",
+            SemanticTransferState::DurabilitySatisfied => "exposure_ready",
+            SemanticTransferState::RootCommitted => "root_published",
+            SemanticTransferState::ReceiptSealed | SemanticTransferState::Superseded => "complete",
+            SemanticTransferState::Rejected => "failed",
+            SemanticTransferState::Aborted => "cancelled",
+            SemanticTransferState::Quarantined => "quarantined",
+            SemanticTransferState::Indeterminate => "indeterminate",
+        }
+    }
+
+    /// Emits a strict, secret-free JSON object conforming to `schemas/transfer_receipt.v1.json`
+    /// (`additionalProperties: false`, required `verification` and `timestamps` fields).
+    #[must_use]
+    pub fn to_transfer_receipt_v1_json(
+        &self,
+        timestamps: &[(&str, i128)],
+        error_id: Option<&str>,
+    ) -> String {
+        let paths_json: Vec<String> = self
+            .path_states
+            .iter()
+            .map(|(pid, st, work)| {
+                format!(
+                    "{{\"pathId\":\"{}\",\"state\":\"{}\",\"liveWork\":{work}}}",
+                    json_escape(pid),
+                    st.canonical_id()
+                )
+            })
+            .collect();
+        let path_names_json: Vec<String> = self
+            .path_states
+            .iter()
+            .map(|(pid, _, _)| format!("\"{}\"", json_escape(pid)))
+            .collect();
+
+        let manifest_verified = self.archive_transitions.iter().any(|s| {
+            matches!(
+                s,
+                ArchivePublicationState::ManifestVerified
+                    | ArchivePublicationState::Fetching
+                    | ArchivePublicationState::Staged
+                    | ArchivePublicationState::ObjectVerified
+                    | ArchivePublicationState::GraphClosed
+                    | ArchivePublicationState::ExposureReady
+                    | ArchivePublicationState::RootPublished
+                    | ArchivePublicationState::ReplicaQualified
+                    | ArchivePublicationState::RetrievabilityVerified
+                    | ArchivePublicationState::Complete
+                    | ArchivePublicationState::Scrubbed
+                    | ArchivePublicationState::Retired
+            )
+        }) || self.semantic_transitions.iter().any(|s| {
+            matches!(
+                s,
+                SemanticTransferState::Offered
+                    | SemanticTransferState::Receiving
+                    | SemanticTransferState::ChildrenVerified
+                    | SemanticTransferState::GraphClosed
+                    | SemanticTransferState::DurabilitySatisfied
+                    | SemanticTransferState::RootCommitted
+                    | SemanticTransferState::ReceiptSealed
+                    | SemanticTransferState::Superseded
+            )
+        });
+        let quarantined = self.semantic_state == SemanticTransferState::Quarantined
+            || self.archive_state == Some(ArchivePublicationState::Quarantined);
+        let objects_verified = !quarantined
+            && self.semantic_transitions.iter().any(|s| {
+                matches!(
+                    s,
+                    SemanticTransferState::ChildrenVerified
+                        | SemanticTransferState::GraphClosed
+                        | SemanticTransferState::DurabilitySatisfied
+                        | SemanticTransferState::RootCommitted
+                        | SemanticTransferState::ReceiptSealed
+                        | SemanticTransferState::Superseded
+                )
+            });
+        let closure_verified = !quarantined
+            && self.semantic_transitions.iter().any(|s| {
+                matches!(
+                    s,
+                    SemanticTransferState::GraphClosed
+                        | SemanticTransferState::DurabilitySatisfied
+                        | SemanticTransferState::RootCommitted
+                        | SemanticTransferState::ReceiptSealed
+                        | SemanticTransferState::Superseded
+                )
+            });
+        let root_verified = !quarantined
+            && (self.commit_anchor.is_some()
+                || self.archive_state.is_some_and(|a| {
+                    matches!(
+                        a,
+                        ArchivePublicationState::RootPublished
+                            | ArchivePublicationState::ReplicaQualified
+                            | ArchivePublicationState::RetrievabilityVerified
+                            | ArchivePublicationState::Complete
+                            | ArchivePublicationState::Scrubbed
+                            | ArchivePublicationState::Retired
+                    )
+                }));
+        let retrievability_json = match (self.archive_state, self.proof_of_retrievability_digest) {
+            (_, Some(_)) => "true",
+            (Some(_), None) => "false",
+            (None, None) => "null",
+        };
+        let ts_entries: Vec<String> = timestamps
+            .iter()
+            .map(|(k, v)| format!("\"{}\":{v}", json_escape(k)))
+            .collect();
+
+        let mut fields: Vec<String> = Vec::with_capacity(24);
+        fields.push("\"schema\":\"fss.transfer_receipt.v1\"".to_owned());
+        fields.push(format!("\"transferId\":\"{}\"", self.transfer_id));
+        fields.push(format!("\"rootDigest\":\"{}\"", self.root_digest));
+        fields.push(format!("\"state\":\"{}\"", self.receipt_state_str()));
+        fields.push(format!(
+            "\"semanticState\":\"{}\"",
+            self.semantic_state.canonical_id()
+        ));
+        if let Some(archive) = self.archive_state {
+            fields.push(format!("\"archiveState\":\"{}\"", archive.canonical_id()));
+        }
+        fields.push(format!("\"pathStates\":[{}]", paths_json.join(",")));
+        fields.push(format!("\"publicationFence\":{}", self.publication_fence));
+        fields.push(format!(
+            "\"contractBasisDigest\":\"{}\"",
+            self.contract_basis_digest
+        ));
+        fields.push(format!(
+            "\"counters\":{{\"offeredBytes\":{},\"receivedBytes\":{},\"verifiedBytes\":{},\"committedBytes\":{},\"reusedBytes\":{},\"offeredObjects\":{},\"verifiedObjects\":{},\"committedObjects\":{}}}",
+            self.counters.offered_bytes,
+            self.counters.received_bytes,
+            self.counters.verified_bytes,
+            self.counters.committed_bytes,
+            self.counters.reused_bytes,
+            self.counters.offered_objects,
+            self.counters.verified_objects,
+            self.counters.committed_objects,
+        ));
+        if let Some(pt) = &self.provider_tuple {
+            fields.push(format!("\"providerTuple\":\"{}\"", json_escape(pt)));
+        }
+        match self.proof_of_retrievability_digest {
+            Some(d) => fields.push(format!("\"proofOfRetrievability\":\"{d}\"")),
+            None => fields.push("\"proofOfRetrievability\":null".to_owned()),
+        }
+        match &self.reconciliation_obligation {
+            Some(ob) => fields.push(format!(
+                "\"reconciliationObligation\":{{\"obligationId\":\"{}\",\"fence\":{},\"reason\":\"{}\"}}",
+                json_escape(&ob.obligation_id),
+                ob.fence,
+                json_escape(&ob.reason),
+            )),
+            None => fields.push("\"reconciliationObligation\":null".to_owned()),
+        }
+        fields.push(format!("\"source\":\"{}\"", json_escape(&self.source)));
+        fields.push(format!(
+            "\"destination\":\"{}\"",
+            json_escape(&self.destination)
+        ));
+        fields.push(format!("\"bytes\":{}", self.counters.verified_bytes));
+        fields.push(format!("\"objects\":{}", self.counters.verified_objects));
+        fields.push(format!("\"paths\":[{}]", path_names_json.join(",")));
+        fields.push(format!(
+            "\"repair\":{{\"symbolsUsed\":{},\"postRepairDigest\":{}}}",
+            self.counters.repair_symbols_used,
+            if self.counters.repair_symbols_used > 0 {
+                format!("\"{}\"", self.root_digest)
+            } else {
+                "null".to_owned()
+            }
+        ));
+        fields.push(format!(
+            "\"verification\":{{\"manifest\":{manifest_verified},\"objects\":{objects_verified},\"closure\":{closure_verified},\"root\":{root_verified},\"retrievability\":{retrievability_json}}}"
+        ));
+        fields.push(format!("\"timestamps\":{{{}}}", ts_entries.join(",")));
+        match self.journal_head_digest {
+            Some(d) => fields.push(format!("\"journalDigest\":\"{d}\"")),
+            None => fields.push("\"journalDigest\":null".to_owned()),
+        }
+        match error_id {
+            Some(eid) => fields.push(format!("\"errorId\":\"{}\"", json_escape(eid))),
+            None => fields.push("\"errorId\":null".to_owned()),
+        }
+        format!("{{{}}}", fields.join(","))
     }
 }
 

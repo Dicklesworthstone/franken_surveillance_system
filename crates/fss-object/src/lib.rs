@@ -10,6 +10,8 @@
 /// Canonical ATP transfer, path, and archive lifecycles (`fss-x4a.13.31`).
 pub mod atp_lifecycle;
 pub mod belief_verification;
+/// Deterministic ATP object-graph closure verifier (`FSS-127`, `fss-x4a.13.11`).
+pub mod closure;
 /// Bounded local custody of the runtime effect coordinator's canonical history.
 pub mod effect_journal;
 /// Encryption-context manifest (FSS-065).

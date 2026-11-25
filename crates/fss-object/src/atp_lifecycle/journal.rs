@@ -7,6 +7,13 @@
 //! Torn bytes, unknown format versions, sequence gaps, broken hash chains, and trailing bytes fail
 //! closed on decode/replay.
 
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Write};
+use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
 use fss_core::{
     CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, ContentDigest,
     ContractError, TimestampNs,
@@ -21,6 +28,8 @@ use super::{
 
 /// Maximum canonical byte length of one serialized journal record (64 KiB).
 pub const MAX_JOURNAL_RECORD_BYTES: usize = 64 * 1024;
+/// Maximum total byte length of one persisted framed transfer journal file (16 MiB).
+pub const MAX_JOURNAL_FILE_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Typed event appended to the resumable ATP lifecycle journal.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -263,7 +272,7 @@ fn decode_bounded_text_list(
     max_items: usize,
 ) -> Result<Vec<String>, ContractError> {
     let count = usize::try_from(decoder.u64()?).map_err(|_| ContractError::InvalidIdentifier)?;
-    if count > max_items {
+    if count > max_items || count.saturating_mul(4) > decoder.remaining() {
         return Err(ContractError::InvalidIdentifier);
     }
     let mut out = Vec::with_capacity(count);
@@ -517,7 +526,7 @@ impl CanonicalDecode for LifecycleEvent {
                 let reason = decoder.text()?.to_owned();
                 let count = usize::try_from(decoder.u64()?)
                     .map_err(|_| ContractError::InvalidIdentifier)?;
-                if count > 4_096 {
+                if count > 4_096 || count.saturating_mul(33) > decoder.remaining() {
                     return Err(ContractError::InvalidIdentifier);
                 }
                 let mut affected_children = Vec::with_capacity(count);
@@ -535,7 +544,7 @@ impl CanonicalDecode for LifecycleEvent {
             30 => {
                 let count = usize::try_from(decoder.u64()?)
                     .map_err(|_| ContractError::InvalidIdentifier)?;
-                if count > 4_096 {
+                if count > 4_096 || count.saturating_mul(34) > decoder.remaining() {
                     return Err(ContractError::InvalidIdentifier);
                 }
                 let mut child_dispositions = Vec::with_capacity(count);
@@ -930,6 +939,136 @@ impl TransferJournal {
             out.push(record);
         }
         Ok(out)
+    }
+
+    /// Atomically persists the complete framed canonical journal to a regular non-symlink file.
+    ///
+    /// Writes to a sibling temporary file, fsyncs it, and renames into `path` so a crash mid-write
+    /// never exposes a half-written journal at `path`. Refuses symlink targets and oversize files.
+    pub fn write_framed_file(&self, path: &Path) -> Result<(), AtpLifecycleError> {
+        if let Ok(meta) = fs::symlink_metadata(path)
+            && !meta.file_type().is_file()
+        {
+            return Err(AtpLifecycleError::InvalidInput(
+                "transfer journal target path must be a regular non-symlink file".to_owned(),
+            ));
+        }
+        let bytes = self.export_framed_prefix(self.records.len())?;
+        if (bytes.len() as u64) > MAX_JOURNAL_FILE_BYTES {
+            return Err(AtpLifecycleError::JournalBoundsExceeded {
+                reason: format!(
+                    "framed journal size {} exceeds max {MAX_JOURNAL_FILE_BYTES}",
+                    bytes.len()
+                ),
+            });
+        }
+        let parent = path.parent().ok_or_else(|| {
+            AtpLifecycleError::InvalidInput(
+                "transfer journal path has no parent directory".to_owned(),
+            )
+        })?;
+        let parent_dir = if parent.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            parent
+        };
+        let file_name = path.file_name().and_then(|n| n.to_str()).ok_or_else(|| {
+            AtpLifecycleError::InvalidInput("transfer journal path has invalid filename".to_owned())
+        })?;
+        let seq = NEXT_TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+        let tmp_path = parent_dir.join(format!(
+            ".{file_name}.tmp-{}-{}-{}",
+            std::process::id(),
+            self.records.len(),
+            seq,
+        ));
+        let write_result = (|| -> Result<(), AtpLifecycleError> {
+            let mut file = OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&tmp_path)
+                .map_err(|err| {
+                    AtpLifecycleError::InvalidInput(format!(
+                        "open temp transfer journal failed: {err}"
+                    ))
+                })?;
+            file.write_all(&bytes).map_err(|err| {
+                AtpLifecycleError::InvalidInput(format!(
+                    "write temp transfer journal failed: {err}"
+                ))
+            })?;
+            file.sync_all().map_err(|err| {
+                AtpLifecycleError::InvalidInput(format!("sync temp transfer journal failed: {err}"))
+            })?;
+            fs::rename(&tmp_path, path).map_err(|err| {
+                AtpLifecycleError::InvalidInput(format!("rename transfer journal failed: {err}"))
+            })?;
+            if let Ok(dir) = File::open(parent_dir) {
+                let _ = dir.sync_all();
+            }
+            Ok(())
+        })();
+        if write_result.is_err() {
+            let _ = fs::remove_file(&tmp_path);
+        }
+        write_result
+    }
+
+    /// Reads and verifies a persisted framed transfer journal from a bounded regular non-symlink file.
+    pub fn read_framed_file(
+        expected_transfer_id: TransferId,
+        path: &Path,
+        max_records: usize,
+    ) -> Result<Vec<JournalRecord>, AtpLifecycleError> {
+        let meta = fs::symlink_metadata(path).map_err(|err| AtpLifecycleError::JournalCorrupt {
+            seq: 0,
+            reason: format!("cannot stat transfer journal: {err}"),
+        })?;
+        if meta.file_type().is_symlink() || !meta.file_type().is_file() {
+            return Err(AtpLifecycleError::JournalCorrupt {
+                seq: 0,
+                reason: "transfer journal must be a regular non-symlink file".to_owned(),
+            });
+        }
+        if meta.len() > MAX_JOURNAL_FILE_BYTES {
+            return Err(AtpLifecycleError::JournalBoundsExceeded {
+                reason: format!(
+                    "transfer journal file size {} exceeds max {MAX_JOURNAL_FILE_BYTES}",
+                    meta.len()
+                ),
+            });
+        }
+        let file = File::open(path).map_err(|err| AtpLifecycleError::JournalCorrupt {
+            seq: 0,
+            reason: format!("cannot open transfer journal: {err}"),
+        })?;
+        let opened_meta = file
+            .metadata()
+            .map_err(|err| AtpLifecycleError::JournalCorrupt {
+                seq: 0,
+                reason: format!("cannot inspect opened transfer journal: {err}"),
+            })?;
+        if !opened_meta.file_type().is_file() {
+            return Err(AtpLifecycleError::JournalCorrupt {
+                seq: 0,
+                reason: "opened transfer journal is not a regular file".to_owned(),
+            });
+        }
+        let mut framed = Vec::new();
+        file.take(MAX_JOURNAL_FILE_BYTES.saturating_add(1))
+            .read_to_end(&mut framed)
+            .map_err(|err| AtpLifecycleError::JournalCorrupt {
+                seq: 0,
+                reason: format!("read transfer journal failed: {err}"),
+            })?;
+        if (framed.len() as u64) > MAX_JOURNAL_FILE_BYTES {
+            return Err(AtpLifecycleError::JournalBoundsExceeded {
+                reason: format!(
+                    "transfer journal grew past max {MAX_JOURNAL_FILE_BYTES} bytes during read"
+                ),
+            });
+        }
+        Self::decode_framed_records(expected_transfer_id, &framed, max_records)
     }
 }
 

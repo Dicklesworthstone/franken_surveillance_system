@@ -485,6 +485,10 @@ impl InMemoryObjectStore {
         self.state(digest) == Some(ObjectState::Tombstoned)
     }
 
+    pub(crate) fn is_invalidated_manifest(&self, digest: ContentDigest) -> bool {
+        self.invalidated_manifests.contains_key(&digest)
+    }
+
     /// Returns all manifest roots whose reachable closure contains at least one tombstoned object.
     ///
     /// Descends into published or invalidated sub-manifests, following the same closure rules as

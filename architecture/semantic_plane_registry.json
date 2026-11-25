@@ -1761,6 +1761,7 @@
     "crates/fss-object/src/atp_lifecycle/mod.rs": "authority",
     "crates/fss-object/src/atp_lifecycle/reducer.rs": "authority",
     "crates/fss-object/src/belief_verification.rs": "support",
+    "crates/fss-object/src/closure.rs": "authority",
     "crates/fss-object/src/effect_journal.rs": "effect",
     "crates/fss-object/src/encryption.rs": "support",
     "crates/fss-object/src/error.rs": "support",

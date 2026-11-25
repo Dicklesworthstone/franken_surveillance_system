@@ -7,6 +7,7 @@
 
 mod backend;
 mod batch_codec;
+mod cursor;
 mod durable;
 pub mod epochs;
 mod error;
@@ -30,6 +31,11 @@ mod tests;
 
 pub use backend::CanonicalLedgerBackend;
 pub use batch_codec::{BatchCodecError, decode_batch, encode_batch};
+pub use cursor::{
+    LEDGER_REPLAY_CURSOR_DOMAIN, LEDGER_REPLAY_CURSOR_MAGIC, LEDGER_REPLAY_CURSOR_VERSION,
+    LedgerReplayCursor, MAX_REPLAY_CURSOR_BYTES, MAX_REPLAY_PAGE_BATCHES, MAX_REPLAY_PAGE_BYTES,
+    ReplayCursorError, ReplayCursorGuidance, ReplayPage, ReplayPageBudget,
+};
 pub use durable::{
     CommittedBatchPosition, DurableAppendReconciliation, DurableLedgerError, DurableLedgerLimits,
     DurableLedgerStatus, DurableReferenceLedger, ERR_LEDGER_DURABLE_BATCH_ID_CONFLICT_001,

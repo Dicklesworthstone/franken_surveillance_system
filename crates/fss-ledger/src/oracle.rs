@@ -1069,7 +1069,7 @@ impl LedgerOracle {
         self.commit(staged)
     }
 
-    fn anchor_at(&self, sequence: u64) -> Option<&LedgerAnchor> {
+    pub(crate) fn anchor_at(&self, sequence: u64) -> Option<&LedgerAnchor> {
         if sequence == 0 {
             return Some(&self.genesis);
         }
@@ -1077,12 +1077,21 @@ impl LedgerOracle {
         self.entries.get(index).map(|entry| &entry.batch.new_anchor)
     }
 
-    fn history_root_at(&self, sequence: u64) -> Option<ContentDigest> {
+    pub(crate) fn history_root_at(&self, sequence: u64) -> Option<ContentDigest> {
         if sequence == 0 {
             return Some(self.genesis_history_root);
         }
         let index = sequence_index(sequence.checked_sub(1)?)?;
         self.entries.get(index).map(|entry| entry.history_root)
+    }
+
+    pub(crate) fn entry_at_index(
+        &self,
+        index: usize,
+    ) -> Option<(&EvidenceDeltaBatch, ContentDigest)> {
+        self.entries
+            .get(index)
+            .map(|entry| (&entry.batch, entry.history_root))
     }
 }
 
@@ -1353,7 +1362,7 @@ fn state_root(objects: &BTreeMap<ObjectId, ObjectRevision>) -> Result<ContentDig
     Ok(ContentDigest::sha256(&bytes))
 }
 
-fn genesis_history_root(genesis: &LedgerAnchor) -> Result<ContentDigest, OracleError> {
+pub(crate) fn genesis_history_root(genesis: &LedgerAnchor) -> Result<ContentDigest, OracleError> {
     let mut encoder = CanonicalEncoder::new();
     encoder.text(CANONICAL_DOMAIN);
     encoder.text(LEDGER_ORACLE_HISTORY_DOMAIN);
@@ -1363,7 +1372,7 @@ fn genesis_history_root(genesis: &LedgerAnchor) -> Result<ContentDigest, OracleE
     Ok(ContentDigest::sha256(&bytes))
 }
 
-fn successor_history_root(
+pub(crate) fn successor_history_root(
     previous: ContentDigest,
     sequence: u64,
     batch_digest: ContentDigest,

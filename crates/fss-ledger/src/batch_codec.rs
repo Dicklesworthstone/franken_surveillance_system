@@ -13,6 +13,12 @@ const VERSION: u16 = 1;
 const MAX_TEXT_BYTES: usize = 4096;
 const MAX_DELTAS: usize = 16_384;
 const MAX_CHILDREN: usize = 16_384;
+/// Minimum encoded wire bytes for one `EvidenceDelta`:
+/// delta_id(4) + family(4) + object_id(4) + prior_gen_tag(1) + new_gen(8)
+/// + interval(32) + plane(1) + payload_digest(33) + witness_tag(1) + op_id_tag(1).
+const MIN_DELTA_ENCODED_BYTES: usize = 89;
+/// Exact encoded wire bytes for one child `ContentDigest`: algo_tag(1) + digest(32).
+const CHILD_ENCODED_BYTES: usize = 33;
 
 /// Deterministic evidence-batch codec failures.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -141,6 +147,9 @@ pub fn decode_batch(bytes: &[u8]) -> Result<EvidenceDeltaBatch, BatchCodecError>
     let basis_anchor = reader.anchor()?;
     let new_anchor = reader.anchor()?;
     let delta_count = reader.count(MAX_DELTAS, "deltas")?;
+    if delta_count.saturating_mul(MIN_DELTA_ENCODED_BYTES) > reader.remaining() {
+        return Err(BatchCodecError::UnexpectedEof);
+    }
     let mut deltas = Vec::with_capacity(delta_count);
     for _ in 0..delta_count {
         let delta_id = reader.text()?;
@@ -176,6 +185,9 @@ pub fn decode_batch(bytes: &[u8]) -> Result<EvidenceDeltaBatch, BatchCodecError>
         });
     }
     let child_count = reader.count(MAX_CHILDREN, "children")?;
+    if child_count.saturating_mul(CHILD_ENCODED_BYTES) > reader.remaining() {
+        return Err(BatchCodecError::UnexpectedEof);
+    }
     let mut children = Vec::with_capacity(child_count);
     for _ in 0..child_count {
         children.push(reader.digest()?);
@@ -269,6 +281,10 @@ struct Reader<'a> {
 impl<'a> Reader<'a> {
     const fn new(bytes: &'a [u8]) -> Self {
         Self { bytes, offset: 0 }
+    }
+
+    const fn remaining(&self) -> usize {
+        self.bytes.len().saturating_sub(self.offset)
     }
 
     fn array<const N: usize>(&mut self) -> Result<[u8; N], BatchCodecError> {

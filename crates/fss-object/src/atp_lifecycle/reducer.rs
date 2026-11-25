@@ -195,6 +195,36 @@ impl AtpLifecycleCoordinator {
         Self::replay(spec, authority, &records)
     }
 
+    /// Cold-reads a persisted framed journal file and replays into a live coordinator.
+    pub fn resume_from_journal_file(
+        spec: TransferSpec,
+        authority: AuthoritySnapshot,
+        path: &std::path::Path,
+    ) -> Result<Self, AtpLifecycleError> {
+        let transfer_id = spec.transfer_id();
+        let records =
+            TransferJournal::read_framed_file(transfer_id, path, spec.max_journal_records)?;
+        Self::replay(spec, authority, &records)
+    }
+
+    /// Builds a strict `schemas/transfer_receipt.v1.json`-conformant JSON document carrying
+    /// exact timestamps derived from this coordinator's append-only journal.
+    pub fn to_transfer_receipt_v1_json(
+        &self,
+        require_committed: bool,
+        error_id: Option<&str>,
+    ) -> Result<String, AtpLifecycleError> {
+        let receipt = self.build_receipt(require_committed)?;
+        let mut timestamps: Vec<(&str, i128)> = Vec::new();
+        if let Some(first) = self.journal.records().first() {
+            timestamps.push(("firstEventNs", first.timestamp_ns.0));
+        }
+        if let Some(last) = self.last_timestamp_ns {
+            timestamps.push(("lastEventNs", last.0));
+        }
+        Ok(receipt.to_transfer_receipt_v1_json(&timestamps, error_id))
+    }
+
     /// Deterministic transfer identity.
     #[must_use]
     pub const fn transfer_id(&self) -> TransferId {
