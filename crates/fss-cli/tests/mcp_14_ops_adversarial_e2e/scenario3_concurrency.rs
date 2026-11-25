@@ -79,8 +79,10 @@ pub fn run() -> TestResult<Scenario3Report> {
     let base_anchor = orientation_anchor(&initial_orient.body_text)?;
     let _ = setup_mcp.finish()?;
 
-    // Start live 8-camera fss-daemon with tight pack/ring bounds to actively trigger compaction!
-    let manifest = build_site_manifest(&ws.v2_root, &deploy_root, 8, 131_072, 65_536)?;
+    // Start live 8-camera fss-daemon with 64 KiB pack rotation and seeded expired candidates so
+    // retention eviction and pack compaction run continuously while accommodating durable 8-camera
+    // corroborated event holds without tripping StorageQuotaPinned during graceful shutdown.
+    let manifest = build_site_manifest(&ws.v2_root, &deploy_root, 8, 4 * 1024 * 1024, 65_536)?;
     let daemon = LiveDaemonHandle::start(manifest, Duration::from_millis(12), true)?;
 
     // Open vault canary rig for leak check.

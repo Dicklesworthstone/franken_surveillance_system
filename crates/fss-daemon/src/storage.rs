@@ -592,7 +592,7 @@ impl StorageEngine {
         self.synchronize_retired_roots()?;
         self.refresh_retention_pins();
         self.resume_pending_retention_deletions()?;
-        let candidates_vec = self.retention_plan_candidates()?;
+        let candidates_vec = self.retention_plan_candidates_for_eviction()?;
         let mut outcome = plan_retention(&self.retention_config, &candidates_vec, now_ns)?;
         if matches!(
             &outcome,
@@ -605,7 +605,7 @@ impl StorageEngine {
             self.refresh_catalog_reference_pins()?;
             outcome = plan_retention(
                 &self.retention_config,
-                &self.retention_plan_candidates()?,
+                &self.retention_plan_candidates_for_eviction()?,
                 now_ns,
             )?;
         }

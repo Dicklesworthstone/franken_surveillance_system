@@ -536,16 +536,11 @@ impl StorageEngine {
                 media_bytes = media_bytes.saturating_add(location.len);
             }
         }
-        let logical_protected = self
+        Ok(self
             .pack_store
             .telemetry_snapshot()?
             .total_payload_bytes
-            .saturating_sub(media_bytes);
-        let physical_protected = self
-            .pack_store
-            .on_disk_pack_bytes()?
-            .saturating_sub(media_bytes);
-        Ok(logical_protected.max(physical_protected))
+            .saturating_sub(media_bytes))
     }
 
     pub(super) fn accounted_ring_bytes(&self) -> Result<u64, DaemonError> {
@@ -572,6 +567,44 @@ impl StorageEngine {
                 active_obligation_ids: Vec::new(),
                 active_event_ids: Vec::new(),
             });
+        }
+        Ok(candidates)
+    }
+
+    /// Candidates presented to `plan_retention` when deciding which unpinned media closures to
+    /// evict: accounts for physical `.fssp` packfile framing overhead so on-disk usage stays
+    /// within the deployment ceiling without inflating logical `ring_used_bytes` or triggering
+    /// false `StorageQuotaPinned` pauses from reclaimable pack overhead.
+    pub(super) fn retention_plan_candidates_for_eviction(
+        &self,
+    ) -> Result<Vec<RetentionCandidate>, DaemonError> {
+        let mut candidates = self.retention_plan_candidates()?;
+        let logical_total = candidates
+            .iter()
+            .fold(0_u64, |sum, c| sum.saturating_add(c.byte_size));
+        let physical_overhead = self
+            .pack_store
+            .on_disk_pack_bytes()?
+            .saturating_sub(logical_total);
+        if physical_overhead > 0 {
+            if let Some(history) = candidates
+                .iter_mut()
+                .find(|c| c.import_id == HISTORY_CANDIDATE)
+            {
+                history.byte_size = history.byte_size.saturating_add(physical_overhead);
+            } else {
+                candidates.push(RetentionCandidate {
+                    import_id: HISTORY_CANDIDATE.to_owned(),
+                    sensor_id: HISTORY_CANDIDATE.to_owned(),
+                    capture_end_ns: TimestampNs(0),
+                    byte_size: physical_overhead,
+                    object_digests: Vec::new(),
+                    is_derived_proxy: false,
+                    held_by: vec!["retention:canonical-replay-inputs".to_owned()],
+                    active_obligation_ids: Vec::new(),
+                    active_event_ids: Vec::new(),
+                });
+            }
         }
         Ok(candidates)
     }
