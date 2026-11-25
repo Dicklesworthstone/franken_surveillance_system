@@ -47,6 +47,10 @@ use super::{
 use crate::error::ExitIdentity;
 use crate::json_output::{object, string};
 
+#[cfg(test)]
+#[path = "intents_control_tests.rs"]
+mod control_tests;
+
 /// Registered payload schema for operational `plan` previews.
 pub const OPS_PLAN_PAYLOAD_SCHEMA: &str = "fss.agent_ops_intent_plan.v1";
 /// Registered payload schema for operational `commit` executions.
@@ -108,7 +112,7 @@ pub enum OpsIntentKind {
     CameraSupervision {
         /// Closed bounded control operation (`BoundedControlOp`).
         op: BoundedControlOp,
-        /// Optional target camera identifier (required for camera-scoped ops).
+        /// Target camera identifier (required for camera-scoped ops, absent for reload/scrub).
         camera_id: Option<String>,
         /// Optional explicit site identifier override.
         site_id: Option<String>,
@@ -704,6 +708,16 @@ fn run_camera_supervision(
     if op.requires_camera_id() && camera_id.is_none() {
         return Err(OpsError::InvalidRequest(format!(
             "camera-supervision op `{}` requires camera_id",
+            op.as_str()
+        )));
+    }
+    if matches!(
+        op,
+        BoundedControlOp::ReloadManifest | BoundedControlOp::TriggerScrub
+    ) && camera_id.is_some()
+    {
+        return Err(OpsError::InvalidRequest(format!(
+            "camera-supervision op `{}` is deployment-wide and does not accept camera_id",
             op.as_str()
         )));
     }

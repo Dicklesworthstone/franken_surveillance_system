@@ -27,6 +27,10 @@ pub use crate::control_client::{
 };
 use crate::error::{DaemonError, ERR_DAEMON_CONTROL_APPROVAL_001, ERR_DAEMON_UNKNOWN_CAMERA_001};
 
+#[cfg(test)]
+#[path = "control_tests.rs"]
+mod tests;
+
 /// Canonical digest domain for graceful daemon shutdown approval digests.
 pub const DAEMON_SHUTDOWN_APPROVAL_DOMAIN: &str = "fss.daemon.shutdown_approval.v1";
 /// Canonical digest domain for non-secret local runtime descriptors (`daemon.meta.json`).
@@ -40,6 +44,8 @@ pub const DAEMON_STOP_TARGET: &str = "daemon:all";
 
 const MAX_DELTA_BUS_EVENTS: usize = 4_096;
 const MAX_IDEMPOTENCY_ENTRIES: usize = 1_024;
+// Accepted work remains FIFO until the supervisor drains it; pressure never evicts a command.
+const MAX_QUEUED_CONTROL_COMMANDS: usize = 1_024;
 const SUBSCRIBE_WAIT_SLICE: Duration = Duration::from_millis(20);
 const SUBSCRIBE_IDLE_WINDOW: Duration = Duration::from_millis(450);
 
@@ -225,6 +231,12 @@ impl ControlPlaneShared {
 
     /// Marks graceful shutdown requested and immediately wakes all waiting delta subscribers.
     pub fn request_shutdown(&self) {
+        // Serialize shutdown with the final admission check and insertion.
+        // A poisoned queue must still allow the daemon to shut down.
+        let _queue = match self.control_queue.lock() {
+            Ok(queue) => queue,
+            Err(poisoned) => poisoned.into_inner(),
+        };
         self.shutdown_requested.store(true, Ordering::Release);
         self.delta_notify.notify_all();
     }
@@ -447,6 +459,11 @@ impl DaemonIpcHandler for DaemonIpcHandlerAdapter {
         target_camera_id: Option<&str>,
         approval_digest: ContentDigest,
     ) -> IpcResponse {
+        if ctx.is_cancelled() {
+            return IpcResponse::Cancelled {
+                request_id: ctx.request_id,
+            };
+        }
         if op == BoundedControlOp::StopCamera && target_camera_id == Some(DAEMON_STOP_TARGET) {
             if approval_digest != self.shared.expected_stop_approval() {
                 return make_refused(
@@ -471,6 +488,36 @@ impl DaemonIpcHandler for DaemonIpcHandlerAdapter {
                 true,
             );
         }
+        if op.requires_camera_id() && target_camera_id.is_none() {
+            return make_refused(
+                ctx.request_id,
+                ERR_IPC_WIRE_CORRUPT_001,
+                "bounded camera control requires a target camera",
+                false,
+            );
+        }
+        if matches!(
+            op,
+            BoundedControlOp::ReloadManifest | BoundedControlOp::TriggerScrub
+        ) && target_camera_id.is_some()
+        {
+            return make_refused(
+                ctx.request_id,
+                ERR_IPC_WIRE_CORRUPT_001,
+                "deployment-wide control does not accept a target camera",
+                false,
+            );
+        }
+        if approval_digest
+            != control_op_approval_digest(&self.shared.deployment_id, op, target_camera_id)
+        {
+            return make_refused(
+                ctx.request_id,
+                ERR_DAEMON_CONTROL_APPROVAL_001,
+                "control approval digest does not match the exact deployment, operation and target",
+                false,
+            );
+        }
         if let Some(cam_id) = target_camera_id
             && !self.shared.known_cameras.iter().any(|c| c == cam_id)
         {
@@ -481,15 +528,43 @@ impl DaemonIpcHandler for DaemonIpcHandlerAdapter {
                 false,
             );
         }
-        let operation_id = self.shared.alloc_operation_id(op);
-        if let Ok(mut queue) = self.shared.control_queue.lock() {
-            queue.push_back(PendingControlCommand {
-                operation_id: operation_id.clone(),
-                op,
-                target_camera_id: target_camera_id.map(str::to_owned),
-                approval_digest,
-            });
+        let Ok(mut queue) = self.shared.control_queue.lock() else {
+            return make_refused(
+                ctx.request_id,
+                crate::error::ERR_DAEMON_SHUTDOWN_001,
+                "control queue is unavailable; no command was admitted",
+                false,
+            );
+        };
+        // Cancellation and shutdown can arrive while waiting for queue admission.
+        if ctx.is_cancelled() {
+            return IpcResponse::Cancelled {
+                request_id: ctx.request_id,
+            };
         }
+        if self.shared.is_shutdown_requested() {
+            return make_refused(
+                ctx.request_id,
+                ERR_IPC_SERVER_SHUTDOWN_001,
+                "daemon is draining for shutdown",
+                true,
+            );
+        }
+        if queue.len() >= MAX_QUEUED_CONTROL_COMMANDS {
+            return make_refused(
+                ctx.request_id,
+                "ERR-BUDGET-EXHAUSTED-001",
+                "bounded control queue is full; wait for the supervisor to drain and retry",
+                true,
+            );
+        }
+        let operation_id = self.shared.alloc_operation_id(op);
+        queue.push_back(PendingControlCommand {
+            operation_id: operation_id.clone(),
+            op,
+            target_camera_id: target_camera_id.map(str::to_owned),
+            approval_digest,
+        });
         IpcResponse::ControlAccepted {
             request_id: ctx.request_id,
             operation_id,

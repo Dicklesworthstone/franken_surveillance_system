@@ -1,8 +1,55 @@
 # Implementation status
 
-**As of:** 2026-11-24 America/New_York (dated feature sections retain their original verification scope)
-**Project state:** locally qualified on `darwin-arm64` across policy, scale, crash-recovery, daemon soak, lab, media, archive, privacy, model, geometry, threat, agent, adapter-loopback, and macOS parity lanes; multi-target DSR release matrix (`linux-x86_64`, `windows-x86_64`) and physical hardware-tuple field qualification remain open
+**As of:** 2026-11-25 America/New_York (dated feature sections retain their original verification scope)
+**Project state:** prior retained snapshots are locally qualified on `darwin-arm64` across policy, scale, crash-recovery, daemon soak, lab, media, archive, privacy, model, geometry, threat, agent, adapter-loopback, and macOS parity lanes; multi-target DSR release matrix (`linux-x86_64`, `windows-x86_64`) and physical hardware-tuple field qualification remain open
+**Current change qualification:** the daemon changes described below await native verification; prior receipts do not qualify these new bytes.
 **Release authority:** repository-owned local qualification (`scripts/qualify.sh`) and retained DSR receipts, not hosted CI
+
+## Daemon control admission — 2026-11-25
+
+The local daemon now validates every bounded control's existing canonical
+approval digest against the exact deployment, operation, and target before
+queueing it. Camera-scoped requests require a known target; deployment-wide
+manifest reload and scrub requests reject camera targets, with matching
+CLI/MCP preview validation. Targeted and deployment-wide detector probes retain
+their existing scopes. Graceful daemon shutdown keeps its separate root-bound
+approval.
+
+The supervisor control queue is capped at 1,024 commands. Capacity pressure
+refuses new admission without evicting acknowledged work, a poisoned queue
+cannot report success, and cancellation is rechecked at admission. Shutdown
+and queue admission use the same existing mutex so a command cannot enter the
+queue after shutdown has acquired that admission boundary. Correct shutdown
+remains available when the queue is full or poisoned.
+
+Regression coverage was added for mismatched deployment/operation/target
+approvals, valid controls, malformed and unknown targets, cancellation,
+capacity/FIFO preservation, queue poison, shutdown approval separation, and
+frontend scope validation. Real owner-only Unix-socket contracts exercise the
+actual daemon handler and client together.
+
+**Verification boundary:** independent source and API review completed. All
+five changed Rust files passed the pinned nightly's formatter. The initial
+locked/offline IPC test attempt exited before compilation because `aes 0.9.4`
+was absent from the cache. The execution environment then disconnected during
+exact dependency provisioning. After recovery, native test provisioning
+resumed; the new tests, Clippy, and full local qualification have **not passed
+or been claimed** for this commit. Prior retained receipts do not qualify
+these new bytes.
+
+Focused reproduction commands:
+
+```sh
+cargo +nightly-2026-08-31 test --locked --offline -p fss-daemon --lib control::tests -- --test-threads=1
+cargo +nightly-2026-08-31 test --locked --offline -p fss-daemon --test control_admission_contract -- --test-threads=1
+cargo +nightly-2026-08-31 test --locked --offline -p fss-cli control_tests -- --test-threads=1
+```
+
+This repairs the admission boundary associated with `fss-x4a.31.3.8`,
+`fss-x4a.31.4.2`, and open invariant bead `fss-x4a.30.1.7`. It does not
+establish durable control-command idempotency, completion across crashes, or
+terminal disposition of commands already queued when shutdown begins. Those
+broader contracts remain open.
 
 ## Massive-scale overhaul (`fss-x4a.31`) local qualification — 2026-11-24
 
