@@ -1654,6 +1654,31 @@ class TestRoundFourConstitutionFindings(ConstitutionCase):
         self.assertEqual(codes(result), {ERR_DEP_CONST_INVARIANT})
         self.assertEqual([(e.file_path, e.target) for e in result.errors], [(".envrc", "line/1")])
 
+    # --- 5: DEP-INV-010 negative controls (optimization cannot expand authority) ----------------
+
+    def test_dep_inv_010_optimization_crate_cannot_expand_authority_via_ffi_or_unstable_simd(self) -> None:
+        """DEP-INV-010: SIMD/accelerator optimization cannot smuggle native FFI links, cdylib, or #![feature(portable_simd)]."""
+        # 1. Native accelerator crate with `links` or `cdylib` is refused by F0 closure census.
+        meta_native = metadata(
+            [
+                pkg("fss-core", member=True),
+                pkg("fast-simd-accel", links="simd_native", kinds=("lib",), crate_types=("cdylib",)),
+            ],
+            {"fss-core": [("fast-simd-accel", None)]},
+        )
+        findings = self.census(meta_native)
+        self.assertTrue(
+            any(code == MV for code, _ in findings),
+            f"expected ERR_DEP_CONST_METADATA_VIOLATION for native accelerator crate, got {findings}",
+        )
+
+        # 2. Enabling unstable #![feature(portable_simd)] in a workspace crate is refused.
+        self.put("crates/fss-core/src/simd_opt.rs", "#![feature(portable_simd)]\npub fn fast() {}\n")
+        self.assertEqual(
+            self.uf(),
+            [(ERR_DEP_UNSTABLE_FEATURE, "crates/fss-core/src/simd_opt.rs", "line/1")],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

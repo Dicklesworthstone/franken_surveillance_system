@@ -140,3 +140,41 @@ fn tampering_is_detectable() {
         );
     }
 }
+
+#[test]
+fn dep_inv_010_optimization_cannot_expand_authority_contract() {
+    // DEP-INV-010 normative doctrine: SIMD/accelerators/zero-copy paths may reduce cost only
+    // behind the exact same semantic interface and output digest as the safe scalar/reference
+    // implementation, without expanding unsafe, FFI, dynamic loading, or policy semantics.
+    let marker = "### `DEP-INV-010`";
+    let start = DOCTRINE_MD
+        .find(marker)
+        .expect("DEP-INV-010 heading missing from DEPENDENCY_CONSTITUTION.md");
+    let section = &DOCTRINE_MD[start..DOCTRINE_MD.len().min(start + 500)];
+    for required_clause in [
+        "same semantic interface and output digest as the safe scalar/reference implementation",
+        "may reduce cost",
+        "may not change evidence, ordering, tie-break, precision policy, or",
+        "cancellation semantics without a new policy epoch",
+    ] {
+        assert!(
+            section.contains(required_clause),
+            "DEP-INV-010 missing required clause '{required_clause}'"
+        );
+    }
+
+    // Machine constitution production bounds enforce that no optimization path can introduce
+    // unsafe code, C/C++ FFI, dynamic loading, or foreign executables.
+    for required_bound in [
+        "\"unsafe\": \"forbidden-in-all-fss-crates\"",
+        "\"cCppFfi\": false",
+        "\"dynamicLoading\": false",
+        "\"foreignExecutables\": false",
+        "\"closedUniverse\": true",
+    ] {
+        assert!(
+            CONSTITUTION_JSON.contains(required_bound),
+            "dependency_constitution.json missing DEP-INV-010 authority bound {required_bound}"
+        );
+    }
+}
