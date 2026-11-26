@@ -23,6 +23,8 @@ pub mod agent_workspace;
 pub mod belief;
 pub mod belief_verification;
 mod canonical;
+/// Deterministic public claim scope, evidence, exclusion, and expiry evaluator (FSS-195).
+pub mod claim_evaluator;
 mod compression;
 mod context_binding;
 mod context_binding_metadata;

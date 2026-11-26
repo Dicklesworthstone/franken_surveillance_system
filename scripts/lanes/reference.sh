@@ -86,8 +86,8 @@ import sys
 
 receipt_path = pathlib.Path(sys.argv[1])
 allow_static_only = sys.argv[2] == "1"
-if not receipt_path.is_file():
-    print(f"[FAIL] QL-REFERENCE-001 verifier: receipt missing: {receipt_path}", file=sys.stderr)
+if receipt_path.is_symlink() or not receipt_path.is_file():
+    print(f"[FAIL] QL-REFERENCE-001 verifier: receipt missing or symlinked: {receipt_path}", file=sys.stderr)
     sys.exit(2)
 
 try:
@@ -325,7 +325,8 @@ if ((ONLY_STATIC == 0)); then
       --test fss_162_factorized_query_planner_contract
   run_step "ref-07-core-contract-oracle" "event_and_model_oracle" \
     env RUST_TEST_THREADS=1 "${CARGO_CMD[@]}" test --locked -p fss-core \
-      --test contract_property_family
+      --test contract_property_family \
+      --test fss_195_claim_evaluator_contract
   run_step "ref-08-model-reference-oracle" "event_and_model_oracle" \
     env RUST_TEST_THREADS=1 "${CARGO_CMD[@]}" test --locked -p fss-reference \
       --test fss_139_scalar_detector_executor_contract \

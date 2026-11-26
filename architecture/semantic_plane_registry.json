@@ -241,6 +241,7 @@
     "crates/fss-core/src/decision_card_v1.rs": "cognition",
     "crates/fss-core/src/delta.rs": "authority",
     "crates/fss-core/src/digest.rs": "support",
+    "crates/fss-core/src/claim_evaluator.rs": "authority",
     "crates/fss-core/src/durable.rs": "support",
     "crates/fss-core/src/effect.rs": "effect",
     "crates/fss-core/src/event.rs": "ambiguous",
