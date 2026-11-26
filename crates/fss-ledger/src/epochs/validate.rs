@@ -238,7 +238,7 @@ fn check_text(field: OracleBoundField, value: &str) -> Result<(), EpochLedgerErr
     Ok(())
 }
 
-fn check_successor(
+pub(super) fn check_successor(
     basis: &LedgerAnchor,
     successor: &LedgerAnchor,
     expected_sequence: u64,

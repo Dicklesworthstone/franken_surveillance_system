@@ -10,6 +10,7 @@ pub mod archive;
 mod checkpoint;
 mod error;
 mod ledger;
+mod receipt;
 mod segment;
 mod validate;
 mod verify;
@@ -35,6 +36,7 @@ pub use checkpoint::{
 };
 pub use error::{CheckpointCorruptionKind, EpochCorruptionKind, EpochLedgerError};
 pub use ledger::{EpochAppendReconciliation, MerkleEpochLedger};
+pub use receipt::{ReceiptProofBudget, ReceiptProofResource, ReceiptProofUsage, VerifiedBatchReceipt};
 pub use segment::{
     EPOCH_FILE_MAGIC, EPOCH_FORMAT_VERSION, EPOCH_HEADER_LEN, EPOCH_RECORD_HEADER_LEN,
     EPOCH_RECORD_MAGIC, EPOCH_RECORD_TRAILER_LEN, EPOCH_TRAILER_MAGIC, EpochHeader, EpochRecord,

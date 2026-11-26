@@ -156,3 +156,6 @@ fn unresolved_append_fences_receipt_recovery_until_native_reconciliation() -> Te
     assert_eq!(ledger.commit_sequence(), 2);
     Ok(())
 }
+
+#[path = "exact_head_receipt_contract/historical.rs"]
+mod historical;

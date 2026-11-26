@@ -21,6 +21,9 @@ use super::checkpoint::{
     CheckpointData, list_checkpoint_files_desc, quarantine_corrupt_checkpoint,
     read_checkpoint_with_head_digest, write_checkpoint_atomic,
 };
+use super::receipt::{
+    ReceiptProofBudget, ReceiptProofUsage, VerifiedBatchReceipt, verify_receipt_from_epochs,
+};
 use super::segment::{
     EPOCH_HEADER_LEN, EpochHeader, create_epoch_file_atomic, list_epoch_ids, scan_epoch_from,
     verify_checkpoint_epoch_anchor,
@@ -348,6 +351,48 @@ impl MerkleEpochLedger {
             anchor: self.head_anchor.clone(),
             history_root: self.history_root,
         }))
+    }
+
+    /// Proves the offered batch's original receipt against this exact current ledger history.
+    ///
+    /// A matching current head uses only the verified owner state and consumes no disk budget.
+    /// Historical matches require retained epoch bytes and a bounded history-chain proof through
+    /// the current head. Missing history, budget exhaustion, corruption, or an unresolved append
+    /// are errors, never permission to resubmit. This method performs no writes or repair.
+    pub fn receipt_for_exact_batch(
+        &self,
+        batch: &EvidenceDeltaBatch,
+        budget: ReceiptProofBudget,
+    ) -> Result<Option<VerifiedBatchReceipt>, EpochLedgerError> {
+        // Preserve the native append fence and complete structural/digest checks before
+        // consulting either the cached index or any historical files.
+        if let Some(receipt) = self.receipt_for_exact_head(batch)? {
+            return Ok(Some(VerifiedBatchReceipt {
+                head_anchor: self.head_anchor.clone(),
+                head_history_root: self.history_root,
+                head_batch_digest: receipt.batch_digest,
+                receipt,
+                usage: ReceiptProofUsage::default(),
+            }));
+        }
+        let Some(&(sequence, digest)) = self.batch_index.get(&batch.batch_id) else {
+            return Ok(None);
+        };
+        if sequence != batch.new_anchor.commit_sequence
+            || digest != batch.batch_digest
+            || sequence >= self.head_anchor.commit_sequence
+        {
+            return Ok(None);
+        }
+        verify_receipt_from_epochs(
+            &self.epochs_dir,
+            batch,
+            self.active_writer.epoch_id(),
+            &self.head_anchor,
+            self.history_root,
+            budget,
+        )
+        .map(Some)
     }
 
     /// Latest committed canonical v2 Radix-Merkle state root.

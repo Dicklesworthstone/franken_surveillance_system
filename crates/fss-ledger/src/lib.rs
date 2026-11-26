@@ -85,7 +85,8 @@ pub use epochs::{
     EpochAppendReconciliation, EpochArchivalError, EpochArchivalPolicy, EpochArchivalReceipt,
     EpochCorruptionKind, EpochHeader, EpochLedgerConfig, EpochLedgerError, EpochLedgerInspection,
     EpochRecord, EpochScanReport, EpochVerificationReport, MIN_MAX_EPOCH_BYTES, MerkleEpochLedger,
-    OpenRecoverySummary, archive_sealed_epochs, checkpoint_file_path, crc32_ieee, epoch_file_path,
+    OpenRecoverySummary, ReceiptProofBudget, ReceiptProofResource, ReceiptProofUsage,
+    VerifiedBatchReceipt, archive_sealed_epochs, checkpoint_file_path, crc32_ieee, epoch_file_path,
     genesis_history_root_v2, inspect_epochs_readonly, read_and_verify_checkpoint,
     successor_history_root_v2,
 };

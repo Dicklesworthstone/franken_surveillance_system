@@ -259,6 +259,17 @@ pub enum EpochLedgerError {
         /// Recomputed v2 Radix-Merkle root.
         computed: ContentDigest,
     },
+    /// Bounded receipt verification exhausted its explicit work allowance.
+    ReceiptProofLimitExceeded {
+        /// Resource whose next operation would exceed the allowance.
+        resource: super::receipt::ReceiptProofResource,
+        /// Amount already charged before the refused operation.
+        used: u64,
+        /// Additional amount required by the refused operation.
+        requested: u64,
+        /// Caller-supplied maximum allowance for this resource.
+        maximum: u64,
+    },
     /// Full-chain verification diverged from live in-memory ledger state.
     LiveStateDivergence(&'static str),
 }
@@ -398,6 +409,15 @@ impl fmt::Display for EpochLedgerError {
             Self::StateRootMismatch { declared, computed } => write!(
                 formatter,
                 "state root mismatch: declared {declared}, computed {computed}"
+            ),
+            Self::ReceiptProofLimitExceeded {
+                resource,
+                used,
+                requested,
+                maximum,
+            } => write!(
+                formatter,
+                "receipt proof {resource:?} limit exceeded: used {used}, requested {requested}, maximum {maximum}"
             ),
             Self::LiveStateDivergence(reason) => {
                 write!(formatter, "full-chain verification diverged: {reason}")

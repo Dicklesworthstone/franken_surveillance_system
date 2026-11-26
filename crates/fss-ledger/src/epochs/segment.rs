@@ -13,6 +13,8 @@ use fss_core::{ContentDigest, DigestAlgorithm, Sha256Hasher, sha256};
 
 use crate::MAX_RECORD_PAYLOAD_BYTES;
 
+use super::receipt::ReceiptProofMeter;
+
 use super::{
     CheckpointCorruptionKind, EPOCH_HEADER_DOMAIN, EpochCorruptionKind, EpochLedgerError,
     crc32_ieee, sync_directory,
@@ -283,6 +285,44 @@ pub(crate) fn scan_epoch_from(
     start_commit_seq: u64,
     start_history_root: ContentDigest,
 ) -> Result<EpochScanReport, EpochLedgerError> {
+    scan_epoch_from_inner(
+        epochs_dir,
+        expected_epoch_id,
+        start_offset,
+        start_commit_seq,
+        start_history_root,
+        None,
+    )
+}
+
+/// The historical receipt path shares the native framing parser while charging every read
+/// before allocation and bounding the number of collected record objects.
+pub(super) fn scan_epoch_from_budgeted(
+    epochs_dir: &Path,
+    expected_epoch_id: u64,
+    start_offset: u64,
+    start_commit_seq: u64,
+    start_history_root: ContentDigest,
+    meter: &mut ReceiptProofMeter,
+) -> Result<EpochScanReport, EpochLedgerError> {
+    scan_epoch_from_inner(
+        epochs_dir,
+        expected_epoch_id,
+        start_offset,
+        start_commit_seq,
+        start_history_root,
+        Some(meter),
+    )
+}
+
+fn scan_epoch_from_inner(
+    epochs_dir: &Path,
+    expected_epoch_id: u64,
+    start_offset: u64,
+    start_commit_seq: u64,
+    start_history_root: ContentDigest,
+    mut meter: Option<&mut ReceiptProofMeter>,
+) -> Result<EpochScanReport, EpochLedgerError> {
     let path = epoch_file_path(epochs_dir, expected_epoch_id);
     let mut file = File::open(&path)?;
     let file_len = file.metadata()?.len();
@@ -294,6 +334,9 @@ pub(crate) fn scan_epoch_from(
         });
     }
 
+    if let Some(meter) = meter.as_deref_mut() {
+        meter.charge_bytes(EPOCH_HEADER_LEN as u64)?;
+    }
     let mut header_buf = [0_u8; EPOCH_HEADER_LEN];
     file.read_exact(&mut header_buf)?;
     let header = EpochHeader::decode(&header_buf, expected_epoch_id)?;
@@ -328,6 +371,9 @@ pub(crate) fn scan_epoch_from(
                 kind: EpochCorruptionKind::TrailerMagic,
             })?;
         file.seek(SeekFrom::Start(trailer_pos))?;
+        if let Some(meter) = meter.as_deref_mut() {
+            meter.charge_bytes(EPOCH_RECORD_TRAILER_LEN as u64)?;
+        }
         let mut trailer_buf = [0_u8; EPOCH_RECORD_TRAILER_LEN];
         file.read_exact(&mut trailer_buf)?;
         let trailer_root = decode_trailer(&trailer_buf, expected_epoch_id, trailer_pos)?;
@@ -342,7 +388,19 @@ pub(crate) fn scan_epoch_from(
 
     file.seek(SeekFrom::Start(start_offset))?;
     let mut tail_bytes = Vec::new();
-    file.read_to_end(&mut tail_bytes)?;
+    if let Some(meter) = meter.as_deref_mut() {
+        let tail_len = file_len - start_offset;
+        meter.charge_bytes(tail_len)?;
+        // Do not let an externally growing file escape the admitted allocation/read bound.
+        (&mut file).take(tail_len).read_to_end(&mut tail_bytes)?;
+        if tail_bytes.len() as u64 != tail_len || file.metadata()?.len() != file_len {
+            return Err(EpochLedgerError::LiveStateDivergence(
+                "epoch size changed during bounded receipt verification",
+            ));
+        }
+    } else {
+        file.read_to_end(&mut tail_bytes)?;
+    }
 
     parse_tail_records(
         &tail_bytes,
@@ -351,6 +409,7 @@ pub(crate) fn scan_epoch_from(
         start_offset,
         start_commit_seq,
         start_history_root,
+        meter,
     )
 }
 
@@ -361,6 +420,7 @@ fn parse_tail_records(
     start_offset: u64,
     start_commit_seq: u64,
     start_history_root: ContentDigest,
+    mut meter: Option<&mut ReceiptProofMeter>,
 ) -> Result<EpochScanReport, EpochLedgerError> {
     let mut cursor = 0_usize;
     let mut expected_seq = start_commit_seq;
@@ -368,6 +428,9 @@ fn parse_tail_records(
     let mut records = Vec::new();
 
     while cursor < tail_bytes.len() {
+        if let Some(meter) = meter.as_deref_mut() {
+            meter.charge_records(1)?;
+        }
         let rec_abs_offset = start_offset
             .checked_add(cursor as u64)
             .ok_or(EpochLedgerError::SequenceExhausted)?;
