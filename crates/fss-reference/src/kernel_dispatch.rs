@@ -887,14 +887,6 @@ impl StaticKernelDispatcher {
             );
         }
 
-        // Map node_id -> primary output tensor name from frozen Model IR.
-        let mut node_primary_out: BTreeMap<&str, &str> = BTreeMap::new();
-        for node in graph.nodes() {
-            if let Some(first_out) = node.outputs().first() {
-                node_primary_out.insert(node.id(), first_out.as_str());
-            }
-        }
-
         let (optimized, prepared_plan_digest, total_macs, decisions) = match policy.backend {
             KernelBackend::OptimizedCpuV1 => {
                 let opt = OptimizedGraph::prepare(graph, constants, cx)?;
@@ -914,9 +906,9 @@ impl StaticKernelDispatcher {
                     } else {
                         None
                     };
-                    let (offset, aligned_bytes) = node_primary_out
-                        .get(desc.node_id.as_str())
-                        .and_then(|out_name| slot_map.get(out_name).copied())
+                    let (offset, aligned_bytes) = slot_map
+                        .get(desc.output_name.as_str())
+                        .copied()
                         .unwrap_or((0, 0));
                     decs.push(NodeDispatchDecision {
                         step_index: desc.step_index,

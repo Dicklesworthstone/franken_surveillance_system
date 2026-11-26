@@ -25,7 +25,7 @@
 use std::error::Error;
 use std::fmt;
 
-use fss_core::{CanonicalDecoder, CanonicalEncoder, ContentDigest, Sha256Hasher};
+use fss_core::{CanonicalDecoder, CanonicalEncoder, ContentDigest, DigestAlgorithm, Sha256Hasher};
 use fss_tensor::{Shape, Tensor};
 
 use crate::preprocess::{ImageBytes, ResizeAspect, ResizeFilter, ResizeGeometry, ResizeOptions};
@@ -622,9 +622,22 @@ pub fn unfused_reference_preprocess(
     };
 
     // Stage 1: Unfused HWC F32 resized/letterboxed buffer.
-    let mut stage1_hwc = vec![0.0_f32; th * tw * image.channels];
+    let plane = th
+        .checked_mul(tw)
+        .ok_or_else(|| FusionLawError::InvalidConfig("target pixel count overflow".to_owned()))?;
+    let stage1_len = plane
+        .checked_mul(image.channels)
+        .ok_or_else(|| FusionLawError::InvalidConfig("stage1 buffer length overflow".to_owned()))?;
+    let stage2_len = plane
+        .checked_mul(out_c)
+        .ok_or_else(|| FusionLawError::InvalidConfig("stage2 buffer length overflow".to_owned()))?;
+    let mut stage1_hwc = vec![0.0_f32; stage1_len];
     for y in 0..th {
         for x in 0..tw {
+            let flat = y * tw + x;
+            if flat.is_multiple_of(1024) {
+                cx.checkpoint("fusion-oracle:resize-sample")?;
+            }
             for c in 0..image.channels {
                 let val = if y < g.top
                     || y - g.top >= g.image_height
@@ -638,14 +651,14 @@ pub fn unfused_reference_preprocess(
                 } else {
                     oracle_sample(image, y - g.top, x - g.left, c, g, options.filter)
                 };
-                stage1_hwc[(y * tw + x) * image.channels + c] = val;
+                stage1_hwc[flat * image.channels + c] = val;
             }
         }
     }
 
     // Stage 2: Unfused HWC F32 channel conversion buffer.
-    let mut stage2_color = vec![0.0_f32; th * tw * out_c];
-    for pix in 0..(th * tw) {
+    let mut stage2_color = vec![0.0_f32; stage2_len];
+    for pix in 0..plane {
         match program.channel_transform {
             ChannelTransform::Rgb => {
                 for c in 0..3 {
@@ -673,15 +686,19 @@ pub fn unfused_reference_preprocess(
     let stage3_scaled: Vec<f32> = stage2_color.iter().map(|&v| v * scale).collect();
 
     // Stage 4: Unfused HWC -> NCHW layout transpose buffer.
-    let plane = th * tw;
-    let mut nchw = vec![0.0_f32; out_c * plane];
+    let mut nchw = vec![0.0_f32; stage2_len];
     for pix in 0..plane {
         for c in 0..out_c {
             nchw[c * plane + pix] = stage3_scaled[pix * out_c + c];
         }
     }
 
-    let intermediate_bytes = (stage1_hwc.len() + stage2_color.len() + stage3_scaled.len()) * 4;
+    let intermediate_bytes = stage1_hwc
+        .len()
+        .checked_add(stage2_color.len())
+        .and_then(|n| n.checked_add(stage3_scaled.len()))
+        .and_then(|n| n.checked_mul(4))
+        .ok_or_else(|| FusionLawError::InvalidConfig("intermediate byte overflow".to_owned()))?;
     let tensor = Tensor::from_values(
         Shape::new(vec![1, out_c, th, tw]).map_err(|e| FusionLawError::Execution(e.to_string()))?,
         &nchw,
@@ -726,8 +743,8 @@ pub fn certify_preprocess_fusion(
     } else {
         FusionVerificationVerdict::DivergenceDetected
     };
-    let canonical_unfused_digest = hash_f32_slice(&unfused_vals, "preprocess_output");
-    let canonical_fused_digest = hash_f32_slice(&fused_vals, "preprocess_output");
+    let canonical_unfused_digest = hash_f32_slice(&unfused_vals, "preprocess_output")?;
+    let canonical_fused_digest = hash_f32_slice(&fused_vals, "preprocess_output")?;
 
     if verdict != FusionVerificationVerdict::CertifiedBitExact {
         return Err(FusionLawError::FusionDivergence(format!(
@@ -799,8 +816,8 @@ pub fn certify_identity_resize_fusion(
             "identity resize diverged from strict execute_bytes by {max_ulp} ULPs"
         )));
     }
-    let strict_digest = hash_f32_slice(&strict_vals, "preprocess_output");
-    let resized_digest = hash_f32_slice(&resized_vals, "preprocess_output");
+    let strict_digest = hash_f32_slice(&strict_vals, "preprocess_output")?;
+    let resized_digest = hash_f32_slice(&resized_vals, "preprocess_output")?;
     let mut receipt = ModelFusionLawReceipt {
         format_version: MODEL_FUSION_WIRE_VERSION,
         law_kind: FusionLawKind::PreprocessIdentityResize,
@@ -898,7 +915,11 @@ pub fn fused_postprocess_decode_nms(
     // Conservative monotone lower bound on logit `x` such that `sigmoid(x) >= threshold`.
     let p = f64::from(config.score_threshold);
     let exact_logit = (p / (1.0 - p)).ln() as f32;
-    let conservative_logit_lb = exact_logit.next_down().next_down();
+    let conservative_logit_lb = if exact_logit.is_finite() {
+        exact_logit.next_down().next_down()
+    } else {
+        f32::NEG_INFINITY
+    };
 
     let mut skipped: u64 = 0;
     let mut candidates: Vec<FusedDetection> = Vec::new();
@@ -965,9 +986,9 @@ pub fn certify_postprocess_fusion(
             .map_err(|e| FusionLawError::MalformedWire(e.to_string()))?,
     );
 
-    let input_digest = hash_proposals(proposals);
-    let unfused_digest = hash_detections(&unfused);
-    let fused_digest = hash_detections(&fused);
+    let input_digest = hash_proposals(proposals)?;
+    let unfused_digest = hash_detections(&unfused)?;
+    let fused_digest = hash_detections(&fused)?;
 
     let mut receipt = ModelFusionLawReceipt {
         format_version: MODEL_FUSION_WIRE_VERSION,
@@ -1100,7 +1121,7 @@ fn f32_to_ordered_u32(v: f32) -> u32 {
     }
 }
 
-fn hash_f32_slice(values: &[f32], tag: &str) -> ContentDigest {
+fn hash_f32_slice(values: &[f32], tag: &str) -> Result<ContentDigest, FusionLawError> {
     let mut h = Sha256Hasher::new();
     h.update(MODEL_FUSION_LAW_RECEIPT_DOMAIN.as_bytes());
     h.update(tag.as_bytes());
@@ -1108,10 +1129,13 @@ fn hash_f32_slice(values: &[f32], tag: &str) -> ContentDigest {
     for v in values {
         h.update(&v.to_bits().to_be_bytes());
     }
-    ContentDigest::sha256(&h.finalize().unwrap_or([0_u8; 32]))
+    let bytes = h
+        .finalize()
+        .map_err(|e| FusionLawError::MalformedWire(e.to_string()))?;
+    Ok(ContentDigest::new(DigestAlgorithm::Sha256, bytes))
 }
 
-fn hash_proposals(proposals: &[RawBoxProposal]) -> ContentDigest {
+fn hash_proposals(proposals: &[RawBoxProposal]) -> Result<ContentDigest, FusionLawError> {
     let mut h = Sha256Hasher::new();
     h.update(MODEL_FUSION_LAW_RECEIPT_DOMAIN.as_bytes());
     h.update(b"raw_proposals");
@@ -1123,10 +1147,13 @@ fn hash_proposals(proposals: &[RawBoxProposal]) -> ContentDigest {
             h.update(&coord.to_bits().to_be_bytes());
         }
     }
-    ContentDigest::sha256(&h.finalize().unwrap_or([0_u8; 32]))
+    let bytes = h
+        .finalize()
+        .map_err(|e| FusionLawError::MalformedWire(e.to_string()))?;
+    Ok(ContentDigest::new(DigestAlgorithm::Sha256, bytes))
 }
 
-fn hash_detections(detections: &[FusedDetection]) -> ContentDigest {
+fn hash_detections(detections: &[FusedDetection]) -> Result<ContentDigest, FusionLawError> {
     let mut h = Sha256Hasher::new();
     h.update(MODEL_FUSION_LAW_RECEIPT_DOMAIN.as_bytes());
     h.update(b"fused_detections");
@@ -1138,7 +1165,10 @@ fn hash_detections(detections: &[FusedDetection]) -> ContentDigest {
             h.update(&coord.to_bits().to_be_bytes());
         }
     }
-    ContentDigest::sha256(&h.finalize().unwrap_or([0_u8; 32]))
+    let bytes = h
+        .finalize()
+        .map_err(|e| FusionLawError::MalformedWire(e.to_string()))?;
+    Ok(ContentDigest::new(DigestAlgorithm::Sha256, bytes))
 }
 
 fn decode_usize(dec: &mut CanonicalDecoder<'_>) -> Result<usize, FusionLawError> {

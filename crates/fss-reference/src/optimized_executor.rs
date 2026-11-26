@@ -303,6 +303,7 @@ struct Step {
     kernel: Kernel,
     sources: Vec<Source>,
     output: usize,
+    output_name: String,
     output_len: usize,
     release: Vec<usize>,
 }
@@ -320,6 +321,8 @@ pub struct OptimizedStepDescriptor {
     pub kernel_label: &'static str,
     /// True iff this step statically fell back to the single-node scalar reference kernel.
     pub is_scalar_fallback: bool,
+    /// Final output tensor name produced by this step (tracks fused post-SiLU output names).
+    pub output_name: String,
     /// Number of F32 elements produced by this step.
     pub output_len: usize,
 }
@@ -629,6 +632,7 @@ impl OptimizedGraph {
                 kernel,
                 sources: step_sources,
                 output,
+                output_name,
                 output_len: out.shape().num_elements()?,
                 release: Vec::new(),
             });
@@ -758,6 +762,7 @@ impl OptimizedGraph {
                 op: step.op,
                 kernel_label: step.kernel.label(),
                 is_scalar_fallback: matches!(step.kernel, Kernel::Reference(_)),
+                output_name: step.output_name.clone(),
                 output_len: step.output_len,
             })
             .collect()
