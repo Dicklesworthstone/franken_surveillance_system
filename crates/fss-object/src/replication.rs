@@ -45,7 +45,7 @@ pub const MAX_REPLICATION_LEDGER_WIRE_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_REPLICA_ID_BYTES: usize = 128;
 /// Maximum UTF-8 bytes in descriptive labels (`provider_tuple`, reasons).
 pub const MAX_REPLICA_LABEL_BYTES: usize = 256;
-/// Maximum UTF-8 bytes in repair obligation identifiers (`repair:<replica_id>:<challenge_id>`).
+/// Maximum UTF-8 bytes in repair obligation identifiers.
 pub const MAX_OBLIGATION_ID_BYTES: usize = 288;
 /// Maximum UTF-8 bytes in residency region identifiers.
 pub const MAX_RESIDENCY_REGION_BYTES: usize = 64;
@@ -767,6 +767,14 @@ impl RetrievabilityChallengeReceipt {
             && self.egress_bytes > 0
     }
 
+    fn legacy_repair_id(&self) -> String {
+        format!("repair:{}:{}", self.replica_id, self.challenge_id)
+    }
+
+    fn receipt_repair_id(&self) -> String {
+        format!("repair-by-receipt:{}", self.receipt_digest)
+    }
+
     fn resolves_challenge(&self, failure: &Self) -> bool {
         self.outcome == ChallengeOutcome::Passed
             && failure.outcome != ChallengeOutcome::Passed
@@ -995,6 +1003,23 @@ pub struct RepairObligation {
 }
 
 impl RepairObligation {
+    fn from_failure(
+        obligation_id: String,
+        failure: &RetrievabilityChallengeReceipt,
+        resolver: Option<ContentDigest>,
+    ) -> Self {
+        Self {
+            obligation_id,
+            replica_id: failure.replica_id.clone(),
+            failed_generation: failure.replica_generation,
+            action: failure.repair_action,
+            triggering_challenge_digest: failure.receipt_digest,
+            opened_at: failure.challenged_at,
+            resolved: resolver.is_some(),
+            resolved_by_challenge_digest: resolver,
+        }
+    }
+
     fn encode_canonical(&self, enc: &mut CanonicalEncoder) {
         enc.text(&self.obligation_id);
         enc.text(&self.replica_id);
@@ -1613,11 +1638,7 @@ impl ArchiveReplicationLedger {
             ChallengeOutcome::DigestMismatch
             | ChallengeOutcome::MissingOrTruncated
             | ChallengeOutcome::TimeoutOrIndeterminate => {
-                let obligation_id =
-                    format!("repair:{}:{}", receipt.replica_id, receipt.challenge_id);
-                if !self.repair_obligations.contains_key(&obligation_id)
-                    && self.repair_obligations.len() >= MAX_REPAIR_OBLIGATIONS
-                {
+                if self.repair_obligations.len() >= MAX_REPAIR_OBLIGATIONS {
                     return Err(ReplicationError::BoundsExceeded {
                         observed: self.repair_obligations.len() + 1,
                         maximum: MAX_REPAIR_OBLIGATIONS,
@@ -1645,19 +1666,14 @@ impl ArchiveReplicationLedger {
                         target.last_updated_at = receipt.challenged_at;
                     }
                 }
-                self.repair_obligations.insert(
-                    obligation_id.clone(),
-                    RepairObligation {
-                        obligation_id,
-                        replica_id: receipt.replica_id.clone(),
-                        failed_generation: receipt.replica_generation,
-                        action: receipt.repair_action,
-                        triggering_challenge_digest: receipt.receipt_digest,
-                        opened_at: receipt.challenged_at,
-                        resolved: false,
-                        resolved_by_challenge_digest: None,
-                    },
-                );
+                let mut obligation_id = receipt.legacy_repair_id();
+                if self.repair_obligations.contains_key(&obligation_id) {
+                    // Replica and challenge IDs can both contain the legacy separator.
+                    obligation_id = receipt.receipt_repair_id();
+                }
+                let obligation = RepairObligation::from_failure(obligation_id, &receipt, None);
+                self.repair_obligations
+                    .insert(obligation.obligation_id.clone(), obligation);
             }
         }
 
@@ -2010,6 +2026,11 @@ impl ArchiveReplicationLedger {
                 }
             }
         }
+        let mut unmatched_failures: BTreeSet<_> = challenges
+            .iter()
+            .filter(|c| c.outcome != ChallengeOutcome::Passed)
+            .map(|c| c.receipt_digest)
+            .collect();
         let mut repair_obligations = BTreeMap::new();
         let mut prev_obligation_id: Option<String> = None;
         for _ in 0..obligation_count {
@@ -2032,6 +2053,14 @@ impl ArchiveReplicationLedger {
                     "repair obligation references unknown triggering challenge digest".to_owned(),
                 ));
             };
+            if !unmatched_failures.remove(&o.triggering_challenge_digest)
+                || (o.obligation_id != trigger.legacy_repair_id()
+                    && o.obligation_id != trigger.receipt_repair_id())
+            {
+                return Err(ReplicationError::MalformedWire(
+                    "repair obligation ID or triggering challenge is inconsistent".to_owned(),
+                ));
+            }
             if trigger.replica_id != o.replica_id
                 || trigger.outcome == ChallengeOutcome::Passed
                 || trigger.replica_generation != o.failed_generation
@@ -2068,7 +2097,7 @@ impl ArchiveReplicationLedger {
             ReplicationError::MalformedWire("trailing bytes after replication ledger".to_owned())
         })?;
 
-        let ledger = Self {
+        let mut ledger = Self {
             format_version,
             root_digest,
             contract_basis_digest,
@@ -2081,7 +2110,53 @@ impl ArchiveReplicationLedger {
         if ledger.compute_head_digest()? != stored_head {
             return Err(ReplicationError::ChecksumMismatch);
         }
+        if !unmatched_failures.is_empty() {
+            ledger.restore_displaced_obligations(&unmatched_failures)?;
+        }
         Ok(ledger)
+    }
+
+    /// Older v1 writers could replace a repair row when two pairs of IDs joined to the same
+    /// string. Recover only this identifiable case from the retained challenge history.
+    fn restore_displaced_obligations(
+        &mut self,
+        unmatched: &BTreeSet<ContentDigest>,
+    ) -> Result<(), ReplicationError> {
+        let total = self.repair_obligations.len() + unmatched.len();
+        if total > MAX_REPAIR_OBLIGATIONS {
+            return Err(ReplicationError::BoundsExceeded {
+                observed: total,
+                maximum: MAX_REPAIR_OBLIGATIONS,
+            });
+        }
+        for (idx, failure) in self.challenges.iter().enumerate() {
+            if !unmatched.contains(&failure.receipt_digest) {
+                continue;
+            }
+            let later = &self.challenges[idx + 1..];
+            let displaced = self
+                .repair_obligations
+                .get(&failure.legacy_repair_id())
+                .is_some_and(|existing| {
+                    later.iter().any(|c| c.receipt_digest == existing.triggering_challenge_digest)
+                });
+            if !displaced {
+                return Err(ReplicationError::MalformedWire(
+                    "failed challenge is missing its repair obligation".to_owned(),
+                ));
+            }
+            let resolver = later
+                .iter()
+                .find(|c| c.resolves_challenge(failure))
+                .map(|c| c.receipt_digest);
+            let id = failure.receipt_repair_id();
+            let obligation = RepairObligation::from_failure(id, failure, resolver);
+            self.repair_obligations
+                .insert(obligation.obligation_id.clone(), obligation);
+        }
+        self.head_digest = self.compute_head_digest()?;
+        // Recovery must also fit the persisted wire size ceiling.
+        self.to_canonical_bytes().map(|_| ())
     }
 }
 
@@ -2138,9 +2213,7 @@ fn validate_bounded_text(value: &str, max_len: usize, label: &str) -> Result<(),
 mod tests {
     use super::*;
 
-    #[test]
-    fn restored_verification_requires_a_persisted_passing_receipt() -> Result<(), ReplicationError>
-    {
+    fn test_ledger() -> Result<ArchiveReplicationLedger, ReplicationError> {
         let root = ContentDigest::sha256(b"root");
         let basis = ContentDigest::sha256(b"basis");
         let policy = ReplicationPolicy {
@@ -2150,8 +2223,14 @@ mod tests {
             max_retrievability_staleness_ns: 100,
             policy_digest: ContentDigest::sha256(b"policy"),
         };
-        let auth = ReplicationAuthorityContext::active(basis, 1, 1);
-        let mut ledger = ArchiveReplicationLedger::new(root, basis, policy)?;
+        ArchiveReplicationLedger::new(root, basis, policy)
+    }
+
+    #[test]
+    fn restored_verification_requires_a_persisted_passing_receipt() -> Result<(), ReplicationError>
+    {
+        let mut ledger = test_ledger()?;
+        let auth = ReplicationAuthorityContext::active(ledger.contract_basis_digest(), 1, 1);
         ledger.register_replica(
             &auth,
             "r",
@@ -2173,6 +2252,94 @@ mod tests {
         let persisted = ledger.to_canonical_bytes()?;
         assert!(matches!(
             ArchiveReplicationLedger::from_canonical_bytes(&persisted),
+            Err(ReplicationError::MalformedWire(_))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn colliding_legacy_ids_preserve_both_repairs_across_restart() -> Result<(), ReplicationError> {
+        let mut ledger = test_ledger()?;
+        let auth = ReplicationAuthorityContext::active(ledger.contract_basis_digest(), 1, 1);
+        let root = ledger.root_digest();
+        for (replica, challenge) in [("a:b", "c"), ("a", "b:c")] {
+            ledger.register_replica(
+                &auth,
+                replica,
+                "provider",
+                "domain",
+                "region",
+                TimestampNs(0),
+                false,
+            )?;
+            let failure = RetrievabilityChallengeInput {
+                replica_id: replica.to_owned(),
+                challenge_id: challenge.to_owned(),
+                replica_generation: 1,
+                ranges: vec![ChallengeRange {
+                    offset: 0,
+                    length: 1,
+                }],
+                expected_digest: root,
+                observed_digest: None,
+                latency_ms: 10,
+                egress_bytes: 0,
+                class_b_ops: 1,
+                outcome: ChallengeOutcome::MissingOrTruncated,
+                challenged_at: TimestampNs(1),
+            };
+            let receipt = ledger.record_challenge(&auth, failure.clone(), false)?;
+            assert_eq!(receipt, ledger.record_challenge(&auth, failure, false)?);
+        }
+
+        let legacy_id = "repair:a:b:c";
+        let first = ledger.challenges[0].clone();
+        let second = ledger.challenges[1].clone();
+        assert_eq!(ledger.repair_obligations.len(), 2);
+        assert_eq!(
+            ledger.repair_obligations[legacy_id].triggering_challenge_digest,
+            first.receipt_digest
+        );
+        assert_eq!(
+            ledger.repair_obligations[&second.receipt_repair_id()].triggering_challenge_digest,
+            second.receipt_digest
+        );
+        let wire = ledger.to_canonical_bytes()?;
+        let reopened = ArchiveReplicationLedger::from_canonical_bytes(&wire)?;
+        assert_eq!(reopened, ledger);
+
+        // Recreate an older persisted v1 snapshot in which the second failure displaced the first.
+        ledger.repair_obligations.clear();
+        ledger.repair_obligations.insert(
+            legacy_id.to_owned(),
+            RepairObligation::from_failure(legacy_id.to_owned(), &second, None),
+        );
+        ledger.head_digest = ledger.compute_head_digest()?;
+        let old_wire = ledger.to_canonical_bytes()?;
+        let recovered = ArchiveReplicationLedger::from_canonical_bytes(&old_wire)?;
+        assert_eq!(
+            recovered.repair_obligations[legacy_id].triggering_challenge_digest,
+            second.receipt_digest
+        );
+        assert_eq!(
+            recovered.repair_obligations[&first.receipt_repair_id()].triggering_challenge_digest,
+            first.receipt_digest
+        );
+        assert_eq!(
+            recovered.evaluate_readiness(TimestampNs(2)).open_repair_obligations,
+            2
+        );
+        let repaired_wire = recovered.to_canonical_bytes()?;
+        assert_eq!(
+            ArchiveReplicationLedger::from_canonical_bytes(&repaired_wire)?,
+            recovered
+        );
+
+        // A missing obligation without the legacy collision must still be refused.
+        ledger.repair_obligations.clear();
+        ledger.head_digest = ledger.compute_head_digest()?;
+        assert!(matches!(
+            ArchiveReplicationLedger::from_canonical_bytes(&ledger.to_canonical_bytes()?),
             Err(ReplicationError::MalformedWire(_))
         ));
         Ok(())
