@@ -206,6 +206,38 @@ fn crosswalk_reconciles_all_layers_legacy_spellings_and_refuses_ambiguity_or_unk
     Ok(())
 }
 
+fn assert_custody_refusal(
+    coord: &mut AtpLifecycleCoordinator,
+    timestamp: TimestampNs,
+    event: LifecycleEvent,
+) -> TestResult {
+    let before = coord.clone();
+    let fence = coord.active_fence();
+    let live = coord
+        .apply_event(fence, timestamp, event.clone(), 0, 1)
+        .err()
+        .ok_or("accepted an unsupported custody claim")?;
+    assert!(
+        matches!(live, AtpLifecycleError::InvalidInput(_)),
+        "{live:?}"
+    );
+    assert_eq!(*coord, before);
+
+    // A well-formed, checksummed record with the same claim must fail on cold replay too.
+    let mut journal = before.journal().clone();
+    journal.append(fence, timestamp, event, 0, 1)?;
+    let framed = journal.export_framed_prefix(journal.records().len())?;
+    let cold = AtpLifecycleCoordinator::resume_from_framed_bytes(
+        before.spec().clone(),
+        before.authority().clone(),
+        &framed,
+    )
+    .err()
+    .ok_or("replayed an unsupported custody claim")?;
+    assert_eq!(live, cold);
+    Ok(())
+}
+
 #[test]
 fn full_semantic_and_archive_lifecycle_enforces_root_last_non_collapse_and_por() -> TestResult {
     let spec = base_spec(true);
@@ -539,9 +571,34 @@ fn full_semantic_and_archive_lifecycle_enforces_root_last_non_collapse_and_por()
     assert_eq!(coord.counters().verified_objects, 3);
     assert_eq!(coord.counters().committed_bytes, 0);
 
-    // 5. MarkChildrenVerified -> CloseGraph -> SatisfyDurability -> MarkExposureReady
+    // 5. Close the graph and check exposure and durability independently.
     coord.apply_event(10, next_ts(), LifecycleEvent::MarkChildrenVerified, 0, 1)?;
     coord.apply_event(10, next_ts(), LifecycleEvent::CloseGraph, 0, 1)?;
+
+    // Stale privacy_epoch on ExposureReady must refuse.
+    assert!(matches!(
+        coord.apply_event(
+            10,
+            next_ts(),
+            LifecycleEvent::MarkExposureReady { policy_epoch: 99 },
+            0,
+            1,
+        ),
+        Err(AtpLifecycleError::StaleAnchorOrGeneration { .. })
+    ));
+    coord.apply_event(
+        10,
+        next_ts(),
+        LifecycleEvent::MarkExposureReady { policy_epoch: 3 },
+        0,
+        1,
+    )?;
+
+    let publish = LifecycleEvent::PublishArchiveRoot {
+        root_digest: spec.manifest_root,
+        provider_tuple: "s3://owner-archive-bucket/site-1/gen-1".to_owned(),
+    };
+    assert_custody_refusal(&mut coord, next_ts(), publish.clone())?;
 
     // Insufficient failure domains must refuse.
     assert!(matches!(
@@ -569,24 +626,48 @@ fn full_semantic_and_archive_lifecycle_enforces_root_last_non_collapse_and_por()
         1,
     )?;
 
-    // Stale privacy_epoch on ExposureReady must refuse.
-    assert!(matches!(
-        coord.apply_event(
-            10,
-            next_ts(),
-            LifecycleEvent::MarkExposureReady { policy_epoch: 99 },
-            0,
-            1,
-        ),
-        Err(AtpLifecycleError::StaleAnchorOrGeneration { .. })
-    ));
-    coord.apply_event(
+    // A provider may publish first, but a sample cannot prove committed reachability yet.
+    let mut remote_first = coord.clone();
+    remote_first.apply_event(10, next_ts(), publish.clone(), 0, 1)?;
+    remote_first.apply_event(
         10,
         next_ts(),
-        LifecycleEvent::MarkExposureReady { policy_epoch: 3 },
+        LifecycleEvent::QualifyReplicas {
+            failure_domains: vec!["fd-rack-a".to_owned(), "fd-rack-b".to_owned()],
+        },
         0,
         1,
     )?;
+    let sampled_at = next_ts();
+    let proof = ProofOfRetrievability {
+        sample_id: "remote-first".to_owned(),
+        root_digest: spec.manifest_root,
+        observed_digest: spec.manifest_root,
+        sampled_bytes: 7168,
+        replica_generation: 1,
+        failure_domain: "fd-rack-b".to_owned(),
+        sampled_at,
+    };
+    let verify = |proof| LifecycleEvent::VerifyRetrievability { proof };
+    assert_custody_refusal(&mut remote_first, sampled_at, verify(proof.clone()))?;
+    let committed_at = next_ts();
+    remote_first.apply_event(
+        10,
+        committed_at,
+        LifecycleEvent::CommitRoot {
+            root_digest: spec.manifest_root,
+            commit_anchor: digest_of("remote-first-ledger-commit"),
+        },
+        0,
+        1,
+    )?;
+    assert_custody_refusal(&mut remote_first, committed_at, verify(proof.clone()))?;
+    let fresh = ProofOfRetrievability {
+        sampled_at: committed_at,
+        ..proof
+    };
+    remote_first.apply_event(10, committed_at, verify(fresh), 0, 1)?;
+    remote_first.apply_event(10, next_ts(), LifecycleEvent::CompleteArchive, 0, 1)?;
 
     // 6. Advance fence -> reject stale fence -> CommitRoot -> PublishArchiveRoot
     coord.apply_event(
@@ -627,16 +708,8 @@ fn full_semantic_and_archive_lifecycle_enforces_root_last_non_collapse_and_por()
         Err(AtpLifecycleError::ReceiptBeforeCommit { .. })
     ));
 
-    coord.apply_event(
-        11,
-        next_ts(),
-        LifecycleEvent::PublishArchiveRoot {
-            root_digest: spec.manifest_root,
-            provider_tuple: "s3://owner-archive-bucket/site-1/gen-1".to_owned(),
-        },
-        0,
-        1,
-    )?;
+    let published_at = next_ts();
+    coord.apply_event(11, published_at, publish, 0, 1)?;
     coord.apply_event(
         11,
         next_ts(),
@@ -666,14 +739,26 @@ fn full_semantic_and_archive_lifecycle_enforces_root_last_non_collapse_and_por()
         sampled_bytes: 7168,
         sampled_at: next_ts(),
     };
-    coord.apply_event(
-        11,
-        next_ts(),
-        LifecycleEvent::VerifyRetrievability { proof: por },
-        0,
-        1,
-    )?;
+    let verify_at = next_ts();
+    for invalid in [
+        ProofOfRetrievability {
+            failure_domain: "unqualified-rack".to_owned(),
+            ..por.clone()
+        },
+        ProofOfRetrievability {
+            sampled_at: TimestampNs(published_at.0 - 1),
+            ..por.clone()
+        },
+        ProofOfRetrievability {
+            sampled_at: TimestampNs(verify_at.0 + 1),
+            ..por.clone()
+        },
+    ] {
+        assert_custody_refusal(&mut coord, verify_at, verify(invalid))?;
+    }
+    coord.apply_event(11, verify_at, verify(por), 0, 1)?;
     coord.apply_event(11, next_ts(), LifecycleEvent::CompleteArchive, 0, 1)?;
+    let before_scrub = coord.build_receipt(true)?;
     coord.apply_event(
         11,
         next_ts(),
@@ -694,6 +779,13 @@ fn full_semantic_and_archive_lifecycle_enforces_root_last_non_collapse_and_por()
     )?;
 
     // Seal semantic receipt and supersede cleanly.
+    assert_custody_refusal(
+        &mut coord,
+        next_ts(),
+        LifecycleEvent::SealReceipt {
+            receipt_digest: before_scrub.receipt_digest,
+        },
+    )?;
     let pre_seal = coord.build_receipt(true)?;
     coord.apply_event(
         11,
@@ -705,6 +797,14 @@ fn full_semantic_and_archive_lifecycle_enforces_root_last_non_collapse_and_por()
         1,
     )?;
     let sealed = coord.build_receipt(true)?;
+    let journal = coord.journal();
+    let framed = journal.export_framed_prefix(journal.records().len())?;
+    let resumed = AtpLifecycleCoordinator::resume_from_framed_bytes(
+        spec.clone(),
+        base_authority(&spec),
+        &framed,
+    )?;
+    assert_eq!(resumed.build_receipt(true)?, sealed);
     assert_eq!(sealed.semantic_state, SemanticTransferState::ReceiptSealed);
     assert_eq!(sealed.archive_state, Some(ArchivePublicationState::Retired));
     assert_eq!(sealed.counters.committed_bytes, 7168);

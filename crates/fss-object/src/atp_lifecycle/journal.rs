@@ -177,7 +177,7 @@ pub enum LifecycleEvent {
     },
     /// Semantic: `RootCommitted -> ReceiptSealed`.
     SealReceipt {
-        /// Canonical sealed receipt commitment digest.
+        /// Digest of the committed receipt built immediately before appending this seal.
         receipt_digest: ContentDigest,
     },
     /// Semantic: `ReceiptSealed -> Superseded`.

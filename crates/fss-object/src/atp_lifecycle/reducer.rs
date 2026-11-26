@@ -930,6 +930,14 @@ impl AtpLifecycleCoordinator {
                     ));
                 }
                 self.ensure_all_children_verified()?;
+                if !matches!(
+                    self.semantic_state,
+                    SemanticTransferState::DurabilitySatisfied | SemanticTransferState::RootCommitted
+                ) {
+                    return Err(AtpLifecycleError::InvalidInput(
+                        "archive publication requires the configured transfer durability".to_owned(),
+                    ));
+                }
                 // Root publication is strictly last: every child in archive mode must already be
                 // at least remote_children_verified when archive object custody is tracked.
                 for child in self.children.values() {
@@ -972,6 +980,32 @@ impl AtpLifecycleCoordinator {
                 self.require_archive_enabled()?;
                 proof.validate_for(self.spec.manifest_root)?;
                 self.transition_archive(ArchivePublicationState::RetrievabilityVerified)?;
+                if self.commit_anchor.is_none() {
+                    return Err(AtpLifecycleError::InvalidInput(
+                        "retrievability requires committed root reachability".to_owned(),
+                    ));
+                }
+                if !self.verified_failure_domains.contains(&proof.failure_domain) {
+                    return Err(AtpLifecycleError::InvalidInput(
+                        "retrievability sample must come from a qualified replica domain".to_owned(),
+                    ));
+                }
+                // Remote publication and ledger commit may occur in either order. A sample
+                // attests to the reachable archive only after both milestones are recorded.
+                let last_root_event = self.journal.records().iter().rev().find(|record| {
+                    matches!(
+                        record.event,
+                        LifecycleEvent::CommitRoot { .. } | LifecycleEvent::PublishArchiveRoot { .. }
+                    )
+                });
+                if last_root_event.is_none_or(|record| proof.sampled_at < record.timestamp_ns)
+                    || proof.sampled_at > timestamp_ns
+                {
+                    return Err(AtpLifecycleError::InvalidInput(
+                        "retrievability sample falls outside the published and committed interval"
+                            .to_owned(),
+                    ));
+                }
                 self.proof_of_retrievability = Some(proof.clone());
             }
 
@@ -1000,20 +1034,19 @@ impl AtpLifecycleCoordinator {
                 self.transition_archive(ArchivePublicationState::Retired)?;
             }
 
-            LifecycleEvent::SealReceipt { receipt_digest: _ } => {
+            LifecycleEvent::SealReceipt { receipt_digest } => {
                 if self.semantic_state != SemanticTransferState::RootCommitted {
                     return Err(AtpLifecycleError::ReceiptBeforeCommit {
                         semantic: self.semantic_state,
                         archive: self.archive_state,
                     });
                 }
-                if let Some(arch) = self.archive_state
-                    && !archive_state_allows_committed_receipt(arch)
-                {
-                    return Err(AtpLifecycleError::ReceiptBeforeCommit {
-                        semantic: self.semantic_state,
-                        archive: Some(arch),
-                    });
+                let expected = self.build_receipt(true)?.receipt_digest;
+                if *receipt_digest != expected {
+                    return Err(AtpLifecycleError::InvalidInput(
+                        "seal digest differs from the committed receipt at this journal head"
+                            .to_owned(),
+                    ));
                 }
                 self.transition_semantic(SemanticTransferState::ReceiptSealed)?;
             }
