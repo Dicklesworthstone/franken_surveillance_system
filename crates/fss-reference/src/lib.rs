@@ -105,6 +105,8 @@ mod hydration;
 /// Scalar image resize/color/normalize reference kernels (FSS-122).
 pub mod image_kernels;
 pub mod ingest;
+/// Static kernel dispatch planner and decision-path receipts (FSS-141).
+pub mod kernel_dispatch;
 mod meaningful_delta;
 pub mod media_fixture;
 /// Non-destructive v1-to-v2 deployment upgrader, format detection, and equivalence receipts.
@@ -126,6 +128,8 @@ pub mod plan_obligation_graph;
 pub mod planned_scalar;
 mod policy;
 pub mod preprocess;
+/// Model preprocess/postprocess fusion laws and 0-ULP reference certification (FSS-143).
+pub mod preprocess_fusion;
 pub mod reference_deployment;
 /// Retained screened movie derivatives and exact local reviewer access/revocation.
 pub mod review_media;
