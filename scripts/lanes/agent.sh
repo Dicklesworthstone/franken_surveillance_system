@@ -86,8 +86,8 @@ import sys
 
 receipt_path = pathlib.Path(sys.argv[1])
 allow_static_only = sys.argv[2] == "1"
-if not receipt_path.is_file():
-    print(f"[FAIL] QL-AGENT-001 verifier: receipt missing: {receipt_path}", file=sys.stderr)
+if receipt_path.is_symlink() or not receipt_path.is_file():
+    print(f"[FAIL] QL-AGENT-001 verifier: receipt missing or symlinked: {receipt_path}", file=sys.stderr)
     sys.exit(2)
 
 try:
@@ -307,6 +307,7 @@ if ((ONLY_STATIC == 0)); then
   run_step "agt-03-core-agent-contracts-and-authority" "epistemic_and_world_envelope" \
     "${CARGO_CMD[@]}" test --locked -p fss-core \
       --test agent_contracts_contract \
+      --test contract_basis_contract \
       --test world_fact_authority_guard_contract
   run_step "agt-04-orientation-context-and-hydration" "orientation_and_context" \
     "${CARGO_CMD[@]}" test --locked -p fss-reference \

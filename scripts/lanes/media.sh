@@ -100,3 +100,13 @@ checkfile 14 mp4-unit-limit crates/fss-container/tests/fixtures/fragmented_av.mp
   --test movie_output_contract \
   --test movie_timing_contract \
   --test demux_malformed_gauntlet
+
+# FSS-054 — bounded pure-Rust scalar decode engine (MJPEG/JPEG, H.264/AVC, H.265/HEVC)
+# conformance, hostile-input refusal, malformed media gauntlets, and custody/gap receipts.
+"${RUN[@]}" cargo --offline test --locked -q -p fss-codec-mjpeg -p fss-codec-h264 -p fss-codec-h265 --lib --tests
+"${RUN[@]}" cargo --offline test --locked -q -p fss-reference \
+  --test decode_jpeg_contract \
+  --test decode_receipt_contract \
+  --test decode_gap_coverage_contract \
+  --test rtpdump_decode_contract \
+  --test rtpdump_custody_decode_contract

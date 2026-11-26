@@ -355,6 +355,7 @@ policy_lane() {
   run github-unavailable-release-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_fss_194_github_unavailable_release.py
   run ql-custody-lane-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_ql_custody_lane.py
   run ql-reference-lane-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_ql_reference_lane.py
+  run ql-security-lane-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_ql_security_lane.py
   run ql-perf-lane-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_ql_perf_lane.py
   run ql-agent-lane-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_ql_agent_lane.py
   run ql-threat-lane-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_ql_threat_lane.py
@@ -372,10 +373,12 @@ policy_lane() {
   run shell-syntax bash -n scripts/qualify.sh scripts/release_qualify.sh scripts/publish_to_github.sh \
     scripts/e2e/run.sh scripts/e2e/lib.sh scripts/e2e/selftest.sh \
     scripts/e2e/fss_035_backup_restore_manifest.sh scripts/e2e/fss_053_media_probe.sh \
+    scripts/e2e/fss_054_pure_rust_decode_engine.sh scripts/e2e/fss_064_multipart_idempotency.sh \
     scripts/e2e/fss_115_fragmented_mp4_cmaf.sh \
     scripts/e2e/fss_141_kernel_dispatch_receipts.sh scripts/e2e/fss_142_packed_tiled_matrix_kernels.sh \
     scripts/e2e/fss_143_preprocess_postprocess_fusion.sh scripts/e2e/fss_150_thermal_pressure_scheduler.sh \
     scripts/e2e/fss_192_release_publication.sh scripts/e2e/fss_194_github_unavailable_release.sh \
+    scripts/e2e/fss_195_claim_evaluator.sh scripts/e2e/fss_241_contract_basis.sh \
     scripts/e2e/test_schedule_001.sh \
     scripts/lanes/adapter.sh scripts/lanes/agent.sh scripts/lanes/archive.sh scripts/lanes/custody.sh \
     scripts/lanes/lab.sh scripts/lanes/media.sh scripts/lanes/model.sh scripts/lanes/perf.sh \
