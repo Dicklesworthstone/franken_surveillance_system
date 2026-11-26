@@ -8,7 +8,7 @@ use std::path::Path;
 
 use fss_core::{ContentDigest, DigestAlgorithm};
 
-use crate::catalog::RootStatus;
+use crate::catalog::{RootStatus, VirtualRootCatalog};
 
 use crate::compaction::{
     CompactionPassReport, CompactionPolicy, PackCompactionAction, PackCompactionReceipt,
@@ -83,29 +83,25 @@ impl PackStore {
     /// Durably commits deletion tombstones for `batch` (both in the virtual root catalog and the
     /// append-only object tombstone log), removing reclaimed digests from the live index and
     /// returning a verified [`TombstoneCommitProof`] required before physical compaction/unlink.
+    ///
+    /// Before changing either tombstone owner, rechecks direct root and metadata references
+    /// against the current catalog. A surviving reference, duplicate import, or conflicting
+    /// prior root tombstone refuses the entire batch. Callers still own hold authority and
+    /// format-specific child-graph revalidation; an I/O failure may leave partial durable work.
     pub fn commit_eviction_tombstones(
         &self,
         batch: &RetentionEvictionBatch,
         ledger_commit_seq: Option<u64>,
     ) -> Result<TombstoneCommitProof, PackError> {
         let mut committed_import_ids = Vec::with_capacity(batch.tombstones.len());
-        let mut digest_reasons: Vec<(ContentDigest, ContentDigest)> = Vec::new();
-        let reclaimable_set: BTreeSet<ContentDigest> =
-            batch.reclaimable_digests.iter().copied().collect();
-
         // Serialize direct-reference verification/publication with object tombstone commitment.
-        // The caller still owns retention-plan and shared-reference revalidation.
         let mut catalog_guard = self.catalog.write().map_err(|_| PackError::LockPoisoned)?;
+        let digest_reasons = preflight_eviction(&catalog_guard, batch)?;
         for tomb in &batch.tombstones {
             if catalog_guard.get_root(&tomb.import_id).is_some() {
                 let _ = catalog_guard.tombstone_root(&tomb.import_id, tomb.reason_digest)?;
             }
             committed_import_ids.push(tomb.import_id.clone());
-            for &digest in &tomb.object_digests {
-                if reclaimable_set.contains(&digest) {
-                    digest_reasons.push((digest, tomb.reason_digest));
-                }
-            }
         }
 
         // Durable fsync of object-level tombstones BEFORE modifying the live index or unlinking packs.
@@ -368,4 +364,95 @@ impl PackStore {
             cut_point,
         )
     }
+}
+
+/// The caller holds the catalog write lock through this check and the resulting deletions.
+/// Only catalog roots actually retiring in this batch may stop protecting their direct bytes.
+fn preflight_eviction(
+    catalog: &VirtualRootCatalog,
+    batch: &RetentionEvictionBatch,
+) -> Result<Vec<(ContentDigest, ContentDigest)>, PackError> {
+    let reclaimable: BTreeSet<_> = batch.reclaimable_digests.iter().copied().collect();
+    let mut seen_imports = BTreeSet::new();
+    let mut retiring_live_roots = BTreeSet::new();
+    let mut digest_reasons = Vec::new();
+    for tomb in &batch.tombstones {
+        if tomb.import_id.is_empty() || !seen_imports.insert(tomb.import_id.as_str()) {
+            return Err(PackError::RetentionPolicyViolation {
+                detail: "eviction batch has an empty or duplicate import_id".to_owned(),
+            });
+        }
+        if tomb.reason_digest.algorithm() != DigestAlgorithm::Sha256 {
+            return Err(PackError::UnsupportedDigestAlgorithm(
+                tomb.reason_digest.algorithm(),
+            ));
+        }
+        if let Some(entry) = catalog.get_root(&tomb.import_id) {
+            match &entry.status {
+                RootStatus::Live => {
+                    retiring_live_roots.insert(tomb.import_id.as_str());
+                }
+                RootStatus::Tombstoned { reason_digest, .. }
+                    if *reason_digest != tomb.reason_digest =>
+                {
+                    return Err(PackError::TombstoneConflict {
+                        root_id: tomb.import_id.clone(),
+                        existing_reason: *reason_digest,
+                        attempted_reason: tomb.reason_digest,
+                    });
+                }
+                RootStatus::Superseded { .. } | RootStatus::Tombstoned { .. } => {}
+            }
+        }
+        // Object-only retention records remain supported, but an absent catalog identity
+        // exempts no live root from the protection check below.
+        for &digest in &tomb.object_digests {
+            if digest.algorithm() != DigestAlgorithm::Sha256 {
+                return Err(PackError::UnsupportedDigestAlgorithm(digest.algorithm()));
+            }
+            if reclaimable.contains(&digest) {
+                digest_reasons.push((digest, tomb.reason_digest));
+            }
+        }
+    }
+    let deleted: BTreeSet<_> = digest_reasons.iter().map(|(digest, _)| *digest).collect();
+    if deleted.is_empty() {
+        return Ok(digest_reasons);
+    }
+
+    // Page through current live descriptors rather than copying the complete catalog.
+    // Holding its write lock makes the scan and subsequent mutation one publication boundary.
+    let mut cursor: Option<String> = None;
+    loop {
+        let page = catalog.list_live_roots(cursor.as_deref(), 512);
+        for entry in &page.entries {
+            let record = &entry.record;
+            if !retiring_live_roots.contains(record.root_id.as_str())
+                && (deleted.contains(&record.root_digest)
+                    || record
+                        .metadata_digest
+                        .is_some_and(|digest| deleted.contains(&digest)))
+            {
+                return Err(PackError::RetentionPolicyViolation {
+                    detail: format!(
+                        "eviction would delete bytes referenced by surviving live root '{}'",
+                        record.root_id
+                    ),
+                });
+            }
+        }
+        if !page.has_more {
+            break;
+        }
+        let next = page.next_cursor.ok_or_else(|| PackError::CorruptCatalog {
+            detail: "live root eviction scan omitted its continuation cursor".to_owned(),
+        })?;
+        if cursor.as_ref().is_some_and(|previous| next <= *previous) {
+            return Err(PackError::CorruptCatalog {
+                detail: "live root eviction scan did not advance".to_owned(),
+            });
+        }
+        cursor = Some(next);
+    }
+    Ok(digest_reasons)
 }
