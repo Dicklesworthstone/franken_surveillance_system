@@ -4,7 +4,7 @@
 //!
 //! Semantic plane: `"authority"`.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
@@ -17,13 +17,13 @@ use fss_core::{
 };
 use fss_ipc::{
     ActiveScrubStatus, BoundedControlOp, CameraLiveStatus, ControlOperationState, DaemonIpcHandler,
-    DeltaEventSummary, DeltaStreamSink, ERR_IPC_SERVER_SHUTDOWN_001, ERR_IPC_WIRE_CORRUPT_001,
+    CameraRetentionForecast, DeltaEventSummary, DeltaStreamSink, ERR_IPC_SERVER_SHUTDOWN_001, ERR_IPC_WIRE_CORRUPT_001,
     IpcResponse, IpcServer, IpcServerConfig, LiveDaemonStatus, RequestContext, RingWatermarkStatus,
     StreamEndReason, parse_error_id,
 };
 
 pub use crate::control_client::{
-    DaemonRuntimeDescriptor, query_live_daemon_status, request_live_daemon_stop,
+    DaemonRuntimeDescriptor, query_camera_retention_forecast, query_live_daemon_status, request_live_daemon_stop,
 };
 use crate::error::{DaemonError, ERR_DAEMON_CONTROL_APPROVAL_001, ERR_DAEMON_UNKNOWN_CAMERA_001};
 
@@ -183,6 +183,7 @@ pub struct ControlPlaneShared {
     next_op_seq: AtomicU64,
     shutdown_requested: AtomicBool,
     status_snapshot: RwLock<ControlStatusSnapshot>,
+    retention_forecasts: RwLock<BTreeMap<String, CameraRetentionForecast>>,
     delta_log: Mutex<BufferedDeltaLog>,
     delta_notify: Condvar,
     control_queue: Mutex<VecDeque<PendingControlCommand>>,
@@ -210,12 +211,22 @@ impl ControlPlaneShared {
             next_op_seq: AtomicU64::new(1),
             shutdown_requested: AtomicBool::new(false),
             status_snapshot: RwLock::new(initial_status),
+            retention_forecasts: RwLock::new(BTreeMap::new()),
             delta_log: Mutex::new(BufferedDeltaLog::new(initial_seq)),
             delta_notify: Condvar::new(),
             control_queue: Mutex::new(VecDeque::new()),
             forwarded_batches: ForwardedBatches::default(),
             forward_writer,
         })
+    }
+
+    pub(crate) fn publish_retention_forecasts(
+        &self,
+        rows: BTreeMap<String, CameraRetentionForecast>,
+    ) {
+        if let Ok(mut snapshot) = self.retention_forecasts.write() {
+            *snapshot = rows;
+        }
     }
 
     /// Publishes an updated live status snapshot for O(1) IPC reads.
@@ -374,6 +385,29 @@ impl DaemonIpcHandler for DaemonIpcHandlerAdapter {
             batch_bytes,
             approval_digest,
         )
+    }
+
+    fn query_retention_forecast(&self, ctx: &RequestContext, camera_id: &str) -> IpcResponse {
+        let Ok(rows) = self.shared.retention_forecasts.read() else {
+            return make_refused(
+                ctx.request_id,
+                ERR_IPC_WIRE_CORRUPT_001,
+                "forecast unavailable",
+                true,
+            );
+        };
+        match rows.get(camera_id) {
+            Some(row) => IpcResponse::RetentionForecast {
+                request_id: ctx.request_id,
+                forecast: row.clone(),
+            },
+            None => make_refused(
+                ctx.request_id,
+                ERR_DAEMON_UNKNOWN_CAMERA_001,
+                "unknown camera",
+                false,
+            ),
+        }
     }
 
     fn query_live_status(

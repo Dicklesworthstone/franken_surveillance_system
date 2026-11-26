@@ -82,6 +82,10 @@ fn canonical_wire_round_trip_every_message_variant() -> TestResult {
     }
 
     let requests = vec![
+        IpcRequest::QueryRetentionForecast {
+            request_id: 11,
+            camera_id: "sensor:front".to_owned(),
+        },
         IpcRequest::SubmitDeltaBatch {
             request_id: 1,
             idempotency_key: digest_a,
@@ -167,6 +171,23 @@ fn canonical_wire_round_trip_every_message_variant() -> TestResult {
 
     let err_id = parse_error_id(ERR_DAEMON_OFFLINE_001)?;
     let responses = vec![
+        IpcResponse::RetentionForecast {
+            request_id: 11,
+            forecast: fss_ipc::CameraRetentionForecast {
+                camera_id: "sensor:front".to_owned(),
+                assessed_at_ns: i128::MAX,
+                retain_hot_ns: 40,
+                max_sensor_bytes: 100,
+                retained_windows: 1,
+                retained_bytes: 30,
+                oldest: Some(fss_ipc::OldestRetentionWindow {
+                    capture_start_ns: i128::MAX - 20,
+                    capture_end_ns: i128::MAX - 15,
+                    age_deadline_ns: i128::MAX,
+                    known_pin: true,
+                }),
+            },
+        },
         IpcResponse::DeltaBatchCommitted {
             request_id: 1,
             commit_sequence: 11,

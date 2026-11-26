@@ -15,8 +15,8 @@ pub use crate::handshake::{
     IPC_HANDSHAKE_DIGEST_DOMAIN, MAX_DEPLOYMENT_ID_BYTES, MAX_REASON_BYTES,
 };
 pub use crate::status::{
-    ActiveScrubStatus, CameraLiveStatus, LiveDaemonStatus, MAX_CAMERA_ID_BYTES,
-    MAX_CAMERAS_IN_STATUS, RingWatermarkStatus,
+    ActiveScrubStatus, CameraLiveStatus, CameraRetentionForecast, LiveDaemonStatus, MAX_CAMERA_ID_BYTES,
+    MAX_CAMERAS_IN_STATUS, OldestRetentionWindow, RingWatermarkStatus,
 };
 use crate::transport::MAX_REQUEST_PAYLOAD_BYTES;
 
@@ -45,6 +45,13 @@ pub enum IpcRequest {
         batch_bytes: Vec<u8>,
         /// Optional operator approval digest when required by policy.
         approval_digest: Option<ContentDigest>,
+    },
+    /// Query the last assessed time-policy forecast for one configured camera.
+    QueryRetentionForecast {
+        /// Client-assigned correlation identifier.
+        request_id: u64,
+        /// Configured source identifier.
+        camera_id: String,
     },
     /// Query live supervisor telemetry and ledger head state.
     QueryLiveStatus {
@@ -88,6 +95,7 @@ impl IpcRequest {
     pub const fn request_id(&self) -> u64 {
         match self {
             Self::SubmitDeltaBatch { request_id, .. }
+            | Self::QueryRetentionForecast { request_id, .. }
             | Self::QueryLiveStatus { request_id, .. }
             | Self::SubscribeDeltas { request_id, .. }
             | Self::SubmitBoundedControl { request_id, .. } => *request_id,
@@ -100,6 +108,7 @@ impl IpcRequest {
     pub const fn op_name(&self) -> &'static str {
         match self {
             Self::SubmitDeltaBatch { .. } => "submit_delta_batch",
+            Self::QueryRetentionForecast { .. } => "query_retention_forecast",
             Self::QueryLiveStatus { .. } => "query_live_status",
             Self::SubscribeDeltas { .. } => "subscribe_deltas",
             Self::SubmitBoundedControl { .. } => "submit_bounded_control",
@@ -134,6 +143,14 @@ impl CanonicalEncode for IpcRequest {
                     }
                     None => encoder.bool(false),
                 }
+            }
+            Self::QueryRetentionForecast {
+                request_id,
+                camera_id,
+            } => {
+                encoder.tag(6);
+                encoder.u64(*request_id);
+                encoder.text(camera_id);
             }
             Self::QueryLiveStatus {
                 request_id,
@@ -203,6 +220,17 @@ impl CanonicalDecode for IpcRequest {
                     approval_digest,
                 })
             }
+            6 => {
+                let request_id = decoder.u64()?;
+                let camera_id = decoder.text()?;
+                if camera_id.is_empty() || camera_id.len() > MAX_CAMERA_ID_BYTES {
+                    return Err(ContractError::InvalidIdentifier);
+                }
+                Ok(Self::QueryRetentionForecast {
+                    request_id,
+                    camera_id: camera_id.to_owned(),
+                })
+            }
             2 => Ok(Self::QueryLiveStatus {
                 request_id: decoder.u64()?,
                 include_cameras: decoder.bool()?,
@@ -254,6 +282,13 @@ pub enum IpcResponse {
         history_root: ContentDigest,
         /// Updated canonical state root digest.
         state_root: ContentDigest,
+    },
+    /// Returns the requested camera's retention assessment.
+    RetentionForecast {
+        /// Correlated client request identifier.
+        request_id: u64,
+        /// Latest published assessment for this camera.
+        forecast: CameraRetentionForecast,
     },
     /// Returns live daemon telemetry for `QueryLiveStatus`.
     LiveStatus(LiveDaemonStatus),
@@ -312,6 +347,7 @@ impl IpcResponse {
             | Self::StreamEnd { request_id, .. }
             | Self::ControlAccepted { request_id, .. }
             | Self::Cancelled { request_id }
+            | Self::RetentionForecast { request_id, .. }
             | Self::Refused { request_id, .. } => *request_id,
             Self::LiveStatus(status) => status.request_id,
         }
@@ -338,6 +374,11 @@ impl CanonicalEncode for IpcResponse {
                 encoder.u64(*commit_sequence);
                 encoder.digest(*history_root);
                 encoder.digest(*state_root);
+            }
+            Self::RetentionForecast { request_id, forecast } => {
+                encoder.tag(8);
+                encoder.u64(*request_id);
+                forecast.encode_canonical(encoder);
             }
             Self::LiveStatus(status) => {
                 encoder.tag(2);
@@ -398,6 +439,10 @@ impl CanonicalDecode for IpcResponse {
                 commit_sequence: decoder.u64()?,
                 history_root: decoder.digest()?,
                 state_root: decoder.digest()?,
+            }),
+            8 => Ok(Self::RetentionForecast {
+                request_id: decoder.u64()?,
+                forecast: CameraRetentionForecast::decode_canonical(decoder)?,
             }),
             2 => Ok(Self::LiveStatus(LiveDaemonStatus::decode_canonical(
                 decoder,

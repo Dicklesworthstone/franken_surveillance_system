@@ -182,6 +182,18 @@ impl RetentionRingConfig {
             })
     }
 
+    /// First instant at which the time policy permits eviction of this capture window.
+    #[must_use]
+    pub fn age_deadline(&self, candidate: &RetentionCandidate) -> TimestampNs {
+        let (retain_hot_ns, _) = self.policy_for_sensor(&candidate.sensor_id);
+        TimestampNs(
+            candidate
+                .capture_end_ns
+                .0
+                .saturating_add(i128::from(retain_hot_ns)),
+        )
+    }
+
     /// Classifies `used_bytes` against `max_total_deployment_bytes` using exact `u128` arithmetic.
     #[must_use]
     pub fn classify_pressure(&self, used_bytes: u64) -> CapacityPressure {

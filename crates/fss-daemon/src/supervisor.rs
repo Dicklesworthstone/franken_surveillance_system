@@ -212,6 +212,7 @@ impl DaemonSupervisor {
             storage.forward_writer(),
         );
         let control = if config.enable_ipc {
+            shared.publish_retention_forecasts(storage.camera_retention_forecasts(sensors.keys(), now));
             Some(ControlPlaneServer::start(
                 ipc_root,
                 config.manifest.site_id.clone(),
@@ -324,6 +325,11 @@ impl DaemonSupervisor {
         let head = self.storage.head_snapshot()?;
         if let Some(shared) = &self.control_shared {
             shared.publish_status(build_control_status(&head, &self.sensors));
+            if self.control.is_some() {
+                shared.publish_retention_forecasts(
+                    self.storage.camera_retention_forecasts(self.sensors.keys(), now),
+                );
+            }
         }
         let telemetry = self.build_telemetry_snapshot(&head);
         self.record_telemetry_lines(&telemetry);

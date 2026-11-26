@@ -215,6 +215,23 @@ fn manifest_scoped_retention_survives_restart_and_preserves_held_footage() -> Te
             .retention_candidates()
             .contains_key(&newer.import_id)
     );
+    let forecasts = storage.camera_retention_forecasts(
+        config.cameras.iter().map(|entry| &entry.sensor_id),
+        TimestampNs(40),
+    );
+    let camera_a = forecasts.get(SENSOR_A).ok_or("missing camera A forecast")?;
+    let oldest = camera_a.oldest.as_ref().ok_or("missing held source window")?;
+    assert_eq!(camera_a.retained_windows, 2);
+    assert_eq!(camera_a.retained_bytes, held.byte_size + newer.byte_size);
+    assert_eq!(camera_a.max_sensor_bytes, 5100);
+    assert_eq!((oldest.capture_end_ns, oldest.age_deadline_ns), (20, 1020));
+    assert!(oldest.known_pin);
+    let camera_b = forecasts.get(SENSOR_B).ok_or("missing camera B forecast")?;
+    let oldest = camera_b.oldest.as_ref().ok_or("missing camera B window")?;
+    assert_eq!(camera_b.retained_windows, 1);
+    assert_eq!((oldest.capture_end_ns, oldest.age_deadline_ns), (10, 10010));
+    assert!(!oldest.known_pin);
+
     // Camera A inherits the site duration. Camera B has its own deadline.
     let aged = storage.run_maintenance_tick(cx, tree, TimestampNs(1040), false)?;
     assert_eq!(aged.evicted_imports, 1);
@@ -237,6 +254,13 @@ fn manifest_scoped_retention_survives_restart_and_preserves_held_footage() -> Te
             .contains_key(&quiet.import_id)
     );
     assert!(storage.retention_candidates().contains_key(&held.import_id));
+    let forecasts = storage.camera_retention_forecasts(
+        config.cameras.iter().map(|entry| &entry.sensor_id),
+        TimestampNs(10010),
+    );
+    let camera_b = forecasts.get(SENSOR_B).ok_or("missing empty camera forecast")?;
+    assert!(camera_b.oldest.is_none());
+    assert_eq!((camera_b.retained_windows, camera_b.retained_bytes), (0, 0));
     Ok(())
 }
 

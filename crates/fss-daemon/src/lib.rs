@@ -27,7 +27,7 @@ pub use control::{
     DAEMON_RUNTIME_DESCRIPTOR_DOMAIN, DAEMON_RUNTIME_DESCRIPTOR_SCHEMA,
     DAEMON_RUNTIME_META_FILENAME, DAEMON_SHUTDOWN_APPROVAL_DOMAIN, DAEMON_STOP_TARGET,
     DaemonRuntimeDescriptor, ForwardBatchReceipt, ForwardBatchWriter, PendingControlCommand,
-    control_op_approval_digest, daemon_stop_approval_digest, query_live_daemon_status,
+    control_op_approval_digest, daemon_stop_approval_digest, query_camera_retention_forecast, query_live_daemon_status,
     request_live_daemon_stop,
 };
 pub use error::{

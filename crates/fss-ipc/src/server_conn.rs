@@ -447,6 +447,10 @@ fn execute_one(
             );
             send_response(writer, FrameFlags::RESPONSE, &resp)
         }
+        IpcRequest::QueryRetentionForecast { camera_id, .. } => {
+            let resp = shared.handler.query_retention_forecast(ctx, &camera_id);
+            send_response(writer, FrameFlags::RESPONSE, &resp)
+        }
         IpcRequest::QueryLiveStatus {
             include_cameras,
             include_ring,
@@ -539,7 +543,12 @@ fn send_refused(
     let _ = send_response(writer, FrameFlags::RESPONSE, &resp);
 }
 
-fn make_refused(request_id: u64, error_id_str: &str, reason: &str, retryable: bool) -> IpcResponse {
+pub(crate) fn make_refused(
+    request_id: u64,
+    error_id_str: &str,
+    reason: &str,
+    retryable: bool,
+) -> IpcResponse {
     match parse_error_id(error_id_str).or_else(|_| parse_error_id(ERR_IPC_CANCELLED_001)) {
         Ok(error_id) => IpcResponse::Refused {
             request_id,

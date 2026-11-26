@@ -237,12 +237,7 @@ pub fn plan_retention(
     // Pass 1: Time-based hot-window expiry for unheld candidates.
     for &idx in &unheld_indices {
         let cand = &candidates[idx];
-        let (retain_hot_ns, _) = config.policy_for_sensor(&cand.sensor_id);
-        let expiry_ns = cand
-            .capture_end_ns
-            .0
-            .saturating_add(i128::from(retain_hot_ns));
-        if expiry_ns <= now_ns.0 {
+        if config.age_deadline(cand) <= now_ns {
             mark_evicted(
                 idx,
                 EvictionReason::ExpiredHotWindow,

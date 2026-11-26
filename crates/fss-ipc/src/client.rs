@@ -480,6 +480,7 @@ impl Iterator for DeltaSubscription<'_> {
 fn response_outcome_label(response: &IpcResponse) -> &str {
     match response {
         IpcResponse::DeltaBatchCommitted { .. }
+        | IpcResponse::RetentionForecast { .. }
         | IpcResponse::LiveStatus(_)
         | IpcResponse::DeltaEvent { .. }
         | IpcResponse::ControlAccepted { .. } => "ok",

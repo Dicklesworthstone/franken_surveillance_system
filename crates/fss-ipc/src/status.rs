@@ -57,6 +57,103 @@ impl CanonicalDecode for CameraLiveStatus {
     }
 }
 
+/// The recorded capture window with the earliest capture end on one camera.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OldestRetentionWindow {
+    /// Earliest capture time in nanoseconds on the recording's clock.
+    pub capture_start_ns: i128,
+    /// Latest capture time in nanoseconds on the recording's clock.
+    pub capture_end_ns: i128,
+    /// Capture end plus the effective retention duration, with saturating arithmetic.
+    pub age_deadline_ns: i128,
+    /// Whether the last assessment found a hold, event, obligation, or catalog pin.
+    pub known_pin: bool,
+}
+
+/// Time-policy forecast for a single configured camera at the last storage assessment.
+/// Capacity can reclaim an eligible recording earlier, while pins can defer reclamation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CameraRetentionForecast {
+    /// Configured source identifier.
+    pub camera_id: String,
+    /// Daemon assessment time in nanoseconds.
+    pub assessed_at_ns: i128,
+    /// Effective duration used by the retention planner.
+    pub retain_hot_ns: u64,
+    /// Effective cap on this camera's accounted bytes.
+    pub max_sensor_bytes: u64,
+    /// Number of retained camera recording windows.
+    pub retained_windows: u64,
+    /// Accounted source media bytes in those windows.
+    pub retained_bytes: u64,
+    /// Oldest retained recording, absent when this camera has none.
+    pub oldest: Option<OldestRetentionWindow>,
+}
+
+impl CanonicalEncode for CameraRetentionForecast {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.text(&self.camera_id);
+        encoder.i128(self.assessed_at_ns);
+        encoder.u64(self.retain_hot_ns);
+        encoder.u64(self.max_sensor_bytes);
+        encoder.u64(self.retained_windows);
+        encoder.u64(self.retained_bytes);
+        encoder.bool(self.oldest.is_some());
+        if let Some(window) = &self.oldest {
+            encoder.i128(window.capture_start_ns);
+            encoder.i128(window.capture_end_ns);
+            encoder.i128(window.age_deadline_ns);
+            encoder.bool(window.known_pin);
+        }
+    }
+}
+
+impl CanonicalDecode for CameraRetentionForecast {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        let camera_id = decoder.text()?;
+        if camera_id.is_empty() || camera_id.len() > MAX_CAMERA_ID_BYTES {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        let camera_id = camera_id.to_owned();
+        let assessed_at_ns = decoder.i128()?;
+        let retain_hot_ns = decoder.u64()?;
+        let max_sensor_bytes = decoder.u64()?;
+        let retained_windows = decoder.u64()?;
+        let retained_bytes = decoder.u64()?;
+        let oldest = if decoder.bool()? {
+            let window = OldestRetentionWindow {
+                capture_start_ns: decoder.i128()?,
+                capture_end_ns: decoder.i128()?,
+                age_deadline_ns: decoder.i128()?,
+                known_pin: decoder.bool()?,
+            };
+            if window.capture_start_ns > window.capture_end_ns
+                || window.age_deadline_ns
+                    != window.capture_end_ns.saturating_add(i128::from(retain_hot_ns))
+            {
+                return Err(ContractError::InvalidIdentifier);
+            }
+            Some(window)
+        } else {
+            None
+        };
+        if oldest.is_some() != (retained_windows > 0)
+            || (retained_windows == 0 && retained_bytes != 0)
+        {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        Ok(Self {
+            camera_id,
+            assessed_at_ns,
+            retain_hot_ns,
+            max_sensor_bytes,
+            retained_windows,
+            retained_bytes,
+            oldest,
+        })
+    }
+}
+
 /// Local ring-buffer storage watermark reported in [`LiveDaemonStatus`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RingWatermarkStatus {

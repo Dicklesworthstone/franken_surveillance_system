@@ -670,6 +670,19 @@ fn graceful_ipc_stop_executes_request_drain_finalize_and_verifies_ledger() -> Te
     cfg.enable_ipc = true;
 
     let supervisor = DaemonSupervisor::start(cfg)?;
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_fss-daemon"))
+        .args(["retention-forecast", "sensor:wyze-39", "--root"])
+        .arg(&root)
+        .arg("--json")
+        .output()?;
+    assert!(output.status.success());
+    let json = String::from_utf8(output.stdout)?;
+    let forecast = fss_core::json_input::parse(&json)?;
+    let row = forecast.object().ok_or("expected retention forecast object")?;
+    assert_eq!(row["camera_id"].text(), Some("sensor:wyze-39"));
+    assert_eq!(row["state"].text(), Some("no_recordings"));
+    assert_eq!(row["retained_windows"].integer(), Some(0));
+
     let runner = thread::spawn(move || {
         supervisor
             .run_until_stopped(None, Duration::from_millis(15))

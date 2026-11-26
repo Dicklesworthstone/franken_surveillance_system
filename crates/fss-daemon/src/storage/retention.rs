@@ -4,6 +4,7 @@
 use std::collections::BTreeSet;
 
 use fss_core::ClockBasis;
+use fss_ipc::{CameraRetentionForecast, OldestRetentionWindow};
 use fss_pack::{MediaChunkView, PackReadBudget, RootStatus};
 use fss_projection_store::{
     CombinerError, DeletionTarget, DeletionTombstonePayload, EvidenceHoldPayload,
@@ -155,6 +156,57 @@ pub(super) fn recover_retained_roots(
 }
 
 impl StorageEngine {
+    /// Summarizes the retained GOPs for the requested sensors after recovery or maintenance.
+    /// Candidate pins reflect that assessment. The planner checks catalog references again
+    /// before deletion, and byte pressure may select a window before its time deadline.
+    pub fn camera_retention_forecasts<'a>(
+        &self,
+        sensors: impl Iterator<Item = &'a SensorId>,
+        assessed_at: TimestampNs,
+    ) -> BTreeMap<String, CameraRetentionForecast> {
+        let mut rows = BTreeMap::new();
+        for sensor in sensors {
+            let id = sensor.as_str();
+            let (retain_hot_ns, max_sensor_bytes) = self.retention_config.policy_for_sensor(id);
+            rows.insert(
+                id.to_owned(),
+                CameraRetentionForecast {
+                    camera_id: id.to_owned(),
+                    assessed_at_ns: assessed_at.0,
+                    retain_hot_ns,
+                    max_sensor_bytes,
+                    retained_windows: 0,
+                    retained_bytes: 0,
+                    oldest: None,
+                },
+            );
+        }
+        for (root_id, root) in &self.candidate_roots {
+            let Some(candidate) = self.candidates.get(root_id) else {
+                continue;
+            };
+            let Some(row) = rows.get_mut(&candidate.sensor_id) else {
+                continue;
+            };
+            row.retained_windows = row.retained_windows.saturating_add(1);
+            row.retained_bytes = row.retained_bytes.saturating_add(candidate.byte_size);
+            // Catalog ids iterate in lexical order, matching the planner's tie-break.
+            if row
+                .oldest
+                .as_ref()
+                .is_none_or(|oldest| candidate.capture_end_ns.0 < oldest.capture_end_ns)
+            {
+                row.oldest = Some(OldestRetentionWindow {
+                    capture_start_ns: root.capture_interval.earliest.0,
+                    capture_end_ns: candidate.capture_end_ns.0,
+                    age_deadline_ns: self.retention_config.age_deadline(candidate).0,
+                    known_pin: candidate.is_pinned(),
+                });
+            }
+        }
+        rows
+    }
+
     /// Durably creates or releases a hold on a retained media closure. The hold identity
     /// cannot be redirected to another target; releasing a hold requires its original target.
     /// The explicit authority context is checked by the canonical commit owner.

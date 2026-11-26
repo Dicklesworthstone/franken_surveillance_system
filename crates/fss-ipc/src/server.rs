@@ -160,6 +160,16 @@ pub trait DaemonIpcHandler: Send + Sync + 'static {
         include_ring: bool,
     ) -> IpcResponse;
 
+    /// Looks up one camera's forecast or returns a typed refusal for unsupported handlers.
+    fn query_retention_forecast(&self, ctx: &RequestContext, _camera_id: &str) -> IpcResponse {
+        crate::server_conn::make_refused(
+            ctx.request_id,
+            crate::error::ERR_IPC_CAPABILITY_DENIED_001,
+            "retention forecast unavailable",
+            false,
+        )
+    }
+
     /// Streams committed deltas after `since_commit_seq` (up to `max_batch`) and returns end reason.
     fn subscribe_deltas(
         &self,

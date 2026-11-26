@@ -11,7 +11,7 @@ use std::time::Duration;
 use fss_core::PrincipalId;
 use fss_daemon::{
     DaemonStartConfig, DaemonSupervisor, SensorHealthPolicy, SiteManifest, escape_json,
-    query_live_daemon_status, render_live_status_json, render_stop_accepted_json,
+    query_camera_retention_forecast, query_live_daemon_status, render_live_status_json, render_stop_accepted_json,
     request_live_daemon_stop,
 };
 
@@ -31,6 +31,7 @@ fn main() -> ExitCode {
     match args[0].as_str() {
         "run" => run_cmd(&args[1..]),
         "status" => status_cmd(&args[1..]),
+        "retention-forecast" => retention_forecast_cmd(&args[1..]),
         "stop" => stop_cmd(&args[1..]),
         other => {
             eprintln!("ERR-DAEMON-MANIFEST-INVALID-001: unknown subcommand `{other}`");
@@ -225,6 +226,64 @@ fn status_cmd(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+fn retention_forecast_cmd(args: &[String]) -> ExitCode {
+    let Some((camera_id, options)) = args.split_first().filter(|(id, _)| !id.starts_with("--"))
+    else {
+        return fail_json(
+            args.iter().any(|arg| arg == "--json"),
+            "ERR-DAEMON-MANIFEST-INVALID-001",
+            "retention-forecast requires a camera identifier",
+        );
+    };
+    let (root, site_id, json) = match parse_root_and_site(options) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    let Ok(principal) = PrincipalId::parse("principal:local-operator") else {
+        return fail_json(json, "ERR-DAEMON-IPC-001", "invalid operator principal");
+    };
+    let (desc, row) = match query_camera_retention_forecast(
+        &root,
+        site_id.as_deref(),
+        principal,
+        camera_id,
+    ) {
+        Ok(v) => v,
+        Err(err) => return fail_json(json, err.error_id(), &err.to_string()),
+    };
+    let state = match &row.oldest {
+        None => "no_recordings",
+        Some(window) if window.known_pin => "pinned",
+        Some(window) if window.age_deadline_ns <= row.assessed_at_ns => "age_deadline_reached",
+        Some(_) => "before_age_deadline",
+    };
+    if json {
+        let oldest = row.oldest.as_ref().map_or_else(|| "null".to_owned(), |window| {
+            format!(
+                "{{\"capture_start_ns\":\"{}\",\"capture_end_ns\":\"{}\",\"age_deadline_ns\":\"{}\",\"known_pin\":{}}}",
+                window.capture_start_ns, window.capture_end_ns, window.age_deadline_ns, window.known_pin
+            )
+        });
+        println!(
+            concat!(
+                "{{\"schema\":\"fss.daemon_retention_forecast.v1\",\"site_id\":\"{}\",\"camera_id\":\"{}\",",
+                "\"assessed_at_ns\":\"{}\",\"retain_hot_ns\":{},\"max_sensor_bytes\":{},",
+                "\"retained_windows\":{},\"retained_bytes\":{},\"state\":\"{}\",\"oldest\":{}}}"
+            ),
+            escape_json(&desc.site_id), escape_json(&row.camera_id), row.assessed_at_ns,
+            row.retain_hot_ns, row.max_sensor_bytes, row.retained_windows, row.retained_bytes, state, oldest
+        );
+    } else {
+        println!("{} retention at {} ns: {} windows, {} accounted media bytes, {} byte camera cap, state={}",
+            row.camera_id, row.assessed_at_ns, row.retained_windows, row.retained_bytes, row.max_sensor_bytes, state);
+        if let Some(window) = row.oldest {
+            println!("Oldest capture {}..{} ns. Time-policy deadline {} ns. Byte pressure can reclaim sooner and pins can extend retention.",
+                window.capture_start_ns, window.capture_end_ns, window.age_deadline_ns);
+        }
+    }
+    ExitCode::SUCCESS
+}
+
 fn stop_cmd(args: &[String]) -> ExitCode {
     let (root, site_id, json) = match parse_root_and_site(args) {
         Ok(v) => v,
@@ -314,5 +373,5 @@ fn fail_json(json: bool, error_id: &str, message: &str) -> ExitCode {
 }
 
 const fn help_text() -> &'static str {
-    "fss-daemon — Always-on Asupersync-owned multi-camera supervisor\n\nUSAGE:\n  fss-daemon run --manifest <site.json> [--root <deploy>] [--once-ticks <N>] [--tick-ms <N>] [--sensor-health conservative-v1] [--json]\n  fss-daemon status --root <deploy> [--site-id <id>] [--json]\n  fss-daemon stop --root <deploy> [--site-id <id>] [--json]\n  fss-daemon version\n  fss-daemon help"
+    "fss-daemon — Always-on Asupersync-owned multi-camera supervisor\n\nUSAGE:\n  fss-daemon run --manifest <site.json> [--root <deploy>] [--once-ticks <N>] [--tick-ms <N>] [--sensor-health conservative-v1] [--json]\n  fss-daemon status --root <deploy> [--site-id <id>] [--json]\n  fss-daemon retention-forecast <camera-id> --root <deploy> [--site-id <id>] [--json]\n  fss-daemon stop --root <deploy> [--site-id <id>] [--json]\n  fss-daemon version\n  fss-daemon help"
 }

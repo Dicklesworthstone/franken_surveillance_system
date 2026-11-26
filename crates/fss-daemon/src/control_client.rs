@@ -14,7 +14,7 @@ use fss_core::json_input::{self, Value};
 use fss_core::{CanonicalEncoder, ContentDigest, OperationId, PrincipalId};
 use fss_ipc::{
     BoundedControlOp, ControlOperationState, IpcClient, IpcClientConfig, IpcError, IpcResponse,
-    LiveDaemonStatus, default_run_dir, default_socket_path, deployment_root_digest,
+    CameraRetentionForecast, IpcRequest, LiveDaemonStatus, default_run_dir, default_socket_path, deployment_root_digest,
 };
 
 use crate::control::{
@@ -215,6 +215,43 @@ pub fn query_live_daemon_status(
         other => Err(DaemonError::Ipc(IpcError::InvalidFrame {
             reason: format!(
                 "unexpected IPC response for QueryLiveStatus: req_id={}",
+                other.request_id()
+            ),
+        })),
+    }
+}
+
+/// Reads a configured camera's last retention assessment from the running daemon.
+pub fn query_camera_retention_forecast(
+    deployment_root: &Path,
+    site_id_override: Option<&str>,
+    principal: PrincipalId,
+    camera_id: &str,
+) -> Result<(DaemonRuntimeDescriptor, CameraRetentionForecast), DaemonError> {
+    let (descriptor, _, mut client) =
+        connect_local_daemon(deployment_root, site_id_override, principal)?;
+    let req_id = client.next_request_id();
+    match client.request(&IpcRequest::QueryRetentionForecast {
+        request_id: req_id,
+        camera_id: camera_id.to_owned(),
+    })? {
+        IpcResponse::RetentionForecast { forecast, .. } if forecast.camera_id == camera_id => {
+            Ok((descriptor, forecast))
+        }
+        IpcResponse::Refused {
+            request_id,
+            error_id,
+            reason,
+            retryable,
+        } => Err(DaemonError::Ipc(IpcError::Refused {
+            request_id,
+            error_id,
+            reason,
+            retryable,
+        })),
+        other => Err(DaemonError::Ipc(IpcError::InvalidFrame {
+            reason: format!(
+                "unexpected IPC response for QueryRetentionForecast: req_id={}",
                 other.request_id()
             ),
         })),
