@@ -18,7 +18,11 @@ pub mod dtype;
 pub mod error;
 /// Generation-leased immutable decoded-frame pools (`FSS-119`).
 pub mod frame_pool;
+/// Registered media pressure degradation ladder (`FSS-121`).
+pub mod media_pressure;
 pub mod shape;
+/// Source-to-tensor span and transform lineage (`FSS-120`).
+pub mod source_lineage;
 pub mod storage;
 pub mod stride;
 pub mod tensor;
@@ -35,7 +39,15 @@ pub use frame_pool::{
     FRAME_POOL_RECEIPT_DOMAIN, FrameDescriptor, FrameLease, FrameLeaseId, FramePool,
     FramePoolError, FramePoolPolicy, FramePoolReceipt, FrameSlotId,
 };
+pub use media_pressure::{
+    MEDIA_PRESSURE_LADDER_RECEIPT_DOMAIN, MediaDegradationRung, MediaPressureController,
+    MediaPressureDecisionReceipt, MediaPressureError, MediaPressurePolicy, MediaPressureSignals,
+};
 pub use shape::{MAX_TENSOR_RANK, Shape};
+pub use source_lineage::{
+    LineageError, SOURCE_TO_TENSOR_LINEAGE_DOMAIN, SourceByteSpan, SourceToTensorLineage,
+    TransformStep,
+};
 pub use storage::{MAX_STORAGE_BYTES, StorageId, TensorStorage};
 pub use stride::Strides;
 pub use tensor::Tensor;
