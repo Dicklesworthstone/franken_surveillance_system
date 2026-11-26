@@ -113,6 +113,8 @@ pub mod media_fixture;
 pub mod migration;
 mod model;
 pub mod model_receipt;
+/// CPU thermal/pressure-aware model scheduler with hard floors and FSSMMS01 receipts (FSS-150).
+pub mod model_scheduler;
 /// Production TLS 1.3 HMAC-signed webhooks, multi-channel relays (ntfy, Pushover, SMTP), and escalation policies.
 pub mod notify;
 /// Owner-scoped, read-only ONVIF Media1 negotiation into the native RTSP path.
