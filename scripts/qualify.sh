@@ -375,9 +375,11 @@ policy_lane() {
     scripts/e2e/doc_039_mechanical_sympathy_doctrine.sh \
     scripts/e2e/fss_035_backup_restore_manifest.sh scripts/e2e/fss_053_media_probe.sh \
     scripts/e2e/fss_054_pure_rust_decode_engine.sh scripts/e2e/fss_055_encode_rendition_kernels.sh \
-    scripts/e2e/fss_058_buffer_accounting.sh scripts/e2e/fss_064_multipart_idempotency.sh \
+    scripts/e2e/fss_056_keyframe_chunker.sh scripts/e2e/fss_058_buffer_accounting.sh \
+    scripts/e2e/fss_060_decode_timestamp_oracle.sh scripts/e2e/fss_064_multipart_idempotency.sh \
     scripts/e2e/fss_115_fragmented_mp4_cmaf.sh scripts/e2e/fss_117_mjpeg_vertical_slice.sh \
-    scripts/e2e/fss_119_frame_pool.sh \
+    scripts/e2e/fss_119_frame_pool.sh scripts/e2e/fss_120_source_to_tensor_lineage.sh \
+    scripts/e2e/fss_121_media_pressure_ladder.sh \
     scripts/e2e/fss_141_kernel_dispatch_receipts.sh scripts/e2e/fss_142_packed_tiled_matrix_kernels.sh \
     scripts/e2e/fss_143_preprocess_postprocess_fusion.sh scripts/e2e/fss_150_thermal_pressure_scheduler.sh \
     scripts/e2e/fss_192_release_publication.sh scripts/e2e/fss_194_github_unavailable_release.sh \

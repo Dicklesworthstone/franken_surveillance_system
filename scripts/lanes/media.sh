@@ -115,7 +115,14 @@ checkfile 14 mp4-unit-limit crates/fss-container/tests/fixtures/fragmented_av.mp
 # FSS-055 — bounded pure-Rust encode and rendition kernels (deterministic JPEG/MJPEG derivatives).
 "${RUN[@]}" cargo --offline test --locked -q -p fss-codec-jpeg-encode --lib --tests
 
-# FSS-058 / FSS-119 — decoded-frame/tensor buffer accounting and generation-leased immutable frame pools.
+# FSS-058 / FSS-119 / FSS-120 / FSS-121 — buffer accounting, frame pools, lineage, and pressure ladder.
 "${RUN[@]}" cargo --offline test --locked -q -p fss-tensor \
   --test fss_058_buffer_accounting_contract \
-  --test fss_119_frame_pool_contract
+  --test fss_119_frame_pool_contract \
+  --test fss_120_source_to_tensor_lineage_contract \
+  --test fss_121_media_pressure_ladder_contract
+
+# FSS-056 / FSS-060 — keyframe-aware chunker and decode/timestamp differential oracle.
+"${RUN[@]}" cargo --offline test --locked -q -p fss-container \
+  --test fss_056_keyframe_chunker_contract \
+  --test fss_060_decode_timestamp_oracle_contract
