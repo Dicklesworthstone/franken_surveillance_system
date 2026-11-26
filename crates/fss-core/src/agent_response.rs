@@ -227,9 +227,11 @@ impl AgentResponseEnvelope {
 
     /// Validates envelope-level invariants (fail closed).
     ///
-    /// Refuses a zero revision, an error outcome without a registered error
-    /// identity, and out-of-bound handle lists.
+    /// Revalidates the operation-registry basis after public-field mutation. Refuses a zero
+    /// revision, an error outcome without a registered error identity, and out-of-bound lists.
     pub fn validate(&self) -> Result<(), ContractError> {
+        registered_operation(&self.contract_basis, self.operation.name())
+            .map_err(|_| ContractError::InvalidIdentifier)?;
         if self.response_revision == 0 {
             return Err(ContractError::CountBoundExceeded);
         }

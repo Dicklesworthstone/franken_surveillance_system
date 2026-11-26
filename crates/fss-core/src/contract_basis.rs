@@ -1134,6 +1134,8 @@ pub fn negotiate_basis_with_superseded(
 /// deterministic remediation guidance; stable IDs (`AOP-001`) are never accepted as
 /// names at this boundary.
 ///
+/// The basis must be structurally valid and select a supported operation-registry profile.
+/// Unknown registries and incomplete additive profiles never fall back to legacy rows.
 /// Failures are typed; no unregistered surface is ever silently mapped.
 pub fn registered_operation(
     basis: &ContractBasis,
@@ -1147,6 +1149,7 @@ pub fn registered_operation(
             },
         });
     }
+    validate_contract_basis(basis)?;
     let operation = AgentOperation::from_name(operation_name).map_err(|_| {
         ContractBasisError::IncompatibleBasis {
             refusal: ContractBasisRefusal::UnregisteredOperation {
@@ -1154,12 +1157,9 @@ pub fn registered_operation(
             },
         }
     })?;
-    if is_hydration_contract_basis(basis) {
-        operation.validate_row_for_basis(basis)
-    } else {
-        operation.validate_row()
-    }
-    .map_err(ContractBasisError::Contract)?;
+    operation
+        .validate_row_for_basis(basis)
+        .map_err(ContractBasisError::Contract)?;
     Ok(operation)
 }
 

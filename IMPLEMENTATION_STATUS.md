@@ -1,9 +1,33 @@
 # Implementation status
 
-**As of:** 2026-11-25 America/New_York (dated feature sections retain their original verification scope)
+**As of:** 2026-11-26 America/New_York (dated feature sections retain their original verification scope)
 **Project state:** prior retained snapshots are locally qualified on `darwin-arm64` across policy, scale, crash-recovery, daemon soak, lab, media, archive, privacy, model, geometry, threat, agent, adapter-loopback, and macOS parity lanes; multi-target DSR release matrix (`linux-x86_64`, `windows-x86_64`) and physical hardware-tuple field qualification remain open
 **Current change qualification:** each dated section below states its exact verification boundary. Native passes for one component do not qualify other changes, and prior receipts do not qualify new bytes.
 **Release authority:** repository-owned local qualification (`scripts/qualify.sh`) and retained DSR receipts, not hosted CI
+
+## Fail-closed operation-registry admission — 2026-11-26
+
+The operation resolver now structurally validates the supplied ContractBasis and
+always uses the existing basis-aware operation-row selector. Unknown operation
+registry digests and partially selected probe/hydration profiles can no longer
+fall through to legacy operation semantics. Response validation repeats this
+check after construction, closing the bypass through public mutable basis fields.
+
+Four regressions exercise all fourteen operation names, unknown and partial
+profiles, malformed producer/ontology/nightly identities, request/response/cognitive
+constructors, post-construction mutation, and supported reference/probe/hydration
+profiles. Complete reference-basis compatibility remains the responsibility of
+the existing negotiation boundary; this change enforces operation-registry
+admission and does not introduce a new protocol or registry generation.
+
+**Native validation passed:** 85 tests across `contract_basis_admission_contract`,
+`contract_basis_contract`, `agent_request_contract`, `agent_response_contract`,
+and `agent_operation_contract` on Linux x86_64 using the pinned
+`nightly-2026-08-31` toolchain, locked offline dependencies, and one build job.
+Pinned rustfmt and changed-path whitespace checks passed. This is focused
+component evidence, not a full qualification or multi-target DSR receipt.
+This change addresses a concrete `fss-x4a.24.41` / FSS-241 admission gap;
+it does not assert whole-requirement or release qualification.
 
 ## Exact-head forwarded receipt recovery — 2026-11-25
 
