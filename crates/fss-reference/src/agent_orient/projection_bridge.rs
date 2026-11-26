@@ -14,7 +14,7 @@
 //!   [`ScrubStatus::NeverScrubbed`] or [`ScrubStatus::VerifiedStale`], mapping conservatively to
 //!   `(DoctorVerdict::AttentionRequired, false)` — never falsely `"healthy"`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -22,14 +22,14 @@ use std::time::Instant;
 use fss_core::{
     CanonicalDecode, CanonicalDecoder, CaptureInterval, ContentDigest, CoverageContinuity,
     CoverageWitness, EffectState, EventHypothesis, EventId, EventState, EvidenceDelta,
-    LedgerAnchor, ObjectId, Obligation, ObligationId, OperationReceipt, SensorId,
-    SensorTamperStatus, StreamId, TimestampNs,
+    EvidenceDeltaBatch, LedgerAnchor, ObjectId, ObjectRevision, Obligation, ObligationId,
+    OperationReceipt, SensorId, SensorTamperStatus, StreamId, TimestampNs,
 };
 use fss_ledger::{DurableLedgerStatus, MerkleEpochLedger, inspect_durable};
 use fss_object::ObjectManifest;
-use fss_pack::{DurabilityMode, PackConfig, PackReader, PackStore};
+use fss_pack::{DurabilityMode, PackConfig, PackReadBudget, PackReader, PackStore};
 use fss_projection_store::{
-    CoverageStatus, CoverageWitnessPayload, DeletionTarget, DeletionTombstonePayload,
+    CanonicalBatchSource, CoverageStatus, CoverageWitnessPayload, DeletionTarget, DeletionTombstonePayload,
     DoctorScrubReceipt, EffectOutcomePayload, EventQueryFilter, EventQueryPage,
     EventRevisionPayload, EvidenceHoldPayload, FAMILY_ALERT_EFFECT_OUTCOME,
     FAMILY_COVERAGE_WITNESS, FAMILY_DELETION_TOMBSTONE, FAMILY_EFFECT_OUTCOME,
@@ -50,7 +50,7 @@ use crate::agent_orient::{
 };
 use crate::deletion::holds::HoldRecord;
 use crate::deletion::{
-    DeletionError, DeletionIndex, DeletionPlan, has_records as has_deletion_records,
+    DeletionError, DeletionIndex, MAX_DELETION_RECORD_BYTES, has_records as has_deletion_records,
 };
 use crate::discovery::retained_liveness::SensorLivenessRecord;
 use crate::discovery::watchdog::{WatchOfflineReason, WatchState};
@@ -58,10 +58,85 @@ use crate::doctor::{DoctorVerdict, inspect_deployment};
 use crate::ingest::privacy_mask::PrivacyMaskPolicy;
 use crate::ingest::recorded_coverage::CoverageRecord;
 use crate::ingest::source_coverage::SourceCoverageRecord;
-use crate::migration::DeploymentLayoutV2;
+use crate::migration::{DeploymentLayoutV2, MigrationEquivalenceReceipt};
 use crate::reference_deployment::{
     DEPLOYMENT_LAYOUT_FILENAME, DeploymentLayout, FAMILY_DELETION_RECORD,
 };
+
+/// Recover v1 commitments only at bases used by deletion headers. The recording ledger
+/// already verified these revisions when it opened. No source v1 directory is required.
+fn v1_deletion_bases(
+    ledger: &MerkleEpochLedger,
+    records: &[EvidenceDeltaBatch],
+    receipt: &MigrationEquivalenceReceipt,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<BTreeMap<u64, LedgerAnchor>, DeploymentReadError> {
+    let requested: BTreeSet<_> = records
+        .iter()
+        .filter(|batch| {
+            batch.new_anchor.commit_sequence <= receipt.batches_migrated
+                && batch.deltas.iter().any(|delta| delta.family == FAMILY_DELETION_RECORD)
+        })
+        .map(|batch| batch.basis_anchor.commit_sequence)
+        .collect();
+    let mut bases = BTreeMap::new();
+    if requested.is_empty() {
+        return Ok(bases);
+    }
+    let mut objects = BTreeMap::new();
+    if requested.contains(&0) {
+        let genesis = LedgerAnchor::genesis(&ledger.genesis_anchor().site_lineage);
+        bases.insert(0, genesis);
+    }
+    let mut previous = ledger.genesis_anchor().clone();
+    let mode = HistoryChainMode::V2MerkleEpoch;
+    let proof_error = |err: ProjectionError| DeploymentReadError::Corrupt {
+        reason: format!("v1 deletion basis reconstruction failed: {err}"),
+    };
+    let mut history = mode.genesis_root(&previous).map_err(proof_error)?;
+    ledger
+        .visit_batches_range(1, receipt.batches_migrated, &mut |batch| {
+            if cancelled() {
+                return Err(ProjectionError::InvalidRequest(
+                    "retained read authority cancelled",
+                ));
+            }
+            if batch.basis_anchor != previous
+                || previous.commit_sequence.checked_add(1) != Some(batch.new_anchor.commit_sequence)
+            {
+                return Err(ProjectionError::InvalidRequest("incomplete deletion basis history"));
+            }
+            for delta in &batch.deltas {
+                objects.insert(delta.object_id.clone(), ObjectRevision::from(delta));
+            }
+            previous = batch.new_anchor.clone();
+            history = mode.successor_root(
+                history,
+                previous.commit_sequence,
+                batch.batch_digest,
+                &previous,
+            )?;
+            if requested.contains(&previous.commit_sequence) {
+                let mut v1 = previous.clone();
+                v1.state_root = fss_core::reference_state_root(&objects);
+                bases.insert(v1.commit_sequence, v1);
+            }
+            Ok(())
+        })
+        .map_err(proof_error)?;
+    let mut v1_head = previous.clone();
+    v1_head.state_root = fss_core::reference_state_root(&objects);
+    if requested.len() != bases.len()
+        || previous != receipt.dest_v2_anchor
+        || history != receipt.dest_v2_history_root
+        || v1_head != receipt.source_v1_anchor
+    {
+        return Err(DeploymentReadError::Corrupt {
+            reason: "canonical deletion history does not match the sealed migration prefix".to_owned(),
+        });
+    }
+    Ok(bases)
+}
 
 /// Default relative directory under a deployment root storing rebuildable derived MVCC state.
 pub const PROJECTION_SUBDIR: &str = "projections/mvcc";
@@ -800,67 +875,103 @@ impl ProjectionBridge {
                 ..ProjectionStoreConfig::default()
             };
             let mut deleted_digests = BTreeSet::new();
-            let v2_batches = if head_seq > 0 {
-                fss_projection_store::CanonicalBatchSource::read_batches_range(
-                    &epoch_ledger,
-                    1,
-                    head_seq,
-                )
-                .map_err(|err| DeploymentReadError::Corrupt {
-                    reason: format!("v2 epoch ledger batch read failed: {err}"),
-                })?
-            } else {
-                Vec::new()
+            // Only deletion records, including orphan transitions and reserved batch identities,
+            // participate in this proof. Release ordinary footage batches as soon as inspected.
+            let mut deletion_batches = Vec::new();
+            let mut scanned = epoch_ledger.genesis_anchor().clone();
+            let mode = HistoryChainMode::V2MerkleEpoch;
+            let ledger_error = |err: ProjectionError| DeploymentReadError::Corrupt {
+                reason: format!("v2 deletion history read failed: {err}"),
             };
-            if has_deletion_records(&v2_batches) {
+            let mut history = mode.genesis_root(&scanned).map_err(ledger_error)?;
+            epoch_ledger
+                .visit_batches_range(1, head_seq, &mut |batch| {
+                    if cancelled() {
+                        return Err(ProjectionError::InvalidRequest(
+                            "retained read authority cancelled",
+                        ));
+                    }
+                    if batch.basis_anchor != scanned
+                        || scanned.commit_sequence.checked_add(1) != Some(batch.new_anchor.commit_sequence)
+                    {
+                        return Err(ProjectionError::InvalidRequest("incomplete deletion history"));
+                    }
+                    scanned = batch.new_anchor.clone();
+                    history = mode.successor_root(
+                        history, scanned.commit_sequence, batch.batch_digest, &scanned,
+                    )?;
+                    if has_deletion_records(std::slice::from_ref(batch)) {
+                        deletion_batches.push(batch.clone());
+                    }
+                    Ok(())
+                })
+                .map_err(ledger_error)?;
+            if &scanned != epoch_ledger.head_anchor() || history != epoch_ledger.history_root() {
+                return Err(DeploymentReadError::Corrupt {
+                    reason: "missing canonical history for deletion custody".to_owned(),
+                });
+            }
+            if !deletion_batches.is_empty() {
                 let packs_dir = objects_dir.join(PACKS_SUBDIR);
                 let reader = if packs_dir.is_dir() {
-                    PackStore::open(root, PackConfig::default())
-                        .ok()
-                        .map(|store| store.reader())
+                    Some(PackStore::open(root, PackConfig::default())
+                        .map_err(|err| DeploymentReadError::Corrupt {
+                            reason: format!("cannot open deletion record pack store: {err}"),
+                        })?
+                        .reader())
                 } else {
                     None
                 };
                 let read_deletion_obj = |digest: ContentDigest| -> Result<Vec<u8>, DeletionError> {
+                    let limit = limits.max_object_bytes.min(MAX_DELETION_RECORD_BYTES);
+                    let pack_error = |err: fss_pack::PackError| DeletionError::Incomplete {
+                        detail: format!("cannot verify packed deletion record {digest}: {err}"),
+                    };
                     if let Some(ref pack_reader) = reader
-                        && let Ok(bytes) = pack_reader.read_verified(&digest)
+                        && let Some(location) = pack_reader.lookup(&digest).map_err(pack_error)?
                     {
-                        return Ok(bytes);
+                        if location.len > limit as u64 {
+                            return Err(DeletionError::Bound { limit: "deletion record bytes" });
+                        }
+                        let budget = PackReadBudget::new(location.record_len().map_err(pack_error)?);
+                        return pack_reader
+                            .read_verified_with_budget(&digest, &budget)
+                            .map_err(pack_error);
                     }
-                    fss_publication::read_verified(&objects_dir, digest, limits.max_object_bytes)
+                    fss_publication::read_verified(&objects_dir, digest, limit)
                         .map_err(DeletionError::from)
                 };
-                match DeletionIndex::from_batches::<DeletionError>(&v2_batches, &read_deletion_obj)
-                {
+                match DeletionIndex::from_batches::<DeletionError>(
+                    &deletion_batches,
+                    &read_deletion_obj,
+                ) {
                     Ok(deletion) => {
                         deleted_digests = deletion.deleted_objects();
                     }
                     Err(DeletionError::RecordMismatch) => {
-                        // v1->v2 migrated DeletionPlans preserve their immutable original v1
-                        // LedgerOracle basis_anchor while v2 epoch batches carry RadixMerkleTrie
-                        // roots; decode each migrated DeletionPlan directly to collect its exact
-                        // deleted object set without failing closed on root-format migration.
-                        for batch in &v2_batches {
-                            for delta in &batch.deltas {
-                                if delta.family == FAMILY_DELETION_RECORD {
-                                    let bytes =
-                                        read_deletion_obj(delta.payload_digest).map_err(|err| {
-                                            DeploymentReadError::Corrupt {
-                                                reason: format!(
-                                                    "v2 migrated deletion plan read failed: {err}"
-                                                ),
-                                            }
-                                        })?;
-                                    let plan = DeletionPlan::decode(&bytes, delta.payload_digest)
-                                        .map_err(|err| DeploymentReadError::Corrupt {
-                                        reason: format!(
-                                            "v2 migrated deletion plan decode failed: {err}"
-                                        ),
-                                    })?;
-                                    deleted_digests.extend(plan.deleted_set());
-                                }
-                            }
-                        }
+                        // A migrated header can carry a v1 state root. Reconstruct that root
+                        // from canonical history and repeat the complete deletion proof.
+                        let receipt = MigrationEquivalenceReceipt::read_from_root(
+                            root,
+                            limits.max_object_bytes,
+                        )
+                        .map_err(|err| DeploymentReadError::Corrupt {
+                            reason: format!("v2 deletion custody replay failed: {err}"),
+                        })?;
+                        let bases = v1_deletion_bases(
+                            &epoch_ledger,
+                            &deletion_batches,
+                            &receipt,
+                            cancelled,
+                        )?;
+                        deleted_digests = DeletionIndex::deleted_objects_with_v1_bases(
+                            &deletion_batches,
+                            &bases,
+                            &read_deletion_obj,
+                        )
+                        .map_err(|err| DeploymentReadError::Corrupt {
+                            reason: format!("v2 deletion custody replay failed: {err}"),
+                        })?;
                     }
                     Err(err) => {
                         return Err(DeploymentReadError::Corrupt {

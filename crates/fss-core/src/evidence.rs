@@ -366,6 +366,18 @@ pub struct ObjectRevision {
     pub validity: CaptureInterval,
 }
 
+impl From<&EvidenceDelta> for ObjectRevision {
+    fn from(delta: &EvidenceDelta) -> Self {
+        Self {
+            generation: delta.new_generation,
+            family: delta.family.clone(),
+            plane: delta.plane,
+            payload_digest: delta.payload_digest,
+            validity: delta.validity,
+        }
+    }
+}
+
 impl CanonicalEncode for ObjectRevision {
     fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
         encoder.u64(self.generation);
@@ -845,19 +857,15 @@ fn apply_deltas(
         }
         next.insert(
             delta.object_id.clone(),
-            ObjectRevision {
-                generation: delta.new_generation,
-                family: delta.family.clone(),
-                plane: delta.plane,
-                payload_digest: delta.payload_digest,
-                validity: delta.validity,
-            },
+            ObjectRevision::from(delta),
         );
     }
     Ok(next)
 }
 
-fn state_root(objects: &BTreeMap<ObjectId, ObjectRevision>) -> ContentDigest {
+/// Computes the canonical v1 reference-state commitment for a materialized object map.
+#[must_use]
+pub fn state_root(objects: &BTreeMap<ObjectId, ObjectRevision>) -> ContentDigest {
     let mut encoder = CanonicalEncoder::new();
     encoder.text("fss.reference_state.v1");
     encoder.u64(objects.len() as u64);

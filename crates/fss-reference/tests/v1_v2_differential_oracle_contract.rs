@@ -1288,6 +1288,47 @@ fn run_single_differential_seed(seed: u64, jpegs: &[Vec<u8>]) -> Result<SeedOutc
         ));
     }
 
+    if seed == 1 {
+        // Verify the migrated deletion on the v2 root itself. A later orphaned deletion
+        // must still fail the full proof even though an earlier plan carries a v1 basis.
+        let migrated = ProjectionBridge::open_or_catch_up(&v2_root, &orient_limits)
+            .map_err(|e| format!("migrated deletion proof: {e}"))?;
+        assert_eq!(
+            migrated.store().snapshot_latest().state_digest(),
+            v2_snap.state_digest()
+        );
+        drop(migrated);
+        let receipt_path = v2_root.join(fss_reference::migration::MIGRATION_RECEIPT_FILENAME);
+        let saved_receipt = fs::read(&receipt_path).map_err(|e| e.to_string())?;
+        fs::write(&receipt_path, b"{}").map_err(|e| e.to_string())?;
+        assert!(matches!(
+            ProjectionBridge::open_or_catch_up(&v2_root, &orient_limits),
+            Err(fss_reference::agent_orient::DeploymentReadError::Corrupt { .. })
+        ));
+        fs::write(receipt_path, saved_receipt).map_err(|e| e.to_string())?;
+        let mut ledger = MerkleEpochLedger::open(
+            v2_root.join("ledger"),
+            &site,
+            EpochLedgerConfig::default(),
+            IncompleteTailPolicy::Reject,
+        )
+        .map_err(|e| e.to_string())?;
+        let orphan = ledger
+            .prepare_batch(
+                fss_core::BatchId::parse("batch:deletion:orphan").map_err(|e| e.to_string())?,
+                Vec::new(),
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+        ledger.append_batch(orphan).map_err(|e| e.to_string())?;
+        drop(ledger);
+        assert!(matches!(
+            ProjectionBridge::open_or_catch_up(&v2_root, &orient_limits),
+            Err(fss_reference::agent_orient::DeploymentReadError::Corrupt { reason })
+                if reason.contains("deletion custody replay failed")
+        ));
+    }
+
     let elapsed_us = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
     Ok(SeedOutcome {
         seed,

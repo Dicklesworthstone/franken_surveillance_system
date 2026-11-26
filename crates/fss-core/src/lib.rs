@@ -217,6 +217,7 @@ pub use event::{
     parse_evidence_class,
 };
 pub use event_store::*;
+pub use evidence::state_root as reference_state_root;
 pub use evidence::{
     ClockBasis, CoverageContinuity, CoverageStopReason, CoverageWitness, EvidenceDelta,
     EvidenceDeltaBatch, LedgerAnchor, LedgerAppendGuard, LedgerSnapshot, LedgerSnapshotRetention,

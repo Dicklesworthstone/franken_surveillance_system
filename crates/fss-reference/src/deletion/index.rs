@@ -75,6 +75,26 @@ impl DeletionIndex {
         Ok(index)
     }
 
+    /// Verifies migrated v1 deletion records against independently reconstructed v1 bases.
+    /// The v2 topology can include native v2 deletions after migration.
+    pub(crate) fn deleted_objects_with_v1_bases(
+        batches: &[EvidenceDeltaBatch],
+        bases: &BTreeMap<u64, LedgerAnchor>,
+        read: impl FnMut(ContentDigest) -> Result<Vec<u8>, DeletionError>,
+    ) -> Result<BTreeSet<ContentDigest>, DeletionError> {
+        let entries = proof::read_with_basis(
+            batches,
+            read,
+            || Ok(()),
+            |_| Ok(()),
+            |batch, plan| batch == plan || bases.get(&batch.commit_sequence) == Some(plan),
+        )?;
+        Ok(entries
+            .into_iter()
+            .flat_map(|entry| entry.plan.deleted_set())
+            .collect())
+    }
+
     /// Reads the index of an open deployment.
     pub fn read(deployment: &ReferenceDeployment) -> Result<Self, DeletionError> {
         let batches = deployment.ledger().batches();

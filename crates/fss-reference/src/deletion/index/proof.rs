@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use fss_core::{ContentDigest, EvidenceDelta, EvidenceDeltaBatch, Plane};
+use fss_core::{ContentDigest, EvidenceDelta, EvidenceDeltaBatch, LedgerAnchor, Plane};
 use fss_publication::ROOT_RETRACTION_FAMILY;
 
 use super::{DeletionEntry, DeletionError};
@@ -159,9 +159,21 @@ pub(super) fn read<E: From<DeletionError>>(
 /// No intermediate progress escapes when a callback or the semantic proof refuses.
 pub(in crate::deletion) fn read_controlled<E: From<DeletionError>>(
     batches: &[EvidenceDeltaBatch],
+    read: impl FnMut(ContentDigest) -> Result<Vec<u8>, E>,
+    checkpoint: impl FnMut() -> Result<(), E>,
+    admit_plan: impl FnMut(&DeletionPlan) -> Result<(), E>,
+) -> Result<Vec<DeletionEntry>, E> {
+    read_with_basis(batches, read, checkpoint, admit_plan, |batch, plan| batch == plan)
+}
+
+/// A migrated plan preserves the v1 basis root. Its owner must independently reconstruct
+/// that exact basis. Every other header, transition and completion check is shared.
+pub(super) fn read_with_basis<E: From<DeletionError>>(
+    batches: &[EvidenceDeltaBatch],
     mut read: impl FnMut(ContentDigest) -> Result<Vec<u8>, E>,
     mut checkpoint: impl FnMut() -> Result<(), E>,
     mut admit_plan: impl FnMut(&DeletionPlan) -> Result<(), E>,
+    matches_basis: impl Fn(&LedgerAnchor, &LedgerAnchor) -> bool,
 ) -> Result<Vec<DeletionEntry>, E> {
     let mut states: Vec<Progress> = Vec::new();
     let mut plans: BTreeMap<ContentDigest, usize> = BTreeMap::new();
@@ -185,7 +197,7 @@ pub(in crate::deletion) fn read_controlled<E: From<DeletionError>>(
             if plans.contains_key(&digest)
                 || records.contains_key(&object)
                 || batch.batch_id.as_str() != DeletionPlan::record_batch_id(digest)
-                || batch.basis_anchor != plan.basis_anchor
+                || !matches_basis(&batch.basis_anchor, &plan.basis_anchor)
                 || plan.site_lineage != plan.basis_anchor.site_lineage
             {
                 return Err(DeletionError::RecordMismatch.into());
