@@ -48,6 +48,8 @@ pub const DAEMON_RUNTIME_META_FILENAME: &str = "daemon.meta.json";
 /// Closed target sentinel for `BoundedControlOp::StopCamera` requesting graceful daemon shutdown.
 pub const DAEMON_STOP_TARGET: &str = "daemon:all";
 
+pub(crate) const CAP_OBSERVE_STATUS: &str = "CAP-OBSERVE-STATUS-001";
+
 const MAX_DELTA_BUS_EVENTS: usize = 4_096;
 // Accepted work remains FIFO until the supervisor drains it; pressure never evicts a command.
 const MAX_QUEUED_CONTROL_COMMANDS: usize = 1_024;
@@ -388,6 +390,14 @@ impl DaemonIpcHandler for DaemonIpcHandlerAdapter {
     }
 
     fn query_retention_forecast(&self, ctx: &RequestContext, camera_id: &str) -> IpcResponse {
+        if !ctx.granted_capabilities.iter().any(|cap| cap == CAP_OBSERVE_STATUS) {
+            return make_refused(
+                ctx.request_id,
+                fss_ipc::ERR_IPC_CAPABILITY_DENIED_001,
+                "retention forecast requires CAP-OBSERVE-STATUS-001",
+                false,
+            );
+        }
         let Ok(rows) = self.shared.retention_forecasts.read() else {
             return make_refused(
                 ctx.request_id,

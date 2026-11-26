@@ -32,7 +32,7 @@ use fss_daemon::{
 use fss_fusion::ScoreCalibration;
 use fss_ipc::{
     BoundedControlOp, DeltaEventSummary, DeltaSubscriptionItem, IpcClient, IpcClientConfig,
-    IpcResponse, default_socket_path,
+    IpcRequest, IpcResponse, default_socket_path,
 };
 use fss_ledger::{EpochLedgerConfig, IncompleteTailPolicy, MerkleEpochLedger};
 use fss_pack::{CapacityPressure, ERR_STORAGE_QUOTA_PINNED_001, RetentionCandidate};
@@ -698,6 +698,30 @@ fn graceful_ipc_stop_executes_request_drain_finalize_and_verifies_ledger() -> Te
     assert_eq!(status.cameras.len(), 3);
     assert!(status.head_commit_sequence >= 3);
 
+    // Both known and unknown camera ids must be indistinguishable without an observer grant.
+    for capabilities in [Vec::new(), vec!["CAP-AGENT-CAMERA-CONTROL-001".to_owned()]] {
+        let mut client = IpcClient::connect(IpcClientConfig {
+            deployment_root: root.clone(),
+            deployment_id: desc.site_id.clone(),
+            contract_basis_digest: desc.contract_basis_digest,
+            principal: op_principal.clone(),
+            capabilities,
+            io_timeout: Duration::from_secs(3),
+        })?;
+        for camera in ["sensor:wyze-39", "sensor:unknown"] {
+            let request_id = client.next_request_id();
+            let response = client.request(&IpcRequest::QueryRetentionForecast {
+                request_id,
+                camera_id: camera.to_owned(),
+            })?;
+            assert!(
+                matches!(&response, IpcResponse::Refused { error_id, retryable: false, .. }
+                    if error_id.as_str() == fss_ipc::ERR_IPC_CAPABILITY_DENIED_001),
+                "expected observer capability refusal, got {response:?}"
+            );
+        }
+    }
+
     // Wrong shutdown approval digest MUST be refused fail-closed.
     let mut bad_client = IpcClient::connect(IpcClientConfig {
         deployment_root: root.clone(),
@@ -707,6 +731,16 @@ fn graceful_ipc_stop_executes_request_drain_finalize_and_verifies_ledger() -> Te
         capabilities: vec!["CAP-OBSERVE-STATUS-001".to_owned()],
         io_timeout: Duration::from_secs(3),
     })?;
+    let request_id = bad_client.next_request_id();
+    let unknown = bad_client.request(&IpcRequest::QueryRetentionForecast {
+        request_id,
+        camera_id: "sensor:unknown".to_owned(),
+    })?;
+    assert!(
+        matches!(&unknown, IpcResponse::Refused { error_id, .. }
+            if error_id.as_str() == fss_daemon::ERR_DAEMON_UNKNOWN_CAMERA_001),
+        "expected authorized unknown-camera refusal, got {unknown:?}"
+    );
     let bad_req = bad_client.next_request_id();
     let bad_resp = bad_client.submit_bounded_control(
         bad_req,

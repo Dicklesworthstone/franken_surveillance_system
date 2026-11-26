@@ -18,7 +18,7 @@ use fss_ipc::{
 };
 
 use crate::control::{
-    DAEMON_RUNTIME_DESCRIPTOR_DOMAIN, DAEMON_RUNTIME_DESCRIPTOR_SCHEMA,
+    CAP_OBSERVE_STATUS, DAEMON_RUNTIME_DESCRIPTOR_DOMAIN, DAEMON_RUNTIME_DESCRIPTOR_SCHEMA,
     DAEMON_RUNTIME_META_FILENAME, DAEMON_STOP_TARGET, daemon_stop_approval_digest,
 };
 use crate::error::DaemonError;
@@ -184,7 +184,7 @@ fn connect_local_daemon(
         deployment_id: deployment_id.clone(),
         contract_basis_digest: descriptor.contract_basis_digest,
         principal,
-        capabilities: vec!["CAP-OBSERVE-STATUS-001".to_owned()],
+        capabilities: vec![CAP_OBSERVE_STATUS.to_owned()],
         io_timeout: Duration::from_secs(5),
     })?;
     Ok((descriptor, deployment_id, client))
@@ -235,7 +235,9 @@ pub fn query_camera_retention_forecast(
         request_id: req_id,
         camera_id: camera_id.to_owned(),
     })? {
-        IpcResponse::RetentionForecast { forecast, .. } if forecast.camera_id == camera_id => {
+        IpcResponse::RetentionForecast { request_id, forecast }
+            if request_id == req_id && forecast.camera_id == camera_id =>
+        {
             Ok((descriptor, forecast))
         }
         IpcResponse::Refused {
@@ -243,7 +245,7 @@ pub fn query_camera_retention_forecast(
             error_id,
             reason,
             retryable,
-        } => Err(DaemonError::Ipc(IpcError::Refused {
+        } if request_id == req_id => Err(DaemonError::Ipc(IpcError::Refused {
             request_id,
             error_id,
             reason,
