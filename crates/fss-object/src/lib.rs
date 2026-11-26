@@ -21,6 +21,8 @@ pub mod effect_journal;
 /// Encryption-context manifest (FSS-065).
 pub mod encryption;
 mod error;
+/// Incident archive retrieval and independent verification (`FSS-068`, `fss-x4a.13.8`).
+pub mod incident_retrieval;
 /// Independent manifest-only archive root reconstruction (`FSS-135`, `fss-x4a.13.19`).
 pub mod independent_reconstruct;
 mod manifest;
