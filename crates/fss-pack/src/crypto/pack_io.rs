@@ -22,7 +22,7 @@ use crate::crypto::pack_codec::next_temp_seq;
 use crate::error::{PackError, PackIoOperation};
 use crate::format::{DurabilityMode, PackId, read_exact_at_bounded, sync_dir, write_all_bounded};
 
-pub(crate) use crate::crypto::pack_codec::write_file_atomic;
+pub(crate) use crate::crypto::pack_codec::{publish_restored_pack, write_file_atomic};
 pub use crate::crypto::pack_codec::{
     DEFAULT_ENCRYPTION_CHUNK_BYTES, DecryptedPackReceipt, ENCRYPTED_PACK_END_MAGIC,
     ENCRYPTED_PACK_HEADER_LEN, ENCRYPTED_PACK_MAGIC, ENCRYPTED_PACK_TRAILER_LEN,

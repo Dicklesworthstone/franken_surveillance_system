@@ -3,7 +3,7 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use fss_core::{ContentDigest, Sha256Hasher};
@@ -19,7 +19,7 @@ use crate::crypto::pack_io::{
     EncryptedPackWriter, decrypt_and_verify_pack_bytes, encrypt_pack_bytes,
 };
 use crate::error::{PackError, PackIoOperation};
-use crate::format::{DurabilityMode, PackId, sync_dir, write_all_bounded};
+use crate::format::{DurabilityMode, PackId, read_exact_at_bounded, sync_dir, write_all_bounded};
 
 /// Magic prefix identifying an encrypted packfile / ledger-epoch stream (`FSEP`).
 pub const ENCRYPTED_PACK_MAGIC: [u8; 4] = *b"FSEP";
@@ -310,14 +310,13 @@ pub(crate) fn next_temp_seq() -> u64 {
     PACK_IO_TEMP_SEQ.fetch_add(1, Ordering::Relaxed)
 }
 
-pub(crate) fn write_file_atomic(
+fn stage_file(
+    parent: &Path,
     path: &Path,
     bytes: &[u8],
     durability: DurabilityMode,
-) -> Result<(), PackError> {
-    let parent = path.parent().ok_or_else(|| PackError::InvalidConfig {
-        detail: "destination path has no parent directory".to_owned(),
-    })?;
+    options: &mut OpenOptions,
+) -> Result<PathBuf, PackError> {
     fs::create_dir_all(parent).map_err(|err| PackError::io(PackIoOperation::CreateDir, err))?;
     let seq = next_temp_seq();
     let base_name =
@@ -327,7 +326,7 @@ pub(crate) fn write_file_atomic(
                 detail: "destination filename must be valid UTF-8".to_owned(),
             })?;
     let temp_path = parent.join(format!(".{base_name}.tmp.{}.{seq}", std::process::id()));
-    let mut file = OpenOptions::new()
+    let mut file = options
         .write(true)
         .create_new(true)
         .open(&temp_path)
@@ -342,13 +341,90 @@ pub(crate) fn write_file_atomic(
         let _ = fs::remove_file(&temp_path);
         return Err(err);
     }
-    drop(file);
+    Ok(temp_path)
+}
+
+pub(crate) fn write_file_atomic(
+    path: &Path,
+    bytes: &[u8],
+    durability: DurabilityMode,
+) -> Result<(), PackError> {
+    let parent = path.parent().ok_or_else(|| PackError::InvalidConfig {
+        detail: "destination path has no parent directory".to_owned(),
+    })?;
+    let temp_path = stage_file(parent, path, bytes, durability, &mut OpenOptions::new())?;
     if let Err(err) = fs::rename(&temp_path, path) {
         let _ = fs::remove_file(&temp_path);
         return Err(PackError::io(PackIoOperation::Rename, err));
     }
     sync_dir(parent, durability)?;
     Ok(())
+}
+
+/// Publish a fully verified plaintext pack into an offline directory. Another restorer
+/// can win the link, but cannot cause this operation to replace a different sealed pack.
+pub(crate) fn publish_restored_pack(
+    parent: &Path,
+    pack_id: PackId,
+    bytes: &[u8],
+    durability: DurabilityMode,
+) -> Result<(), PackError> {
+    let path = parent.join(pack_id.file_name());
+    match fs::symlink_metadata(&path) {
+        Ok(_) => {
+            verify_existing_pack(&path, bytes, durability)?;
+            return sync_dir(parent, durability);
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(PackError::io(PackIoOperation::Metadata, err)),
+    }
+
+    let mut options = OpenOptions::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let staged = stage_file(parent, &path, bytes, durability, &mut options)?;
+    let published = match fs::hard_link(&staged, &path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+            verify_existing_pack(&path, bytes, durability)
+        }
+        Err(err) => Err(PackError::io(PackIoOperation::Write, err)),
+    };
+    let removed =
+        fs::remove_file(staged).map_err(|err| PackError::io(PackIoOperation::Remove, err));
+    published?;
+    removed?;
+    sync_dir(parent, durability)
+}
+
+fn verify_existing_pack(
+    path: &Path,
+    bytes: &[u8],
+    durability: DurabilityMode,
+) -> Result<(), PackError> {
+    let conflict = || PackError::ArchiveIntegrity {
+        detail: "existing restore destination conflicts with verified sealed pack".to_owned(),
+    };
+    let metadata =
+        fs::symlink_metadata(path).map_err(|err| PackError::io(PackIoOperation::Metadata, err))?;
+    if !metadata.is_file() || metadata.len() != bytes.len() as u64 {
+        return Err(conflict());
+    }
+    let file = File::open(path).map_err(|err| PackError::io(PackIoOperation::Open, err))?;
+    let mut scratch = [0_u8; 8192];
+    let mut offset = 0;
+    for chunk in bytes.chunks(scratch.len()) {
+        let buf = &mut scratch[..chunk.len()];
+        read_exact_at_bounded(&file, offset, buf)?;
+        if buf != chunk {
+            return Err(conflict());
+        }
+        offset += chunk.len() as u64;
+    }
+    durability.sync_file(&file)
 }
 
 /// Streams a sealed plaintext `.fssp` packfile into an atomic encrypted `.fsep` file on disk.

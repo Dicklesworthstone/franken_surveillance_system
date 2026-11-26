@@ -1390,6 +1390,21 @@ fn fss_archive_cli_seal_verify_s3_upload_restore_and_crypto_erase_e2e() -> TestR
     assert_eq!(fs::read(&restored_pack)?, orig_bytes);
     assert!(!manifest_file.exists());
 
+    // A retry after successful publication preserves the original file. A different pack
+    // under the same logical ID (even the exact same length) must survive a refused restore.
+    let retry_witness = restore_packs_dir.join("restore-retry-witness");
+    fs::hard_link(&restored_pack, &retry_witness)?;
+    let (code, retried, err) = run_fss(&remote_args)?;
+    assert_eq!(code, 0, "identical restore retry failed: {retried} {err}");
+    let mut conflicting = orig_bytes.clone();
+    conflicting[0] ^= 1;
+    fs::write(&retry_witness, &conflicting)?;
+    assert_eq!(fs::read(&restored_pack)?, conflicting);
+    let (code, refused, _) = run_fss(&remote_args)?;
+    assert_ne!(code, 0, "restore overwrote an existing pack: {refused}");
+    assert_eq!(fs::read(&restored_pack)?, conflicting);
+    fs::remove_file(&retry_witness)?;
+
     // 7. `fss archive crypto-erase` preview -> approve -> signed erasure -> verify fails with ERR-CRYPTO-KEY-ERASED-001!
     let (code, ce_prev, err) = run_fss(&[
         "archive",

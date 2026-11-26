@@ -22,7 +22,7 @@ use crate::crypto::envelope::{KeyEncryptionKey, SCHEMA_EPOCH_PACKFILE};
 use crate::crypto::erasure::escape_json_str;
 use crate::crypto::keyring::KeyEnvelopeCatalog;
 use crate::crypto::pack_io::{
-    EncryptedStreamKind, decrypt_and_verify_pack_bytes, write_file_atomic,
+    EncryptedStreamKind, decrypt_and_verify_pack_bytes, publish_restored_pack,
 };
 use crate::error::PackError;
 use crate::format::{
@@ -527,8 +527,7 @@ pub fn restore_cold_pack_to_dir(
         max_download_bytes,
         now_ns,
     )?;
-    let dest_path = packs_dir.join(manifest.pack_id.file_name());
-    write_file_atomic(&dest_path, &plaintext_pack, durability)?;
+    publish_restored_pack(packs_dir, manifest.pack_id, &plaintext_pack, durability)?;
     let mut digests: Vec<ContentDigest> = verified_records.into_iter().map(|r| r.digest).collect();
     digests.sort_unstable();
     Ok(digests)
