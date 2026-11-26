@@ -415,17 +415,16 @@ fn combiner_deterministic_order_cancellation_and_collision_deferral() -> TestRes
     Ok(())
 }
 
+type CheckpointFaultCombiner = (
+    CommitCombiner<LedgerPackProjectionSink>,
+    Arc<MvccProjectionStore>,
+    PathBuf,
+);
+
 /// Block checkpoint publication at its temporary path without interfering with epoch or pack I/O.
 fn checkpoint_fault_combiner(
     dir: &TempDir,
-) -> Result<
-    (
-        CommitCombiner<LedgerPackProjectionSink>,
-        Arc<MvccProjectionStore>,
-        PathBuf,
-    ),
-    Box<dyn std::error::Error>,
-> {
+) -> Result<CheckpointFaultCombiner, Box<dyn std::error::Error>> {
     let ledger_dir = dir.root.join("ledger");
     let ledger = MerkleEpochLedger::open(
         &ledger_dir,

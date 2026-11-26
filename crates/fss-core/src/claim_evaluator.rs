@@ -32,8 +32,10 @@ pub const CLAIM_EVALUATION_RECEIPT_DOMAIN: &str = "fss.claim_evaluation_receipt.
 /// Format version for canonical claim evaluation receipts.
 pub const CLAIM_EVALUATION_FORMAT_VERSION: u32 = 1;
 
-/// Forbidden mutable generation aliases that can never back a public claim (`ADR-0004`).
-const FORBIDDEN_ALIASES: &[&str] = &["latest", "auto", "head", "current"];
+/// Forbidden mutable ref/tag aliases that can never back a public claim (`ADR-0004`).
+/// `"latest"` is forbidden in any delimited segment; the other aliases are forbidden when
+/// used as the whole identifier or as a ref/tag suffix after `:`, `@`, or `/`.
+const FORBIDDEN_SUFFIX_ALIASES: &[&str] = &["auto", "head", "current"];
 
 /// Hard bounds protecting claim evaluation from unbounded inputs or adversarial payloads.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -561,6 +563,34 @@ impl CanonicalDecode for ClaimEvaluationReceipt {
         if !receipt.verify_digest() {
             return Err(ContractError::InvalidIdentifier);
         }
+        // Fail closed on structurally self-contradictory receipts even if SHA-256 was recomputed.
+        let limits = ClaimEvaluationLimits::default();
+        if validate_identifier(&receipt.claim_id, "claim_id", limits.max_text_bytes).is_err()
+            || validate_scope(&receipt.scope, limits).is_err()
+        {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        if receipt.verdict == ClaimEvaluationVerdict::Certified {
+            if !receipt.defects.is_empty()
+                || !receipt.matched_exclusions.is_empty()
+                || receipt.effective_level != receipt.requested_level
+            {
+                return Err(ContractError::InvalidIdentifier);
+            }
+        } else if receipt.effective_level != ClaimReadinessLevel::Declared
+            || receipt.valid_until_ns.is_some()
+        {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        if !receipt
+            .verified_receipt_digests
+            .windows(2)
+            .all(|w| w[0] < w[1])
+            || !receipt.matched_exclusions.windows(2).all(|w| w[0] < w[1])
+            || !receipt.defects.windows(2).all(|w| w[0] < w[1])
+        {
+            return Err(ContractError::InvalidIdentifier);
+        }
         Ok(receipt)
     }
 }
@@ -594,13 +624,22 @@ fn validate_text(
 }
 
 fn is_forbidden_alias(gen_id: &str) -> bool {
-    gen_id
+    if gen_id
         .split(['-', '_', ':', '/', '@', '.', '+'])
-        .any(|token| {
-            FORBIDDEN_ALIASES
-                .iter()
-                .any(|alias| token.eq_ignore_ascii_case(alias))
-        })
+        .any(|token| token.eq_ignore_ascii_case("latest"))
+    {
+        return true;
+    }
+    if FORBIDDEN_SUFFIX_ALIASES
+        .iter()
+        .any(|alias| gen_id.eq_ignore_ascii_case(alias))
+    {
+        return true;
+    }
+    let last_ref_segment = gen_id.rsplit([':', '@', '/']).next().unwrap_or("");
+    FORBIDDEN_SUFFIX_ALIASES
+        .iter()
+        .any(|alias| last_ref_segment.eq_ignore_ascii_case(alias))
 }
 
 fn validate_scope(
@@ -684,7 +723,7 @@ pub fn evaluate_public_claim(
         validate_identifier(&rec.receipt_id, "receipt_id", limits.max_text_bytes)?;
         validate_identifier(&rec.lane_id, "lane_id", limits.max_text_bytes)?;
         validate_scope(&rec.scope, limits)?;
-        if rec.issued_at_ns.0 > rec.expires_at_ns.0 {
+        if rec.issued_at_ns.0 >= rec.expires_at_ns.0 {
             return Err(ClaimEvaluatorError::InvalidInput("inverted_receipt_window"));
         }
         if let Some((prev_digest, prev_status)) = seen_receipt_ids.get(rec.receipt_id.as_str())

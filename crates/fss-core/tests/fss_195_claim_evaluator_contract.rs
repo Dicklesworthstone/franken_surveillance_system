@@ -99,6 +99,35 @@ fn fss_195_nominal_certification_is_deterministic_canonical_and_tamper_evident()
         ClaimEvaluationReceipt::decode_canonical(&mut CanonicalDecoder::new(&bad_bytes)).is_err()
     );
 
+    // Even a forged receipt whose SHA-256 was recomputed fails decode_canonical if self-contradictory.
+    let mut forged = r1.clone();
+    forged.matched_exclusions.push("EXCL-FORGED".to_owned());
+    forged.receipt_digest = forged.computed_digest();
+    assert!(forged.verify_digest());
+    let mut forged_enc = CanonicalEncoder::new();
+    forged.encode_canonical(&mut forged_enc);
+    let forged_bytes = forged_enc.finish();
+    assert!(
+        ClaimEvaluationReceipt::decode_canonical(&mut CanonicalDecoder::new(&forged_bytes))
+            .is_err()
+    );
+
+    // Legitimate immutable generations containing "head"/"auto"/"current" as nouns are NOT false-positived.
+    let mut benign_req = nominal_request();
+    let benign_gens = [
+        "cam:front-head:v1",
+        "isp:auto-exposure:v2",
+        "sensor:current-loop:v3",
+    ];
+    for g in benign_gens {
+        benign_req.scope.pinned_generations.push(g.to_owned());
+        for rec in &mut benign_req.evidence {
+            rec.scope.pinned_generations.push(g.to_owned());
+        }
+    }
+    let benign = evaluate_public_claim(&benign_req, ClaimEvaluationLimits::default(), || false)?;
+    assert_eq!(benign.verdict, ClaimEvaluationVerdict::Certified);
+
     emit_caplog(
         "fss_195_nominal_certification_and_canonical_roundtrip",
         "certified_deterministic_tightest_expiry_and_tamper_evident",
