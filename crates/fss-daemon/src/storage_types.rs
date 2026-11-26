@@ -36,6 +36,8 @@ pub struct StorageCommitReceipt {
     pub batch_digest: ContentDigest,
     /// Optional ledger checkpoint failure after the canonical commit and projection succeeded.
     pub checkpoint_failure: Option<Arc<str>>,
+    /// Optional projection snapshot failure after the canonical commit and projection succeeded.
+    pub projection_snapshot_failure: Option<Arc<str>>,
     /// OS durability fsync barriers executed during this commit.
     pub fsyncs_executed: u64,
 }

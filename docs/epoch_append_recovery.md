@@ -48,6 +48,29 @@ If projection also fails, `CommittedProjectionFailed` carries the original ledge
 the projection error, and any ledger checkpoint diagnostic. Recover the projection against
 that receipt before submitting further evidence.
 
+## Projection preparation and snapshot maintenance
+
+The direct pack/ledger/projection sink resolves and validates required projection
+payloads, computes the successor snapshot, and encodes its bounded WAL frame before
+appending the canonical batch. Preparation retains projection writer ownership until
+publication. A missing or malformed projected payload is therefore a precommit refusal;
+it does not create a canonical row that cannot be replayed. A projection that is already
+behind the canonical sequence, authority root, or history root fences another wave before
+pack persistence until the existing committed history is recovered.
+
+After the WAL and new projection head are published, optional snapshot creation or WAL
+reset can still fail. The sink returns the successful commit receipt with
+`projection_snapshot_failure`; any concurrent ledger checkpoint failure remains available
+separately in `checkpoint_failure`. Both diagnostics reach coalesced and daemon storage
+receipts. Repair the affected maintenance target and call `compact_snapshot` or the
+ledger checkpoint repair API as appropriate; do not resubmit the committed mutation.
+
+Direct projection `apply_delta_batch` and `record_scrub_receipt` callers receive
+`ProjectionError::AppliedMaintenanceFailed` with the already-visible anchor when this
+postpublication maintenance fails. A projection WAL or visibility failure after canonical
+commitment still returns `CommittedProjectionFailed` with the exact canonical receipt;
+recover that projection before admitting another wave.
+
 ## Verification boundary
 
 Thirteen focused recovery test functions cover exclusive ownership (including a child

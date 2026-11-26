@@ -122,14 +122,12 @@ impl ProjectionWal {
         self.frames_written
     }
 
-    /// Appends a verified `ApplyBatch` frame to `mvcc.wal`.
-    pub(crate) fn append_batch(
+    /// Appends an already encoded and bounded `ApplyBatch` frame to `mvcc.wal`.
+    pub(crate) fn append_prepared_batch(
         &mut self,
-        batch: &EvidenceDeltaBatch,
+        batch: &PreparedWalBatch,
     ) -> Result<(), ProjectionError> {
-        let body = encode_batch(batch)?;
-        let frame = encode_wal_frame(WAL_OP_APPLY_BATCH, batch.new_anchor.commit_sequence, &body)?;
-        self.write_frame(&frame, false)
+        self.write_frame(&batch.frame, false)
     }
 
     /// Appends a verified `RecordScrubReceipt` frame and always fsyncs it durably.
@@ -163,6 +161,20 @@ impl ProjectionWal {
     #[must_use]
     pub(crate) fn path(&self) -> &Path {
         &self.path
+    }
+}
+
+/// A fully encoded, bounded batch frame prepared before canonical commitment.
+/// Its private bytes cannot be replaced between validation and persistence.
+pub(crate) struct PreparedWalBatch {
+    frame: Vec<u8>,
+}
+
+impl PreparedWalBatch {
+    pub(crate) fn encode(batch: &EvidenceDeltaBatch) -> Result<Self, ProjectionError> {
+        let body = encode_batch(batch)?;
+        let frame = encode_wal_frame(WAL_OP_APPLY_BATCH, batch.new_anchor.commit_sequence, &body)?;
+        Ok(Self { frame })
     }
 }
 

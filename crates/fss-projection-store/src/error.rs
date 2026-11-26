@@ -9,6 +9,8 @@ use fss_core::{ContentDigest, ContractError, ObjectId};
 use fss_ledger::{BatchCodecError, CommitReceipt, EpochLedgerError};
 use fss_pack::PackError;
 
+use crate::schema::ProjectionAnchor;
+
 /// Disk or filesystem operation associated with a [`ProjectionError::Io`] failure.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ProjectionIoOperation {
@@ -79,6 +81,14 @@ pub enum ProjectionError {
     Ledger(EpochLedgerError),
     /// Underlying packfile store error while resolving content-addressed payloads.
     Pack(PackError),
+    /// The projection head is already published, but its optional snapshot compaction failed.
+    /// Reapplying the batch is not safe or necessary; repair and call `compact_snapshot`.
+    AppliedMaintenanceFailed {
+        /// Exact visible projection anchor, unaffected by the maintenance failure.
+        anchor: ProjectionAnchor,
+        /// Failed snapshot write or WAL-reset operation.
+        source: Box<ProjectionError>,
+    },
     /// Offered delta batch does not advance from the store's current anchor.
     AnchorMismatch {
         /// Expected basis commit sequence.
@@ -170,6 +180,11 @@ impl fmt::Display for ProjectionError {
             Self::BatchCodec(err) => write!(f, "projection batch codec error: {err}"),
             Self::Ledger(err) => write!(f, "canonical ledger error: {err}"),
             Self::Pack(err) => write!(f, "pack store payload error: {err}"),
+            Self::AppliedMaintenanceFailed { anchor, source } => write!(
+                f,
+                "projection sequence {} is already applied, but snapshot maintenance failed: {source}; repair and compact_snapshot without reapplying the batch",
+                anchor.commit_sequence
+            ),
             Self::AnchorMismatch {
                 expected_sequence,
                 actual_sequence,

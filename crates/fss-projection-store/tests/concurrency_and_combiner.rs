@@ -488,30 +488,23 @@ fn combiner_projects_durable_batch_despite_checkpoint_failure() -> TestResult {
 }
 
 #[test]
-fn combiner_preserves_durable_receipt_when_projection_and_checkpoint_both_fail() -> TestResult {
+fn combiner_rejects_missing_payload_before_canonical_commit_and_checkpoint() -> TestResult {
     let dir = TempDir::new("durable-missing-projection")?;
     let (combiner, projection, blocked) = checkpoint_fault_combiner(&dir)?;
     let mut proposal = make_event_proposal(0, 1, None)?;
     proposal.objects.clear();
-    let Err(CombinerError::CommittedProjectionFailed {
-        receipt,
-        checkpoint_failure,
-        source,
-    }) = combiner.submit(proposal)
-    else {
-        return Err("missing projection payload lost the durable receipt".into());
-    };
-    assert_eq!(receipt.sequence, 1);
-    assert!(checkpoint_failure.is_some());
-    assert!(matches!(
-        source.as_ref(),
-        fss_projection_store::ProjectionError::MissingPayload { .. }
-    ));
+    let rejected = combiner.submit(proposal);
+    assert!(
+        matches!(rejected, Err(CombinerError::SinkFailure(ref detail)) if detail.contains("missing payload"))
+    );
     assert_eq!(projection.head_anchor().commit_sequence, 0);
+    // The rejected generation was never committed, and the checkpoint path was never reached.
+    let receipt = combiner.submit(make_event_proposal(0, 1, None)?)?;
+    assert_eq!(receipt.commit_sequence, 1);
+    assert!(receipt.checkpoint_failure.is_some());
     fs::remove_dir(blocked)?;
-    assert!(combiner.submit(make_event_proposal(0, 2, None)?).is_err());
     let sink = combiner.into_sink()?;
-    assert_eq!(sink.ledger().head_anchor(), &receipt.anchor);
+    assert_eq!(sink.ledger().head_anchor().commit_sequence, 1);
     assert_eq!(sink.ledger().history_root(), receipt.history_root);
     assert_eq!(sink.ledger().verify_full_chain()?.batches_verified, 1);
     Ok(())
@@ -678,6 +671,7 @@ fn combiner_canonical_sort_order_is_arrival_independent() -> TestResult {
                 batch_digest: root,
                 fsyncs_executed: 2,
                 checkpoint_failure: None,
+                projection_snapshot_failure: None,
             })
         }
     }

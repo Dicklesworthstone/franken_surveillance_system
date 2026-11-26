@@ -2,6 +2,7 @@
 //! Anchor-pinned MVCC [`ProjectionStore`] trait, durable [`MvccProjectionStore`],
 //! and standalone full-history replay helper.
 
+mod prepared;
 mod recovery;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -157,10 +158,14 @@ pub trait ProjectionStore: Send + Sync {
     fn latest_scrub_receipt(&self) -> Option<DoctorScrubReceipt>;
 
     /// Validates, persists durably to `mvcc.wal`, and records a new [`DoctorScrubReceipt`].
+    /// [`ProjectionError::AppliedMaintenanceFailed`] means the receipt is already visible
+    /// and only optional snapshot maintenance requires repair.
     fn record_scrub_receipt(&self, receipt: DoctorScrubReceipt) -> Result<(), ProjectionError>;
 
     /// Deterministically applies one canonical [`EvidenceDeltaBatch`], persists its WAL frame,
     /// and atomically advances the MVCC head snapshot.
+    /// [`ProjectionError::AppliedMaintenanceFailed`] means the new head is already visible;
+    /// repair snapshot storage and compact it rather than applying the same batch again.
     fn apply_delta_batch(
         &self,
         batch: &EvidenceDeltaBatch,
@@ -430,8 +435,15 @@ impl ProjectionStore for MvccProjectionStore {
         if writer.config.snapshot_stride > 0
             && writer.wal.frames_written() >= writer.config.snapshot_stride
         {
-            let _ = write_snapshot_atomic(&writer.dir, &next_arc, writer.config.durability)?;
-            writer.wal.reset_empty()?;
+            let maintenance =
+                write_snapshot_atomic(&writer.dir, &next_arc, writer.config.durability)
+                    .and_then(|_| writer.wal.reset_empty());
+            if let Err(source) = maintenance {
+                return Err(ProjectionError::AppliedMaintenanceFailed {
+                    anchor: next_arc.anchor,
+                    source: Box::new(source),
+                });
+            }
         }
         Ok(())
     }
@@ -441,32 +453,7 @@ impl ProjectionStore for MvccProjectionStore {
         batch: &EvidenceDeltaBatch,
         payload_resolver: &dyn PayloadResolver,
     ) -> Result<ProjectionAnchor, ProjectionError> {
-        let mut writer = self
-            .writer
-            .lock()
-            .map_err(|_| ProjectionError::LockPoisoned)?;
-        let current = self.snapshot_latest();
-        let mut next = (*current).clone();
-        advance_snapshot_in_place(&mut next, batch, payload_resolver)?;
-        writer.wal.append_batch(batch)?;
-
-        let new_anchor = next.anchor;
-        let next_arc = Arc::new(next);
-        {
-            let mut guard = self
-                .read_state
-                .write()
-                .map_err(|_| ProjectionError::LockPoisoned)?;
-            guard.publish(Arc::clone(&next_arc));
-        }
-
-        if writer.config.snapshot_stride > 0
-            && writer.wal.frames_written() >= writer.config.snapshot_stride
-        {
-            let _ = write_snapshot_atomic(&writer.dir, &next_arc, writer.config.durability)?;
-            writer.wal.reset_empty()?;
-        }
-        Ok(new_anchor)
+        self.prepare_delta_batch(batch, payload_resolver)?.publish()
     }
 }
 

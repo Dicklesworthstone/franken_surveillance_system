@@ -329,7 +329,7 @@ fn exact_batch_keeps_the_committed_receipt_after_checkpoint_failure() -> TestRes
 }
 
 #[test]
-fn exact_batch_preserves_committed_projection_failure_and_fences_later_appends() -> TestResult {
+fn exact_batch_refuses_malformed_projection_payload_before_canonical_commit() -> TestResult {
     let dir = TempDir::new()?;
     let sink = open_sink(&dir)?;
     let source = prepare(&sink, "projection-fault")?;
@@ -342,22 +342,20 @@ fn exact_batch_preserves_committed_projection_failure_and_fences_later_appends()
             .prepare_batch(source.batch_id.clone(), deltas, source.children.clone())?;
     let projection = Arc::clone(sink.projection());
     let combiner = CommitCombiner::new(sink, CommitCombinerConfig::default())?;
-    let Err(CombinerError::CommittedProjectionFailed { receipt, .. }) =
-        combiner.submit_exact_batch(offered.clone())
-    else {
-        return Err("projection failure lost the exact durable receipt".into());
-    };
-    assert_eq!(receipt.sequence, 1);
-    assert_eq!(receipt.batch_digest, offered.batch_digest);
+    let rejected = combiner.submit_exact_batch(offered.clone());
+    assert!(matches!(
+        rejected,
+        Err(CombinerError::SinkFailure(ref detail)) if detail.contains("invalid payload")
+    ));
     assert_eq!(projection.head_anchor().commit_sequence, 0);
-    let sink = combiner.into_sink()?;
-    let next = prepare(&sink, "after-projection-fault")?;
-    assert_eq!(next.basis_anchor.commit_sequence, 1);
-    let combiner = CommitCombiner::new(sink, CommitCombinerConfig::default())?;
-    assert!(combiner.submit_exact_batch(next).is_err());
+    assert!(combiner.receipt_for_exact_head(&offered)?.is_none());
+    // The malformed proposal did not consume its exact identity or object generation.
+    let receipt = combiner.submit_exact_batch(source.clone())?;
+    assert_eq!(receipt.commit_sequence, 1);
+    assert_eq!(receipt.batch_digest, source.batch_digest);
     let sink = combiner.into_sink()?;
     assert_eq!(sink.ledger().commit_sequence(), 1);
-    assert_eq!(sink.ledger().read_batches_range(1, 1)?, vec![offered]);
+    assert_eq!(sink.ledger().read_batches_range(1, 1)?, vec![source]);
     Ok(())
 }
 

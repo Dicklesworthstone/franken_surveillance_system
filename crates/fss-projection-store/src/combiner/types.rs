@@ -176,6 +176,9 @@ pub struct CoalescedCommitReceipt {
     /// Failure of the optional ledger checkpoint after this batch became durable.
     /// The canonical batch and its projection both succeeded; repair the checkpoint separately.
     pub checkpoint_failure: Option<Arc<str>>,
+    /// Failure of optional projection snapshot compaction after the new head became visible.
+    /// Repair derived snapshot storage and call `compact_snapshot`; do not resubmit the batch.
+    pub projection_snapshot_failure: Option<Arc<str>>,
     /// Zero-based deterministic position in canonical `(sensor_scope, request_digest)` order.
     pub proposal_position: usize,
 }
@@ -198,6 +201,9 @@ pub struct SinkCommitOutcome {
     /// Failure of the optional ledger checkpoint after this batch became durable.
     /// The canonical batch and its projection both succeeded; repair the checkpoint separately.
     pub checkpoint_failure: Option<Arc<str>>,
+    /// Failure of optional projection snapshot compaction after the new head became visible.
+    /// Repair derived snapshot storage and call `compact_snapshot`; do not resubmit the batch.
+    pub projection_snapshot_failure: Option<Arc<str>>,
 }
 
 /// Abstract durable commit target invoked exclusively by the elected combiner thread.
@@ -279,6 +285,47 @@ impl LedgerPackProjectionSink {
         &self.projection
     }
 
+    /// Stages projection validation and WAL encoding before canonical commitment for both
+    /// ordinary proposals and exact forwarded batches, retaining writer ownership until publish.
+    fn commit_and_publish_batch(
+        &mut self,
+        batch: EvidenceDeltaBatch,
+        pack_fsyncs: u64,
+    ) -> Result<SinkCommitOutcome, CombinerError> {
+        let resolver = PackStorePayloadResolver::new(&self.pack_store);
+        let prepared_projection = self.projection.prepare_delta_batch(&batch, &resolver)?;
+        let (ledger_receipt, checkpoint_failure) = match self.ledger.append_batch(batch) {
+            Ok(receipt) => (receipt, None),
+            Err(EpochLedgerError::CommittedCheckpointFailed { receipt, source }) => {
+                (*receipt, Some(Arc::<str>::from(source.to_string())))
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let (proj_anchor, projection_snapshot_failure) = match prepared_projection.publish() {
+            Ok(anchor) => (anchor, None),
+            Err(ProjectionError::AppliedMaintenanceFailed { anchor, source }) => {
+                (anchor, Some(Arc::<str>::from(source.to_string())))
+            }
+            Err(source) => {
+                return Err(CombinerError::CommittedProjectionFailed {
+                    receipt: Arc::new(ledger_receipt),
+                    checkpoint_failure,
+                    source: Arc::new(source),
+                });
+            }
+        };
+        Ok(SinkCommitOutcome {
+            commit_sequence: ledger_receipt.sequence,
+            batch_id: ledger_receipt.batch_id,
+            authority_root: proj_anchor.authority_root,
+            history_root: proj_anchor.history_root,
+            batch_digest: ledger_receipt.batch_digest,
+            fsyncs_executed: pack_fsyncs.saturating_add(1),
+            checkpoint_failure,
+            projection_snapshot_failure,
+        })
+    }
+
     /// Consumes the sink and returns its component stores.
     #[must_use]
     pub fn into_parts(self) -> (MerkleEpochLedger, Arc<PackStore>, Arc<MvccProjectionStore>) {
@@ -357,33 +404,7 @@ impl CommitSink for LedgerPackProjectionSink {
 
         // Native admission checks the exact live basis, successor, generations, state root,
         // identity, and digest. Never reconstruct this batch against a different head.
-        let (ledger_receipt, checkpoint_failure) = match self.ledger.append_batch(batch.clone()) {
-            Ok(receipt) => (receipt, None),
-            Err(EpochLedgerError::CommittedCheckpointFailed { receipt, source }) => {
-                (*receipt, Some(Arc::<str>::from(source.to_string())))
-            }
-            Err(error) => return Err(error.into()),
-        };
-        let resolver = PackStorePayloadResolver::new(&self.pack_store);
-        let proj_anchor = match self.projection.apply_delta_batch(&batch, &resolver) {
-            Ok(anchor) => anchor,
-            Err(source) => {
-                return Err(CombinerError::CommittedProjectionFailed {
-                    receipt: Arc::new(ledger_receipt),
-                    checkpoint_failure,
-                    source: Arc::new(source),
-                });
-            }
-        };
-        Ok(SinkCommitOutcome {
-            commit_sequence: ledger_receipt.sequence,
-            batch_id: ledger_receipt.batch_id,
-            authority_root: proj_anchor.authority_root,
-            history_root: proj_anchor.history_root,
-            batch_digest: ledger_receipt.batch_digest,
-            fsyncs_executed: 1,
-            checkpoint_failure,
-        })
+        self.commit_and_publish_batch(batch, 0)
     }
 
     fn commit_coalesced_wave(
@@ -420,36 +441,7 @@ impl CommitSink for LedgerPackProjectionSink {
         let pack_fsyncs = pack_fsyncs_after.saturating_sub(pack_fsyncs_before);
 
         let batch = self.ledger.prepare_batch(batch_id, deltas, child_roots)?;
-        let (ledger_receipt, checkpoint_failure) = match self.ledger.append_batch(batch.clone()) {
-            Ok(receipt) => (receipt, None),
-            Err(EpochLedgerError::CommittedCheckpointFailed { receipt, source }) => {
-                (*receipt, Some(Arc::<str>::from(source.to_string())))
-            }
-            Err(error) => return Err(error.into()),
-        };
-        let epoch_fsyncs = 1_u64;
-
-        let resolver = PackStorePayloadResolver::new(&self.pack_store);
-        let proj_anchor = match self.projection.apply_delta_batch(&batch, &resolver) {
-            Ok(anchor) => anchor,
-            Err(source) => {
-                return Err(CombinerError::CommittedProjectionFailed {
-                    receipt: Arc::new(ledger_receipt),
-                    checkpoint_failure,
-                    source: Arc::new(source),
-                });
-            }
-        };
-
-        Ok(SinkCommitOutcome {
-            commit_sequence: ledger_receipt.sequence,
-            batch_id: ledger_receipt.batch_id,
-            authority_root: proj_anchor.authority_root,
-            history_root: proj_anchor.history_root,
-            batch_digest: ledger_receipt.batch_digest,
-            fsyncs_executed: pack_fsyncs.saturating_add(epoch_fsyncs),
-            checkpoint_failure,
-        })
+        self.commit_and_publish_batch(batch, pack_fsyncs)
     }
 }
 

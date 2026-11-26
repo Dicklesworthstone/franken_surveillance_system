@@ -918,6 +918,7 @@ fn receipt_from_coalesced(c: fss_projection_store::CoalescedCommitReceipt) -> St
         batch_digest: c.batch_digest,
         fsyncs_executed: c.fsyncs_executed,
         checkpoint_failure: c.checkpoint_failure,
+        projection_snapshot_failure: c.projection_snapshot_failure,
     }
 }
 

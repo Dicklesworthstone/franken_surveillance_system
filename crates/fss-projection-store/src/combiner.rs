@@ -451,6 +451,9 @@ impl<S: CommitSink> CommitCombiner<S> {
                                 fsyncs_executed: committed.fsyncs_executed,
                                 proposal_position: pos,
                                 checkpoint_failure: committed.checkpoint_failure.clone(),
+                                projection_snapshot_failure: committed
+                                    .projection_snapshot_failure
+                                    .clone(),
                             }));
                         }
                     }

@@ -5,6 +5,41 @@
 **Current change qualification:** each dated section below states its exact verification boundary. Native passes for one component do not qualify other changes, and prior receipts do not qualify new bytes.
 **Release authority:** repository-owned local qualification (`scripts/qualify.sh`) and retained DSR receipts, not hosted CI
 
+## Projection preparation and committed maintenance outcomes — 2026-11-26
+
+Ordinary coalesced ingestion and exact forwarded batches now share one commit pipeline.
+It validates projection payloads and anchor continuity, computes the successor snapshot,
+and encodes the bounded WAL frame before canonical append. Projection writer ownership
+is retained through publication. Missing or malformed payloads, already-poisoned read
+ownership, and deterministic codec/size refusals therefore cannot poison canonical replay
+history. The exact forwarding identity, custody checks, singleton queue, and exact-head
+receipt recovery from concurrent main are preserved.
+
+Once the WAL and new projection head are visible, optional snapshot creation or WAL
+reset failure is a successful canonical/projection commit with a separate
+`projection_snapshot_failure` diagnostic. Ledger `checkpoint_failure` remains independent;
+both reach coalesced and daemon storage receipts. Genuine post-commit publication failure
+retains the existing `CommittedProjectionFailed` receipt. Direct apply and scrub APIs
+report `AppliedMaintenanceFailed` with the already-visible anchor so callers can repair
+maintenance without reapplying a mutation.
+
+Nine new regression functions cover checkpoint failure and reopen, snapshot repair and
+continued writes, missing/malformed payload refusal, simultaneous maintenance failures,
+public apply/scrub outcomes, projection-lag fencing before pack I/O, exact committed
+receipt fanout, and exact forwarding plus head-receipt recovery. Two existing malformed
+payload tests now require refusal before append rather than accepting unreplayable history.
+
+**Verification boundary:** pinned rustfmt, changed-path whitespace checks, and independent
+source/API review passed on the final integration. Native compilation and execution of
+the changed projection/daemon code remain unverified: both a focused pack test build and
+a metadata-only check were killed by SIGKILL in the shared unchanged `asupersync 0.5.0`
+dependency before reaching the changed higher-level targets. No full qualification or
+broad INV-007 completion is claimed.
+
+The repository-wide layered manifest audit reports unrelated proof-file digest mismatches
+and excluded/unknown paths in the base manifest. Changed-path SHA-256 entries are verified
+separately; that global audit is not a passing release gate.
+
 ## Verified direct-root and metadata custody before publication — 2026-11-26
 
 Single-root, batch, graph, and superseding-root publication now verify the descriptor's
