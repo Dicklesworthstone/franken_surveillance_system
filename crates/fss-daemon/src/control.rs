@@ -16,22 +16,25 @@ use fss_core::{
     OperationId,
 };
 use fss_ipc::{
-    ActiveScrubStatus, BoundedControlOp, CameraLiveStatus, ControlOperationState, DaemonIpcHandler,
-    CameraRetentionForecast, DeltaEventSummary, DeltaStreamSink, ERR_IPC_SERVER_SHUTDOWN_001, ERR_IPC_WIRE_CORRUPT_001,
-    IpcResponse, IpcServer, IpcServerConfig, LiveDaemonStatus, RequestContext, RingWatermarkStatus,
-    StreamEndReason, parse_error_id,
+    ActiveScrubStatus, BoundedControlOp, CameraLiveStatus, CameraRetentionForecast,
+    ControlOperationState, DaemonIpcHandler, DeltaEventSummary, DeltaStreamSink,
+    ERR_IPC_SERVER_SHUTDOWN_001, ERR_IPC_WIRE_CORRUPT_001, IpcResponse, IpcServer, IpcServerConfig,
+    LiveDaemonStatus, RequestContext, RingWatermarkStatus, StreamEndReason, parse_error_id,
 };
 
 pub use crate::control_client::{
-    DaemonRuntimeDescriptor, query_camera_retention_forecast, query_live_daemon_status, request_live_daemon_stop,
+    DaemonRuntimeDescriptor, query_camera_retention_forecast, query_live_daemon_status,
+    request_live_daemon_stop,
 };
 use crate::error::{DaemonError, ERR_DAEMON_CONTROL_APPROVAL_001, ERR_DAEMON_UNKNOWN_CAMERA_001};
 
 mod delta_log;
 mod forwarding;
+pub mod journal;
 
 use delta_log::BufferedDeltaLog;
 use forwarding::ForwardedBatches;
+use journal::{ControlHistoryReport, ControlProgress, DurableControlJournal};
 
 #[cfg(test)]
 #[path = "control_tests.rs"]
@@ -189,12 +192,14 @@ pub struct ControlPlaneShared {
     delta_log: Mutex<BufferedDeltaLog>,
     delta_notify: Condvar,
     control_queue: Mutex<VecDeque<PendingControlCommand>>,
+    control_journal: Mutex<Option<DurableControlJournal>>,
     forwarded_batches: ForwardedBatches,
     forward_writer: Arc<dyn ForwardBatchWriter>,
 }
 
 impl ControlPlaneShared {
-    /// Constructs shared control-plane state for `deployment_id`.
+    /// Constructs process-local control-plane state for embedded callers and fixtures.
+    /// `DaemonSupervisor` uses the durable constructor before opening camera drivers.
     #[must_use]
     pub fn new(
         deployment_id: impl Into<String>,
@@ -203,10 +208,47 @@ impl ControlPlaneShared {
         initial_status: ControlStatusSnapshot,
         forward_writer: Arc<dyn ForwardBatchWriter>,
     ) -> Arc<Self> {
+        Self::build(
+            deployment_id.into(),
+            deployment_root_digest,
+            known_cameras,
+            initial_status,
+            forward_writer,
+            None,
+        )
+    }
+
+    /// Binds durable intake to the daemon's control owner. Recovery never reconstructs a queue.
+    pub(crate) fn new_durable(
+        deployment_id: String,
+        deployment_root_digest: ContentDigest,
+        known_cameras: Vec<String>,
+        initial_status: ControlStatusSnapshot,
+        forward_writer: Arc<dyn ForwardBatchWriter>,
+        journal: DurableControlJournal,
+    ) -> Arc<Self> {
+        Self::build(
+            deployment_id,
+            deployment_root_digest,
+            known_cameras,
+            initial_status,
+            forward_writer,
+            Some(journal),
+        )
+    }
+
+    fn build(
+        deployment_id: String,
+        deployment_root_digest: ContentDigest,
+        known_cameras: Vec<String>,
+        initial_status: ControlStatusSnapshot,
+        forward_writer: Arc<dyn ForwardBatchWriter>,
+        journal: Option<DurableControlJournal>,
+    ) -> Arc<Self> {
         let initial_seq = initial_status.head_commit_sequence;
         Arc::new(Self {
             started_at: Instant::now(),
-            deployment_id: deployment_id.into(),
+            deployment_id,
             deployment_root_digest,
             known_cameras,
             head_commit_sequence: AtomicU64::new(initial_seq),
@@ -217,6 +259,7 @@ impl ControlPlaneShared {
             delta_log: Mutex::new(BufferedDeltaLog::new(initial_seq)),
             delta_notify: Condvar::new(),
             control_queue: Mutex::new(VecDeque::new()),
+            control_journal: Mutex::new(journal),
             forwarded_batches: ForwardedBatches::default(),
             forward_writer,
         })
@@ -289,12 +332,108 @@ impl ControlPlaneShared {
         &self.shutdown_requested
     }
 
-    /// Drains all queued bounded control commands for execution on the supervisor loop.
+    /// Transfers one bounded turn, retaining dispatch fences for durable owners.
+    /// Use `control_history` for inspection; draining transfers execution ownership.
     #[must_use]
     pub fn drain_control_commands(&self) -> Vec<PendingControlCommand> {
-        match self.control_queue.lock() {
-            Ok(mut guard) => guard.drain(..).collect(),
-            Err(_) => Vec::new(),
+        let durable = self
+            .control_journal
+            .lock()
+            .map(|journal| journal.is_some())
+            .unwrap_or(true);
+        if !durable {
+            return match self.control_queue.lock() {
+                Ok(mut queue) => queue.drain(..).collect(),
+                Err(_) => Vec::new(),
+            };
+        }
+        let allowance = self.queued_control_command_count().unwrap_or_default();
+        let mut commands = Vec::with_capacity(allowance);
+        for _ in 0..allowance {
+            match self.take_control_command() {
+                Ok(Some(command)) => commands.push(command),
+                Ok(None) | Err(_) => break,
+            }
+        }
+        commands
+    }
+
+    /// Bounded current/recovered history. A process-local owner returns `None`.
+    pub fn control_history(
+        &self,
+        maximum: usize,
+    ) -> Result<Option<ControlHistoryReport>, DaemonError> {
+        let guard = self
+            .control_journal
+            .lock()
+            .map_err(|_| DaemonError::LockPoisoned {
+                component: "control_journal",
+            })?;
+        guard
+            .as_ref()
+            .map(|journal| {
+                journal
+                    .inspect(maximum)
+                    .map_err(DaemonError::ControlHistory)
+            })
+            .transpose()
+    }
+
+    pub(crate) fn record_control_progress(
+        &self,
+        operation_id: &OperationId,
+        progress: ControlProgress,
+    ) -> Result<(), DaemonError> {
+        let result = self
+            .control_journal
+            .lock()
+            .map_err(|_| DaemonError::LockPoisoned {
+                component: "control_journal",
+            })
+            .and_then(|mut guard| match guard.as_mut() {
+                Some(journal) => journal
+                    .transition(operation_id, progress)
+                    .map_err(DaemonError::ControlHistory),
+                None => Ok(()),
+            });
+        if result.is_err() {
+            // Some callers hold the queue. Never acquire its mutex in the opposite order.
+            self.shutdown_requested.store(true, Ordering::Release);
+            self.delta_notify.notify_all();
+        }
+        result
+    }
+
+    fn retain_control(
+        &self,
+        ctx: &RequestContext,
+        op: BoundedControlOp,
+        target: Option<&str>,
+        approval: ContentDigest,
+    ) -> Result<PendingControlCommand, DaemonError> {
+        let mut guard = self
+            .control_journal
+            .lock()
+            .map_err(|_| DaemonError::LockPoisoned {
+                component: "control_journal",
+            })?;
+        match guard.as_mut() {
+            Some(journal) => {
+                let result = journal
+                    .admit(ctx, op, target, approval)
+                    .map_err(DaemonError::ControlHistory);
+                if journal.is_poisoned() {
+                    self.shutdown_requested.store(true, Ordering::Release);
+                    self.delta_notify.notify_all();
+                }
+                result
+            }
+            None => Ok(PendingControlCommand {
+                operation_id: self.alloc_operation_id(op),
+                op,
+                target_camera_id: target.map(str::to_owned),
+                approval_digest: approval,
+            }),
         }
     }
 
@@ -322,6 +461,11 @@ impl ControlPlaneShared {
         if self.is_shutdown_requested() {
             return Ok(None);
         }
+        if let Some(command) = queue.front()
+            && command.op != BoundedControlOp::TriggerScrub
+        {
+            self.record_control_progress(&command.operation_id, ControlProgress::DispatchStarted)?;
+        }
         Ok(queue.pop_front())
     }
 
@@ -330,7 +474,7 @@ impl ControlPlaneShared {
     pub(crate) fn cancel_unstarted_controls(
         &self,
     ) -> (Vec<PendingControlCommand>, Option<DaemonError>) {
-        let (mut queue, error) = match self.control_queue.lock() {
+        let (mut queue, mut error) = match self.control_queue.lock() {
             Ok(queue) => (queue, None),
             Err(poisoned) => (
                 poisoned.into_inner(),
@@ -340,7 +484,15 @@ impl ControlPlaneShared {
             ),
         };
         self.shutdown_requested.store(true, Ordering::Release);
-        let commands = queue.drain(..).collect();
+        let commands: Vec<_> = queue.drain(..).collect();
+        for command in &commands {
+            if let Err(cause) = self.record_control_progress(
+                &command.operation_id,
+                ControlProgress::CancelledBeforeExecution,
+            ) {
+                error.get_or_insert(cause);
+            }
+        }
         self.delta_notify.notify_all();
         (commands, error)
     }
@@ -390,7 +542,11 @@ impl DaemonIpcHandler for DaemonIpcHandlerAdapter {
     }
 
     fn query_retention_forecast(&self, ctx: &RequestContext, camera_id: &str) -> IpcResponse {
-        if !ctx.granted_capabilities.iter().any(|cap| cap == CAP_OBSERVE_STATUS) {
+        if !ctx
+            .granted_capabilities
+            .iter()
+            .any(|cap| cap == CAP_OBSERVE_STATUS)
+        {
             return make_refused(
                 ctx.request_id,
                 fss_ipc::ERR_IPC_CAPABILITY_DENIED_001,
@@ -548,10 +704,77 @@ impl DaemonIpcHandler for DaemonIpcHandlerAdapter {
                     false,
                 );
             }
-            self.shared.request_shutdown();
+            let _queue = match self.shared.control_queue.lock() {
+                Ok(queue) => queue,
+                // Shutdown retains ownership even when another queue user panicked.
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            if ctx.is_cancelled() {
+                return IpcResponse::Cancelled {
+                    request_id: ctx.request_id,
+                };
+            }
+            let command = match self.shared.retain_control(
+                ctx,
+                op,
+                target_camera_id,
+                approval_digest,
+            ) {
+                Ok(command) => command,
+                Err(error) => {
+                    return make_refused(
+                        ctx.request_id,
+                        error.error_id(),
+                        "control intake was not acknowledged; inspect durable history before retry",
+                        false,
+                    );
+                }
+            };
+            if ctx.is_cancelled() {
+                if let Err(error) = self.shared.record_control_progress(
+                    &command.operation_id,
+                    ControlProgress::CancelledBeforeExecution,
+                ) {
+                    return make_refused(
+                        ctx.request_id,
+                        error.error_id(),
+                        "shutdown cancellation custody is uncertain; inspect durable history before retry",
+                        false,
+                    );
+                }
+                return IpcResponse::Cancelled {
+                    request_id: ctx.request_id,
+                };
+            }
+            if let Err(error) = self
+                .shared
+                .record_control_progress(&command.operation_id, ControlProgress::DispatchStarted)
+            {
+                return make_refused(
+                    ctx.request_id,
+                    error.error_id(),
+                    "shutdown dispatch custody is uncertain; inspect durable history before retry",
+                    false,
+                );
+            }
+            self.shared
+                .shutdown_requested
+                .store(true, Ordering::Release);
+            self.shared.delta_notify.notify_all();
+            if let Err(error) = self
+                .shared
+                .record_control_progress(&command.operation_id, ControlProgress::SubsystemReturned)
+            {
+                return make_refused(
+                    ctx.request_id,
+                    error.error_id(),
+                    "shutdown requested, but its durable return boundary is uncertain",
+                    false,
+                );
+            }
             return IpcResponse::ControlAccepted {
                 request_id: ctx.request_id,
-                operation_id: self.shared.alloc_operation_id(op),
+                operation_id: command.operation_id,
                 state: ControlOperationState::Accepted,
             };
         }
@@ -633,13 +856,49 @@ impl DaemonIpcHandler for DaemonIpcHandlerAdapter {
                 true,
             );
         }
-        let operation_id = self.shared.alloc_operation_id(op);
-        queue.push_back(PendingControlCommand {
-            operation_id: operation_id.clone(),
-            op,
-            target_camera_id: target_camera_id.map(str::to_owned),
-            approval_digest,
-        });
+        let command = match self
+            .shared
+            .retain_control(ctx, op, target_camera_id, approval_digest)
+        {
+            Ok(command) => command,
+            Err(error) => {
+                return make_refused(
+                    ctx.request_id,
+                    error.error_id(),
+                    "control intake was not acknowledged; inspect durable history before retry",
+                    false,
+                );
+            }
+        };
+        // Cancellation may arrive during journal I/O. Retain its disposition before any
+        // queue publication, rather than losing the request or dispatching cancelled work.
+        if ctx.is_cancelled() || self.shared.is_shutdown_requested() {
+            if let Err(error) = self.shared.record_control_progress(
+                &command.operation_id,
+                ControlProgress::CancelledBeforeExecution,
+            ) {
+                return make_refused(
+                    ctx.request_id,
+                    error.error_id(),
+                    "control cancellation custody is uncertain; inspect durable history before retry",
+                    false,
+                );
+            }
+            return if ctx.is_cancelled() {
+                IpcResponse::Cancelled {
+                    request_id: ctx.request_id,
+                }
+            } else {
+                make_refused(
+                    ctx.request_id,
+                    ERR_IPC_SERVER_SHUTDOWN_001,
+                    "daemon closed admission while retaining the request; control cancelled before execution",
+                    true,
+                )
+            };
+        }
+        let operation_id = command.operation_id.clone();
+        queue.push_back(command);
         IpcResponse::ControlAccepted {
             request_id: ctx.request_id,
             operation_id,

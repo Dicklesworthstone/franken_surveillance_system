@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "fss.daemon_control_history.v1",
+  "title": "Durable daemon control history inspection",
+  "description": "Bounded diagnostic projection of retained control bookkeeping. It never grants replay authority or proves semantic completion. Native decoding enforces u64 sequence bounds, canonical capability order, deployment scope, and pinned journal custody.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "deployment_id",
+    "contract_basis_digest",
+    "head_sequence",
+    "head_root",
+    "total_entries",
+    "omitted_entries",
+    "automatic_replay",
+    "semantic_completion_proved",
+    "entries"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.daemon_control_history.v1"
+    },
+    "deployment_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "contract_basis_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "head_sequence": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "head_root": {
+      "$ref": "#/$defs/digest"
+    },
+    "total_entries": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 16383
+    },
+    "omitted_entries": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 16383
+    },
+    "automatic_replay": {
+      "const": false
+    },
+    "semantic_completion_proved": {
+      "const": false
+    },
+    "entries": {
+      "type": "array",
+      "maxItems": 1024,
+      "items": {
+        "$ref": "#/$defs/entry"
+      }
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operation_id",
+        "operation",
+        "target_camera_id",
+        "approval_digest",
+        "principal",
+        "contract_basis_digest",
+        "granted_capabilities",
+        "connection_id",
+        "request_id",
+        "accepted_sequence",
+        "progress",
+        "recovered"
+      ],
+      "properties": {
+        "operation_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "operation": {
+          "enum": [
+            "start_camera",
+            "stop_camera",
+            "snapshot_camera",
+            "reload_manifest",
+            "probe_detect",
+            "trigger_scrub"
+          ]
+        },
+        "target_camera_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "approval_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "principal": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "contract_basis_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "granted_capabilities": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "connection_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "request_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "accepted_sequence": {
+          "type": "integer",
+          "minimum": 2
+        },
+        "progress": {
+          "enum": [
+            "never_started",
+            "dispatch_started",
+            "subsystem_returned",
+            "cancelled_before_execution"
+          ]
+        },
+        "recovered": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

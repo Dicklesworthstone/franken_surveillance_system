@@ -15,6 +15,7 @@ use fss_reference::ingest::live_corroborate::LiveCorroborateError;
 use fss_reference::ingest::model_pool::ModelPoolError;
 use fss_reference::ingest::osd_mask::OsdMaskError;
 use fss_runtime::authority::AuthorityError;
+use fss_runtime::effect_journal::EffectPersistenceError;
 use fss_vault::SecretError;
 
 use crate::supervisor_types::DaemonShutdownReport;
@@ -93,6 +94,8 @@ pub enum DaemonError {
     Corroborate(LiveCorroborateError),
     /// Underlying `fss-vault` secret-store error.
     Vault(SecretError),
+    /// Durable control custody failed; retained work must never be silently redispatched.
+    ControlHistory(EffectPersistenceError),
     /// Internal synchronization primitive was poisoned.
     LockPoisoned {
         /// Static subsystem identifier.
@@ -175,6 +178,8 @@ impl DaemonError {
             Self::OsdMask(err) => err.stable_id(),
             Self::Corroborate(err) => err.stable_id(),
             Self::Vault(err) => err.error_id(),
+            Self::ControlHistory(EffectPersistenceError::Capacity) => "ERR-BUDGET-EXHAUSTED-001",
+            Self::ControlHistory(_) => fss_core::ERR_OP_RECONCILIATION_REQUIRED_001,
             Self::LockPoisoned { .. } | Self::ShutdownViolation { .. } => ERR_DAEMON_SHUTDOWN_001,
             Self::Io { .. } => ERR_DAEMON_IO_001,
             Self::ShutdownRequested => fss_ipc::ERR_IPC_SERVER_SHUTDOWN_001,
@@ -225,6 +230,10 @@ impl fmt::Display for DaemonError {
             Self::OsdMask(err) => write!(f, "OSD ignore-region error: {err}"),
             Self::Corroborate(err) => write!(f, "live corroboration error: {err}"),
             Self::Vault(err) => write!(f, "vault error: {err}"),
+            Self::ControlHistory(err) => write!(
+                f,
+                "durable control history: {err}; preserve custody and inspect before retry; no command replay authorized"
+            ),
             Self::LockPoisoned { component } => {
                 write!(
                     f,
@@ -277,6 +286,7 @@ impl fmt::Display for DaemonError {
 impl std::error::Error for DaemonError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::ControlHistory(error) => Some(error),
             Self::RunWithControlDisposition { run, .. } | Self::RunAndShutdown { run, .. } => {
                 Some(run.as_ref())
             }

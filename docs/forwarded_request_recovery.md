@@ -99,6 +99,7 @@ does not retain this retry guarantee. These receipt checks detect
 conflicting canonical history but do not qualify arbitrary mixed-generation backups or
 provide a complete backup profile for the daemon's epoch, pack, and retry stores.
 
-This change does not make queued camera/control commands durable. Their shutdown
-disposition remains explicitly process-local, and accepting or dispatching a control
-command does not establish semantic completion.
+Bounded camera/control intake now retains separate durable lifecycle bookkeeping; see
+[durable control recovery](durable_control_recovery.md). Recovered commands remain inert,
+and neither acceptance nor dispatch establishes semantic completion. Forwarding retry
+keys do not add retry deduplication to bounded-control requests.

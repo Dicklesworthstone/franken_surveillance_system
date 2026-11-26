@@ -11,6 +11,7 @@ use fss_projection_store::{CoverageStatus, SensorLivenessStatus};
 use fss_reference::ingest::live_corroborate::{CorroborationOutcome, LiveCorroborationDecision};
 
 use crate::control::PendingControlCommand;
+use crate::control::journal::ControlProgress;
 use crate::error::DaemonError;
 use crate::manifest::CameraAdapterKind;
 use crate::sensor::{CameraFrame, SensorDisconnectReason, SensorDriverEvent, SensorState};
@@ -50,7 +51,18 @@ impl DaemonSupervisor {
             let Some(cmd) = shared.take_control_command()? else {
                 break;
             };
-            match self.execute_control_command_step(&cmd, now_ns, now) {
+            let result = self
+                .execute_control_command_step(&cmd, now_ns, now)
+                .and_then(|gaps| {
+                    if cmd.op != BoundedControlOp::TriggerScrub {
+                        shared.record_control_progress(
+                            &cmd.operation_id,
+                            ControlProgress::SubsystemReturned,
+                        )?;
+                    }
+                    Ok(gaps)
+                });
+            match result {
                 Ok(gaps) => coverage_gaps = coverage_gaps.saturating_add(gaps),
                 Err(cause) => {
                     // The subsystem may have changed state before returning the error.

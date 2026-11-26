@@ -5,6 +5,63 @@
 **Current change qualification:** each dated section below states its exact verification boundary. Native passes for one component do not qualify other changes, and prior receipts do not qualify new bytes.
 **Release authority:** repository-owned local qualification (`scripts/qualify.sh`) and retained DSR receipts, not hosted CI
 
+## Durable bounded-control intake and restart inspection — 2026-11-26
+
+Accepted camera/control commands now retain exact request authority and lifecycle in a
+deployment-scoped effect journal with an independently retained trusted-root pin.
+Acceptance is durable before queue admission and acknowledgement. Stable operation IDs
+derive from retained acceptance sequence and scope, so restart does not reuse process-local
+IDs. Immediate and delayed-scrub dispatch boundaries are retained before subsystem work;
+returned and cancelled dispositions remain distinct from semantic completion.
+
+Startup verifies complete journal/pin custody and reconstructs indexed history. Missing
+or partial pins, divergent roots, malformed progress, scope changes, and lost append
+acknowledgements fail closed. Recovered commands remain inert and are never automatically
+queued or dispatched. Offline control-history inspection requires existing custody and
+reports up to 1,024 entries plus omission counts. Replay itself has separate record,
+byte, and read-work ceilings; output bounds do not substitute for those limits.
+
+Ten regression functions cover retained progress and restart, intake/dispatch lost
+acknowledgements, reserved terminal-transition capacity, malformed/scope-mismatched history,
+partial or missing pins, journal-ahead-of-pin state, real handler acceptance ordering,
+empty recovered queues, deferred scrub, and shutdown cancellation.
+
+**Verification boundary:** pinned rustfmt and independent source review passed, including
+journal/pin commit-before-ack ordering, dispatch fencing, bounded indexed recovery, and
+the offline no-bootstrap path. A fresh single-job metadata-only Cargo check passed the
+core dependency but was killed by SIGKILL compiling unchanged asupersync 0.5.0, before
+the changed pack/daemon/projection targets. These ten regressions remain unexecuted.
+
+The adopted concurrent canonical-history implementation received a separate native check:
+cargo check -p fss-ledger --tests passed, and all 13 exact-head/historical receipt
+regressions passed. Those results qualify that ledger target only, not this control change.
+
+These records are durable bookkeeping, not canonical world history, device completion
+proof, a restart resumption policy, or retry deduplication: the current bounded-control
+IPC request has no stable idempotency key. Full backup/migration custody and operator
+reconciliation remain separate work.
+
+## Surviving catalog references fence stale retention plans — 2026-11-26
+
+Eviction now revalidates direct root and metadata references under the catalog write
+lock before any catalog tombstone, object tombstone, or index mutation. Only live roots
+actually retiring in the same batch are exempted; absent or superseded IDs do not exempt
+surviving publications. Duplicate retirement IDs, invalid digest algorithms, and conflicting
+prior root-tombstone reasons also refuse before mutation. Catalog scans use 512-entry
+pages, and existing unreferenced object-only retention remains supported.
+
+Eight regression functions cover late root/metadata publications, supersession, whole-batch
+refusal, references beyond the first catalog page, absent/duplicate IDs, prior tombstone
+conflicts, joint retirement with exact replay, and object-only deletion.
+
+**Verification boundary:** independent source review, pinned rustfmt, and changed-path
+whitespace checks passed. A fresh single-job metadata-only check was killed by SIGKILL
+in unchanged asupersync 0.5.0 before reaching this target; these eight regressions remain
+unexecuted. This guard covers direct catalog references; hold authority and recursive
+child reachability remain caller responsibilities. The daemon can already have committed
+canonical retirement before a pack refusal, so staged cross-store recovery is still
+required. No cross-store atomicity or broad retention qualification is claimed.
+
 ## Bounded historical forwarded receipt recovery — 2026-11-26
 
 The native Merkle ledger now exposes read-only exact receipt proofs for retained historical

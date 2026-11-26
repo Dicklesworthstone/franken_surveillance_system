@@ -22,6 +22,7 @@ use fss_vault::{
     SecretError, SecretScope, SecretStore,
 };
 
+use crate::control::journal::{ControlHistoryReport, ControlProgress, DurableControlJournal};
 use crate::control::{ControlPlaneServer, ControlPlaneShared};
 use crate::error::DaemonError;
 use crate::manifest::{CameraAdapterKind, CameraManifestEntry, SiteManifest};
@@ -86,6 +87,14 @@ impl DaemonSupervisor {
         });
 
         let mut storage = StorageEngine::open(&config.manifest, Some(&root_dir))?;
+        // Establish control custody before any driver connects. Recovery never recreates
+        // an execution queue, grant, or permission to redispatch a previous request.
+        let control_journal = DurableControlJournal::open(
+            &root_dir,
+            &config.manifest.site_id,
+            Arc::new(fss_object::HostSpoolIo),
+        )
+        .map_err(DaemonError::ControlHistory)?;
         let mut regions = DaemonRegionTree::initialize(&config.manifest, &config.principal, now)?;
         let perception = PerceptionEngine::new(&config.manifest, config.perception_config)?;
 
@@ -204,15 +213,18 @@ impl DaemonSupervisor {
             .iter()
             .map(|c| c.sensor_id.as_str().to_owned())
             .collect();
-        let shared = ControlPlaneShared::new(
+        let shared = ControlPlaneShared::new_durable(
             config.manifest.site_id.clone(),
             fss_ipc::deployment_root_digest(&ipc_root),
             known_cameras,
             initial_status,
             storage.forward_writer(),
+            control_journal,
         );
         let control = if config.enable_ipc {
-            shared.publish_retention_forecasts(storage.camera_retention_forecasts(sensors.keys(), now));
+            shared.publish_retention_forecasts(
+                storage.camera_retention_forecasts(sensors.keys(), now),
+            );
             Some(ControlPlaneServer::start(
                 ipc_root,
                 config.manifest.site_id.clone(),
@@ -286,6 +298,11 @@ impl DaemonSupervisor {
             .saturating_add(tick_shared_held);
         self.coverage_gaps = self.coverage_gaps.saturating_add(coverage_gaps_emitted);
 
+        if let Some(shared) = &self.control_shared {
+            for operation in &self.pending_scrub_operations {
+                shared.record_control_progress(operation, ControlProgress::DispatchStarted)?;
+            }
+        }
         let maintenance = self.storage.run_maintenance_tick(
             self.regions.storage_pack_cx(),
             self.regions.region_tree(),
@@ -296,7 +313,22 @@ impl DaemonSupervisor {
             Ok(report) => {
                 // The subsystem processed these requests; this does not prove that
                 // a multi-pass integrity scrub has reached a clean result.
-                self.pending_scrub_operations.clear();
+                let operations = std::mem::take(&mut self.pending_scrub_operations);
+                if let Some(shared) = &self.control_shared {
+                    for (index, operation) in operations.iter().enumerate() {
+                        if let Err(cause) = shared
+                            .record_control_progress(operation, ControlProgress::SubsystemReturned)
+                        {
+                            self.indeterminate_control_operations
+                                .extend_from_slice(&operations[index..]);
+                            self.request_shutdown();
+                            return Err(DaemonError::ControlExecutionIndeterminate {
+                                operation_id: operation.clone(),
+                                cause: Box::new(cause),
+                            });
+                        }
+                    }
+                }
                 report
             }
             Err(error) => {
@@ -327,7 +359,8 @@ impl DaemonSupervisor {
             shared.publish_status(build_control_status(&head, &self.sensors));
             if self.control.is_some() {
                 shared.publish_retention_forecasts(
-                    self.storage.camera_retention_forecasts(self.sensors.keys(), now),
+                    self.storage
+                        .camera_retention_forecasts(self.sensors.keys(), now),
                 );
             }
         }
@@ -431,6 +464,15 @@ impl DaemonSupervisor {
             |shared| shared.cancel_unstarted_controls(),
         );
         let mut cancelled_before_execution = std::mem::take(&mut self.pending_scrub_operations);
+        if let Some(shared) = &self.control_shared {
+            for operation in &cancelled_before_execution {
+                if let Err(cause) = shared
+                    .record_control_progress(operation, ControlProgress::CancelledBeforeExecution)
+                {
+                    first_error.get_or_insert(cause);
+                }
+            }
+        }
         cancelled_before_execution.extend(
             cancelled_commands
                 .into_iter()
@@ -558,6 +600,16 @@ impl DaemonSupervisor {
     #[must_use]
     pub fn ipc_socket_path(&self) -> Option<&Path> {
         self.control.as_ref().map(ControlPlaneServer::socket_path)
+    }
+
+    /// Inspects bounded live/recovered control history without transferring command ownership.
+    pub fn control_history(
+        &self,
+        maximum: usize,
+    ) -> Result<Option<ControlHistoryReport>, DaemonError> {
+        self.control_shared
+            .as_ref()
+            .map_or(Ok(None), |shared| shared.control_history(maximum))
     }
 
     /// Returns the active region-owned task count across `ProcessRegion`.
