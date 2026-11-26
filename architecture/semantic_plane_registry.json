@@ -802,6 +802,7 @@
     "crates/fss-reference/src/model.rs": "cognition",
     "crates/fss-reference/src/model_receipt.rs": "cognition",
     "crates/fss-reference/src/model_receipt_tests.rs": "support",
+    "crates/fss-reference/src/model_scheduler.rs": "cognition",
     "crates/fss-reference/src/model_tests.rs": "support",
     "crates/fss-reference/src/optimized_executor.rs": "cognition",
     "crates/fss-reference/src/optimized_executor/conv.rs": "cognition",
