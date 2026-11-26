@@ -5,6 +5,37 @@
 **Current change qualification:** each dated section below states its exact verification boundary. Native passes for one component do not qualify other changes, and prior receipts do not qualify new bytes.
 **Release authority:** repository-owned local qualification (`scripts/qualify.sh`) and retained DSR receipts, not hosted CI
 
+## Incident retention follows verified source footage — 2026-11-25
+
+Corroborated events now pin every retained GOP that overlaps their host-time interval on
+each contributing sensor. Delayed events and events spanning multiple GOPs no longer bind
+to whichever footage happened to arrive most recently. Explicit capsule citations must
+resolve to verified media roots or verified frame bytes inside that interval; missing or
+unrelated source custody refuses the event/hold commit.
+
+The writer publishes contributing partial GOP buffers before committing the event and
+its canonical holds under the retention gate. Cancellation is checked before source
+publication. Recovered canonical import intervals survive restart and projection rebuild.
+Source verification is bounded to 256 roots and a cumulative 256 MiB read budget.
+
+Four regressions cover delayed multi-GOP events followed by newer footage, retained holds
+after projection rebuild and expiry, partial-buffer publication and revoked-authority
+retry, missing intervals/capsules without ledger changes, and repeated payload bytes with
+both outside-window and inside-window frame occurrences.
+
+**Verification boundary:** independent source/API review; pinned rustfmt and whitespace
+checks passed on the implementation and first three regressions before executor loss.
+The fourth regression and concurrent-main integration were source-reviewed afterward.
+The targeted daemon test attempt was killed while compiling unchanged dependency
+`syn 2.0.119` (SIGKILL); modified daemon/projection code and these tests did not compile
+or execute. A separate baseline `merkle_writer_recovery_contract` run passed all 13 tests;
+that does not qualify this feature. Native feature tests, Clippy and full qualification
+remain outstanding.
+
+```sh
+cargo +nightly-2026-08-31 test --locked --offline -p fss-daemon --test storage_retention_restart_contract
+```
+
 ## Exact approved notification payloads and durable dispatch — 2026-11-25
 
 Real `fss notify dispatch` now requires exactly one durable destination:

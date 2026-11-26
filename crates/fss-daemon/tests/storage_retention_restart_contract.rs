@@ -402,6 +402,272 @@ fn corroborated_event(
 }
 
 #[test]
+fn delayed_event_pins_every_source_gop_in_its_interval_before_newer_footage() -> TestResult {
+    let dir = TempDirGuard::new("delayed-event-window")?;
+    let manifest = manifest(1_048_576)?;
+    let regions =
+        DaemonRegionTree::initialize(&manifest, "principal:retention-test", TimestampNs(0))?;
+    let mut storage = StorageEngine::open(&manifest, Some(dir.path()))?;
+    let mut expected = BTreeSet::new();
+    for (sensor, sequence, at) in [
+        (SENSOR_A, 1, 1_000_000),
+        (SENSOR_B, 2, 1_000_001),
+        (SENSOR_A, 3, 1_000_002),
+        (SENSOR_B, 4, 1_000_003),
+    ] {
+        expected.insert(media_digest(&ingest(
+            &mut storage, &regions, sensor, sequence, at, 128,
+        )?)?);
+    }
+    let newer_a = ingest(&mut storage, &regions, SENSOR_A, 5, 2_000_000, 128)?;
+    let newer_b = ingest(&mut storage, &regions, SENSOR_B, 6, 2_000_001, 128)?;
+    let first_source = frame(SENSOR_A, 1, 1_000_000, 128)?.source_digest;
+    let second_source = frame(SENSOR_B, 4, 1_000_003, 128)?.source_digest;
+    let mut event = corroborated_event(first_source, second_source)?;
+    event.interval = CaptureInterval::new(TimestampNs(1_000_000), TimestampNs(1_000_003))?;
+    for evidence in &mut event.evidence {
+        evidence.capsule_digest = Some(evidence.digest);
+    }
+    let receipt = storage.commit_event_hypothesis(
+        &event,
+        vec![SensorId::parse(SENSOR_A)?, SensorId::parse(SENSOR_B)?],
+        regions.storage_ledger_cx(),
+        regions.region_tree(),
+    )?;
+    let snapshot = storage.projection().snapshot_latest();
+    let holds: Vec<_> = snapshot.holds().filter(|hold| hold.active).collect();
+    assert_eq!(holds.len(), 4);
+    assert_eq!(
+        holds
+            .iter()
+            .map(|hold| hold.target_digest)
+            .collect::<BTreeSet<_>>(),
+        expected
+    );
+    assert!(
+        holds
+            .iter()
+            .all(|hold| hold.committed_sequence == receipt.commit_sequence)
+    );
+    assert!(
+        storage.retention_candidates()[&newer_a.import_id]
+            .active_event_ids
+            .is_empty()
+    );
+    assert!(
+        storage.retention_candidates()[&newer_b.import_id]
+            .active_event_ids
+            .is_empty()
+    );
+    storage.shutdown_and_flush()?;
+
+    fs::remove_dir_all(dir.path().join(PROJECTION_SUBDIR))?;
+    let mut reopened = StorageEngine::open(&manifest, Some(dir.path()))?;
+    let _ = reopened.maintenance_tick(EXPIRED_AT)?;
+    let retained: BTreeSet<_> = reopened
+        .retention_candidates()
+        .values()
+        .map(media_digest)
+        .collect::<Result<_, _>>()?;
+    assert_eq!(
+        retained, expected,
+        "only the actual event window survives expiry"
+    );
+    assert_eq!(
+        reopened
+            .projection()
+            .snapshot_latest()
+            .holds()
+            .filter(|hold| hold.active)
+            .count(),
+        4
+    );
+    reopened.shutdown_and_flush()?;
+    Ok(())
+}
+
+#[test]
+fn corroboration_publishes_and_pins_partial_source_gops_before_the_event() -> TestResult {
+    let dir = TempDirGuard::new("event-partial-gop")?;
+    let manifest = manifest(1_048_576)?;
+    let mut regions =
+        DaemonRegionTree::initialize(&manifest, "principal:retention-test", TimestampNs(0))?;
+    let mut storage = StorageEngine::open(&manifest, Some(dir.path()))?;
+    let source_a = frame(SENSOR_A, 1, 1_000_000, 128)?;
+    let source_b = frame(SENSOR_B, 2, 1_000_001, 128)?;
+    for source in [&source_a, &source_b] {
+        assert!(
+            storage
+                .ingest_frame(
+                    Arc::clone(source),
+                    CameraAdapterKind::Synthetic,
+                    32,
+                    regions.storage_ledger_cx(),
+                    regions.region_tree(),
+                )?
+                .is_none()
+        );
+    }
+    assert!(storage.retention_candidates().is_empty());
+    let mut event = corroborated_event(source_a.source_digest, source_b.source_digest)?;
+    for evidence in &mut event.evidence {
+        evidence.capsule_digest = Some(evidence.digest);
+    }
+    // Revoked authority cannot publish buffered source as a side effect of event pinning.
+    regions.request_shutdown(TimestampNs(2_000_000))?;
+    let sensors = vec![SensorId::parse(SENSOR_A)?, SensorId::parse(SENSOR_B)?];
+    assert!(matches!(
+        storage.commit_event_hypothesis(
+            &event,
+            sensors.clone(),
+            regions.storage_ledger_cx(),
+            regions.region_tree(),
+        ),
+        Err(DaemonError::Combiner(
+            fss_projection_store::CombinerError::Cancelled
+        ))
+    ));
+    assert_eq!(storage.head_snapshot()?.commit_sequence, 0);
+    let fresh_regions = DaemonRegionTree::initialize(
+        &manifest,
+        "principal:retention-test",
+        TimestampNs(3_000_000),
+    )?;
+    let receipt = storage.commit_event_hypothesis(
+        &event,
+        sensors,
+        fresh_regions.storage_ledger_cx(),
+        fresh_regions.region_tree(),
+    )?;
+    assert_eq!(storage.retention_candidates().len(), 2);
+    let snapshot = storage.projection().snapshot_latest();
+    let holds: Vec<_> = snapshot.holds().filter(|hold| hold.active).collect();
+    assert_eq!(holds.len(), 2);
+    for hold in holds {
+        assert_eq!(hold.committed_sequence, receipt.commit_sequence);
+        let source = snapshot
+            .get_footage_import(&hold.target_digest)
+            .ok_or("event hold lacks a canonical source import")?;
+        assert!(source.committed_sequence < receipt.commit_sequence);
+    }
+    assert!(storage.retention_candidates().values().all(|candidate| {
+        candidate.active_event_ids == vec![event.event_id.as_str().to_owned()]
+    }));
+    storage.shutdown_and_flush()?;
+    Ok(())
+}
+
+#[test]
+fn missing_event_source_refuses_corroboration_without_substituting_other_footage() -> TestResult {
+    let dir = TempDirGuard::new("event-missing-source")?;
+    let manifest = manifest(1_048_576)?;
+    let regions =
+        DaemonRegionTree::initialize(&manifest, "principal:retention-test", TimestampNs(0))?;
+    let mut storage = StorageEngine::open(&manifest, Some(dir.path()))?;
+    let first = ingest(&mut storage, &regions, SENSOR_A, 1, 1_000_000, 128)?;
+    let second = ingest(&mut storage, &regions, SENSOR_B, 2, 1_000_001, 128)?;
+    let mut event = corroborated_event(media_digest(&first)?, media_digest(&second)?)?;
+    event.evidence[0].capsule_digest = Some(ContentDigest::sha256(b"unretained-source-frame"));
+    let before = storage.head_snapshot()?;
+    for missing_citation in [true, false] {
+        if !missing_citation {
+            event.evidence[0].capsule_digest = None;
+            event.interval = CaptureInterval::new(TimestampNs(0), TimestampNs(1))?;
+        }
+        assert!(matches!(
+            storage.commit_event_hypothesis(
+                &event,
+                vec![SensorId::parse(SENSOR_A)?, SensorId::parse(SENSOR_B)?],
+                regions.storage_ledger_cx(),
+                regions.region_tree(),
+            ),
+            Err(DaemonError::Combiner(
+                fss_projection_store::CombinerError::InvalidProposal(_)
+            ))
+        ));
+        let after = storage.head_snapshot()?;
+        assert_eq!(after.commit_sequence, before.commit_sequence);
+        assert_eq!(after.history_root, before.history_root);
+        assert_eq!(after.state_root, before.state_root);
+        assert_eq!(
+            storage.projection().snapshot_latest().holds().count(),
+            0
+        );
+        assert!(
+            storage
+                .retention_candidates()
+                .values()
+                .all(|candidate| { candidate.active_event_ids.is_empty() })
+        );
+    }
+    storage.shutdown_and_flush()?;
+    Ok(())
+}
+
+#[test]
+fn repeated_source_bytes_resolve_inside_event_window_without_accepting_outside_frames() -> TestResult {
+    let dir = TempDirGuard::new("event-repeated-source")?;
+    let manifest = manifest(1_048_576)?;
+    let regions =
+        DaemonRegionTree::initialize(&manifest, "principal:retention-test", TimestampNs(0))?;
+    let mut storage = StorageEngine::open(&manifest, Some(dir.path()))?;
+    let early = frame(SENSOR_A, 1, 999_998, 128)?;
+    let outside = frame(SENSOR_A, 2, 999_999, 128)?;
+    let mut repeated = (*early).clone();
+    repeated.sequence = 3;
+    repeated.media_pts_ns = 1_000_000;
+    repeated.host_receive_ns = 1_000_000;
+    for source in [Arc::clone(&early), Arc::clone(&outside), Arc::new(repeated)] {
+        let _ = storage.ingest_frame(
+            source,
+            CameraAdapterKind::Synthetic,
+            3,
+            regions.storage_ledger_cx(),
+            regions.region_tree(),
+        )?;
+    }
+    let second = ingest(&mut storage, &regions, SENSOR_B, 4, 1_000_001, 128)?;
+    let mut event = corroborated_event(outside.source_digest, media_digest(&second)?)?;
+    event.evidence[0].capsule_digest = Some(outside.source_digest);
+    let sensors = vec![SensorId::parse(SENSOR_A)?, SensorId::parse(SENSOR_B)?];
+    let before = storage.head_snapshot()?;
+    assert!(matches!(
+        storage.commit_event_hypothesis(
+            &event,
+            sensors.clone(),
+            regions.storage_ledger_cx(),
+            regions.region_tree(),
+        ),
+        Err(DaemonError::Combiner(
+            fss_projection_store::CombinerError::InvalidProposal(_)
+        ))
+    ));
+    assert_eq!(
+        storage.head_snapshot()?.commit_sequence,
+        before.commit_sequence
+    );
+    event.evidence[0].digest = early.source_digest;
+    event.evidence[0].capsule_digest = Some(early.source_digest);
+    let _ = storage.commit_event_hypothesis(
+        &event,
+        sensors,
+        regions.storage_ledger_cx(),
+        regions.region_tree(),
+    )?;
+    assert_eq!(
+        storage
+            .projection()
+            .snapshot_latest()
+            .holds()
+            .filter(|hold| hold.active)
+            .count(),
+        2
+    );
+    storage.shutdown_and_flush()?;
+    Ok(())
+}
+
+#[test]
 fn health_transition_evidence_survives_restart_and_projection_rebuild() -> TestResult {
     let dir = TempDirGuard::new("health-receipts")?;
     let manifest = manifest(1_048_576)?;

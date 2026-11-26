@@ -3,10 +3,11 @@
 
 use std::collections::BTreeSet;
 
-use fss_pack::{PackReadBudget, RootStatus};
+use fss_core::ClockBasis;
+use fss_pack::{MediaChunkView, PackReadBudget, RootStatus};
 use fss_projection_store::{
-    DeletionTarget, DeletionTombstonePayload, EvidenceHoldPayload, FAMILY_DELETION_TOMBSTONE,
-    FAMILY_EVIDENCE_HOLD,
+    CombinerError, DeletionTarget, DeletionTombstonePayload, EvidenceHoldPayload,
+    FAMILY_DELETION_TOMBSTONE, FAMILY_EVIDENCE_HOLD,
 };
 
 use super::*;
@@ -16,10 +17,13 @@ const LEGACY_HOLD_BLOCKER: &str = "recovery:legacy-hold-state-unverified";
 const HISTORY_CANDIDATE: &str = "retention:canonical-history";
 const CATALOG_REFERENCE_BLOCKER: &str = "retention:live-catalog-reference";
 const MAX_RETENTION_METADATA_BYTES: u64 = 64 * 1024;
+const MAX_EVENT_PIN_ROOTS: usize = 256;
+const MAX_EVENT_SOURCE_READ_BYTES: u64 = 256 * 1024 * 1024;
 
 pub(super) struct RetainedRoot {
     pub(super) media_digest: ContentDigest,
     pub(super) metadata_digest: ContentDigest,
+    pub(super) capture_interval: CaptureInterval,
     pub(super) legacy_hold_state: bool,
 }
 
@@ -124,6 +128,7 @@ pub(super) fn recover_retained_roots(
                 RetainedRoot {
                     media_digest: record.root_digest,
                     metadata_digest,
+                    capture_interval: import.capture_interval,
                     legacy_hold_state: record.kind == "media-gop-v1",
                 },
             );
@@ -296,8 +301,9 @@ impl StorageEngine {
         ))
     }
 
-    /// Pin exactly the media roots selected when corroboration commits. Recording the pins
-    /// in the same canonical proposal prevents restart from rebinding them to newer footage.
+    /// Pin every verified GOP intersecting the event interval on its contributing sensors.
+    /// Explicit capsule citations must resolve to retained source bytes; unrelated newer
+    /// footage cannot stand in for missing custody. Event and pins publish atomically.
     pub(super) fn append_event_pins(
         &mut self,
         event: &EventHypothesis,
@@ -307,18 +313,7 @@ impl StorageEngine {
         if event.state != EventState::Corroborated {
             return Ok(Vec::new());
         }
-        let mut targets = BTreeSet::new();
-        for sensor in sensors {
-            if let Some(latest) = self
-                .candidates
-                .values()
-                .filter(|candidate| candidate.sensor_id == sensor.as_str())
-                .max_by_key(|candidate| candidate.capture_end_ns)
-                && let Some(target) = latest.object_digests.first()
-            {
-                targets.insert(*target);
-            }
-        }
+        let targets = self.event_source_targets(event, sensors)?;
         let snapshot = self.projection.snapshot_latest();
         let scope = format!("{EVENT_HOLD_SCOPE}{}", event.event_id.as_str());
         let mut generations = Vec::new();
@@ -339,6 +334,105 @@ impl StorageEngine {
             proposal.deltas.push(delta);
         }
         Ok(generations)
+    }
+
+    fn event_source_targets(
+        &self,
+        event: &EventHypothesis,
+        sensors: &[SensorId],
+    ) -> Result<BTreeSet<ContentDigest>, DaemonError> {
+        let requested: BTreeSet<_> = sensors.iter().map(SensorId::as_str).collect();
+        let mut covered = BTreeSet::new();
+        let mut missing_capsules: BTreeSet<_> = event
+            .evidence
+            .iter()
+            .filter_map(|evidence| evidence.capsule_digest)
+            .collect();
+        let mut targets = BTreeSet::new();
+        let budget = PackReadBudget::new(MAX_EVENT_SOURCE_READ_BYTES);
+        let snapshot = self.projection.snapshot_latest();
+        for (id, root) in &self.candidate_roots {
+            let Some(candidate) = self.candidates.get(id) else {
+                continue;
+            };
+            if !requested.contains(candidate.sensor_id.as_str())
+                || root.capture_interval.latest < event.interval.earliest
+                || event.interval.latest < root.capture_interval.earliest
+            {
+                continue;
+            }
+            if targets.len() >= MAX_EVENT_PIN_ROOTS {
+                return Err(CombinerError::InvalidProposal(
+                    "event source closure exceeds the retained GOP limit",
+                )
+                .into());
+            }
+            let invalid =
+                || CombinerError::InvalidProposal("event source lacks a verified live GOP closure");
+            let catalog = self.pack_store.get_root(id)?.ok_or_else(invalid)?;
+            if !matches!(catalog.status, RootStatus::Live)
+                || catalog.record.root_digest != root.media_digest
+                || catalog.record.metadata_digest != Some(root.metadata_digest)
+                || snapshot.get_footage_import(&root.media_digest).is_none()
+            {
+                return Err(invalid().into());
+            }
+            // The interval cache comes only from canonical import metadata. Recheck the
+            // immutable descriptor and FSMC clock basis before using host-time overlap.
+            let metadata = self
+                .pack_store
+                .read_verified_with_budget(&root.metadata_digest, &budget)?;
+            let ProjectionRecordPayload::FootageImport(import) =
+                ProjectionRecordPayload::decode_bytes(&metadata)?
+            else {
+                return Err(invalid().into());
+            };
+            if !import.completed
+                || import.import_id != root.media_digest
+                || import.manifest_digest != root.media_digest
+                || import.sensor_id.as_str() != candidate.sensor_id
+                || import.capture_interval != root.capture_interval
+                || import.capsule_count != catalog.record.child_count
+                || import.capture_interval.latest != catalog.record.created_at_ns
+            {
+                return Err(invalid().into());
+            }
+            let source = self
+                .pack_store
+                .read_verified_with_budget(&root.media_digest, &budget)?;
+            let media = MediaChunkView::parse(&source)?;
+            if media.clock_basis() != ClockBasis::HostMonotonic
+                || media.stream_id() != import.stream_id.as_str()
+                || media.frame_count() as u64 != import.capsule_count
+                || media.window_start_ns() != root.capture_interval.earliest
+                || media.window_end_ns() != root.capture_interval.latest
+                || source.len() as u64 != import.total_bytes
+            {
+                return Err(invalid().into());
+            }
+            missing_capsules.remove(&root.media_digest);
+            for index in 0..media.frame_count() {
+                let entry = media.frame_entry(index)?;
+                if !missing_capsules.contains(&entry.digest)
+                    || entry.timestamp_ns < event.interval.earliest
+                    || event.interval.latest < entry.timestamp_ns
+                {
+                    continue;
+                }
+                // A frame-table digest alone is not custody of the cited source bytes.
+                let _ = media.frame_bytes_verified(index)?;
+                missing_capsules.remove(&entry.digest);
+            }
+            covered.insert(candidate.sensor_id.as_str());
+            targets.insert(root.media_digest);
+        }
+        if requested.is_empty() || covered != requested || !missing_capsules.is_empty() {
+            return Err(CombinerError::InvalidProposal(
+                "corroborated event source is not retained for its interval and capsule citations",
+            )
+            .into());
+        }
+        Ok(targets)
     }
 
     /// Materialize active canonical holds, preserving explicit caller-owned candidates.

@@ -43,7 +43,7 @@ use fss_runtime::authority::AuthorityCx;
 
 use crate::control::ForwardBatchWriter;
 use crate::error::DaemonError;
-use crate::manifest::SiteManifest;
+use crate::manifest::{CameraAdapterKind, SiteManifest};
 use crate::sensor::CameraFrame;
 use crate::storage_types::{
     CombinerForwardWriter, map_scrub_verdict, sanitize_object_part, scrub_report_to_ipc_status,
@@ -74,6 +74,7 @@ pub struct StorageEngine {
     candidate_roots: BTreeMap<String, RetainedRoot>,
     pending_deletions: Vec<RetiredRoot>,
     gop_buffers: BTreeMap<SensorId, Vec<Arc<CameraFrame>>>,
+    gop_adapters: BTreeMap<SensorId, CameraAdapterKind>,
     pending_gop_publications: BTreeMap<SensorId, PendingGopPublication>,
     indeterminate_gop_commits: BTreeSet<SensorId>,
     scrubber: BackgroundScrubber,
@@ -217,6 +218,7 @@ impl StorageEngine {
             candidate_roots,
             pending_deletions,
             gop_buffers: BTreeMap::new(),
+            gop_adapters: BTreeMap::new(),
             pending_gop_publications: BTreeMap::new(),
             indeterminate_gop_commits: BTreeSet::new(),
             scrubber: BackgroundScrubber::new(),
@@ -483,7 +485,7 @@ impl StorageEngine {
     }
 
     /// Commits a cognition-plane [`EventHypothesis`] revision (`Plane::Cognition`, preserving
-    /// Cognition != Authority) and pins recent media closures for corroborated events.
+    /// Cognition != Authority) and pins verified source closures for corroborated events.
     pub fn commit_event_hypothesis(
         &mut self,
         event: &EventHypothesis,
@@ -495,6 +497,10 @@ impl StorageEngine {
         let _guard = gate.lock().map_err(|_| DaemonError::LockPoisoned {
             component: "retention_gate",
         })?;
+        if cx.is_cancel_requested(tree)? {
+            return Err(fss_projection_store::CombinerError::Cancelled.into());
+        }
+        self.flush_event_sources(event, &sensor_ids, cx, tree)?;
         let event_root = event.canonical_digest(EventHypothesis::SCHEMA);
         let proj_bytes = ProjectionRecordPayload::EventRevision(EventRevisionPayload {
             event_id: event.event_id.clone(),

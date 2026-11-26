@@ -29,6 +29,7 @@ pub(super) struct PendingGopPublication {
     object_id: ObjectId,
     object_generation: u64,
     media_bytes: u64,
+    capture_interval: CaptureInterval,
     receipt: StorageCommitReceipt,
     reopen_required: bool,
 }
@@ -107,6 +108,9 @@ impl StorageEngine {
             receipt = self.flush_camera_gop(&sensor_id, adapter, cx, tree)?;
         }
         let buf = self.gop_buffers.entry(sensor_id.clone()).or_default();
+        self.gop_adapters
+            .entry(sensor_id.clone())
+            .or_insert(adapter);
         buf.push(frame);
         *accepted = true;
         if buf.len() >= gop_frames.max(1) {
@@ -255,6 +259,7 @@ impl StorageEngine {
                 object_id,
                 object_generation: new_gen,
                 media_bytes,
+                capture_interval: interval,
                 receipt: receipt_from_coalesced(committed),
                 reopen_required: false,
             },
@@ -326,6 +331,7 @@ impl StorageEngine {
             RetainedRoot {
                 media_digest: pending.root.root_digest,
                 metadata_digest,
+                capture_interval: pending.capture_interval,
                 legacy_hold_state: false,
             },
         );
@@ -345,7 +351,45 @@ impl StorageEngine {
         );
         let receipt = pending.receipt.clone();
         self.pending_gop_publications.remove(sensor_id);
+        self.gop_adapters.remove(sensor_id);
         Ok(receipt)
+    }
+
+    /// Close only contributing source buffers that intersect the event's common host-time
+    /// interval. The event writer holds the retention gate across this publication and its
+    /// atomic event/hold commit, so maintenance cannot expire the newly retained source.
+    pub(super) fn flush_event_sources(
+        &mut self,
+        event: &EventHypothesis,
+        sensors: &[SensorId],
+        cx: &AuthorityCx,
+        tree: &RegionTree,
+    ) -> Result<(), DaemonError> {
+        if event.state != EventState::Corroborated {
+            return Ok(());
+        }
+        for sensor in sensors {
+            let buffered = self.gop_buffers.get(sensor).is_some_and(|frames| {
+                frames.iter().any(|frame| {
+                    event.interval.earliest.0 <= frame.host_receive_ns
+                        && frame.host_receive_ns <= event.interval.latest.0
+                })
+            });
+            let pending = self
+                .pending_gop_publications
+                .get(sensor)
+                .is_some_and(|pending| {
+                    pending.capture_interval.earliest <= event.interval.latest
+                        && event.interval.earliest <= pending.capture_interval.latest
+                });
+            if buffered || pending {
+                let adapter = self.gop_adapters.get(sensor).copied().ok_or(
+                    CombinerError::InvalidProposal("event source buffer lacks its capture adapter"),
+                )?;
+                self.flush_camera_gop(sensor, adapter, cx, tree)?;
+            }
+        }
+        Ok(())
     }
 }
 
