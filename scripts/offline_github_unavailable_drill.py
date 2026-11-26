@@ -337,11 +337,20 @@ def run_drill(
                     )
 
             finished_ns = max(time.time_ns(), started_ns + 1)
-            head_commit = _run_cmd(["git", "rev-parse", "HEAD"], repo_root, env).stdout.strip()
-            head_tree = _run_cmd(["git", "rev-parse", "HEAD^{tree}"], repo_root, env).stdout.strip()
-            sib = _run_cmd(
+            head_commit_proc = _run_cmd(["git", "rev-parse", "HEAD"], repo_root, env)
+            head_tree_proc = _run_cmd(["git", "rev-parse", "HEAD^{tree}"], repo_root, env)
+            sib_proc = _run_cmd(
                 [sys.executable, "scripts/sibling_closure.py", str(repo_root)], repo_root, env
-            ).stdout.strip()
+            )
+            if head_commit_proc.returncode != 0 or not head_commit_proc.stdout.strip():
+                failures.append(f"git rev-parse HEAD failed: {head_commit_proc.stderr.strip()}")
+            if head_tree_proc.returncode != 0 or not head_tree_proc.stdout.strip():
+                failures.append(f"git rev-parse HEAD^{{tree}} failed: {head_tree_proc.stderr.strip()}")
+            if sib_proc.returncode != 0 or not sib_proc.stdout.strip():
+                failures.append(f"sibling_closure.py failed: {sib_proc.stderr.strip()}")
+            head_commit = head_commit_proc.stdout.strip()
+            head_tree = head_tree_proc.stdout.strip()
+            sib = sib_proc.stdout.strip()
             toolchain_toml = tomllib.loads(
                 (repo_root / "rust-toolchain.toml").read_text(encoding="utf-8")
             )
@@ -402,12 +411,18 @@ def run_drill(
                 )
 
             # 2. Offline SBOM + License + Cargo.lock + Qualification Receipt cross-check (FSS-190).
+            sbom_dir = td / "sbom-bundle"
+            sbom_dir.mkdir()
+            sbom_path = sbom_dir / "sbom.spdx.json"
+            inv_path = sbom_dir / "license-inventory.json"
+            meta_path = sbom_dir / "cargo-metadata.json"
             sbom_script = td / "sbom_check_driver.py"
             sbom_script.write_text(
                 "import json, sys\n"
                 "from pathlib import Path\n"
                 "repo = Path(sys.argv[1])\n"
                 "receipt_path = Path(sys.argv[2])\n"
+                "sbom_out, inv_out, meta_out = Path(sys.argv[3]), Path(sys.argv[4]), Path(sys.argv[5])\n"
                 "sys.path.insert(0, str(repo / 'scripts'))\n"
                 "import release_artifacts, sbom_crosscheck\n"
                 "lock_text = (repo / 'Cargo.lock').read_text(encoding='utf-8')\n"
@@ -422,6 +437,9 @@ def run_drill(
                 "    artifacts = Path('/tmp/unused')\n"
                 "sbom = release_artifacts.cargo_sbom(meta, Ctx())\n"
                 "inv = release_artifacts.license_inventory(meta, Ctx())\n"
+                "sbom_out.write_text(json.dumps(sbom, sort_keys=True), encoding='utf-8')\n"
+                "inv_out.write_text(json.dumps(inv, sort_keys=True), encoding='utf-8')\n"
+                "meta_out.write_text(json.dumps(meta, sort_keys=True), encoding='utf-8')\n"
                 "receipt = json.loads(receipt_path.read_text(encoding='utf-8'))\n"
                 "errs = sbom_crosscheck.crosscheck(sbom, inv, lock_text, meta, receipt)\n"
                 "print(json.dumps({'packageCount': len(pkgs), 'errors': errs}))\n"
@@ -429,7 +447,15 @@ def run_drill(
                 encoding="utf-8",
             )
             sbom_proc = _run_cmd(
-                [sys.executable, str(sbom_script), str(repo_root), str(receipt_path)],
+                [
+                    sys.executable,
+                    str(sbom_script),
+                    str(repo_root),
+                    str(receipt_path),
+                    str(sbom_path),
+                    str(inv_path),
+                    str(meta_path),
+                ],
                 repo_root,
                 env,
             )
@@ -449,41 +475,53 @@ def run_drill(
         art_dir.mkdir()
         (art_dir / "fss-local-native.tar.xz").write_bytes(b"fss-offline-native-bundle-v1")
         (art_dir / "SHA256SUMS.txt").write_bytes(b"sha256sums-offline-v1\n")
-        (art_dir / "qualification-receipt.json").write_bytes(
-            (td / "receipt-run" / "qualification-receipt.json").read_bytes()
-            if (td / "receipt-run" / "qualification-receipt.json").is_file()
-            else b"{}"
-        )
+        receipt_file = td / "receipt-run" / "qualification-receipt.json"
+        if not receipt_file.is_file():
+            failures.append("missing local qualification-receipt.json for release bundle")
+        else:
+            (art_dir / "qualification-receipt.json").write_bytes(receipt_file.read_bytes())
         basis = _sha256_bytes(b"fss.contract_basis.fss194.offline_drill.v1")
 
-        # 3a. Publish + verify-remote offline.
-        pub = _run_cmd(
-            [
-                "bash",
-                "scripts/release_qualify.sh",
-                "publish",
-                "--release-id",
-                "rel:fss194:offline:v0.0.1",
-                "--version",
-                "0.0.1",
-                "--artifacts-dir",
-                str(art_dir),
-                "--remote-store-dir",
-                str(td / "remote-store"),
-                "--state-dir",
-                str(td / "state"),
-                "--principal",
-                "operator:local-dsr",
-                "--builder",
-                "builder:local-dsr-host",
-                "--signer",
-                "signer:offline-hardware-key",
-                "--contract-basis-digest",
-                basis,
-            ],
-            repo_root,
-            env,
-        )
+        # 3a. Publish + verify-remote offline (wiring FSS-190 SBOM/license/lock/receipt leg inline!).
+        pub_cmd = [
+            "bash",
+            "scripts/release_qualify.sh",
+            "publish",
+            "--release-id",
+            "rel:fss194:offline:v0.0.1",
+            "--version",
+            "0.0.1",
+            "--artifacts-dir",
+            str(art_dir),
+            "--remote-store-dir",
+            str(td / "remote-store"),
+            "--state-dir",
+            str(td / "state"),
+            "--principal",
+            "operator:local-dsr",
+            "--builder",
+            "builder:local-dsr-host",
+            "--signer",
+            "signer:offline-hardware-key",
+            "--contract-basis-digest",
+            basis,
+        ]
+        if (td / "sbom-bundle" / "sbom.spdx.json").is_file() and receipt_file.is_file():
+            pub_cmd.extend(
+                [
+                    "--sbom",
+                    str(td / "sbom-bundle" / "sbom.spdx.json"),
+                    "--license-inventory",
+                    str(td / "sbom-bundle" / "license-inventory.json"),
+                    "--cargo-lock",
+                    str(repo_root / "Cargo.lock"),
+                    "--metadata",
+                    str(td / "sbom-bundle" / "cargo-metadata.json"),
+                    "--qualification-receipt",
+                    str(receipt_file),
+                ]
+            )
+        pub = _run_cmd(pub_cmd, repo_root, env)
         pub_json = json.loads(pub.stdout) if pub.stdout.strip().startswith("{") else {}
         pub_ok = pub.returncode == 0 and pub_json.get("state") == "published"
         checks.append(

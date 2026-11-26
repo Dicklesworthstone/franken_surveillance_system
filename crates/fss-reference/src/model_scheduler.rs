@@ -1791,8 +1791,10 @@ impl ThermalPressureModelScheduler {
         receipt.receipt_digest = receipt.recompute_digest();
         receipt.verify_integrity()?;
 
-        self.idempotent_receipts
-            .insert(request.request_id.clone(), (req_fp, receipt.clone()));
+        if receipt.decision_state.is_admitted() {
+            self.idempotent_receipts
+                .insert(request.request_id.clone(), (req_fp, receipt.clone()));
+        }
         Ok(receipt)
     }
 

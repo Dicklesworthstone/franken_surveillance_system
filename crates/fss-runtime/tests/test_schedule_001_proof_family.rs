@@ -276,9 +276,18 @@ fn run_nested_cancel_fault_schedule(
 
     {
         let mut sched = runtime.scheduler.lock();
-        sched.schedule(t_stage, 1);
-        sched.schedule(t_pub, 1);
-        sched.schedule(t_cancel, 1);
+        // Deterministically sweep task priority interleavings across seeds so the corpus proves
+        // all three outcomes: commit-before-cancel, cancel-between-stage-and-publish (FORMAL-008
+        // rollback), and cancel-before-stage.
+        let (p_stage, p_pub, p_cancel) = match seed % 4 {
+            0 => (3, 2, 1), // stage -> publish -> cancel
+            1 => (3, 1, 2), // stage -> cancel -> publish (mid-flight FORMAL-008 rollback)
+            2 => (1, 1, 3), // cancel -> stage -> publish (pre-cancelled)
+            _ => (1, 1, 1), // symmetric LabRuntime tie-break race
+        };
+        sched.schedule(t_stage, p_stage);
+        sched.schedule(t_pub, p_pub);
+        sched.schedule(t_cancel, p_cancel);
     }
 
     let steps = runtime.run_until_quiescent();
@@ -407,6 +416,10 @@ fn test_schedule_001_multi_seed_cancel_fault_exploration_and_sealed_manifest() -
         }
         outcomes.push(run_a);
     }
+    assert!(
+        saw_committed,
+        "expected clean commit-before-cancel schedules across corpus"
+    );
     assert!(
         saw_fault,
         "expected injected fault cases across schedule corpus"

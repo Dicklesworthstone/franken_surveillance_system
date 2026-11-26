@@ -264,9 +264,11 @@ fn critical_hard_floor_preempts_lower_classes_and_thermal_hysteresis_prevents_fl
     );
 
     // At t=15s (6s after entering Hot) and temp 50 C (<= warm_exit), thermal state recovers to Nominal.
+    // Reusing the SAME request_id ("std-dwell") that was previously DeferredByPressure MUST succeed
+    // cleanly after cool-down (non-admitted deferrals never poison the idempotency cache!).
     let r_nom = sched.admit(
         &sample(15, 50_000, ResourcePressure::Nominal, 0, 256, None),
-        &make_request("std-nom", ModelWorkloadClass::StandardAnalytics, 4, 32, 5)?,
+        &make_request("std-dwell", ModelWorkloadClass::StandardAnalytics, 4, 32, 5)?,
         &cx,
     )?;
     assert_eq!(r_nom.effective_thermal_state, ThermalState::Nominal);
