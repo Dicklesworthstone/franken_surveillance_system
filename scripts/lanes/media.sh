@@ -10,15 +10,25 @@ cd "$ROOT"
 TOOLCHAIN="$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml 2>/dev/null || true)"
 if [[ -n "$TOOLCHAIN" ]]; then RUN=(rustup run "$TOOLCHAIN"); else RUN=(); fi
 
+export CARGO_NET_OFFLINE=true
+export RUSTUP_AUTO_INSTALL=0
+export RCH_SHIM_LOCAL_IDE="${RCH_SHIM_LOCAL_IDE:-1}"
+
 # Reuse a binary if one is present: the lane is about behaviour, and rebuilds are the slowest thing in
 # it (a flaky build queue must not read as a probe failure).
 BIN=""
 HOST="$(rustc -vV 2>/dev/null | sed -n 's/^host: //p')"
-for candidate in "target/${HOST}/debug/fss-probe" target/*/debug/fss-probe target/debug/fss-probe; do
+TARGET_BASE="${CARGO_TARGET_DIR:-target}"
+for candidate in \
+  "${TARGET_BASE}/${HOST}/debug/fss-probe" \
+  "${TARGET_BASE}/debug/fss-probe" \
+  "target/${HOST}/debug/fss-probe" \
+  target/*/debug/fss-probe \
+  target/debug/fss-probe; do
   [[ -x "$candidate" ]] && { BIN="$candidate"; break; }
 done
 if [[ -z "$BIN" ]]; then
-  BIN="$("${RUN[@]}" cargo --offline build -q --message-format=json -p fss-cli --bin fss-probe \
+  BIN="$("${RUN[@]}" cargo --offline build --locked -q --message-format=json -p fss-cli --bin fss-probe \
     | python3 -c 'import json,sys
 for line in sys.stdin:
     m = json.loads(line)
@@ -49,15 +59,38 @@ checkp() { # checkp <expected-exit> <label> <printf-format>  — --parameters mo
   printf 'parameters %s: exit %s\n' "$label" "$got"
 }
 
+checkfile() { # checkfile <expected-exit> <label> <file> [extra fss-probe args...]
+  local want="$1" label="$2" file="$3"
+  shift 3
+  local got=0
+  "$BIN" "$@" < "$file" >/dev/null 2>&1 || got=$?
+  if [[ "$got" != "$want" ]]; then
+    printf 'probe-file %s: exit %s, wanted %s\n' "$label" "$got" "$want" >&2
+    exit 1
+  fi
+  printf 'probe-file %s: exit %s\n' "$label" "$got"
+}
+
 check 0 matroska            '\x1a\x45\xdf\xa3matroska'
 check 0 isobmff-brand       '\x00\x00\x00\x18ftypavc1'
 check 0 jpeg                '\xff\xd8\xff\xe0ACameraX'
 check 10 short-head         'FLV'
 check 11 unknown            'RIFFxxxxWAVE'
+check 12 contradictory      '\x00\x00\x01\x67ftypisom'
 checkp 10 parameters-short  '\x00\x00\x00\x01\x67'
+checkfile 0 mp4-avc-params  crates/fss-container/tests/fixtures/fragmented_av.mp4 --parameters
+checkfile 0 mp4-hevc-params crates/fss-container/tests/fixtures/hevc_fragmented_av.mp4 --parameters
+checkfile 0 mkv-avc-params  crates/fss-container/tests/fixtures/avc_av.mkv --parameters
+checkfile 0 mkv-hevc-params crates/fss-container/tests/fixtures/hevc_av.mkv --parameters
+checkfile 14 mp4-unit-limit crates/fss-container/tests/fixtures/fragmented_av.mp4 --parameters --units 1
+
+# FSS-053 — bounded media probe engine library, contract, and CLI unit suites.
+"${RUN[@]}" cargo --offline test --locked -q -p fss-container --lib probe::
+"${RUN[@]}" cargo --offline test --locked -q -p fss-container --test fss_053_media_probe_contract
+"${RUN[@]}" cargo --offline test --locked -q -p fss-cli --bin fss-probe
 
 # FSS-115 — deterministic fragmented MP4/CMAF writer, reader, timeline, and malformed gauntlets.
-"${RUN[@]}" cargo --offline test -q -p fss-container \
+"${RUN[@]}" cargo --offline test --locked -q -p fss-container \
   --test fss_115_fragmented_mp4_cmaf_contract \
   --test avc_mux_contract \
   --test hevc_remux_contract \

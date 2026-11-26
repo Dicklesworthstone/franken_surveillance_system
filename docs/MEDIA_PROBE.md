@@ -1,6 +1,6 @@
 # Bounded media probing
 
-This is a reference implementation increment for **FSS-053** (`fss-x4a.12.2`). It extends the existing container-family probe with native AVC/HEVC configuration metadata. It does not close QL-MEDIA-001, TEST-MEDIA-MALFORMED-001 or GATE-040, and it does not establish camera or decoder support.
+This document specifies the bounded pure-Rust media probe engine for **FSS-053** (`fss-x4a.12.2`), covering container-family probing and native AVC/HEVC configuration metadata extraction across Annex-B, MP4 (`iso-bmff`), Matroska/WebM, and FLV. Downstream beads (`FSS-054`, `TEST-MEDIA-MALFORMED-001`, and `GATE-040`) remain separately tracked and are not closed by probing alone, and probing does not establish camera or decoder support.
 
 ## Command
 
@@ -196,7 +196,4 @@ cancellation, unsupported forms, and deterministic mutations.
 
 ## Qualification
 
-`scripts/qualify.sh --lane media` runs `scripts/lanes/media.sh`, which drives the built binary rather
-than the library: the contract here is the exit status, so a lane that never execs the shipped path
-would prove nothing. It covers a matroska head, an ISO-BMFF head with a brand, a JPEG head, a short
-head (`10`), an unknown head (`11`) and an under-length `--parameters` prefix (`10`).
+`scripts/qualify.sh --lane media` runs `scripts/lanes/media.sh`, which drives the built `fss-probe` binary directly against both family and `--parameters` fixtures (exit statuses `0`, `10`, `11`, `12`, `14`), executes `fss-container --lib probe::`, `fss-container --test fss_053_media_probe_contract`, and `fss-cli --bin fss-probe`, and runs the `FSS-115` fragmented MP4/CMAF suites. The dedicated E2E contract entrypoint is `scripts/e2e/fss_053_media_probe.sh`.
