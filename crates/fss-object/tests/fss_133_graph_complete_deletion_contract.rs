@@ -449,11 +449,23 @@ fn partial_apply_preserves_paths_and_reconciles_the_exact_plan_once() -> TestRes
         1,
         &[local, index],
     ));
-    catalog.insert(node(index, DeletionArtifactClass::IndexOrCache, 2, &[remote]));
+    catalog.insert(node(
+        index,
+        DeletionArtifactClass::IndexOrCache,
+        2,
+        &[remote],
+    ));
     catalog.insert(node(local, DeletionArtifactClass::LocalReplica, 4, &[]));
     catalog.insert(node(remote, DeletionArtifactClass::RemoteReplica, 8, &[]));
     let auth = DeletionAuthorityContext::approved(d("basis"), 1, 2, d("approved"));
-    let plan = DeletionClosureExecutor::plan_closure(&catalog, root, &auth, vec![], TimestampNs(1), false)?;
+    let plan = DeletionClosureExecutor::plan_closure(
+        &catalog,
+        root,
+        &auth,
+        vec![],
+        TimestampNs(1),
+        false,
+    )?;
     let partial = DeletionClosureExecutor::execute_and_verify(
         &mut catalog,
         &plan,
@@ -468,7 +480,14 @@ fn partial_apply_preserves_paths_and_reconciles_the_exact_plan_once() -> TestRes
     assert!(catalog.get(&root).is_some_and(|n| n.reachable));
     assert!(catalog.tombstone_for(&root).is_none());
 
-    let remaining = DeletionClosureExecutor::plan_closure(&catalog, root, &auth, vec![], TimestampNs(3), false)?;
+    let remaining = DeletionClosureExecutor::plan_closure(
+        &catalog,
+        root,
+        &auth,
+        vec![],
+        TimestampNs(3),
+        false,
+    )?;
     assert!(remaining.members.iter().any(|m| m.digest == remote));
     let retry = DeletionClosureExecutor::execute_and_verify(
         &mut catalog,
@@ -548,10 +567,22 @@ fn incomplete_membership_and_external_aliases_prevent_deletion() -> TestResult {
         Err(DeletionClosureError::InvalidInput(_))
     ));
     catalog.insert(node(child, DeletionArtifactClass::SourceChunk, 1, &[]));
-    let mut other = node(d("other-index"), DeletionArtifactClass::IndexOrCache, 1, &[]);
+    let mut other = node(
+        d("other-index"),
+        DeletionArtifactClass::IndexOrCache,
+        1,
+        &[],
+    );
     other.hidden_reference_aliases.insert(child);
     catalog.insert(other);
-    let mut plan = DeletionClosureExecutor::plan_closure(&catalog, root, &auth, vec![], TimestampNs(2), false)?;
+    let mut plan = DeletionClosureExecutor::plan_closure(
+        &catalog,
+        root,
+        &auth,
+        vec![],
+        TimestampNs(2),
+        false,
+    )?;
     assert_eq!(plan.blockers.len(), 1);
     assert_eq!(plan.blockers[0].target_digest, child);
     assert_eq!(plan.blockers[0].reference_id, d("other-index").to_string());
@@ -571,5 +602,131 @@ fn incomplete_membership_and_external_aliases_prevent_deletion() -> TestResult {
     ));
     assert!(catalog.get(&child).is_some_and(|n| n.reachable));
     assert!(catalog.tombstone_for(&root).is_none());
+    Ok(())
+}
+
+#[test]
+fn byte_accounting_refuses_overflow_and_accepts_the_exact_limit() -> TestResult {
+    let root = d("manifest");
+    let child = d("large-source");
+    let auth = DeletionAuthorityContext::approved(d("basis"), 1, 2, d("approved"));
+    let mut catalog = ArchiveDeletionCatalog::new();
+    catalog.insert(node(root, DeletionArtifactClass::Manifest, 1, &[child]));
+    catalog.insert(node(
+        child,
+        DeletionArtifactClass::SourceChunk,
+        u64::MAX,
+        &[],
+    ));
+    assert!(matches!(
+        DeletionClosureExecutor::plan_closure(&catalog, root, &auth, vec![], TimestampNs(1), false),
+        Err(DeletionClosureError::InvalidInput(_))
+    ));
+    assert!(catalog.get(&child).is_some_and(|n| n.reachable));
+    catalog.insert(node(
+        child,
+        DeletionArtifactClass::SourceChunk,
+        u64::MAX - 1,
+        &[],
+    ));
+    let plan = DeletionClosureExecutor::plan_closure(
+        &catalog,
+        root,
+        &auth,
+        vec![],
+        TimestampNs(1),
+        false,
+    )?;
+    let receipt = DeletionClosureExecutor::execute_and_verify(
+        &mut catalog,
+        &plan,
+        &auth,
+        &BTreeSet::new(),
+        TimestampNs(2),
+        false,
+    )?;
+    assert_eq!(plan.total_planned_bytes, u64::MAX);
+    assert_eq!(receipt.deleted_bytes, u64::MAX);
+    Ok(())
+}
+
+#[test]
+fn a_closure_whose_terminal_proof_would_exceed_the_wire_limit_remains_intact() -> TestResult {
+    use fss_core::DigestAlgorithm;
+    use fss_object::deletion_closure::MAX_DELETION_RECEIPT_WIRE_BYTES;
+    fn id(n: u32) -> ContentDigest {
+        let mut value = [0_u8; 32];
+        value[..4].copy_from_slice(&n.to_be_bytes());
+        ContentDigest::new(DigestAlgorithm::Sha256, value)
+    }
+
+    let root = id(0);
+    let mut manifest = node(root, DeletionArtifactClass::Manifest, 1, &[]);
+    let mut catalog = ArchiveDeletionCatalog::new();
+    // This is a valid one-level closure below the 65,536-member ceiling. Member
+    // digests alone fit the v1 wire budget; the distinct surviving aliases do not.
+    for n in 1..=63_544 {
+        let mut source = node(id(n), DeletionArtifactClass::SourceChunk, 1, &[]);
+        source.simulate_surviving_hidden_ref = Some(id(n + 63_544));
+        manifest.dependencies.insert(source.digest);
+        catalog.insert(source);
+    }
+    catalog.insert(manifest);
+    let auth = DeletionAuthorityContext::approved(d("basis"), 1, 2, d("approved"));
+    let mut disclosure = UnknownExternalCopy {
+        copy_id: "x".to_owned(),
+        destination_label: "y".to_owned(),
+        note: "a".repeat(54),
+    };
+    let plan = DeletionClosureExecutor::plan_closure(
+        &catalog,
+        root,
+        &auth,
+        vec![disclosure.clone()],
+        TimestampNs(1),
+        false,
+    )?;
+    let before = catalog.catalog_state_digest()?;
+    assert!(matches!(
+        DeletionClosureExecutor::execute_and_verify(
+            &mut catalog,
+            &plan,
+            &auth,
+            &BTreeSet::new(),
+            TimestampNs(2),
+            false
+        ),
+        Err(DeletionClosureError::BoundsExceeded {
+            maximum: MAX_DELETION_RECEIPT_WIRE_BYTES,
+            ..
+        })
+    ));
+    assert_eq!(catalog.catalog_state_digest()?, before);
+    assert!(catalog.tombstone_for(&root).is_none());
+
+    // Removing one byte from the disclosure gives a receipt exactly at the v1 ceiling.
+    disclosure.note.truncate(53);
+    let plan = DeletionClosureExecutor::plan_closure(
+        &catalog,
+        root,
+        &auth,
+        vec![disclosure],
+        TimestampNs(3),
+        false,
+    )?;
+    let receipt = DeletionClosureExecutor::execute_and_verify(
+        &mut catalog,
+        &plan,
+        &auth,
+        &BTreeSet::new(),
+        TimestampNs(4),
+        false,
+    )?;
+    let wire = receipt.to_canonical_bytes()?;
+    assert_eq!(wire.len(), MAX_DELETION_RECEIPT_WIRE_BYTES);
+    assert_eq!(
+        DeletionClosureReceipt::from_canonical_bytes(&wire)?,
+        receipt
+    );
     Ok(())
 }

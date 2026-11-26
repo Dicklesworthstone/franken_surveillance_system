@@ -1004,7 +1004,14 @@ impl DeletionClosureExecutor {
                     reference_id: hold_id.clone(),
                 });
             }
-            total_planned_bytes = total_planned_bytes.saturating_add(node.byte_len);
+            total_planned_bytes =
+                total_planned_bytes
+                    .checked_add(node.byte_len)
+                    .ok_or_else(|| {
+                        DeletionClosureError::InvalidInput(
+                            "deletion closure exceeds u64 byte accounting".to_owned(),
+                        )
+                    })?;
             members.push(PlannedDeletionMember {
                 digest,
                 class: node.class,
@@ -1139,6 +1146,7 @@ impl DeletionClosureExecutor {
         {
             return Ok(receipt.clone());
         }
+        ensure_terminal_receipt_fits(catalog, plan)?;
         for member in &plan.members {
             if deleted_set.contains(&member.digest) || indeterminate_set.contains(&member.digest) {
                 continue;
@@ -1156,7 +1164,8 @@ impl DeletionClosureExecutor {
                 }
                 node.reachable = false;
                 deleted_set.insert(member.digest);
-                deleted_bytes = deleted_bytes.saturating_add(node.byte_len);
+                // Planning proved the sum of all distinct member sizes fits u64.
+                deleted_bytes += node.byte_len;
                 if let Some(leaked_alias) = node.simulate_surviving_hidden_ref {
                     catalog
                         .surviving_hidden_refs
@@ -1187,8 +1196,7 @@ impl DeletionClosureExecutor {
         }
 
         // Publish canonical tombstone root only after every planned member was deleted.
-        let tombstone_root_digest =
-            compute_tombstone_root(plan, &deleted_digests, completed_at)?;
+        let tombstone_root_digest = compute_tombstone_root(plan, &deleted_digests, completed_at)?;
         catalog
             .tombstones
             .insert(plan.root_digest, tombstone_root_digest);
@@ -1238,6 +1246,53 @@ impl DeletionClosureExecutor {
         );
         Ok(receipt)
     }
+}
+
+/// Reserve room for the final FSSDCL01 proof before retiring any member. Partial proofs
+/// omit the tombstone and contain disjoint subsets of the same members, so also fit.
+fn ensure_terminal_receipt_fits(
+    catalog: &ArchiveDeletionCatalog,
+    plan: &DeletionClosurePlan,
+) -> Result<(), DeletionClosureError> {
+    // V1 has six tagged 32-byte digests in a terminal envelope (including the checksum),
+    // two one-byte tags, seven u64 fields, a timestamp, the body version and the header.
+    const DIGEST_BYTES: usize = 33;
+    const TERMINAL_ENVELOPE_BYTES: usize = 12 + 4 + 6 * DIGEST_BYTES + 2 + 7 * 8 + 16;
+    let disclosure_bytes: usize = plan
+        .unknown_external_copies
+        .iter()
+        .map(|copy| 3 * 8 + copy.copy_id.len() + copy.destination_label.len() + copy.note.len())
+        .sum();
+    let member_proof_bytes =
+        TERMINAL_ENVELOPE_BYTES + plan.members.len() * DIGEST_BYTES + disclosure_bytes;
+
+    let mut aliases = BTreeSet::new();
+    for member in &plan.members {
+        if let Some(survivors) = catalog.surviving_hidden_refs.get(&member.digest) {
+            aliases.extend(survivors.iter().copied());
+        }
+        if let Some(alias) = catalog
+            .get(&member.digest)
+            .filter(|node| node.reachable)
+            .and_then(|node| node.simulate_surviving_hidden_ref)
+        {
+            aliases.insert(alias);
+        }
+        if aliases.len() > MAX_DELETION_CLOSURE_NODES {
+            return Err(DeletionClosureError::BoundsExceeded {
+                observed: aliases.len(),
+                maximum: MAX_DELETION_CLOSURE_NODES,
+            });
+        }
+        let required = member_proof_bytes + aliases.len() * DIGEST_BYTES;
+        if required > MAX_DELETION_RECEIPT_WIRE_BYTES {
+            return Err(DeletionClosureError::BoundsExceeded {
+                observed: required,
+                maximum: MAX_DELETION_RECEIPT_WIRE_BYTES,
+            });
+        }
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
