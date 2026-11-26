@@ -172,6 +172,35 @@ fn assert_diagnostic_handle(orientation: &DeploymentOrientation, record: &Histor
     );
 }
 
+fn assert_graph_coverage(
+    snapshot: &fss_reference::agent_orient::DeploymentSnapshot,
+    window: fss_core::CaptureInterval,
+    expected: u64,
+) -> TestResult {
+    use fss_graph_algorithms::GraphBudget;
+    use fss_reference::coverage_graph::{
+        coverage_observations, coverage_observations_during, coverage_single_points,
+        coverage_single_points_during,
+    };
+    use fss_reference::coverage_timeline::coverage_timeline;
+
+    for facts in [coverage_observations(snapshot), coverage_observations_during(snapshot, window)?] {
+        assert_eq!(facts.iter().map(|fact| fact.witnesses).sum::<u64>(), expected);
+    }
+    for report in [coverage_single_points(snapshot)?, coverage_single_points_during(snapshot, window)?] {
+        assert_eq!(report.answer.zones.len(), 1);
+        assert_eq!(report.answer.zones[0].witnesses, expected);
+    }
+    let timeline = coverage_timeline(snapshot, window, GraphBudget {
+        max_operations: 1_000_000,
+        max_output_entries: 65_536,
+    })?;
+    assert_eq!(timeline.segments.len(), 1);
+    assert_eq!(timeline.segments[0].window, window);
+    assert_eq!(timeline.segments[0].report.answer.zones[0].witnesses, expected);
+    Ok(())
+}
+
 #[test]
 fn retained_frozen_diagnostic_revokes_cold_coverage_and_protects_follow_without_rewriting_history()
 -> TestResult {
@@ -191,6 +220,9 @@ fn retained_frozen_diagnostic_revokes_cold_coverage_and_protects_follow_without_
     assert!(historical.historical_health.is_empty());
     assert_covered(&orient_deployment(&historical, &request()?, &limits)?)?;
     let current = history.snapshot_at(history.head())?;
+    let window = historical.coverage[0].record.zones[0].witnesses[0].covered;
+    assert_graph_coverage(&historical, window, 1)?;
+    assert_graph_coverage(&current, window, 0)?;
     assert_eq!(current.coverage.len(), 1);
     assert_eq!(current.coverage[0].record.to_bytes(), original);
     let current = orient_deployment(&current, &request()?, &limits)?;
@@ -289,12 +321,15 @@ fn unaffected_overlapping_import_keeps_coverage_when_a_conflicting_witness_is_wi
         .map(|witness| witness.witness.witness_digest())
         .collect();
     assert_eq!(unaffected.len(), 1);
+    let window = independent.record.zones[0].witnesses[0].covered;
+    assert_graph_coverage(&before, window, 2)?;
     let before = orient_deployment(&before, &request()?, &limits)?;
     assert_covered(&before)?;
     let before_zone = &before.coverage.as_ref().ok_or("coverage")?.zones[0];
     assert_eq!(before_zone.witnesses.len(), 2);
 
     let diagnostic = retain_diagnostic(&mut fixture, &plan(frozen, 0, FRAMES))?;
+    assert_graph_coverage(&read_deployment(fixture.deployment.root(), &limits)?, window, 1)?;
     let after = orient(&fixture)?;
     assert_covered(&after)?;
     let zone = &after.coverage.as_ref().ok_or("coverage")?.zones[0];

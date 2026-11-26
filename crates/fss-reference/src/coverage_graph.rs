@@ -15,7 +15,8 @@
 //! witness is not observable, never evidence of absence. Nothing is written and nothing is
 //! authorized.
 //! Verified calibration withdrawals at the snapshot remove affected witness edges while
-//! retaining their sensor and zone rows. Historical prefixes before withdrawal keep their own
+//! retaining their sensor and zone rows. Historical diagnostics withhold whole witnesses
+//! overlapping a scan with findings over the exact same source and privacy generation. Historical prefixes before withdrawal keep their own
 //! verified interpretation; immutable coverage records are never rewritten.
 //!
 //! [`coverage_single_points_during`] restricts every sensor--zone edge to witnesses whose
@@ -39,6 +40,7 @@ use fss_graph_algorithms::{
 
 use fss_graph_algorithms::weighted::{WeightedGraph, WeightedGraphBuilder};
 
+use crate::agent_orient::coverage::{HealthWithdrawals, WitnessSelection};
 use crate::agent_orient::{DeploymentReadError, DeploymentSnapshot, OrientLimits, read_deployment};
 use crate::ingest::recorded_coverage::CoverageRecord;
 
@@ -108,26 +110,21 @@ impl fmt::Display for CoverageGraphError {
 
 impl std::error::Error for CoverageGraphError {}
 
-/// The `(sensor, zone scope, retained witnesses)` facts of a snapshot's retained coverage.
+/// Per-zone counts from the verified snapshot. Invalid diagnostic metadata withholds all
+/// witnesses in this infallible inventory view. Certified queries return the error.
 #[must_use]
 pub fn coverage_observations(snapshot: &DeploymentSnapshot) -> Vec<CoverageObservation> {
+    let health = HealthWithdrawals::new(&snapshot.historical_health).ok();
     snapshot
         .coverage
         .iter()
         .flat_map(|retained| {
-            retained
-                .record
-                .zones
-                .iter()
-                .map(|zone| CoverageObservation {
-                    sensor_id: retained.record.sensor_id.clone(),
-                    zone_scope: zone.scope.clone(),
-                    witnesses: if retained.calibration_invalidation.is_some() {
-                        0
-                    } else {
-                        zone.witnesses.len() as u64
-                    },
-                })
+            let selection = health.as_ref().map(|index| index.selection(retained));
+            retained.record.zones.iter().map(move |zone| CoverageObservation {
+                sensor_id: retained.record.sensor_id.clone(),
+                zone_scope: zone.scope.clone(),
+                witnesses: selection.map_or(0, |screen| screen.count(&zone.witnesses)) as u64,
+            })
         })
         .collect()
 }
@@ -201,13 +198,12 @@ fn project_snapshot(
     window: Option<CaptureInterval>,
     limits: CoverageBuildLimits,
 ) -> Result<SensorCoverageProjection, GraphError> {
+    let health = HealthWithdrawals::new(&snapshot.historical_health)
+        .map_err(|error| GraphError::PreconditionFailed(error.to_string()))?;
     project_records(
         &snapshot.site_lineage,
         snapshot.coverage.iter().map(|retained| {
-            (
-                &retained.record,
-                retained.calibration_invalidation.is_some(),
-            )
+            (&retained.record, health.selection(retained))
         }),
         window,
         limits,
@@ -216,21 +212,18 @@ fn project_snapshot(
 
 fn project_records<'a>(
     site: &str,
-    records: impl Iterator<Item = (&'a CoverageRecord, bool)>,
+    records: impl Iterator<Item = (&'a CoverageRecord, WitnessSelection<'a>)>,
     window: Option<CaptureInterval>,
     limits: CoverageBuildLimits,
 ) -> Result<SensorCoverageProjection, GraphError> {
     let mut builder = CoverageProjectionBuilder::new(site, limits)?;
-    for (record, invalidated) in records {
+    for (record, selection) in records {
         for zone in &record.zones {
-            let witnesses = match (invalidated, window) {
-                (true, _) => 0,
-                (false, None) => zone.witnesses.len(),
-                (false, Some(window)) => zone
-                    .witnesses
-                    .iter()
-                    .filter(|witness| contains_window(witness.covered, window))
-                    .count(),
+            let witnesses = match window {
+                None => selection.count(&zone.witnesses),
+                Some(window) => zone.witnesses.iter().filter(|witness| {
+                    contains_window(witness.covered, window) && selection.allows(witness)
+                }).count(),
             };
             builder.push(&CoverageObservation {
                 sensor_id: record.sensor_id.clone(),
@@ -312,18 +305,18 @@ fn contains_window(covered: CaptureInterval, window: CaptureInterval) -> bool {
 }
 
 fn observations_in_window<'a>(
-    records: impl Iterator<Item = (&'a CoverageRecord, bool)>,
+    records: impl Iterator<Item = (&'a CoverageRecord, WitnessSelection<'a>)>,
     window: CaptureInterval,
 ) -> Vec<CoverageObservation> {
     records
-        .flat_map(|(record, invalidated)| {
+        .flat_map(|(record, selection)| {
             record.zones.iter().map(move |zone| CoverageObservation {
                 sensor_id: record.sensor_id.clone(),
                 zone_scope: zone.scope.clone(),
                 witnesses: zone
                     .witnesses
                     .iter()
-                    .filter(|witness| !invalidated && contains_window(witness.covered, window))
+                    .filter(|witness| contains_window(witness.covered, window) && selection.allows(witness))
                     .count() as u64,
             })
         })
@@ -344,12 +337,11 @@ pub fn coverage_observations_during(
     window: CaptureInterval,
 ) -> Result<Vec<CoverageObservation>, CoverageGraphError> {
     let window = validate_window(window)?;
+    let health =
+        HealthWithdrawals::new(&snapshot.historical_health).map_err(CoverageGraphError::Contract)?;
     Ok(observations_in_window(
         snapshot.coverage.iter().map(|retained| {
-            (
-                &retained.record,
-                retained.calibration_invalidation.is_some(),
-            )
+            (&retained.record, health.selection(retained))
         }),
         window,
     ))
@@ -457,7 +449,7 @@ mod window_tests {
     ) -> TestResult<CoverageSinglePoints> {
         let projection = project_records(
             "site:window-tests",
-            records.iter().map(|record| (record, false)),
+            records.iter().map(|record| (record, WitnessSelection::ALL)),
             Some(window),
             CoverageBuildLimits::default(),
         )?;
@@ -517,13 +509,13 @@ mod window_tests {
     fn uncertain_outer_bounds_do_not_authorize_an_edge() -> TestResult {
         let record = record("sensor:east", 0, None)?;
         let witness = &record.zones[0].witnesses[0];
-        let whole = observations_in_window([(&record, false)].into_iter(), witness.covered);
+        let whole = observations_in_window([(&record, WitnessSelection::ALL)].into_iter(), witness.covered);
         assert_eq!(whole[0].witnesses, 1);
-        let hull = observations_in_window([(&record, false)].into_iter(), witness.outer);
+        let hull = observations_in_window([(&record, WitnessSelection::ALL)].into_iter(), witness.outer);
         assert_eq!(hull[0].witnesses, 0);
         let point = interval(witness.covered.earliest.0, witness.covered.earliest.0)?;
         assert_eq!(
-            observations_in_window([(&record, false)].into_iter(), point)[0].witnesses,
+            observations_in_window([(&record, WitnessSelection::ALL)].into_iter(), point)[0].witnesses,
             1
         );
         Ok(())
@@ -533,10 +525,10 @@ mod window_tests {
     fn partial_witnesses_never_bridge_an_uncovered_interval() -> TestResult {
         let record = record("sensor:east", 0, Some(10))?;
         assert_eq!(record.zones[0].witnesses.len(), 2);
-        let facts = observations_in_window([(&record, false)].into_iter(), interval(50, 160)?);
+        let facts = observations_in_window([(&record, WitnessSelection::ALL)].into_iter(), interval(50, 160)?);
         assert_eq!(facts[0].witnesses, 0);
         assert_eq!(
-            observations_in_window([(&record, false)].into_iter(), interval(50, 70)?)[0].witnesses,
+            observations_in_window([(&record, WitnessSelection::ALL)].into_iter(), interval(50, 70)?)[0].witnesses,
             1
         );
         Ok(())
@@ -597,7 +589,7 @@ mod window_tests {
         for window in [None, Some(interval(60, 120)?), Some(interval(500, 600)?)] {
             let facts = match window {
                 Some(window) => {
-                    observations_in_window(records.iter().map(|record| (record, false)), window)
+                    observations_in_window(records.iter().map(|record| (record, WitnessSelection::ALL)), window)
                 }
                 None => records
                     .iter()
@@ -613,7 +605,7 @@ mod window_tests {
             let expected = SensorCoverageProjection::build("site:window-tests", &facts)?;
             let streamed = project_records(
                 "site:window-tests",
-                records.iter().map(|record| (record, false)),
+                records.iter().map(|record| (record, WitnessSelection::ALL)),
                 window,
                 CoverageBuildLimits::default(),
             )?;
@@ -639,7 +631,7 @@ mod window_tests {
         });
         let result = project_records(
             "site:window-tests",
-            records.map(|record| (record, false)),
+            records.map(|record| (record, WitnessSelection::ALL)),
             None,
             CoverageBuildLimits {
                 max_observations: 1,

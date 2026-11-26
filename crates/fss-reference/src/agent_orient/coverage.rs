@@ -84,6 +84,7 @@ use crate::ingest::source_coverage::{
 
 mod health;
 pub use health::CoverageHealthConflict;
+pub(crate) use health::{HealthWithdrawals, WitnessSelection};
 pub(super) use health::privacy_at_basis;
 
 /// Sensor-capsule payloads read to attribute the newest evidence of each covered sensor; more is
