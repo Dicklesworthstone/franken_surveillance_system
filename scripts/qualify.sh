@@ -100,7 +100,7 @@ WRITE_RECEIPT=1
 usage() {
   cat >&2 <<'USAGE'
 Usage: scripts/qualify.sh [--lane LANE] [--receipt-dir DIR] [--no-receipt]
-       scripts/qualify.sh [policy|docs|rust|full|lab|adapter|media|archive|model|geometry|threat|agent|privacy|scale-benchmark|macos-parity|release-preflight|release]
+       scripts/qualify.sh [policy|docs|rust|full|lab|adapter|media|archive|model|geometry|threat|agent|privacy|security|scale-benchmark|macos-parity|release-preflight|release]
        scripts/qualify.sh --recording-lifecycle
 
 The repository-local qualifier is the semantic qualification entrypoint. Doodlestein
@@ -108,7 +108,7 @@ Self-Releaser executes it from clean, exact source/sibling snapshots on controll
 Workflow YAML is a portable supplementary job graph and contains no unique release authority.
 --recording-lifecycle runs supplemental locked, offline recorder, review, and event contracts.
 
-Implemented now: policy, docs, rust, full, lab, adapter, media, archive, model, geometry, threat, agent, privacy, scale-benchmark, macos-parity, release-preflight, release.
+Implemented now: policy, docs, rust, full, lab, adapter, media, archive, model, geometry, threat, agent, privacy, security, scale-benchmark, macos-parity, release-preflight, release.
 Claim-specific lanes fail closed until their dedicated Rust harness exists under scripts/lanes/.
 USAGE
 }
@@ -119,7 +119,7 @@ while (($#)); do
     --receipt-dir) RECEIPT_DIR="${2:?missing directory after --receipt-dir}"; shift 2 ;;
     --no-receipt) WRITE_RECEIPT=0; shift ;;
     -h|--help) usage; exit 0 ;;
-    policy|docs|rust|full|lab|adapter|media|archive|model|geometry|threat|agent|privacy|scale-benchmark|macos-parity|release-preflight|release)
+    policy|docs|rust|full|lab|adapter|media|archive|model|geometry|threat|agent|privacy|security|scale-benchmark|macos-parity|release-preflight|release)
       LANE="$1"; shift ;;
     *) printf 'unknown argument or lane: %s\n' "$1" >&2; usage; exit 4 ;;
   esac
@@ -364,7 +364,7 @@ policy_lane() {
   run diff-check git diff --check
   run shell-syntax bash -n scripts/qualify.sh scripts/release_qualify.sh scripts/publish_to_github.sh \
     scripts/e2e/run.sh scripts/e2e/lib.sh scripts/e2e/selftest.sh \
-    scripts/lanes/adapter.sh scripts/lanes/scale_benchmark.sh scripts/lanes/macos_parity.sh
+    scripts/lanes/adapter.sh scripts/lanes/security.sh scripts/lanes/scale_benchmark.sh scripts/lanes/macos_parity.sh
   run python-syntax env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 -m py_compile \
     scripts/check-policy.py scripts/dependency_audit.py scripts/manifest_audit.py scripts/stable_id_audit.py \
     scripts/schema_validate.py scripts/slo_validate.py scripts/architecture_registry_consistency.py \
@@ -502,7 +502,7 @@ case "$LANE" in
   docs) docs_lane ;;
   rust) policy_lane; rust_lane ;;
   full) policy_lane; rust_lane; "$ROOT/scripts/lanes/media.sh"; "$ROOT/scripts/lanes/archive.sh" ;;
-  lab|adapter|media|archive|model|geometry|threat|agent|privacy|scale-benchmark|macos-parity) claim_lane ;;
+  lab|adapter|media|archive|model|geometry|threat|agent|privacy|security|scale-benchmark|macos-parity) claim_lane ;;
   release-preflight) policy_lane; clean_tree_lane; rust_lane ;;
   release) policy_lane; rust_lane; "$ROOT/scripts/lanes/media.sh"; "$ROOT/scripts/lanes/archive.sh"; clean_tree_lane ;;
   *) printf 'unknown qualification lane: %s\n' "$LANE" >&2; exit 4 ;;

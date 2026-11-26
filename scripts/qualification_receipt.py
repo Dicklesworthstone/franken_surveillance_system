@@ -83,7 +83,8 @@ LANE_IDS = {
     "full": "QL-RUST-001", "lab": "QL-LAB-001", "adapter": "QL-ADAPTER-001",
     "media": "QL-MEDIA-001", "archive": "QL-ARCHIVE-001", "model": "QL-MODEL-001",
     "geometry": "QL-GEOMETRY-001", "threat": "QL-THREAT-001", "agent": "QL-AGENT-001",
-    "privacy": "QL-PRIVACY-001", "scale-benchmark": "QL-SCALE-001", "macos-parity": "QL-MACOS-001",
+    "privacy": "QL-PRIVACY-001", "security": "QL-SECURITY-001",
+    "scale-benchmark": "QL-SCALE-001", "macos-parity": "QL-MACOS-001",
     "release-preflight": "QL-RELEASE-001", "release": "QL-RELEASE-001",
 }
 
