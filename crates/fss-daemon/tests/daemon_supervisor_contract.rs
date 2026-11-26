@@ -678,7 +678,9 @@ fn graceful_ipc_stop_executes_request_drain_finalize_and_verifies_ledger() -> Te
     assert!(output.status.success());
     let json = String::from_utf8(output.stdout)?;
     let forecast = fss_core::json_input::parse(&json)?;
-    let row = forecast.object().ok_or("expected retention forecast object")?;
+    let row = forecast
+        .object()
+        .ok_or("expected retention forecast object")?;
     assert_eq!(row["camera_id"].text(), Some("sensor:wyze-39"));
     assert_eq!(row["state"].text(), Some("no_recordings"));
     assert_eq!(row["retained_windows"].integer(), Some(0));

@@ -220,7 +220,10 @@ fn manifest_scoped_retention_survives_restart_and_preserves_held_footage() -> Te
         TimestampNs(40),
     );
     let camera_a = forecasts.get(SENSOR_A).ok_or("missing camera A forecast")?;
-    let oldest = camera_a.oldest.as_ref().ok_or("missing held source window")?;
+    let oldest = camera_a
+        .oldest
+        .as_ref()
+        .ok_or("missing held source window")?;
     assert_eq!(camera_a.retained_windows, 2);
     assert_eq!(camera_a.retained_bytes, held.byte_size + newer.byte_size);
     assert_eq!(camera_a.max_sensor_bytes, 5100);
@@ -258,7 +261,9 @@ fn manifest_scoped_retention_survives_restart_and_preserves_held_footage() -> Te
         config.cameras.iter().map(|entry| &entry.sensor_id),
         TimestampNs(10010),
     );
-    let camera_b = forecasts.get(SENSOR_B).ok_or("missing empty camera forecast")?;
+    let camera_b = forecasts
+        .get(SENSOR_B)
+        .ok_or("missing empty camera forecast")?;
     assert!(camera_b.oldest.is_none());
     assert_eq!((camera_b.retained_windows, camera_b.retained_bytes), (0, 0));
     Ok(())

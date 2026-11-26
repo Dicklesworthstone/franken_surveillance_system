@@ -129,7 +129,9 @@ impl CanonicalDecode for CameraRetentionForecast {
             };
             if window.capture_start_ns > window.capture_end_ns
                 || window.age_deadline_ns
-                    != window.capture_end_ns.saturating_add(i128::from(retain_hot_ns))
+                    != window
+                        .capture_end_ns
+                        .saturating_add(i128::from(retain_hot_ns))
             {
                 return Err(ContractError::InvalidIdentifier);
             }

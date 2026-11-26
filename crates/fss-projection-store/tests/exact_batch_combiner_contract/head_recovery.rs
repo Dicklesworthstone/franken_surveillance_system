@@ -111,7 +111,10 @@ fn historical_recovery_waits_for_publication_of_the_current_head() -> TestResult
     ));
     // Publishing the target alone cannot establish complete publication of the
     // authenticated suffix. The derived view must catch up to the verified head.
-    assert_eq!(projection.head_anchor().commit_sequence, expected.commit_sequence);
+    assert_eq!(
+        projection.head_anchor().commit_sequence,
+        expected.commit_sequence
+    );
     assert_eq!(combiner.stats()?.proposals_committed, 0);
     let sink = combiner.into_sink()?;
     {

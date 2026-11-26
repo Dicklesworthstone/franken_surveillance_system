@@ -2021,7 +2021,8 @@ impl ArchiveReplicationLedger {
                     }) => {}
                 _ => {
                     return Err(ReplicationError::MalformedWire(
-                        "replica verification lacks a matching passing challenge receipt".to_owned(),
+                        "replica verification lacks a matching passing challenge receipt"
+                            .to_owned(),
                     ));
                 }
             }
@@ -2138,7 +2139,9 @@ impl ArchiveReplicationLedger {
                 .repair_obligations
                 .get(&failure.legacy_repair_id())
                 .is_some_and(|existing| {
-                    later.iter().any(|c| c.receipt_digest == existing.triggering_challenge_digest)
+                    later
+                        .iter()
+                        .any(|c| c.receipt_digest == existing.triggering_challenge_digest)
                 });
             if !displaced {
                 return Err(ReplicationError::MalformedWire(
@@ -2326,7 +2329,9 @@ mod tests {
             first.receipt_digest
         );
         assert_eq!(
-            recovered.evaluate_readiness(TimestampNs(2)).open_repair_obligations,
+            recovered
+                .evaluate_readiness(TimestampNs(2))
+                .open_repair_obligations,
             2
         );
         let repaired_wire = recovered.to_canonical_bytes()?;

@@ -15,9 +15,7 @@ use fss_core::{ContentDigest, EvidenceDeltaBatch, LedgerAnchor};
 use crate::batch_codec::{decode_batch, encode_batch};
 use crate::oracle::CommitReceipt;
 
-use super::segment::{
-    EPOCH_HEADER_LEN, EpochHeader, epoch_file_path, scan_epoch_from_budgeted,
-};
+use super::segment::{EPOCH_HEADER_LEN, EpochHeader, epoch_file_path, scan_epoch_from_budgeted};
 use super::validate::{check_counts, check_deltas, check_successor, check_texts};
 use super::{EpochCorruptionKind, EpochLedgerError, successor_history_root_v2};
 
@@ -202,9 +200,12 @@ pub(super) fn verify_receipt_from_epochs(
         if header.first_commit_seq <= target_sequence {
             break header;
         }
-        first_epoch_id = first_epoch_id.checked_sub(1).ok_or(
-            EpochLedgerError::LiveStateDivergence("indexed receipt precedes retained epoch history"),
-        )?;
+        first_epoch_id =
+            first_epoch_id
+                .checked_sub(1)
+                .ok_or(EpochLedgerError::LiveStateDivergence(
+                    "indexed receipt precedes retained epoch history",
+                ))?;
     };
 
     let expected_payload = encode_batch(offered)?;

@@ -855,10 +855,7 @@ fn apply_deltas(
                 }
             }
         }
-        next.insert(
-            delta.object_id.clone(),
-            ObjectRevision::from(delta),
-        );
+        next.insert(delta.object_id.clone(), ObjectRevision::from(delta));
     }
     Ok(next)
 }

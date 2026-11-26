@@ -13,8 +13,9 @@ use std::time::Duration;
 use fss_core::json_input::{self, Value};
 use fss_core::{CanonicalEncoder, ContentDigest, OperationId, PrincipalId};
 use fss_ipc::{
-    BoundedControlOp, ControlOperationState, IpcClient, IpcClientConfig, IpcError, IpcResponse,
-    CameraRetentionForecast, IpcRequest, LiveDaemonStatus, default_run_dir, default_socket_path, deployment_root_digest,
+    BoundedControlOp, CameraRetentionForecast, ControlOperationState, IpcClient, IpcClientConfig,
+    IpcError, IpcRequest, IpcResponse, LiveDaemonStatus, default_run_dir, default_socket_path,
+    deployment_root_digest,
 };
 
 use crate::control::{
@@ -235,11 +236,10 @@ pub fn query_camera_retention_forecast(
         request_id: req_id,
         camera_id: camera_id.to_owned(),
     })? {
-        IpcResponse::RetentionForecast { request_id, forecast }
-            if request_id == req_id && forecast.camera_id == camera_id =>
-        {
-            Ok((descriptor, forecast))
-        }
+        IpcResponse::RetentionForecast {
+            request_id,
+            forecast,
+        } if request_id == req_id && forecast.camera_id == camera_id => Ok((descriptor, forecast)),
         IpcResponse::Refused {
             request_id,
             error_id,

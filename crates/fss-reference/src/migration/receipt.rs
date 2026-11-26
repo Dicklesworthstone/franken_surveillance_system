@@ -100,10 +100,16 @@ impl MigrationEquivalenceReceipt {
     fn from_canonical_json(text: &str, max_bytes: usize) -> Result<Self, MigrationError> {
         let value = parse_migration_receipt(text, max_bytes)
             .map_err(|err| receipt_error(format!("invalid receipt JSON: {err}")))?;
-        let fields = value.object().ok_or_else(|| receipt_error("expected receipt object"))?;
-        let digests = fields.get("source_unreferenced_orphans").and_then(Value::array)
+        let fields = value
+            .object()
+            .ok_or_else(|| receipt_error("expected receipt object"))?;
+        let digests = fields
+            .get("source_unreferenced_orphans")
+            .and_then(Value::array)
             .ok_or_else(|| receipt_error("expected source_unreferenced_orphans array"))?;
-        let source_unreferenced_orphans = digests.iter().map(decode_digest)
+        let source_unreferenced_orphans = digests
+            .iter()
+            .map(decode_digest)
             .collect::<Result<Vec<_>, _>>()?;
         let effects_journal_digest = match fields.get("effects_journal_digest") {
             Some(Value::Null) => None,
@@ -199,9 +205,15 @@ impl MigrationEquivalenceReceipt {
             || self.dest_v2_anchor.commit_sequence != self.batches_migrated
             || self.dest_v2_anchor.state_root != self.dest_v2_merkle_root
         {
-            return Err(receipt_error("receipt anchor, lineage, or migration count mismatch"));
+            return Err(receipt_error(
+                "receipt anchor, lineage, or migration count mismatch",
+            ));
         }
-        if self.source_unreferenced_orphans.windows(2).any(|pair| pair[0] >= pair[1]) {
+        if self
+            .source_unreferenced_orphans
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+        {
             return Err(receipt_error("receipt orphan list is not strictly ordered"));
         }
         let expected = self
@@ -517,7 +529,9 @@ impl MigrationEquivalenceReceipt {
 
         // 7. Confirm persisted migration_receipt.json exists and matches canonical JSON.
         if Self::read_from_root(dest_v2_root, self.to_json().len())? != *self {
-            return Err(receipt_error("persisted migration receipt differs from verified receipt"));
+            return Err(receipt_error(
+                "persisted migration receipt differs from verified receipt",
+            ));
         }
 
         Ok(())
@@ -589,35 +603,61 @@ impl MigrationEquivalenceReceipt {
 }
 
 fn receipt_error(detail: impl Into<String>) -> MigrationError {
-    MigrationError::VerificationFailed { detail: detail.into() }
+    MigrationError::VerificationFailed {
+        detail: detail.into(),
+    }
 }
 
-fn read_text<'a>(fields: &'a BTreeMap<String, Value>, key: &str) -> Result<&'a str, MigrationError> {
-    fields.get(key).and_then(Value::text)
+fn read_text<'a>(
+    fields: &'a BTreeMap<String, Value>,
+    key: &str,
+) -> Result<&'a str, MigrationError> {
+    fields
+        .get(key)
+        .and_then(Value::text)
         .ok_or_else(|| receipt_error(format!("expected receipt string: {key}")))
 }
 
 fn read_count(fields: &BTreeMap<String, Value>, key: &str) -> Result<u64, MigrationError> {
-    fields.get(key).and_then(Value::integer).and_then(|count| u64::try_from(count).ok())
+    fields
+        .get(key)
+        .and_then(Value::integer)
+        .and_then(|count| u64::try_from(count).ok())
         .ok_or_else(|| receipt_error(format!("expected receipt u64: {key}")))
 }
 
 fn read_bool(fields: &BTreeMap<String, Value>, key: &str) -> Result<bool, MigrationError> {
-    fields.get(key).and_then(Value::boolean)
+    fields
+        .get(key)
+        .and_then(Value::boolean)
         .ok_or_else(|| receipt_error(format!("expected receipt boolean: {key}")))
 }
 
 fn decode_digest(value: &Value) -> Result<ContentDigest, MigrationError> {
-    let text = value.text().ok_or_else(|| receipt_error("expected receipt digest string"))?;
+    let text = value
+        .text()
+        .ok_or_else(|| receipt_error("expected receipt digest string"))?;
     ContentDigest::parse(text).map_err(|_| receipt_error("invalid receipt digest"))
 }
 
-fn read_digest(fields: &BTreeMap<String, Value>, key: &str) -> Result<ContentDigest, MigrationError> {
-    decode_digest(fields.get(key).ok_or_else(|| receipt_error(format!("missing receipt digest: {key}")))?)
+fn read_digest(
+    fields: &BTreeMap<String, Value>,
+    key: &str,
+) -> Result<ContentDigest, MigrationError> {
+    decode_digest(
+        fields
+            .get(key)
+            .ok_or_else(|| receipt_error(format!("missing receipt digest: {key}")))?,
+    )
 }
 
-fn read_anchor(fields: &BTreeMap<String, Value>, key: &str) -> Result<LedgerAnchor, MigrationError> {
-    let anchor = fields.get(key).and_then(Value::object)
+fn read_anchor(
+    fields: &BTreeMap<String, Value>,
+    key: &str,
+) -> Result<LedgerAnchor, MigrationError> {
+    let anchor = fields
+        .get(key)
+        .and_then(Value::object)
         .ok_or_else(|| receipt_error(format!("expected receipt anchor: {key}")))?;
     Ok(LedgerAnchor {
         site_lineage: read_text(anchor, "site_lineage")?.to_owned(),
@@ -651,8 +691,7 @@ mod tests {
 
     #[test]
     fn receipt_reader_requires_exact_bytes_consistent_anchors_and_digest()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
+    -> Result<(), Box<dyn std::error::Error>> {
         let v1 = LedgerAnchor::genesis("site:receipt");
         let mut v2 = v1.clone();
         v2.state_root = ContentDigest::sha256(b"v2");
@@ -686,7 +725,13 @@ mod tests {
         assert_eq!(parse(&json)?, receipt);
         assert!(MigrationEquivalenceReceipt::from_canonical_json(&json, json.len() - 1).is_err());
         assert!(parse(&format!("{json}\n")).is_err());
-        assert!(parse(&json.replace("\"source_unreferenced_orphan_count\":1", "\"source_unreferenced_orphan_count\":2")).is_err());
+        assert!(
+            parse(&json.replace(
+                "\"source_unreferenced_orphan_count\":1",
+                "\"source_unreferenced_orphan_count\":2"
+            ))
+            .is_err()
+        );
         assert!(parse(&json.replace("\"masks_migrated\":0", "\"masks_migrated\":1")).is_err());
         for case in 0..3 {
             let mut changed = receipt.clone();

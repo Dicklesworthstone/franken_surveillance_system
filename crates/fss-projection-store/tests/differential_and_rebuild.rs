@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use fss_core::{
     BatchId, CaptureInterval, ContentDigest, EffectState, EventId, EventKind, EventState,
-    EvidenceDelta, EvidenceDeltaBatch, LedgerAnchor, ObjectId, ObligationId, ObligationState, OperationId, Plane,
-    SensorId, StreamId, TimestampNs,
+    EvidenceDelta, EvidenceDeltaBatch, LedgerAnchor, ObjectId, ObligationId, ObligationState,
+    OperationId, Plane, SensorId, StreamId, TimestampNs,
 };
 use fss_graph_algorithms::certified::Budget;
 use fss_graph_algorithms::zset::zset_incremental_maintenance;
@@ -26,9 +26,10 @@ use fss_projection_store::{
     FootageAdapterKind, FootageImportPayload, FootageQueryFilter, GraphEdgeDeltaPayload,
     GraphEdgeKey, HistoryChainMode, MvccProjectionStore, ObligationPayload,
     PROJECTION_SCRUB_RECEIPT_DOMAIN, PackStorePayloadResolver, PrivacyMaskPayload,
-    ProjectionAnchor, ProjectionError, ProjectionRebuildReason, ProjectionRecordPayload, ProjectionRecoveryMode, ProjectionStore,
-    ProjectionStoreConfig, SNAPSHOT_FILENAME, ScrubVerdict, SensorLivenessPayload,
-    SensorLivenessStatus, SensorTamperPayload, WAL_FILENAME, replay_from_batches,
+    ProjectionAnchor, ProjectionError, ProjectionRebuildReason, ProjectionRecordPayload,
+    ProjectionRecoveryMode, ProjectionStore, ProjectionStoreConfig, SNAPSHOT_FILENAME,
+    ScrubVerdict, SensorLivenessPayload, SensorLivenessStatus, SensorTamperPayload, WAL_FILENAME,
+    replay_from_batches,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;

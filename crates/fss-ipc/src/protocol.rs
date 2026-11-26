@@ -15,8 +15,8 @@ pub use crate::handshake::{
     IPC_HANDSHAKE_DIGEST_DOMAIN, MAX_DEPLOYMENT_ID_BYTES, MAX_REASON_BYTES,
 };
 pub use crate::status::{
-    ActiveScrubStatus, CameraLiveStatus, CameraRetentionForecast, LiveDaemonStatus, MAX_CAMERA_ID_BYTES,
-    MAX_CAMERAS_IN_STATUS, OldestRetentionWindow, RingWatermarkStatus,
+    ActiveScrubStatus, CameraLiveStatus, CameraRetentionForecast, LiveDaemonStatus,
+    MAX_CAMERA_ID_BYTES, MAX_CAMERAS_IN_STATUS, OldestRetentionWindow, RingWatermarkStatus,
 };
 use crate::transport::MAX_REQUEST_PAYLOAD_BYTES;
 
@@ -375,7 +375,10 @@ impl CanonicalEncode for IpcResponse {
                 encoder.digest(*history_root);
                 encoder.digest(*state_root);
             }
-            Self::RetentionForecast { request_id, forecast } => {
+            Self::RetentionForecast {
+                request_id,
+                forecast,
+            } => {
                 encoder.tag(8);
                 encoder.u64(*request_id);
                 forecast.encode_canonical(encoder);

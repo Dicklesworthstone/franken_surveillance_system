@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "fss.daemon_control_history.v1",
+  "$id": "https://franken-surveillance-system.invalid/schemas/daemon_control_history.v1.json",
   "title": "Durable daemon control history inspection",
   "description": "Bounded diagnostic projection of retained control bookkeeping. It never grants replay authority or proves semantic completion. Native decoding enforces u64 sequence bounds, canonical capability order, deployment scope, and pinned journal custody.",
   "type": "object",

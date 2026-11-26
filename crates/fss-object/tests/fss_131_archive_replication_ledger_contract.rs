@@ -769,8 +769,11 @@ fn root_readiness_and_repair_follow_the_evidence_target_after_restart() -> TestR
     };
 
     ledger.record_challenge(&auth, sample("extra-root", "extra", root, 5000), false)?;
-    let range =
-        ledger.record_challenge(&auth, sample("primary-range", "primary", object, 5001), false)?;
+    let range = ledger.record_challenge(
+        &auth,
+        sample("primary-range", "primary", object, 5001),
+        false,
+    )?;
     assert!(range.to_proof_of_retrievability().is_none());
     let decoded = ArchiveReplicationLedger::from_canonical_bytes(&ledger.to_canonical_bytes()?)?;
     assert_eq!(decoded, ledger);

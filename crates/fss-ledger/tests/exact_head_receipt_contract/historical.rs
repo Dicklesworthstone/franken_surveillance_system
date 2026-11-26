@@ -73,7 +73,9 @@ fn historical_receipt_crosses_rollover_and_reopen_without_archived_prefix() -> T
     fs::remove_file(epoch_path(&dir, 0))?;
     let reopened = open_with_epoch_size(&dir, 1)?;
     assert_eq!(
-        reopened.get_object(&target.deltas[0].object_id).map(|revision| revision.generation),
+        reopened
+            .get_object(&target.deltas[0].object_id)
+            .map(|revision| revision.generation),
         Some(2)
     );
     let before: Vec<_> = [1, 2]
@@ -130,14 +132,23 @@ fn identical_state_and_batch_on_another_history_has_a_distinct_original_receipt(
     assert_eq!(proof_left.receipt, original_left);
     assert_eq!(proof_right.receipt, original_right);
     assert_eq!(proof_left.receipt.anchor, proof_right.receipt.anchor);
-    assert_eq!(proof_left.receipt.batch_digest, proof_right.receipt.batch_digest);
-    assert_ne!(proof_left.receipt.history_root, proof_right.receipt.history_root);
+    assert_eq!(
+        proof_left.receipt.batch_digest,
+        proof_right.receipt.batch_digest
+    );
+    assert_ne!(
+        proof_left.receipt.history_root,
+        proof_right.receipt.history_root
+    );
 
     // Substitute a fully well-formed alternate suffix, including correct epoch headers,
     // payload checksums, and recomputed history trailers. Only the final trusted-head
     // comparison can reject this; simple framing checks and exact target bytes all pass.
     for epoch in [1, 2] {
-        fs::write(epoch_path(&left_dir, epoch), fs::read(epoch_path(&right_dir, epoch))?)?;
+        fs::write(
+            epoch_path(&left_dir, epoch),
+            fs::read(epoch_path(&right_dir, epoch))?,
+        )?;
     }
     let before = left.history_root();
     assert!(matches!(
@@ -172,8 +183,8 @@ fn cumulative_receipt_budgets_include_locator_headers_and_pre_target_records() -
         .ok_or("missing budget proof")?;
     assert_eq!(proof.usage.epochs_scanned, 2);
     assert_eq!(proof.usage.records_verified, 5);
-    let file_bytes = fs::metadata(epoch_path(&dir, 0))?.len()
-        + fs::metadata(epoch_path(&dir, 1))?.len();
+    let file_bytes =
+        fs::metadata(epoch_path(&dir, 0))?.len() + fs::metadata(epoch_path(&dir, 1))?.len();
     assert_eq!(
         proof.usage.bytes_read,
         file_bytes + 2 * EPOCH_HEADER_LEN as u64
@@ -183,13 +194,37 @@ fn cumulative_receipt_budgets_include_locator_headers_and_pre_target_records() -
         max_records: proof.usage.records_verified,
         max_bytes: proof.usage.bytes_read,
     };
-    assert_eq!(ledger.receipt_for_exact_batch(&target, exact)?, Some(proof.clone()));
+    assert_eq!(
+        ledger.receipt_for_exact_batch(&target, exact)?,
+        Some(proof.clone())
+    );
     for (budget, resource) in [
-        (ReceiptProofBudget { max_epochs: 1, ..exact }, ReceiptProofResource::Epochs),
-        (ReceiptProofBudget { max_records: 4, ..exact }, ReceiptProofResource::Records),
-        (ReceiptProofBudget { max_bytes: exact.max_bytes - 1, ..exact }, ReceiptProofResource::Bytes),
         (
-            ReceiptProofBudget { max_bytes: EPOCH_HEADER_LEN as u64 - 1, ..exact },
+            ReceiptProofBudget {
+                max_epochs: 1,
+                ..exact
+            },
+            ReceiptProofResource::Epochs,
+        ),
+        (
+            ReceiptProofBudget {
+                max_records: 4,
+                ..exact
+            },
+            ReceiptProofResource::Records,
+        ),
+        (
+            ReceiptProofBudget {
+                max_bytes: exact.max_bytes - 1,
+                ..exact
+            },
+            ReceiptProofResource::Bytes,
+        ),
+        (
+            ReceiptProofBudget {
+                max_bytes: EPOCH_HEADER_LEN as u64 - 1,
+                ..exact
+            },
             ReceiptProofResource::Bytes,
         ),
     ] {
@@ -198,10 +233,16 @@ fn cumulative_receipt_budgets_include_locator_headers_and_pre_target_records() -
             .expect_err("incomplete proof must not fit a smaller budget");
         match error {
             EpochLedgerError::ReceiptProofLimitExceeded {
-                resource: observed, used, requested, maximum,
+                resource: observed,
+                used,
+                requested,
+                maximum,
             } => {
                 assert_eq!(observed, resource);
-                assert!(used.checked_add(requested).is_none_or(|total| total > maximum));
+                assert!(
+                    used.checked_add(requested)
+                        .is_none_or(|total| total > maximum)
+                );
             }
             other => return Err(format!("expected explicit budget refusal, got {other}").into()),
         }
@@ -231,7 +272,8 @@ fn current_head_proof_uses_zero_budget_and_no_epoch_reads() -> TestResult {
     assert!(matches!(
         ledger.receipt_for_exact_batch(&historical, no_history_budget()),
         Err(EpochLedgerError::ReceiptProofLimitExceeded {
-            resource: ReceiptProofResource::Epochs, ..
+            resource: ReceiptProofResource::Epochs,
+            ..
         })
     ));
     fs::rename(&unavailable, &epochs)?;
@@ -259,7 +301,11 @@ fn historical_batch_body_identity_and_anchor_must_match_the_native_index() -> Te
     changed_state.new_anchor.state_root = ContentDigest::sha256(b"uncommitted historical state");
     for mut changed in [stale_digest, changed_id, changed_basis, changed_state] {
         changed.batch_digest = changed.computed_digest();
-        assert!(ledger.receipt_for_exact_batch(&changed, no_history_budget())?.is_none());
+        assert!(
+            ledger
+                .receipt_for_exact_batch(&changed, no_history_budget())?
+                .is_none()
+        );
     }
     assert_eq!(ledger.commit_sequence(), 2);
     Ok(())
@@ -277,7 +323,9 @@ fn missing_historical_epoch_remains_unresolved_without_repair() -> TestResult {
     let before = ledger.history_root();
     assert!(matches!(
         ledger.receipt_for_exact_batch(&target, ReceiptProofBudget::default()),
-        Err(EpochLedgerError::MissingEpoch { expected_epoch_id: 1 })
+        Err(EpochLedgerError::MissingEpoch {
+            expected_epoch_id: 1
+        })
     ));
     assert!(!missing.exists());
     assert_eq!(ledger.history_root(), before);
@@ -294,7 +342,11 @@ fn historical_header_and_continuation_payload_tampering_are_preserved_and_refuse
     let _ = append_named(&mut ledger, "after-corruption")?;
     for (epoch, offset, kind) in [
         (0, 54, EpochCorruptionKind::HeaderChecksumMismatch),
-        (1, EPOCH_HEADER_LEN + EPOCH_RECORD_HEADER_LEN + 5, EpochCorruptionKind::PayloadChecksum),
+        (
+            1,
+            EPOCH_HEADER_LEN + EPOCH_RECORD_HEADER_LEN + 5,
+            EpochCorruptionKind::PayloadChecksum,
+        ),
     ] {
         let path = epoch_path(&dir, epoch);
         let original = fs::read(&path)?;
@@ -355,14 +407,21 @@ fn oversized_epoch_is_refused_by_byte_budget_before_tail_allocation() -> TestRes
     let _ = append_named(&mut ledger, "oversized-head")?;
     let path = epoch_path(&dir, 0);
     let oversized = 256 * 1024 * 1024;
-    OpenOptions::new().write(true).open(&path)?.set_len(oversized)?;
+    OpenOptions::new()
+        .write(true)
+        .open(&path)?
+        .set_len(oversized)?;
     assert!(matches!(
         ledger.receipt_for_exact_batch(
             &target,
-            ReceiptProofBudget { max_bytes: 1024, ..ReceiptProofBudget::default() },
+            ReceiptProofBudget {
+                max_bytes: 1024,
+                ..ReceiptProofBudget::default()
+            },
         ),
         Err(EpochLedgerError::ReceiptProofLimitExceeded {
-            resource: ReceiptProofResource::Bytes, ..
+            resource: ReceiptProofResource::Bytes,
+            ..
         })
     ));
     assert_eq!(fs::metadata(path)?.len(), oversized);

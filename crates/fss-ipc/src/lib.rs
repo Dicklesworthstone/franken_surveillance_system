@@ -68,8 +68,8 @@ pub use security::{
 };
 pub use server::{DaemonIpcHandler, DeltaStreamSink, IpcServer, IpcServerConfig, RequestContext};
 pub use status::{
-    ActiveScrubStatus, CameraLiveStatus, CameraRetentionForecast, LiveDaemonStatus, MAX_CAMERA_ID_BYTES,
-    MAX_CAMERAS_IN_STATUS, OldestRetentionWindow, RingWatermarkStatus,
+    ActiveScrubStatus, CameraLiveStatus, CameraRetentionForecast, LiveDaemonStatus,
+    MAX_CAMERA_ID_BYTES, MAX_CAMERAS_IN_STATUS, OldestRetentionWindow, RingWatermarkStatus,
 };
 pub use trace::{IpcTraceEvent, format_trace_jsonl};
 pub use transport::{

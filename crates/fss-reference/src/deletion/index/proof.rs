@@ -163,7 +163,9 @@ pub(in crate::deletion) fn read_controlled<E: From<DeletionError>>(
     checkpoint: impl FnMut() -> Result<(), E>,
     admit_plan: impl FnMut(&DeletionPlan) -> Result<(), E>,
 ) -> Result<Vec<DeletionEntry>, E> {
-    read_with_basis(batches, read, checkpoint, admit_plan, |batch, plan| batch == plan)
+    read_with_basis(batches, read, checkpoint, admit_plan, |batch, plan| {
+        batch == plan
+    })
 }
 
 /// A migrated plan preserves the v1 basis root. Its owner must independently reconstruct

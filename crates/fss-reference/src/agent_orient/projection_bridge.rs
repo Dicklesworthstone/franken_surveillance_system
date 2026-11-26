@@ -29,9 +29,9 @@ use fss_ledger::{DurableLedgerStatus, MerkleEpochLedger, inspect_durable};
 use fss_object::ObjectManifest;
 use fss_pack::{DurabilityMode, PackConfig, PackReadBudget, PackReader, PackStore};
 use fss_projection_store::{
-    CanonicalBatchSource, CoverageStatus, CoverageWitnessPayload, DeletionTarget, DeletionTombstonePayload,
-    DoctorScrubReceipt, EffectOutcomePayload, EventQueryFilter, EventQueryPage,
-    EventRevisionPayload, EvidenceHoldPayload, FAMILY_ALERT_EFFECT_OUTCOME,
+    CanonicalBatchSource, CoverageStatus, CoverageWitnessPayload, DeletionTarget,
+    DeletionTombstonePayload, DoctorScrubReceipt, EffectOutcomePayload, EventQueryFilter,
+    EventQueryPage, EventRevisionPayload, EvidenceHoldPayload, FAMILY_ALERT_EFFECT_OUTCOME,
     FAMILY_COVERAGE_WITNESS, FAMILY_DELETION_TOMBSTONE, FAMILY_EFFECT_OUTCOME,
     FAMILY_EVENT_REVISION, FAMILY_EVIDENCE_HOLD, FAMILY_FILE_IMPORT, FAMILY_FOOTAGE_IMPORT,
     FAMILY_HTTP_IMPORT, FAMILY_OBLIGATION, FAMILY_PRIVACY_MASK_POLICY, FAMILY_RTSP_IMPORT,
@@ -75,7 +75,10 @@ fn v1_deletion_bases(
         .iter()
         .filter(|batch| {
             batch.new_anchor.commit_sequence <= receipt.batches_migrated
-                && batch.deltas.iter().any(|delta| delta.family == FAMILY_DELETION_RECORD)
+                && batch
+                    .deltas
+                    .iter()
+                    .any(|delta| delta.family == FAMILY_DELETION_RECORD)
         })
         .map(|batch| batch.basis_anchor.commit_sequence)
         .collect();
@@ -104,7 +107,9 @@ fn v1_deletion_bases(
             if batch.basis_anchor != previous
                 || previous.commit_sequence.checked_add(1) != Some(batch.new_anchor.commit_sequence)
             {
-                return Err(ProjectionError::InvalidRequest("incomplete deletion basis history"));
+                return Err(ProjectionError::InvalidRequest(
+                    "incomplete deletion basis history",
+                ));
             }
             for delta in &batch.deltas {
                 objects.insert(delta.object_id.clone(), ObjectRevision::from(delta));
@@ -132,7 +137,8 @@ fn v1_deletion_bases(
         || v1_head != receipt.source_v1_anchor
     {
         return Err(DeploymentReadError::Corrupt {
-            reason: "canonical deletion history does not match the sealed migration prefix".to_owned(),
+            reason: "canonical deletion history does not match the sealed migration prefix"
+                .to_owned(),
         });
     }
     Ok(bases)
@@ -892,13 +898,19 @@ impl ProjectionBridge {
                         ));
                     }
                     if batch.basis_anchor != scanned
-                        || scanned.commit_sequence.checked_add(1) != Some(batch.new_anchor.commit_sequence)
+                        || scanned.commit_sequence.checked_add(1)
+                            != Some(batch.new_anchor.commit_sequence)
                     {
-                        return Err(ProjectionError::InvalidRequest("incomplete deletion history"));
+                        return Err(ProjectionError::InvalidRequest(
+                            "incomplete deletion history",
+                        ));
                     }
                     scanned = batch.new_anchor.clone();
                     history = mode.successor_root(
-                        history, scanned.commit_sequence, batch.batch_digest, &scanned,
+                        history,
+                        scanned.commit_sequence,
+                        batch.batch_digest,
+                        &scanned,
                     )?;
                     if has_deletion_records(std::slice::from_ref(batch)) {
                         deletion_batches.push(batch.clone());
@@ -914,11 +926,13 @@ impl ProjectionBridge {
             if !deletion_batches.is_empty() {
                 let packs_dir = objects_dir.join(PACKS_SUBDIR);
                 let reader = if packs_dir.is_dir() {
-                    Some(PackStore::open(root, PackConfig::default())
-                        .map_err(|err| DeploymentReadError::Corrupt {
-                            reason: format!("cannot open deletion record pack store: {err}"),
-                        })?
-                        .reader())
+                    Some(
+                        PackStore::open(root, PackConfig::default())
+                            .map_err(|err| DeploymentReadError::Corrupt {
+                                reason: format!("cannot open deletion record pack store: {err}"),
+                            })?
+                            .reader(),
+                    )
                 } else {
                     None
                 };
@@ -931,9 +945,12 @@ impl ProjectionBridge {
                         && let Some(location) = pack_reader.lookup(&digest).map_err(pack_error)?
                     {
                         if location.len > limit as u64 {
-                            return Err(DeletionError::Bound { limit: "deletion record bytes" });
+                            return Err(DeletionError::Bound {
+                                limit: "deletion record bytes",
+                            });
                         }
-                        let budget = PackReadBudget::new(location.record_len().map_err(pack_error)?);
+                        let budget =
+                            PackReadBudget::new(location.record_len().map_err(pack_error)?);
                         return pack_reader
                             .read_verified_with_budget(&digest, &budget)
                             .map_err(pack_error);

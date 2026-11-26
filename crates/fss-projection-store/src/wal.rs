@@ -630,7 +630,10 @@ mod tests {
             delivered += 1;
             Ok(())
         });
-        assert!(matches!(result, Err(ProjectionError::CorruptDerivedStore { .. })));
+        assert!(matches!(
+            result,
+            Err(ProjectionError::CorruptDerivedStore { .. })
+        ));
         assert_eq!(delivered, 1);
         assert!(matches!(
             inspect_wal_readonly(&path, u64::MAX),

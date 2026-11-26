@@ -932,10 +932,12 @@ impl AtpLifecycleCoordinator {
                 self.ensure_all_children_verified()?;
                 if !matches!(
                     self.semantic_state,
-                    SemanticTransferState::DurabilitySatisfied | SemanticTransferState::RootCommitted
+                    SemanticTransferState::DurabilitySatisfied
+                        | SemanticTransferState::RootCommitted
                 ) {
                     return Err(AtpLifecycleError::InvalidInput(
-                        "archive publication requires the configured transfer durability".to_owned(),
+                        "archive publication requires the configured transfer durability"
+                            .to_owned(),
                     ));
                 }
                 // Root publication is strictly last: every child in archive mode must already be
@@ -985,9 +987,13 @@ impl AtpLifecycleCoordinator {
                         "retrievability requires committed root reachability".to_owned(),
                     ));
                 }
-                if !self.verified_failure_domains.contains(&proof.failure_domain) {
+                if !self
+                    .verified_failure_domains
+                    .contains(&proof.failure_domain)
+                {
                     return Err(AtpLifecycleError::InvalidInput(
-                        "retrievability sample must come from a qualified replica domain".to_owned(),
+                        "retrievability sample must come from a qualified replica domain"
+                            .to_owned(),
                     ));
                 }
                 // Remote publication and ledger commit may occur in either order. A sample
@@ -995,7 +1001,8 @@ impl AtpLifecycleCoordinator {
                 let last_root_event = self.journal.records().iter().rev().find(|record| {
                     matches!(
                         record.event,
-                        LifecycleEvent::CommitRoot { .. } | LifecycleEvent::PublishArchiveRoot { .. }
+                        LifecycleEvent::CommitRoot { .. }
+                            | LifecycleEvent::PublishArchiveRoot { .. }
                     )
                 });
                 if last_root_event.is_none_or(|record| proof.sampled_at < record.timestamp_ns)
