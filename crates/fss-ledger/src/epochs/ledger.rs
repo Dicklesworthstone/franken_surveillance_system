@@ -19,7 +19,7 @@ use crate::oracle::{CommitReceipt, MAX_ORACLE_TEXT_BYTES};
 
 use super::checkpoint::{
     CheckpointData, list_checkpoint_files_desc, quarantine_corrupt_checkpoint,
-    read_and_verify_checkpoint, write_checkpoint_atomic,
+    read_checkpoint_with_head_digest, write_checkpoint_atomic,
 };
 use super::segment::{
     EPOCH_HEADER_LEN, EpochHeader, create_epoch_file_atomic, list_epoch_ids, scan_epoch_from,
@@ -46,6 +46,7 @@ pub struct MerkleEpochLedger {
     config: EpochLedgerConfig,
     genesis: LedgerAnchor,
     head_anchor: LedgerAnchor,
+    head_batch_digest: Option<ContentDigest>,
     history_root: ContentDigest,
     trie: RadixMerkleTrie,
     batch_index: BTreeMap<BatchId, (u64, ContentDigest)>,
@@ -252,6 +253,7 @@ impl MerkleEpochLedger {
             config,
             genesis,
             head_anchor: state.head_anchor,
+            head_batch_digest: state.head_batch_digest,
             history_root: state.history_root,
             trie: state.trie,
             batch_index: state.batch_index,
@@ -285,6 +287,12 @@ impl MerkleEpochLedger {
     #[must_use]
     pub const fn head_anchor(&self) -> &LedgerAnchor {
         &self.head_anchor
+    }
+
+    /// Digest of the latest durably published batch, or `None` at genesis.
+    #[must_use]
+    pub const fn head_batch_digest(&self) -> Option<ContentDigest> {
+        self.head_batch_digest
     }
 
     /// Latest committed sequence (`0` at genesis).
@@ -518,6 +526,7 @@ impl MerkleEpochLedger {
             validated.batch.batch_id,
             (seq, validated.batch.batch_digest),
         );
+        self.head_batch_digest = Some(validated.batch.batch_digest);
         self.head_anchor = validated.batch.new_anchor;
         self.history_root = validated.next_history_root;
         self.trie = validated.next_trie;
@@ -659,8 +668,8 @@ fn load_best_checkpoint_or_genesis(
 ) -> Result<LoadedCheckpointResult, EpochLedgerError> {
     let mut quarantined = Vec::new();
     for (seq, path) in list_checkpoint_files_desc(checkpoints_dir)? {
-        match read_and_verify_checkpoint(&path, Some(seq), site_lineage, false) {
-            Ok((data, file_bytes)) => {
+        match read_checkpoint_with_head_digest(&path, Some(seq), site_lineage, false) {
+            Ok((data, file_bytes, head_batch_digest)) => {
                 match verify_checkpoint_epoch_anchor(
                     epochs_dir,
                     data.epoch_id,
@@ -680,6 +689,7 @@ fn load_best_checkpoint_or_genesis(
                         };
                         let state = ReplayState {
                             head_anchor: data.latest_anchor,
+                            head_batch_digest,
                             history_root: data.history_root,
                             trie: data.trie,
                             batch_index: data.batch_index,
@@ -707,6 +717,7 @@ fn load_best_checkpoint_or_genesis(
 
     let state = ReplayState {
         head_anchor: genesis.clone(),
+        head_batch_digest: None,
         history_root: genesis_history,
         trie: RadixMerkleTrie::new(),
         batch_index: BTreeMap::new(),

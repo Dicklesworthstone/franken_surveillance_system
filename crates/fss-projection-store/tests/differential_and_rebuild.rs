@@ -58,6 +58,87 @@ impl Drop for TempWorkspace {
     }
 }
 
+fn assert_exact_head_digest(
+    source: &dyn CanonicalBatchSource,
+    committed: ContentDigest,
+    stale: ContentDigest,
+) -> TestResult {
+    let head = source.head_ledger_anchor();
+    let candidate = ProjectionAnchor {
+        commit_sequence: head.commit_sequence,
+        authority_root: head.state_root,
+        history_root: source.head_history_root(),
+        high_water_digest: committed,
+    };
+    assert!(source.matches_anchor(&candidate)?);
+    assert!(!source.matches_anchor(&ProjectionAnchor {
+        high_water_digest: stale,
+        ..candidate
+    })?);
+    Ok(())
+}
+
+#[test]
+fn epoch_head_high_water_survives_reconciliation_checkpoint_and_tail_replay() -> TestResult {
+    use fss_ledger::{AppendPhase, EpochAppendReconciliation, EpochLedgerError};
+
+    let ws = TempWorkspace::new("head-high-water")?;
+    let open = || {
+        MerkleEpochLedger::open(
+            &ws.root,
+            "site:head-high-water",
+            EpochLedgerConfig::default(),
+            IncompleteTailPolicy::Reject,
+        )
+    };
+    let mut ledger = open()?;
+    assert_eq!(ledger.head_batch_digest(), None);
+    let first = ledger.prepare_batch(BatchId::parse("batch:z-first")?, vec![], [])?;
+    let first_digest = first.batch_digest;
+    ledger.append_batch(first)?;
+    let second = ledger.prepare_batch(BatchId::parse("batch:a-second")?, vec![], [])?;
+    let second_digest = second.batch_digest;
+    ledger.fail_journal_after_phase(AppendPhase::CommitSync);
+    assert!(matches!(
+        ledger.append_batch(second),
+        Err(EpochLedgerError::AppendIndeterminate { .. })
+    ));
+    assert_exact_head_digest(&ledger, first_digest, second_digest)?;
+    assert!(matches!(
+        ledger.reconcile_pending(IncompleteTailPolicy::Reject)?,
+        EpochAppendReconciliation::Committed(_)
+    ));
+    assert_exact_head_digest(&ledger, second_digest, first_digest)?;
+    ledger.force_checkpoint()?;
+    drop(ledger);
+
+    let mut ledger = open()?;
+    assert_eq!(ledger.recovery_summary().replayed_tail_batches, 0);
+    assert_exact_head_digest(&ledger, second_digest, first_digest)?;
+    let third = ledger.prepare_batch(BatchId::parse("batch:m-third")?, vec![], [])?;
+    let third_digest = third.batch_digest;
+    ledger.append_batch(third)?;
+    drop(ledger);
+
+    let ledger = open()?;
+    assert_eq!(ledger.recovery_summary().replayed_tail_batches, 1);
+    assert_exact_head_digest(&ledger, third_digest, second_digest)
+}
+
+#[test]
+fn oracle_head_rejects_another_committed_batch_digest() -> TestResult {
+    use fss_ledger::{LedgerOracle, OracleLimits};
+
+    let mut oracle = LedgerOracle::new("site:head-high-water", OracleLimits::CEILING)?;
+    let first = oracle.prepare_batch(BatchId::parse("batch:first")?, vec![], [])?;
+    let first_digest = first.batch_digest;
+    oracle.append(first)?;
+    let second = oracle.prepare_batch(BatchId::parse("batch:second")?, vec![], [])?;
+    let second_digest = second.batch_digest;
+    oracle.append(second)?;
+    assert_exact_head_digest(&oracle, second_digest, first_digest)
+}
+
 struct ScenarioHarness {
     ledger: MerkleEpochLedger,
     packs: PackStore,

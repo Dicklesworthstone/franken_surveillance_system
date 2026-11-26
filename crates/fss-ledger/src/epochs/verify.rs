@@ -69,6 +69,7 @@ pub fn inspect_epochs_readonly(
         history_root: genesis_history,
         trie: RadixMerkleTrie::new(),
         batch_index: BTreeMap::new(),
+        head_batch_digest: None,
     };
     let mut batches = Vec::new();
     let mut positions = Vec::new();
@@ -133,6 +134,7 @@ pub fn inspect_epochs_readonly(
                 validated.batch.batch_id.clone(),
                 (commit_sequence, validated.batch.batch_digest),
             );
+            state.head_batch_digest = Some(validated.batch.batch_digest);
             state.head_anchor = validated.batch.new_anchor.clone();
             state.history_root = validated.next_history_root;
             state.trie = validated.next_trie;
@@ -162,6 +164,7 @@ pub fn inspect_epochs_readonly(
 pub(super) struct ReplayState {
     pub(super) head_anchor: LedgerAnchor,
     pub(super) history_root: ContentDigest,
+    pub(super) head_batch_digest: Option<ContentDigest>,
     pub(super) trie: RadixMerkleTrie,
     pub(super) batch_index: BTreeMap<BatchId, (u64, ContentDigest)>,
 }
@@ -209,6 +212,7 @@ pub(super) fn replay_epoch_records(
                 validated.batch.batch_digest,
             ),
         );
+        state.head_batch_digest = Some(validated.batch.batch_digest);
         state.head_anchor = validated.batch.new_anchor;
         state.history_root = validated.next_history_root;
         state.trie = validated.next_trie;
@@ -241,6 +245,7 @@ pub(super) fn verify_full_chain_from_disk(
         history_root: genesis_history_root_v2(genesis)?,
         trie: RadixMerkleTrie::new(),
         batch_index: BTreeMap::new(),
+        head_batch_digest: None,
     };
     let mut batches_verified = 0_u64;
 

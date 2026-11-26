@@ -167,6 +167,22 @@ pub fn read_and_verify_checkpoint(
     expected_site_lineage: &str,
     verify_trie_digests: bool,
 ) -> Result<(CheckpointData, u64), CheckpointCorruptionKind> {
+    read_checkpoint_with_head_digest(
+        path,
+        expected_filename_seq,
+        expected_site_lineage,
+        verify_trie_digests,
+    )
+    .map(|(data, file_bytes, _)| (data, file_bytes))
+}
+
+/// Recovers the head batch digest while decoding the existing batch index.
+pub(super) fn read_checkpoint_with_head_digest(
+    path: &Path,
+    expected_filename_seq: Option<u64>,
+    expected_site_lineage: &str,
+    verify_trie_digests: bool,
+) -> Result<(CheckpointData, u64, Option<ContentDigest>), CheckpointCorruptionKind> {
     let bytes = fs::read(path).map_err(|_| CheckpointCorruptionKind::TooShort)?;
     let file_bytes = bytes.len() as u64;
     if bytes.len() < MIN_CHECKPOINT_LEN {
@@ -245,6 +261,7 @@ pub fn read_and_verify_checkpoint(
     .map_err(|_| CheckpointCorruptionKind::CanonicalDecode)?;
     let mut batch_index = BTreeMap::new();
     let mut prev_batch_id: Option<BatchId> = None;
+    let mut head_batch_digest = None;
     for _ in 0..batch_count {
         let batch_id = BatchId::decode_canonical(&mut decoder)
             .map_err(|_| CheckpointCorruptionKind::CanonicalDecode)?;
@@ -260,10 +277,16 @@ pub fn read_and_verify_checkpoint(
         let digest = decoder
             .digest()
             .map_err(|_| CheckpointCorruptionKind::CanonicalDecode)?;
+        if seq == commit_sequence && head_batch_digest.replace(digest).is_some() {
+            return Err(CheckpointCorruptionKind::AnchorInconsistency);
+        }
         prev_batch_id = Some(batch_id.clone());
         batch_index.insert(batch_id, (seq, digest));
     }
 
+    if commit_sequence != 0 && head_batch_digest.is_none() {
+        return Err(CheckpointCorruptionKind::AnchorInconsistency);
+    }
     decoder
         .ensure_finished()
         .map_err(|_| CheckpointCorruptionKind::CanonicalDecode)?;
@@ -281,6 +304,7 @@ pub fn read_and_verify_checkpoint(
             batch_index,
         },
         file_bytes,
+        head_batch_digest,
     ))
 }
 

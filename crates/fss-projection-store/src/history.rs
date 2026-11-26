@@ -93,7 +93,8 @@ impl CanonicalBatchSource for MerkleEpochLedger {
         }
         if candidate.commit_sequence == head.commit_sequence {
             return Ok(candidate.authority_root == head.state_root
-                && candidate.history_root == self.history_root());
+                && candidate.history_root == self.history_root()
+                && self.head_batch_digest() == Some(candidate.high_water_digest));
         }
         // Historical anchor check: inspect the single canonical record at candidate.commit_sequence.
         let mut matches = false;
@@ -173,7 +174,11 @@ impl CanonicalBatchSource for LedgerOracle {
         }
         if candidate.commit_sequence == head.commit_sequence {
             return Ok(candidate.authority_root == head.state_root
-                && candidate.history_root == self.head_history_root());
+                && candidate.history_root == self.head_history_root()
+                && self
+                    .batches()
+                    .last()
+                    .is_some_and(|batch| batch.batch_digest == candidate.high_water_digest));
         }
         let mut running_root = self.history_mode().genesis_root(self.genesis_anchor())?;
         for batch in self.batches() {
