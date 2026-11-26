@@ -193,14 +193,15 @@ pub fn coverage_timeline(
     window: CaptureInterval,
     budget: GraphBudget,
 ) -> Result<CoverageTimelineReport, CoverageGraphError> {
-    let health =
-        HealthWithdrawals::new(&snapshot.historical_health).map_err(CoverageGraphError::Contract)?;
+    let health = HealthWithdrawals::new(&snapshot.historical_health)
+        .map_err(CoverageGraphError::Contract)?;
     analyse_records(
         &snapshot.site_lineage,
         &snapshot.anchor,
-        snapshot.coverage.iter().map(|retained| {
-            (&retained.record, health.selection(retained))
-        }),
+        snapshot
+            .coverage
+            .iter()
+            .map(|retained| (&retained.record, health.selection(retained))),
         window,
         budget,
     )
@@ -453,7 +454,10 @@ mod tests {
             analyse_records(
                 "site:timeline-tests",
                 &anchor,
-                records.iter().rev().map(|record| (record, WitnessSelection::ALL)),
+                records
+                    .iter()
+                    .rev()
+                    .map(|record| (record, WitnessSelection::ALL)),
                 window(0, 1200),
                 budget()
             )?

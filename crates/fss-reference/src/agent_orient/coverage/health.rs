@@ -155,8 +155,13 @@ impl<'a> Source<'a> {
 
 fn scan_range(record: &HistoricalHealthRecord) -> Result<(u64, u64), ContractError> {
     let start = record.first_segment() as u64;
-    let size = record.segment_count().checked_sub(1).ok_or(ContractError::InvalidIdentifier)?;
-    let end = start.checked_add(size as u64).ok_or(ContractError::InvalidIdentifier)?;
+    let size = record
+        .segment_count()
+        .checked_sub(1)
+        .ok_or(ContractError::InvalidIdentifier)?;
+    let end = start
+        .checked_add(size as u64)
+        .ok_or(ContractError::InvalidIdentifier)?;
     Ok((start, end))
 }
 
@@ -188,7 +193,9 @@ impl WitnessSelection<'_> {
     pub(crate) fn allows(self, witness: &ZoneWitness) -> bool {
         self.0.is_some_and(|ranges| {
             let index = ranges.partition_point(|&(_, last)| last < witness.first_segment);
-            ranges.get(index).is_none_or(|&(first, _)| witness.last_segment < first)
+            ranges
+                .get(index)
+                .is_none_or(|&(first, _)| witness.last_segment < first)
         })
     }
 
@@ -196,7 +203,10 @@ impl WitnessSelection<'_> {
         match self.0 {
             None => 0,
             Some([]) => witnesses.len(),
-            Some(_) => witnesses.iter().filter(|witness| self.allows(witness)).count(),
+            Some(_) => witnesses
+                .iter()
+                .filter(|witness| self.allows(witness))
+                .count(),
         }
     }
 }
@@ -213,7 +223,10 @@ impl<'a> HealthWithdrawals<'a> {
             if let HistoricalHealthMetadata::Retained { record, .. } = &item.metadata
                 && !record.summary().findings().is_empty()
             {
-                scans.entry(Source::diagnostic(record)).or_default().push(scan_range(record)?);
+                scans
+                    .entry(Source::diagnostic(record))
+                    .or_default()
+                    .push(scan_range(record)?);
             }
         }
         for ranges in scans.values_mut() {
@@ -230,9 +243,11 @@ impl<'a> HealthWithdrawals<'a> {
         Ok(Self(scans))
     }
 
-    pub(crate) fn selection(&self, coverage: &RetainedCoverage) -> WitnessSelection<'_> {
+    pub(crate) fn selection<'b>(&'b self, coverage: &'b RetainedCoverage) -> WitnessSelection<'b> {
         WitnessSelection(coverage.calibration_invalidation.is_none().then(|| {
-            self.0.get(&Source::coverage(coverage)).map_or(&[][..], Vec::as_slice)
+            self.0
+                .get(&Source::coverage(coverage))
+                .map_or(&[][..], Vec::as_slice)
         }))
     }
 }

@@ -120,11 +120,15 @@ pub fn coverage_observations(snapshot: &DeploymentSnapshot) -> Vec<CoverageObser
         .iter()
         .flat_map(|retained| {
             let selection = health.as_ref().map(|index| index.selection(retained));
-            retained.record.zones.iter().map(move |zone| CoverageObservation {
-                sensor_id: retained.record.sensor_id.clone(),
-                zone_scope: zone.scope.clone(),
-                witnesses: selection.map_or(0, |screen| screen.count(&zone.witnesses)) as u64,
-            })
+            retained
+                .record
+                .zones
+                .iter()
+                .map(move |zone| CoverageObservation {
+                    sensor_id: retained.record.sensor_id.clone(),
+                    zone_scope: zone.scope.clone(),
+                    witnesses: selection.map_or(0, |screen| screen.count(&zone.witnesses)) as u64,
+                })
         })
         .collect()
 }
@@ -202,9 +206,10 @@ fn project_snapshot(
         .map_err(|error| GraphError::PreconditionFailed(error.to_string()))?;
     project_records(
         &snapshot.site_lineage,
-        snapshot.coverage.iter().map(|retained| {
-            (&retained.record, health.selection(retained))
-        }),
+        snapshot
+            .coverage
+            .iter()
+            .map(|retained| (&retained.record, health.selection(retained))),
         window,
         limits,
     )
@@ -221,9 +226,13 @@ fn project_records<'a>(
         for zone in &record.zones {
             let witnesses = match window {
                 None => selection.count(&zone.witnesses),
-                Some(window) => zone.witnesses.iter().filter(|witness| {
-                    contains_window(witness.covered, window) && selection.allows(witness)
-                }).count(),
+                Some(window) => zone
+                    .witnesses
+                    .iter()
+                    .filter(|witness| {
+                        contains_window(witness.covered, window) && selection.allows(witness)
+                    })
+                    .count(),
             };
             builder.push(&CoverageObservation {
                 sensor_id: record.sensor_id.clone(),
@@ -316,7 +325,9 @@ fn observations_in_window<'a>(
                 witnesses: zone
                     .witnesses
                     .iter()
-                    .filter(|witness| contains_window(witness.covered, window) && selection.allows(witness))
+                    .filter(|witness| {
+                        contains_window(witness.covered, window) && selection.allows(witness)
+                    })
                     .count() as u64,
             })
         })
@@ -337,12 +348,13 @@ pub fn coverage_observations_during(
     window: CaptureInterval,
 ) -> Result<Vec<CoverageObservation>, CoverageGraphError> {
     let window = validate_window(window)?;
-    let health =
-        HealthWithdrawals::new(&snapshot.historical_health).map_err(CoverageGraphError::Contract)?;
+    let health = HealthWithdrawals::new(&snapshot.historical_health)
+        .map_err(CoverageGraphError::Contract)?;
     Ok(observations_in_window(
-        snapshot.coverage.iter().map(|retained| {
-            (&retained.record, health.selection(retained))
-        }),
+        snapshot
+            .coverage
+            .iter()
+            .map(|retained| (&retained.record, health.selection(retained))),
         window,
     ))
 }
@@ -509,13 +521,20 @@ mod window_tests {
     fn uncertain_outer_bounds_do_not_authorize_an_edge() -> TestResult {
         let record = record("sensor:east", 0, None)?;
         let witness = &record.zones[0].witnesses[0];
-        let whole = observations_in_window([(&record, WitnessSelection::ALL)].into_iter(), witness.covered);
+        let whole = observations_in_window(
+            [(&record, WitnessSelection::ALL)].into_iter(),
+            witness.covered,
+        );
         assert_eq!(whole[0].witnesses, 1);
-        let hull = observations_in_window([(&record, WitnessSelection::ALL)].into_iter(), witness.outer);
+        let hull = observations_in_window(
+            [(&record, WitnessSelection::ALL)].into_iter(),
+            witness.outer,
+        );
         assert_eq!(hull[0].witnesses, 0);
         let point = interval(witness.covered.earliest.0, witness.covered.earliest.0)?;
         assert_eq!(
-            observations_in_window([(&record, WitnessSelection::ALL)].into_iter(), point)[0].witnesses,
+            observations_in_window([(&record, WitnessSelection::ALL)].into_iter(), point)[0]
+                .witnesses,
             1
         );
         Ok(())
@@ -525,10 +544,17 @@ mod window_tests {
     fn partial_witnesses_never_bridge_an_uncovered_interval() -> TestResult {
         let record = record("sensor:east", 0, Some(10))?;
         assert_eq!(record.zones[0].witnesses.len(), 2);
-        let facts = observations_in_window([(&record, WitnessSelection::ALL)].into_iter(), interval(50, 160)?);
+        let facts = observations_in_window(
+            [(&record, WitnessSelection::ALL)].into_iter(),
+            interval(50, 160)?,
+        );
         assert_eq!(facts[0].witnesses, 0);
         assert_eq!(
-            observations_in_window([(&record, WitnessSelection::ALL)].into_iter(), interval(50, 70)?)[0].witnesses,
+            observations_in_window(
+                [(&record, WitnessSelection::ALL)].into_iter(),
+                interval(50, 70)?
+            )[0]
+            .witnesses,
             1
         );
         Ok(())
@@ -588,9 +614,10 @@ mod window_tests {
         ];
         for window in [None, Some(interval(60, 120)?), Some(interval(500, 600)?)] {
             let facts = match window {
-                Some(window) => {
-                    observations_in_window(records.iter().map(|record| (record, WitnessSelection::ALL)), window)
-                }
+                Some(window) => observations_in_window(
+                    records.iter().map(|record| (record, WitnessSelection::ALL)),
+                    window,
+                ),
                 None => records
                     .iter()
                     .flat_map(|record| {

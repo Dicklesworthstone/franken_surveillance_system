@@ -180,24 +180,51 @@ fn assert_graph_coverage(
     use fss_graph_algorithms::GraphBudget;
     use fss_reference::coverage_graph::{
         coverage_observations, coverage_observations_during, coverage_single_points,
-        coverage_single_points_during,
+        coverage_single_points_during, weighted_historical_coverage,
     };
     use fss_reference::coverage_timeline::coverage_timeline;
 
-    for facts in [coverage_observations(snapshot), coverage_observations_during(snapshot, window)?] {
-        assert_eq!(facts.iter().map(|fact| fact.witnesses).sum::<u64>(), expected);
+    for facts in [
+        coverage_observations(snapshot),
+        coverage_observations_during(snapshot, window)?,
+    ] {
+        assert_eq!(
+            facts.iter().map(|fact| fact.witnesses).sum::<u64>(),
+            expected
+        );
     }
-    for report in [coverage_single_points(snapshot)?, coverage_single_points_during(snapshot, window)?] {
+    for report in [
+        coverage_single_points(snapshot)?,
+        coverage_single_points_during(snapshot, window)?,
+    ] {
         assert_eq!(report.answer.zones.len(), 1);
         assert_eq!(report.answer.zones[0].witnesses, expected);
     }
-    let timeline = coverage_timeline(snapshot, window, GraphBudget {
-        max_operations: 1_000_000,
-        max_output_entries: 65_536,
-    })?;
+    let weighted = weighted_historical_coverage(snapshot, Default::default())?;
+    let camera = weighted
+        .index_of(&format!("sensor/{SENSOR}"))
+        .ok_or("missing camera node")?;
+    let zone = weighted
+        .index_of("zone/zone:quiet-zone")
+        .ok_or("missing zone node")?;
+    let weight = weighted
+        .find_arc(camera, zone)
+        .map(|arc| weighted.arc(arc).weight);
+    assert_eq!(weight, (expected > 0).then_some(expected));
+    let timeline = coverage_timeline(
+        snapshot,
+        window,
+        GraphBudget {
+            max_operations: 1_000_000,
+            max_output_entries: 65_536,
+        },
+    )?;
     assert_eq!(timeline.segments.len(), 1);
     assert_eq!(timeline.segments[0].window, window);
-    assert_eq!(timeline.segments[0].report.answer.zones[0].witnesses, expected);
+    assert_eq!(
+        timeline.segments[0].report.answer.zones[0].witnesses,
+        expected
+    );
     Ok(())
 }
 
@@ -277,7 +304,10 @@ fn same_source_findings_outside_a_witness_do_not_revoke_the_disjoint_window() ->
             .iter()
             .all(|finding| finding.last_segment < 16)
     );
-    let after = orient(&fixture)?;
+    let snapshot = read_deployment(fixture.deployment.root(), &OrientLimits::default())?;
+    let window = snapshot.coverage[0].record.zones[0].witnesses[0].covered;
+    assert_graph_coverage(&snapshot, window, 1)?;
+    let after = orient_deployment(&snapshot, &request()?, &OrientLimits::default())?;
     assert_covered(&after)?;
     assert_eq!(before.coverage, after.coverage);
     Ok(())
@@ -329,7 +359,11 @@ fn unaffected_overlapping_import_keeps_coverage_when_a_conflicting_witness_is_wi
     assert_eq!(before_zone.witnesses.len(), 2);
 
     let diagnostic = retain_diagnostic(&mut fixture, &plan(frozen, 0, FRAMES))?;
-    assert_graph_coverage(&read_deployment(fixture.deployment.root(), &limits)?, window, 1)?;
+    assert_graph_coverage(
+        &read_deployment(fixture.deployment.root(), &limits)?,
+        window,
+        1,
+    )?;
     let after = orient(&fixture)?;
     assert_covered(&after)?;
     let zone = &after.coverage.as_ref().ok_or("coverage")?.zones[0];
@@ -453,6 +487,8 @@ fn coverage_health_binding_uses_original_mask_generation_even_when_policy_bytes_
         );
         let snapshot = read_deployment(fixture.deployment.root(), &OrientLimits::default())?;
         assert_eq!(snapshot.coverage[0].privacy_generation, Some(1));
+        let window = snapshot.coverage[0].record.zones[0].witnesses[0].covered;
+        assert_graph_coverage(&snapshot, window, u64::from(repeat_policy))?;
         let orientation = orient_deployment(&snapshot, &request()?, &OrientLimits::default())?;
         if repeat_policy {
             assert_covered(&orientation)?;
