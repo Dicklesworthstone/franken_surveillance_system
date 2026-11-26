@@ -48,6 +48,10 @@ pub enum ColdRetrievabilityVerdict {
 }
 
 impl ColdRetrievabilityVerdict {
+    fn requires_repair(self) -> bool {
+        matches!(self, Self::Corrupted | Self::Missing)
+    }
+
     /// Encodes as a canonical 1-byte wire tag.
     #[must_use]
     pub const fn to_tag(self) -> u8 {
@@ -263,44 +267,20 @@ pub fn audit_cold_pack_retrievability(
                         false,
                         bytes_verified,
                         ColdRetrievabilityVerdict::Corrupted,
-                        "Range-GET identity, interval, length, or ETag differs from request".to_owned(),
+                        "Range-GET identity, interval, length, or ETag differs from request"
+                            .to_owned(),
                         now_ns,
                     );
                 }
                 bytes_verified = bytes_verified.saturating_add(len);
                 verified_samples = verified_samples.saturating_add(1);
             }
-            Err(PackError::ArchiveMissing { .. }) => {
-                return finalize_audit_receipt(
-                    manifest,
-                    None,
-                    observed_etag,
-                    requested_count,
-                    verified_samples,
-                    sample_results,
-                    false,
-                    bytes_verified,
-                    ColdRetrievabilityVerdict::Missing,
-                    "cold pack object missing at remote endpoint (HTTP 404)".to_owned(),
-                    now_ns,
-                );
-            }
-            Err(PackError::ArchiveIntegrity { detail }) => {
-                return finalize_audit_receipt(
-                    manifest,
-                    None,
-                    observed_etag,
-                    requested_count,
-                    verified_samples,
-                    sample_results,
-                    false,
-                    bytes_verified,
-                    ColdRetrievabilityVerdict::Corrupted,
-                    detail,
-                    now_ns,
-                );
-            }
             Err(err) => {
+                let (verdict, detail) = classify_read_error(
+                    err,
+                    "Range-GET",
+                    "cold pack object missing at remote endpoint (HTTP 404)",
+                );
                 return finalize_audit_receipt(
                     manifest,
                     None,
@@ -310,8 +290,8 @@ pub fn audit_cold_pack_retrievability(
                     sample_results,
                     false,
                     bytes_verified,
-                    ColdRetrievabilityVerdict::Unknown,
-                    format!("Range-GET transport indeterminate: {err}"),
+                    verdict,
+                    detail,
                     now_ns,
                 );
             }
@@ -338,22 +318,12 @@ pub fn audit_cold_pack_retrievability(
     let get_resp =
         match transport.get_object(&manifest.object_key, config.max_download_bytes, now_ns) {
             Ok(r) => r,
-            Err(PackError::ArchiveMissing { .. }) => {
-                return finalize_audit_receipt(
-                    manifest,
-                    None,
-                    observed_etag,
-                    requested_count,
-                    verified_samples,
-                    sample_results,
-                    false,
-                    bytes_verified,
-                    ColdRetrievabilityVerdict::Missing,
-                    "cold pack disappeared before whole-pack GET (HTTP 404)".to_owned(),
-                    now_ns,
-                );
-            }
             Err(err) => {
+                let (verdict, detail) = classify_read_error(
+                    err,
+                    "whole-pack GET",
+                    "cold pack disappeared before whole-pack GET (HTTP 404)",
+                );
                 return finalize_audit_receipt(
                     manifest,
                     None,
@@ -363,8 +333,8 @@ pub fn audit_cold_pack_retrievability(
                     sample_results,
                     false,
                     bytes_verified,
-                    ColdRetrievabilityVerdict::Unknown,
-                    format!("whole-pack GET transport indeterminate: {err}"),
+                    verdict,
+                    detail,
                     now_ns,
                 );
             }
@@ -411,7 +381,9 @@ pub fn audit_cold_pack_retrievability(
         let offset = sample.offset;
         let start = usize::try_from(offset).map_err(|_| PackError::ArithmeticOverflow)?;
         let len = usize::try_from(sample.len).map_err(|_| PackError::ArithmeticOverflow)?;
-        let end = start.checked_add(len).ok_or(PackError::ArithmeticOverflow)?;
+        let end = start
+            .checked_add(len)
+            .ok_or(PackError::ArithmeticOverflow)?;
         if get_resp.body.get(start..end).map(ContentDigest::sha256) != Some(sample.sample_sha256) {
             return finalize_audit_receipt(
                 manifest,
@@ -725,6 +697,26 @@ fn build_audit_ranges(total_bytes: u64, config: &ColdAuditConfig) -> Vec<(u64, u
     ranges
 }
 
+// Both reads feed the same repair decision. Keep the failing phase in the
+// diagnostic so prior range and whole-pack receipts retain their wire details.
+fn classify_read_error(
+    err: PackError,
+    phase: &str,
+    missing_detail: &str,
+) -> (ColdRetrievabilityVerdict, String) {
+    match err {
+        PackError::ArchiveMissing { .. } => (
+            ColdRetrievabilityVerdict::Missing,
+            missing_detail.to_owned(),
+        ),
+        PackError::ArchiveIntegrity { detail } => (ColdRetrievabilityVerdict::Corrupted, detail),
+        err => (
+            ColdRetrievabilityVerdict::Unknown,
+            format!("{phase} transport indeterminate: {err}"),
+        ),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn finalize_audit_receipt(
     manifest: &ColdPackArchiveManifest,
@@ -739,10 +731,6 @@ fn finalize_audit_receipt(
     detail: String,
     audited_at_ns: TimestampNs,
 ) -> Result<ColdRetrievabilityAuditReceipt, PackError> {
-    let requires_repair_obligation = matches!(
-        verdict,
-        ColdRetrievabilityVerdict::Corrupted | ColdRetrievabilityVerdict::Missing
-    );
     let mut receipt = ColdRetrievabilityAuditReceipt {
         manifest_digest: manifest.manifest_digest,
         pack_id: manifest.pack_id,
@@ -756,7 +744,7 @@ fn finalize_audit_receipt(
         whole_pack_sha256_verified,
         bytes_verified,
         verdict,
-        requires_repair_obligation,
+        requires_repair_obligation: verdict.requires_repair(),
         detail,
         audited_at_ns,
         receipt_digest: ContentDigest::new(DigestAlgorithm::Sha256, [0_u8; 32]),
@@ -807,4 +795,47 @@ fn compute_audit_receipt_digest(
     receipt.audited_at_ns.encode_canonical(&mut enc);
     let bytes = enc.finish_checked()?;
     Ok(ContentDigest::sha256(&bytes))
+}
+
+#[cfg(test)]
+mod read_failure_tests {
+    use super::*;
+
+    #[test]
+    fn confirmed_read_failures_require_repair_and_indeterminate_transport_does_not() {
+        for phase in ["Range-GET", "whole-pack GET"] {
+            let (corrupt, detail) = classify_read_error(
+                PackError::ArchiveIntegrity {
+                    detail: "provider checksum mismatch".to_owned(),
+                },
+                phase,
+                "missing",
+            );
+            assert_eq!(corrupt, ColdRetrievabilityVerdict::Corrupted);
+            assert!(corrupt.requires_repair());
+            assert_eq!(detail, "provider checksum mismatch");
+
+            let (missing, detail) = classify_read_error(
+                PackError::ArchiveMissing {
+                    object_key: "pack".to_owned(),
+                },
+                phase,
+                "missing",
+            );
+            assert_eq!(missing, ColdRetrievabilityVerdict::Missing);
+            assert!(missing.requires_repair());
+            assert_eq!(detail, "missing");
+
+            let (unknown, detail) = classify_read_error(
+                PackError::ArchiveTransport {
+                    detail: "connection lost".to_owned(),
+                },
+                phase,
+                "missing",
+            );
+            assert_eq!(unknown, ColdRetrievabilityVerdict::Unknown);
+            assert!(!unknown.requires_repair());
+            assert!(detail.starts_with(&format!("{phase} transport indeterminate: ")));
+        }
+    }
 }
