@@ -224,19 +224,30 @@ impl ColdArchivePolicy {
         pack_id: PackId,
         ciphertext_sha256: ContentDigest,
     ) -> String {
-        let hash_prefix = encode_hex_lower(&ciphertext_sha256.bytes()[..8]);
+        let hash = encode_hex_lower(&ciphertext_sha256.bytes());
         format!(
-            "{}/packs/pack-{:08}-{:012}-{hash_prefix}.fsep",
+            "{}/packs/pack-{:08}-{:012}-{hash}.fsep",
             self.key_prefix, pack_id.epoch, pack_id.seq
         )
     }
 
-    /// Builds an opaque privacy-preserving cold object key for the root-last archive manifest.
+    /// Returns the pack-id-only locator used by older publications. Retained receipts using
+    /// this locator can still be recovered by their independent manifest digest.
     #[must_use]
     pub fn opaque_manifest_object_key(&self, pack_id: PackId) -> String {
         format!(
             "{}/manifests/pack-{:08}-{:012}.manifest.fssc",
             self.key_prefix, pack_id.epoch, pack_id.seq
+        )
+    }
+
+    /// Builds the immutable remote locator for one exact publication of a sealed pack.
+    #[must_use]
+    pub fn published_manifest_object_key(&self, manifest: &ColdPackArchiveManifest) -> String {
+        let hash = encode_hex_lower(&manifest.manifest_digest.bytes());
+        format!(
+            "{}/manifests/pack-{:08}-{:012}-{hash}.manifest.fssc",
+            self.key_prefix, manifest.pack_id.epoch, manifest.pack_id.seq
         )
     }
 }

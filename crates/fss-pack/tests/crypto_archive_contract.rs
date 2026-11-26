@@ -1359,6 +1359,37 @@ fn cold_tier_loopback_s3_e2e_archive_audit_tamper_evict_and_restore() -> TestRes
         ColdPackArchiveManifest::from_canonical_bytes(&remote_manifest_raw)?;
     assert_eq!(parsed_remote_manifest, arch_p1.manifest);
 
+    // Retry a complete archive of the same sealed pack with a fresh DEK. Both receipts
+    // must still independently recover their pinned remote roots after the second PUT.
+    let republished = archive_sealed_pack(
+        store.packs_dir(),
+        sealed_p1.pack_id,
+        &policy,
+        &mut catalog,
+        &kek,
+        &mut transport,
+        &mut entropy,
+        None,
+        DurabilityMode::Fsync,
+        now,
+    )?;
+    assert_eq!(
+        republished.manifest.plaintext_pack_sha256,
+        arch_p1.manifest.plaintext_pack_sha256
+    );
+    assert_ne!(republished.manifest_object_key, arch_p1.manifest_object_key);
+    for publication in [&arch_p1, &republished] {
+        assert_eq!(
+            fetch_cold_pack_manifest(
+                &mut transport,
+                &publication.manifest_object_key,
+                publication.manifest.manifest_digest,
+                now,
+            )?,
+            publication.manifest
+        );
+    }
+
     // Partial-only audit MUST NEVER upgrade to Verified!
     let partial_cfg = ColdAuditConfig {
         verify_whole_pack: false,

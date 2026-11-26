@@ -3,7 +3,10 @@
 `fss archive restore` can recover an encrypted pack after its local plaintext file
 and local archive manifest have been lost. Retain the `manifest_object_key` and
 `manifest_digest` from the successful upload result in an independent trusted
-record. Recovery also needs the current key-envelope catalog, its vault-backed
+record. New uploads use the full digest of the manifest in its remote object key.
+Archiving the same sealed pack again publishes a distinct root, so both upload
+receipts remain usable. Existing receipts retain their original object keys.
+Recovery also needs the current key-envelope catalog, its vault-backed
 KEK, and scoped S3 credentials.
 
 ## Restore the remote root
@@ -11,7 +14,7 @@ KEK, and scoped S3 credentials.
 ```sh
 fss archive restore \
   --packs-dir /absolute/path/offline-restored-packs \
-  --manifest-object-key fss-cold/v1/manifests/pack-00000001-000000000001.manifest.fssc \
+  --manifest-object-key "$MANIFEST_OBJECT_KEY_FROM_UPLOAD" \
   --expected-manifest sha256:INDEPENDENT_MANIFEST_DIGEST_FROM_UPLOAD \
   --key-catalog /absolute/path/keys.fskc \
   --peer 127.0.0.1:9000 --host s3.local --region us-east-1 \

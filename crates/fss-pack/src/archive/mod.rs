@@ -145,7 +145,7 @@ pub fn archive_sealed_pack(
 
     // 4. Upload encrypted ciphertext blob BEFORE publishing any archive manifest root.
     let pack_object_key = policy.opaque_pack_object_key(pack_id, enc_receipt.ciphertext_sha256);
-    let (put_receipt, upload_mode) =
+    let (put_receipt, upload_mode, expected_parts) =
         if enc_receipt.ciphertext_bytes >= policy.multipart_threshold_bytes {
             let receipt = transport.put_object_multipart(
                 &pack_object_key,
@@ -156,7 +156,11 @@ pub fn archive_sealed_pack(
             let mode = ColdUploadMode::Multipart {
                 part_count: receipt.part_count,
             };
-            (receipt, mode)
+            (
+                receipt,
+                mode,
+                ciphertext_pack.len().div_ceil(policy.multipart_part_bytes),
+            )
         } else {
             let receipt = transport.put_object(
                 &pack_object_key,
@@ -164,16 +168,16 @@ pub fn archive_sealed_pack(
                 enc_receipt.ciphertext_sha256,
                 now_ns,
             )?;
-            (receipt, ColdUploadMode::SinglePut)
+            (receipt, ColdUploadMode::SinglePut, 1)
         };
 
-    if put_receipt.bytes_uploaded != enc_receipt.ciphertext_bytes
-        || put_receipt.content_sha256 != enc_receipt.ciphertext_sha256
-    {
-        return Err(PackError::ArchiveIntegrity {
-            detail: "uploaded ciphertext byte count or SHA-256 mismatch".to_owned(),
-        });
-    }
+    check_put_receipt(
+        &put_receipt,
+        &pack_object_key,
+        enc_receipt.ciphertext_sha256,
+        enc_receipt.ciphertext_bytes,
+        expected_parts,
+    )?;
 
     // 5. Root-last publication: build and publish ColdPackArchiveManifest ONLY AFTER upload succeeds.
     let manifest = ColdPackArchiveManifest::build(
@@ -193,9 +197,17 @@ pub fn archive_sealed_pack(
     )?;
     let manifest_bytes = manifest.to_canonical_bytes()?;
     let manifest_sha = ContentDigest::sha256(&manifest_bytes);
-    let manifest_object_key = policy.opaque_manifest_object_key(pack_id);
+    let manifest_object_key = policy.published_manifest_object_key(&manifest);
     let manifest_put =
         transport.put_object(&manifest_object_key, &manifest_bytes, manifest_sha, now_ns)?;
+
+    check_put_receipt(
+        &manifest_put,
+        &manifest_object_key,
+        manifest_sha,
+        manifest_bytes.len() as u64,
+        1,
+    )?;
 
     if let Some(dir) = local_manifest_dir {
         let local_path = dir.join(format!(
@@ -212,6 +224,28 @@ pub fn archive_sealed_pack(
         manifest_etag: manifest_put.etag,
         encryption_frame_count: enc_receipt.frame_count,
     })
+}
+
+fn check_put_receipt(
+    receipt: &ColdPutReceipt,
+    key: &str,
+    digest: ContentDigest,
+    bytes: u64,
+    parts: usize,
+) -> Result<(), PackError> {
+    if receipt.object_key != key
+        || receipt.content_sha256 != digest
+        || receipt.bytes_uploaded != bytes
+        || usize::try_from(receipt.part_count).ok() != Some(parts)
+        || receipt.etag.is_empty()
+        || receipt.etag.len() > 1024
+        || receipt.etag.chars().any(char::is_control)
+    {
+        return Err(PackError::ArchiveIntegrity {
+            detail: "cold upload receipt does not acknowledge the exact object".to_owned(),
+        });
+    }
+    Ok(())
 }
 
 /// Evicts a local hot sealed `.fssp` packfile after verifying its cold archive manifest
