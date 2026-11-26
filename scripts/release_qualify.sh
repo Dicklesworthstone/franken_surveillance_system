@@ -9,7 +9,7 @@ cd "$(dirname "$0")/.."
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/release_qualify.sh <release-preflight|build|verify|package|all>
+Usage: scripts/release_qualify.sh <release-preflight|build|verify|package|publish|reconcile|verify-remote|all> [args...]
 
 Environment:
   FSS_RELEASE_VERSION   exact version label (default: workspace package version)
@@ -189,6 +189,21 @@ package_release() {
     --source-commit "$(git rev-parse HEAD)"
 }
 
+publish_release() {
+  shift
+  exec python3 scripts/release_publication.py publish "$@"
+}
+
+reconcile_release() {
+  shift
+  exec python3 scripts/release_publication.py reconcile "$@"
+}
+
+verify_remote_release() {
+  shift
+  exec python3 scripts/release_publication.py verify "$@"
+}
+
 run_all() {
   release_preflight
   build_release
@@ -201,6 +216,9 @@ case "${1:-}" in
   build) build_release ;;
   verify) verify_release ;;
   package) package_release ;;
+  publish) publish_release "$@" ;;
+  reconcile) reconcile_release "$@" ;;
+  verify-remote) verify_remote_release "$@" ;;
   all) run_all ;;
   -h|--help) usage ;;
   *) usage >&2; exit 2 ;;

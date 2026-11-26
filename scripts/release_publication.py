@@ -118,6 +118,7 @@ class FaultSchedule:
     drop_from_remote_list: str | None = None
     inject_extra_remote_asset: str | None = None
     lost_ack_on_root_publish: bool = False
+    fail_post_publish_root_check: bool = False
     store_unavailable: bool = False
     partial_write_asset: str | None = None
 
@@ -253,23 +254,25 @@ class PublicationJournal:
             return journal
         expected_prev = ZERO_SHA256
         lines = path.read_text(encoding="utf-8").splitlines()
-        for idx, line in enumerate(lines, start=1):
+        expected_seq = 0
+        for line_no, line in enumerate(lines, start=1):
             if not line.strip():
-                continue
+                raise ValueError(f"journal line {line_no} is blank/malformed")
+            expected_seq += 1
             try:
                 entry = json.loads(line)
             except ValueError as exc:
-                raise ValueError(f"journal line {idx} invalid JSON: {exc}") from exc
-            if entry.get("sequence") != idx:
-                raise ValueError(f"journal sequence gap at line {idx}: observed {entry.get('sequence')}")
+                raise ValueError(f"journal line {line_no} invalid JSON: {exc}") from exc
+            if entry.get("sequence") != expected_seq:
+                raise ValueError(f"journal sequence gap at line {line_no}: observed {entry.get('sequence')}")
             if entry.get("prevDigest") != expected_prev:
-                raise ValueError(f"journal hash chain break at sequence {idx}")
+                raise ValueError(f"journal hash chain break at sequence {expected_seq}")
             recorded_digest = entry.get("entryDigest")
             body = {k: v for k, v in entry.items() if k != "entryDigest"}
             recomputed = _sha256_bytes(_canonical_json_bytes(body))
             if recorded_digest != recomputed:
                 raise ValueError(
-                    f"journal entry {idx} digest mismatch: expected {recorded_digest}, observed {recomputed}"
+                    f"journal entry {expected_seq} digest mismatch: expected {recorded_digest}, observed {recomputed}"
                 )
             journal.entries.append(entry)
             expected_prev = recorded_digest
@@ -289,10 +292,11 @@ class PublicationJournal:
         }
         entry_digest = _sha256_bytes(_canonical_json_bytes(body))
         entry = {**body, "entryDigest": entry_digest}
-        self.entries.append(entry)
+        next_entries = [*self.entries, entry]
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        serialized = "\n".join(json.dumps(e, sort_keys=True, separators=(",", ":")) for e in self.entries) + "\n"
+        serialized = "\n".join(json.dumps(e, sort_keys=True, separators=(",", ":")) for e in next_entries) + "\n"
         atomic_write_bytes(self.path, serialized.encode("utf-8"))
+        self.entries = next_entries
         return entry
 
     def highest_lease_fence(self) -> int:
@@ -779,14 +783,99 @@ def publish_release(cfg: PublishConfig) -> dict[str, Any]:
         )
 
     # Download back the published root manifest and verify byte-exact parity!
-    fetched_root = store.get_root()
+    # Because `put_root` already executed, any readback failure or mismatch MUST enter
+    # `indeterminate` in the durable journal so reconciliation runs before any new publish.
+    try:
+        if cfg.faults.fail_post_publish_root_check:
+            raise RemoteStoreError(
+                "post_publish_readback_failed",
+                "post-publish root manifest readback failed (injected); outcome is indeterminate",
+            )
+        fetched_root = store.get_root()
+    except RemoteStoreError as exc:
+        journal.append(
+            cfg.release_id,
+            "indeterminate",
+            {
+                "planDigest": plan_digest,
+                "rootDigest": root_digest,
+                "reason": exc.detail,
+                "leaseFence": cfg.lease_fence,
+            },
+        )
+        transitions.append("indeterminate")
+        return fail(
+            exc.code,
+            exc.detail,
+            state="indeterminate",
+            planDigest=plan_digest,
+            rootDigest=root_digest,
+            journalHeadDigest=journal.head_digest(),
+        )
     if fetched_root is None:
-        return fail("root_not_retrievable", "root manifest missing on post-publish download check")
+        detail = "root manifest missing on post-publish download check"
+        journal.append(
+            cfg.release_id,
+            "indeterminate",
+            {
+                "planDigest": plan_digest,
+                "rootDigest": root_digest,
+                "reason": detail,
+                "leaseFence": cfg.lease_fence,
+            },
+        )
+        transitions.append("indeterminate")
+        return fail(
+            "root_not_retrievable",
+            detail,
+            state="indeterminate",
+            planDigest=plan_digest,
+            rootDigest=root_digest,
+            journalHeadDigest=journal.head_digest(),
+        )
     fetched_root_bytes, fetched_sig_bytes = fetched_root
     if "sha256:" + _sha256_bytes(fetched_root_bytes) != root_digest:
-        return fail("root_digest_mismatch", "downloaded root manifest digest differs from published root")
+        detail = "downloaded root manifest digest differs from published root"
+        journal.append(
+            cfg.release_id,
+            "indeterminate",
+            {
+                "planDigest": plan_digest,
+                "rootDigest": root_digest,
+                "reason": detail,
+                "leaseFence": cfg.lease_fence,
+            },
+        )
+        transitions.append("indeterminate")
+        return fail(
+            "root_digest_mismatch",
+            detail,
+            state="indeterminate",
+            planDigest=plan_digest,
+            rootDigest=root_digest,
+            journalHeadDigest=journal.head_digest(),
+        )
     if sig_bytes is not None and fetched_sig_bytes != sig_bytes:
-        return fail("root_signature_mismatch", "downloaded detached signature differs from published signature")
+        detail = "downloaded detached signature differs from published signature"
+        journal.append(
+            cfg.release_id,
+            "indeterminate",
+            {
+                "planDigest": plan_digest,
+                "rootDigest": root_digest,
+                "reason": detail,
+                "leaseFence": cfg.lease_fence,
+            },
+        )
+        transitions.append("indeterminate")
+        return fail(
+            "root_signature_mismatch",
+            detail,
+            state="indeterminate",
+            planDigest=plan_digest,
+            rootDigest=root_digest,
+            journalHeadDigest=journal.head_digest(),
+        )
 
     journal.append(
         cfg.release_id,

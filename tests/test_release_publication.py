@@ -382,6 +382,85 @@ class TestReleasePublication(unittest.TestCase):
             self.assertEqual(vout["state"], "verified")
             self.assertEqual(vout["rootDigest"], out["rootDigest"])
 
+    def test_post_publish_root_readback_failure_enters_indeterminate_and_reconciles(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            td = Path(t)
+            expected = _seed_artifacts(td / "artifacts")
+            cfg = _base_cfg(
+                td,
+                release_id="rel:readback-fail",
+                version="0.1.0",
+                expected_assets=expected,
+                faults=rp.FaultSchedule(fail_post_publish_root_check=True),
+            )
+            res = rp.publish_release(cfg)
+            self.assertEqual(res["state"], "indeterminate")
+            self.assertEqual(res["errorCode"], "post_publish_readback_failed")
+
+            # Subsequent publish MUST be blocked until indeterminate is reconciled!
+            blocked = rp.publish_release(
+                _base_cfg(td, release_id="rel:blocked-after-readback", version="0.1.1", expected_assets=expected, lease_fence=2)
+            )
+            self.assertEqual(blocked["errorCode"], "indeterminate_pending")
+
+            # Reconcile confirms the root landed intact and transitions cleanly to published!
+            rec = rp.reconcile_indeterminate("rel:readback-fail", td / "remote", td / "state")
+            self.assertEqual(rec["state"], "published")
+            self.assertEqual(rec["reconciled"], "confirmed_published")
+
+    def test_release_qualify_wrapper_publishes_and_verifies_remote(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            td = Path(t)
+            _seed_artifacts(td / "artifacts")
+            pub = subprocess.run(
+                [
+                    "bash",
+                    str(SCRIPTS_DIR / "release_qualify.sh"),
+                    "publish",
+                    "--release-id",
+                    "rel:rq:v0.2.0",
+                    "--version",
+                    "0.2.0",
+                    "--artifacts-dir",
+                    str(td / "artifacts"),
+                    "--remote-store-dir",
+                    str(td / "remote"),
+                    "--state-dir",
+                    str(td / "state"),
+                    "--principal",
+                    "operator:rq",
+                    "--builder",
+                    "builder:dsr-1",
+                    "--signer",
+                    "signer:hsm-1",
+                    "--contract-basis-digest",
+                    BASIS_DIGEST,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.assertEqual(pub.returncode, 0, pub.stdout + pub.stderr)
+            pub_out = json.loads(pub.stdout)
+            self.assertEqual(pub_out["state"], "published")
+
+            ver = subprocess.run(
+                [
+                    "bash",
+                    str(SCRIPTS_DIR / "release_qualify.sh"),
+                    "verify-remote",
+                    "--remote-store-dir",
+                    str(td / "remote"),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.assertEqual(ver.returncode, 0, ver.stdout + ver.stderr)
+            ver_out = json.loads(ver.stdout)
+            self.assertEqual(ver_out["state"], "verified")
+            self.assertEqual(ver_out["rootDigest"], pub_out["rootDigest"])
+
 
 if __name__ == "__main__":
     unittest.main()
