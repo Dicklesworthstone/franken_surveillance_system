@@ -10,6 +10,9 @@ cd "$ROOT"
 TOOLCHAIN="$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml 2>/dev/null || true)"
 if [[ -n "$TOOLCHAIN" ]]; then RUN=(rustup run "$TOOLCHAIN"); else RUN=(); fi
 
+"${RUN[@]}" cargo --offline test -q -p fss-ledger \
+  --test test_ledger_crash_001_proof_family
+
 "${RUN[@]}" cargo --offline test -q -p fss-object \
   --test completion_observation_contract \
   --test retrieval_observation_contract

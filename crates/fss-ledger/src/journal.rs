@@ -312,6 +312,9 @@ impl Journal {
         if let Err(source) = self.file.read_to_end(&mut bytes) {
             return Err(self.indeterminate(AppendPhase::ReconcileRead, source));
         }
+        if let Err(source) = self.maybe_fail(AppendPhase::ReconcileRead) {
+            return Err(self.indeterminate(AppendPhase::ReconcileRead, source));
+        }
         let report = recover_bytes(&bytes)?;
 
         let committed_match = report.committed_len == pending.expected_end
@@ -328,10 +331,19 @@ impl Journal {
                 if let Err(source) = self.file.set_len(pending.expected_end) {
                     return Err(self.indeterminate(AppendPhase::ReconcileTruncate, source));
                 }
+                if let Err(source) = self.maybe_fail(AppendPhase::ReconcileTruncate) {
+                    return Err(self.indeterminate(AppendPhase::ReconcileTruncate, source));
+                }
                 if let Err(source) = self.file.sync_all() {
                     return Err(self.indeterminate(AppendPhase::ReconcileSync, source));
                 }
+                if let Err(source) = self.maybe_fail(AppendPhase::ReconcileSync) {
+                    return Err(self.indeterminate(AppendPhase::ReconcileSync, source));
+                }
                 if let Err(source) = self.file.seek(SeekFrom::Start(pending.expected_end)) {
+                    return Err(self.indeterminate(AppendPhase::ReconcileSeek, source));
+                }
+                if let Err(source) = self.maybe_fail(AppendPhase::ReconcileSeek) {
                     return Err(self.indeterminate(AppendPhase::ReconcileSeek, source));
                 }
                 let record = self.commit_pending(pending);
@@ -339,6 +351,9 @@ impl Journal {
             }
             if bytes.len() as u64 == pending.expected_end {
                 if let Err(source) = self.file.sync_all() {
+                    return Err(self.indeterminate(AppendPhase::ReconcileSync, source));
+                }
+                if let Err(source) = self.maybe_fail(AppendPhase::ReconcileSync) {
                     return Err(self.indeterminate(AppendPhase::ReconcileSync, source));
                 }
                 let record = self.commit_pending(pending);
@@ -356,10 +371,19 @@ impl Journal {
                 if let Err(source) = self.file.set_len(pending.base_committed_len) {
                     return Err(self.indeterminate(AppendPhase::ReconcileTruncate, source));
                 }
+                if let Err(source) = self.maybe_fail(AppendPhase::ReconcileTruncate) {
+                    return Err(self.indeterminate(AppendPhase::ReconcileTruncate, source));
+                }
                 if let Err(source) = self.file.sync_all() {
                     return Err(self.indeterminate(AppendPhase::ReconcileSync, source));
                 }
+                if let Err(source) = self.maybe_fail(AppendPhase::ReconcileSync) {
+                    return Err(self.indeterminate(AppendPhase::ReconcileSync, source));
+                }
                 if let Err(source) = self.file.seek(SeekFrom::Start(pending.base_committed_len)) {
+                    return Err(self.indeterminate(AppendPhase::ReconcileSeek, source));
+                }
+                if let Err(source) = self.maybe_fail(AppendPhase::ReconcileSeek) {
                     return Err(self.indeterminate(AppendPhase::ReconcileSeek, source));
                 }
                 self.pending = None;
