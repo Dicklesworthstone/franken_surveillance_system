@@ -11,6 +11,8 @@
 /// Source-preserving MJPEG AVI indexing and exact rational stream timing.
 pub mod avi;
 mod boxes;
+/// Deterministic, bounded keyframe-aware media chunker (`FSS-056`).
+pub mod chunker;
 /// Indexed or fragmented AVC/HEVC MP4 sample index, source-preserving Annex-B extraction and
 /// exact byte maps.
 pub mod demux;
@@ -27,6 +29,8 @@ pub mod mpeg_ts;
 mod mux;
 /// Bounded, allocation-free head probing that names a container family without decoding (FSS-053).
 pub mod probe;
+/// Deterministic decode and timestamp differential oracle (`FSS-060`).
+pub mod timestamp_oracle;
 mod video_codec;
 
 pub use hevc::{
