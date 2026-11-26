@@ -478,7 +478,12 @@ impl CanonicalDecode for FramePoolReceipt {
             return Err(ContractError::InvalidIdentifier);
         }
         let pool_id = decoder.text()?.to_owned();
-        if pool_id.is_empty() || pool_id.len() > MAX_OWNER_ID_BYTES {
+        if pool_id.is_empty()
+            || pool_id.len() > MAX_OWNER_ID_BYTES
+            || pool_id
+                .bytes()
+                .any(|b| b.is_ascii_control() || b.is_ascii_whitespace())
+        {
             return Err(ContractError::InvalidIdentifier);
         }
         let captured_at_ns = TimestampNs(decoder.i128()?);
@@ -493,19 +498,28 @@ impl CanonicalDecode for FramePoolReceipt {
         let total_reclaimed_slots = decoder.u64()?;
         let pressure_tier = BufferPressureTier::decode_canonical(decoder)?;
         let accounting_snapshot_digest = decoder.digest()?;
-        let rev_count = decoder.u64()? as usize;
+        let rev_count =
+            usize::try_from(decoder.u64()?).map_err(|_| ContractError::InvalidIdentifier)?;
         if rev_count > MAX_FRAME_POOL_SLOTS * 4 {
             return Err(ContractError::InvalidIdentifier);
         }
         let mut retired_generations = Vec::with_capacity(rev_count);
         for _ in 0..rev_count {
-            retired_generations.push(Generation(decoder.u64()?));
+            let g = Generation(decoder.u64()?);
+            if g.0 == 0 {
+                return Err(ContractError::InvalidIdentifier);
+            }
+            retired_generations.push(g);
         }
         let receipt_digest = decoder.digest()?;
 
-        if retained_slots > max_slots
+        if max_slots == 0
+            || max_bytes == 0
+            || retained_slots > max_slots
             || draining_retired_slots > retained_slots
+            || draining_retired_slots > active_leases
             || live_bytes > peak_live_bytes
+            || peak_live_bytes > max_bytes
             || total_reclaimed_slots > total_admitted_frames
             || total_admitted_frames - total_reclaimed_slots != retained_slots
             || !retired_generations.windows(2).all(|w| w[0] < w[1])
@@ -658,13 +672,13 @@ impl FramePool {
             for slot_id in reclaim_plan {
                 self.reclaim_slot_unchecked(slot_id, now_ns)?;
             }
-        }
-
-        if is_cancelled() {
+        } else if is_cancelled() {
             return Err(FramePoolError::Cancelled);
         }
 
         let frame_digest = ContentDigest::sha256(&bytes);
+        // Cancellation was already verified before committing evictions so the admission cannot
+        // cancel halfway between reclaiming cached slots and charging the replacement reservation.
         let reservation = self
             .accountant
             .reserve(
@@ -676,7 +690,7 @@ impl FramePool {
                     source_digest: Some(descriptor.source_evidence_digest),
                 },
                 now_ns,
-                &mut is_cancelled,
+                || false,
             )
             .map_err(|err| match err {
                 BufferAccountingError::Cancelled => FramePoolError::Cancelled,
@@ -810,6 +824,9 @@ impl FramePool {
             .lease_to_slot
             .remove(&lease.lease_id)
             .ok_or(FramePoolError::UnknownOrReleasedLease(lease.lease_id))?;
+        if slot_id != lease.slot_id {
+            return Err(FramePoolError::UnknownSlot(lease.slot_id));
+        }
         let should_reclaim = {
             let slot = self
                 .slots

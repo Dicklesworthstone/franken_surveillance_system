@@ -559,7 +559,8 @@ impl CanonicalDecode for BufferAccountingSnapshot {
         let total_refused = decoder.u64()?;
         let pressure_tier = BufferPressureTier::decode_canonical(decoder)?;
 
-        let gen_count = decoder.u64()? as usize;
+        let gen_count =
+            usize::try_from(decoder.u64()?).map_err(|_| ContractError::InvalidIdentifier)?;
         if gen_count > MAX_ACCOUNTANT_LIVE_BUFFERS {
             return Err(ContractError::InvalidIdentifier);
         }
@@ -567,23 +568,28 @@ impl CanonicalDecode for BufferAccountingSnapshot {
         for _ in 0..gen_count {
             let g = Generation(decoder.u64()?);
             let b = decoder.u64()?;
-            if b == 0 {
+            if g.0 == 0 || b == 0 {
                 return Err(ContractError::InvalidIdentifier);
             }
             live_by_generation.push((g, b));
         }
 
-        let rev_count = decoder.u64()? as usize;
+        let rev_count =
+            usize::try_from(decoder.u64()?).map_err(|_| ContractError::InvalidIdentifier)?;
         if rev_count > MAX_ACCOUNTANT_LIVE_BUFFERS {
             return Err(ContractError::InvalidIdentifier);
         }
         let mut revoked_generations = Vec::with_capacity(rev_count);
         for _ in 0..rev_count {
-            revoked_generations.push(Generation(decoder.u64()?));
+            let g = Generation(decoder.u64()?);
+            if g.0 == 0 {
+                return Err(ContractError::InvalidIdentifier);
+            }
+            revoked_generations.push(g);
         }
         let snapshot_digest = decoder.digest()?;
 
-        // Structural balance & monotonicity invariants enforced on decode.
+        // Structural balance, policy-bound, & monotonicity invariants enforced on decode.
         let class_sum = decoded_frame_live_bytes
             .checked_add(tensor_workspace_live_bytes)
             .and_then(|v| v.checked_add(staging_scratch_live_bytes))
@@ -592,10 +598,20 @@ impl CanonicalDecode for BufferAccountingSnapshot {
             .iter()
             .try_fold(0_u64, |acc, (_, b)| acc.checked_add(*b))
             .ok_or(ContractError::InvalidIdentifier)?;
-        if class_sum != live_bytes
+        if max_total_bytes == 0
+            || max_live_buffers == 0
+            || alignment_bytes == 0
+            || alignment_bytes > 4096
+            || !alignment_bytes.is_power_of_two()
+            || class_sum != live_bytes
             || gen_sum != live_bytes
             || live_bytes > peak_live_bytes
+            || peak_live_bytes > max_total_bytes
             || live_buffers > peak_live_buffers
+            || peak_live_buffers > max_live_buffers
+            || decoded_frame_live_bytes > decoded_frame_peak_bytes
+            || tensor_workspace_live_bytes > tensor_workspace_peak_bytes
+            || staging_scratch_live_bytes > staging_scratch_peak_bytes
             || total_released > total_admitted
             || total_admitted - total_released != live_buffers
             || !live_by_generation.windows(2).all(|w| w[0].0 < w[1].0)

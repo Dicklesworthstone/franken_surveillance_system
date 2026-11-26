@@ -589,7 +589,12 @@ fn delayed_event_pins_every_source_gop_in_its_interval_before_newer_footage() ->
 
     fs::remove_dir_all(dir.path().join(PROJECTION_SUBDIR))?;
     let mut reopened = StorageEngine::open(&manifest, Some(dir.path()))?;
-    let _ = reopened.maintenance_tick(EXPIRED_AT)?;
+    let _ = reopened.run_maintenance_tick(
+        regions.storage_ledger_cx(),
+        regions.region_tree(),
+        EXPIRED_AT,
+        false,
+    )?;
     let retained: BTreeSet<_> = reopened
         .retention_candidates()
         .values()
@@ -966,7 +971,12 @@ fn event_revision_witness_survives_projection_rebuild() -> TestResult {
         Err(DaemonError::Contract(_))
     ));
     assert_eq!(storage.head_snapshot()?.commit_sequence, before);
-    assert!(storage.pack_store().lookup(&invalid.revision_digest())?.is_none());
+    assert!(
+        storage
+            .pack_store()
+            .lookup(&invalid.revision_digest())?
+            .is_none()
+    );
 
     let receipt = storage.commit_event_hypothesis(&event, sensors, cx, tree)?;
     storage.shutdown_and_flush()?;
@@ -978,11 +988,18 @@ fn event_revision_witness_survives_projection_rebuild() -> TestResult {
         .ok_or("missing projected event revision")?;
     assert_eq!(row.committed_sequence, receipt.commit_sequence);
     assert_eq!(row.event_root, event.revision_digest());
-    let history = fss_ledger::inspect_epochs_readonly(&dir.path().join("ledger"), &manifest.site_id)?;
-    assert!(history.batches.iter().flat_map(|batch| &batch.deltas).any(|delta| {
-        delta.family == fss_projection_store::FAMILY_EVENT_REVISION
-            && delta.witness_digest == Some(row.event_root)
-    }));
+    let history =
+        fss_ledger::inspect_epochs_readonly(&dir.path().join("ledger"), &manifest.site_id)?;
+    assert!(
+        history
+            .batches
+            .iter()
+            .flat_map(|batch| &batch.deltas)
+            .any(|delta| {
+                delta.family == fss_projection_store::FAMILY_EVENT_REVISION
+                    && delta.witness_digest == Some(row.event_root)
+            })
+    );
     let bytes = reopened.pack_store().read_verified(&row.event_root)?;
     let mut decoder = CanonicalDecoder::new(&bytes);
     assert_eq!(decoder.text()?, "fss.canonical.v1");
