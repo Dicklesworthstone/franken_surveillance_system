@@ -13,6 +13,7 @@ use fss_pack::{DEFAULT_MAX_READ_BYTES, PackObjectInput, PackReadBudget, PackStor
 
 use crate::error::{CombinerError, ProjectionError};
 use crate::payloads::PackStorePayloadResolver;
+use crate::schema::HistoryChainMode;
 use crate::store::{MvccProjectionStore, ProjectionStore};
 
 /// Default maximum queued proposals waiting in the bounded collector.
@@ -394,10 +395,13 @@ impl CommitSink for LedgerPackProjectionSink {
     ) -> Result<SinkCommitOutcome, CombinerError> {
         // A failed projection can leave a durable ledger batch waiting for replay.
         // Do not append another wave on top of a known gap in the materialized view.
-        let projected = self.projection.head_anchor();
+        let snapshot = self.projection.snapshot_latest();
+        let projected = snapshot.anchor();
         let canonical = self.ledger.head_anchor();
         if projected.commit_sequence != canonical.commit_sequence
             || projected.authority_root != canonical.state_root
+            || (snapshot.history_mode == HistoryChainMode::V2MerkleEpoch
+                && projected.history_root != self.ledger.history_root())
         {
             return Err(ProjectionError::AnchorMismatch {
                 expected_sequence: canonical.commit_sequence,

@@ -517,6 +517,116 @@ fn combiner_preserves_durable_receipt_when_projection_and_checkpoint_both_fail()
     Ok(())
 }
 
+fn history_test_sink(
+    dir: &TempDir,
+    history_mode: fss_projection_store::HistoryChainMode,
+) -> Result<LedgerPackProjectionSink, Box<dyn std::error::Error>> {
+    let ledger = MerkleEpochLedger::open(
+        dir.root.join("ledger"),
+        "site:paired-histories",
+        EpochLedgerConfig::default(),
+        IncompleteTailPolicy::Reject,
+    )?;
+    let packs = Arc::new(PackStore::open(
+        dir.root.join("packs"),
+        PackConfig::default(),
+    )?);
+    let projection = Arc::new(MvccProjectionStore::open_empty(
+        dir.root.join("projection"),
+        ledger.genesis_anchor(),
+        ProjectionStoreConfig {
+            history_mode,
+            ..ProjectionStoreConfig::default()
+        },
+    )?);
+    Ok(LedgerPackProjectionSink::new(ledger, packs, projection))
+}
+
+#[test]
+fn combiner_refuses_equal_state_from_a_different_merkle_history() -> TestResult {
+    use fss_projection_store::HistoryChainMode::V2MerkleEpoch;
+
+    let canonical_dir = TempDir::new("canonical-history")?;
+    let alternate_dir = TempDir::new("alternate-history")?;
+    let canonical = CommitCombiner::new(
+        history_test_sink(&canonical_dir, V2MerkleEpoch)?,
+        CommitCombinerConfig::default(),
+    )?;
+    let alternate = CommitCombiner::new(
+        history_test_sink(&alternate_dir, V2MerkleEpoch)?,
+        CommitCombinerConfig::default(),
+    )?;
+    // Identical object revisions under different batch IDs produce the same authority
+    // root but a different history commitment.
+    let mut first = make_event_proposal(0, 1, None)?;
+    let canonical_commit = canonical.submit(first.clone())?;
+    first.request_digest = ContentDigest::sha256(b"alternate-request");
+    let alternate_commit = alternate.submit(first)?;
+    assert_eq!(
+        canonical_commit.commit_sequence,
+        alternate_commit.commit_sequence
+    );
+    assert_eq!(
+        canonical_commit.authority_root,
+        alternate_commit.authority_root
+    );
+    assert_ne!(canonical_commit.history_root, alternate_commit.history_root);
+
+    let (ledger, packs, _) = canonical.into_sink()?.into_parts();
+    // Forwarding cites a payload already in the pack so closure verification alone
+    // cannot reject the crossed history.
+    let successor = make_event_proposal(0, 1, Some(1))?;
+    let child = successor.deltas[0].payload_digest;
+    let exact = ledger.prepare_batch(
+        fss_core::BatchId::parse("exact-next")?,
+        successor.deltas,
+        [child],
+    )?;
+    let (_, _, wrong_projection) = alternate.into_sink()?.into_parts();
+    let mixed = CommitCombiner::new(
+        LedgerPackProjectionSink::new(ledger, Arc::clone(&packs), wrong_projection),
+        CommitCombinerConfig::default(),
+    )?;
+    let next = make_event_proposal(0, 2, None)?;
+    let digest = next.deltas[0].payload_digest;
+    assert!(matches!(
+        packs.read_verified(&digest),
+        Err(fss_pack::PackError::MissingObject(_))
+    ));
+    assert!(mixed.submit(next).is_err());
+    assert!(mixed.submit_exact_batch(exact).is_err());
+    assert!(matches!(
+        packs.read_verified(&digest),
+        Err(fss_pack::PackError::MissingObject(_))
+    ));
+    let sink = mixed.into_sink()?;
+    assert_eq!(sink.ledger().verify_full_chain()?.batches_verified, 1);
+    assert_eq!(sink.ledger().history_root(), canonical_commit.history_root);
+    assert_eq!(
+        sink.projection().head_anchor().history_root,
+        alternate_commit.history_root
+    );
+    Ok(())
+}
+
+#[test]
+fn combiner_preserves_legacy_projection_history_mode() -> TestResult {
+    use fss_projection_store::HistoryChainMode::V1LedgerOracle;
+
+    let dir = TempDir::new("legacy-projection-history")?;
+    let combiner = CommitCombiner::new(
+        history_test_sink(&dir, V1LedgerOracle)?,
+        CommitCombinerConfig::default(),
+    )?;
+    let _ = combiner.submit(make_event_proposal(0, 1, None)?)?;
+    let next = combiner.submit(make_event_proposal(0, 2, None)?)?;
+    let sink = combiner.into_sink()?;
+    assert_eq!(next.commit_sequence, 2);
+    assert_ne!(next.history_root, sink.ledger().history_root());
+    assert_eq!(next.authority_root, sink.ledger().head_anchor().state_root);
+    Ok(())
+}
+
 #[test]
 fn combiner_canonical_sort_order_is_arrival_independent() -> TestResult {
     use fss_core::BatchId;
