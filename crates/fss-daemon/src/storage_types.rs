@@ -12,14 +12,14 @@ use fss_ipc::ActiveScrubStatus;
 use fss_ledger::decode_batch;
 use fss_pack::{CapacityPressure, PackScrubReport, ScrubVerdict as PackScrubVerdict};
 use fss_projection_store::{
-    CommitCombiner, FootageAdapterKind, LedgerPackProjectionSink,
-    MvccProjectionStore, ProjectionStore, ScrubVerdict as ProjectionScrubVerdict,
+    CommitCombiner, FootageAdapterKind, LedgerPackProjectionSink, MvccProjectionStore,
+    ProjectionStore, ScrubVerdict as ProjectionScrubVerdict,
 };
 
 use crate::control::{ForwardBatchReceipt, ForwardBatchWriter};
 use crate::error::DaemonError;
 use crate::manifest::CameraAdapterKind;
-use crate::storage::forward_requests::ForwardRequestStore;
+use crate::storage::forward_requests::{ForwardRequestReservation, ForwardRequestStore};
 
 /// Receipt returned after one group-committed storage wave succeeds.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -130,31 +130,79 @@ impl ForwardBatchWriter for CombinerForwardWriter {
         batch_bytes: &[u8],
     ) -> Result<ForwardBatchReceipt, DaemonError> {
         // Invalid wire bytes cannot have produced an effect and need no reservation.
-        decode_batch(batch_bytes).map_err(|err| DaemonError::InvalidConfig {
+        let batch = decode_batch(batch_bytes).map_err(|err| DaemonError::InvalidConfig {
             detail: format!("forwarded batch decode failed: {err}"),
         })?;
         // Enforce the payload binding here as well as in the IPC handler: direct
         // trait callers cannot pair an old caller digest with different batch bytes.
         let request_digest = forward_payload_binding(request_digest, batch_bytes)?;
-        if let Some(receipt) = self
+        match self
             .forward_requests
             .reserve(idempotency_key, request_digest)?
         {
-            let head = self.projection.head_anchor();
-            if receipt.commit_sequence > head.commit_sequence
-                || (receipt.commit_sequence == head.commit_sequence
-                    && (receipt.history_root != head.history_root
-                        || receipt.state_root != head.authority_root))
-            {
-                return Err(DaemonError::Ipc(fss_ipc::IpcError::Refused {
-                    request_id: 0,
-                    error_id: ErrorId::parse("ERR-OP-RECONCILIATION-REQUIRED-001")?,
-                    reason: "forwarded completion is inconsistent with the current canonical head"
-                        .to_owned(),
-                    retryable: false,
-                }));
+            ForwardRequestReservation::Completed(receipt) => {
+                let head = self.projection.head_anchor();
+                if receipt.commit_sequence > head.commit_sequence
+                    || (receipt.commit_sequence == head.commit_sequence
+                        && (receipt.history_root != head.history_root
+                            || receipt.state_root != head.authority_root))
+                {
+                    return Err(DaemonError::Ipc(fss_ipc::IpcError::Refused {
+                        request_id: 0,
+                        error_id: ErrorId::parse("ERR-OP-RECONCILIATION-REQUIRED-001")?,
+                        reason:
+                            "forwarded completion is inconsistent with the current canonical head"
+                                .to_owned(),
+                        retryable: false,
+                    }));
+                }
+                return Ok(receipt);
             }
-            return Ok(receipt);
+            ForwardRequestReservation::Pending => {
+                // Observe only: an existing claim never permits another append. The ledger
+                // writer proves the complete original batch is its durable current head,
+                // and the sink also proves the projection published that exact commit.
+                let Some(committed) = self.combiner.receipt_for_exact_head(&batch)? else {
+                    return Err(DaemonError::Ipc(fss_ipc::IpcError::Refused {
+                        request_id: 0,
+                        error_id: ErrorId::parse("ERR-OP-RECONCILIATION-REQUIRED-001")?,
+                        reason: "pending forwarded request is not the exact verified canonical head; reconcile its outcome before retry"
+                            .to_owned(),
+                        retryable: false,
+                    }));
+                };
+                let receipt = ForwardBatchReceipt {
+                    commit_sequence: committed.sequence,
+                    history_root: committed.history_root,
+                    state_root: committed.anchor.state_root,
+                    replayed: false,
+                };
+                {
+                    let mut generations =
+                        self.object_generations
+                            .lock()
+                            .map_err(|_| DaemonError::LockPoisoned {
+                                component: "object_generations",
+                            })?;
+                    // A newer commit may follow the immutable receipt proof. Catch up the
+                    // local generation cache without ever lowering a newer generation.
+                    for delta in &batch.deltas {
+                        generations
+                            .entry(delta.object_id.clone())
+                            .and_modify(|generation| {
+                                *generation = (*generation).max(delta.new_generation);
+                            })
+                            .or_insert(delta.new_generation);
+                    }
+                }
+                self.forward_requests
+                    .complete(idempotency_key, request_digest, receipt)?;
+                return Ok(ForwardBatchReceipt {
+                    replayed: true,
+                    ..receipt
+                });
+            }
+            ForwardRequestReservation::Fresh => {}
         }
         let (commit_sequence, history_root, state_root) = self.forward_delta_batch(batch_bytes)?;
         let receipt = ForwardBatchReceipt {
@@ -200,7 +248,9 @@ impl ForwardBatchWriter for CombinerForwardWriter {
         let receipt = self.combiner.submit_exact_batch(batch.clone())?;
         if let Ok(mut gens) = self.object_generations.lock() {
             for delta in &batch.deltas {
-                gens.insert(delta.object_id.clone(), delta.new_generation);
+                gens.entry(delta.object_id.clone())
+                    .and_modify(|current| *current = (*current).max(delta.new_generation))
+                    .or_insert(delta.new_generation);
             }
         }
         Ok((

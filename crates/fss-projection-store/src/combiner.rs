@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
 use fss_core::{BatchId, CanonicalEncoder, ContentDigest, EvidenceDeltaBatch, RegionTree};
-use fss_ledger::MAX_ORACLE_CHILDREN_PER_BATCH;
+use fss_ledger::{CommitReceipt, MAX_ORACLE_CHILDREN_PER_BATCH};
 use fss_runtime::authority::AuthorityCx;
 
 use crate::error::CombinerError;
@@ -186,6 +186,30 @@ impl<S: CommitSink> CommitCombiner<S> {
             return Err(CombinerError::Cancelled);
         }
         self.submit_internal(proposal, None, None)
+    }
+
+    /// Observes an exact fully published head receipt under the same lock as commit admission.
+    ///
+    /// This method never queues or appends a write. Historical, absent, and unsupported
+    /// candidates return `None`; incomplete publication or invalid bytes return an error.
+    pub fn receipt_for_exact_head(
+        &self,
+        batch: &EvidenceDeltaBatch,
+    ) -> Result<Option<CommitReceipt>, CombinerError> {
+        if batch.deltas.len() > self.config.max_deltas_per_batch
+            || batch.children.len() > MAX_ORACLE_CHILDREN_PER_BATCH
+        {
+            return Err(CombinerError::InvalidProposal(
+                "receipt candidate exceeds canonical batch bounds",
+            ));
+        }
+        if !batch.is_canonically_ordered() || batch.computed_digest() != batch.batch_digest {
+            return Err(CombinerError::InvalidProposal(
+                "receipt candidate must be canonical with its original valid digest",
+            ));
+        }
+        let sink = self.sink.lock().map_err(|_| CombinerError::LockPoisoned)?;
+        sink.receipt_for_exact_head(batch)
     }
 
     /// Returns cumulative coalescing and fsync amortization telemetry.

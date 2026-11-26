@@ -57,10 +57,7 @@ fn open_sink_with_config(
         config,
         IncompleteTailPolicy::Reject,
     )?;
-    let packs = Arc::new(PackStore::open(
-        dir.0.join("packs"),
-        PackConfig::default(),
-    )?);
+    let packs = Arc::new(PackStore::open(dir.0.join("packs"), PackConfig::default())?);
     let projection = Arc::new(MvccProjectionStore::open_empty(
         dir.0.join("projection"),
         ledger.genesis_anchor(),
@@ -117,10 +114,9 @@ fn exact_batch_preserves_identity_successor_and_extra_children_across_reopen() -
         PackObjectInput::new(PACK_KIND_METADATA, 0, extra),
     ])?;
     batch.deltas[0].witness_digest = Some(ContentDigest::sha256(witness));
-    batch.children.extend([
-        ContentDigest::sha256(witness),
-        ContentDigest::sha256(extra),
-    ]);
+    batch
+        .children
+        .extend([ContentDigest::sha256(witness), ContentDigest::sha256(extra)]);
     batch.children.sort_unstable();
     batch.batch_digest = batch.computed_digest();
     let combiner = CommitCombiner::new(sink, CommitCombinerConfig::default())?;
@@ -191,11 +187,9 @@ fn exact_batch_requires_children_payloads_and_witnesses_before_publication() -> 
     missing_witness.batch_digest = missing_witness.computed_digest();
     let mut delta = valid.deltas[0].clone();
     delta.payload_digest = missing;
-    let missing_payload = sink.ledger().prepare_batch(
-        BatchId::parse("batch:missing-payload")?,
-        vec![delta],
-        [],
-    )?;
+    let missing_payload =
+        sink.ledger()
+            .prepare_batch(BatchId::parse("batch:missing-payload")?, vec![delta], [])?;
     let projection = Arc::clone(sink.projection());
     let combiner = CommitCombiner::new(sink, CommitCombinerConfig::default())?;
     for batch in [missing_child, missing_witness, missing_payload] {
@@ -285,9 +279,16 @@ fn queued_exact_batch_rechecks_basis_under_the_commit_lock() -> TestResult {
         thread::yield_now();
     }
     release_tx.send(())?;
-    let ordinary_receipt = ordinary_writer.join().map_err(|_| "ordinary writer panicked")??;
+    let ordinary_receipt = ordinary_writer
+        .join()
+        .map_err(|_| "ordinary writer panicked")??;
     assert_eq!(ordinary_receipt.commit_sequence, 1);
-    assert!(exact_writer.join().map_err(|_| "exact writer panicked")?.is_err());
+    assert!(
+        exact_writer
+            .join()
+            .map_err(|_| "exact writer panicked")?
+            .is_err()
+    );
     let combiner = Arc::try_unwrap(combiner).map_err(|_| "combiner still shared")?;
     let sink = combiner.into_sink()?.inner;
     assert_eq!(sink.ledger().commit_sequence(), 1);
@@ -317,7 +318,10 @@ fn exact_batch_keeps_the_committed_receipt_after_checkpoint_failure() -> TestRes
     assert!(receipt.checkpoint_failure.is_some());
     assert_eq!(receipt.batch_digest, batch.batch_digest);
     assert_eq!(projection.head_anchor().commit_sequence, 1);
-    assert_eq!(projection.head_anchor().high_water_digest, batch.batch_digest);
+    assert_eq!(
+        projection.head_anchor().high_water_digest,
+        batch.batch_digest
+    );
     fs::remove_dir(blocked)?;
     let sink = combiner.into_sink()?;
     assert_eq!(sink.ledger().read_batches_range(1, 1)?, vec![batch]);
@@ -333,11 +337,9 @@ fn exact_batch_preserves_committed_projection_failure_and_fences_later_appends()
     // Bytes exist and are authentic, but cannot decode as this projected family.
     deltas[0].family = fss_projection_store::FAMILY_EVENT_REVISION.to_owned();
     deltas[0].plane = Plane::Cognition;
-    let offered = sink.ledger().prepare_batch(
-        source.batch_id.clone(),
-        deltas,
-        source.children.clone(),
-    )?;
+    let offered =
+        sink.ledger()
+            .prepare_batch(source.batch_id.clone(), deltas, source.children.clone())?;
     let projection = Arc::clone(sink.projection());
     let combiner = CommitCombiner::new(sink, CommitCombinerConfig::default())?;
     let Err(CombinerError::CommittedProjectionFailed { receipt, .. }) =
@@ -358,3 +360,6 @@ fn exact_batch_preserves_committed_projection_failure_and_fences_later_appends()
     assert_eq!(sink.ledger().read_batches_range(1, 1)?, vec![offered]);
     Ok(())
 }
+
+#[path = "exact_batch_combiner_contract/head_recovery.rs"]
+mod head_recovery;

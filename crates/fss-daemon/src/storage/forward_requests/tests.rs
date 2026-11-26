@@ -56,12 +56,17 @@ fn completed_receipt_replays_exactly_after_reopen() -> TestResult {
     let key = digest("key");
     let request = digest("request");
     let store = ForwardRequestStore::open(&dir.0)?;
-    assert_eq!(store.reserve(key, request)?, None);
+    assert_eq!(
+        store.reserve(key, request)?,
+        ForwardRequestReservation::Fresh
+    );
     store.complete(key, request, receipt())?;
     drop(store);
 
     let reopened = ForwardRequestStore::open(&dir.0)?;
-    let replay = reopened.reserve(key, request)?.expect("retained receipt");
+    let ForwardRequestReservation::Completed(replay) = reopened.reserve(key, request)? else {
+        return Err("completed request did not replay its receipt".into());
+    };
     assert_eq!(
         replay,
         ForwardBatchReceipt {
@@ -79,13 +84,19 @@ fn pending_request_survives_reopen_without_permission_to_redispatch() -> TestRes
     let key = digest("pending");
     let request = digest("request");
     let store = ForwardRequestStore::open(&dir.0)?;
-    assert_eq!(store.reserve(key, request)?, None);
+    assert_eq!(
+        store.reserve(key, request)?,
+        ForwardRequestReservation::Fresh
+    );
     let (path, _) = store.paths(key)?;
     let before = fs::read(&path)?;
     drop(store);
 
     let reopened = ForwardRequestStore::open(&dir.0)?;
-    assert_refused(reopened.reserve(key, request), RECONCILE);
+    assert_eq!(
+        reopened.reserve(key, request)?,
+        ForwardRequestReservation::Pending
+    );
     assert_refused(reopened.reserve(key, digest("changed")), CONFLICT);
     assert_eq!(fs::read(path)?, before);
     Ok(())
@@ -107,12 +118,15 @@ fn concurrent_reservation_has_exactly_one_dispatch_owner() -> TestResult {
             .into_iter()
             .map(|handle| {
                 let result = handle.join().expect("reservation worker panicked");
-                usize::from(matches!(result, Ok(None)))
+                usize::from(matches!(result, Ok(ForwardRequestReservation::Fresh)))
             })
             .sum::<usize>()
     });
     assert_eq!(claimed, 1);
-    assert_refused(store.reserve(key, request), RECONCILE);
+    assert_eq!(
+        store.reserve(key, request)?,
+        ForwardRequestReservation::Pending
+    );
     Ok(())
 }
 
@@ -153,7 +167,10 @@ fn corrupt_or_oversized_completions_never_replay() -> TestResult {
     let store = ForwardRequestStore::open(&dir.0)?;
     let key = digest("corrupt");
     let request = digest("request");
-    assert_eq!(store.reserve(key, request)?, None);
+    assert_eq!(
+        store.reserve(key, request)?,
+        ForwardRequestReservation::Fresh
+    );
     store.complete(key, request, receipt())?;
     let (_, completed) = store.paths(key)?;
     let mut bytes = fs::read(&completed)?;
@@ -178,9 +195,15 @@ fn missing_or_mismatched_reservation_cannot_acquire_a_completion() -> TestResult
     let key = digest("key");
     let request = digest("request");
     assert_refused(store.complete(key, request, receipt()), RECONCILE);
-    assert_eq!(store.reserve(key, request)?, None);
+    assert_eq!(
+        store.reserve(key, request)?,
+        ForwardRequestReservation::Fresh
+    );
     assert_refused(store.complete(key, digest("other"), receipt()), CONFLICT);
-    assert_refused(store.reserve(key, request), RECONCILE);
+    assert_eq!(
+        store.reserve(key, request)?,
+        ForwardRequestReservation::Pending
+    );
 
     let (pending, completed) = store.paths(key)?;
     fs::remove_file(pending)?;
@@ -227,14 +250,17 @@ fn older_receipts_survive_more_than_the_hot_cache_capacity() -> TestResult {
     for index in 0..1025 {
         let key = digest(&format!("key-{index}"));
         let request = digest(&format!("request-{index}"));
-        assert_eq!(store.reserve(key, request)?, None);
+        assert_eq!(
+            store.reserve(key, request)?,
+            ForwardRequestReservation::Fresh
+        );
         store.complete(key, request, receipt())?;
     }
     drop(store);
     let reopened = ForwardRequestStore::open(&dir.0)?;
     assert_eq!(
         reopened.reserve(digest("key-0"), digest("request-0"))?,
-        Some(ForwardBatchReceipt {
+        ForwardRequestReservation::Completed(ForwardBatchReceipt {
             replayed: true,
             ..receipt()
         })
@@ -261,9 +287,66 @@ fn request_paths_reject_symlinks_and_public_permissions() -> TestResult {
     let store = ForwardRequestStore::open(&dir.0)?;
     let key = digest("private");
     let request = digest("request");
-    assert_eq!(store.reserve(key, request)?, None);
+    assert_eq!(
+        store.reserve(key, request)?,
+        ForwardRequestReservation::Fresh
+    );
     let (pending, _) = store.paths(key)?;
     fs::set_permissions(&pending, fs::Permissions::from_mode(0o644))?;
     assert_refused(store.reserve(key, request), RECONCILE);
+    Ok(())
+}
+
+#[test]
+fn identical_completion_retries_settle_without_replacing_immutable_bytes() -> TestResult {
+    let dir = TempDir::new()?;
+    let store = ForwardRequestStore::open(&dir.0)?;
+    let key = digest("completion-retry");
+    let request = digest("request");
+    assert_eq!(
+        store.reserve(key, request)?,
+        ForwardRequestReservation::Fresh
+    );
+    store.complete(key, request, receipt())?;
+    let (_, completed) = store.paths(key)?;
+    let before = fs::read(&completed)?;
+    store.complete(
+        key,
+        request,
+        ForwardBatchReceipt {
+            replayed: true,
+            ..receipt()
+        },
+    )?;
+    assert_eq!(fs::read(&completed)?, before);
+    let changed = ForwardBatchReceipt {
+        history_root: digest("different-history"),
+        ..receipt()
+    };
+    assert_refused(store.complete(key, request, changed), RECONCILE);
+    assert_eq!(fs::read(&completed)?, before);
+    Ok(())
+}
+
+#[test]
+fn completion_reconciliation_preserves_corrupt_and_partial_records() -> TestResult {
+    let dir = TempDir::new()?;
+    let store = ForwardRequestStore::open(&dir.0)?;
+    let key = digest("corrupt-completion-repair");
+    let request = digest("request");
+    assert_eq!(
+        store.reserve(key, request)?,
+        ForwardRequestReservation::Fresh
+    );
+    store.complete(key, request, receipt())?;
+    let (_, completed) = store.paths(key)?;
+    let mut corrupt = fs::read(&completed)?;
+    corrupt[20] ^= 0x80;
+    fs::write(&completed, &corrupt)?;
+    assert_refused(store.complete(key, request, receipt()), RECONCILE);
+    assert_eq!(fs::read(&completed)?, corrupt);
+    fs::write(&completed, &corrupt[..16])?;
+    assert_refused(store.complete(key, request, receipt()), RECONCILE);
+    assert_eq!(fs::read(&completed)?, &corrupt[..16]);
     Ok(())
 }

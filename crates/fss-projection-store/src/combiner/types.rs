@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use fss_core::{BatchId, ContentDigest, EvidenceDelta, EvidenceDeltaBatch, ObjectId};
 use fss_ledger::{
-    EpochLedgerError, MAX_ORACLE_CHILDREN_PER_BATCH, MAX_ORACLE_DELTAS_PER_BATCH, MerkleEpochLedger,
+    CommitReceipt, EpochLedgerError, MAX_ORACLE_CHILDREN_PER_BATCH, MAX_ORACLE_DELTAS_PER_BATCH,
+    MerkleEpochLedger,
 };
 use fss_pack::{DEFAULT_MAX_READ_BYTES, PackObjectInput, PackReadBudget, PackStore};
 
@@ -203,6 +204,17 @@ pub trait CommitSink: Send {
     /// Returns the currently committed generation of `object_id` (`None` if not yet created).
     fn current_object_generation(&self, object_id: &ObjectId) -> Option<u64>;
 
+    /// Observes an exact durable head receipt without appending or changing any state.
+    ///
+    /// Unsupported sinks leave the request unresolved. Implementations must also verify
+    /// that required materialized publication is complete before returning a receipt.
+    fn receipt_for_exact_head(
+        &self,
+        _batch: &EvidenceDeltaBatch,
+    ) -> Result<Option<CommitReceipt>, CombinerError> {
+        Ok(None)
+    }
+
     /// Commits an exact prepared batch as a singleton under the combiner's sink mutex.
     ///
     /// Implementations must preserve every anchor, delta, child, and the original batch identity.
@@ -276,6 +288,29 @@ impl LedgerPackProjectionSink {
 impl CommitSink for LedgerPackProjectionSink {
     fn current_object_generation(&self, object_id: &ObjectId) -> Option<u64> {
         self.ledger.get_object(object_id).map(|rev| rev.generation)
+    }
+
+    fn receipt_for_exact_head(
+        &self,
+        batch: &EvidenceDeltaBatch,
+    ) -> Result<Option<CommitReceipt>, CombinerError> {
+        let Some(receipt) = self.ledger.receipt_for_exact_head(batch)? else {
+            return Ok(None);
+        };
+        let projected = self.projection.head_anchor();
+        if projected.commit_sequence != receipt.sequence
+            || projected.authority_root != receipt.anchor.state_root
+            || projected.history_root != receipt.history_root
+            || projected.high_water_digest != receipt.batch_digest
+        {
+            return Err(ProjectionError::AnchorMismatch {
+                expected_sequence: receipt.sequence,
+                actual_sequence: projected.commit_sequence,
+                detail: "exact ledger head has no matching materialized publication",
+            }
+            .into());
+        }
+        Ok(Some(receipt))
     }
 
     fn commit_exact_batch(

@@ -5,6 +5,56 @@
 **Current change qualification:** each dated section below states its exact verification boundary. Native passes for one component do not qualify other changes, and prior receipts do not qualify new bytes.
 **Release authority:** repository-owned local qualification (`scripts/qualify.sh`) and retained DSR receipts, not hosted CI
 
+## Exact-head forwarded receipt recovery — 2026-11-25
+
+A retry now distinguishes a fresh durable reservation, a pending outcome, and a completed
+receipt. Only a fresh reservation can dispatch. An identical pending retry can recover its
+missing completion when the complete original batch is still the verified canonical head
+and the projection has published the same sequence, state root, history root, and high-water
+batch digest. The proof validates canonical structure and the body digest, matches the
+committed batch index and full successor anchor, and refuses unresolved append fences.
+
+Recovery performs no append or historical scan. It restores and syncs the same immutable
+completion receipt, returning the original commit identity with `replayed: true`. Completion
+races settle only after the existing record is verified byte-for-byte and synchronized;
+corrupt, partial, conflicting, orphaned, and unsupported records remain intact and refused.
+All acknowledged-generation cache updates are monotonic so a delayed older receipt cannot
+lower a newer canonical object generation.
+
+This is deliberately an exact-current-head path. Unrelated writes, including startup
+coverage or ingest, can leave an older pending request unresolved. Legacy rewritten or
+coalesced forwards are not guessed from object equality. General historical reconciliation
+and backup-format coverage for retry records remain open. See
+`docs/forwarded_request_recovery.md` for the exact recovery contract.
+
+Three ledger regressions cover reopen and historical exclusion, changed body/identity/anchor
+and noncanonical children, and pending-append fencing through native reconciliation. A
+projection regression requires exact materialized publication without committing any
+proposal. Daemon/store regressions cover missing receipt reconstruction after projection
+rebuild, copied reservations with no canonical commit, historical pending requests, changed
+request authority, immutable exact completion retries, and preservation of corrupt records.
+
+**Native verification:** on the pinned nightly/Linux x86_64, all three new
+`exact_head_receipt_contract` tests and all 13 `merkle_writer_recovery_contract` tests
+passed against the final ledger source and the updated core from concurrent main
+(`bfc12bf37612ac6a44dfdc37f3946f2cf9dc43a3`). The modified ledger library compiled successfully.
+
+The higher-level native attempts were killed while compiling unchanged registry
+dependencies (`syn 2.0.119`, then `asupersync 0.5.0`). A subsequent metadata-only targeted
+check was also killed in `asupersync 0.5.0`, before projection/daemon source diagnostics.
+Those feature tests and higher-level compilation remain unverified; no Clippy pass, full
+qualification, or broad INV-007 closure is claimed. Pinned rustfmt and whitespace checks
+passed on the final source and regression files. Independent review found and fixed the
+generation-cache race described above. Changed-path manifest hashes are verified separately
+from the repository-wide release gate.
+
+```sh
+cargo +nightly-2026-08-31 test --locked --offline -p fss-ledger --test exact_head_receipt_contract --test merkle_writer_recovery_contract
+cargo +nightly-2026-08-31 test --locked --offline -p fss-projection-store --test exact_batch_combiner_contract
+cargo +nightly-2026-08-31 test --locked --offline -p fss-daemon --test forwarded_delta_recovery_contract --test storage_retention_restart_contract
+cargo +nightly-2026-08-31 test --locked --offline -p fss-daemon --lib storage::forward_requests::tests
+```
+
 ## Exact canonical forwarding preserves caller authority — 2026-11-25
 
 The production forwarder no longer extracts deltas and silently rebases them into a newly

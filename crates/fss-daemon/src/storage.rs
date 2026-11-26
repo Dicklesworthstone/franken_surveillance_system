@@ -876,7 +876,9 @@ impl StorageEngine {
             .map_err(|_| DaemonError::LockPoisoned {
                 component: "object_generations",
             })?;
-        gens.insert(object_id, generation);
+        gens.entry(object_id)
+            .and_modify(|current| *current = (*current).max(generation))
+            .or_insert(generation);
         Ok(())
     }
 

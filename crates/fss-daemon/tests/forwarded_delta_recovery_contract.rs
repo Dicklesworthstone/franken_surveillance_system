@@ -155,7 +155,7 @@ fn forwarding_receipt_survives_new_writer_handles_and_storage_restart() -> TestR
 }
 
 #[test]
-fn committed_ledger_without_a_completion_record_requires_reconciliation() -> TestResult {
+fn exact_current_head_recovers_a_missing_completion_without_another_append() -> TestResult {
     let dir = TempDir::new()?;
     let manifest = manifest()?;
     let storage = StorageEngine::open(&manifest, Some(&dir.0))?;
@@ -174,14 +174,22 @@ fn committed_ledger_without_a_completion_record_requires_reconciliation() -> Tes
         .join("forwarded-requests")
         .join(format!("{:02x}", key.bytes()[0]))
         .join(format!("{}.committed", key.to_text().replace(':', "_")));
-    fs::remove_file(completion)?;
+    fs::remove_file(&completion)?;
+    fs::remove_dir_all(dir.0.join("projections/mvcc"))?;
 
     let reopened = StorageEngine::open(&manifest, Some(&dir.0))?;
     let writer = reopened.forward_writer();
-    let err = writer
-        .forward_delta_batch_idempotent(key, request, &bytes)
-        .expect_err("ambiguous request cannot dispatch again");
-    assert_eq!(err.error_id(), "ERR-OP-RECONCILIATION-REQUIRED-001");
+    let recovered = writer.forward_delta_batch_idempotent(key, request, &bytes)?;
+    assert!(recovered.replayed);
+    assert_eq!(recovered.commit_sequence, original.commit_sequence);
+    assert_eq!(recovered.history_root, original.history_root);
+    assert_eq!(recovered.state_root, original.state_root);
+    let completion_bytes = fs::read(&completion)?;
+    assert_eq!(
+        writer.forward_delta_batch_idempotent(key, request, &bytes)?,
+        recovered
+    );
+    assert_eq!(fs::read(&completion)?, completion_bytes);
     let head = reopened.head_snapshot()?;
     assert_eq!(head.commit_sequence, original.commit_sequence);
     assert_eq!(head.history_root, original.history_root);
@@ -309,13 +317,155 @@ fn forwarding_refuses_an_unretained_declared_child_before_advancing_authority() 
     let writer = storage.forward_writer();
     assert!(writer.forward_delta_batch(&bytes).is_err());
     assert_eq!(storage.head_snapshot()?.commit_sequence, 0);
-    storage.pack_store().append_batch(&[PackObjectInput::new(
-        PACK_KIND_METADATA,
-        0,
-        child,
-    )])?;
+    storage
+        .pack_store()
+        .append_batch(&[PackObjectInput::new(PACK_KIND_METADATA, 0, child)])?;
     assert_eq!(writer.forward_delta_batch(&bytes)?.0, 1);
     drop(writer);
     storage.shutdown_and_flush()?;
+    Ok(())
+}
+
+fn request_record_path(root: &std::path::Path, key: ContentDigest, suffix: &str) -> PathBuf {
+    root.join("forwarded-requests")
+        .join(format!("{:02x}", key.bytes()[0]))
+        .join(format!("{}.{suffix}", key.to_text().replace(':', "_")))
+}
+
+#[test]
+fn pending_historical_batch_is_not_guessed_from_the_current_object_state() -> TestResult {
+    let dir = TempDir::new()?;
+    let manifest = manifest()?;
+    let storage = StorageEngine::open(&manifest, Some(&dir.0))?;
+    let bytes = batch(&storage)?;
+    let first = decode_batch(&bytes)?;
+    let key = ContentDigest::sha256(b"historical-pending");
+    let request = ContentDigest::sha256(&bytes);
+    let writer = storage.forward_writer();
+    let _ = writer.forward_delta_batch_idempotent(key, request, &bytes)?;
+
+    let preparation = TempDir::new()?;
+    let mut oracle = MerkleEpochLedger::open(
+        preparation.0.join("ledger"),
+        "site-forward-recovery",
+        EpochLedgerConfig::default(),
+        IncompleteTailPolicy::Reject,
+    )?;
+    oracle.append_batch(first.clone())?;
+    let mut delta = first.deltas[0].clone();
+    delta.object_id = ObjectId::parse("obj:forward:after-pending")?;
+    delta.delta_id = "delta:forward:after-pending".to_owned();
+    let next = oracle.prepare_batch(
+        BatchId::parse("batch:forward:after-pending")?,
+        vec![delta],
+        first.children.clone(),
+    )?;
+    let _ = writer.forward_delta_batch(&encode_batch(&next)?)?;
+    let before = storage.head_snapshot()?;
+    drop(writer);
+    storage.shutdown_and_flush()?;
+    let completion = request_record_path(&dir.0, key, "committed");
+    fs::remove_file(&completion)?;
+    let pending = request_record_path(&dir.0, key, "reserved");
+    let pending_bytes = fs::read(&pending)?;
+
+    let reopened = StorageEngine::open(&manifest, Some(&dir.0))?;
+    let writer = reopened.forward_writer();
+    let error = writer
+        .forward_delta_batch_idempotent(key, request, &bytes)
+        .expect_err("historical pending request needs explicit reconciliation");
+    assert_eq!(error.error_id(), "ERR-OP-RECONCILIATION-REQUIRED-001");
+    assert!(!completion.exists());
+    assert_eq!(fs::read(pending)?, pending_bytes);
+    let after = reopened.head_snapshot()?;
+    assert_eq!(after.commit_sequence, before.commit_sequence);
+    assert_eq!(after.history_root, before.history_root);
+    assert_eq!(after.state_root, before.state_root);
+    drop(writer);
+    assert_eq!(reopened.shutdown_and_flush()?.verified_batches, 2);
+    Ok(())
+}
+
+#[test]
+fn copied_pending_reservation_cannot_authorize_a_fresh_dispatch() -> TestResult {
+    let source = TempDir::new()?;
+    let target = TempDir::new()?;
+    let manifest = manifest()?;
+    let source_storage = StorageEngine::open(&manifest, Some(&source.0))?;
+    let bytes = batch(&source_storage)?;
+    let key = ContentDigest::sha256(b"pending-without-commit");
+    let request = ContentDigest::sha256(&bytes);
+    let writer = source_storage.forward_writer();
+    let _ = writer.forward_delta_batch_idempotent(key, request, &bytes)?;
+    drop(writer);
+    source_storage.shutdown_and_flush()?;
+
+    let storage = StorageEngine::open(&manifest, Some(&target.0))?;
+    // Retain the same source bytes, so failure cannot be mistaken for missing payload custody.
+    assert_eq!(batch(&storage)?, bytes);
+    let source_pending = request_record_path(&source.0, key, "reserved");
+    let target_pending = request_record_path(&target.0, key, "reserved");
+    let parent = target_pending.parent().ok_or("missing retry shard")?;
+    let mut builder = fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(parent)?;
+    fs::copy(source_pending, &target_pending)?;
+    let before = fs::read(&target_pending)?;
+    let writer = storage.forward_writer();
+    let error = writer
+        .forward_delta_batch_idempotent(key, request, &bytes)
+        .expect_err("a pending claim is never permission to dispatch");
+    assert_eq!(error.error_id(), "ERR-OP-RECONCILIATION-REQUIRED-001");
+    assert_eq!(storage.head_snapshot()?.commit_sequence, 0);
+    assert_eq!(fs::read(target_pending)?, before);
+    assert!(!request_record_path(&target.0, key, "committed").exists());
+    drop(writer);
+    storage.shutdown_and_flush()?;
+    Ok(())
+}
+
+#[test]
+fn exact_head_recovery_does_not_replace_a_corrupt_completion_or_change_its_request() -> TestResult {
+    let dir = TempDir::new()?;
+    let manifest = manifest()?;
+    let storage = StorageEngine::open(&manifest, Some(&dir.0))?;
+    let bytes = batch(&storage)?;
+    let key = ContentDigest::sha256(b"corrupt-head-completion");
+    let request = ContentDigest::sha256(&bytes);
+    let writer = storage.forward_writer();
+    let original = writer.forward_delta_batch_idempotent(key, request, &bytes)?;
+    drop(writer);
+    storage.shutdown_and_flush()?;
+    let completion = request_record_path(&dir.0, key, "committed");
+    let mut corrupt = fs::read(&completion)?;
+    corrupt[20] ^= 0x80;
+    fs::write(&completion, &corrupt)?;
+
+    let reopened = StorageEngine::open(&manifest, Some(&dir.0))?;
+    let writer = reopened.forward_writer();
+    let error = writer
+        .forward_delta_batch_idempotent(key, request, &bytes)
+        .expect_err("an exact head cannot replace corrupt retry custody");
+    assert_eq!(error.error_id(), "ERR-OP-RECONCILIATION-REQUIRED-001");
+    assert_eq!(fs::read(&completion)?, corrupt);
+    fs::remove_file(&completion)?;
+    let error = writer
+        .forward_delta_batch_idempotent(key, ContentDigest::sha256(b"changed principal"), &bytes)
+        .expect_err("recovery needs the exact original request identity");
+    assert_eq!(error.error_id(), "ERR-IDEMPOTENCY-CONFLICT-001");
+    assert!(!completion.exists());
+    let recovered = writer.forward_delta_batch_idempotent(key, request, &bytes)?;
+    assert!(recovered.replayed);
+    assert_eq!(recovered.history_root, original.history_root);
+    assert_eq!(
+        reopened.head_snapshot()?.commit_sequence,
+        original.commit_sequence
+    );
+    drop(writer);
+    assert_eq!(reopened.shutdown_and_flush()?.verified_batches, 1);
     Ok(())
 }

@@ -416,7 +416,12 @@ fn delayed_event_pins_every_source_gop_in_its_interval_before_newer_footage() ->
         (SENSOR_B, 4, 1_000_003),
     ] {
         expected.insert(media_digest(&ingest(
-            &mut storage, &regions, sensor, sequence, at, 128,
+            &mut storage,
+            &regions,
+            sensor,
+            sequence,
+            at,
+            128,
         )?)?);
     }
     let newer_a = ingest(&mut storage, &regions, SENSOR_A, 5, 2_000_000, 128)?;
@@ -589,10 +594,7 @@ fn missing_event_source_refuses_corroboration_without_substituting_other_footage
         assert_eq!(after.commit_sequence, before.commit_sequence);
         assert_eq!(after.history_root, before.history_root);
         assert_eq!(after.state_root, before.state_root);
-        assert_eq!(
-            storage.projection().snapshot_latest().holds().count(),
-            0
-        );
+        assert_eq!(storage.projection().snapshot_latest().holds().count(), 0);
         assert!(
             storage
                 .retention_candidates()
@@ -605,7 +607,8 @@ fn missing_event_source_refuses_corroboration_without_substituting_other_footage
 }
 
 #[test]
-fn repeated_source_bytes_resolve_inside_event_window_without_accepting_outside_frames() -> TestResult {
+fn repeated_source_bytes_resolve_inside_event_window_without_accepting_outside_frames() -> TestResult
+{
     let dir = TempDirGuard::new("event-repeated-source")?;
     let manifest = manifest(1_048_576)?;
     let regions =

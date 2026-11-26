@@ -2,8 +2,8 @@
 //! Durable retry identity for forwarded batches. These records bind requests to verified
 //! receipts; canonical world history remains exclusively in the evidence ledger.
 //!
-//! A reservation without a completion is deliberately not replayed. The ledger may have
-//! committed before the caller lost its receipt, so that cut requires reconciliation.
+//! A reservation without a completion is never permission to dispatch again. The owner may
+//! reconcile only a proven exact canonical commit; otherwise the request remains pending.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
@@ -27,6 +27,14 @@ pub(crate) struct ForwardRequestStore {
     dir: PathBuf,
 }
 
+/// A durable claim distinguishes a fresh dispatch from a retry that needs outcome proof.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ForwardRequestReservation {
+    Fresh,
+    Pending,
+    Completed(ForwardBatchReceipt),
+}
+
 impl ForwardRequestStore {
     pub(crate) fn open(root: &Path) -> Result<Self, DaemonError> {
         let dir = root.join("forwarded-requests");
@@ -44,12 +52,13 @@ impl ForwardRequestStore {
         ))
     }
 
-    /// Returns the original receipt, or durably claims a fresh key before any mutation.
+    /// Returns a verified receipt, an unresolved existing claim, or a newly durable claim.
+    /// Only `Fresh` permits dispatch; `Pending` requires independent canonical outcome proof.
     pub(crate) fn reserve(
         &self,
         key: ContentDigest,
         request: ContentDigest,
-    ) -> Result<Option<ForwardBatchReceipt>, DaemonError> {
+    ) -> Result<ForwardRequestReservation, DaemonError> {
         let (pending_path, completed_path) = self.paths(key)?;
         if let Some(pending) = read_record(&pending_path)? {
             pending.check_identity(key, request)?;
@@ -57,17 +66,14 @@ impl ForwardRequestStore {
                 return Err(refused(RECONCILE, "reservation has a completion lifecycle"));
             }
             let Some(completed) = read_record(&completed_path)? else {
-                return Err(refused(
-                    RECONCILE,
-                    "forwarded request was reserved without a verified completion; reconcile its ledger outcome before any retry",
-                ));
+                return Ok(ForwardRequestReservation::Pending);
             };
             completed.check_identity(key, request)?;
             let mut receipt = completed.receipt.ok_or_else(|| {
                 refused(RECONCILE, "completion record has a reservation lifecycle")
             })?;
             receipt.replayed = true;
-            return Ok(Some(receipt));
+            return Ok(ForwardRequestReservation::Completed(receipt));
         }
         if read_record(&completed_path)?.is_some() {
             return Err(refused(
@@ -83,7 +89,7 @@ impl ForwardRequestStore {
                 receipt: None,
             },
         )?;
-        Ok(None)
+        Ok(ForwardRequestReservation::Fresh)
     }
 
     pub(crate) fn complete(
@@ -99,14 +105,30 @@ impl ForwardRequestStore {
         if pending.receipt.is_some() || receipt.commit_sequence == 0 {
             return Err(refused(RECONCILE, "invalid forwarded completion lifecycle"));
         }
-        write_new_record(
-            &completed_path,
-            &Record {
-                key,
-                request,
-                receipt: Some(receipt),
-            },
-        )
+        let desired = Record {
+            key,
+            request,
+            receipt: Some(receipt),
+        };
+        match write_new_record(&completed_path, &desired) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                // Another exact retry may finish the same receipt, or publication may have
+                // succeeded before a lost sync acknowledgement. Verify and sync the complete
+                // immutable bytes; never replace a partial, conflicting, or corrupt record.
+                if let Some(existing) = read_record(&completed_path)? {
+                    existing.check_identity(key, request)?;
+                    if existing.encode()? == desired.encode()? {
+                        return Ok(());
+                    }
+                    return Err(refused(
+                        RECONCILE,
+                        "existing forwarded completion differs from the proven receipt",
+                    ));
+                }
+                Err(error)
+            }
+        }
     }
 }
 

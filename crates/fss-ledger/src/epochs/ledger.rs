@@ -299,6 +299,49 @@ impl MerkleEpochLedger {
         self.history_root
     }
 
+    /// Recovers a receipt only when the offered batch is exactly the verified current head.
+    ///
+    /// This performs no append, repair, or historical scan. A nonmatching or historical
+    /// request remains unresolved; an indeterminate writer must be reconciled separately.
+    pub fn receipt_for_exact_head(
+        &self,
+        batch: &EvidenceDeltaBatch,
+    ) -> Result<Option<CommitReceipt>, EpochLedgerError> {
+        self.active_writer.ensure_reconciled()?;
+        check_counts(batch.deltas.len(), batch.children.len())?;
+        check_texts(&batch.deltas, &batch.basis_anchor, &batch.new_anchor)?;
+        check_deltas(&batch.deltas)?;
+        if !batch.is_canonically_ordered() {
+            return Err(EpochLedgerError::NonCanonicalOrdering {
+                batch_id: batch.batch_id.clone(),
+            });
+        }
+        let computed = batch.computed_digest();
+        if computed != batch.batch_digest {
+            return Err(EpochLedgerError::BatchDigestMismatch {
+                batch_id: batch.batch_id.clone(),
+                declared: batch.batch_digest,
+                computed,
+            });
+        }
+        if batch.new_anchor != self.head_anchor {
+            return Ok(None);
+        }
+        let Some(&(sequence, digest)) = self.batch_index.get(&batch.batch_id) else {
+            return Ok(None);
+        };
+        if sequence != self.head_anchor.commit_sequence || digest != batch.batch_digest {
+            return Ok(None);
+        }
+        Ok(Some(CommitReceipt {
+            sequence,
+            batch_id: batch.batch_id.clone(),
+            batch_digest: digest,
+            anchor: self.head_anchor.clone(),
+            history_root: self.history_root,
+        }))
+    }
+
     /// Latest committed canonical v2 Radix-Merkle state root.
     #[must_use]
     pub const fn state_root(&self) -> ContentDigest {
