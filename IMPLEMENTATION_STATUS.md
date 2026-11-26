@@ -5,6 +5,33 @@
 **Current change qualification:** each dated section below states its exact verification boundary. Native passes for one component do not qualify other changes, and prior receipts do not qualify new bytes.
 **Release authority:** repository-owned local qualification (`scripts/qualify.sh`) and retained DSR receipts, not hosted CI
 
+## Verified direct-root and metadata custody before publication — 2026-11-26
+
+Single-root, batch, graph, and superseding-root publication now verify the descriptor's
+direct root bytes and optional metadata bytes through the bounded, tombstone-aware
+CRC/SHA-256 reader before catalog visibility. A derived index entry alone no longer
+establishes custody. Missing, corrupted, oversized, or permanently deleted bytes refuse
+publication; a failed supersession leaves the previous root live and a failed batch
+publishes none of its roots.
+
+Publication retains a reader epoch through catalog mutation, preventing compaction
+from unlinking verified packs. The existing catalog ownership barrier now also spans
+eviction object-tombstone commitment. Format-specific graph owners still validate
+recursive child closure and stale retention plans still require their existing
+shared-reference revalidation; this change does not claim full graph qualification.
+
+Seven new regression functions cover all four publication APIs, missing attached
+metadata, corruption after ingest, tombstoned bytes reinserted into the index, batch
+atomicity and reopen, staged graph retry and reopen, identical root/metadata references,
+and configured read bounds.
+
+**Verification boundary:** source review, pinned rustfmt, and whitespace checks passed.
+Both the focused native test build and a metadata-only Cargo check were killed by
+SIGKILL while compiling the unchanged `asupersync 0.5.0` dependency, before the pack
+test target could compile or execute. The seven regressions remain unexecuted.
+This is partial implementation evidence for FSS-018 / INV-011 / XFER-INV-004, not
+a closed requirement, retained qualification, or release claim.
+
 ## Fail-closed operation-registry admission — 2026-11-26
 
 The operation resolver now structurally validates the supplied ContractBasis and

@@ -93,17 +93,17 @@ impl PackStore {
         let reclaimable_set: BTreeSet<ContentDigest> =
             batch.reclaimable_digests.iter().copied().collect();
 
-        {
-            let mut catalog_guard = self.catalog.write().map_err(|_| PackError::LockPoisoned)?;
-            for tomb in &batch.tombstones {
-                if catalog_guard.get_root(&tomb.import_id).is_some() {
-                    let _ = catalog_guard.tombstone_root(&tomb.import_id, tomb.reason_digest)?;
-                }
-                committed_import_ids.push(tomb.import_id.clone());
-                for &digest in &tomb.object_digests {
-                    if reclaimable_set.contains(&digest) {
-                        digest_reasons.push((digest, tomb.reason_digest));
-                    }
+        // Serialize direct-reference verification/publication with object tombstone commitment.
+        // The caller still owns retention-plan and shared-reference revalidation.
+        let mut catalog_guard = self.catalog.write().map_err(|_| PackError::LockPoisoned)?;
+        for tomb in &batch.tombstones {
+            if catalog_guard.get_root(&tomb.import_id).is_some() {
+                let _ = catalog_guard.tombstone_root(&tomb.import_id, tomb.reason_digest)?;
+            }
+            committed_import_ids.push(tomb.import_id.clone());
+            for &digest in &tomb.object_digests {
+                if reclaimable_set.contains(&digest) {
+                    digest_reasons.push((digest, tomb.reason_digest));
                 }
             }
         }

@@ -3,6 +3,7 @@
 //! and the unbounded virtual root catalog under the root-last publication invariant.
 
 mod maintenance;
+mod publication;
 mod reader;
 
 use std::fs::{self, File, OpenOptions, TryLockError};
@@ -317,21 +318,15 @@ impl PackStore {
         let child_locations = self.append_batch(children)?;
         let pack_fsyncs_after = self.pack_fsync_count.load(Ordering::Relaxed);
 
-        {
-            let index_guard = self.index.read().map_err(|_| PackError::LockPoisoned)?;
-            if !index_guard.contains(&root_record.root_digest) {
-                return Err(PackError::MissingObject(root_record.root_digest));
-            }
-        }
-
-        if let Some(PackCutPoint::AfterPackSyncBeforeRootAppend) = cut_point {
-            return Err(PackError::InjectedCrash(
-                PackCutPoint::AfterPackSyncBeforeRootAppend,
-            ));
-        }
-
         let (receipt, catalog_fsyncs) = {
             let mut catalog_guard = self.catalog.write().map_err(|_| PackError::LockPoisoned)?;
+            let custody = publication::PublicationCustody::new(self)?;
+            custody.verify_root(&root_record)?;
+            if let Some(PackCutPoint::AfterPackSyncBeforeRootAppend) = cut_point {
+                return Err(PackError::InjectedCrash(
+                    PackCutPoint::AfterPackSyncBeforeRootAppend,
+                ));
+            }
             let before = catalog_guard.fsync_count();
             let receipt = catalog_guard.publish_root(root_record)?;
             let after = catalog_guard.fsync_count();
@@ -347,54 +342,47 @@ impl PackStore {
         })
     }
 
-    /// Publishes one root record whose `root_digest` is already durably stored in the packfile store.
+    /// Publishes one root after freshly verifying its root and attached metadata bytes.
+    /// Missing, corrupt, tombstoned, or over-budget references refuse before catalog mutation.
     pub fn publish_root(
         &self,
         root_record: VirtualRootRecord,
     ) -> Result<RootPublishReceipt, PackError> {
         root_record.validate()?;
-        {
-            let index_guard = self.index.read().map_err(|_| PackError::LockPoisoned)?;
-            if !index_guard.contains(&root_record.root_digest) {
-                return Err(PackError::MissingObject(root_record.root_digest));
-            }
-        }
         let mut catalog_guard = self.catalog.write().map_err(|_| PackError::LockPoisoned)?;
+        let custody = publication::PublicationCustody::new(self)?;
+        custody.verify_root(&root_record)?;
         catalog_guard.publish_root(root_record)
     }
 
-    /// Group-commits a batch of root records whose `root_digest`s are already stored in packs.
+    /// Group-commits roots only after every root and attached metadata object verifies.
+    /// A rejected reference leaves the entire catalog batch unpublished.
     pub fn publish_roots_batch(
         &self,
         root_records: &[VirtualRootRecord],
     ) -> Result<Vec<RootPublishReceipt>, PackError> {
-        {
-            let index_guard = self.index.read().map_err(|_| PackError::LockPoisoned)?;
-            for rec in root_records {
-                rec.validate()?;
-                if !index_guard.contains(&rec.root_digest) {
-                    return Err(PackError::MissingObject(rec.root_digest));
-                }
-            }
+        for rec in root_records {
+            rec.validate()?;
         }
         let mut catalog_guard = self.catalog.write().map_err(|_| PackError::LockPoisoned)?;
+        let custody = publication::PublicationCustody::new(self)?;
+        for rec in root_records {
+            custody.verify_root(rec)?;
+        }
         catalog_guard.publish_roots_batch(root_records)
     }
 
-    /// Atomically supersedes a `Live` root with `new_record` (whose digest must exist in packs).
+    /// Atomically supersedes a `Live` root after verifying the replacement's root and metadata.
+    /// Failed custody verification leaves the previous root live.
     pub fn supersede_root(
         &self,
         old_id: &str,
         new_record: VirtualRootRecord,
     ) -> Result<RootPublishReceipt, PackError> {
         new_record.validate()?;
-        {
-            let index_guard = self.index.read().map_err(|_| PackError::LockPoisoned)?;
-            if !index_guard.contains(&new_record.root_digest) {
-                return Err(PackError::MissingObject(new_record.root_digest));
-            }
-        }
         let mut catalog_guard = self.catalog.write().map_err(|_| PackError::LockPoisoned)?;
+        let custody = publication::PublicationCustody::new(self)?;
+        custody.verify_root(&new_record)?;
         catalog_guard.supersede_root(old_id, new_record)
     }
 
