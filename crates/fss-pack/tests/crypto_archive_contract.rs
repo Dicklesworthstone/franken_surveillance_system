@@ -167,6 +167,7 @@ struct MockS3State {
     requests: Vec<RecordedS3Request>,
     next_upload_seq: u64,
     force_redirect_on_key: Option<String>,
+    mislabel_ranges: bool,
 }
 
 struct LoopbackS3Server {
@@ -420,7 +421,11 @@ fn handle_mock_s3_connection(
                         && end < data.len()
                     {
                         let slice = &data[start..=end];
-                        let content_range = format!("bytes {start}-{end}/{}", data.len());
+                        let content_range = if guard.mislabel_ranges {
+                            format!("bytes 0-0/{}", data.len())
+                        } else {
+                            format!("bytes {start}-{end}/{}", data.len())
+                        };
                         write_http_reply(
                             stream,
                             206,
@@ -1425,6 +1430,26 @@ fn cold_tier_loopback_s3_e2e_archive_audit_tamper_evict_and_restore() -> TestRes
         sample_range_bytes: 512,
         ..ColdAuditConfig::default()
     };
+    // Return exactly the expected bytes and ETag with the wrong range identity.
+    server
+        .state
+        .lock()
+        .map_err(|_| "mock state poisoned")?
+        .mislabel_ranges = true;
+    let wrong_range =
+        audit_cold_pack_retrievability(&mut transport, &arch_p1.manifest, &full_audit_cfg, now)?;
+    assert_eq!(wrong_range.verdict, ColdRetrievabilityVerdict::Corrupted);
+    assert_eq!(wrong_range.range_samples_verified, 0);
+    assert_eq!(wrong_range.bytes_verified, 0);
+    assert!(!wrong_range.whole_pack_sha256_verified);
+    assert!(wrong_range.requires_repair_obligation);
+    wrong_range.verify_digest()?;
+    server
+        .state
+        .lock()
+        .map_err(|_| "mock state poisoned")?
+        .mislabel_ranges = false;
+
     let audit_p1 = audit_cold_pack_retrievability(
         &mut transport,
         &arch_p1.manifest,

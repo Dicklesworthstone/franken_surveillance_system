@@ -37,6 +37,32 @@ impl HttpReply {
         }
         Ok(first)
     }
+
+    /// A 206 body is evidence for a byte interval only if the provider declares that interval.
+    pub(super) fn verify_content_range(&self, start: u64, end: u64) -> Result<(), PackError> {
+        let invalid = || PackError::ArchiveIntegrity {
+            detail: "Range-GET Content-Range does not identify the requested interval".to_owned(),
+        };
+        let value = self.unique_header("content-range").map_err(|_| invalid())?;
+        let (unit, spec) = value.split_once(' ').ok_or_else(invalid)?;
+        let (interval, total) = spec.split_once('/').ok_or_else(invalid)?;
+        let (first, last) = interval.split_once('-').ok_or_else(invalid)?;
+        let decimal = |digits: &str| -> Option<u64> {
+            if digits.bytes().all(|c| c.is_ascii_digit()) {
+                digits.parse().ok()
+            } else {
+                None
+            }
+        };
+        if !unit.eq_ignore_ascii_case("bytes")
+            || decimal(first) != Some(start)
+            || decimal(last) != Some(end)
+            || (total != "*" && decimal(total).is_none_or(|len| len <= end))
+        {
+            return Err(invalid());
+        }
+        Ok(())
+    }
 }
 
 pub(super) fn validate_object_key(key: &str) -> Result<(), PackError> {
@@ -665,6 +691,31 @@ pub(super) fn parse_flat_s3_xml(
 mod tests {
     use super::*;
     use fss_vault::{AdapterFamily, SecretBytes, SecretScope};
+
+    #[test]
+    fn range_receipts_require_one_matching_content_range() {
+        let mut reply = HttpReply {
+            status: 206,
+            headers: Vec::new(),
+            body: Vec::new(),
+        };
+        assert!(reply.verify_content_range(8, 11).is_err());
+        for (value, valid) in [
+            ("bytes 8-11/12", true),
+            ("BYTES 08-11/*", true),
+            ("bytes 0-3/12", false),
+            ("bytes 8-11/11", false),
+            ("bytes 8-11/+12", false),
+            ("bytes 8-11/18446744073709551616", false),
+            ("items 8-11/12", false),
+            ("bytes */12", false),
+        ] {
+            reply.headers = vec![("content-range".to_owned(), value.to_owned())];
+            assert_eq!(reply.verify_content_range(8, 11).is_ok(), valid, "{value}");
+        }
+        reply.headers = vec![("content-range".to_owned(), "bytes 8-11/12".to_owned()); 2];
+        assert!(reply.verify_content_range(8, 11).is_err());
+    }
 
     #[test]
     fn sigv4_matches_aws_published_get_vector() -> Result<(), Box<dyn std::error::Error>> {

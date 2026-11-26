@@ -231,7 +231,6 @@ pub fn audit_cold_pack_retrievability(
     let ranges = build_audit_ranges(manifest.ciphertext_bytes, config);
     let requested_count = u32::try_from(ranges.len()).map_err(|_| PackError::ArithmeticOverflow)?;
     let mut sample_results = Vec::with_capacity(ranges.len());
-    let mut sample_slices: Vec<(u64, Vec<u8>)> = Vec::with_capacity(ranges.len());
     let mut verified_samples = 0_u32;
     let mut bytes_verified = 0_u64;
     let mut observed_etag: Option<String> = None;
@@ -249,8 +248,11 @@ pub fn audit_cold_pack_retrievability(
                     sample_sha256: sample_sha,
                     etag_matched,
                 });
-                bytes_verified = bytes_verified.saturating_add(len);
-                if !etag_matched {
+                let exact_range = resp.object_key == manifest.object_key
+                    && resp.start_inclusive == start
+                    && resp.end_inclusive == end
+                    && len == end - start + 1;
+                if !etag_matched || !exact_range {
                     return finalize_audit_receipt(
                         manifest,
                         None,
@@ -261,12 +263,12 @@ pub fn audit_cold_pack_retrievability(
                         false,
                         bytes_verified,
                         ColdRetrievabilityVerdict::Corrupted,
-                        "Range-GET ETag diverged from published manifest ETag".to_owned(),
+                        "Range-GET identity, interval, length, or ETag differs from request".to_owned(),
                         now_ns,
                     );
                 }
+                bytes_verified = bytes_verified.saturating_add(len);
                 verified_samples = verified_samples.saturating_add(1);
-                sample_slices.push((start, resp.body));
             }
             Err(PackError::ArchiveMissing { .. }) => {
                 return finalize_audit_receipt(
@@ -370,9 +372,8 @@ pub fn audit_cold_pack_retrievability(
 
     observed_etag = Some(get_resp.etag.clone());
     let observed_sha = ContentDigest::sha256(&get_resp.body);
-    bytes_verified = bytes_verified.saturating_add(get_resp.body.len() as u64);
 
-    if get_resp.etag != manifest.etag {
+    if get_resp.object_key != manifest.object_key || get_resp.etag != manifest.etag {
         return finalize_audit_receipt(
             manifest,
             Some(observed_sha),
@@ -383,7 +384,7 @@ pub fn audit_cold_pack_retrievability(
             false,
             bytes_verified,
             ColdRetrievabilityVerdict::Corrupted,
-            "whole-pack GET ETag mismatch against manifest".to_owned(),
+            "whole-pack GET object key or ETag mismatch against manifest".to_owned(),
             now_ns,
         );
     }
@@ -406,12 +407,12 @@ pub fn audit_cold_pack_retrievability(
             now_ns,
         );
     }
-    for (offset, expected_slice) in &sample_slices {
-        let start = usize::try_from(*offset).map_err(|_| PackError::ArithmeticOverflow)?;
-        let end = start
-            .checked_add(expected_slice.len())
-            .ok_or(PackError::ArithmeticOverflow)?;
-        if end > get_resp.body.len() || &get_resp.body[start..end] != expected_slice.as_slice() {
+    for sample in &sample_results {
+        let offset = sample.offset;
+        let start = usize::try_from(offset).map_err(|_| PackError::ArithmeticOverflow)?;
+        let len = usize::try_from(sample.len).map_err(|_| PackError::ArithmeticOverflow)?;
+        let end = start.checked_add(len).ok_or(PackError::ArithmeticOverflow)?;
+        if get_resp.body.get(start..end).map(ContentDigest::sha256) != Some(sample.sample_sha256) {
             return finalize_audit_receipt(
                 manifest,
                 Some(observed_sha),
@@ -451,7 +452,7 @@ pub fn audit_cold_pack_retrievability(
         verified_samples,
         sample_results,
         true,
-        bytes_verified,
+        bytes_verified.saturating_add(manifest.ciphertext_bytes),
         ColdRetrievabilityVerdict::Verified,
         "all Range-GET samples and whole-pack ciphertext SHA-256 verified".to_owned(),
         now_ns,
@@ -557,6 +558,11 @@ fn download_decrypt_and_verify_pack(
         });
     }
     let resp = transport.get_object(&manifest.object_key, max_download_bytes, now_ns)?;
+    if resp.object_key != manifest.object_key {
+        return Err(PackError::ArchiveIntegrity {
+            detail: "downloaded ciphertext belongs to a different object key".to_owned(),
+        });
+    }
     if resp.body.len() as u64 != manifest.ciphertext_bytes {
         return Err(PackError::ArchiveIntegrity {
             detail: format!(

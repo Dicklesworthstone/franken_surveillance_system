@@ -737,6 +737,7 @@ impl ColdPackTransport for S3CompatiblePackTransport {
                 detail: format!("Range-GET expected HTTP 206, received {}", reply.status),
             });
         }
+        reply.verify_content_range(start_inclusive, end_inclusive)?;
         if reply.body.len() != expected_len {
             return Err(PackError::ArchiveIntegrity {
                 detail: format!(
