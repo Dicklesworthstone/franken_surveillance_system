@@ -715,6 +715,17 @@ impl LedgerSchemaMigrator {
         let _ = source
             .verify_storage()
             .map_err(|e| LedgerMigrationError::SourceCorruptOrPending(e.to_string()))?;
+        for batch in source.batches() {
+            for delta in &batch.deltas {
+                if !authority.allowed_planes.contains(&delta.plane) {
+                    return Err(LedgerMigrationError::AuthorityRefused(format!(
+                        "migration authority lacks plane {:?} required for source batch '{}'",
+                        delta.plane,
+                        batch.batch_id.as_str()
+                    )));
+                }
+            }
+        }
         let source_head_anchor = source.current().anchor.clone();
         let source_history_root = source.head_history_root();
 
@@ -731,7 +742,9 @@ impl LedgerSchemaMigrator {
             let raw =
                 fs::read(&receipt_path).map_err(|e| LedgerMigrationError::Io(e.to_string()))?;
             let existing = LedgerMigrationReceipt::from_canonical_bytes(&raw)?;
-            if existing.site_lineage != site_lineage
+            if existing.from_version != StorageSchemaVersion::V1_0
+                || existing.to_version != StorageSchemaVersion::V2_0
+                || existing.site_lineage != site_lineage
                 || existing.source_history_root != source_history_root
                 || existing.source_head_anchor.commit_sequence != source_head_anchor.commit_sequence
             {
@@ -813,6 +826,11 @@ impl LedgerSchemaMigrator {
         if let Err(err) = fs::rename(&staging_dir, target_epochs_dir) {
             let _ = fs::remove_dir_all(&staging_dir);
             return Err(LedgerMigrationError::Io(err.to_string()));
+        }
+        if let Some(parent) = target_epochs_dir.parent()
+            && let Ok(dir) = fs::File::open(parent)
+        {
+            let _ = dir.sync_all();
         }
         Ok(receipt)
     }

@@ -157,6 +157,24 @@ fn migrates_live_v1_journal_to_v2_epochs_with_merkle_proofs_and_idempotency() ->
     ));
     assert!(!v2_dir.exists());
 
+    // Migration authority lacking Plane::Effect present in source journal -> MUST fail closed!
+    let mut partial_plane_auth = StorageAuthorityScope::active(cb, 1, 1, [Plane::Authority]);
+    partial_plane_auth.allows_migration = true;
+    assert!(matches!(
+        LedgerSchemaMigrator::migrate_v1_journal_to_v2_epochs(
+            "mig:v1_to_v2:partial-plane",
+            &v1_path,
+            &v2_dir,
+            site,
+            &partial_plane_auth,
+            EpochLedgerConfig::default(),
+            TimestampNs(10_050),
+            None,
+        ),
+        Err(LedgerMigrationError::AuthorityRefused(_))
+    ));
+    assert!(!v2_dir.exists());
+
     // Authorize migration and run!
     auth.allows_migration = true;
     let receipt = LedgerSchemaMigrator::migrate_v1_journal_to_v2_epochs(

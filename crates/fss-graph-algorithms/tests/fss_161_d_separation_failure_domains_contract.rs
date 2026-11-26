@@ -320,6 +320,11 @@ fn shared_failure_domains_refute_corroboration_and_redaction_downgrades_certific
             "poe-sw-1",
             &vec_s(&["cam-a", "cam-b"]),
         )?,
+        FailureDomain::new(
+            FailureDomainKind::Power,
+            "breaker-1",
+            &vec_s(&["cam-a", "cam-b"]),
+        )?,
         FailureDomain::new(FailureDomainKind::Power, "ups-2", &vec_s(&["cam-c"]))?,
         FailureDomain::new(FailureDomainKind::Network, "uplink-2", &vec_s(&["cam-c"]))?,
     ];
@@ -336,7 +341,7 @@ fn shared_failure_domains_refute_corroboration_and_redaction_downgrades_certific
         false,
     )?;
 
-    // 1. {cam-a, cam-b} CANNOT corroborate independently because of shared fork `failure/network/poe-sw-1`!
+    // 1. {cam-a, cam-b} CANNOT corroborate independently; BOTH shared forks must be reported!
     let report_ab = dag.assess_corroboration_independence(
         "corrob:ab",
         &vec_s(&["sensor/cam-a", "sensor/cam-b"]),
@@ -351,7 +356,10 @@ fn shared_failure_domains_refute_corroboration_and_redaction_downgrades_certific
     );
     assert_eq!(
         report_ab.pair_findings[0].shared_fork_causes,
-        vec!["failure/network/poe-sw-1".to_owned()]
+        vec![
+            "failure/network/poe-sw-1".to_owned(),
+            "failure/power/breaker-1".to_owned(),
+        ]
     );
 
     // 2. {cam-a, cam-c} ARE CertifiedDSeparated given {} (disjoint failure domains; zone/rear is an unconditioned collider)!
@@ -384,13 +392,16 @@ fn shared_failure_domains_refute_corroboration_and_redaction_downgrades_certific
         CorroborationIndependenceStatus::ConfoundedBySharedDomains
     );
 
-    // 4. Privacy/capability redaction of `failure/network/poe-sw-1` BEFORE expansion:
+    // 4. Privacy/capability redaction of both shared domains BEFORE expansion:
     //    cam-a and cam-b appear disconnected on the partial view, MUST downgrade to
     //    `DSeparatedOnPartialView` / `UncertifiedPartialView` — NEVER `CertifiedDSeparated`!
     let mut redacted_auth = auth.clone();
     redacted_auth
         .redacted_node_ids
         .insert("failure/network/poe-sw-1".to_owned());
+    redacted_auth
+        .redacted_node_ids
+        .insert("failure/power/breaker-1".to_owned());
     let redacted_dag = CausalDag::from_failure_domains(
         &coverage,
         &domains,

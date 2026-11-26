@@ -1442,8 +1442,12 @@ impl CausalDag {
         if cancelled {
             return Err(DSeparationError::Cancelled);
         }
-        validate_label(query_prefix, MAX_D_SEP_LABEL_BYTES, "query_prefix")?;
-        let (sensors, _) = self.resolve_query_set(sensor_node_ids, false, "sensors")?;
+        validate_label(query_prefix, MAX_D_SEP_LABEL_BYTES - 16, "query_prefix")?;
+        let (sensors, sensor_indices) =
+            self.resolve_query_set(sensor_node_ids, false, "sensors")?;
+        let (_, conditioned_indices) =
+            self.resolve_query_set(conditioned_ids, true, "conditioned")?;
+        let conditioned_set: BTreeSet<u32> = conditioned_indices.into_iter().collect();
         if sensors.len() < 2 {
             return Err(DSeparationError::InvalidInput(
                 "corroboration independence assessment requires at least 2 distinct sensors"
@@ -1481,11 +1485,20 @@ impl CausalDag {
                         limit,
                     });
                 }
-                let shared_fork_causes = receipt
-                    .active_path
-                    .as_ref()
-                    .map(|p| p.fork_causes().into_iter().map(ToOwned::to_owned).collect())
-                    .unwrap_or_default();
+                let mut fork_causes_set: BTreeSet<String> = BTreeSet::new();
+                let parents_i = &self.parents[sensor_indices[i] as usize];
+                let parents_j = &self.parents[sensor_indices[j] as usize];
+                for &p in parents_i {
+                    if !conditioned_set.contains(&p) && parents_j.binary_search(&p).is_ok() {
+                        fork_causes_set.insert(self.node_ids[p as usize].clone());
+                    }
+                }
+                if let Some(ref p) = receipt.active_path {
+                    for cause in p.fork_causes() {
+                        fork_causes_set.insert(cause.to_owned());
+                    }
+                }
+                let shared_fork_causes: Vec<String> = fork_causes_set.into_iter().collect();
                 match receipt.verdict {
                     DSeparationVerdict::DConnected => any_confounded = true,
                     DSeparationVerdict::DSeparatedOnPartialView => any_partial = true,
