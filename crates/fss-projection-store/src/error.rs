@@ -3,9 +3,10 @@
 
 use core::fmt;
 use std::io;
+use std::sync::Arc;
 
 use fss_core::{ContentDigest, ContractError, ObjectId};
-use fss_ledger::{BatchCodecError, EpochLedgerError};
+use fss_ledger::{BatchCodecError, CommitReceipt, EpochLedgerError};
 use fss_pack::PackError;
 
 /// Disk or filesystem operation associated with a [`ProjectionError::Io`] failure.
@@ -282,6 +283,16 @@ pub enum CombinerError {
     Ledger(EpochLedgerError),
     /// Underlying materialized projection apply failed.
     Projection(ProjectionError),
+    /// The canonical batch is durable, but the projection operation returned an error.
+    /// Reconcile the projection from the committed receipt; do not resubmit the wave.
+    CommittedProjectionFailed {
+        /// Exact receipt from the ledger, shared across submitters in this wave.
+        receipt: Arc<CommitReceipt>,
+        /// Independent failure of periodic ledger checkpoint maintenance, when attempted.
+        checkpoint_failure: Option<Arc<str>>,
+        /// Failure while applying or checkpointing the projection.
+        source: Arc<ProjectionError>,
+    },
     /// Sink reported an opaque typed failure.
     SinkFailure(String),
     /// Internal combiner mutex or condvar lock was poisoned.
@@ -316,6 +327,21 @@ impl fmt::Display for CombinerError {
             Self::Pack(err) => write!(f, "commit combiner pack error: {err}"),
             Self::Ledger(err) => write!(f, "commit combiner ledger error: {err}"),
             Self::Projection(err) => write!(f, "commit combiner projection error: {err}"),
+            Self::CommittedProjectionFailed {
+                receipt,
+                checkpoint_failure,
+                source,
+            } => {
+                write!(
+                    f,
+                    "batch {} durably committed at sequence {}, projection operation failed: {source}",
+                    receipt.batch_id, receipt.sequence
+                )?;
+                if let Some(checkpoint) = checkpoint_failure {
+                    write!(f, "; ledger checkpoint also failed: {checkpoint}")?;
+                }
+                Ok(())
+            }
             Self::SinkFailure(msg) => write!(f, "commit combiner sink failure: {msg}"),
             Self::LockPoisoned => f.write_str("commit combiner lock poisoned"),
         }

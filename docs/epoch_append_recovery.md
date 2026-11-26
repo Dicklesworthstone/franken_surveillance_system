@@ -41,10 +41,12 @@ on the same adapter handle. Its retained duplicate identity remains intact. An u
 append still fences this repair. The lower-level ledger exposes its existing
 `force_checkpoint` for callers that own its authority boundary.
 
-The direct pack/ledger/projection combiner currently propagates this error before projection
-application. In that path, canonical evidence can be durable while projection publication
-is still pending; the error is not a successful end-to-end projection receipt. Projection
-replay and checkpoint repair must preserve that distinction.
+The direct pack/ledger/projection combiner uses the durable receipt to apply the batch
+when a periodic ledger checkpoint fails. After successful projection, each submitter and
+the daemon storage caller receive the commit identity and a separate checkpoint diagnostic.
+If projection also fails, `CommittedProjectionFailed` carries the original ledger receipt,
+the projection error, and any ledger checkpoint diagnostic. Recover the projection against
+that receipt before submitting further evidence.
 
 ## Verification boundary
 

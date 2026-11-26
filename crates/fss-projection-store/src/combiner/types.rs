@@ -5,10 +5,10 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use fss_core::{BatchId, ContentDigest, EvidenceDelta, ObjectId};
-use fss_ledger::{MAX_ORACLE_DELTAS_PER_BATCH, MerkleEpochLedger};
+use fss_ledger::{EpochLedgerError, MAX_ORACLE_DELTAS_PER_BATCH, MerkleEpochLedger};
 use fss_pack::{PackObjectInput, PackStore};
 
-use crate::error::CombinerError;
+use crate::error::{CombinerError, ProjectionError};
 use crate::payloads::PackStorePayloadResolver;
 use crate::store::{MvccProjectionStore, ProjectionStore};
 
@@ -169,6 +169,9 @@ pub struct CoalescedCommitReceipt {
     pub coalesced_count: usize,
     /// Actual OS durability fsync barriers executed during this commit round (pack + epoch).
     pub fsyncs_executed: u64,
+    /// Failure of the optional ledger checkpoint after this batch became durable.
+    /// The canonical batch and its projection both succeeded; repair the checkpoint separately.
+    pub checkpoint_failure: Option<Arc<str>>,
     /// Zero-based deterministic position in canonical `(sensor_scope, request_digest)` order.
     pub proposal_position: usize,
 }
@@ -188,6 +191,9 @@ pub struct SinkCommitOutcome {
     pub batch_digest: ContentDigest,
     /// Actual fsync barriers executed for this wave.
     pub fsyncs_executed: u64,
+    /// Failure of the optional ledger checkpoint after this batch became durable.
+    /// The canonical batch and its projection both succeeded; repair the checkpoint separately.
+    pub checkpoint_failure: Option<Arc<str>>,
 }
 
 /// Abstract durable commit target invoked exclusively by the elected combiner thread.
@@ -264,6 +270,20 @@ impl CommitSink for LedgerPackProjectionSink {
         deltas: Vec<EvidenceDelta>,
         child_roots: Vec<ContentDigest>,
     ) -> Result<SinkCommitOutcome, CombinerError> {
+        // A failed projection can leave a durable ledger batch waiting for replay.
+        // Do not append another wave on top of a known gap in the materialized view.
+        let projected = self.projection.head_anchor();
+        let canonical = self.ledger.head_anchor();
+        if projected.commit_sequence != canonical.commit_sequence
+            || projected.authority_root != canonical.state_root
+        {
+            return Err(ProjectionError::AnchorMismatch {
+                expected_sequence: canonical.commit_sequence,
+                actual_sequence: projected.commit_sequence,
+                detail: "replay the projection to the canonical head before submitting another wave",
+            }.into());
+        }
+
         let pack_fsyncs_before = self.pack_store.telemetry_snapshot()?.pack_fsync_count;
         if !objects.is_empty() {
             let inputs: Vec<PackObjectInput<'_>> =
@@ -274,11 +294,26 @@ impl CommitSink for LedgerPackProjectionSink {
         let pack_fsyncs = pack_fsyncs_after.saturating_sub(pack_fsyncs_before);
 
         let batch = self.ledger.prepare_batch(batch_id, deltas, child_roots)?;
-        let ledger_receipt = self.ledger.append_batch(batch.clone())?;
+        let (ledger_receipt, checkpoint_failure) = match self.ledger.append_batch(batch.clone()) {
+            Ok(receipt) => (receipt, None),
+            Err(EpochLedgerError::CommittedCheckpointFailed { receipt, source }) => {
+                (*receipt, Some(Arc::<str>::from(source.to_string())))
+            }
+            Err(error) => return Err(error.into()),
+        };
         let epoch_fsyncs = 1_u64;
 
         let resolver = PackStorePayloadResolver::new(&self.pack_store);
-        let proj_anchor = self.projection.apply_delta_batch(&batch, &resolver)?;
+        let proj_anchor = match self.projection.apply_delta_batch(&batch, &resolver) {
+            Ok(anchor) => anchor,
+            Err(source) => {
+                return Err(CombinerError::CommittedProjectionFailed {
+                    receipt: Arc::new(ledger_receipt),
+                    checkpoint_failure,
+                    source: Arc::new(source),
+                });
+            }
+        };
 
         Ok(SinkCommitOutcome {
             commit_sequence: ledger_receipt.sequence,
@@ -287,6 +322,7 @@ impl CommitSink for LedgerPackProjectionSink {
             history_root: proj_anchor.history_root,
             batch_digest: ledger_receipt.batch_digest,
             fsyncs_executed: pack_fsyncs.saturating_add(epoch_fsyncs),
+            checkpoint_failure,
         })
     }
 }

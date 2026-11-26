@@ -415,6 +415,108 @@ fn combiner_deterministic_order_cancellation_and_collision_deferral() -> TestRes
     Ok(())
 }
 
+/// Block checkpoint publication at its temporary path without interfering with epoch or pack I/O.
+fn checkpoint_fault_combiner(
+    dir: &TempDir,
+) -> Result<
+    (
+        CommitCombiner<LedgerPackProjectionSink>,
+        Arc<MvccProjectionStore>,
+        PathBuf,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    let ledger_dir = dir.root.join("ledger");
+    let ledger = MerkleEpochLedger::open(
+        &ledger_dir,
+        "site:checkpoint-fault",
+        EpochLedgerConfig {
+            checkpoint_stride: 1,
+            ..EpochLedgerConfig::default()
+        },
+        IncompleteTailPolicy::Reject,
+    )?;
+    let packs = Arc::new(PackStore::open(
+        dir.root.join("packs"),
+        PackConfig::default(),
+    )?);
+    let projection = Arc::new(MvccProjectionStore::open_empty(
+        dir.root.join("projection"),
+        ledger.genesis_anchor(),
+        ProjectionStoreConfig::default(),
+    )?);
+    let sink = LedgerPackProjectionSink::new(ledger, packs, Arc::clone(&projection));
+    let blocked = ledger_dir
+        .join("checkpoints")
+        .join(format!(".seq-{:020}.fssc.tmp", 1));
+    fs::create_dir(&blocked)?;
+    Ok((
+        CommitCombiner::new(sink, CommitCombinerConfig::default())?,
+        projection,
+        blocked,
+    ))
+}
+
+#[test]
+fn combiner_projects_durable_batch_despite_checkpoint_failure() -> TestResult {
+    let dir = TempDir::new("durable-without-checkpoint")?;
+    let (combiner, projection, blocked) = checkpoint_fault_combiner(&dir)?;
+    let proposal = make_event_proposal(0, 1, None)?;
+    let committed = combiner.submit(proposal.clone())?;
+    assert!(committed.checkpoint_failure.is_some());
+    let visible = projection.snapshot_latest();
+    assert_eq!(visible.orient_summary().total_events, 1);
+    assert_eq!(visible.anchor().commit_sequence, committed.commit_sequence);
+    assert_eq!(visible.anchor().high_water_digest, committed.batch_digest);
+    assert_eq!(visible.anchor().history_root, committed.history_root);
+    assert!(matches!(
+        combiner.submit(proposal),
+        Err(CombinerError::GenerationConflict { .. })
+    ));
+
+    fs::remove_dir(blocked)?;
+    let next = combiner.submit(make_event_proposal(0, 2, None)?)?;
+    assert!(next.checkpoint_failure.is_none());
+    assert_eq!(next.commit_sequence, 2);
+    assert_eq!(
+        projection.snapshot_latest().orient_summary().total_events,
+        2
+    );
+    let sink = combiner.into_sink()?;
+    assert_eq!(sink.ledger().verify_full_chain()?.batches_verified, 2);
+    Ok(())
+}
+
+#[test]
+fn combiner_preserves_durable_receipt_when_projection_and_checkpoint_both_fail() -> TestResult {
+    let dir = TempDir::new("durable-missing-projection")?;
+    let (combiner, projection, blocked) = checkpoint_fault_combiner(&dir)?;
+    let mut proposal = make_event_proposal(0, 1, None)?;
+    proposal.objects.clear();
+    let Err(CombinerError::CommittedProjectionFailed {
+        receipt,
+        checkpoint_failure,
+        source,
+    }) = combiner.submit(proposal)
+    else {
+        return Err("missing projection payload lost the durable receipt".into());
+    };
+    assert_eq!(receipt.sequence, 1);
+    assert!(checkpoint_failure.is_some());
+    assert!(matches!(
+        source.as_ref(),
+        fss_projection_store::ProjectionError::MissingPayload { .. }
+    ));
+    assert_eq!(projection.head_anchor().commit_sequence, 0);
+    fs::remove_dir(blocked)?;
+    assert!(combiner.submit(make_event_proposal(0, 2, None)?).is_err());
+    let sink = combiner.into_sink()?;
+    assert_eq!(sink.ledger().head_anchor(), &receipt.anchor);
+    assert_eq!(sink.ledger().history_root(), receipt.history_root);
+    assert_eq!(sink.ledger().verify_full_chain()?.batches_verified, 1);
+    Ok(())
+}
+
 #[test]
 fn combiner_canonical_sort_order_is_arrival_independent() -> TestResult {
     use fss_core::BatchId;
@@ -465,6 +567,7 @@ fn combiner_canonical_sort_order_is_arrival_independent() -> TestResult {
                 history_root: root,
                 batch_digest: root,
                 fsyncs_executed: 2,
+                checkpoint_failure: None,
             })
         }
     }

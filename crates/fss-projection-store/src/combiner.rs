@@ -379,6 +379,20 @@ impl<S: CommitSink> CommitCombiner<S> {
                                 coalesced_count,
                                 fsyncs_executed: committed.fsyncs_executed,
                                 proposal_position: pos,
+                                checkpoint_failure: committed.checkpoint_failure.clone(),
+                            }));
+                        }
+                    }
+                    Err(CombinerError::CommittedProjectionFailed {
+                        receipt,
+                        checkpoint_failure,
+                        source,
+                    }) => {
+                        for (entry, _) in wave {
+                            entry.complete(Err(CombinerError::CommittedProjectionFailed {
+                                receipt: Arc::clone(&receipt),
+                                checkpoint_failure: checkpoint_failure.clone(),
+                                source: Arc::clone(&source),
                             }));
                         }
                     }

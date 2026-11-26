@@ -895,6 +895,7 @@ fn receipt_from_coalesced(c: fss_projection_store::CoalescedCommitReceipt) -> St
         history_root: c.history_root,
         batch_digest: c.batch_digest,
         fsyncs_executed: c.fsyncs_executed,
+        checkpoint_failure: c.checkpoint_failure,
     }
 }
 
