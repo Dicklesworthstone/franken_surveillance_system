@@ -22,6 +22,8 @@ pub mod flv_av;
 pub mod flv_avc;
 mod hevc;
 mod init;
+/// Adversarial malformed compressed-stream corpus and deterministic minimizer (`FSS-125`).
+pub mod malformed_minimizer;
 /// Allocation-free framing for timed, lossless grayscale Matroska derivatives.
 pub mod matroska_gray;
 /// Bounded AVC/HEVC MPEG-TS extraction with checked PSI/PES and original byte spans.

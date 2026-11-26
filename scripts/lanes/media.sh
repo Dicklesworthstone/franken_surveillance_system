@@ -126,7 +126,8 @@ checkfile 14 mp4-unit-limit crates/fss-container/tests/fixtures/fragmented_av.mp
   --test doc_041_media_derivative_receipt_contract \
   --test doc_054_frame_pyramid_contract
 
-# FSS-056 / FSS-060 — keyframe-aware chunker and decode/timestamp differential oracle.
+# FSS-056 / FSS-060 / FSS-125 — keyframe-aware chunker, decode/timestamp oracle, and malformed corpus minimizer.
 "${RUN[@]}" cargo --offline test --locked -q -p fss-container \
   --test fss_056_keyframe_chunker_contract \
-  --test fss_060_decode_timestamp_oracle_contract
+  --test fss_060_decode_timestamp_oracle_contract \
+  --test fss_125_malformed_corpus_minimizer_contract
