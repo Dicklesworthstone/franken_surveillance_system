@@ -646,3 +646,57 @@ fn differential_200_scenarios_rebuild_and_oracle_exactness() -> TestResult {
     assert_eq!(harness.ledger.read_batches_range(1, 205)?.len(), 205);
     Ok(())
 }
+
+#[test]
+fn epoch_visitor_stops_before_later_corruption() -> TestResult {
+    use fss_projection_store::ProjectionError;
+    use std::io::{Seek, SeekFrom, Write};
+
+    let ws = TempWorkspace::new("visit-epoch")?;
+    let ledger = MerkleEpochLedger::open(
+        ws.root.join("ledger"),
+        "site:visit-epoch",
+        EpochLedgerConfig::default(),
+        IncompleteTailPolicy::Reject,
+    )?;
+    let store = MvccProjectionStore::open_empty(
+        ws.root.join("projection"),
+        ledger.genesis_anchor(),
+        ProjectionStoreConfig::default(),
+    )?;
+    let mut harness = ScenarioHarness {
+        ledger,
+        packs: PackStore::open(ws.root.join("packs"), PackConfig::default())?,
+        gens: BTreeMap::new(),
+        rev_digests: BTreeMap::new(),
+        created_imports: Vec::new(),
+    };
+    harness.run_step(&store, 1)?;
+    harness.run_step(&store, 2)?;
+
+    let path = fss_ledger::epoch_file_path(&ws.root.join("ledger/epochs"), 0);
+    let mut file = fs::OpenOptions::new().read(true).write(true).open(path)?;
+    file.seek(SeekFrom::End(-1))?;
+    let mut last_byte = [0_u8];
+    std::io::Read::read_exact(&mut file, &mut last_byte)?;
+    file.seek(SeekFrom::End(-1))?;
+    file.write_all(&[last_byte[0] ^ 1])?;
+    drop(file);
+
+    let mut visited = Vec::new();
+    let stopped = harness.ledger.visit_batches_range(1, 2, &mut |batch| {
+        visited.push(batch.new_anchor.commit_sequence);
+        Err(ProjectionError::InvalidRequest("stop"))
+    });
+    assert!(matches!(stopped, Err(ProjectionError::InvalidRequest("stop"))));
+    assert_eq!(visited, [1]);
+
+    let mut verified = Vec::new();
+    let corrupt = harness.ledger.visit_batches_range(1, 2, &mut |batch| {
+        verified.push(batch.new_anchor.commit_sequence);
+        Ok(())
+    });
+    assert!(matches!(corrupt, Err(ProjectionError::CorruptDerivedStore { .. })));
+    assert_eq!(verified, [1]);
+    Ok(())
+}

@@ -3,7 +3,7 @@
 //! [`MerkleEpochLedger`], [`LedgerOracle`], [`DurableReferenceLedger`], or batch slices.
 
 use std::fs::{self, File};
-use std::io::Read;
+use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
 use fss_core::{ContentDigest, DigestAlgorithm, EvidenceDeltaBatch, LedgerAnchor, sha256};
@@ -41,6 +41,28 @@ pub trait CanonicalBatchSource {
         from_seq: u64,
         to_seq: u64,
     ) -> Result<Vec<EvidenceDeltaBatch>, ProjectionError>;
+
+    /// Visits the inclusive range in commit order, stopping at the first visitor or source error.
+    /// Implementations with a native cursor can avoid collecting batches altogether.
+    fn visit_batches_range(
+        &self,
+        from_seq: u64,
+        to_seq: u64,
+        visit: &mut dyn FnMut(&EvidenceDeltaBatch) -> Result<(), ProjectionError>,
+    ) -> Result<(), ProjectionError> {
+        let mut start = from_seq;
+        while start != 0 && start <= to_seq {
+            let end = start.saturating_add(63).min(to_seq);
+            for batch in self.read_batches_range(start, end)? {
+                visit(&batch)?;
+            }
+            if end == to_seq {
+                break;
+            }
+            start = end + 1;
+        }
+        Ok(())
+    }
 }
 
 impl CanonicalBatchSource for MerkleEpochLedger {
@@ -74,20 +96,20 @@ impl CanonicalBatchSource for MerkleEpochLedger {
                 && candidate.history_root == self.history_root());
         }
         // Historical anchor check: inspect the single canonical record at candidate.commit_sequence.
-        let records = read_epoch_batches_in_range(
+        let mut matches = false;
+        visit_epoch_batches_in_range(
             &self.root_dir().join("epochs"),
             candidate.commit_sequence,
             candidate.commit_sequence,
+            &mut |batch, history_root| {
+                matches = batch.new_anchor.commit_sequence == candidate.commit_sequence
+                    && batch.new_anchor.state_root == candidate.authority_root
+                    && history_root == candidate.history_root
+                    && batch.batch_digest == candidate.high_water_digest;
+                Ok(())
+            },
         )?;
-        let Some((batch, history_root)) = records.into_iter().next() else {
-            return Ok(false);
-        };
-        Ok(
-            batch.new_anchor.commit_sequence == candidate.commit_sequence
-                && batch.new_anchor.state_root == candidate.authority_root
-                && history_root == candidate.history_root
-                && batch.batch_digest == candidate.high_water_digest,
-        )
+        Ok(matches)
     }
 
     fn read_batches_range(
@@ -95,11 +117,31 @@ impl CanonicalBatchSource for MerkleEpochLedger {
         from_seq: u64,
         to_seq: u64,
     ) -> Result<Vec<EvidenceDeltaBatch>, ProjectionError> {
-        if from_seq == 0 || from_seq > to_seq {
-            return Ok(Vec::new());
-        }
-        let pairs = read_epoch_batches_in_range(&self.root_dir().join("epochs"), from_seq, to_seq)?;
-        Ok(pairs.into_iter().map(|(batch, _)| batch).collect())
+        let mut batches = Vec::new();
+        visit_epoch_batches_in_range(
+            &self.root_dir().join("epochs"),
+            from_seq,
+            to_seq,
+            &mut |batch, _| {
+                batches.push(batch);
+                Ok(())
+            },
+        )?;
+        Ok(batches)
+    }
+
+    fn visit_batches_range(
+        &self,
+        from_seq: u64,
+        to_seq: u64,
+        visit: &mut dyn FnMut(&EvidenceDeltaBatch) -> Result<(), ProjectionError>,
+    ) -> Result<(), ProjectionError> {
+        visit_epoch_batches_in_range(
+            &self.root_dir().join("epochs"),
+            from_seq,
+            to_seq,
+            &mut |batch, _| visit(&batch),
+        )
     }
 }
 
@@ -373,15 +415,16 @@ fn list_epoch_ids(epochs_dir: &Path) -> Result<Vec<u64>, ProjectionError> {
 
 /// Scans verified `FSSE` v2 epoch segment files under `epochs_dir`, skipping epochs whose headers
 /// prove they lie entirely outside `from_seq..=to_seq`.
-fn read_epoch_batches_in_range(
+fn visit_epoch_batches_in_range(
     epochs_dir: &Path,
     from_seq: u64,
     to_seq: u64,
-) -> Result<Vec<(EvidenceDeltaBatch, ContentDigest)>, ProjectionError> {
-    let epoch_ids = list_epoch_ids(epochs_dir)?;
-    if epoch_ids.is_empty() {
-        return Ok(Vec::new());
+    visit: &mut dyn FnMut(EvidenceDeltaBatch, ContentDigest) -> Result<(), ProjectionError>,
+) -> Result<(), ProjectionError> {
+    if from_seq == 0 || from_seq > to_seq {
+        return Ok(());
     }
+    let epoch_ids = list_epoch_ids(epochs_dir)?;
     // Read headers once to locate the starting epoch without scanning irrelevant older epochs.
     let mut headers = Vec::with_capacity(epoch_ids.len());
     for epoch_id in epoch_ids {
@@ -395,7 +438,6 @@ fn read_epoch_batches_in_range(
         headers.push((epoch_id, header));
     }
 
-    let mut out = Vec::new();
     for (idx, &(epoch_id, header)) in headers.iter().enumerate() {
         if header.first_commit_seq > to_seq {
             break;
@@ -406,37 +448,46 @@ fn read_epoch_batches_in_range(
             continue;
         }
         let path = epoch_file_path(epochs_dir, epoch_id);
-        let raw =
-            fs::read(&path).map_err(|err| ProjectionError::io(ProjectionIoOperation::Read, err))?;
-        parse_epoch_records(&raw, epoch_id, from_seq, to_seq, &mut out)?;
+        let file = File::open(path)
+            .map_err(|err| ProjectionError::io(ProjectionIoOperation::Open, err))?;
+        visit_epoch_records(file, epoch_id, from_seq, to_seq, visit)?;
     }
-    Ok(out)
+    Ok(())
 }
 
-fn parse_epoch_records(
-    raw: &[u8],
+fn visit_epoch_records(
+    file: File,
     epoch_id: u64,
     from_seq: u64,
     to_seq: u64,
-    out: &mut Vec<(EvidenceDeltaBatch, ContentDigest)>,
+    visit: &mut dyn FnMut(EvidenceDeltaBatch, ContentDigest) -> Result<(), ProjectionError>,
 ) -> Result<(), ProjectionError> {
-    if raw.len() < EPOCH_HEADER_LEN {
-        return Err(ProjectionError::CorruptDerivedStore {
-            artifact: "epoch_segment",
-            detail: format!("epoch {epoch_id} shorter than header"),
-        });
-    }
-    let mut cursor = EPOCH_HEADER_LEN;
-    while cursor < raw.len() {
-        let remaining = raw.len() - cursor;
-        if remaining < EPOCH_RECORD_HEADER_LEN + EPOCH_RECORD_TRAILER_LEN {
-            break;
-        }
-        let hdr = &raw[cursor..cursor + EPOCH_RECORD_HEADER_LEN];
+    let read_error = |err| ProjectionError::io(ProjectionIoOperation::Read, err);
+    let file_len = file
+        .metadata()
+        .map_err(|err| ProjectionError::io(ProjectionIoOperation::Metadata, err))?
+        .len();
+    let mut reader = BufReader::new(file);
+    let mut epoch_header = [0_u8; EPOCH_HEADER_LEN];
+    reader.read_exact(&mut epoch_header).map_err(read_error)?;
+    let header = EpochHeader::decode(&epoch_header, epoch_id)?;
+    let mut expected_seq = header.first_commit_seq;
+    let mut cursor = EPOCH_HEADER_LEN as u64;
+    let frame_overhead = (EPOCH_RECORD_HEADER_LEN + EPOCH_RECORD_TRAILER_LEN) as u64;
+    let mut payload = Vec::new();
+    while file_len - cursor >= frame_overhead {
+        let mut hdr = [0_u8; EPOCH_RECORD_HEADER_LEN];
+        reader.read_exact(&mut hdr).map_err(read_error)?;
         if hdr[0..4] != EPOCH_RECORD_MAGIC {
             return Err(ProjectionError::CorruptDerivedStore {
                 artifact: "epoch_segment",
                 detail: format!("invalid record magic in epoch {epoch_id} at offset {cursor}"),
+            });
+        }
+        if hdr[4..6] != [0, 0] {
+            return Err(ProjectionError::CorruptDerivedStore {
+                artifact: "epoch_segment",
+                detail: format!("unsupported record flags in epoch {epoch_id} at offset {cursor}"),
             });
         }
         let stored_hdr_crc = u32::from_be_bytes([hdr[54], hdr[55], hdr[56], hdr[57]]);
@@ -451,6 +502,12 @@ fn parse_epoch_records(
         let commit_seq = u64::from_be_bytes([
             hdr[6], hdr[7], hdr[8], hdr[9], hdr[10], hdr[11], hdr[12], hdr[13],
         ]);
+        if commit_seq != expected_seq {
+            return Err(ProjectionError::CorruptDerivedStore {
+                artifact: "epoch_segment",
+                detail: format!("expected seq {expected_seq} in epoch {epoch_id}, found {commit_seq}"),
+            });
+        }
         let payload_len = u32::from_be_bytes([hdr[14], hdr[15], hdr[16], hdr[17]]) as usize;
         if payload_len > MAX_RECORD_PAYLOAD_BYTES {
             return Err(ProjectionError::CorruptDerivedStore {
@@ -458,23 +515,24 @@ fn parse_epoch_records(
                 detail: format!("record payload too large in epoch {epoch_id}"),
             });
         }
-        let payload_start = cursor + EPOCH_RECORD_HEADER_LEN;
-        let payload_end = payload_start.saturating_add(payload_len);
-        let record_end = payload_end.saturating_add(EPOCH_RECORD_TRAILER_LEN);
-        if record_end > raw.len() {
+        let frame_len = frame_overhead + payload_len as u64;
+        if frame_len > file_len - cursor {
             break;
         }
+        cursor += frame_len;
 
-        if commit_seq >= from_seq && commit_seq <= to_seq {
-            let payload = &raw[payload_start..payload_end];
+        if commit_seq >= from_seq {
+            payload.resize(payload_len, 0);
+            reader.read_exact(&mut payload).map_err(read_error)?;
             let expected_crc = u32::from_be_bytes([hdr[18], hdr[19], hdr[20], hdr[21]]);
-            if crc32_ieee(payload) != expected_crc || sha256(payload) != hdr[22..54] {
+            if crc32_ieee(&payload) != expected_crc || sha256(&payload) != hdr[22..54] {
                 return Err(ProjectionError::CorruptDerivedStore {
                     artifact: "epoch_segment",
                     detail: format!("record payload checksum mismatch at seq {commit_seq}"),
                 });
             }
-            let trailer = &raw[payload_end..record_end];
+            let mut trailer = [0_u8; EPOCH_RECORD_TRAILER_LEN];
+            reader.read_exact(&mut trailer).map_err(read_error)?;
             if trailer[0..4] != EPOCH_TRAILER_MAGIC {
                 return Err(ProjectionError::CorruptDerivedStore {
                     artifact: "epoch_segment",
@@ -492,14 +550,23 @@ fn parse_epoch_records(
             let mut root_bytes = [0_u8; 32];
             root_bytes.copy_from_slice(&trailer[4..36]);
             let history_root = ContentDigest::new(DigestAlgorithm::Sha256, root_bytes);
-            let batch = decode_batch(payload)?;
-            out.push((batch, history_root));
+            let batch = decode_batch(&payload)?;
+            if batch.new_anchor.commit_sequence != commit_seq {
+                return Err(ProjectionError::CorruptDerivedStore {
+                    artifact: "epoch_segment",
+                    detail: format!("batch anchor disagrees with record sequence {commit_seq}"),
+                });
+            }
+            visit(batch, history_root)?;
+        } else {
+            reader.seek(SeekFrom::Start(cursor)).map_err(read_error)?;
         }
-
-        cursor = record_end;
-        if commit_seq >= to_seq {
+        if commit_seq == to_seq {
             break;
         }
+        expected_seq = commit_seq
+            .checked_add(1)
+            .ok_or(ProjectionError::ArithmeticOverflow("epoch_commit_sequence"))?;
     }
     Ok(())
 }
