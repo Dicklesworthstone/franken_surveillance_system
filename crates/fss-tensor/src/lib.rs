@@ -14,12 +14,18 @@
 pub mod buffer_accounting;
 /// Canonical tensor byte encoding and digests (FSS-138).
 pub mod canonical;
+/// Canonical `MediaDerivativeReceipt` lineage (`DOC-041`).
+pub mod derivative_receipt;
 pub mod dtype;
 pub mod error;
 /// Generation-leased immutable decoded-frame pools (`FSS-119`).
 pub mod frame_pool;
+/// Shared multi-scale frame pyramids, cache tiling, and accelerator isolation (`DOC-054`).
+pub mod frame_pyramid;
 /// Registered media pressure degradation ladder (`FSS-121`).
 pub mod media_pressure;
+/// Live preview bounded fan-out (`FSS-057`).
+pub mod preview_fanout;
 pub mod shape;
 /// Source-to-tensor span and transform lineage (`FSS-120`).
 pub mod source_lineage;
@@ -33,15 +39,29 @@ pub use buffer_accounting::{
     BufferAccountingPolicy, BufferAccountingSnapshot, BufferClass, BufferPressureTier,
     BufferReleaseReceipt, BufferReservationId, BufferReservationReceipt, BufferReservationRequest,
 };
+pub use derivative_receipt::{
+    DerivativePublicationState, DerivativeReceiptError, DerivativeReceiptRequest,
+    MEDIA_DERIVATIVE_RECEIPT_DOMAIN, MediaDerivativeKind, MediaDerivativeReceipt,
+    ReproducibilityClass, SourceCustodyBinding,
+};
 pub use dtype::{BF16, DType, F16, TensorScalar};
 pub use error::TensorError;
 pub use frame_pool::{
     FRAME_POOL_RECEIPT_DOMAIN, FrameDescriptor, FrameLease, FrameLeaseId, FramePool,
     FramePoolError, FramePoolPolicy, FramePoolReceipt, FrameSlotId,
 };
+pub use frame_pyramid::{
+    AcceleratorCandidate, AcceleratorGateDecision, FRAME_PYRAMID_RECEIPT_DOMAIN, FramePyramid,
+    FramePyramidError, FramePyramidReceipt, PyramidLevelEntry, TilePlan, TileRegion,
+    adjudicate_accelerator_against_scalar, downsample_2x_box_u8,
+};
 pub use media_pressure::{
     MEDIA_PRESSURE_LADDER_RECEIPT_DOMAIN, MediaDegradationRung, MediaPressureController,
     MediaPressureDecisionReceipt, MediaPressureError, MediaPressurePolicy, MediaPressureSignals,
+};
+pub use preview_fanout::{
+    FanoutPublishOutcome, PREVIEW_FANOUT_RECEIPT_DOMAIN, PreviewFanoutError, PreviewFanoutHub,
+    PreviewFanoutPolicy, PreviewFanoutReceipt, PreviewFrameOffer, PreviewSubscriberSpec,
 };
 pub use shape::{MAX_TENSOR_RANK, Shape};
 pub use source_lineage::{
