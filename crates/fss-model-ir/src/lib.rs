@@ -26,6 +26,8 @@ pub mod op;
 pub mod port;
 /// Model invocation quotas and memory-pressure admission (FSS-073).
 pub mod quotas;
+/// Deterministic alignment-aware scratch arena & buffer-reuse planner (FSS-140).
+pub mod scratch_planner;
 pub mod shape_inference;
 pub mod validator;
 
@@ -58,5 +60,11 @@ pub use op::{
     verify_operator_table_frozen, verify_operator_table_frozen_for_version,
 };
 pub use port::TensorPort;
+pub use scratch_planner::{
+    DEFAULT_SCRATCH_ALIGNMENT, MAX_SCRATCH_ALIGNMENT, MAX_SCRATCH_ARENA_BYTES,
+    MAX_SCRATCH_PLAN_WIRE_BYTES, SCRATCH_ARENA_PLAN_DOMAIN, SCRATCH_PLAN_WIRE_MAGIC,
+    SCRATCH_PLAN_WIRE_VERSION, ScratchArenaPlan, ScratchPlanBudget, ScratchPlanError,
+    ScratchPlanGuidance, ScratchSlotAssignment,
+};
 pub use shape_inference::{broadcast_shapes, infer_operator_outputs};
 pub use validator::{GraphValidator, ProducerId, order_independent_num_elements};
