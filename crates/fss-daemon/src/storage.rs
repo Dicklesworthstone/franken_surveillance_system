@@ -17,8 +17,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use fss_core::{
-    CanonicalEncode, CaptureInterval, ContentDigest, EventHypothesis, EventState, EvidenceDelta,
-    ObjectId, Plane, RegionTree, SensorId, TimestampNs,
+    CanonicalEncode, CanonicalEncoder, CaptureInterval, ContentDigest, EventHypothesis, EventState,
+    EvidenceDelta, ObjectId, Plane, RegionTree, SensorId, TimestampNs,
 };
 use fss_ipc::ActiveScrubStatus;
 use fss_ledger::{EpochLedgerConfig, IncompleteTailPolicy, MerkleEpochLedger};
@@ -508,8 +508,16 @@ impl StorageEngine {
         if cx.is_cancel_requested(tree)? {
             return Err(fss_projection_store::CombinerError::Cancelled.into());
         }
+        event.validate()?;
+        // Pack keys hash the stored bytes. Preserve the domain-separated revision identity
+        // already used by ledger witnesses and supersession links.
+        let mut encoder = CanonicalEncoder::new();
+        encoder.text("fss.canonical.v1");
+        encoder.text(EventHypothesis::SCHEMA);
+        event.encode_canonical(&mut encoder);
+        let revision_bytes = encoder.finish_checked()?;
+        let event_root = ContentDigest::sha256(&revision_bytes);
         self.flush_event_sources(event, &sensor_ids, cx, tree)?;
-        let event_root = event.canonical_digest(EventHypothesis::SCHEMA);
         let proj_bytes = ProjectionRecordPayload::EventRevision(EventRevisionPayload {
             event_id: event.event_id.clone(),
             revision: event.revision,
@@ -535,12 +543,10 @@ impl StorageEngine {
         let mut proposal = CommitProposal {
             request_digest: proj_digest,
             sensor_scope: format!("event:{}", event.event_id.as_str()),
-            objects: vec![OwnedPackObject::with_digest(
-                PACK_KIND_METADATA,
-                0,
-                proj_bytes,
-                proj_digest,
-            )],
+            objects: vec![
+                OwnedPackObject::with_digest(PACK_KIND_METADATA, 0, revision_bytes, event_root),
+                OwnedPackObject::with_digest(PACK_KIND_METADATA, 0, proj_bytes, proj_digest),
+            ],
             deltas: vec![EvidenceDelta {
                 delta_id: format!("delta:event:{seq}"),
                 family: FAMILY_EVENT_REVISION.to_owned(),

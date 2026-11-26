@@ -9,9 +9,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use fss_core::{
-    CaptureInterval, ContentDigest, DecisionPath, EventEvidence, EventHypothesis, EventId,
-    EventKind, EventState, EvidenceClass, EvidenceEdgeRelation, ProbabilityInterval, SensorId,
-    StreamId, TimestampNs,
+    CanonicalDecode, CanonicalDecoder, CaptureInterval, ContentDigest, DecisionPath, EventEvidence,
+    EventHypothesis, EventId, EventKind, EventState, EvidenceClass, EvidenceEdgeRelation,
+    ProbabilityInterval, SensorId, StreamId, TimestampNs,
 };
 use fss_daemon::{
     CameraAdapterKind, CameraFrame, DaemonError, DaemonRegionTree, SiteManifest, StorageEngine,
@@ -909,6 +909,63 @@ fn refused_health_transition_publishes_neither_state_nor_receipt() -> TestResult
             .is_none()
     );
     storage.shutdown_and_flush()?;
+    Ok(())
+}
+
+#[test]
+fn event_revision_witness_survives_projection_rebuild() -> TestResult {
+    let dir = TempDirGuard::new("event-witness")?;
+    let manifest = manifest(1_048_576)?;
+    let regions = DaemonRegionTree::initialize(&manifest, "principal:event-test", TimestampNs(0))?;
+    let cx = regions.storage_ledger_cx();
+    let tree = regions.region_tree();
+    let mut storage = StorageEngine::open(&manifest, Some(dir.path()))?;
+    let a = ingest(&mut storage, &regions, SENSOR_A, 1, 1_000_000, 128)?;
+    let b = ingest(&mut storage, &regions, SENSOR_B, 1, 1_000_001, 128)?;
+    let event = corroborated_event(media_digest(&a)?, media_digest(&b)?)?;
+    let sensors = vec![SensorId::parse(SENSOR_A)?, SensorId::parse(SENSOR_B)?];
+
+    // A malformed event must not flush the contributing camera's partial GOP.
+    let buffered = storage.ingest_frame(
+        frame(SENSOR_A, 2, 1_000_001, 128)?,
+        CameraAdapterKind::Synthetic,
+        4,
+        cx,
+        tree,
+    )?;
+    assert!(buffered.is_none());
+    let before = storage.head_snapshot()?.commit_sequence;
+    let mut invalid = event.clone();
+    invalid.evidence.pop();
+    assert!(matches!(
+        storage.commit_event_hypothesis(&invalid, sensors.clone(), cx, tree),
+        Err(DaemonError::Contract(_))
+    ));
+    assert_eq!(storage.head_snapshot()?.commit_sequence, before);
+    assert!(storage.pack_store().lookup(&invalid.revision_digest())?.is_none());
+
+    let receipt = storage.commit_event_hypothesis(&event, sensors, cx, tree)?;
+    storage.shutdown_and_flush()?;
+    fs::remove_dir_all(dir.path().join(PROJECTION_SUBDIR))?;
+    let reopened = StorageEngine::open(&manifest, Some(dir.path()))?;
+    let snapshot = reopened.projection().snapshot_latest();
+    let row = snapshot
+        .get_event_revision(&event.event_id, event.revision)
+        .ok_or("missing projected event revision")?;
+    assert_eq!(row.committed_sequence, receipt.commit_sequence);
+    assert_eq!(row.event_root, event.revision_digest());
+    let history = fss_ledger::inspect_epochs_readonly(&dir.path().join("ledger"), &manifest.site_id)?;
+    assert!(history.batches.iter().flat_map(|batch| &batch.deltas).any(|delta| {
+        delta.family == fss_projection_store::FAMILY_EVENT_REVISION
+            && delta.witness_digest == Some(row.event_root)
+    }));
+    let bytes = reopened.pack_store().read_verified(&row.event_root)?;
+    let mut decoder = CanonicalDecoder::new(&bytes);
+    assert_eq!(decoder.text()?, "fss.canonical.v1");
+    assert_eq!(decoder.text()?, EventHypothesis::SCHEMA);
+    assert_eq!(EventHypothesis::decode_canonical(&mut decoder)?, event);
+    decoder.ensure_finished()?;
+    reopened.shutdown_and_flush()?;
     Ok(())
 }
 

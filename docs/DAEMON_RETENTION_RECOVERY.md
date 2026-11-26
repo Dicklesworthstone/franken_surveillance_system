@@ -107,6 +107,14 @@ inserted between the hold snapshot and deletion. Hold/deletion control remains
 available under pinned-capacity pressure, so retention controls can clear the
 condition that paused recording.
 
+New event commits retain the complete, validated event revision in the metadata pack.
+The projected event root and the ledger witness identify the same domain-separated
+revision bytes, including supporting and contradicting evidence, failure domains, model
+receipt references, uncertainty, and the decision path. Those bytes can be read by
+digest after a projection rebuild. Older summary-only commits may lack the revision
+object. A reference inside a retained revision does not establish custody of the
+referenced model receipt or footage.
+
 ## Retirement and replay
 
 Media expiration first commits canonical footage-deletion deltas, then commits
