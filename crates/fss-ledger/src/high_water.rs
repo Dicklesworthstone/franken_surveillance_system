@@ -153,6 +153,18 @@ impl DerivedGenerationPin {
         None
     }
 
+    /// Computes a deterministic domain-separated SHA-256 digest of this validated generation pin.
+    pub fn canonical_digest(&self) -> Result<ContentDigest, HighWaterError> {
+        self.validate()?;
+        let mut enc = CanonicalEncoder::new();
+        enc.text(DERIVED_HIGH_WATER_DOMAIN);
+        self.encode_canonical(&mut enc);
+        let bytes = enc
+            .finish_checked()
+            .map_err(|err| HighWaterError::MalformedWire(err.to_string()))?;
+        Ok(ContentDigest::sha256(&bytes))
+    }
+
     fn encode_canonical(&self, enc: &mut CanonicalEncoder) {
         enc.u8(self.cache_kind.tag());
         enc.text(&self.cache_id);

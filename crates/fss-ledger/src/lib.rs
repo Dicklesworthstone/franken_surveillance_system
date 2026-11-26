@@ -21,8 +21,12 @@ mod journal;
 pub mod merge_ladder;
 pub mod merkle;
 mod oracle;
+/// Crash-resumable derived-index rebuild cursor over v1 and v2 ledgers (`FSS-034`, `fss-x4a.9.4`).
+pub mod rebuild_cursor;
 mod recovery;
 mod repair;
+/// Durable retention-policy and legal-hold obligation tables (`FSS-036`, `fss-x4a.9.6`).
+pub mod retention_holds;
 /// Versioned ledger schema catalog and crash-safe root-last v1 -> v2 durable migration engine (`FSS-033`, `fss-x4a.9.3`).
 pub mod schema_migrations;
 mod sealed_lineage;
@@ -114,12 +118,25 @@ pub use oracle::{
     OracleError, OracleFingerprint, OracleGuidance, OracleLimits, OracleReadError,
     OracleReplayError, StagedBatch,
 };
+pub use rebuild_cursor::{
+    DERIVED_REBUILD_CURSOR_MAGIC, DERIVED_REBUILD_CURSOR_VERSION, DerivedIndexRebuildCursor,
+    DerivedIndexSink, DerivedRebuildCursorState, LEDGER_DERIVED_REBUILD_CURSOR_DOMAIN,
+    MAX_DERIVED_REBUILD_CURSOR_WIRE_BYTES, RebuildCursorError, RebuildCursorGuidance,
+    RebuildCursorStatus, RebuildStepReport, SecondaryFamilyIndex,
+};
 pub use recovery::{JournalRecord, RecoveryReport, inspect, recover_bytes};
 pub use repair::{
     DoctorReport, ForeignRange, JournalDoctorReport, MAX_QUARANTINE_TEMP_ATTEMPTS,
     RepairDoctorReport, RepairError, RepairPlan, RepairReceipt, SealedRepairPlan, apply, doctor,
     doctor_bounded, doctor_bounded_with_io, doctor_path, plan, plan_with_cut, quarantine_path_for,
     quarantine_temp_path_for,
+};
+pub use retention_holds::{
+    HoldObligation, HoldState, HoldTarget, LEDGER_RETENTION_HOLD_TABLE_DOMAIN,
+    MAX_HOLD_OBLIGATIONS, MAX_RETENTION_HOLD_WIRE_BYTES, MAX_RETENTION_REASON_BYTES,
+    MAX_RETENTION_RULES, RETENTION_HOLD_WIRE_MAGIC, RETENTION_HOLD_WIRE_VERSION, RetentionClass,
+    RetentionDisposition, RetentionHoldError, RetentionHoldGuidance, RetentionHoldTable,
+    RetentionRule, TableMutationOutcome,
 };
 pub use schema_migrations::{
     LEDGER_MIGRATION_RECEIPT_MAGIC, LEDGER_MIGRATION_RECEIPT_VERSION, LEDGER_SCHEMA_CATALOG,
