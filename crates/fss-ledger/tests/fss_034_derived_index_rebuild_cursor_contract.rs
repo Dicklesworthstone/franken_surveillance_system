@@ -336,12 +336,15 @@ fn rebuild_cursor_pending_cancel_budget_auth_and_hostile_wire_fail_closed() -> T
     );
     assert_eq!(cursor.applied_anchor.commit_sequence, 0);
 
-    // 2. Undersized byte budget fails closed with BatchExceedsPageBudget!
+    // 2. Undersized byte budget fails closed with BatchExceedsPageBudget AND leaves cursor/sink intact
+    //    even when a generation-drift genesis reset would otherwise have been triggered!
+    let cursor_before_err = cursor.clone();
+    let sink_before_err = sink.clone();
     assert!(matches!(
         DerivedIndexRebuildCursor::step_v1(
             &v1,
             &auth,
-            &p,
+            &pin(99),
             &mut cursor,
             &mut sink,
             ReplayPageBudget::new(1, 8)?,
@@ -349,6 +352,9 @@ fn rebuild_cursor_pending_cancel_budget_auth_and_hostile_wire_fail_closed() -> T
         ),
         Err(RebuildCursorError::BatchExceedsPageBudget { .. })
     ));
+    assert_eq!(cursor, cursor_before_err);
+    assert_eq!(sink, sink_before_err);
+    cursor.verify_self()?;
 
     // 3. Pending unresolved append on source ledger pauses cursor honestly (BlockedPendingReconciliation)!
     let b2 = v1.prepare_batch(

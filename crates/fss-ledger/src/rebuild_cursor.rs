@@ -782,6 +782,14 @@ fn step_batches_common<S: DerivedIndexSink>(
     sink: &mut S,
     budget: ReplayPageBudget,
 ) -> Result<RebuildStepReport, RebuildCursorError> {
+    if batches.len() as u64 != head_anchor.commit_sequence {
+        return Err(RebuildCursorError::SourceLedgerError(format!(
+            "source ledger batch count {} disagrees with head commit_sequence {}",
+            batches.len(),
+            head_anchor.commit_sequence
+        )));
+    }
+
     // Enforce plane isolation BEFORE mutating cursor or sink state.
     for batch in batches {
         for delta in &batch.deltas {
@@ -801,12 +809,13 @@ fn step_batches_common<S: DerivedIndexSink>(
     let cur_seq = cursor.applied_anchor.commit_sequence;
 
     // Detect any generation drift, lineage change, corruption flag, ahead-of-head cursor,
-    // or forked anchor / history-chain root at cur_seq.
+    // sink state/count divergence, or forked anchor / history-chain root at cur_seq.
     let mut needs_reset = cursor.corruption_flagged
         || cursor.generation_pin_digest != expected_pin_digest
         || cursor.site_lineage != genesis_anchor.site_lineage
         || cur_seq > head_seq
-        || cursor.derived_state_digest != sink.state_digest();
+        || cursor.derived_state_digest != sink.state_digest()
+        || cursor.derived_entry_count != sink.entry_count();
 
     if !needs_reset {
         if cur_seq == 0 {
@@ -832,76 +841,84 @@ fn step_batches_common<S: DerivedIndexSink>(
         }
     }
 
+    // Stage the entire page BEFORE mutating `sink` or `cursor` so any error leaves both intact.
+    let start_seq = if needs_reset { 0 } else { cur_seq };
+    let base_history_root = if needs_reset {
+        genesis_history_root
+    } else {
+        cursor.applied_history_root
+    };
+    let start_idx = start_seq as usize;
+
+    let mut staged_page: Vec<(&EvidenceDeltaBatch, ContentDigest)> = Vec::new();
+    let mut bytes_used = 0_u64;
+    let mut running_root = base_history_root;
+    let mut final_anchor = if needs_reset {
+        genesis_anchor.clone()
+    } else {
+        cursor.applied_anchor.clone()
+    };
+
+    if start_seq < head_seq {
+        for batch in &batches[start_idx..] {
+            if staged_page.len() >= budget.max_batches() {
+                break;
+            }
+            let encoded = encode_batch(batch)
+                .map_err(|e| RebuildCursorError::SourceLedgerError(e.to_string()))?;
+            let batch_len = encoded.len() as u64;
+            if staged_page.is_empty() && batch_len > budget.max_bytes() {
+                return Err(RebuildCursorError::BatchExceedsPageBudget {
+                    sequence: batch.new_anchor.commit_sequence,
+                    batch_bytes: batch_len,
+                    budget_bytes: budget.max_bytes(),
+                });
+            }
+            if bytes_used.saturating_add(batch_len) > budget.max_bytes() {
+                break;
+            }
+            running_root = history_kind.successor(running_root, batch)?;
+            bytes_used = bytes_used.saturating_add(batch_len);
+            final_anchor = batch.new_anchor.clone();
+            staged_page.push((batch, running_root));
+        }
+    }
+
+    let has_more = final_anchor.commit_sequence < head_seq;
+    if !has_more && running_root != head_history_root {
+        return Err(RebuildCursorError::SourceLedgerError(
+            "computed canonical history root at head disagrees with source ledger head_history_root"
+                .to_owned(),
+        ));
+    }
+
+    // Commit staged transitions atomically to `sink` and `cursor`.
     if needs_reset {
         sink.reset_to_genesis();
         cursor.site_lineage = genesis_anchor.site_lineage.clone();
         cursor.generation_pin_digest = expected_pin_digest;
         cursor.applied_anchor = genesis_anchor.clone();
         cursor.applied_history_root = genesis_history_root;
-        cursor.derived_state_digest = sink.state_digest();
-        cursor.derived_entry_count = sink.entry_count();
         cursor.rebuild_epoch = cursor.rebuild_epoch.saturating_add(1);
         cursor.corruption_flagged = false;
     }
 
-    let start_seq = cursor.applied_anchor.commit_sequence;
-    if start_seq == head_seq {
-        cursor.applied_history_root = head_history_root;
-        cursor.last_status = if needs_reset {
-            RebuildCursorStatus::RebuiltFromGenesis
-        } else {
-            RebuildCursorStatus::UpToDate
-        };
-        cursor.cursor_digest = cursor.compute_digest()?;
-        return Ok(RebuildStepReport {
-            status: cursor.last_status,
-            batches_applied: 0,
-            bytes_processed: 0,
-            has_more: false,
-            cursor_state: cursor.clone(),
-        });
-    }
-
-    let mut applied = 0_usize;
-    let mut bytes_used = 0_u64;
-    let start_idx = start_seq as usize;
-
-    for batch in &batches[start_idx..] {
-        if applied >= budget.max_batches() {
-            break;
-        }
-        let encoded = encode_batch(batch)
-            .map_err(|e| RebuildCursorError::SourceLedgerError(e.to_string()))?;
-        let batch_len = encoded.len() as u64;
-        if applied == 0 && batch_len > budget.max_bytes() {
-            return Err(RebuildCursorError::BatchExceedsPageBudget {
-                sequence: batch.new_anchor.commit_sequence,
-                batch_bytes: batch_len,
-                budget_bytes: budget.max_bytes(),
-            });
-        }
-        if bytes_used.saturating_add(batch_len) > budget.max_bytes() {
-            break;
-        }
-        let next_root = history_kind.successor(cursor.applied_history_root, batch)?;
+    let applied = staged_page.len();
+    for (batch, next_root) in staged_page {
         sink.apply_batch(batch);
-        applied += 1;
-        bytes_used = bytes_used.saturating_add(batch_len);
         cursor.applied_anchor = batch.new_anchor.clone();
         cursor.applied_history_root = next_root;
     }
-
-    let has_more = cursor.applied_anchor.commit_sequence < head_seq;
-    if !has_more && cursor.applied_history_root != head_history_root {
-        return Err(RebuildCursorError::SourceLedgerError(
-            "computed canonical history root at head disagrees with source ledger head_history_root"
-                .to_owned(),
-        ));
+    if applied == 0 && start_seq == head_seq {
+        cursor.applied_history_root = head_history_root;
     }
+
     cursor.derived_state_digest = sink.state_digest();
     cursor.derived_entry_count = sink.entry_count();
     cursor.last_status = if needs_reset {
         RebuildCursorStatus::RebuiltFromGenesis
+    } else if applied == 0 {
+        RebuildCursorStatus::UpToDate
     } else {
         RebuildCursorStatus::ProgressedIncremental
     };

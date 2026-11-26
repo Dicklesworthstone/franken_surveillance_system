@@ -439,9 +439,18 @@ impl RetentionHoldTable {
                 maximum: MAX_RETENTION_RULES,
             });
         }
-        self.rules.insert(rule.rule_id.clone(), rule);
-        self.table_digest = self.compute_digest()?;
-        Ok(TableMutationOutcome::Inserted)
+        let key = rule.rule_id.clone();
+        self.rules.insert(key.clone(), rule);
+        match self.compute_digest() {
+            Ok(digest) => {
+                self.table_digest = digest;
+                Ok(TableMutationOutcome::Inserted)
+            }
+            Err(err) => {
+                self.rules.remove(&key);
+                Err(err)
+            }
+        }
     }
 
     /// Places a [`HoldObligation`] under explicit `Plane::Authority` scope.
@@ -481,9 +490,18 @@ impl RetentionHoldTable {
                 maximum: MAX_HOLD_OBLIGATIONS,
             });
         }
-        self.holds.insert(hold.hold_id.clone(), hold);
-        self.table_digest = self.compute_digest()?;
-        Ok(TableMutationOutcome::Inserted)
+        let key = hold.hold_id.clone();
+        self.holds.insert(key.clone(), hold);
+        match self.compute_digest() {
+            Ok(digest) => {
+                self.table_digest = digest;
+                Ok(TableMutationOutcome::Inserted)
+            }
+            Err(err) => {
+                self.holds.remove(&key);
+                Err(err)
+            }
+        }
     }
 
     /// Explicitly releases an active hold, preserving it as a tombstoned [`HoldState::Released`]
@@ -522,8 +540,18 @@ impl RetentionHoldTable {
         match &hold.state {
             HoldState::Active => {
                 hold.state = target_state;
-                self.table_digest = self.compute_digest()?;
-                Ok(TableMutationOutcome::Released)
+                match self.compute_digest() {
+                    Ok(digest) => {
+                        self.table_digest = digest;
+                        Ok(TableMutationOutcome::Released)
+                    }
+                    Err(err) => {
+                        if let Some(h) = self.holds.get_mut(hold_id) {
+                            h.state = HoldState::Active;
+                        }
+                        Err(err)
+                    }
+                }
             }
             existing @ HoldState::Released { .. } => {
                 if existing == &target_state {
