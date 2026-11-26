@@ -4634,6 +4634,13 @@
       "schema": "fss.coverage_witness.v1"
     },
     {
+      "authority": "bounded diagnostic projection of retained daemon control bookkeeping",
+      "compatibilityRule": "Owner: fss-daemon::control::journal. At most 1,024 latest admissions preserve exact request identity, acceptance sequence, recovered status and never_started/dispatch_started/subsystem_returned/cancelled_before_execution progress, with total and omitted counts. Native custody verification and bounded replay precede inspection; a report neither authorizes redispatch nor proves semantic completion. Connection/request IDs are correlations, not retry keys.",
+      "file": "schemas/daemon_control_history.v1.json",
+      "id": "SCHEMA-DAEMON-CONTROL-HISTORY-001",
+      "schema": "fss.daemon_control_history.v1"
+    },
+    {
       "authority": "policy/evidence",
       "compatibilityRule": "hard constraints and alternatives retained; no silent rewrite",
       "file": "schemas/decision_card.v1.json",
