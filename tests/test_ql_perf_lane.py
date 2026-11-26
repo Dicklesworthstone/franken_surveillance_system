@@ -161,6 +161,22 @@ class TestQlPerfLane(unittest.TestCase):
             self.assertEqual(sym_fail.returncode, 2)
             self.assertIn("missing or escaped step log artifact", sym_fail.stderr)
 
+            # Fault 6: Forged stepDurationPercentilesMs in perf-metrics.json MUST fail closed.
+            steps_path.write_text(orig_steps, encoding="utf-8")
+            receipt_path.write_text(orig_receipt_text, encoding="utf-8")
+            orig_metrics_text = metrics_path.read_text(encoding="utf-8")
+            forged_metrics = json.loads(orig_metrics_text)
+            forged_metrics["stepDurationPercentilesMs"]["p50"] = 999999
+            metrics_path.write_text(json.dumps(forged_metrics), encoding="utf-8")
+            forged_fail = subprocess.run(
+                ["bash", str(SCRIPT), "--verify-receipt", str(receipt_path), "--allow-static-only"],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(forged_fail.returncode, 2)
+            self.assertIn("stepDurationPercentilesMs mismatch", forged_fail.stderr)
+            metrics_path.write_text(orig_metrics_text, encoding="utf-8")
+
 
 if __name__ == "__main__":
     unittest.main()

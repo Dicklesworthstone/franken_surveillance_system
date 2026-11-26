@@ -604,7 +604,25 @@ fn actual_loopback_socket_uses_exact_route_and_transfers_native_bytes() -> TestR
         TcpSecurityPolicy::OwnerApprovedPlaintext,
     )?;
     let mut link = RtspTcpLink::connect(route, TcpLimits::default(), 0, 60_000_000_000, &Permit)?;
-    let (mut peer, _) = listener.accept()?;
+    let mut peer = {
+        let mut accepted = None;
+        for _ in 0..200 {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    accepted = Some(stream);
+                    break;
+                }
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(err) => return Err(err.into()),
+            }
+        }
+        accepted.ok_or("loopback listener did not accept within 200ms")?
+    };
+    // On BSD/macOS, accepted sockets inherit O_NONBLOCK from a nonblocking listener;
+    // restore blocking mode so read_exact honors the explicit 1s timeout cleanly.
+    peer.set_nonblocking(false)?;
     peer.set_read_timeout(Some(Duration::from_secs(1)))?;
     peer.set_write_timeout(Some(Duration::from_secs(1)))?;
     let request = request()?;

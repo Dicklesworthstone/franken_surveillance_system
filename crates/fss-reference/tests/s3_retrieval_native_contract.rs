@@ -163,6 +163,9 @@ fn accept(listener: &TcpListener) -> TcpStream {
     loop {
         match listener.accept() {
             Ok((socket, _)) => {
+                // On BSD/macOS, accepted sockets inherit O_NONBLOCK from a nonblocking listener;
+                // restore blocking mode so read/write timeouts take effect cleanly.
+                socket.set_nonblocking(false).unwrap();
                 socket
                     .set_read_timeout(Some(Duration::from_secs(2)))
                     .unwrap();

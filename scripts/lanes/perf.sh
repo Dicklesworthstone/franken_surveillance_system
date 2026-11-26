@@ -82,13 +82,14 @@ if [[ "$MODE" == "verify" ]]; then
   exec python3 - "$VERIFY_TARGET" "$ALLOW_STATIC_ONLY" <<'PY'
 import hashlib
 import json
+import math
 import pathlib
 import sys
 
 receipt_path = pathlib.Path(sys.argv[1])
 allow_static_only = sys.argv[2] == "1"
-if not receipt_path.is_file():
-    print(f"[FAIL] QL-PERF-001 verifier: receipt missing: {receipt_path}", file=sys.stderr)
+if receipt_path.is_symlink() or not receipt_path.is_file():
+    print(f"[FAIL] QL-PERF-001 verifier: receipt missing or symlinked: {receipt_path}", file=sys.stderr)
     sys.exit(2)
 
 try:
@@ -202,11 +203,54 @@ if len(step_rows) != len(commands):
 if metrics.get("stepCount") != len(step_rows):
     print(f"[FAIL] perf-metrics stepCount ({metrics.get('stepCount')}) != step rows ({len(step_rows)})", file=sys.stderr)
     sys.exit(2)
+durations = []
+for idx, row in enumerate(step_rows, start=1):
+    d = row.get("durationMs")
+    if not isinstance(d, int) or isinstance(d, bool) or d < 0:
+        print(f"[FAIL] line {idx}: malformed durationMs {d!r}", file=sys.stderr)
+        sys.exit(2)
+    durations.append(d)
+durations.sort()
+
+def _pct(vals, q):
+    if not vals:
+        return 0
+    i = min(len(vals) - 1, max(0, math.ceil(q * len(vals)) - 1))
+    return vals[i]
+
+expected_percentiles = {
+    "p50": _pct(durations, 0.50),
+    "p95": _pct(durations, 0.95),
+    "p99": _pct(durations, 0.99),
+    "total": sum(durations),
+}
 percentiles = metrics.get("stepDurationPercentilesMs")
-if not isinstance(percentiles, dict) or not all(
-    isinstance(percentiles.get(k), int) and percentiles[k] >= 0 for k in ("p50", "p95", "p99")
+if not isinstance(percentiles, dict) or percentiles != expected_percentiles:
+    print(
+        f"[FAIL] stepDurationPercentilesMs mismatch: got {percentiles!r}, expected {expected_percentiles!r}",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+manifest_digest = metrics.get("workloadManifestDigest")
+manifest_files = metrics.get("workloadManifestFiles")
+if (
+    not isinstance(manifest_digest, str)
+    or not manifest_digest.startswith("sha256:")
+    or len(manifest_digest) != 71
+    or any(ch not in "0123456789abcdef" for ch in manifest_digest[7:])
+    or not isinstance(manifest_files, list)
+    or not manifest_files
 ):
-    print(f"[FAIL] malformed stepDurationPercentilesMs: {percentiles!r}", file=sys.stderr)
+    print("[FAIL] malformed workload manifest witness in perf-metrics.json", file=sys.stderr)
+    sys.exit(2)
+thermal = metrics.get("thermalEnergyCounters")
+want_sched_ok = any(r.get("stepId") == "perf-07-thermal-energy-floors" and r.get("status") == "passed" for r in step_rows)
+if (
+    not isinstance(thermal, dict)
+    or not isinstance(thermal.get("status"), str)
+    or thermal.get("deterministicSchedulerContractVerified") is not want_sched_ok
+):
+    print(f"[FAIL] thermalEnergyCounters witness disagrees with executed steps: {thermal!r}", file=sys.stderr)
     sys.exit(2)
 
 observed_ids = [row.get("stepId") for row in step_rows]

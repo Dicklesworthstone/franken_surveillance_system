@@ -216,20 +216,25 @@ fn cmaf_hostile_truncation_box_corruption_and_writer_refusals_fail_closed() -> T
     Ok(())
 }
 
-fn decode_hex_line(s: &str) -> Vec<u8> {
+fn decode_hex_line(s: &str) -> Result<Vec<u8>, Error> {
     let compact: Vec<_> = s.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
+    if !compact.len().is_multiple_of(2) {
+        return Err("odd hex fixture line length".into());
+    }
     compact
         .as_chunks::<2>()
         .0
         .iter()
         .map(|pair| {
-            let nibble = |b| match b {
-                b'0'..=b'9' => b - b'0',
-                b'a'..=b'f' => b - b'a' + 10,
-                b'A'..=b'F' => b - b'A' + 10,
-                _ => 0,
+            let nibble = |b| -> Result<u8, Error> {
+                match b {
+                    b'0'..=b'9' => Ok(b - b'0'),
+                    b'a'..=b'f' => Ok(b - b'a' + 10),
+                    b'A'..=b'F' => Ok(b - b'A' + 10),
+                    _ => Err("non-hex byte in fixture".into()),
+                }
             };
-            nibble(pair[0]) * 16 + nibble(pair[1])
+            Ok(nibble(pair[0])? * 16 + nibble(pair[1])?)
         })
         .collect()
 }
@@ -240,7 +245,7 @@ fn assemble_hevc_pictures()
         .lines()
         .filter(|line| !line.is_empty())
         .map(decode_hex_line)
-        .collect();
+        .collect::<Result<_, _>>()?;
     let config_a = HevcConfiguration::parse(
         &nals[0],
         &nals[1],
@@ -339,13 +344,27 @@ fn cmaf_hevc_multi_fragment_write_and_demux_roundtrip_is_bit_deterministic() -> 
     assert_eq!(parsed.codec(), VideoCodec::Hevc);
     assert_eq!(parsed.samples().len(), 4);
 
-    let written_samples: Vec<(usize, &fss_container::HevcSampleMapping)> = frag1_a
+    let written_samples: Vec<(
+        usize,
+        usize,
+        &fss_container::HevcSampleMapping,
+        &fss_container::HevcFragment,
+    )> = frag1_a
         .samples()
         .iter()
-        .map(|s| (frag1_off, s))
-        .chain(frag2_a.samples().iter().map(|s| (frag2_off, s)))
+        .enumerate()
+        .map(|(idx, s)| (idx, frag1_off, s, &frag1_a))
+        .chain(
+            frag2_a
+                .samples()
+                .iter()
+                .enumerate()
+                .map(|(idx, s)| (2 + idx, frag2_off, s, &frag2_a)),
+        )
         .collect();
-    for (demuxed, (frag_off, written)) in parsed.samples().iter().zip(written_samples) {
+    for (demuxed, (pic_idx, frag_off, written, frag)) in
+        parsed.samples().iter().zip(written_samples)
+    {
         assert_eq!(
             demuxed.source,
             frag_off + written.range.start..frag_off + written.range.end
@@ -357,6 +376,12 @@ fn cmaf_hevc_multi_fragment_write_and_demux_roundtrip_is_bit_deterministic() -> 
             i128::from(written.presentation_time)
         );
         assert_eq!(demuxed.contains_idr, written.idr);
+        for mapping in &frag.mappings()[written.mappings.clone()] {
+            let orig_nal = &pictures[pic_idx].nals()[mapping.nal];
+            let abs_start = frag_off + mapping.range.start;
+            let abs_end = frag_off + mapping.range.end;
+            assert_eq!(&cmaf_stream[abs_start..abs_end], orig_nal.bytes());
+        }
     }
 
     emit_caplog(

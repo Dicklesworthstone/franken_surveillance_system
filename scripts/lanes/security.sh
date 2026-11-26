@@ -98,8 +98,8 @@ import sys
 
 receipt_path = pathlib.Path(sys.argv[1])
 allow_static_only = sys.argv[2] == "1"
-if not receipt_path.is_file():
-    print(f"[FAIL] QL-SECURITY-001 verifier: receipt missing: {receipt_path}", file=sys.stderr)
+if receipt_path.is_symlink() or not receipt_path.is_file():
+    print(f"[FAIL] QL-SECURITY-001 verifier: receipt missing or symlinked: {receipt_path}", file=sys.stderr)
     sys.exit(2)
 
 try:

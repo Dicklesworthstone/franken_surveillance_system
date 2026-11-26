@@ -10,16 +10,24 @@ source "${SCRIPT_DIR}/lib.sh"
 _E2E_SCRIPT_PATH="scripts/e2e/fss_053_media_probe.sh"
 
 e2e_init "fss_053_media_probe" "fss-x4a.12.2" "$@"
-e2e_cargo_test "fss-container" "fss_053_media_probe_contract"
 
-# Also verify the unit test suites in `fss-container::probe` and `fss-cli --bin fss-probe`.
 ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 TOOLCHAIN="$(sed -n 's/^channel *= *"\(.*\)"/\1/p' "$ROOT/rust-toolchain.toml" 2>/dev/null || true)"
 if [[ -n "$TOOLCHAIN" ]]; then RUN=(rustup run "$TOOLCHAIN"); else RUN=(); fi
 
-CARGO_NET_OFFLINE=true RCH_SHIM_LOCAL_IDE="${RCH_SHIM_LOCAL_IDE:-1}" \
+e2e_step "fss_053_media_probe_contract" -- \
+  env CARGO_NET_OFFLINE=true RUSTUP_AUTO_INSTALL=0 RCH_SHIM_LOCAL_IDE="${RCH_SHIM_LOCAL_IDE:-1}" \
+  "${RUN[@]}" cargo --offline test --locked -q -p fss-container --test fss_053_media_probe_contract -- --nocapture
+e2e_expect_exit "fss_053_media_probe_contract" 0
+
+e2e_step "fss_053_probe_lib_tests" -- \
+  env CARGO_NET_OFFLINE=true RUSTUP_AUTO_INSTALL=0 RCH_SHIM_LOCAL_IDE="${RCH_SHIM_LOCAL_IDE:-1}" \
   "${RUN[@]}" cargo --offline test --locked -q -p fss-container --lib probe::
-CARGO_NET_OFFLINE=true RCH_SHIM_LOCAL_IDE="${RCH_SHIM_LOCAL_IDE:-1}" \
+e2e_expect_exit "fss_053_probe_lib_tests" 0
+
+e2e_step "fss_053_probe_cli_tests" -- \
+  env CARGO_NET_OFFLINE=true RUSTUP_AUTO_INSTALL=0 RCH_SHIM_LOCAL_IDE="${RCH_SHIM_LOCAL_IDE:-1}" \
   "${RUN[@]}" cargo --offline test --locked -q -p fss-cli --bin fss-probe
+e2e_expect_exit "fss_053_probe_cli_tests" 0
 
 e2e_summary
