@@ -117,24 +117,48 @@ try {
   pass(`${drawerCount} drawers of supporting figures open.`);
 
   // Copy rules the owner set: no estate name, no dash punctuation in prose. The estates' working
-  // names (Alder House, and Juniper House with its court) stay out of what screen readers and
-  // share previews read too: alt text, labels, titles and the page's descriptions.
+  // names (Alder House, and Juniper House with its court) also stay out of copy that is not on
+  // screen: hidden panels and SVG titles, alt text, labels and titles, the titles and descriptions
+  // link previews read, and each chapter's share page. File paths are not copy and are not
+  // searched.
   const text = await page.evaluate(() => document.body.innerText);
-  const unseen = await page.evaluate(() =>
-    [
+  const unseen = await page.evaluate(() => {
+    // Text nodes in place: a cloned body would clone the films and start fetching them again.
+    const words = [];
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (!node.parentElement?.closest("script, style, noscript")) words.push(node.data);
+    }
+    return [
+      ...words,
       document.title,
       ...[...document.querySelectorAll("meta[name=description], meta[property^='og:'], meta[name^='twitter:']")].map((m) => m.content),
       ...[...document.querySelectorAll("[alt], [aria-label], [title]")].flatMap((e) =>
         ["alt", "aria-label", "title"].map((name) => e.getAttribute(name)),
       ),
     ]
-      .filter(Boolean)
-      .join("\n"),
-  );
-  for (const copy of [text, unseen]) assert.doesNotMatch(copy, /alder|juniper/i, "estate name absent");
+      .filter((copy) => copy && !/^(https?:)?\//.test(copy))
+      .join("\n");
+  });
+  const shares = [...new Set(await page.locator('a[href^="/chapter/"]').evaluateAll((links) => links.map((a) => a.getAttribute("href"))))];
+  assert.ok(shares.length >= 5, `every chapter links its share page (${shares.length} found)`);
+  const shareCopy = [];
+  for (const share of shares) {
+    const response = await page.request.get(absolute(share));
+    assert.equal(response.status(), 200, `${share} is served`);
+    const html = await response.text();
+    const body = html.match(/<body[^>]*>([\s\S]*)<\/body>/)?.[1] ?? "";
+    shareCopy.push(
+      body.replace(/<(script|style)[\s\S]*?<\/\1>/g, " ").replace(/<[^>]+>/g, " "),
+      ...[...html.matchAll(/<title>([^<]*)<\/title>|<meta [^>]*content="([^"]*)"/g)]
+        .map((m) => m[1] ?? m[2])
+        .filter((copy) => !/^(https?:)?\//.test(copy)),
+    );
+  }
+  for (const copy of [text, unseen, shareCopy.join("\n")]) assert.doesNotMatch(copy, /alder|juniper/i, "estate name absent");
   assert.ok(!/[—–]/.test(text), "no em or en dash in the page text");
   assert.match(await page.title(), /^Franken Surveillance/);
-  pass("Page text and labels have no estate name, and the text has no dash punctuation.");
+  pass(`Page text, labels and ${shares.length} share pages have no estate name, and the text has no dash punctuation.`);
 
   // Every picture and film the page names is served.
   const media = await page.evaluate(() => [
