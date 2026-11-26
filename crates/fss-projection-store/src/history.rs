@@ -198,17 +198,21 @@ impl CanonicalBatchSource for LedgerOracle {
         from_seq: u64,
         to_seq: u64,
     ) -> Result<Vec<EvidenceDeltaBatch>, ProjectionError> {
-        if from_seq == 0 || from_seq > to_seq {
-            return Ok(Vec::new());
-        }
-        Ok(self
-            .batches()
-            .filter(|b| {
-                let s = b.new_anchor.commit_sequence;
-                s >= from_seq && s <= to_seq
-            })
-            .cloned()
-            .collect())
+        let mut batches = Vec::new();
+        self.visit_batches_range(from_seq, to_seq, &mut |batch| {
+            batches.push(batch.clone());
+            Ok(())
+        })?;
+        Ok(batches)
+    }
+
+    fn visit_batches_range(
+        &self,
+        from_seq: u64,
+        to_seq: u64,
+        visit: &mut dyn FnMut(&EvidenceDeltaBatch) -> Result<(), ProjectionError>,
+    ) -> Result<(), ProjectionError> {
+        visit_stored_batches(self.batches(), from_seq, to_seq, visit)
     }
 }
 
@@ -274,18 +278,21 @@ impl CanonicalBatchSource for DurableReferenceLedger {
         from_seq: u64,
         to_seq: u64,
     ) -> Result<Vec<EvidenceDeltaBatch>, ProjectionError> {
-        if from_seq == 0 || from_seq > to_seq {
-            return Ok(Vec::new());
-        }
-        Ok(self
-            .batches()
-            .iter()
-            .filter(|b| {
-                let s = b.new_anchor.commit_sequence;
-                s >= from_seq && s <= to_seq
-            })
-            .cloned()
-            .collect())
+        let mut batches = Vec::new();
+        self.visit_batches_range(from_seq, to_seq, &mut |batch| {
+            batches.push(batch.clone());
+            Ok(())
+        })?;
+        Ok(batches)
+    }
+
+    fn visit_batches_range(
+        &self,
+        from_seq: u64,
+        to_seq: u64,
+        visit: &mut dyn FnMut(&EvidenceDeltaBatch) -> Result<(), ProjectionError>,
+    ) -> Result<(), ProjectionError> {
+        visit_stored_batches(self.batches().iter(), from_seq, to_seq, visit)
     }
 }
 
@@ -372,19 +379,43 @@ impl CanonicalBatchSource for SliceBatchSource {
         from_seq: u64,
         to_seq: u64,
     ) -> Result<Vec<EvidenceDeltaBatch>, ProjectionError> {
-        if from_seq == 0 || from_seq > to_seq {
-            return Ok(Vec::new());
-        }
-        Ok(self
-            .batches
-            .iter()
-            .filter(|b| {
-                let s = b.new_anchor.commit_sequence;
-                s >= from_seq && s <= to_seq
-            })
-            .cloned()
-            .collect())
+        let mut batches = Vec::new();
+        self.visit_batches_range(from_seq, to_seq, &mut |batch| {
+            batches.push(batch.clone());
+            Ok(())
+        })?;
+        Ok(batches)
     }
+
+    fn visit_batches_range(
+        &self,
+        from_seq: u64,
+        to_seq: u64,
+        visit: &mut dyn FnMut(&EvidenceDeltaBatch) -> Result<(), ProjectionError>,
+    ) -> Result<(), ProjectionError> {
+        visit_stored_batches(self.batches.iter(), from_seq, to_seq, visit)
+    }
+}
+
+fn visit_stored_batches<'a>(
+    batches: impl Iterator<Item = &'a EvidenceDeltaBatch>,
+    from_seq: u64,
+    to_seq: u64,
+    visit: &mut dyn FnMut(&EvidenceDeltaBatch) -> Result<(), ProjectionError>,
+) -> Result<(), ProjectionError> {
+    if from_seq == 0 || from_seq > to_seq {
+        return Ok(());
+    }
+    for batch in batches {
+        let seq = batch.new_anchor.commit_sequence;
+        if seq > to_seq {
+            break;
+        }
+        if seq >= from_seq {
+            visit(batch)?;
+        }
+    }
+    Ok(())
 }
 
 fn list_epoch_ids(epochs_dir: &Path) -> Result<Vec<u64>, ProjectionError> {
@@ -475,7 +506,7 @@ fn visit_epoch_records(
     let mut cursor = EPOCH_HEADER_LEN as u64;
     let frame_overhead = (EPOCH_RECORD_HEADER_LEN + EPOCH_RECORD_TRAILER_LEN) as u64;
     let mut payload = Vec::new();
-    while file_len - cursor >= frame_overhead {
+    while file_len.saturating_sub(cursor) >= frame_overhead {
         let mut hdr = [0_u8; EPOCH_RECORD_HEADER_LEN];
         reader.read_exact(&mut hdr).map_err(read_error)?;
         if hdr[0..4] != EPOCH_RECORD_MAGIC {
@@ -505,7 +536,9 @@ fn visit_epoch_records(
         if commit_seq != expected_seq {
             return Err(ProjectionError::CorruptDerivedStore {
                 artifact: "epoch_segment",
-                detail: format!("expected seq {expected_seq} in epoch {epoch_id}, found {commit_seq}"),
+                detail: format!(
+                    "expected seq {expected_seq} in epoch {epoch_id}, found {commit_seq}"
+                ),
             });
         }
         let payload_len = u32::from_be_bytes([hdr[14], hdr[15], hdr[16], hdr[17]]) as usize;

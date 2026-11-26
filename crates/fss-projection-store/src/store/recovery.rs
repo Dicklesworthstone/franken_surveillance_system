@@ -54,7 +54,6 @@ impl MvccProjectionStore {
 
         let genesis_ledger = ledger_backend.genesis_anchor();
         let head_ledger = ledger_backend.head_ledger_anchor();
-        let head_seq = head_ledger.commit_sequence;
         let genesis_anchor = ProjectionAnchor::genesis(&genesis_ledger, config.history_mode)?;
 
         let try_existing = try_load_existing_state(
@@ -72,30 +71,16 @@ impl MvccProjectionStore {
                 replayed_wal_frames,
             } => {
                 let mut snapshot = *snapshot;
-                let mut retained_history = vec![Arc::new(snapshot.clone())];
-                let mut replayed_ledger_batches = 0_u64;
-                let mode = if snapshot.anchor.commit_sequence == head_seq {
+                let (retained_history, replayed_ledger_batches) = replay_to_head(
+                    &mut snapshot,
+                    ledger_backend,
+                    &head_ledger,
+                    payload_resolver,
+                    config.max_retained_snapshots,
+                )?;
+                let mode = if replayed_ledger_batches == 0 {
                     ProjectionRecoveryMode::LoadedCurrent
                 } else {
-                    let start_seq = snapshot
-                        .anchor
-                        .commit_sequence
-                        .checked_add(1)
-                        .ok_or(ProjectionError::ArithmeticOverflow("catchup_seq"))?;
-                    let missing_batches = ledger_backend.read_batches_range(start_seq, head_seq)?;
-                    for batch in &missing_batches {
-                        advance_snapshot_in_place(&mut snapshot, batch, payload_resolver)?;
-                        retained_history.push(Arc::new(snapshot.clone()));
-                        if retained_history.len() > config.max_retained_snapshots {
-                            retained_history.remove(0);
-                        }
-                        replayed_ledger_batches = replayed_ledger_batches.saturating_add(1);
-                    }
-                    verify_final_anchor(
-                        &snapshot,
-                        &head_ledger,
-                        ledger_backend.head_history_root(),
-                    )?;
                     ProjectionRecoveryMode::CaughtUpFromSnapshot
                 };
 
@@ -125,21 +110,13 @@ impl MvccProjectionStore {
             ExistingLoadOutcome::NeedsRebuild(reason) => {
                 let quarantined_files = quarantine_derived_files(&dir)?;
                 let mut snapshot = ProjectionSnapshot::empty(genesis_anchor, config.history_mode);
-                let mut retained_history = vec![Arc::new(snapshot.clone())];
-                let mut replayed_ledger_batches = 0_u64;
-
-                if head_seq > 0 {
-                    let all_batches = ledger_backend.read_batches_range(1, head_seq)?;
-                    for batch in &all_batches {
-                        advance_snapshot_in_place(&mut snapshot, batch, payload_resolver)?;
-                        retained_history.push(Arc::new(snapshot.clone()));
-                        if retained_history.len() > config.max_retained_snapshots {
-                            retained_history.remove(0);
-                        }
-                        replayed_ledger_batches = replayed_ledger_batches.saturating_add(1);
-                    }
-                }
-                verify_final_anchor(&snapshot, &head_ledger, ledger_backend.head_history_root())?;
+                let (retained_history, replayed_ledger_batches) = replay_to_head(
+                    &mut snapshot,
+                    ledger_backend,
+                    &head_ledger,
+                    payload_resolver,
+                    config.max_retained_snapshots,
+                )?;
 
                 let _ = write_snapshot_atomic(&dir, &snapshot, config.durability)?;
                 let mut wal = ProjectionWal::open_append(&dir, config.wal_sync, config.durability)?;
@@ -164,6 +141,36 @@ impl MvccProjectionStore {
             }
         }
     }
+}
+
+/// Replays canonical batches directly into the working projection. Only snapshots inside the
+/// final retention window can be served after open, so older intermediate states need no clone.
+fn replay_to_head(
+    snapshot: &mut ProjectionSnapshot,
+    ledger: &impl CanonicalBatchSource,
+    head: &LedgerAnchor,
+    resolver: &dyn PayloadResolver,
+    max_retained: usize,
+) -> Result<(Vec<Arc<ProjectionSnapshot>>, u64), ProjectionError> {
+    let start = snapshot.anchor.commit_sequence;
+    let first_retained = head
+        .commit_sequence
+        .saturating_sub((max_retained - 1) as u64);
+    let mut retained = Vec::new();
+    if start >= first_retained {
+        retained.push(Arc::new(snapshot.clone()));
+    }
+    if start < head.commit_sequence {
+        ledger.visit_batches_range(start + 1, head.commit_sequence, &mut |batch| {
+            advance_snapshot_in_place(snapshot, batch, resolver)?;
+            if snapshot.anchor.commit_sequence >= first_retained {
+                retained.push(Arc::new(snapshot.clone()));
+            }
+            Ok(())
+        })?;
+    }
+    verify_final_anchor(snapshot, head, ledger.head_history_root())?;
+    Ok((retained, head.commit_sequence - start))
 }
 
 /// Validates batch anchor/digest continuity and applies one [`EvidenceDeltaBatch`] to `snapshot`.

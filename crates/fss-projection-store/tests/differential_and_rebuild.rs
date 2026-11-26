@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use fss_core::{
     BatchId, CaptureInterval, ContentDigest, EffectState, EventId, EventKind, EventState,
-    EvidenceDelta, EvidenceDeltaBatch, ObjectId, ObligationId, ObligationState, OperationId, Plane,
+    EvidenceDelta, EvidenceDeltaBatch, LedgerAnchor, ObjectId, ObligationId, ObligationState, OperationId, Plane,
     SensorId, StreamId, TimestampNs,
 };
 use fss_graph_algorithms::certified::Budget;
@@ -26,7 +26,7 @@ use fss_projection_store::{
     FootageAdapterKind, FootageImportPayload, FootageQueryFilter, GraphEdgeDeltaPayload,
     GraphEdgeKey, HistoryChainMode, MvccProjectionStore, ObligationPayload,
     PROJECTION_SCRUB_RECEIPT_DOMAIN, PackStorePayloadResolver, PrivacyMaskPayload,
-    ProjectionRebuildReason, ProjectionRecordPayload, ProjectionRecoveryMode, ProjectionStore,
+    ProjectionAnchor, ProjectionError, ProjectionRebuildReason, ProjectionRecordPayload, ProjectionRecoveryMode, ProjectionStore,
     ProjectionStoreConfig, SNAPSHOT_FILENAME, ScrubVerdict, SensorLivenessPayload,
     SensorLivenessStatus, SensorTamperPayload, WAL_FILENAME, replay_from_batches,
 };
@@ -381,6 +381,48 @@ impl ScenarioHarness {
     }
 }
 
+/// Recovery must consume the cursor even when a backend cannot materialize an entire range.
+struct StreamingHistory<'a>(&'a MerkleEpochLedger);
+
+impl CanonicalBatchSource for StreamingHistory<'_> {
+    fn history_mode(&self) -> HistoryChainMode {
+        self.0.history_mode()
+    }
+
+    fn genesis_anchor(&self) -> LedgerAnchor {
+        self.0.genesis_anchor().clone()
+    }
+
+    fn head_ledger_anchor(&self) -> LedgerAnchor {
+        self.0.head_ledger_anchor()
+    }
+
+    fn head_history_root(&self) -> ContentDigest {
+        self.0.head_history_root()
+    }
+
+    fn matches_anchor(&self, anchor: &ProjectionAnchor) -> Result<bool, ProjectionError> {
+        self.0.matches_anchor(anchor)
+    }
+
+    fn read_batches_range(
+        &self,
+        _: u64,
+        _: u64,
+    ) -> Result<Vec<EvidenceDeltaBatch>, ProjectionError> {
+        Err(ProjectionError::InvalidRequest("bulk read during recovery"))
+    }
+
+    fn visit_batches_range(
+        &self,
+        from_seq: u64,
+        to_seq: u64,
+        visit: &mut dyn FnMut(&EvidenceDeltaBatch) -> Result<(), ProjectionError>,
+    ) -> Result<(), ProjectionError> {
+        self.0.visit_batches_range(from_seq, to_seq, visit)
+    }
+}
+
 #[test]
 fn differential_200_scenarios_rebuild_and_oracle_exactness() -> TestResult {
     let ws = TempWorkspace::new("diff200")?;
@@ -466,7 +508,21 @@ fn differential_200_scenarios_rebuild_and_oracle_exactness() -> TestResult {
     drop(store);
     fs::remove_dir_all(&proj_dir)?;
     let resolver = PackStorePayloadResolver::new(&harness.packs);
-    let rebuilt = MvccProjectionStore::open_or_rebuild(&proj_dir, &harness.ledger, &resolver)?;
+    let recovery_config = ProjectionStoreConfig {
+        max_retained_snapshots: 3,
+        ..ProjectionStoreConfig::default()
+    };
+    let rebuilt = MvccProjectionStore::open_or_rebuild_with_config(
+        &proj_dir,
+        &StreamingHistory(&harness.ledger),
+        &resolver,
+        recovery_config,
+    )?;
+    assert!(matches!(
+        rebuilt.snapshot_at(197),
+        Err(ProjectionError::SnapshotEvicted { .. })
+    ));
+    assert_eq!(rebuilt.snapshot_at(198)?.anchor().commit_sequence, 198);
     assert_eq!(
         rebuilt.recovery_report().mode,
         ProjectionRecoveryMode::RebuiltFromGenesis
@@ -560,7 +616,17 @@ fn differential_200_scenarios_rebuild_and_oracle_exactness() -> TestResult {
     }
 
     let resolver = PackStorePayloadResolver::new(&harness.packs);
-    let caught_up = MvccProjectionStore::open_or_rebuild(&proj_dir, &harness.ledger, &resolver)?;
+    let caught_up = MvccProjectionStore::open_or_rebuild_with_config(
+        &proj_dir,
+        &StreamingHistory(&harness.ledger),
+        &resolver,
+        recovery_config,
+    )?;
+    assert!(matches!(
+        caught_up.snapshot_at(202),
+        Err(ProjectionError::SnapshotEvicted { .. })
+    ));
+    assert_eq!(caught_up.snapshot_at(203)?.anchor().commit_sequence, 203);
     assert_eq!(
         caught_up.recovery_report().mode,
         ProjectionRecoveryMode::CaughtUpFromSnapshot
@@ -649,7 +715,6 @@ fn differential_200_scenarios_rebuild_and_oracle_exactness() -> TestResult {
 
 #[test]
 fn epoch_visitor_stops_before_later_corruption() -> TestResult {
-    use fss_projection_store::ProjectionError;
     use std::io::{Seek, SeekFrom, Write};
 
     let ws = TempWorkspace::new("visit-epoch")?;
@@ -688,7 +753,10 @@ fn epoch_visitor_stops_before_later_corruption() -> TestResult {
         visited.push(batch.new_anchor.commit_sequence);
         Err(ProjectionError::InvalidRequest("stop"))
     });
-    assert!(matches!(stopped, Err(ProjectionError::InvalidRequest("stop"))));
+    assert!(matches!(
+        stopped,
+        Err(ProjectionError::InvalidRequest("stop"))
+    ));
     assert_eq!(visited, [1]);
 
     let mut verified = Vec::new();
@@ -696,7 +764,10 @@ fn epoch_visitor_stops_before_later_corruption() -> TestResult {
         verified.push(batch.new_anchor.commit_sequence);
         Ok(())
     });
-    assert!(matches!(corrupt, Err(ProjectionError::CorruptDerivedStore { .. })));
+    assert!(matches!(
+        corrupt,
+        Err(ProjectionError::CorruptDerivedStore { .. })
+    ));
     assert_eq!(verified, [1]);
     Ok(())
 }
