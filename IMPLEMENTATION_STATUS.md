@@ -5,6 +5,44 @@
 **Current change qualification:** each dated section below states its exact verification boundary. Native passes for one component do not qualify other changes, and prior receipts do not qualify new bytes.
 **Release authority:** repository-owned local qualification (`scripts/qualify.sh`) and retained DSR receipts, not hosted CI
 
+## Exact canonical forwarding preserves caller authority — 2026-11-25
+
+The production forwarder no longer extracts deltas and silently rebases them into a newly
+named coalesced batch. It submits the original `EvidenceDeltaBatch`, preserving the complete
+basis and successor anchors, batch ID, canonical digest, deltas, and declared child roots.
+Each forwarded batch runs as an exclusive singleton wave in the existing bounded combiner.
+Ordinary camera/pipeline proposals retain their existing group-commit behavior.
+
+Before append, the sink verifies every declared child and every payload/witness reference
+against retained pack bytes with a cumulative 64 MiB read budget. Native v2 ledger validation
+then checks the original basis and computed successor under the same commit mutex. A stale
+batch cannot succeed merely because its object IDs are disjoint from intervening writes.
+A projection mismatch fences further forwarding.
+
+The concurrent checkpoint-recovery change is preserved: an optional ledger checkpoint
+failure still permits projection publication and returns its diagnostic; a projection
+failure after canonical commit retains `CommittedProjectionFailed` and the original receipt.
+Completed durable retries continue to replay before current-basis validation. Existing
+forwarding fixtures now construct genuine v2 batches instead of incompatible v1 oracle roots.
+
+Six combiner regressions and two additional daemon regressions cover exact batch identity
+and extra closure members across reopen, forked basis and invented successor anchors,
+missing payload/witness/child custody, a queued stale-basis race, checkpoint failure, and
+the durable projection-failure fence.
+
+**Verification boundary:** independent source/API review and guarded reconstruction against
+concurrent main. The initial local forwarding files passed pinned rustfmt; subsequent
+checkpoint integration and added tests were reviewed in source after executor loss.
+Native compilation and tests remain unverified: the shared daemon build was killed in
+unchanged `syn 2.0.119` before modified sources compiled. No Clippy or release qualification
+pass is claimed.
+
+```sh
+cargo +nightly-2026-08-31 test --locked --offline -p fss-projection-store --test exact_batch_combiner_contract
+cargo +nightly-2026-08-31 test --locked --offline -p fss-projection-store --test concurrency_and_combiner
+cargo +nightly-2026-08-31 test --locked --offline -p fss-daemon --test forwarded_delta_recovery_contract
+```
+
 ## Incident retention follows verified source footage — 2026-11-25
 
 Corroborated events now pin every retained GOP that overlaps their host-time interval on

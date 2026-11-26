@@ -15,7 +15,8 @@ use std::collections::{BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
-use fss_core::{BatchId, CanonicalEncoder, ContentDigest, RegionTree};
+use fss_core::{BatchId, CanonicalEncoder, ContentDigest, EvidenceDeltaBatch, RegionTree};
+use fss_ledger::MAX_ORACLE_CHILDREN_PER_BATCH;
 use fss_runtime::authority::AuthorityCx;
 
 use crate::error::CombinerError;
@@ -29,15 +30,21 @@ pub use types::{
 
 struct PendingSubmission {
     proposal: Mutex<Option<CommitProposal>>,
+    exact_batch: Option<EvidenceDeltaBatch>,
     cancelled: Option<Arc<AtomicBool>>,
     outcome: Mutex<Option<Result<CoalescedCommitReceipt, CombinerError>>>,
     ready: Condvar,
 }
 
 impl PendingSubmission {
-    fn new(proposal: CommitProposal, cancelled: Option<Arc<AtomicBool>>) -> Self {
+    fn new(
+        proposal: CommitProposal,
+        exact_batch: Option<EvidenceDeltaBatch>,
+        cancelled: Option<Arc<AtomicBool>>,
+    ) -> Self {
         Self {
             proposal: Mutex::new(Some(proposal)),
+            exact_batch,
             cancelled,
             outcome: Mutex::new(None),
             ready: Condvar::new(),
@@ -114,7 +121,41 @@ impl<S: CommitSink> CommitCombiner<S> {
         &self,
         proposal: CommitProposal,
     ) -> Result<CoalescedCommitReceipt, CombinerError> {
-        self.submit_internal(proposal, None)
+        self.submit_internal(proposal, None, None)
+    }
+
+    /// Commits an already prepared canonical batch without rebasing, renaming, or coalescing it.
+    ///
+    /// The batch occupies an exclusive wave in the same bounded queue as ordinary proposals.
+    /// The sink validates its exact basis and successor while holding the commit mutex.
+    /// All referenced pack objects must already be durable; unsupported sinks fail closed.
+    pub fn submit_exact_batch(
+        &self,
+        batch: EvidenceDeltaBatch,
+    ) -> Result<CoalescedCommitReceipt, CombinerError> {
+        if batch.deltas.len() > self.config.max_deltas_per_batch {
+            return Err(CombinerError::InvalidProposal(
+                "exact batch deltas exceed max_deltas_per_batch",
+            ));
+        }
+        if batch.children.len() > MAX_ORACLE_CHILDREN_PER_BATCH {
+            return Err(CombinerError::InvalidProposal(
+                "exact batch children exceed MAX_ORACLE_CHILDREN_PER_BATCH",
+            ));
+        }
+        if !batch.is_canonically_ordered() || batch.computed_digest() != batch.batch_digest {
+            return Err(CombinerError::InvalidProposal(
+                "exact batch must be canonical with its original valid digest",
+            ));
+        }
+        let proposal = CommitProposal {
+            request_digest: batch.batch_digest,
+            sensor_scope: "canonical:exact".to_owned(),
+            objects: Vec::new(),
+            deltas: batch.deltas.clone(),
+            batch_id_prefix: "exact".to_owned(),
+        };
+        self.submit_internal(proposal, None, Some(batch))
     }
 
     /// Submits `proposal` with an explicit cooperative cancellation flag checked before queueing
@@ -127,7 +168,7 @@ impl<S: CommitSink> CommitCombiner<S> {
         if cancel_flag.load(Ordering::Acquire) {
             return Err(CombinerError::Cancelled);
         }
-        self.submit_internal(proposal, Some(cancel_flag))
+        self.submit_internal(proposal, Some(cancel_flag), None)
     }
 
     /// Submits `proposal` after explicitly verifying that the caller's [`AuthorityCx`] is not
@@ -144,7 +185,7 @@ impl<S: CommitSink> CommitCombiner<S> {
         if cancelled {
             return Err(CombinerError::Cancelled);
         }
-        self.submit_internal(proposal, None)
+        self.submit_internal(proposal, None, None)
     }
 
     /// Returns cumulative coalescing and fsync amortization telemetry.
@@ -185,6 +226,7 @@ impl<S: CommitSink> CommitCombiner<S> {
         &self,
         proposal: CommitProposal,
         cancel_flag: Option<Arc<AtomicBool>>,
+        exact_batch: Option<EvidenceDeltaBatch>,
     ) -> Result<CoalescedCommitReceipt, CombinerError> {
         proposal.validate()?;
         if proposal.deltas.len() > self.config.max_deltas_per_batch {
@@ -198,7 +240,7 @@ impl<S: CommitSink> CommitCombiner<S> {
             ));
         }
 
-        let submission = Arc::new(PendingSubmission::new(proposal, cancel_flag));
+        let submission = Arc::new(PendingSubmission::new(proposal, exact_batch, cancel_flag));
         let became_combiner = {
             let mut state = self.queue.lock().map_err(|_| CombinerError::LockPoisoned)?;
             if state.shutting_down {
@@ -292,7 +334,10 @@ impl<S: CommitSink> CommitCombiner<S> {
                         && (total_deltas + prop.deltas.len() > self.config.max_deltas_per_batch
                             || total_objects + prop.objects.len()
                                 > self.config.max_objects_per_batch);
-                    if collides || exceeds_limits {
+                    // An exact successor cannot share its state root with unrelated deltas.
+                    let requires_separate_wave = !wave.is_empty()
+                        && (entry.exact_batch.is_some() || wave[0].0.exact_batch.is_some());
+                    if collides || exceeds_limits || requires_separate_wave {
                         deferred.push((entry, prop));
                         continue;
                     }
@@ -306,6 +351,8 @@ impl<S: CommitSink> CommitCombiner<S> {
 
                 if wave.is_empty() {
                     None
+                } else if let Some(batch) = wave[0].0.exact_batch.as_ref() {
+                    Some(sink.commit_exact_batch(batch.clone()))
                 } else {
                     match derive_coalesced_batch_id(&wave) {
                         Ok(batch_id) => {

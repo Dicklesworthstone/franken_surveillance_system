@@ -10,8 +10,11 @@ use fss_core::{
     BatchId, CaptureInterval, ContentDigest, EvidenceDelta, ObjectId, Plane, TimestampNs,
 };
 use fss_daemon::{SiteManifest, StorageEngine};
-use fss_ledger::{LedgerOracle, OracleLimits, decode_batch, encode_batch};
+use fss_ledger::{
+    EpochLedgerConfig, IncompleteTailPolicy, MerkleEpochLedger, decode_batch, encode_batch,
+};
 use fss_pack::{PACK_KIND_METADATA, PackObjectInput};
+use fss_projection_store::CanonicalBatchSource;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -63,17 +66,32 @@ fn manifest() -> Result<SiteManifest, Box<dyn std::error::Error>> {
 }
 
 fn batch(storage: &StorageEngine) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    prepared_batch(storage, "recovery")
+}
+
+fn prepared_batch(
+    storage: &StorageEngine,
+    label: &str,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let payload = b"synthetic canonical forwarding metadata";
     storage
         .pack_store()
         .append_batch(&[PackObjectInput::new(PACK_KIND_METADATA, 0, payload)])?;
-    let oracle = LedgerOracle::new("site-forward-recovery", OracleLimits::CEILING)?;
+    // The live daemon owns v2 Merkle authority. A v1 flat-state oracle batch is
+    // intentionally incompatible with exact canonical forwarding.
+    let preparation = TempDir::new()?;
+    let oracle = MerkleEpochLedger::open(
+        preparation.0.join("ledger"),
+        "site-forward-recovery",
+        EpochLedgerConfig::default(),
+        IncompleteTailPolicy::Reject,
+    )?;
     let batch = oracle.prepare_batch(
-        BatchId::parse("batch:forward:recovery")?,
+        BatchId::parse(format!("batch:forward:{label}"))?,
         vec![EvidenceDelta {
-            delta_id: "delta:forward:recovery".to_owned(),
+            delta_id: format!("delta:forward:{label}"),
             family: "synthetic_forward_metadata".to_owned(),
-            object_id: ObjectId::parse("obj:forward:recovery")?,
+            object_id: ObjectId::parse(format!("obj:forward:{label}"))?,
             prior_generation: None,
             new_generation: 1,
             validity: CaptureInterval::new(TimestampNs(0), TimestampNs(1))?,
@@ -82,7 +100,7 @@ fn batch(storage: &StorageEngine) -> Result<Vec<u8>, Box<dyn std::error::Error>>
             witness_digest: None,
             operation_id: None,
         }],
-        [],
+        [ContentDigest::sha256(payload)],
     )?;
     Ok(encode_batch(&batch)?)
 }
@@ -239,5 +257,65 @@ fn completion_from_a_later_ledger_cannot_replay_against_an_older_head() -> TestR
     assert_eq!(target_storage.head_snapshot()?.commit_sequence, 0);
     drop(writer);
     target_storage.shutdown_and_flush()?;
+    Ok(())
+}
+
+#[test]
+fn forwarding_preserves_the_exact_batch_and_rejects_stale_independent_writes() -> TestResult {
+    let dir = TempDir::new()?;
+    let manifest = manifest()?;
+    let storage = StorageEngine::open(&manifest, Some(&dir.0))?;
+    let bytes = batch(&storage)?;
+    let stale = prepared_batch(&storage, "independent")?;
+    let expected = decode_batch(&bytes)?;
+    let writer = storage.forward_writer();
+    let receipt = writer.forward_delta_batch(&bytes)?;
+    assert_eq!(receipt.0, expected.new_anchor.commit_sequence);
+    assert_eq!(receipt.2, expected.new_anchor.state_root);
+    assert!(
+        writer.forward_delta_batch(&stale).is_err(),
+        "a valid but stale batch cannot be rebased merely because its object is new"
+    );
+    assert_eq!(storage.head_snapshot()?.commit_sequence, 1);
+    drop(writer);
+    storage.shutdown_and_flush()?;
+
+    let ledger = MerkleEpochLedger::open(
+        dir.0.join("ledger"),
+        "site-forward-recovery",
+        EpochLedgerConfig::default(),
+        IncompleteTailPolicy::Reject,
+    )?;
+    assert_eq!(ledger.read_batches_range(1, 1)?, vec![expected]);
+    assert!(
+        ledger
+            .get_object(&ObjectId::parse("obj:forward:independent")?)
+            .is_none()
+    );
+    Ok(())
+}
+
+#[test]
+fn forwarding_refuses_an_unretained_declared_child_before_advancing_authority() -> TestResult {
+    let dir = TempDir::new()?;
+    let manifest = manifest()?;
+    let storage = StorageEngine::open(&manifest, Some(&dir.0))?;
+    let mut offered = decode_batch(&batch(&storage)?)?;
+    let child = b"independent forwarded closure member";
+    offered.children.push(ContentDigest::sha256(child));
+    offered.children.sort_unstable();
+    offered.batch_digest = offered.computed_digest();
+    let bytes = encode_batch(&offered)?;
+    let writer = storage.forward_writer();
+    assert!(writer.forward_delta_batch(&bytes).is_err());
+    assert_eq!(storage.head_snapshot()?.commit_sequence, 0);
+    storage.pack_store().append_batch(&[PackObjectInput::new(
+        PACK_KIND_METADATA,
+        0,
+        child,
+    )])?;
+    assert_eq!(writer.forward_delta_batch(&bytes)?.0, 1);
+    drop(writer);
+    storage.shutdown_and_flush()?;
     Ok(())
 }

@@ -4,9 +4,11 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use fss_core::{BatchId, ContentDigest, EvidenceDelta, ObjectId};
-use fss_ledger::{EpochLedgerError, MAX_ORACLE_DELTAS_PER_BATCH, MerkleEpochLedger};
-use fss_pack::{PackObjectInput, PackStore};
+use fss_core::{BatchId, ContentDigest, EvidenceDelta, EvidenceDeltaBatch, ObjectId};
+use fss_ledger::{
+    EpochLedgerError, MAX_ORACLE_CHILDREN_PER_BATCH, MAX_ORACLE_DELTAS_PER_BATCH, MerkleEpochLedger,
+};
+use fss_pack::{DEFAULT_MAX_READ_BYTES, PackObjectInput, PackReadBudget, PackStore};
 
 use crate::error::{CombinerError, ProjectionError};
 use crate::payloads::PackStorePayloadResolver;
@@ -201,6 +203,19 @@ pub trait CommitSink: Send {
     /// Returns the currently committed generation of `object_id` (`None` if not yet created).
     fn current_object_generation(&self, object_id: &ObjectId) -> Option<u64>;
 
+    /// Commits an exact prepared batch as a singleton under the combiner's sink mutex.
+    ///
+    /// Implementations must preserve every anchor, delta, child, and the original batch identity.
+    /// A sink without exact-batch support refuses rather than silently converting it to a proposal.
+    fn commit_exact_batch(
+        &mut self,
+        _batch: EvidenceDeltaBatch,
+    ) -> Result<SinkCommitOutcome, CombinerError> {
+        Err(CombinerError::InvalidProposal(
+            "this commit sink does not support exact canonical batches",
+        ))
+    }
+
     /// Atomically executes one coalesced commit wave: pack append -> ledger append -> projection apply.
     fn commit_coalesced_wave(
         &mut self,
@@ -261,6 +276,78 @@ impl LedgerPackProjectionSink {
 impl CommitSink for LedgerPackProjectionSink {
     fn current_object_generation(&self, object_id: &ObjectId) -> Option<u64> {
         self.ledger.get_object(object_id).map(|rev| rev.generation)
+    }
+
+    fn commit_exact_batch(
+        &mut self,
+        batch: EvidenceDeltaBatch,
+    ) -> Result<SinkCommitOutcome, CombinerError> {
+        // A prior durable append may still await projection replay. Exact forwarding
+        // must honor the same publication fence as ordinary coalesced proposals.
+        let projected = self.projection.head_anchor();
+        let canonical = self.ledger.head_anchor();
+        if projected.commit_sequence != canonical.commit_sequence
+            || projected.authority_root != canonical.state_root
+            || projected.history_root != self.ledger.history_root()
+        {
+            return Err(ProjectionError::AnchorMismatch {
+                expected_sequence: canonical.commit_sequence,
+                actual_sequence: projected.commit_sequence,
+                detail: "replay the projection to the canonical head before forwarding another batch",
+            }
+            .into());
+        }
+        if batch.children.len() > MAX_ORACLE_CHILDREN_PER_BATCH
+            || batch.deltas.len() > MAX_ORACLE_DELTAS_PER_BATCH
+        {
+            return Err(CombinerError::InvalidProposal(
+                "exact batch exceeds canonical closure bounds",
+            ));
+        }
+        // Forwarding carries no object bytes. Verify the declared closure and implicit
+        // payload/witness references before publishing authority, including unknown families.
+        // A cumulative budget prevents many small references from causing unbounded reads.
+        let mut children: BTreeSet<_> = batch.children.iter().copied().collect();
+        for delta in &batch.deltas {
+            children.insert(delta.payload_digest);
+            if let Some(witness) = delta.witness_digest {
+                children.insert(witness);
+            }
+        }
+        let budget = PackReadBudget::new(DEFAULT_MAX_READ_BYTES);
+        for child in children {
+            let _ = self.pack_store.read_verified_with_budget(&child, &budget)?;
+        }
+
+        // Native admission checks the exact live basis, successor, generations, state root,
+        // identity, and digest. Never reconstruct this batch against a different head.
+        let (ledger_receipt, checkpoint_failure) = match self.ledger.append_batch(batch.clone()) {
+            Ok(receipt) => (receipt, None),
+            Err(EpochLedgerError::CommittedCheckpointFailed { receipt, source }) => {
+                (*receipt, Some(Arc::<str>::from(source.to_string())))
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let resolver = PackStorePayloadResolver::new(&self.pack_store);
+        let proj_anchor = match self.projection.apply_delta_batch(&batch, &resolver) {
+            Ok(anchor) => anchor,
+            Err(source) => {
+                return Err(CombinerError::CommittedProjectionFailed {
+                    receipt: Arc::new(ledger_receipt),
+                    checkpoint_failure,
+                    source: Arc::new(source),
+                });
+            }
+        };
+        Ok(SinkCommitOutcome {
+            commit_sequence: ledger_receipt.sequence,
+            batch_id: ledger_receipt.batch_id,
+            authority_root: proj_anchor.authority_root,
+            history_root: proj_anchor.history_root,
+            batch_digest: ledger_receipt.batch_digest,
+            fsyncs_executed: 1,
+            checkpoint_failure,
+        })
     }
 
     fn commit_coalesced_wave(

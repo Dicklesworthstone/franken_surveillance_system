@@ -263,7 +263,6 @@ impl StorageEngine {
             quota_pinned: Arc::clone(&self.quota_pinned),
             pinned_bytes: Arc::clone(&self.pinned_bytes),
             cap_bytes: self.retention_config.max_total_deployment_bytes,
-            next_seq: AtomicU64::new(self.next_delta_seq),
         })
     }
 

@@ -12,7 +12,7 @@ use fss_ipc::ActiveScrubStatus;
 use fss_ledger::decode_batch;
 use fss_pack::{CapacityPressure, PackScrubReport, ScrubVerdict as PackScrubVerdict};
 use fss_projection_store::{
-    CommitCombiner, CommitProposal, FootageAdapterKind, LedgerPackProjectionSink,
+    CommitCombiner, FootageAdapterKind, LedgerPackProjectionSink,
     MvccProjectionStore, ProjectionStore, ScrubVerdict as ProjectionScrubVerdict,
 };
 
@@ -116,7 +116,6 @@ pub(crate) struct CombinerForwardWriter {
     pub(crate) quota_pinned: Arc<AtomicBool>,
     pub(crate) pinned_bytes: Arc<AtomicU64>,
     pub(crate) cap_bytes: u64,
-    pub(crate) next_seq: AtomicU64,
 }
 
 impl ForwardBatchWriter for CombinerForwardWriter {
@@ -136,12 +135,7 @@ impl ForwardBatchWriter for CombinerForwardWriter {
         })?;
         // Enforce the payload binding here as well as in the IPC handler: direct
         // trait callers cannot pair an old caller digest with different batch bytes.
-        let mut binding = CanonicalEncoder::new();
-        binding.text("fss.canonical.v1");
-        binding.text("fss.daemon.forwarded_payload_binding.v1");
-        binding.digest(request_digest);
-        binding.digest(ContentDigest::sha256(batch_bytes));
-        let request_digest = ContentDigest::sha256(&binding.finish_checked()?);
+        let request_digest = forward_payload_binding(request_digest, batch_bytes)?;
         if let Some(receipt) = self
             .forward_requests
             .reserve(idempotency_key, request_digest)?
@@ -201,15 +195,9 @@ impl ForwardBatchWriter for CombinerForwardWriter {
                 cap_bytes: self.cap_bytes,
             });
         }
-        let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
-        let proposal = CommitProposal {
-            request_digest: batch.batch_digest,
-            sensor_scope: "ipc:forward".to_owned(),
-            objects: Vec::new(),
-            deltas: batch.deltas.clone(),
-            batch_id_prefix: format!("fwd-{seq}"),
-        };
-        let receipt = self.combiner.submit(proposal)?;
+        // The supplied batch is an exact canonical successor, not a rebasing intent.
+        // Its basis and full closure are validated under the combiner's commit mutex.
+        let receipt = self.combiner.submit_exact_batch(batch.clone())?;
         if let Ok(mut gens) = self.object_generations.lock() {
             for delta in &batch.deltas {
                 gens.insert(delta.object_id.clone(), delta.new_generation);
@@ -221,6 +209,18 @@ impl ForwardBatchWriter for CombinerForwardWriter {
             receipt.authority_root,
         ))
     }
+}
+
+pub(crate) fn forward_payload_binding(
+    request_digest: ContentDigest,
+    batch_bytes: &[u8],
+) -> Result<ContentDigest, DaemonError> {
+    let mut binding = CanonicalEncoder::new();
+    binding.text("fss.canonical.v1");
+    binding.text("fss.daemon.forwarded_payload_binding.v1");
+    binding.digest(request_digest);
+    binding.digest(ContentDigest::sha256(batch_bytes));
+    Ok(ContentDigest::sha256(&binding.finish_checked()?))
 }
 
 pub(crate) const fn map_footage_adapter(adapter: CameraAdapterKind) -> FootageAdapterKind {
