@@ -5,6 +5,23 @@
 **Current change qualification:** each dated section below states its exact verification boundary. Native passes for one component do not qualify other changes, and prior receipts do not qualify new bytes.
 **Release authority:** repository-owned local qualification (`scripts/qualify.sh`) and retained DSR receipts, not hosted CI
 
+## Receipt certification refuses poisoned projection publication — 2026-11-26
+
+Both current-head and historical receipt certification now acquire the latest projection
+through a fallible read-lock accessor. Poisoned publication state is refused rather than
+silently recovered as if it were trustworthy. Current-head certification also explicitly
+requires the v2 history mode. Ordinary diagnostic snapshots retain their existing behavior.
+
+The regression proves historical recovery still succeeds after old MVCC snapshot eviction,
+then poisons publication ownership and requires both proof paths to return LockPoisoned
+without changing the canonical head or proposal counters. The older head-only API still
+returns no receipt for a historical candidate.
+
+**Verification boundary:** pinned rustfmt, whitespace checks and independent source/API
+review passed. Native execution of this projection regression is blocked by SIGKILL in
+unchanged asupersync 0.5.0 before the changed target. The separately passing 13-test ledger
+receipt suite does not qualify projection publication or daemon control execution.
+
 ## Durable bounded-control intake and restart inspection — 2026-11-26
 
 Accepted camera/control commands now retain exact request authority and lifecycle in a

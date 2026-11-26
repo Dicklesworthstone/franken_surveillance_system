@@ -357,8 +357,10 @@ impl CommitSink for LedgerPackProjectionSink {
         let Some(receipt) = self.ledger.receipt_for_exact_head(batch)? else {
             return Ok(None);
         };
-        let projected = self.projection.head_anchor();
-        if projected.commit_sequence != receipt.sequence
+        let snapshot = self.projection.try_snapshot_latest()?;
+        let projected = snapshot.anchor();
+        if snapshot.history_mode != HistoryChainMode::V2MerkleEpoch
+            || projected.commit_sequence != receipt.sequence
             || projected.authority_root != receipt.anchor.state_root
             || projected.history_root != receipt.history_root
             || projected.high_water_digest != receipt.batch_digest
@@ -383,7 +385,7 @@ impl CommitSink for LedgerPackProjectionSink {
         };
         // The target may be historical. Publication must nevertheless match the current
         // verified canonical head, including its v2 history and final batch identity.
-        let snapshot = self.projection.snapshot_latest();
+        let snapshot = self.projection.try_snapshot_latest()?;
         let projected = snapshot.anchor();
         if snapshot.history_mode != HistoryChainMode::V2MerkleEpoch
             || projected.commit_sequence != proof.head_anchor.commit_sequence

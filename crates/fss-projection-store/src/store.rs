@@ -3,6 +3,8 @@
 //! and standalone full-history replay helper.
 
 mod prepared;
+#[cfg(test)]
+mod receipt_publication_tests;
 mod recovery;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -279,6 +281,15 @@ impl MvccProjectionStore {
     #[must_use]
     pub const fn recovery_report(&self) -> &ProjectionRecoveryReport {
         &self.recovery_report
+    }
+
+    /// Reads the current publication for an authority-bearing check without recovering poison.
+    pub(crate) fn try_snapshot_latest(&self) -> Result<Arc<ProjectionSnapshot>, ProjectionError> {
+        let guard = self
+            .read_state
+            .read()
+            .map_err(|_| ProjectionError::LockPoisoned)?;
+        Ok(Arc::clone(&guard.latest))
     }
 
     /// Explicitly pins a currently retained historical snapshot sequence against sliding-window
