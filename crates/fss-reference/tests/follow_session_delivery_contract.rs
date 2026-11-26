@@ -1100,6 +1100,7 @@ fn pinned_claim_expiry_is_derived_at_each_evidence_snapshot_without_expiring_the
         DurableSessionLimits::default(),
         WorkClaimLimits::default(),
     )?;
+    store.enable_coordination(WorkClaimLimits::default())?;
     // Explicit owner-authorized synthetic work isolates lease-clock projection. No claim
     // action here asserts that an investigation ran or that a physical observation occurred.
     let claim = store.coordinate(

@@ -554,7 +554,7 @@ fn invalid_policies_and_duplicate_options_refuse_before_deployment_io() -> Test 
         for (extra, reason) in [
             (
                 vec!["--sensor-health", "latest"],
-                "requires policy conservative-v1",
+                "--sensor-health requires conservative-v1 or conservative-optical-v1",
             ),
             (vec!["--sensor-health"], "missing value"),
             (

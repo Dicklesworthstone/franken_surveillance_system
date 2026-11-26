@@ -18,6 +18,9 @@ use std::time::Duration;
 use fss_cli::agent_json::{object, string};
 use fss_cli::json_input::{Value, parse};
 use fss_core::ContentDigest;
+
+#[path = "mcp_investigation_contract/wire.rs"]
+mod wire;
 use fss_reference::deployment_session::plan::read_control_plan;
 use fss_reference::media_fixture::jpeg::{JpegConfig, Subsampling, encode_jpeg};
 
@@ -449,7 +452,7 @@ impl Agent {
         );
         String::from_utf8(output.stdout)?
             .lines()
-            .map(|line| parse(line).map_err(Into::into))
+            .map(wire::parse_response)
             .collect()
     }
 

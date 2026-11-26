@@ -897,7 +897,7 @@ fn mcp_bound_orientation_reads_current_head_without_rebase_or_semantic_changes()
     fixture.prepare()?;
     let before = retained_tree(&fixture.root)?;
     let args = format!(
-        "{{\"session\":{},\"view\":\"epistemic_map\",\"budget_tokens\":4096}}",
+        "{{\"session\":{},\"view\":\"epistemic_map\",\"budget_tokens\":3000}}",
         quote(&session)
     );
     let current = fixture.call(PRINCIPAL, "session_orient", &args, "AOP-003", false)?;
@@ -931,7 +931,7 @@ fn mcp_bound_orientation_reads_current_head_without_rebase_or_semantic_changes()
     let stateless = fixture.call(
         PRINCIPAL,
         "session_orient",
-        r#"{"view":"epistemic_map","budget_tokens":4096}"#,
+        r#"{"view":"epistemic_map","budget_tokens":3000}"#,
         "AOP-003",
         false,
     )?;

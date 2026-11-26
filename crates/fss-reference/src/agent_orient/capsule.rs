@@ -259,6 +259,12 @@ pub(super) fn compile_capsule(
             handles: &mut pulse_source_handles,
         };
         if let Some(assessment) = &coverage {
+            proof_roots.extend(
+                assessment
+                    .zones
+                    .iter()
+                    .flat_map(|zone| zone.calibration_invalidations.iter().copied()),
+            );
             append_coverage_zones(assessment, &rollup_ctx, &mut sink)?;
         }
         append_historical_health(

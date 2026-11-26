@@ -68,6 +68,13 @@ fn runtime_fixture(tag: &str, clock: &Clock) -> TestResult<Fixture> {
     Ok(fixture)
 }
 
+fn supervision_limits() -> OrientLimits {
+    OrientLimits {
+        max_journal_bytes: 32 * 1024 * 1024,
+        ..OrientLimits::default()
+    }
+}
+
 fn action(
     fixture: &Fixture,
     clock: &Clock,
@@ -82,7 +89,7 @@ fn action(
         SessionContext::runtime(&fixture.root, clock),
         &fixture.opened.session.principal_id,
         &request,
-        &OrientLimits::default(),
+        &supervision_limits(),
         &mut SyntheticEvaluator {
             root: &fixture.root,
             source: &fixture.source,
@@ -211,7 +218,7 @@ fn native_case_link(tag: &str, expire_before_link: bool) -> TestResult {
             action: SupervisionAction::Poll,
         },
         configured.subscription.digest(),
-        &OrientLimits::default(),
+        &supervision_limits(),
         &mut SyntheticEvaluator {
             root: &fixture.root,
             source: &fixture.source,
