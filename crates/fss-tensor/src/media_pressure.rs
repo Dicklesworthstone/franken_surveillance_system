@@ -442,16 +442,29 @@ impl CanonicalDecode for MediaPressureDecisionReceipt {
         }
         let mut trigger_codes = Vec::with_capacity(trigger_count);
         for _ in 0..trigger_count {
-            trigger_codes.push(decoder.text()?.to_owned());
+            let code = decoder.text()?.to_owned();
+            if code.is_empty()
+                || code.len() > MAX_OWNER_ID_BYTES
+                || code
+                    .bytes()
+                    .any(|b| b.is_ascii_control() || b.is_ascii_whitespace())
+            {
+                return Err(ContractError::InvalidIdentifier);
+            }
+            trigger_codes.push(code);
         }
         let recovery_guidance = decoder.text()?.to_owned();
         let receipt_digest = decoder.digest()?;
 
-        // Enforce structural rung invariants even against forged SHA-256 payloads.
+        // Enforce structural rung and hysteresis invariants even against forged SHA-256 payloads.
         if preview_stride != effective_rung.preview_stride()
             || analytics_stride != effective_rung.analytics_stride()
             || source_custody_protected != effective_rung.source_custody_protected()
             || coverage_gap_witness_required != effective_rung.coverage_gap_witness_required()
+            || (effective_rung > MediaDegradationRung::Rung3ReduceAnalyticsCadence
+                && alert_corroboration_protected)
+            || (recovery_held_by_hysteresis
+                && (raw_target_rung >= previous_rung || effective_rung != previous_rung))
             || !trigger_codes.windows(2).all(|w| w[0] < w[1])
         {
             return Err(ContractError::InvalidIdentifier);

@@ -366,6 +366,7 @@ impl CanonicalDecode for TimestampOracleReceipt {
         if generation.0 == 0
             || timescale_hz == 0
             || reference_frame_count == 0
+            || verified_gap_witnesses > reference_frame_count
             || (verdict == OracleVerdict::ExactParity
                 && (first_divergence.is_some()
                     || reference_frame_count != candidate_frame_count

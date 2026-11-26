@@ -129,6 +129,10 @@ fn fss_056_presync_discard_keyframe_sealing_gap_reset_and_canonical_receipt() ->
     assert_eq!(gap_chunk.chunk_index, 2);
     assert_eq!(gap_chunk.seal_reason, ChunkSealReason::GapInterrupt);
     assert!(!gap_chunk.is_complete_gop);
+    assert_eq!(
+        gap_chunk.pre_sync_discarded_samples, 0,
+        "chunk 2 opened immediately on a keyframe boundary and must not double-count chunk 1 discards"
+    );
     assert!(!chunker.has_open_chunk());
 
     // Non-keyframe after gap is discarded until fresh keyframe arrives.
@@ -147,7 +151,8 @@ fn fss_056_presync_discard_keyframe_sealing_gap_reset_and_canonical_receipt() ->
     assert_eq!(flushed.chunk_index, 3);
     assert_eq!(flushed.seal_reason, ChunkSealReason::ExplicitFlush);
     assert!(!flushed.is_complete_gop);
-    assert_eq!(flushed.pre_sync_discarded_samples, 3);
+    assert_eq!(flushed.pre_sync_discarded_samples, 1);
+    assert_eq!(chunker.pre_sync_discarded_samples(), 3);
 
     emit_caplog(
         "fss_056_presync_sealing_gap_and_canonical_receipt",

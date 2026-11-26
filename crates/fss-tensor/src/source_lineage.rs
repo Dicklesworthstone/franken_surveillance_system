@@ -491,6 +491,7 @@ impl SourceToTensorLineage {
             ));
         }
         let mut privacy_masked = false;
+        let mut last_norm_dtype: Option<DType> = None;
         for step in &transforms {
             if is_cancelled() {
                 return Err(LineageError::Cancelled);
@@ -499,6 +500,14 @@ impl SourceToTensorLineage {
             if matches!(step, TransformStep::PrivacyMask { .. }) {
                 privacy_masked = true;
             }
+            if let TransformStep::Normalize { output_dtype, .. } = step {
+                last_norm_dtype = Some(*output_dtype);
+            }
+        }
+        if let Some(norm_dtype) = last_norm_dtype
+            && norm_dtype != output_tensor.dtype()
+        {
+            return Err(LineageError::TensorMismatch("normalize_output_dtype"));
         }
 
         let output_generation = output_tensor.generation();
@@ -686,11 +695,19 @@ impl CanonicalDecode for SourceToTensorLineage {
         };
         let lineage_digest = decoder.digest()?;
 
-        // Derived tensors NEVER inherit raw source custody, and privacy_masked must agree with steps.
+        // Derived tensors NEVER inherit raw source custody, privacy_masked must agree with steps,
+        // and any final Normalize step dtype must agree with output_dtype.
         let has_mask_step = transforms
             .iter()
             .any(|s| matches!(s, TransformStep::PrivacyMask { .. }));
-        if is_source_custody || privacy_masked != has_mask_step {
+        let last_norm_dtype = transforms.iter().rev().find_map(|s| match s {
+            TransformStep::Normalize { output_dtype, .. } => Some(*output_dtype),
+            _ => None,
+        });
+        if is_source_custody
+            || privacy_masked != has_mask_step
+            || last_norm_dtype.is_some_and(|dt| dt != output_dtype)
+        {
             return Err(ContractError::InvalidIdentifier);
         }
 

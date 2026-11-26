@@ -427,6 +427,7 @@ impl CanonicalDecode for KeyframeChunk {
             || keyframe_count == 0
             || keyframe_count > sample_count
             || last_sample_seq < first_sample_seq
+            || last_sample_seq - first_sample_seq < sample_count - 1
             || last_dts_ns < first_dts_ns
             || max_pts_ns < min_pts_ns
             || total_duration_ns == 0
@@ -506,7 +507,8 @@ pub struct KeyframeChunker {
     next_chunk_index: u64,
     last_seen_seq: Option<u64>,
     last_seen_dts_ns: Option<i128>,
-    pre_sync_discarded_samples: u64,
+    total_pre_sync_discarded_samples: u64,
+    pending_pre_sync_discarded_samples: u64,
     pre_sync_discarded_bytes: usize,
     open: Option<OpenChunk>,
 }
@@ -520,7 +522,8 @@ impl KeyframeChunker {
             next_chunk_index: 1,
             last_seen_seq: None,
             last_seen_dts_ns: None,
-            pre_sync_discarded_samples: 0,
+            total_pre_sync_discarded_samples: 0,
+            pending_pre_sync_discarded_samples: 0,
             pre_sync_discarded_bytes: 0,
             open: None,
         })
@@ -529,7 +532,7 @@ impl KeyframeChunker {
     /// Returns cumulative leading non-keyframe samples discarded while waiting for random access.
     #[must_use]
     pub const fn pre_sync_discarded_samples(&self) -> u64 {
-        self.pre_sync_discarded_samples
+        self.total_pre_sync_discarded_samples
     }
 
     /// Returns `true` if a keyframe-aligned chunk is currently open and accumulating samples.
@@ -605,7 +608,10 @@ impl KeyframeChunker {
             }
             self.last_seen_seq = Some(sample.sample_seq);
             self.last_seen_dts_ns = Some(sample.dts_ns);
-            self.pre_sync_discarded_samples = self.pre_sync_discarded_samples.saturating_add(1);
+            self.total_pre_sync_discarded_samples =
+                self.total_pre_sync_discarded_samples.saturating_add(1);
+            self.pending_pre_sync_discarded_samples =
+                self.pending_pre_sync_discarded_samples.saturating_add(1);
             self.pre_sync_discarded_bytes = next_discard_bytes;
             return Ok(None);
         }
@@ -731,7 +737,9 @@ impl KeyframeChunker {
         sample_bytes: usize,
         sample_end_offset: u64,
     ) -> OpenChunk {
-        let discarded = self.pre_sync_discarded_samples;
+        // Consume per-chunk pre-sync discard count so subsequent chunks never double-count.
+        let discarded = self.pending_pre_sync_discarded_samples;
+        self.pending_pre_sync_discarded_samples = 0;
         self.pre_sync_discarded_bytes = 0;
         OpenChunk {
             first_sample_seq: sample.sample_seq,
