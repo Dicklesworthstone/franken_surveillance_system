@@ -353,6 +353,7 @@ policy_lane() {
   run release-artifact-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_release_artifacts.py
   run release-publication-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_release_publication.py
   run github-unavailable-release-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_fss_194_github_unavailable_release.py
+  run fss-118-lab-differential-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_fss_118_ffmpeg_lab_differential.py
   run ql-custody-lane-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_ql_custody_lane.py
   run ql-reference-lane-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_ql_reference_lane.py
   run ql-security-lane-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_ql_security_lane.py
@@ -373,11 +374,14 @@ policy_lane() {
   run shell-syntax bash -n scripts/qualify.sh scripts/release_qualify.sh scripts/publish_to_github.sh \
     scripts/e2e/run.sh scripts/e2e/lib.sh scripts/e2e/selftest.sh \
     scripts/e2e/doc_039_mechanical_sympathy_doctrine.sh \
+    scripts/e2e/doc_041_media_derivative_receipt.sh scripts/e2e/doc_054_frame_pyramid_tiling.sh \
     scripts/e2e/fss_035_backup_restore_manifest.sh scripts/e2e/fss_053_media_probe.sh \
     scripts/e2e/fss_054_pure_rust_decode_engine.sh scripts/e2e/fss_055_encode_rendition_kernels.sh \
-    scripts/e2e/fss_056_keyframe_chunker.sh scripts/e2e/fss_058_buffer_accounting.sh \
+    scripts/e2e/fss_056_keyframe_chunker.sh scripts/e2e/fss_057_preview_fanout.sh \
+    scripts/e2e/fss_058_buffer_accounting.sh \
     scripts/e2e/fss_060_decode_timestamp_oracle.sh scripts/e2e/fss_064_multipart_idempotency.sh \
     scripts/e2e/fss_115_fragmented_mp4_cmaf.sh scripts/e2e/fss_117_mjpeg_vertical_slice.sh \
+    scripts/e2e/fss_118_ffmpeg_lab_differential.sh \
     scripts/e2e/fss_119_frame_pool.sh scripts/e2e/fss_120_source_to_tensor_lineage.sh \
     scripts/e2e/fss_121_media_pressure_ladder.sh \
     scripts/e2e/fss_141_kernel_dispatch_receipts.sh scripts/e2e/fss_142_packed_tiled_matrix_kernels.sh \
@@ -398,9 +402,11 @@ policy_lane() {
     scripts/asupersync_concurrency_guard.py scripts/verify_website_showcase.py scripts/soak_live_daemon.py \
     scripts/generate-manifest.py scripts/release_artifacts.py scripts/release_publication.py \
     scripts/offline_github_unavailable_drill.py scripts/json_instance_validate.py \
+    scripts/lab/ffmpeg_media_differential.py \
     scripts/e2e/validate_log.py scripts/e2e/runner_verdict.py tests/test_e2e_lib_fail_closed.py \
     tests/test_manifest_audit.py tests/test_stable_id_audit.py tests/test_release_artifacts.py \
     tests/test_release_publication.py tests/test_fss_194_github_unavailable_release.py \
+    tests/test_fss_118_ffmpeg_lab_differential.py \
     tests/test_ql_agent_lane.py tests/test_ql_custody_lane.py tests/test_ql_perf_lane.py \
     tests/test_ql_reference_lane.py tests/test_ql_security_lane.py tests/test_ql_threat_lane.py \
     tests/test_schema_validate.py tests/test_slo_validate.py tests/test_slo_operation_cost_consistency.py \
