@@ -55,3 +55,15 @@ check 0 jpeg                '\xff\xd8\xff\xe0ACameraX'
 check 10 short-head         'FLV'
 check 11 unknown            'RIFFxxxxWAVE'
 checkp 10 parameters-short  '\x00\x00\x00\x01\x67'
+
+# FSS-115 — deterministic fragmented MP4/CMAF writer, reader, timeline, and malformed gauntlets.
+"${RUN[@]}" cargo --offline test -q -p fss-container \
+  --test fss_115_fragmented_mp4_cmaf_contract \
+  --test avc_mux_contract \
+  --test hevc_remux_contract \
+  --test implicit_fragment_contract \
+  --test inband_mp4 \
+  --test mixed_mp4 \
+  --test movie_output_contract \
+  --test movie_timing_contract \
+  --test demux_malformed_gauntlet
