@@ -10,7 +10,7 @@
 //! ```
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use fss_core::{CanonicalDecode, CanonicalEncode, EvidenceDeltaBatch};
@@ -211,27 +211,60 @@ pub(crate) fn encode_wal_frame(
 ///
 /// Any truncated frame, bad magic, version mismatch, CRC32C mismatch, or codec error returns
 /// [`ProjectionError::CorruptDerivedStore`] so `open_or_rebuild` can quarantine and rebuild.
-pub(crate) fn read_and_verify_wal(path: &Path) -> Result<Vec<WalRecord>, ProjectionError> {
-    if !path.exists() {
-        return Ok(Vec::new());
+pub(crate) fn visit_verified_wal(
+    path: &Path,
+    visit: impl FnMut(WalRecord) -> Result<(), ProjectionError>,
+) -> Result<(), ProjectionError> {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(ProjectionError::io(ProjectionIoOperation::Open, err)),
+    };
+    let file_len = file
+        .metadata()
+        .map_err(|err| ProjectionError::io(ProjectionIoOperation::Metadata, err))?
+        .len();
+    if let Some(offset) = visit_wal_frames(&file, file_len, visit)? {
+        return Err(ProjectionError::CorruptDerivedStore {
+            artifact: WAL_FILENAME,
+            detail: format!("truncated WAL frame at byte offset {offset}"),
+        });
     }
-    let mut file =
-        File::open(path).map_err(|err| ProjectionError::io(ProjectionIoOperation::Open, err))?;
-    let mut raw = Vec::new();
-    file.read_to_end(&mut raw)
-        .map_err(|err| ProjectionError::io(ProjectionIoOperation::Read, err))?;
+    Ok(())
+}
 
-    let mut records = Vec::new();
-    let mut offset = 0_usize;
-    while offset < raw.len() {
-        let remaining = raw.len() - offset;
-        if remaining < WAL_FRAME_HEADER_LEN + WAL_FRAME_TRAILER_LEN {
-            return Err(ProjectionError::CorruptDerivedStore {
-                artifact: WAL_FILENAME,
-                detail: format!("truncated WAL header at byte offset {offset}"),
-            });
+/// Visits complete frames within the observed length. A live writer can leave an incomplete
+/// final frame. The caller decides whether that prefix is inspectable or requires recovery.
+fn visit_wal_frames(
+    file: &File,
+    file_len: u64,
+    mut visit: impl FnMut(WalRecord) -> Result<(), ProjectionError>,
+) -> Result<Option<u64>, ProjectionError> {
+    let mut reader = BufReader::new(file.take(file_len));
+    let mut frame = Vec::new();
+    let mut offset = 0_u64;
+    let read_error = |err| ProjectionError::io(ProjectionIoOperation::Read, err);
+    while offset < file_len {
+        frame.clear();
+        reader
+            .by_ref()
+            .take(WAL_FRAME_HEADER_LEN as u64)
+            .read_to_end(&mut frame)
+            .map_err(read_error)?;
+        let remaining = file_len - offset;
+        if frame.len() < WAL_FRAME_HEADER_LEN
+            || remaining < (WAL_FRAME_HEADER_LEN + WAL_FRAME_TRAILER_LEN) as u64
+        {
+            let prefix = frame.len().min(WAL_FRAME_MAGIC.len());
+            if frame[..prefix] != WAL_FRAME_MAGIC[..prefix] {
+                return Err(ProjectionError::CorruptDerivedStore {
+                    artifact: WAL_FILENAME,
+                    detail: format!("invalid WAL frame magic at byte offset {offset}"),
+                });
+            }
+            return Ok(Some(offset));
         }
-        let hdr = &raw[offset..offset + WAL_FRAME_HEADER_LEN];
+        let hdr = &frame[..];
         if hdr[0..4] != WAL_FRAME_MAGIC {
             return Err(ProjectionError::CorruptDerivedStore {
                 artifact: WAL_FILENAME,
@@ -260,13 +293,17 @@ pub(crate) fn read_and_verify_wal(path: &Path) -> Result<Vec<WalRecord>, Project
             .checked_add(body_len)
             .and_then(|v| v.checked_add(WAL_FRAME_TRAILER_LEN))
             .ok_or(ProjectionError::ArithmeticOverflow("wal_frame_len"))?;
-        if frame_len > remaining {
-            return Err(ProjectionError::CorruptDerivedStore {
-                artifact: WAL_FILENAME,
-                detail: format!("truncated WAL frame body at byte offset {offset}"),
-            });
+        if frame_len as u64 > remaining {
+            return Ok(Some(offset));
         }
-        let frame = &raw[offset..offset + frame_len];
+        reader
+            .by_ref()
+            .take((body_len + WAL_FRAME_TRAILER_LEN) as u64)
+            .read_to_end(&mut frame)
+            .map_err(read_error)?;
+        if frame.len() != frame_len {
+            return Ok(Some(offset));
+        }
         let crc_pos = frame_len - WAL_FRAME_TRAILER_LEN;
         let stored_crc = u32::from_be_bytes([
             frame[crc_pos],
@@ -297,10 +334,10 @@ pub(crate) fn read_and_verify_wal(path: &Path) -> Result<Vec<WalRecord>, Project
                         ),
                     });
                 }
-                records.push(WalRecord::ApplyBatch {
+                visit(WalRecord::ApplyBatch {
                     commit_sequence: seq,
                     batch,
-                });
+                })?;
             }
             WAL_OP_SCRUB_RECEIPT => {
                 let receipt = DoctorScrubReceipt::from_canonical_bytes(body).map_err(|err| {
@@ -311,10 +348,16 @@ pub(crate) fn read_and_verify_wal(path: &Path) -> Result<Vec<WalRecord>, Project
                         ),
                     }
                 })?;
-                records.push(WalRecord::RecordScrubReceipt {
+                if receipt.anchor.commit_sequence != seq {
+                    return Err(ProjectionError::CorruptDerivedStore {
+                        artifact: WAL_FILENAME,
+                        detail: format!("WAL scrub receipt sequence mismatch at offset {offset}"),
+                    });
+                }
+                visit(WalRecord::RecordScrubReceipt {
                     commit_sequence: seq,
                     receipt,
-                });
+                })?;
             }
             other => {
                 return Err(ProjectionError::CorruptDerivedStore {
@@ -323,9 +366,9 @@ pub(crate) fn read_and_verify_wal(path: &Path) -> Result<Vec<WalRecord>, Project
                 });
             }
         }
-        offset += frame_len;
+        offset += frame_len as u64;
     }
-    Ok(records)
+    Ok(None)
 }
 
 /// Strictly read-only inspection summary of `mvcc.wal` produced without acquiring locks or
@@ -389,17 +432,12 @@ pub fn inspect_wal_readonly(
             detail: "mvcc.wal is not a regular non-symlink file".to_owned(),
         });
     }
-    let mut raw = Vec::new();
-    file.take(max_bytes.saturating_add(1))
-        .read_to_end(&mut raw)
-        .map_err(|err| ProjectionError::io(ProjectionIoOperation::Read, err))?;
-    if (raw.len() as u64) > max_bytes {
+    if opened_meta.len() > max_bytes {
         return Err(ProjectionError::CorruptDerivedStore {
             artifact: WAL_FILENAME,
             detail: format!("mvcc.wal exceeded read-only inspection bound {max_bytes}"),
         });
     }
-
     let mut summary = WalInspectionSummary {
         batch_frames: 0,
         scrub_receipt_frames: 0,
@@ -407,108 +445,22 @@ pub fn inspect_wal_readonly(
         latest_scrub_receipt: None,
         incomplete_tail: false,
     };
-    let mut offset = 0_usize;
-    while offset < raw.len() {
-        let remaining = raw.len() - offset;
-        if remaining < WAL_FRAME_HEADER_LEN + WAL_FRAME_TRAILER_LEN {
-            let magic_prefix = remaining.min(WAL_FRAME_MAGIC.len());
-            if raw[offset..offset + magic_prefix] != WAL_FRAME_MAGIC[..magic_prefix] {
-                return Err(ProjectionError::CorruptDerivedStore {
-                    artifact: WAL_FILENAME,
-                    detail: format!("invalid WAL frame magic at byte offset {offset}"),
-                });
-            }
-            summary.incomplete_tail = true;
-            break;
-        }
-        let hdr = &raw[offset..offset + WAL_FRAME_HEADER_LEN];
-        if hdr[0..4] != WAL_FRAME_MAGIC {
-            return Err(ProjectionError::CorruptDerivedStore {
-                artifact: WAL_FILENAME,
-                detail: format!("invalid WAL frame magic at byte offset {offset}"),
-            });
-        }
-        let version = u16::from_be_bytes([hdr[4], hdr[5]]);
-        if version != WAL_FORMAT_VERSION {
-            return Err(ProjectionError::CorruptDerivedStore {
-                artifact: WAL_FILENAME,
-                detail: format!("unsupported WAL version {version} at byte offset {offset}"),
-            });
-        }
-        let op_tag = u16::from_be_bytes([hdr[6], hdr[7]]);
-        let seq = u64::from_be_bytes([
-            hdr[8], hdr[9], hdr[10], hdr[11], hdr[12], hdr[13], hdr[14], hdr[15],
-        ]);
-        let body_len = u32::from_be_bytes([hdr[16], hdr[17], hdr[18], hdr[19]]) as usize;
-        if body_len > MAX_WAL_FRAME_BODY_BYTES {
-            return Err(ProjectionError::CorruptDerivedStore {
-                artifact: WAL_FILENAME,
-                detail: format!("WAL frame body_len {body_len} exceeds max at offset {offset}"),
-            });
-        }
-        let frame_len = WAL_FRAME_HEADER_LEN
-            .checked_add(body_len)
-            .and_then(|v| v.checked_add(WAL_FRAME_TRAILER_LEN))
-            .ok_or(ProjectionError::ArithmeticOverflow("wal_frame_len"))?;
-        if frame_len > remaining {
-            summary.incomplete_tail = true;
-            break;
-        }
-        let frame = &raw[offset..offset + frame_len];
-        let crc_pos = frame_len - WAL_FRAME_TRAILER_LEN;
-        let stored_crc = u32::from_be_bytes([
-            frame[crc_pos],
-            frame[crc_pos + 1],
-            frame[crc_pos + 2],
-            frame[crc_pos + 3],
-        ]);
-        if crc32c(&frame[..crc_pos]) != stored_crc {
-            return Err(ProjectionError::CorruptDerivedStore {
-                artifact: WAL_FILENAME,
-                detail: format!("WAL CRC32C checksum mismatch at byte offset {offset}"),
-            });
-        }
-        let body = &frame[WAL_FRAME_HEADER_LEN..crc_pos];
-        match op_tag {
-            WAL_OP_APPLY_BATCH => {
-                let batch =
-                    decode_batch(body).map_err(|err| ProjectionError::CorruptDerivedStore {
-                        artifact: WAL_FILENAME,
-                        detail: format!("WAL batch decode failed at offset {offset}: {err}"),
-                    })?;
-                if batch.new_anchor.commit_sequence != seq {
-                    return Err(ProjectionError::CorruptDerivedStore {
-                        artifact: WAL_FILENAME,
-                        detail: format!(
-                            "WAL sequence mismatch at offset {offset}: frame={seq}, batch={}",
-                            batch.new_anchor.commit_sequence
-                        ),
-                    });
-                }
+    let incomplete = visit_wal_frames(&file, opened_meta.len(), |record| {
+        match record {
+            WalRecord::ApplyBatch {
+                commit_sequence, ..
+            } => {
                 summary.batch_frames = summary.batch_frames.saturating_add(1);
-                summary.max_commit_sequence = summary.max_commit_sequence.max(seq);
+                summary.max_commit_sequence = summary.max_commit_sequence.max(commit_sequence);
             }
-            WAL_OP_SCRUB_RECEIPT => {
-                let receipt = DoctorScrubReceipt::from_canonical_bytes(body).map_err(|err| {
-                    ProjectionError::CorruptDerivedStore {
-                        artifact: WAL_FILENAME,
-                        detail: format!(
-                            "WAL scrub receipt decode failed at offset {offset}: {err}"
-                        ),
-                    }
-                })?;
+            WalRecord::RecordScrubReceipt { receipt, .. } => {
                 summary.scrub_receipt_frames = summary.scrub_receipt_frames.saturating_add(1);
                 summary.latest_scrub_receipt = Some(receipt);
             }
-            other => {
-                return Err(ProjectionError::CorruptDerivedStore {
-                    artifact: WAL_FILENAME,
-                    detail: format!("unknown WAL op tag {other} at byte offset {offset}"),
-                });
-            }
         }
-        offset += frame_len;
-    }
+        Ok(())
+    })?;
+    summary.incomplete_tail = incomplete.is_some();
     Ok(summary)
 }
 
@@ -644,6 +596,57 @@ mod tests {
         ));
         fs::create_dir_all(&dir).expect("create temp dir");
         dir
+    }
+
+    #[test]
+    fn wal_visitors_verify_each_frame_before_reporting_it() {
+        use crate::schema::{ProjectionAnchor, ScrubVerdict};
+        use fss_core::{ContentDigest, TimestampNs};
+
+        let dir = unique_temp_dir("frame-visitor");
+        let path = dir.join(WAL_FILENAME);
+        let digest = ContentDigest::sha256(b"recording history");
+        let receipt = DoctorScrubReceipt {
+            scrubbed_at_ns: TimestampNs(10),
+            anchor: ProjectionAnchor {
+                commit_sequence: 7,
+                authority_root: digest,
+                history_root: digest,
+                high_water_digest: digest,
+            },
+            first_seq: 1,
+            last_seq: 7,
+            verified_objects: 2,
+            verified_packs: 1,
+            verified_fraction_ppm: 1_000_000,
+            verdict: ScrubVerdict::Clean,
+        };
+        let body = receipt.try_canonical_bytes().expect("encode receipt");
+        let valid = encode_wal_frame(WAL_OP_SCRUB_RECEIPT, 7, &body).expect("encode frame");
+        let wrong_seq = encode_wal_frame(WAL_OP_SCRUB_RECEIPT, 8, &body).expect("encode frame");
+        fs::write(&path, [valid.as_slice(), &wrong_seq].concat()).expect("write WAL");
+        let mut delivered = 0;
+        let result = visit_verified_wal(&path, |_| {
+            delivered += 1;
+            Ok(())
+        });
+        assert!(matches!(result, Err(ProjectionError::CorruptDerivedStore { .. })));
+        assert_eq!(delivered, 1);
+        assert!(matches!(
+            inspect_wal_readonly(&path, u64::MAX),
+            Err(ProjectionError::CorruptDerivedStore { .. })
+        ));
+
+        fs::write(&path, [valid.as_slice(), b"FM"].concat()).expect("write torn WAL");
+        let observed = inspect_wal_readonly(&path, u64::MAX).expect("inspect complete prefix");
+        assert_eq!(observed.latest_scrub_receipt, Some(receipt));
+        assert_eq!(observed.scrub_receipt_frames, 1);
+        assert!(observed.incomplete_tail);
+        assert!(matches!(
+            visit_verified_wal(&path, |_| Ok(())),
+            Err(ProjectionError::CorruptDerivedStore { .. })
+        ));
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

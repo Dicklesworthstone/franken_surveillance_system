@@ -19,7 +19,7 @@ use crate::store::{
 };
 use crate::wal::{
     ProjectionWal, WAL_FILENAME, WalRecord, load_snapshot_if_present, quarantine_derived_files,
-    read_and_verify_wal, write_snapshot_atomic,
+    visit_verified_wal, write_snapshot_atomic,
 };
 
 impl MvccProjectionStore {
@@ -264,16 +264,6 @@ fn try_load_existing_state<L: CanonicalBatchSource>(
         ));
     }
 
-    let wal_records = match read_and_verify_wal(&wal_path) {
-        Ok(recs) => recs,
-        Err(ProjectionError::CorruptDerivedStore { .. }) => {
-            return Ok(ExistingLoadOutcome::NeedsRebuild(
-                ProjectionRebuildReason::CorruptWal,
-            ));
-        }
-        Err(err) => return Err(err),
-    };
-
     let loaded_snapshot_seq = snap_loaded.as_ref().map(|s| s.anchor.commit_sequence);
     let mut snapshot = match snap_loaded {
         Some(s) => {
@@ -288,19 +278,22 @@ fn try_load_existing_state<L: CanonicalBatchSource>(
     };
 
     let mut replayed_wal_frames = 0_u64;
-    for rec in wal_records {
+    let wal_result = visit_verified_wal(&wal_path, |rec| {
         match rec {
             WalRecord::ApplyBatch {
                 commit_sequence,
                 batch,
             } => {
                 if commit_sequence <= snapshot.anchor.commit_sequence {
-                    continue;
+                    return Ok(());
                 }
                 if advance_snapshot_in_place(&mut snapshot, &batch, payload_resolver).is_err() {
-                    return Ok(ExistingLoadOutcome::NeedsRebuild(
-                        ProjectionRebuildReason::CorruptWal,
-                    ));
+                    return Err(ProjectionError::CorruptDerivedStore {
+                        artifact: WAL_FILENAME,
+                        detail: format!(
+                            "WAL batch at sequence {commit_sequence} cannot advance the projection"
+                        ),
+                    });
                 }
                 replayed_wal_frames = replayed_wal_frames.saturating_add(1);
             }
@@ -308,14 +301,25 @@ fn try_load_existing_state<L: CanonicalBatchSource>(
                 if receipt.validate().is_err()
                     || receipt.anchor.commit_sequence > snapshot.anchor.commit_sequence
                 {
-                    return Ok(ExistingLoadOutcome::NeedsRebuild(
-                        ProjectionRebuildReason::CorruptWal,
-                    ));
+                    return Err(ProjectionError::CorruptDerivedStore {
+                        artifact: WAL_FILENAME,
+                        detail: "invalid or future WAL scrub receipt".to_owned(),
+                    });
                 }
                 snapshot.scrub_receipt = Some(receipt);
                 replayed_wal_frames = replayed_wal_frames.saturating_add(1);
             }
         }
+        Ok(())
+    });
+    match wal_result {
+        Ok(()) => {}
+        Err(ProjectionError::CorruptDerivedStore { .. }) => {
+            return Ok(ExistingLoadOutcome::NeedsRebuild(
+                ProjectionRebuildReason::CorruptWal,
+            ));
+        }
+        Err(err) => return Err(err),
     }
 
     if !ledger_backend.matches_anchor(&snapshot.anchor)? {
