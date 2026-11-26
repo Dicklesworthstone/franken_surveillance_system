@@ -725,3 +725,110 @@ fn indeterminate_authority_revocation_cancellation_and_hostile_wire_fail_closed(
     );
     Ok(())
 }
+
+#[test]
+fn root_readiness_and_repair_follow_the_evidence_target_after_restart() -> TestResult {
+    let root = d("root:readiness-target");
+    let object = d("object:range-a");
+    let basis = d("basis:readiness-target");
+    let auth = ReplicationAuthorityContext::active(basis, 5, 2);
+    let mut policy = two_domain_policy();
+    policy.min_failure_domains = 1;
+    policy.max_retrievability_staleness_ns = 100;
+    let mut ledger = ArchiveReplicationLedger::new(root, basis, policy)?;
+    for (replica, provider, domain) in [
+        ("primary", "s3:us-east-primary", "east"),
+        ("extra", "r2:us-west-secondary", "west"),
+    ] {
+        ledger.register_replica(
+            &auth,
+            replica,
+            provider,
+            domain,
+            "us-east",
+            TimestampNs(0),
+            false,
+        )?;
+        advance_to_published(&mut ledger, &auth, replica, 0)?;
+    }
+    let sample = |id: &str, replica: &str, expected, at| RetrievabilityChallengeInput {
+        challenge_id: id.to_owned(),
+        replica_id: replica.to_owned(),
+        replica_generation: 1,
+        ranges: vec![ChallengeRange {
+            offset: 0,
+            length: 64,
+        }],
+        expected_digest: expected,
+        observed_digest: Some(expected),
+        latency_ms: 4,
+        egress_bytes: 64,
+        class_b_ops: 1,
+        outcome: ChallengeOutcome::Passed,
+        challenged_at: TimestampNs(at),
+    };
+
+    ledger.record_challenge(&auth, sample("extra-root", "extra", root, 5000), false)?;
+    let range =
+        ledger.record_challenge(&auth, sample("primary-range", "primary", object, 5001), false)?;
+    assert!(range.to_proof_of_retrievability().is_none());
+    let decoded = ArchiveReplicationLedger::from_canonical_bytes(&ledger.to_canonical_bytes()?)?;
+    assert_eq!(decoded, ledger);
+    let missing_root = decoded.evaluate_readiness(TimestampNs(5002));
+    assert_eq!(
+        missing_root.state,
+        ArchiveReadinessState::PolicySatisfiedUnchallenged
+    );
+    assert_eq!(
+        missing_root.fresh_retrievable_domains,
+        BTreeSet::from(["west".to_owned()])
+    );
+    assert_eq!(missing_root.total_challenge_egress_bytes, 128);
+
+    let root_receipt =
+        ledger.record_challenge(&auth, sample("primary-root", "primary", root, 5010), false)?;
+    let mut different_domain = root_receipt.clone();
+    different_domain.failure_domain = "other".to_owned();
+    assert!(different_domain.to_proof_of_retrievability().is_none());
+    assert_eq!(
+        ledger.evaluate_readiness(TimestampNs(5011)).state,
+        ArchiveReadinessState::RetrievableFresh
+    );
+
+    let timeout = RetrievabilityChallengeInput {
+        outcome: ChallengeOutcome::TimeoutOrIndeterminate,
+        observed_digest: None,
+        egress_bytes: 0,
+        ..sample("extra-timeout", "extra", root, 5020)
+    };
+    ledger.record_challenge(&auth, timeout, false)?;
+    ledger.record_challenge(&auth, sample("extra-object", "extra", object, 5030), false)?;
+    let unresolved = ArchiveReplicationLedger::from_canonical_bytes(&ledger.to_canonical_bytes()?)?
+        .evaluate_readiness(TimestampNs(5031));
+    assert_eq!(unresolved.state, ArchiveReadinessState::Indeterminate);
+    assert_eq!(unresolved.open_repair_obligations, 1);
+
+    ledger.record_challenge(&auth, sample("extra-repaired", "extra", root, 5040), false)?;
+    ledger.record_challenge(
+        &auth,
+        sample("primary-late-range", "primary", object, 5105),
+        false,
+    )?;
+    // The range neither supersedes a still-fresh root proof nor extends its lifetime.
+    assert_eq!(
+        ledger.evaluate_readiness(TimestampNs(5105)).state,
+        ArchiveReadinessState::RetrievableFresh
+    );
+    let decoded = ArchiveReplicationLedger::from_canonical_bytes(&ledger.to_canonical_bytes()?)?;
+    let after_expiry = decoded.evaluate_readiness(TimestampNs(5111));
+    assert_eq!(
+        after_expiry.state,
+        ArchiveReadinessState::RetrievabilityStale
+    );
+    assert_eq!(
+        after_expiry.fresh_retrievable_domains,
+        BTreeSet::from(["west".to_owned()])
+    );
+    assert_eq!(after_expiry.open_repair_obligations, 0);
+    Ok(())
+}

@@ -742,16 +742,13 @@ pub struct RetrievabilityChallengeReceipt {
 impl RetrievabilityChallengeReceipt {
     /// Projects a passed challenge receipt into an [`atp_lifecycle::ProofOfRetrievability`].
     ///
-    /// Returns `None` for any non-passed outcome or if `expected_digest != root_digest`.
+    /// Requires an intact receipt for a passing challenge whose observed digest binds the root.
     #[must_use]
     pub fn to_proof_of_retrievability(&self) -> Option<ProofOfRetrievability> {
-        if self.outcome != ChallengeOutcome::Passed || self.expected_digest != self.root_digest {
+        if !self.proves_root() || self.compute_digest().ok() != Some(self.receipt_digest) {
             return None;
         }
         let observed_digest = self.observed_digest?;
-        if observed_digest != self.root_digest || self.egress_bytes == 0 {
-            return None;
-        }
         Some(ProofOfRetrievability {
             sample_id: self.challenge_id.clone(),
             root_digest: self.root_digest,
@@ -761,6 +758,23 @@ impl RetrievabilityChallengeReceipt {
             sampled_bytes: self.egress_bytes,
             sampled_at: self.challenged_at,
         })
+    }
+
+    fn proves_root(&self) -> bool {
+        self.outcome == ChallengeOutcome::Passed
+            && self.expected_digest == self.root_digest
+            && self.observed_digest == Some(self.root_digest)
+            && self.egress_bytes > 0
+    }
+
+    fn resolves_challenge(&self, failure: &Self) -> bool {
+        self.outcome == ChallengeOutcome::Passed
+            && failure.outcome != ChallengeOutcome::Passed
+            && self.replica_id == failure.replica_id
+            && self.replica_generation >= failure.replica_generation
+            && self.challenged_at >= failure.challenged_at
+            && self.expected_digest == failure.expected_digest
+            && (self.proves_root() || self.ranges == failure.ranges)
     }
 
     fn compute_digest(&self) -> Result<ContentDigest, ReplicationError> {
@@ -1081,7 +1095,7 @@ pub enum ArchiveReadinessState {
     RetrievabilityStale,
     /// At least one replica failed retrievability and has an open repair obligation.
     RepairRequired,
-    /// Policy sufficiency depends on at least one indeterminate replica (never upgraded to Healthy).
+    /// A replica has unresolved reconciliation, or policy depends on an indeterminate replica.
     Indeterminate,
 }
 
@@ -1420,9 +1434,8 @@ impl ArchiveReplicationLedger {
     ///   conflicting `challenge_id`.
     /// - Refuses stale `replica_generation`, unverified/pre-publication replicas (for `Passed`),
     ///   revoked authority, or cooperative cancellation.
-    /// - On `Passed`: advances `custody_state` to `RetrievabilitySamplePassed` (if at
-    ///   `ReplicationPolicySatisfied`), records freshness timestamp & digest, and resolves any
-    ///   open repair obligations for this replica.
+    /// - On `Passed`: records the sample and resolves matching repair obligations. Archive
+    ///   readiness counts only current-generation samples bound to the root digest.
     /// - On `DigestMismatch`, `MissingOrTruncated`, or `TimeoutOrIndeterminate`: degrades replica
     ///   readiness (`Quarantined`, `RepairScheduled`, or `Indeterminate`) and records a durable
     ///   [`RepairObligation`] so failures are never silently ignored.
@@ -1555,15 +1568,16 @@ impl ArchiveReplicationLedger {
         // Apply state transition according to challenge outcome.
         match receipt.outcome {
             ChallengeOutcome::Passed => {
-                // Only resolve obligations that predate this proof (newer generation OR same
-                // generation observed at/after the obligation opened). A delayed older Passed
-                // sample from before a failure can never resolve a newer open repair obligation.
+                // A successful sample may repair only the root or object range it verified.
+                let repaired_challenges: BTreeSet<_> = self
+                    .challenges
+                    .iter()
+                    .filter(|failed| receipt.resolves_challenge(failed))
+                    .map(|failed| failed.receipt_digest)
+                    .collect();
                 for obligation in self.repair_obligations.values_mut() {
-                    if obligation.replica_id == receipt.replica_id
-                        && !obligation.resolved
-                        && (receipt.replica_generation > obligation.failed_generation
-                            || (receipt.replica_generation == obligation.failed_generation
-                                && receipt.challenged_at >= obligation.opened_at))
+                    if !obligation.resolved
+                        && repaired_challenges.contains(&obligation.triggering_challenge_digest)
                     {
                         obligation.resolved = true;
                         obligation.resolved_by_challenge_digest = Some(receipt.receipt_digest);
@@ -1658,6 +1672,23 @@ impl ArchiveReplicationLedger {
         let mut healthy_published_domains = BTreeSet::new();
         let mut fresh_retrievable_domains = BTreeSet::new();
         let mut stale_retrievable_domains = BTreeSet::new();
+        let mut fresh_providers = BTreeSet::new();
+        // The most recent sample on a replica may prove only an individual object range.
+        // Only root-bound receipts on the current generation count toward archive freshness.
+        let mut root_verified_at = BTreeMap::new();
+        for challenge in &self.challenges {
+            if challenge.proves_root()
+                && self
+                    .replicas
+                    .get(&challenge.replica_id)
+                    .is_some_and(|r| r.replica_generation == challenge.replica_generation)
+            {
+                let newest = root_verified_at
+                    .entry(challenge.replica_id.as_str())
+                    .or_insert(challenge.challenged_at);
+                *newest = (*newest).max(challenge.challenged_at);
+            }
+        }
         let mut indeterminate_replicas = 0usize;
         let mut any_local_durable = false;
         let mut any_remote = false;
@@ -1676,10 +1707,11 @@ impl ArchiveReplicationLedger {
                 && replica.custody_state >= ArchiveObjectState::RemoteRootPublished
             {
                 healthy_published_domains.insert(replica.failure_domain.clone());
-                if let Some(verified_at) = replica.last_verified_at {
+                if let Some(verified_at) = root_verified_at.get(replica.replica_id.as_str()) {
                     let age = now_ns.0.saturating_sub(verified_at.0);
                     if age >= 0 && age <= self.policy.max_retrievability_staleness_ns {
                         fresh_retrievable_domains.insert(replica.failure_domain.clone());
+                        fresh_providers.insert(replica.provider_tuple.clone());
                     } else {
                         stale_retrievable_domains.insert(replica.failure_domain.clone());
                     }
@@ -1700,17 +1732,7 @@ impl ArchiveReplicationLedger {
                     && r.custody_state >= ArchiveObjectState::RemoteRootPublished
             })
         });
-        let required_providers_fresh = self.policy.required_providers.iter().all(|req| {
-            self.replicas.values().any(|r| {
-                r.provider_tuple == *req
-                    && r.readiness == ReplicaReadiness::Healthy
-                    && r.custody_state >= ArchiveObjectState::RemoteRootPublished
-                    && r.last_verified_at.is_some_and(|verified_at| {
-                        let age = now_ns.0.saturating_sub(verified_at.0);
-                        age >= 0 && age <= self.policy.max_retrievability_staleness_ns
-                    })
-            })
-        });
+        let required_providers_fresh = self.policy.required_providers.is_subset(&fresh_providers);
         let required_domains = self.policy.min_failure_domains as usize;
         let policy_satisfied =
             healthy_published_domains.len() >= required_domains && required_providers_healthy;
@@ -1725,10 +1747,11 @@ impl ArchiveReplicationLedger {
                     )
             }) {
             ArchiveReadinessState::RepairRequired
-        } else if indeterminate_replicas > 0
-            && (!policy_satisfied
-                || fresh_retrievable_domains.len() < required_domains
-                || !required_providers_fresh)
+        } else if open_repair_obligations > 0
+            || (indeterminate_replicas > 0
+                && (!policy_satisfied
+                    || fresh_retrievable_domains.len() < required_domains
+                    || !required_providers_fresh))
         {
             ArchiveReadinessState::Indeterminate
         } else if policy_satisfied
@@ -1933,6 +1956,16 @@ impl ArchiveReplicationLedger {
                     "challenge receipt root_digest disagrees with ledger root_digest".to_owned(),
                 ));
             }
+            if !replicas.get(&c.replica_id).is_some_and(|r| {
+                r.provider_tuple == c.provider_tuple
+                    && r.failure_domain == c.failure_domain
+                    && r.replica_generation >= c.replica_generation
+            }) {
+                return Err(ReplicationError::MalformedWire(
+                    "challenge receipt disagrees with replica identity, topology, or generation"
+                        .to_owned(),
+                ));
+            }
             if !seen_challenges.insert(c.challenge_id.clone()) {
                 return Err(ReplicationError::MalformedWire(
                     "duplicate challenge_id in wire ledger".to_owned(),
@@ -1959,6 +1992,24 @@ impl ArchiveReplicationLedger {
         }
         let challenge_by_digest: BTreeMap<ContentDigest, &RetrievabilityChallengeReceipt> =
             challenges.iter().map(|c| (c.receipt_digest, c)).collect();
+        for replica in replicas.values() {
+            match (replica.last_challenge_digest, replica.last_verified_at) {
+                (None, None)
+                    if replica.custody_state != ArchiveObjectState::RetrievabilitySamplePassed => {}
+                (Some(digest), Some(time))
+                    if challenge_by_digest.get(&digest).is_some_and(|c| {
+                        c.replica_id == replica.replica_id
+                            && c.replica_generation == replica.replica_generation
+                            && c.outcome == ChallengeOutcome::Passed
+                            && c.challenged_at == time
+                    }) => {}
+                _ => {
+                    return Err(ReplicationError::MalformedWire(
+                        "replica verification lacks a matching passing challenge receipt".to_owned(),
+                    ));
+                }
+            }
+        }
         let mut repair_obligations = BTreeMap::new();
         let mut prev_obligation_id: Option<String> = None;
         for _ in 0..obligation_count {
@@ -1981,7 +2032,12 @@ impl ArchiveReplicationLedger {
                     "repair obligation references unknown triggering challenge digest".to_owned(),
                 ));
             };
-            if trigger.replica_id != o.replica_id || trigger.outcome == ChallengeOutcome::Passed {
+            if trigger.replica_id != o.replica_id
+                || trigger.outcome == ChallengeOutcome::Passed
+                || trigger.replica_generation != o.failed_generation
+                || trigger.challenged_at != o.opened_at
+                || trigger.repair_action != o.action
+            {
                 return Err(ReplicationError::MalformedWire(
                     "repair obligation triggering challenge must be a non-passed challenge on the same replica"
                         .to_owned(),
@@ -1994,11 +2050,9 @@ impl ArchiveReplicationLedger {
                             .to_owned(),
                     ));
                 };
-                if resolver.replica_id != o.replica_id
-                    || resolver.outcome != ChallengeOutcome::Passed
-                {
+                if !resolver.resolves_challenge(trigger) {
                     return Err(ReplicationError::MalformedWire(
-                        "repair obligation resolving challenge must be a passed challenge on the same replica"
+                        "resolving challenge must verify the failed evidence at or after the failure"
                             .to_owned(),
                     ));
                 }
@@ -2078,4 +2132,49 @@ fn validate_bounded_text(value: &str, max_len: usize, label: &str) -> Result<(),
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restored_verification_requires_a_persisted_passing_receipt() -> Result<(), ReplicationError>
+    {
+        let root = ContentDigest::sha256(b"root");
+        let basis = ContentDigest::sha256(b"basis");
+        let policy = ReplicationPolicy {
+            min_failure_domains: 1,
+            required_providers: BTreeSet::new(),
+            allowed_residency_regions: BTreeSet::new(),
+            max_retrievability_staleness_ns: 100,
+            policy_digest: ContentDigest::sha256(b"policy"),
+        };
+        let auth = ReplicationAuthorityContext::active(basis, 1, 1);
+        let mut ledger = ArchiveReplicationLedger::new(root, basis, policy)?;
+        ledger.register_replica(
+            &auth,
+            "r",
+            "provider",
+            "domain",
+            "region",
+            TimestampNs(0),
+            false,
+        )?;
+        let replica = ledger
+            .replicas
+            .get_mut("r")
+            .expect("replica was registered above");
+        replica.custody_state = ArchiveObjectState::RetrievabilitySamplePassed;
+        replica.last_verified_at = Some(TimestampNs(5));
+        replica.last_challenge_digest = Some(ContentDigest::sha256(b"absent receipt"));
+        ledger.head_digest = ledger.compute_head_digest()?;
+
+        let persisted = ledger.to_canonical_bytes()?;
+        assert!(matches!(
+            ArchiveReplicationLedger::from_canonical_bytes(&persisted),
+            Err(ReplicationError::MalformedWire(_))
+        ));
+        Ok(())
+    }
 }
