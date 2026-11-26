@@ -7,7 +7,7 @@ use std::sync::Arc;
 use fss_core::{BatchId, ContentDigest, EvidenceDelta, EvidenceDeltaBatch, ObjectId};
 use fss_ledger::{
     CommitReceipt, EpochLedgerError, MAX_ORACLE_CHILDREN_PER_BATCH, MAX_ORACLE_DELTAS_PER_BATCH,
-    MerkleEpochLedger,
+    MerkleEpochLedger, ReceiptProofBudget, VerifiedBatchReceipt,
 };
 use fss_pack::{DEFAULT_MAX_READ_BYTES, PackObjectInput, PackReadBudget, PackStore};
 
@@ -222,6 +222,18 @@ pub trait CommitSink: Send {
         Ok(None)
     }
 
+    /// Proves an exact retained canonical receipt within explicit read/work bounds.
+    ///
+    /// Implementations must verify publication through the proof's current head. Historical
+    /// media availability is independent of canonical publication and is not asserted here.
+    fn receipt_for_exact_batch(
+        &self,
+        _batch: &EvidenceDeltaBatch,
+        _budget: ReceiptProofBudget,
+    ) -> Result<Option<VerifiedBatchReceipt>, CombinerError> {
+        Ok(None)
+    }
+
     /// Commits an exact prepared batch as a singleton under the combiner's sink mutex.
     ///
     /// Implementations must preserve every anchor, delta, child, and the original batch identity.
@@ -359,6 +371,34 @@ impl CommitSink for LedgerPackProjectionSink {
             .into());
         }
         Ok(Some(receipt))
+    }
+
+    fn receipt_for_exact_batch(
+        &self,
+        batch: &EvidenceDeltaBatch,
+        budget: ReceiptProofBudget,
+    ) -> Result<Option<VerifiedBatchReceipt>, CombinerError> {
+        let Some(proof) = self.ledger.receipt_for_exact_batch(batch, budget)? else {
+            return Ok(None);
+        };
+        // The target may be historical. Publication must nevertheless match the current
+        // verified canonical head, including its v2 history and final batch identity.
+        let snapshot = self.projection.snapshot_latest();
+        let projected = snapshot.anchor();
+        if snapshot.history_mode != HistoryChainMode::V2MerkleEpoch
+            || projected.commit_sequence != proof.head_anchor.commit_sequence
+            || projected.authority_root != proof.head_anchor.state_root
+            || projected.history_root != proof.head_history_root
+            || projected.high_water_digest != proof.head_batch_digest
+        {
+            return Err(ProjectionError::AnchorMismatch {
+                expected_sequence: proof.head_anchor.commit_sequence,
+                actual_sequence: projected.commit_sequence,
+                detail: "canonical receipt proof has no matching materialized head publication",
+            }
+            .into());
+        }
+        Ok(Some(proof))
     }
 
     fn commit_exact_batch(

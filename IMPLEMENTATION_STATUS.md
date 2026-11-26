@@ -5,6 +5,47 @@
 **Current change qualification:** each dated section below states its exact verification boundary. Native passes for one component do not qualify other changes, and prior receipts do not qualify new bytes.
 **Release authority:** repository-owned local qualification (`scripts/qualify.sh`) and retained DSR receipts, not hosted CI
 
+## Bounded historical forwarded receipt recovery — 2026-11-26
+
+The native Merkle ledger now exposes read-only exact receipt proofs for retained historical
+batches. A cached current-head proof performs no disk reads; older candidates must match
+the immutable batch index and exact canonical bytes, then verify bounded epoch framing,
+checksums, adjacent complete anchors, and every v2 history link through the owner's trusted
+current head. The starting epoch's prior root is not accepted independently. Missing,
+changed, corrupt, or incomplete history and unresolved append fences refuse without repair
+or append. Public budgets and consumed-work receipts cover epoch probes, prefix records,
+and cumulative reads, including repeated headers. Defaults are 16 epochs, 32,768 records,
+and 128 MiB. The persisted ledger and forwarded-request formats are unchanged.
+
+The production combiner serializes the proof with commit admission and requires the current
+projection's v2 mode, sequence, state, history, and high-water digest to match the proof's
+head. The daemon can therefore reconstruct an interrupted forwarded completion after
+unrelated writes or a projection rebuild, return the original receipt, and durably replay
+it without appending again. Already completed retries now also prove their original
+history root. Copying a valid saved receipt from a different canonical history is refused
+even when both histories contain the identical requested batch and authority state.
+Only a fresh reservation permits dispatch; generation catch-up remains monotonic.
+
+The new regression fixtures exercise historical receipts, rollover/checkpoint reopening,
+work limits, history corruption, read-only failure, publication lag, later-write recovery
+and restart, and identical-state history forks. The prior exact-head and unresolved
+reservation contracts remain in place.
+
+**Verification boundary:** the new source and fault fixtures received independent Rust/API,
+history-authentication, bounded-work, and retry/publication reviews. Changed-path content
+digests are verified. Native formatting, compilation, and execution of this increment remain
+unverified because the local execution environment became unavailable; no successful
+replacement native run was obtained. Earlier ledger test receipts and unchanged-dependency
+SIGKILL failures do not qualify these new bytes. No release qualification or broad INV-007
+closure is claimed.
+
+Historical recovery requires the needed epochs to remain available within the caller's
+budget, including when an old completion file exists. Archived/missing history, oversized
+proof work, and legacy coalesced request identities remain unresolved. Receipt proof does
+not assert current media retrievability or an external device/notification effect. The
+reference backup formats remain separate from a complete daemon epoch/pack/retry backup
+profile; arbitrary mixed-generation restore is not qualified by this change.
+
 ## Projection preparation and committed maintenance outcomes — 2026-11-26
 
 Ordinary coalesced ingestion and exact forwarded batches now share one commit pipeline.

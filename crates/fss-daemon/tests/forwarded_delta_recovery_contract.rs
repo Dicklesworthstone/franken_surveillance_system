@@ -333,7 +333,7 @@ fn request_record_path(root: &std::path::Path, key: ContentDigest, suffix: &str)
 }
 
 #[test]
-fn pending_historical_batch_is_not_guessed_from_the_current_object_state() -> TestResult {
+fn historical_pending_recovers_the_original_receipt_after_advance_and_restart() -> TestResult {
     let dir = TempDir::new()?;
     let manifest = manifest()?;
     let storage = StorageEngine::open(&manifest, Some(&dir.0))?;
@@ -342,7 +342,7 @@ fn pending_historical_batch_is_not_guessed_from_the_current_object_state() -> Te
     let key = ContentDigest::sha256(b"historical-pending");
     let request = ContentDigest::sha256(&bytes);
     let writer = storage.forward_writer();
-    let _ = writer.forward_delta_batch_idempotent(key, request, &bytes)?;
+    let original = writer.forward_delta_batch_idempotent(key, request, &bytes)?;
 
     let preparation = TempDir::new()?;
     let mut oracle = MerkleEpochLedger::open(
@@ -362,25 +362,45 @@ fn pending_historical_batch_is_not_guessed_from_the_current_object_state() -> Te
     )?;
     let _ = writer.forward_delta_batch(&encode_batch(&next)?)?;
     let before = storage.head_snapshot()?;
+    assert_eq!(before.commit_sequence, 2);
     drop(writer);
     storage.shutdown_and_flush()?;
+    // Reproduce an interrupted completion followed by another canonical commit.
+    // The projection is rebuilt so the recovery proof must survive a fresh storage open.
     let completion = request_record_path(&dir.0, key, "committed");
     fs::remove_file(&completion)?;
+    fs::remove_dir_all(dir.0.join("projections/mvcc"))?;
     let pending = request_record_path(&dir.0, key, "reserved");
     let pending_bytes = fs::read(&pending)?;
 
     let reopened = StorageEngine::open(&manifest, Some(&dir.0))?;
     let writer = reopened.forward_writer();
-    let error = writer
-        .forward_delta_batch_idempotent(key, request, &bytes)
-        .expect_err("historical pending request needs explicit reconciliation");
-    assert_eq!(error.error_id(), "ERR-OP-RECONCILIATION-REQUIRED-001");
-    assert!(!completion.exists());
-    assert_eq!(fs::read(pending)?, pending_bytes);
+    let recovered = writer.forward_delta_batch_idempotent(key, request, &bytes)?;
+    assert!(recovered.replayed);
+    assert_eq!(recovered.commit_sequence, original.commit_sequence);
+    assert_eq!(recovered.history_root, original.history_root);
+    assert_eq!(recovered.state_root, original.state_root);
+    let completion_bytes = fs::read(&completion)?;
+    assert_eq!(
+        writer.forward_delta_batch_idempotent(key, request, &bytes)?,
+        recovered
+    );
+    assert_eq!(fs::read(&completion)?, completion_bytes);
+    assert_eq!(fs::read(&pending)?, pending_bytes);
     let after = reopened.head_snapshot()?;
     assert_eq!(after.commit_sequence, before.commit_sequence);
     assert_eq!(after.history_root, before.history_root);
     assert_eq!(after.state_root, before.state_root);
+    drop(writer);
+    assert_eq!(reopened.shutdown_and_flush()?.verified_batches, 2);
+
+    let reopened = StorageEngine::open(&manifest, Some(&dir.0))?;
+    let writer = reopened.forward_writer();
+    assert_eq!(
+        writer.forward_delta_batch_idempotent(key, request, &bytes)?,
+        recovered
+    );
+    assert_eq!(reopened.head_snapshot()?.commit_sequence, 2);
     drop(writer);
     assert_eq!(reopened.shutdown_and_flush()?.verified_batches, 2);
     Ok(())
@@ -467,5 +487,111 @@ fn exact_head_recovery_does_not_replace_a_corrupt_completion_or_change_its_reque
     );
     drop(writer);
     assert_eq!(reopened.shutdown_and_flush()?.verified_batches, 1);
+    Ok(())
+}
+
+#[test]
+fn historical_completion_refuses_another_fork_with_the_same_batch() -> TestResult {
+    let source = TempDir::new()?;
+    let target = TempDir::new()?;
+    let manifest = manifest()?;
+    let source_storage = StorageEngine::open(&manifest, Some(&source.0))?;
+    let target_storage = StorageEngine::open(&manifest, Some(&target.0))?;
+    let first_bytes = batch(&source_storage)?;
+    assert_eq!(batch(&target_storage)?, first_bytes);
+    let first = decode_batch(&first_bytes)?;
+    let mut forked_first = first.clone();
+    forked_first.batch_id = BatchId::parse("batch:forward:forked-first")?;
+    forked_first.batch_digest = forked_first.computed_digest();
+    assert_eq!(forked_first.new_anchor, first.new_anchor);
+
+    let source_writer = source_storage.forward_writer();
+    let target_writer = target_storage.forward_writer();
+    let source_first = source_writer.forward_delta_batch(&first_bytes)?;
+    let target_first = target_writer.forward_delta_batch(&encode_batch(&forked_first)?)?;
+    assert_eq!(source_first.2, target_first.2);
+    assert_ne!(source_first.1, target_first.1);
+
+    let preparation = TempDir::new()?;
+    let mut oracle = MerkleEpochLedger::open(
+        preparation.0.join("ledger"),
+        "site-forward-recovery",
+        EpochLedgerConfig::default(),
+        IncompleteTailPolicy::Reject,
+    )?;
+    oracle.append_batch(first.clone())?;
+    let mut delta = first.deltas[0].clone();
+    delta.object_id = ObjectId::parse("obj:forward:shared-fork-batch")?;
+    delta.delta_id = "delta:forward:shared-fork-batch".to_owned();
+    let shared = oracle.prepare_batch(
+        BatchId::parse("batch:forward:shared-fork-batch")?,
+        vec![delta],
+        first.children.clone(),
+    )?;
+    let bytes = encode_batch(&shared)?;
+    let key = ContentDigest::sha256(b"copied-historical-fork-completion");
+    let request = ContentDigest::sha256(&bytes);
+    let source_receipt = source_writer.forward_delta_batch_idempotent(key, request, &bytes)?;
+    let target_receipt = target_writer.forward_delta_batch(&bytes)?;
+    // Both histories contain exactly the same batch and authority state. Only their
+    // ancestry (and therefore the receipt's history root) distinguishes the outcome.
+    assert_eq!(source_receipt.commit_sequence, target_receipt.0);
+    assert_eq!(source_receipt.state_root, target_receipt.2);
+    assert_ne!(source_receipt.history_root, target_receipt.1);
+
+    oracle.append_batch(shared.clone())?;
+    let mut delta = shared.deltas[0].clone();
+    delta.object_id = ObjectId::parse("obj:forward:after-fork")?;
+    delta.delta_id = "delta:forward:after-fork".to_owned();
+    let next = oracle.prepare_batch(
+        BatchId::parse("batch:forward:after-fork")?,
+        vec![delta],
+        shared.children.clone(),
+    )?;
+    let _ = target_writer.forward_delta_batch(&encode_batch(&next)?)?;
+    let before = target_storage.head_snapshot()?;
+    assert_eq!(before.commit_sequence, 3);
+    assert_eq!(source_receipt.commit_sequence, 2);
+    drop(source_writer);
+    drop(target_writer);
+    source_storage.shutdown_and_flush()?;
+    target_storage.shutdown_and_flush()?;
+
+    // Model a mixed restoration: valid retry custody copied from a different
+    // history while the target canonical ledger retains its own verified fork.
+    let target_pending = request_record_path(&target.0, key, "reserved");
+    let parent = target_pending.parent().ok_or("missing retry shard")?;
+    let mut builder = fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(parent)?;
+    for suffix in ["reserved", "committed"] {
+        fs::copy(
+            request_record_path(&source.0, key, suffix),
+            request_record_path(&target.0, key, suffix),
+        )?;
+    }
+    let completion = request_record_path(&target.0, key, "committed");
+    let pending_bytes = fs::read(&target_pending)?;
+    let completion_bytes = fs::read(&completion)?;
+    fs::remove_dir_all(target.0.join("projections/mvcc"))?;
+
+    let reopened = StorageEngine::open(&manifest, Some(&target.0))?;
+    let writer = reopened.forward_writer();
+    let error = writer
+        .forward_delta_batch_idempotent(key, request, &bytes)
+        .expect_err("matching batch identity and state do not establish the receipt's lineage");
+    assert_eq!(error.error_id(), "ERR-OP-RECONCILIATION-REQUIRED-001");
+    assert_eq!(fs::read(&target_pending)?, pending_bytes);
+    assert_eq!(fs::read(&completion)?, completion_bytes);
+    let after = reopened.head_snapshot()?;
+    assert_eq!(after.commit_sequence, before.commit_sequence);
+    assert_eq!(after.history_root, before.history_root);
+    assert_eq!(after.state_root, before.state_root);
+    drop(writer);
+    assert_eq!(reopened.shutdown_and_flush()?.verified_batches, 3);
     Ok(())
 }

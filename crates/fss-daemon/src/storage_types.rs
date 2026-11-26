@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use fss_core::{BatchId, CanonicalEncoder, ContentDigest, ErrorId, ObjectId};
 use fss_ipc::ActiveScrubStatus;
-use fss_ledger::decode_batch;
+use fss_ledger::{ReceiptProofBudget, decode_batch};
 use fss_pack::{CapacityPressure, PackScrubReport, ScrubVerdict as PackScrubVerdict};
 use fss_projection_store::{
     CommitCombiner, FootageAdapterKind, LedgerPackProjectionSink, MvccProjectionStore,
@@ -158,25 +158,47 @@ impl ForwardBatchWriter for CombinerForwardWriter {
                         retryable: false,
                     }));
                 }
-                return Ok(receipt);
-            }
-            ForwardRequestReservation::Pending => {
-                // Observe only: an existing claim never permits another append. The ledger
-                // writer proves the complete original batch is its durable current head,
-                // and the sink also proves the projection published that exact commit.
-                let Some(committed) = self.combiner.receipt_for_exact_head(&batch)? else {
+                // Even an older saved completion must belong to this canonical history.
+                // Batch identity and state alone cannot distinguish two histories that
+                // applied the same deltas under different earlier batch identities.
+                let proven = self
+                    .combiner
+                    .receipt_for_exact_batch(&batch, ReceiptProofBudget::default())?;
+                if !proven.is_some_and(|proof| {
+                    proof.receipt.sequence == receipt.commit_sequence
+                        && proof.receipt.history_root == receipt.history_root
+                        && proof.receipt.anchor.state_root == receipt.state_root
+                }) {
                     return Err(DaemonError::Ipc(fss_ipc::IpcError::Refused {
                         request_id: 0,
                         error_id: ErrorId::parse("ERR-OP-RECONCILIATION-REQUIRED-001")?,
-                        reason: "pending forwarded request is not the exact verified canonical head; reconcile its outcome before retry"
+                        reason: "forwarded completion has no exact receipt in the verified canonical history"
+                            .to_owned(),
+                        retryable: false,
+                    }));
+                }
+                return Ok(receipt);
+            }
+            ForwardRequestReservation::Pending => {
+                // Observe only: an existing claim never permits another append. Prove
+                // the exact original batch in retained history through the current head,
+                // with bounded work and a matching fully published projection.
+                let Some(proof) = self
+                    .combiner
+                    .receipt_for_exact_batch(&batch, ReceiptProofBudget::default())?
+                else {
+                    return Err(DaemonError::Ipc(fss_ipc::IpcError::Refused {
+                        request_id: 0,
+                        error_id: ErrorId::parse("ERR-OP-RECONCILIATION-REQUIRED-001")?,
+                        reason: "pending forwarded request has no exact receipt in the verified canonical history; reconcile its outcome before retry"
                             .to_owned(),
                         retryable: false,
                     }));
                 };
                 let receipt = ForwardBatchReceipt {
-                    commit_sequence: committed.sequence,
-                    history_root: committed.history_root,
-                    state_root: committed.anchor.state_root,
+                    commit_sequence: proof.receipt.sequence,
+                    history_root: proof.receipt.history_root,
+                    state_root: proof.receipt.anchor.state_root,
                     replayed: false,
                 };
                 {

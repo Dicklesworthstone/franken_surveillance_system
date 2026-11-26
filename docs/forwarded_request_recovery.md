@@ -21,48 +21,66 @@ successor anchors, deltas, and declared child closure. It does not rebase stale 
 Declared children and delta payload/witness bytes must already be retained and verified
 within the bounded source-read budget before canonical publication.
 
-An exact completed retry returns the original receipt, including after reopening storage.
-A changed request using the same key returns `ERR-IDEMPOTENCY-CONFLICT-001`. A completion
-ahead of the current canonical head, or inconsistent with its roots at the same sequence,
-is refused. Older receipts assume the retained history and retry records belong to the
-same deployment lineage; these checks do not certify arbitrary mixed backup generations.
+An exact completed retry returns the original receipt after verifying that it belongs to
+the current canonical history, including after reopening storage. A changed request using
+the same key returns `ERR-IDEMPOTENCY-CONFLICT-001`. A saved completion must match the
+proven sequence, history root, and state root. Matching batch bytes and state alone are
+insufficient: different histories can apply the same batch and reach the same state.
+A copied receipt from another history is refused without changing its custody records.
 
 A valid reservation without a completion is a pending outcome, never permission to
-dispatch again. An identical retry can reconstruct its missing completion only when
-the original batch is still the exact, fully published canonical head. The writer checks:
+dispatch again. An identical retry can reconstruct its missing completion even after
+startup coverage or ordinary ingest advances the canonical head. The writer checks:
 
 - The stored reservation binds the same key, normalized request, and exact batch bytes.
 - The batch is canonical and its digest recomputes from its complete contents.
-- The full successor anchor and committed batch ID/sequence/digest match the verified
-  ledger head, with no unresolved append fence.
-- The projection sequence, authority root, history root, and high-water batch digest
-  match that same commit.
+- The committed batch index binds the exact batch ID, sequence, and digest, with no
+  unresolved append fence.
+- For a historical target, retained epoch framing and checksums, exact target bytes,
+  adjacent full anchors, and the v2 history chain verify through the current trusted
+  canonical head.
+- The projection uses the v2 history mode and its sequence, authority root, history root,
+  and high-water batch digest match that current head.
 
-This bounded observation runs under the existing commit mutex and performs no historical
-scan or canonical append. It restores the immutable completion, syncs the record and its
-parent directory, and returns the original roots and sequence with `replayed: true`.
+The current-head fast path uses the writer's already verified head and performs no disk
+reads. Historical proofs locate the target by probing epoch headers backward from the
+known active epoch, then verify the canonical suffix through the current head. They do
+not enumerate the archive or infer a receipt from current object generations. The default
+budget is 16 distinct epochs, 32,768 records, and 128 MiB of cumulative reads. Header
+probes and records before the target count toward these limits, and read sizes are
+checked before record allocation. The native ledger and combiner APIs accept an explicit
+`ReceiptProofBudget` and return consumed work in `ReceiptProofUsage`; the daemon retry
+path uses the default budget. These limits also apply to completed retries: retaining
+an old completion record does not bypass the need for retained canonical evidence within
+the allowed work budget.
+
+This observation runs under the existing commit mutex and performs no canonical append.
+On a proven pending outcome, it restores the immutable completion, syncs the record and
+its parent directory, and returns the original roots and sequence with `replayed: true`.
 An identical competing completion or lost sync acknowledgement is settled by verifying
 and syncing the existing exact record, never by overwriting it. The local generation
 cache catches up monotonically so a newer generation cannot be replaced by the recovered
 older one.
 
-If unrelated writes have advanced the canonical head, the pending request remains
-`ERR-OP-RECONCILIATION-REQUIRED-001`. Startup coverage or ingest can cause that advance;
-this mechanism is therefore exact-current-head receipt recovery, not general historical
-pending-request reconciliation. Legacy forwarded batches whose identities were rewritten
-or coalesced are not inferred from similar object state. A projection gap or append fence
-must be resolved separately before this path can prove completion.
+Missing or archived epochs, corrupt history, an exhausted proof budget, incomplete
+projection publication, and unresolved append fences leave the request unresolved.
+Budget exhaustion is an explicit error, not evidence that a batch was absent. No such
+failure falls through to another dispatch. Legacy forwarded batches whose identities
+were rewritten or coalesced are not inferred from similar object state. This also applies
+to a legacy saved completion whose reserved request differs from the canonical coalesced
+batch: the old receipt remains unresolved instead of bypassing historical verification.
 
-Corrupt, truncated, oversized, mismatched, orphaned, and unsupported records fail closed
-even when the caller presents a batch matching the current head. No recovery failure falls
-through to another dispatch. These receipts establish canonical ledger/projection
-publication; they are not evidence of a separate external device or notification effect.
+Corrupt, truncated, oversized, mismatched, orphaned, and unsupported retry records fail
+closed even when the caller presents a batch matching the current head. Historical
+proofs establish canonical ledger/projection publication; they do not require historical
+payload bytes to remain in the hot store after authorized retention, assert current media
+retrievability, or prove a separate external device or notification effect.
 
-There is currently no general operator command that reconciles a pending forwarded
-reservation outside this exact-head case. Preserve the deployment and original request
-for inspection against canonical history. Deleting the reservation or inventing a
-replacement key is not a supported recovery procedure: either can repeat an effect
-whose outcome is still unknown.
+There is currently no general operator command to repair missing history, raise the
+daemon's proof budget, or reconcile unsupported legacy outcomes. Preserve the deployment
+and original request for inspection. Deleting a reservation or inventing a replacement
+key is not a supported recovery procedure: either can repeat an effect whose outcome is
+still unknown.
 
 ## Storage scope
 
@@ -77,8 +95,9 @@ mutations, not individual captured frames.
 
 Treat the retry directory and its canonical deployment history as one recovery unit.
 Existing backup formats are not extended by this change; a backup that omits these records
-does not retain this retry guarantee. Cross-generation restoration and general historical
-pending-request resolution remain separate work.
+does not retain this retry guarantee. These receipt checks detect
+conflicting canonical history but do not qualify arbitrary mixed-generation backups or
+provide a complete backup profile for the daemon's epoch, pack, and retry stores.
 
 This change does not make queued camera/control commands durable. Their shutdown
 disposition remains explicitly process-local, and accepting or dispatching a control
