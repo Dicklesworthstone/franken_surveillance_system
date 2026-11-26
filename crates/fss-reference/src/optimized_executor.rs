@@ -307,6 +307,23 @@ struct Step {
     release: Vec<usize>,
 }
 
+/// Immutable read-only descriptor of one statically dispatched execution step in [`OptimizedGraph`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OptimizedStepDescriptor {
+    /// Zero-based execution order inside the prepared graph.
+    pub step_index: usize,
+    /// Stable node identifier from the frozen Model IR graph.
+    pub node_id: String,
+    /// Canonical operator code of the primary node in this step.
+    pub op: OpCode,
+    /// Statically selected kernel implementation label.
+    pub kernel_label: &'static str,
+    /// True iff this step statically fell back to the single-node scalar reference kernel.
+    pub is_scalar_fallback: bool,
+    /// Number of F32 elements produced by this step.
+    pub output_len: usize,
+}
+
 /// Measured resource witness of one optimized run (tensor payload, not process RSS).
 /// Execution telemetry only: it is never bound into outputs, plan digests or receipts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -728,6 +745,37 @@ impl OptimizedGraph {
             *counts.entry(step.kernel.label()).or_insert(0) += 1;
         }
         counts
+    }
+    /// Immutable ordered per-step static dispatch descriptors for receipt sealing (`FSS-141`).
+    #[must_use]
+    pub fn step_descriptors(&self) -> Vec<OptimizedStepDescriptor> {
+        self.steps
+            .iter()
+            .enumerate()
+            .map(|(step_index, step)| OptimizedStepDescriptor {
+                step_index,
+                node_id: step.node_id.clone(),
+                op: step.op,
+                kernel_label: step.kernel.label(),
+                is_scalar_fallback: matches!(step.kernel, Kernel::Reference(_)),
+                output_len: step.output_len,
+            })
+            .collect()
+    }
+    /// Whole-graph reference work units bound at preparation time.
+    #[must_use]
+    pub const fn total_macs(&self) -> u64 {
+        self.total_macs
+    }
+    /// Whole-graph cumulative tensor bytes bound at preparation time.
+    #[must_use]
+    pub const fn total_bytes(&self) -> usize {
+        self.total_bytes
+    }
+    /// Packed constants/weights resident inside this prepared plan.
+    #[must_use]
+    pub const fn resident_bytes(&self) -> usize {
+        self.resident_bytes
     }
     /// Graph inputs supplied per run (everything that is not a bound constant).
     #[must_use]
