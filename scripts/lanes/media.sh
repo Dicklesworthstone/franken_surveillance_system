@@ -101,12 +101,21 @@ checkfile 14 mp4-unit-limit crates/fss-container/tests/fixtures/fragmented_av.mp
   --test movie_timing_contract \
   --test demux_malformed_gauntlet
 
-# FSS-054 — bounded pure-Rust scalar decode engine (MJPEG/JPEG, H.264/AVC, H.265/HEVC)
-# conformance, hostile-input refusal, malformed media gauntlets, and custody/gap receipts.
+# FSS-054 / FSS-117 — bounded pure-Rust scalar decode engine (MJPEG/JPEG, H.264/AVC, H.265/HEVC),
+# AVI MJPEG vertical slice, hostile-input refusal, malformed media gauntlets, and custody/gap receipts.
 "${RUN[@]}" cargo --offline test --locked -q -p fss-codec-mjpeg -p fss-codec-h264 -p fss-codec-h265 --lib --tests
+"${RUN[@]}" cargo --offline test --locked -q -p fss-container --test avi_mjpeg_contract
 "${RUN[@]}" cargo --offline test --locked -q -p fss-reference \
   --test decode_jpeg_contract \
   --test decode_receipt_contract \
   --test decode_gap_coverage_contract \
   --test rtpdump_decode_contract \
   --test rtpdump_custody_decode_contract
+
+# FSS-055 — bounded pure-Rust encode and rendition kernels (deterministic JPEG/MJPEG derivatives).
+"${RUN[@]}" cargo --offline test --locked -q -p fss-codec-jpeg-encode --lib --tests
+
+# FSS-058 / FSS-119 — decoded-frame/tensor buffer accounting and generation-leased immutable frame pools.
+"${RUN[@]}" cargo --offline test --locked -q -p fss-tensor \
+  --test fss_058_buffer_accounting_contract \
+  --test fss_119_frame_pool_contract
