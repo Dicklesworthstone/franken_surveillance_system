@@ -100,7 +100,7 @@ WRITE_RECEIPT=1
 usage() {
   cat >&2 <<'USAGE'
 Usage: scripts/qualify.sh [--lane LANE] [--receipt-dir DIR] [--no-receipt]
-       scripts/qualify.sh [policy|docs|rust|full|reference|lab|adapter|media|archive|model|geometry|threat|agent|privacy|security|custody|scale-benchmark|macos-parity|release-preflight|release]
+       scripts/qualify.sh [policy|docs|rust|full|reference|lab|adapter|media|archive|model|geometry|threat|agent|privacy|security|custody|perf|scale-benchmark|macos-parity|release-preflight|release]
        scripts/qualify.sh --recording-lifecycle
 
 The repository-local qualifier is the semantic qualification entrypoint. Doodlestein
@@ -108,7 +108,7 @@ Self-Releaser executes it from clean, exact source/sibling snapshots on controll
 Workflow YAML is a portable supplementary job graph and contains no unique release authority.
 --recording-lifecycle runs supplemental locked, offline recorder, review, and event contracts.
 
-Implemented now: policy, docs, rust, full, reference, lab, adapter, media, archive, model, geometry, threat, agent, privacy, security, custody, scale-benchmark, macos-parity, release-preflight, release.
+Implemented now: policy, docs, rust, full, reference, lab, adapter, media, archive, model, geometry, threat, agent, privacy, security, custody, perf, scale-benchmark, macos-parity, release-preflight, release.
 Claim-specific lanes fail closed until their dedicated Rust harness exists under scripts/lanes/.
 USAGE
 }
@@ -119,7 +119,7 @@ while (($#)); do
     --receipt-dir) RECEIPT_DIR="${2:?missing directory after --receipt-dir}"; shift 2 ;;
     --no-receipt) WRITE_RECEIPT=0; shift ;;
     -h|--help) usage; exit 0 ;;
-    policy|docs|rust|full|reference|lab|adapter|media|archive|model|geometry|threat|agent|privacy|security|custody|scale-benchmark|macos-parity|release-preflight|release)
+    policy|docs|rust|full|reference|lab|adapter|media|archive|model|geometry|threat|agent|privacy|security|custody|perf|scale-benchmark|macos-parity|release-preflight|release)
       LANE="$1"; shift ;;
     *) printf 'unknown argument or lane: %s\n' "$1" >&2; usage; exit 4 ;;
   esac
@@ -355,6 +355,9 @@ policy_lane() {
   run github-unavailable-release-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_fss_194_github_unavailable_release.py
   run ql-custody-lane-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_ql_custody_lane.py
   run ql-reference-lane-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_ql_reference_lane.py
+  run ql-perf-lane-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_ql_perf_lane.py
+  run ql-agent-lane-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_ql_agent_lane.py
+  run ql-threat-lane-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_ql_threat_lane.py
   run robot-docs python3 scripts/robot_docs_checker.py
   run robot-docs-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_robot_docs.py
   run json-instance-validate-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_json_instance_validate.py
@@ -368,14 +371,16 @@ policy_lane() {
   run diff-check git diff --check
   run shell-syntax bash -n scripts/qualify.sh scripts/release_qualify.sh scripts/publish_to_github.sh \
     scripts/e2e/run.sh scripts/e2e/lib.sh scripts/e2e/selftest.sh \
-    scripts/e2e/fss_035_backup_restore_manifest.sh scripts/e2e/fss_115_fragmented_mp4_cmaf.sh \
+    scripts/e2e/fss_035_backup_restore_manifest.sh scripts/e2e/fss_053_media_probe.sh \
+    scripts/e2e/fss_115_fragmented_mp4_cmaf.sh \
     scripts/e2e/fss_141_kernel_dispatch_receipts.sh scripts/e2e/fss_142_packed_tiled_matrix_kernels.sh \
     scripts/e2e/fss_143_preprocess_postprocess_fusion.sh scripts/e2e/fss_150_thermal_pressure_scheduler.sh \
     scripts/e2e/fss_192_release_publication.sh scripts/e2e/fss_194_github_unavailable_release.sh \
     scripts/e2e/test_schedule_001.sh \
-    scripts/lanes/adapter.sh scripts/lanes/archive.sh scripts/lanes/custody.sh \
-    scripts/lanes/lab.sh scripts/lanes/media.sh scripts/lanes/model.sh scripts/lanes/reference.sh \
-    scripts/lanes/security.sh scripts/lanes/scale_benchmark.sh scripts/lanes/macos_parity.sh
+    scripts/lanes/adapter.sh scripts/lanes/agent.sh scripts/lanes/archive.sh scripts/lanes/custody.sh \
+    scripts/lanes/lab.sh scripts/lanes/media.sh scripts/lanes/model.sh scripts/lanes/perf.sh \
+    scripts/lanes/reference.sh scripts/lanes/security.sh scripts/lanes/threat.sh \
+    scripts/lanes/scale_benchmark.sh scripts/lanes/macos_parity.sh
   run python-syntax env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 -m py_compile \
     scripts/check-policy.py scripts/dependency_audit.py scripts/manifest_audit.py scripts/stable_id_audit.py \
     scripts/schema_validate.py scripts/slo_validate.py scripts/architecture_registry_consistency.py \
@@ -388,7 +393,8 @@ policy_lane() {
     scripts/e2e/validate_log.py scripts/e2e/runner_verdict.py tests/test_e2e_lib_fail_closed.py \
     tests/test_manifest_audit.py tests/test_stable_id_audit.py tests/test_release_artifacts.py \
     tests/test_release_publication.py tests/test_fss_194_github_unavailable_release.py \
-    tests/test_ql_custody_lane.py tests/test_ql_reference_lane.py tests/test_ql_security_lane.py \
+    tests/test_ql_agent_lane.py tests/test_ql_custody_lane.py tests/test_ql_perf_lane.py \
+    tests/test_ql_reference_lane.py tests/test_ql_security_lane.py tests/test_ql_threat_lane.py \
     tests/test_schema_validate.py tests/test_slo_validate.py tests/test_slo_operation_cost_consistency.py \
     tests/test_architecture_registry_consistency.py tests/test_dependency_dag_checker.py \
     tests/test_claim_proof_bundle_checker.py tests/test_unsafe_prohibition_checker.py \
@@ -516,7 +522,7 @@ case "$LANE" in
   docs) docs_lane ;;
   rust) policy_lane; rust_lane ;;
   full) policy_lane; rust_lane; "$ROOT/scripts/lanes/media.sh"; "$ROOT/scripts/lanes/archive.sh" ;;
-  reference|lab|adapter|media|archive|model|geometry|threat|agent|privacy|security|custody|scale-benchmark|macos-parity) claim_lane ;;
+  reference|lab|adapter|media|archive|model|geometry|threat|agent|privacy|security|custody|perf|scale-benchmark|macos-parity) claim_lane ;;
   release-preflight) policy_lane; clean_tree_lane; rust_lane ;;
   release) policy_lane; rust_lane; "$ROOT/scripts/lanes/media.sh"; "$ROOT/scripts/lanes/archive.sh"; clean_tree_lane ;;
   *) printf 'unknown qualification lane: %s\n' "$LANE" >&2; exit 4 ;;
