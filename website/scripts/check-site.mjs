@@ -116,12 +116,25 @@ try {
   assert.equal(await page.locator("details.drawer[open]").count(), drawerCount, "every drawer opens");
   pass(`${drawerCount} drawers of supporting figures open.`);
 
-  // Copy rules the owner set: no estate name, no dash punctuation in prose.
+  // Copy rules the owner set: no estate name, no dash punctuation in prose. The estates' working
+  // names (Alder House, and Juniper House with its court) stay out of what screen readers and
+  // share previews read too: alt text, labels, titles and the page's descriptions.
   const text = await page.evaluate(() => document.body.innerText);
-  assert.ok(!/alder/i.test(text), "estate name absent");
+  const unseen = await page.evaluate(() =>
+    [
+      document.title,
+      ...[...document.querySelectorAll("meta[name=description], meta[property^='og:'], meta[name^='twitter:']")].map((m) => m.content),
+      ...[...document.querySelectorAll("[alt], [aria-label], [title]")].flatMap((e) =>
+        ["alt", "aria-label", "title"].map((name) => e.getAttribute(name)),
+      ),
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  );
+  for (const copy of [text, unseen]) assert.doesNotMatch(copy, /alder|juniper/i, "estate name absent");
   assert.ok(!/[—–]/.test(text), "no em or en dash in the page text");
   assert.match(await page.title(), /^Franken Surveillance/);
-  pass("Page text has no estate name and no dash punctuation.");
+  pass("Page text and labels have no estate name, and the text has no dash punctuation.");
 
   // Every picture and film the page names is served.
   const media = await page.evaluate(() => [
