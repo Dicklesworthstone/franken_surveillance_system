@@ -1,3 +1,4 @@
+a8eca676026db9c2099fc19722b8737f016587ceb2e8862bee64b79594c5e8ae  crates/fss-core/src/json_input.rs
 b1a34a9e8c55dcf85a03462475a3436f011ddb88b31f0e9c64bc6e7cf393ab6c  crates/fss-daemon/src/control.rs
 380bbf4b6aa360e2722e3d43eb05fb74b59325fe690cc67354c8eaeca017ded8  crates/fss-daemon/src/control_client.rs
 804c7182132e9eebc01f79b2aab1e61af3ee5d3f61a02c2f19fd9d4f879a46b0  crates/fss-daemon/src/lib.rs
@@ -27,3 +28,5 @@ fd4872d57d425da5f3ab78701487ebcf133e7bbc094615bf1b2353a2e97afb59  crates/fss-obj
 21a70eb77d271a1416b52d3d08119416354f7d084ccca673b35a1236387048cd  crates/fss-projection-store/src/store/recovery.rs
 6ba640789f79a5b80b791af59040e249c70d7a613cee66f1e7c11a4c59027bd4  crates/fss-projection-store/src/wal.rs
 8325c21d87ef5252e0f4615e892960526571d206aa8414cdd3c0221e32d3768f  crates/fss-projection-store/tests/differential_and_rebuild.rs
+2a86ec2d2c20f377916f08ff16bc1a71537579c5ab2a327f39f5d996afaaae9b  crates/fss-reference/src/migration/receipt.rs
+532278d5a0232783339a95d5ba9543c81069d72f525ebe1f1646cec23e48342f  crates/fss-reference/src/migration/tests.rs

@@ -144,13 +144,17 @@ fn refusal_guidance_and_receipt_digest_are_deterministic_and_tamper_evident() ->
     assert!(gjson.contains(ERR_DEPLOYMENT_FORMAT_V1_001));
     assert!(gjson.contains("fss migrate --from /var/fss/old-v1 --to /var/fss/new-v2"));
 
+    let mut source_anchor = LedgerAnchor::genesis("site:receipt-unit");
+    source_anchor.commit_sequence = 5;
+    let mut dest_anchor = source_anchor.clone();
+    dest_anchor.state_root = ContentDigest::sha256(b"v2-merkle");
     let mut receipt = MigrationEquivalenceReceipt {
         schema: MIGRATION_RECEIPT_SCHEMA.to_owned(),
         site_lineage: "site:receipt-unit".to_owned(),
-        source_v1_anchor: LedgerAnchor::genesis("site:receipt-unit"),
+        source_v1_anchor: source_anchor,
         source_v1_ledger_root: ContentDigest::sha256(b"v1-root"),
-        dest_v2_anchor: LedgerAnchor::genesis("site:receipt-unit"),
-        dest_v2_merkle_root: ContentDigest::sha256(b"v2-merkle"),
+        dest_v2_merkle_root: dest_anchor.state_root,
+        dest_v2_anchor: dest_anchor,
         dest_v2_history_root: ContentDigest::sha256(b"v2-history"),
         batches_migrated: 5,
         objects_migrated: 12,

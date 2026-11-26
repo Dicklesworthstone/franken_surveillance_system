@@ -127,6 +127,18 @@ pub fn parse(text: &str) -> Result<Value, JsonError> {
     )
 }
 
+/// Parses a migration receipt under the caller's file-size bound. Its only variable-length
+/// collection contains digest strings with at least 64 hexadecimal digits each.
+pub fn parse_migration_receipt(text: &str, max_bytes: usize) -> Result<Value, JsonError> {
+    parse_bounded(
+        text,
+        max_bytes,
+        64 + text.len() / 64,
+        MAX_STRING_BYTES,
+        "document exceeds the migration receipt bound",
+    )
+}
+
 /// Decodes one MCP reply with a bounded native tool result embedded as a JSON string.
 ///
 /// Only the reply profile admits strings up to the tool-output ceiling. Use `parse`

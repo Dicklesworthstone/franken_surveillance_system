@@ -2,10 +2,10 @@
 //! Cryptographic migration equivalence receipt (`fss.migration_receipt.v1`) and independent
 //! post-migration equivalence verifier.
 
-use std::collections::BTreeSet;
-use std::fs;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+use fss_core::json_input::{Value, parse_migration_receipt};
 use fss_core::{CanonicalEncode, CanonicalEncoder, ContentDigest, ContractError, LedgerAnchor};
 use fss_ledger::{
     DurableLedgerStatus, EpochLedgerConfig, IncompleteTailPolicy, MerkleEpochLedger,
@@ -88,6 +88,59 @@ pub struct MigrationEquivalenceReceipt {
 }
 
 impl MigrationEquivalenceReceipt {
+    /// Loads the canonical receipt without consulting the migrated-from deployment. The caller
+    /// must still check its destination commitment against the current v2 canonical history.
+    pub(crate) fn read_from_root(root: &Path, max_bytes: usize) -> Result<Self, MigrationError> {
+        let bytes = read_bounded_bytes(&root.join(MIGRATION_RECEIPT_FILENAME), max_bytes)?;
+        let text = std::str::from_utf8(&bytes)
+            .map_err(|_| receipt_error("migration receipt is not UTF-8"))?;
+        Self::from_canonical_json(text, max_bytes)
+    }
+
+    fn from_canonical_json(text: &str, max_bytes: usize) -> Result<Self, MigrationError> {
+        let value = parse_migration_receipt(text, max_bytes)
+            .map_err(|err| receipt_error(format!("invalid receipt JSON: {err}")))?;
+        let fields = value.object().ok_or_else(|| receipt_error("expected receipt object"))?;
+        let digests = fields.get("source_unreferenced_orphans").and_then(Value::array)
+            .ok_or_else(|| receipt_error("expected source_unreferenced_orphans array"))?;
+        let source_unreferenced_orphans = digests.iter().map(decode_digest)
+            .collect::<Result<Vec<_>, _>>()?;
+        let effects_journal_digest = match fields.get("effects_journal_digest") {
+            Some(Value::Null) => None,
+            Some(value) => Some(decode_digest(value)?),
+            None => return Err(receipt_error("missing effects_journal_digest")),
+        };
+        let receipt = Self {
+            schema: read_text(fields, "schema")?.to_owned(),
+            site_lineage: read_text(fields, "site_lineage")?.to_owned(),
+            source_v1_anchor: read_anchor(fields, "source_v1_anchor")?,
+            source_v1_ledger_root: read_digest(fields, "source_v1_ledger_root")?,
+            dest_v2_anchor: read_anchor(fields, "dest_v2_anchor")?,
+            dest_v2_merkle_root: read_digest(fields, "dest_v2_merkle_root")?,
+            dest_v2_history_root: read_digest(fields, "dest_v2_history_root")?,
+            batches_migrated: read_count(fields, "batches_migrated")?,
+            objects_migrated: read_count(fields, "objects_migrated")?,
+            roots_migrated: read_count(fields, "roots_migrated")?,
+            events_migrated: read_count(fields, "events_migrated")?,
+            holds_migrated: read_count(fields, "holds_migrated")?,
+            masks_migrated: read_count(fields, "masks_migrated")?,
+            tombstones_migrated: read_count(fields, "tombstones_migrated")?,
+            source_unreferenced_orphans,
+            effects_verified: read_bool(fields, "effects_verified")?,
+            effects_journal_digest,
+            agent_files_verified: read_count(fields, "agent_files_verified")?,
+            projection_state_digest: read_digest(fields, "projection_state_digest")?,
+            semantic_equivalence_verified: read_bool(fields, "semantic_equivalence_verified")?,
+            receipt_digest: read_digest(fields, "receipt_digest")?,
+        };
+        // Exact re-encoding also checks the derived orphan count, field set and order.
+        if receipt.to_json() != text {
+            return Err(receipt_error("migration receipt is not canonical JSON"));
+        }
+        receipt.verify_self_digest()?;
+        Ok(receipt)
+    }
+
     /// Recomputes the canonical domain-separated SHA-256 digest over all receipt fields except
     /// `receipt_digest` itself under [`MIGRATION_RECEIPT_DOMAIN`].
     pub fn compute_digest(&self) -> Result<ContentDigest, ContractError> {
@@ -138,6 +191,18 @@ impl MigrationEquivalenceReceipt {
             return Err(MigrationError::VerificationFailed {
                 detail: "receipt marks semantic_equivalence_verified=false".to_owned(),
             });
+        }
+        if crate::reference_deployment::validate_site_lineage(&self.site_lineage).is_err()
+            || self.source_v1_anchor.site_lineage != self.site_lineage
+            || self.dest_v2_anchor.site_lineage != self.site_lineage
+            || self.source_v1_anchor.commit_sequence != self.batches_migrated
+            || self.dest_v2_anchor.commit_sequence != self.batches_migrated
+            || self.dest_v2_anchor.state_root != self.dest_v2_merkle_root
+        {
+            return Err(receipt_error("receipt anchor, lineage, or migration count mismatch"));
+        }
+        if self.source_unreferenced_orphans.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(receipt_error("receipt orphan list is not strictly ordered"));
         }
         let expected = self
             .compute_digest()
@@ -451,17 +516,8 @@ impl MigrationEquivalenceReceipt {
         }
 
         // 7. Confirm persisted migration_receipt.json exists and matches canonical JSON.
-        let persisted_path = dest_v2_root.join(MIGRATION_RECEIPT_FILENAME);
-        let persisted_json = fs::read_to_string(&persisted_path).map_err(|err| {
-            MigrationError::VerificationFailed {
-                detail: format!("failed reading {}: {err}", persisted_path.display()),
-            }
-        })?;
-        if persisted_json != self.to_json() {
-            return Err(MigrationError::VerificationFailed {
-                detail: "persisted migration_receipt.json differs from canonical receipt JSON"
-                    .to_owned(),
-            });
+        if Self::read_from_root(dest_v2_root, self.to_json().len())? != *self {
+            return Err(receipt_error("persisted migration receipt differs from verified receipt"));
         }
 
         Ok(())
@@ -532,6 +588,49 @@ impl MigrationEquivalenceReceipt {
     }
 }
 
+fn receipt_error(detail: impl Into<String>) -> MigrationError {
+    MigrationError::VerificationFailed { detail: detail.into() }
+}
+
+fn read_text<'a>(fields: &'a BTreeMap<String, Value>, key: &str) -> Result<&'a str, MigrationError> {
+    fields.get(key).and_then(Value::text)
+        .ok_or_else(|| receipt_error(format!("expected receipt string: {key}")))
+}
+
+fn read_count(fields: &BTreeMap<String, Value>, key: &str) -> Result<u64, MigrationError> {
+    fields.get(key).and_then(Value::integer).and_then(|count| u64::try_from(count).ok())
+        .ok_or_else(|| receipt_error(format!("expected receipt u64: {key}")))
+}
+
+fn read_bool(fields: &BTreeMap<String, Value>, key: &str) -> Result<bool, MigrationError> {
+    fields.get(key).and_then(Value::boolean)
+        .ok_or_else(|| receipt_error(format!("expected receipt boolean: {key}")))
+}
+
+fn decode_digest(value: &Value) -> Result<ContentDigest, MigrationError> {
+    let text = value.text().ok_or_else(|| receipt_error("expected receipt digest string"))?;
+    ContentDigest::parse(text).map_err(|_| receipt_error("invalid receipt digest"))
+}
+
+fn read_digest(fields: &BTreeMap<String, Value>, key: &str) -> Result<ContentDigest, MigrationError> {
+    decode_digest(fields.get(key).ok_or_else(|| receipt_error(format!("missing receipt digest: {key}")))?)
+}
+
+fn read_anchor(fields: &BTreeMap<String, Value>, key: &str) -> Result<LedgerAnchor, MigrationError> {
+    let anchor = fields.get(key).and_then(Value::object)
+        .ok_or_else(|| receipt_error(format!("expected receipt anchor: {key}")))?;
+    Ok(LedgerAnchor {
+        site_lineage: read_text(anchor, "site_lineage")?.to_owned(),
+        ledger_epoch: read_count(anchor, "ledger_epoch")?,
+        commit_sequence: read_count(anchor, "commit_sequence")?,
+        adapter_registry_epoch: read_count(anchor, "adapter_registry_epoch")?,
+        schema_epoch: read_count(anchor, "schema_epoch")?,
+        policy_epoch: read_count(anchor, "policy_epoch")?,
+        privacy_epoch: read_count(anchor, "privacy_epoch")?,
+        state_root: read_digest(anchor, "state_root")?,
+    })
+}
+
 fn anchor_to_json(anchor: &LedgerAnchor) -> String {
     format!(
         "{{\"site_lineage\":\"{}\",\"ledger_epoch\":{},\"commit_sequence\":{},\"state_root\":\"{}\",\"adapter_registry_epoch\":{},\"schema_epoch\":{},\"policy_epoch\":{},\"privacy_epoch\":{}}}",
@@ -544,4 +643,61 @@ fn anchor_to_json(anchor: &LedgerAnchor) -> String {
         anchor.policy_epoch,
         anchor.privacy_epoch,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn receipt_reader_requires_exact_bytes_consistent_anchors_and_digest()
+        -> Result<(), Box<dyn std::error::Error>>
+    {
+        let v1 = LedgerAnchor::genesis("site:receipt");
+        let mut v2 = v1.clone();
+        v2.state_root = ContentDigest::sha256(b"v2");
+        let root = ContentDigest::sha256(b"fixture");
+        let mut receipt = MigrationEquivalenceReceipt {
+            schema: MIGRATION_RECEIPT_SCHEMA.to_owned(),
+            site_lineage: v1.site_lineage.clone(),
+            source_v1_anchor: v1,
+            source_v1_ledger_root: root,
+            dest_v2_merkle_root: v2.state_root,
+            dest_v2_anchor: v2,
+            dest_v2_history_root: root,
+            batches_migrated: 0,
+            objects_migrated: u64::MAX,
+            roots_migrated: 0,
+            events_migrated: 0,
+            holds_migrated: 0,
+            masks_migrated: 0,
+            tombstones_migrated: 0,
+            source_unreferenced_orphans: vec![root],
+            effects_verified: true,
+            effects_journal_digest: Some(root),
+            agent_files_verified: 0,
+            projection_state_digest: root,
+            semantic_equivalence_verified: true,
+            receipt_digest: root,
+        };
+        receipt.receipt_digest = receipt.compute_digest()?;
+        let json = receipt.to_json();
+        let parse = |text: &str| MigrationEquivalenceReceipt::from_canonical_json(text, text.len());
+        assert_eq!(parse(&json)?, receipt);
+        assert!(MigrationEquivalenceReceipt::from_canonical_json(&json, json.len() - 1).is_err());
+        assert!(parse(&format!("{json}\n")).is_err());
+        assert!(parse(&json.replace("\"source_unreferenced_orphan_count\":1", "\"source_unreferenced_orphan_count\":2")).is_err());
+        assert!(parse(&json.replace("\"masks_migrated\":0", "\"masks_migrated\":1")).is_err());
+        for case in 0..3 {
+            let mut changed = receipt.clone();
+            match case {
+                0 => changed.batches_migrated = 1,
+                1 => changed.source_v1_anchor.site_lineage = "site:other".to_owned(),
+                _ => changed.dest_v2_merkle_root = root,
+            }
+            changed.receipt_digest = changed.compute_digest()?;
+            assert!(parse(&changed.to_json()).is_err());
+        }
+        Ok(())
+    }
 }
