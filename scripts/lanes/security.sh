@@ -20,6 +20,7 @@ LANE_NAME="security"
 
 export CARGO_NET_OFFLINE=true
 export RUSTUP_AUTO_INSTALL=0
+export RCH_SHIM_LOCAL_IDE="${RCH_SHIM_LOCAL_IDE:-1}"
 
 usage() {
   cat >&2 <<'USAGE'
@@ -116,6 +117,12 @@ if receipt.get("laneId") != "QL-SECURITY-001":
 if receipt.get("status") != "passed":
     print(f"[FAIL] non-passing receipt status: {receipt.get('status')}", file=sys.stderr)
     sys.exit(1)
+if not isinstance(receipt.get("sourceCommit"), str) or not receipt["sourceCommit"].startswith("git:"):
+    print(f"[FAIL] malformed sourceCommit: {receipt.get('sourceCommit')!r}", file=sys.stderr)
+    sys.exit(2)
+if not isinstance(receipt.get("cargoLockDigest"), str) or not receipt["cargoLockDigest"].startswith("sha256:"):
+    print(f"[FAIL] malformed cargoLockDigest: {receipt.get('cargoLockDigest')!r}", file=sys.stderr)
+    sys.exit(2)
 
 commands = receipt.get("commands")
 if not isinstance(commands, list) or not commands:
@@ -123,9 +130,10 @@ if not isinstance(commands, list) or not commands:
     sys.exit(2)
 
 run_dir = receipt_path.parent
+run_dir_resolved = run_dir.resolve()
 steps_jsonl = run_dir / "security-steps.jsonl"
-if not steps_jsonl.is_file():
-    print(f"[FAIL] missing structured step log: {steps_jsonl}", file=sys.stderr)
+if steps_jsonl.is_symlink() or not steps_jsonl.is_file():
+    print(f"[FAIL] missing or symlinked structured step log: {steps_jsonl}", file=sys.stderr)
     sys.exit(2)
 
 SECRET_MARKERS = ("BEGIN PRIVATE KEY", "AKIA", "rtsp-pass-gen1", "password=", "Authorization: Bearer ")
@@ -166,10 +174,21 @@ for idx, raw_line in enumerate(steps_jsonl.read_text(encoding="utf-8").splitline
         print(f"[FAIL] line {idx}: non-passing step status {row.get('status')}", file=sys.stderr)
         sys.exit(1)
     log_name = row.get("logFile")
-    if not log_name or not (run_dir / log_name).is_file():
-        print(f"[FAIL] line {idx}: missing step log artifact {log_name}", file=sys.stderr)
+    if (
+        not isinstance(log_name, str)
+        or not log_name
+        or "/" in log_name
+        or "\\" in log_name
+        or ".." in log_name
+        or pathlib.Path(log_name).name != log_name
+    ):
+        print(f"[FAIL] line {idx}: unsafe step log filename {log_name!r}", file=sys.stderr)
         sys.exit(2)
-    log_bytes = (run_dir / log_name).read_bytes()
+    log_path = run_dir / log_name
+    if log_path.is_symlink() or not log_path.is_file() or log_path.resolve().parent != run_dir_resolved:
+        print(f"[FAIL] line {idx}: missing or escaped step log artifact {log_name!r}", file=sys.stderr)
+        sys.exit(2)
+    log_bytes = log_path.read_bytes()
     actual_digest = "sha256:" + hashlib.sha256(log_bytes).hexdigest()
     if actual_digest != row.get("outputDigest"):
         print(f"[FAIL] line {idx}: log digest mismatch ({actual_digest} != {row.get('outputDigest')})", file=sys.stderr)

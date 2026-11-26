@@ -122,6 +122,40 @@ class TestQlCustodyLane(unittest.TestCase):
             )
             self.assertNotEqual(skip_fail.returncode, 0)
 
+            # Fault 4: Path-traversal logFile (even with matching digest!) MUST fail closed.
+            outside_file = Path(td) / "outside.log"
+            outside_file.write_bytes(b"outside-data\n")
+            outside_digest = "sha256:" + hashlib.sha256(b"outside-data\n").hexdigest()
+            trav_rows = [json.loads(line) for line in orig_steps.splitlines() if line.strip()]
+            trav_rows[0]["logFile"] = "../outside.log"
+            trav_rows[0]["outputDigest"] = outside_digest
+            steps_path.write_text("\n".join(json.dumps(r) for r in trav_rows) + "\n", encoding="utf-8")
+            rec_trav = json.loads(orig_receipt_text)
+            rec_trav["commands"][0]["outputDigest"] = outside_digest
+            receipt_path.write_text(json.dumps(rec_trav), encoding="utf-8")
+            trav_fail = subprocess.run(
+                ["bash", str(SCRIPT), "--verify-receipt", str(receipt_path), "--allow-static-only"],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(trav_fail.returncode, 2)
+            self.assertIn("unsafe step log filename", trav_fail.stderr)
+
+            # Fault 5: Symlink logFile inside run_dir escaping outside MUST fail closed.
+            sym_log = run_dir / "escape.log"
+            sym_log.symlink_to(outside_file)
+            sym_rows = [json.loads(line) for line in orig_steps.splitlines() if line.strip()]
+            sym_rows[0]["logFile"] = "escape.log"
+            sym_rows[0]["outputDigest"] = outside_digest
+            steps_path.write_text("\n".join(json.dumps(r) for r in sym_rows) + "\n", encoding="utf-8")
+            sym_fail = subprocess.run(
+                ["bash", str(SCRIPT), "--verify-receipt", str(receipt_path), "--allow-static-only"],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(sym_fail.returncode, 2)
+            self.assertIn("missing or escaped step log artifact", sym_fail.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

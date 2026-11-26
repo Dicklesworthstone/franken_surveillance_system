@@ -7,8 +7,15 @@ mod common;
 
 use common::{BASELINE, Error, HIGH, KEY, groups, timed};
 use fss_container::demux::{AvcMp4, DemuxLimits, VideoCodec};
-use fss_container::{AvcMuxer, Mp4Error, Mp4Limits, NalTarget};
+use fss_container::{AvcMuxer, HevcMuxer, Mp4Error, Mp4Limits, NalTarget, TimedHevcPicture};
 use fss_core::ContentDigest;
+use fss_packet::hevc::{
+    HevcAssembler, HevcAssemblyLimits, HevcAssemblyStep, HevcConfiguration,
+    HevcConfigurationLimits, HevcPictureGroup,
+};
+use fss_packet::{H265Depacketizer, H265Limits, PacketLimits, RtpPacket};
+
+const HEVC_FIXTURE: &str = include_str!("../../../tests/fixtures/media/hevc/remux_main8.nals.hex");
 
 type TestResult = Result<(), Error>;
 
@@ -204,6 +211,158 @@ fn cmaf_hostile_truncation_box_corruption_and_writer_refusals_fail_closed() -> T
         "fss_115_cmaf_hostile_and_refusals",
         "truncated_prefixes_box_corruption_and_writer_refusals_fail_closed",
         "truncated_prefixes_box_corruption_and_writer_refusals_fail_closed",
+        "pass",
+    );
+    Ok(())
+}
+
+fn decode_hex_line(s: &str) -> Vec<u8> {
+    let compact: Vec<_> = s.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
+    compact
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| {
+            let nibble = |b| match b {
+                b'0'..=b'9' => b - b'0',
+                b'a'..=b'f' => b - b'a' + 10,
+                b'A'..=b'F' => b - b'A' + 10,
+                _ => 0,
+            };
+            nibble(pair[0]) * 16 + nibble(pair[1])
+        })
+        .collect()
+}
+
+fn assemble_hevc_pictures()
+-> Result<(HevcConfiguration, HevcConfiguration, Vec<HevcPictureGroup>), Error> {
+    let nals: Vec<Vec<u8>> = HEVC_FIXTURE
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(decode_hex_line)
+        .collect();
+    let config_a = HevcConfiguration::parse(
+        &nals[0],
+        &nals[1],
+        &nals[2],
+        HevcConfigurationLimits::default(),
+    )?;
+    let config_b = HevcConfiguration::parse(
+        &nals[0],
+        &nals[1],
+        &nals[2],
+        HevcConfigurationLimits::default(),
+    )?;
+    let timestamps = [0, 0, 0, 0, 18_000, 36_000, 36_000, 36_000, 36_000, 54_000];
+    let mut payloads: Vec<(u32, Vec<u8>)> = timestamps.into_iter().zip(nals).collect();
+    payloads.push((54_000, vec![0x48, 1, 0x80]));
+
+    let mut dep = H265Depacketizer::new(KEY, 96, 0, H265Limits::default())?;
+    let mut assembler = HevcAssembler::new(KEY, HevcAssemblyLimits::default())?;
+    let mut pictures = Vec::new();
+    for (i, (timestamp, payload)) in payloads.iter().enumerate() {
+        let mut raw = vec![0x80, 96 | 128];
+        raw.extend_from_slice(&(i as u16 + 1).to_be_bytes());
+        raw.extend_from_slice(&timestamp.to_be_bytes());
+        raw.extend_from_slice(&KEY.ssrc.to_be_bytes());
+        raw.extend_from_slice(payload);
+        let output = dep.push(
+            KEY,
+            i as u64 + 1,
+            RtpPacket::parse(&raw, PacketLimits::default())?,
+            i as u64,
+        )?;
+        for nal in output.nals {
+            match assembler.push(nal, i as u64) {
+                HevcAssemblyStep::Accepted(step) => {
+                    if let Some(pic) = step.picture {
+                        pictures.push(pic);
+                    }
+                }
+                HevcAssemblyStep::Refused(refused) => return Err(refused.reason.into()),
+            }
+        }
+    }
+    Ok((config_a, config_b, pictures))
+}
+
+#[test]
+fn cmaf_hevc_multi_fragment_write_and_demux_roundtrip_is_bit_deterministic() -> TestResult {
+    let (config_a, config_b, pictures) = assemble_hevc_pictures()?;
+    assert_eq!(pictures.len(), 4);
+
+    let mut mux_a = HevcMuxer::new(KEY, config_a, 90_000, Mp4Limits::default())?;
+    let mut mux_b = HevcMuxer::new(KEY, config_b, 90_000, Mp4Limits::default())?;
+    let init_a = mux_a.initialization().bytes().to_vec();
+    let init_b = mux_b.initialization().bytes().to_vec();
+    assert_eq!(init_a, init_b);
+
+    let timed_frag1: Vec<TimedHevcPicture<'_>> = pictures[..2]
+        .iter()
+        .enumerate()
+        .map(|(i, picture)| TimedHevcPicture {
+            picture,
+            decode_time: i as u64 * 18_000,
+            duration: 18_000,
+            composition_offset: 0,
+        })
+        .collect();
+    let timed_frag2: Vec<TimedHevcPicture<'_>> = pictures[2..]
+        .iter()
+        .enumerate()
+        .map(|(i, picture)| TimedHevcPicture {
+            picture,
+            decode_time: 54_000 + i as u64 * 18_000,
+            duration: 18_000,
+            composition_offset: 0,
+        })
+        .collect();
+
+    let frag1_a = mux_a.fragment(&timed_frag1)?;
+    let frag1_b = mux_b.fragment(&timed_frag1)?;
+    assert_eq!(frag1_a, frag1_b);
+    assert!(frag1_a.timeline_gap().is_none());
+
+    let frag2_a = mux_a.fragment(&timed_frag2)?;
+    let frag2_b = mux_b.fragment(&timed_frag2)?;
+    assert_eq!(frag2_a, frag2_b);
+    assert_eq!(frag2_a.timeline_gap(), Some(36_000..54_000));
+
+    let mut cmaf_stream = Vec::new();
+    cmaf_stream.extend_from_slice(&init_a);
+    let frag1_off = cmaf_stream.len();
+    cmaf_stream.extend_from_slice(frag1_a.bytes());
+    let frag2_off = cmaf_stream.len();
+    cmaf_stream.extend_from_slice(frag2_a.bytes());
+
+    let parsed = AvcMp4::parse(&cmaf_stream, None, DemuxLimits::default())?;
+    assert_eq!(parsed.codec(), VideoCodec::Hevc);
+    assert_eq!(parsed.samples().len(), 4);
+
+    let written_samples: Vec<(usize, &fss_container::HevcSampleMapping)> = frag1_a
+        .samples()
+        .iter()
+        .map(|s| (frag1_off, s))
+        .chain(frag2_a.samples().iter().map(|s| (frag2_off, s)))
+        .collect();
+    for (demuxed, (frag_off, written)) in parsed.samples().iter().zip(written_samples) {
+        assert_eq!(
+            demuxed.source,
+            frag_off + written.range.start..frag_off + written.range.end
+        );
+        assert_eq!(demuxed.decode_time, written.decode_time);
+        assert_eq!(demuxed.duration, written.duration);
+        assert_eq!(
+            demuxed.presentation_time(),
+            i128::from(written.presentation_time)
+        );
+        assert_eq!(demuxed.contains_idr, written.idr);
+    }
+
+    emit_caplog(
+        "fss_115_cmaf_hevc_roundtrip",
+        "bit_exact_multi_fragment_hevc_cmaf_write_demux_roundtrip_verified",
+        "bit_exact_multi_fragment_hevc_cmaf_write_demux_roundtrip_verified",
         "pass",
     );
     Ok(())
