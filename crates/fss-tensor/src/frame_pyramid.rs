@@ -8,7 +8,7 @@
 //!   detectors, trackers, and preview consumers never redundantly downsample the same frame.
 //! - [`TilePlan`] partitions `[0..width) x [0..height)` into bounded cache-sized tiles with
 //!   explicit overlap/halo clamping, zero out-of-bounds spans, and exact coverage verification.
-//! - [`AcceleratorIsolationGate`] isolates any optional hardware/accelerator candidate behind
+//! - [`adjudicate_accelerator_against_scalar`] isolates any optional hardware/accelerator candidate behind
 //!   pinned scalar reference outputs and registered max-abs-delta tolerances; unavailability,
 //!   timeout, stale generation, or numerical divergence falls back explicitly to scalar truth
 //!   (never silently promoting an unverified accelerator result).
@@ -310,6 +310,13 @@ impl FramePyramid {
         pool: &mut FramePool,
         now_ns: TimestampNs,
     ) -> Result<(), FramePyramidError> {
+        if self
+            .levels
+            .iter()
+            .any(|(_, lease)| lease.pool_id() != pool.policy().pool_id)
+        {
+            return Err(FramePyramidError::Pool(FramePoolError::PoolMismatch));
+        }
         for (_, lease) in self.levels {
             pool.release_lease(lease, now_ns)
                 .map_err(FramePyramidError::Pool)?;
@@ -327,6 +334,15 @@ impl FramePyramid {
         if !tile_plan.verify_exact_coverage() {
             return Err(FramePyramidError::InvalidConfiguration(
                 "invalid_tile_plan_coverage",
+            ));
+        }
+        let matches_level_geometry = self
+            .levels
+            .iter()
+            .any(|(e, _)| e.width == tile_plan.image_width && e.height == tile_plan.image_height);
+        if !matches_level_geometry {
+            return Err(FramePyramidError::InvalidConfiguration(
+                "tile_plan_geometry_mismatch",
             ));
         }
         if tile_plan.tiles.len() > MAX_TILES_PER_PLAN {
@@ -583,7 +599,10 @@ pub fn adjudicate_accelerator_against_scalar<'a>(
             scalar_reference,
         ),
         AcceleratorCandidate::Candidate { generation, bytes } => {
-            if generation != expected_generation || bytes.len() != scalar_reference.len() {
+            if expected_generation.0 == 0
+                || generation != expected_generation
+                || bytes.len() != scalar_reference.len()
+            {
                 return (
                     AcceleratorGateDecision::QuarantinedDivergenceFallbackScalar,
                     u8::MAX,

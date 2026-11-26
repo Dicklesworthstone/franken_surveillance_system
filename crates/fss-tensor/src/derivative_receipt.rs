@@ -457,7 +457,14 @@ impl MediaDerivativeReceipt {
                     "deleted_parent_receipt",
                 ));
             }
-            if !parent.privacy_masked {
+            if parent_digests.contains(&parent.receipt_digest) {
+                return Err(DerivativeReceiptError::InvalidLineage(
+                    "duplicate_parent_receipt",
+                ));
+            }
+            // Inheriting privacy_masked across a privacy-policy change would silently skip newly
+            // added mask zones; only inherit when the parent was masked under the EXACT same policy.
+            if !parent.privacy_masked || parent.privacy_policy_digest != req.privacy_policy_digest {
                 inherited_masked = false;
             }
             parent_digests.push(parent.receipt_digest);
@@ -470,7 +477,15 @@ impl MediaDerivativeReceipt {
             }
             step.validate()
                 .map_err(|_| DerivativeReceiptError::InvalidLineage("invalid_transform_step"))?;
-            if matches!(step, TransformStep::PrivacyMask { .. }) {
+            if let TransformStep::PrivacyMask {
+                mask_policy_digest, ..
+            } = step
+            {
+                if *mask_policy_digest != req.privacy_policy_digest {
+                    return Err(DerivativeReceiptError::InvalidLineage(
+                        "privacy_mask_policy_mismatch",
+                    ));
+                }
                 stage_masked = true;
             }
         }
@@ -641,7 +656,11 @@ impl CanonicalDecode for MediaDerivativeReceipt {
         }
         let mut parent_derivative_digests = Vec::with_capacity(parent_count);
         for _ in 0..parent_count {
-            parent_derivative_digests.push(decoder.digest()?);
+            let parent_digest = decoder.digest()?;
+            if parent_derivative_digests.contains(&parent_digest) {
+                return Err(ContractError::InvalidIdentifier);
+            }
+            parent_derivative_digests.push(parent_digest);
         }
         let step_count =
             usize::try_from(decoder.u64()?).map_err(|_| ContractError::InvalidIdentifier)?;
@@ -672,9 +691,18 @@ impl CanonicalDecode for MediaDerivativeReceipt {
         let receipt_digest = decoder.digest()?;
 
         // Strict structural invariants enforced even against recomputed-SHA-256 forgeries.
-        let has_stage_mask = transforms
-            .iter()
-            .any(|s| matches!(s, TransformStep::PrivacyMask { .. }));
+        let mut has_stage_mask = false;
+        for step in &transforms {
+            if let TransformStep::PrivacyMask {
+                mask_policy_digest, ..
+            } = step
+            {
+                if *mask_policy_digest != privacy_policy_digest {
+                    return Err(ContractError::InvalidIdentifier);
+                }
+                has_stage_mask = true;
+            }
+        }
         if is_source_custody
             || (kind == MediaDerivativeKind::PrivacyRedaction && !has_stage_mask)
             || (has_stage_mask && !privacy_masked)

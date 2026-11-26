@@ -40,6 +40,9 @@ class TestFss118FfmpegLabDifferential(unittest.TestCase):
                 "bead_id": "fss-x4a.12.17",
                 "oracle_role": diff_runner.ORACLE_ROLE,
                 "production_authority": False,
+                "excluded_dimensions": ["production_runtime", "source_custody_authority"],
+                "cases_total": 1,
+                "cases_passed": 1,
                 "verdict": "pass",
                 "cases": [{"case_id": "synthetic", "status": "pass", "divergences": []}],
             }
@@ -140,6 +143,13 @@ class TestFss118FfmpegLabDifferential(unittest.TestCase):
             )
             self.assertEqual(vproc.returncode, 0, msg=vproc.stdout + vproc.stderr)
             self.assertIn("RECEIPT_VERIFY status=pass", vproc.stdout)
+
+            # Tampering with sibling differential.jsonl MUST cause --verify-receipt to fail!
+            jsonl_path.write_text(jsonl_text + '{"tampered":true}\n', encoding="utf-8")
+            ok_tampered_jsonl, msg_tampered_jsonl = diff_runner.verify_receipt(receipt_path)
+            self.assertFalse(ok_tampered_jsonl)
+            self.assertIn("differential.jsonl", msg_tampered_jsonl)
+            jsonl_path.write_text(jsonl_text, encoding="utf-8")
 
             doc = json.loads(receipt_text)
             self.assertEqual(doc["cases_total"], 12)

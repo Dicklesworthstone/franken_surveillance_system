@@ -214,43 +214,52 @@ def run_parameter_case(
     fss_summary: dict[str, Any] = {}
     ff_summary: dict[str, Any] = {}
     if not divergences and data_ff is not None and video_stream is not None:
-        fss_container = normalize_container_family(fss_kv.get("container", ""))
-        ff_container = normalize_ffprobe_container(str(data_ff.get("format", {}).get("format_name", "")))
-        fss_codec = normalize_codec(fss_kv.get("codec", ""))
-        ff_codec = normalize_codec(str(video_stream.get("codec_name", "")))
-        fss_dw = int(fss_kv.get("display_width", "0"))
-        fss_dh = int(fss_kv.get("display_height", "0"))
-        ff_dw = int(video_stream.get("width", 0))
-        ff_dh = int(video_stream.get("height", 0))
-        fss_cw = int(fss_kv.get("coded_width", "0"))
-        fss_ch = int(fss_kv.get("coded_height", "0"))
-        ff_cw = int(video_stream.get("coded_width", ff_dw))
-        ff_ch = int(video_stream.get("coded_height", ff_dh))
-
-        fss_summary = {
-            "container": fss_container,
-            "codec": fss_codec,
-            "display_width": fss_dw,
-            "display_height": fss_dh,
-            "coded_width": fss_cw,
-            "coded_height": fss_ch,
-        }
-        ff_summary = {
-            "container": ff_container,
-            "codec": ff_codec,
-            "display_width": ff_dw,
-            "display_height": ff_dh,
-            "coded_width": ff_cw,
-            "coded_height": ff_ch,
-        }
-        if fss_container != ff_container:
-            divergences.append(f"container mismatch: fss={fss_container} ffprobe={ff_container}")
-        if fss_codec != ff_codec:
-            divergences.append(f"codec mismatch: fss={fss_codec} ffprobe={ff_codec}")
-        if (fss_dw, fss_dh) != (ff_dw, ff_dh):
-            divergences.append(f"display dims mismatch: fss=({fss_dw},{fss_dh}) ffprobe=({ff_dw},{ff_dh})")
-        if (fss_cw, fss_ch) != (ff_cw, ff_ch):
-            divergences.append(f"coded dims mismatch: fss=({fss_cw},{fss_ch}) ffprobe=({ff_cw},{ff_ch})")
+        try:
+            fss_container = normalize_container_family(fss_kv.get("container", ""))
+            ff_container = normalize_ffprobe_container(
+                str(data_ff.get("format", {}).get("format_name", ""))
+            )
+            fss_codec = normalize_codec(fss_kv.get("codec", ""))
+            ff_codec = normalize_codec(str(video_stream.get("codec_name", "")))
+            fss_dw = int(fss_kv["display_width"])
+            fss_dh = int(fss_kv["display_height"])
+            ff_dw = int(video_stream["width"])
+            ff_dh = int(video_stream["height"])
+            fss_cw = int(fss_kv["coded_width"])
+            fss_ch = int(fss_kv["coded_height"])
+            ff_cw = int(video_stream.get("coded_width", ff_dw))
+            ff_ch = int(video_stream.get("coded_height", ff_dh))
+        except (KeyError, TypeError, ValueError) as exc:
+            divergences.append(f"malformed probe metadata: {exc}")
+        else:
+            fss_summary = {
+                "container": fss_container,
+                "codec": fss_codec,
+                "display_width": fss_dw,
+                "display_height": fss_dh,
+                "coded_width": fss_cw,
+                "coded_height": fss_ch,
+            }
+            ff_summary = {
+                "container": ff_container,
+                "codec": ff_codec,
+                "display_width": ff_dw,
+                "display_height": ff_dh,
+                "coded_width": ff_cw,
+                "coded_height": ff_ch,
+            }
+            if fss_container != ff_container:
+                divergences.append(f"container mismatch: fss={fss_container} ffprobe={ff_container}")
+            if fss_codec != ff_codec:
+                divergences.append(f"codec mismatch: fss={fss_codec} ffprobe={ff_codec}")
+            if (fss_dw, fss_dh) != (ff_dw, ff_dh):
+                divergences.append(
+                    f"display dims mismatch: fss=({fss_dw},{fss_dh}) ffprobe=({ff_dw},{ff_dh})"
+                )
+            if (fss_cw, fss_ch) != (ff_cw, ff_ch):
+                divergences.append(
+                    f"coded dims mismatch: fss=({fss_cw},{fss_ch}) ffprobe=({ff_cw},{ff_ch})"
+                )
 
     return {
         "case_id": case_id,
@@ -435,17 +444,33 @@ def verify_receipt(receipt_path: Path) -> tuple[bool, str]:
         return False, f"unexpected oracle_role: {doc.get('oracle_role')!r}"
     if doc.get("production_authority") is not False:
         return False, "production_authority must be strictly false"
+    excluded = doc.get("excluded_dimensions")
+    if (
+        not isinstance(excluded, list)
+        or "production_runtime" not in excluded
+        or "source_custody_authority" not in excluded
+    ):
+        return False, "excluded_dimensions must disclose production_runtime and source_custody_authority"
     expected_digest = compute_receipt_digest(doc)
     if doc.get("receipt_digest") != expected_digest:
         return False, f"receipt_digest mismatch: got {doc.get('receipt_digest')!r}, expected {expected_digest!r}"
     cases = doc.get("cases")
     if not isinstance(cases, list) or not cases:
         return False, "receipt contains no cases"
+    if doc.get("cases_total") != len(cases) or doc.get("cases_passed") != len(cases):
+        return False, "cases_total/cases_passed disagree with cases list"
     for c in cases:
         if not isinstance(c, dict) or c.get("status") != "pass" or c.get("divergences"):
             return False, f"non-passing case in receipt: {c.get('case_id') if isinstance(c, dict) else 'invalid'}"
     if doc.get("verdict") != "pass":
         return False, f"receipt verdict is not pass: {doc.get('verdict')!r}"
+    jsonl_digest = doc.get("jsonl_log_digest")
+    if isinstance(jsonl_digest, str):
+        sibling_jsonl = receipt_path.parent / "differential.jsonl"
+        if sibling_jsonl.is_symlink():
+            return False, "refused symlink sibling differential.jsonl"
+        if sibling_jsonl.is_file() and sha256_file(sibling_jsonl) != jsonl_digest:
+            return False, "sibling differential.jsonl digest mismatch"
     return True, f"verified {len(cases)} sealed lab-oracle cases ({expected_digest})"
 
 

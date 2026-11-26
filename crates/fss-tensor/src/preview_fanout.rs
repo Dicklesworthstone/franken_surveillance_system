@@ -298,6 +298,8 @@ impl CanonicalDecode for PreviewFanoutReceipt {
             || queued_leases > active_subscribers.saturating_mul(MAX_SUBSCRIBER_QUEUE_DEPTH as u64)
             || total_dropped_oldest > total_deliveries
             || queued_leases > total_deliveries.saturating_sub(total_dropped_oldest)
+            || (total_frames_offered == 0
+                && (total_deliveries > 0 || total_privacy_filtered > 0 || total_pressure_shed > 0))
         {
             return Err(ContractError::InvalidIdentifier);
         }
@@ -405,10 +407,25 @@ impl PreviewFanoutHub {
         pool: &mut FramePool,
         now_ns: TimestampNs,
     ) -> Result<usize, PreviewFanoutError> {
-        let mut removed = self
-            .subscribers
-            .remove(subscriber_id)
-            .ok_or_else(|| PreviewFanoutError::UnknownSubscriber(subscriber_id.to_owned()))?;
+        // Pre-validate pool ownership before removing subscriber so a wrong-pool call fails
+        // atomically without mutating hub state or dropping queued leases.
+        let Some(existing) = self.subscribers.get(subscriber_id) else {
+            return Err(PreviewFanoutError::UnknownSubscriber(
+                subscriber_id.to_owned(),
+            ));
+        };
+        if existing
+            .queue
+            .iter()
+            .any(|lease| lease.pool_id() != pool.policy().pool_id)
+        {
+            return Err(PreviewFanoutError::Pool(FramePoolError::PoolMismatch));
+        }
+        let Some(mut removed) = self.subscribers.remove(subscriber_id) else {
+            return Err(PreviewFanoutError::UnknownSubscriber(
+                subscriber_id.to_owned(),
+            ));
+        };
         let mut drained = 0;
         while let Some(lease) = removed.queue.pop_front() {
             pool.release_lease(lease, now_ns)
@@ -435,6 +452,12 @@ impl PreviewFanoutHub {
                 expected: self.policy.active_generation,
                 actual: offer.generation,
             });
+        }
+        // Fail closed before mutating offer counters if the target slot does not exist in `pool`.
+        if pool.slot_active_leases(offer.slot_id).is_none() {
+            return Err(PreviewFanoutError::Pool(FramePoolError::UnknownSlot(
+                offer.slot_id,
+            )));
         }
 
         let frame_ordinal = self.total_frames_offered;
@@ -544,6 +567,14 @@ impl PreviewFanoutHub {
                 expected: self.policy.active_generation,
                 actual: next_generation,
             });
+        }
+        // Pre-validate every queued lease belongs to `pool` before mutating queues or generation.
+        if self.subscribers.values().any(|sub| {
+            sub.queue
+                .iter()
+                .any(|lease| lease.pool_id() != pool.policy().pool_id)
+        }) {
+            return Err(PreviewFanoutError::Pool(FramePoolError::PoolMismatch));
         }
         let mut drained = 0;
         for sub in self.subscribers.values_mut() {

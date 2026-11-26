@@ -245,5 +245,54 @@ fn doc_041_refuses_forged_source_custody_staged_egress_latest_alias_deleted_pare
         MediaDerivativeReceipt::decode_canonical(&mut CanonicalDecoder::new(&forged_mask_bytes))
             .is_err()
     );
+
+    // 8. Privacy policy rotation invalidates inherited privacy_masked AND mismatched PrivacyMask
+    //    policy digest is refused cleanly.
+    let mut masked_v1_req = base_request(MediaDerivativeKind::PrivacyRedaction);
+    masked_v1_req.receipt_id = "deriv:cam01:masked-v1".to_owned();
+    masked_v1_req.transforms = vec![TransformStep::PrivacyMask {
+        mask_policy_digest: digest("privacy-policy:v1"),
+        masked_region_count: 1,
+    }];
+    let masked_v1 = MediaDerivativeReceipt::seal(masked_v1_req, || false)?;
+    assert!(masked_v1.privacy_masked);
+
+    // Child under newer privacy-policy:v2 MUST NOT inherit privacy_masked from v1 parent!
+    let mut rotated_child_req = base_request(MediaDerivativeKind::Resize);
+    rotated_child_req.receipt_id = "deriv:cam01:rotated-v2".to_owned();
+    rotated_child_req.privacy_policy_digest = digest("privacy-policy:v2");
+    rotated_child_req.parent_receipts = vec![masked_v1.clone()];
+    let rotated_child = MediaDerivativeReceipt::seal(rotated_child_req, || false)?;
+    assert!(!rotated_child.privacy_masked);
+    assert_eq!(
+        rotated_child.verify_egress_eligible(true),
+        Err(DerivativeReceiptError::EgressDenied(
+            "privacy_mask_required"
+        ))
+    );
+
+    // Duplicate parent receipts refused.
+    let mut dup_parent_req = base_request(MediaDerivativeKind::Resize);
+    dup_parent_req.parent_receipts = vec![masked_v1.clone(), masked_v1];
+    assert_eq!(
+        MediaDerivativeReceipt::seal(dup_parent_req, || false),
+        Err(DerivativeReceiptError::InvalidLineage(
+            "duplicate_parent_receipt"
+        ))
+    );
+
+    // PrivacyMask transform citing a different policy digest than receipt.privacy_policy_digest refused.
+    let mut mismatch_mask_req = base_request(MediaDerivativeKind::PrivacyRedaction);
+    mismatch_mask_req.privacy_policy_digest = digest("privacy-policy:v2");
+    mismatch_mask_req.transforms = vec![TransformStep::PrivacyMask {
+        mask_policy_digest: digest("privacy-policy:v1"),
+        masked_region_count: 1,
+    }];
+    assert_eq!(
+        MediaDerivativeReceipt::seal(mismatch_mask_req, || false),
+        Err(DerivativeReceiptError::InvalidLineage(
+            "privacy_mask_policy_mismatch"
+        ))
+    );
     Ok(())
 }

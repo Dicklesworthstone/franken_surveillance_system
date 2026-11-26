@@ -274,5 +274,22 @@ fn doc_054_tile_plan_clamping_pool_rollback_and_accelerator_isolation_gate() -> 
     );
     assert_eq!(delta_len, u8::MAX);
     assert_eq!(out_len, scalar.as_slice());
+
+    // Zero expected generation is never valid and is quarantined back to scalar truth!
+    let (d_zero, delta_zero, out_zero) = adjudicate_accelerator_against_scalar(
+        Generation(0),
+        &scalar,
+        AcceleratorCandidate::Candidate {
+            generation: Generation(0),
+            bytes: &scalar,
+        },
+        1,
+    );
+    assert_eq!(
+        d_zero,
+        AcceleratorGateDecision::QuarantinedDivergenceFallbackScalar
+    );
+    assert_eq!(delta_zero, u8::MAX);
+    assert_eq!(out_zero, scalar.as_slice());
     Ok(())
 }
