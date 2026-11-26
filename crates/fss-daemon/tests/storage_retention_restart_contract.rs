@@ -56,6 +56,14 @@ impl Drop for TempDirGuard {
 }
 
 fn manifest(cap_bytes: u64) -> Result<SiteManifest, Box<DaemonError>> {
+    manifest_with_camera_fields(cap_bytes, "", "")
+}
+
+fn manifest_with_camera_fields(
+    cap_bytes: u64,
+    camera_a: &str,
+    camera_b: &str,
+) -> Result<SiteManifest, Box<DaemonError>> {
     SiteManifest::parse_json(&format!(
         r#"{{
   "schema": "fss.site_manifest.v1",
@@ -68,7 +76,7 @@ fn manifest(cap_bytes: u64) -> Result<SiteManifest, Box<DaemonError>> {
   "scrub_budget_bytes_per_tick": 1048576,
   "cameras": [
     {{
-      "sensor_id": "{SENSOR_A}",
+      {camera_a}"sensor_id": "{SENSOR_A}",
       "adapter": "synthetic",
       "endpoint": "synthetic://retention-a",
       "secret_id": "secret:retention:a",
@@ -79,7 +87,7 @@ fn manifest(cap_bytes: u64) -> Result<SiteManifest, Box<DaemonError>> {
       "gop_frames": 1
     }},
     {{
-      "sensor_id": "{SENSOR_B}",
+      {camera_b}"sensor_id": "{SENSOR_B}",
       "adapter": "synthetic",
       "endpoint": "synthetic://retention-b",
       "secret_id": "secret:retention:b",
@@ -165,6 +173,95 @@ fn media_digest(
         .first()
         .copied()
         .ok_or_else(|| "retained GOP is missing its source media digest".into())
+}
+
+#[test]
+fn manifest_scoped_retention_survives_restart_and_preserves_held_footage() -> TestResult {
+    let dir = TempDirGuard::new("sensor-policy")?;
+    let config = manifest_with_camera_fields(
+        1_048_576,
+        r#""max_sensor_bytes":5100,"#,
+        r#""retain_hot_ns":10000,"#,
+    )?;
+    let regions =
+        DaemonRegionTree::initialize(&config, "principal:retention-test", TimestampNs(0))?;
+    let cx = regions.storage_ledger_cx();
+    let tree = regions.region_tree();
+    let mut storage = StorageEngine::open(&config, Some(dir.path()))?;
+    let quiet = ingest(&mut storage, &regions, SENSOR_B, 1, 10, 1024)?;
+    let held = ingest(&mut storage, &regions, SENSOR_A, 1, 20, 1024)?;
+    let older = ingest(&mut storage, &regions, SENSOR_A, 2, 30, 1024)?;
+    let newer = ingest(&mut storage, &regions, SENSOR_A, 3, 40, 1024)?;
+    assert!(held.byte_size + newer.byte_size <= 5100);
+    assert!(held.byte_size + older.byte_size + newer.byte_size > 5100);
+    assert!(storage.set_candidate_hold(&held.import_id, "hold:sensor-quota", true, cx, tree)?);
+    storage.shutdown_and_flush()?;
+    let mut storage = StorageEngine::open(&config, Some(dir.path()))?;
+
+    let first = storage.run_maintenance_tick(cx, tree, TimestampNs(40), false)?;
+    assert_eq!(first.evicted_imports, 1);
+    assert!(
+        !storage
+            .retention_candidates()
+            .contains_key(&older.import_id)
+    );
+    assert!(
+        storage
+            .retention_candidates()
+            .contains_key(&quiet.import_id)
+    );
+    assert!(
+        storage
+            .retention_candidates()
+            .contains_key(&newer.import_id)
+    );
+    // Camera A inherits the site duration. Camera B has its own deadline.
+    let aged = storage.run_maintenance_tick(cx, tree, TimestampNs(1040), false)?;
+    assert_eq!(aged.evicted_imports, 1);
+    assert!(
+        !storage
+            .retention_candidates()
+            .contains_key(&newer.import_id)
+    );
+    assert!(storage.retention_candidates().contains_key(&held.import_id));
+    assert!(
+        storage
+            .retention_candidates()
+            .contains_key(&quiet.import_id)
+    );
+    let deadline = storage.run_maintenance_tick(cx, tree, TimestampNs(10010), false)?;
+    assert_eq!(deadline.evicted_imports, 1);
+    assert!(
+        !storage
+            .retention_candidates()
+            .contains_key(&quiet.import_id)
+    );
+    assert!(storage.retention_candidates().contains_key(&held.import_id));
+    Ok(())
+}
+
+#[test]
+fn retention_overrides_bind_the_manifest_and_refuse_malformed_values() -> TestResult {
+    let cap = 1_048_576;
+    let base = manifest(cap)?.digest();
+    let bytes = r#""max_sensor_bytes":5100,"#;
+    let time = r#""retain_hot_ns":10000,"#;
+    assert_ne!(base, manifest_with_camera_fields(cap, bytes, "")?.digest());
+    assert_ne!(base, manifest_with_camera_fields(cap, time, "")?.digest());
+    assert_ne!(
+        manifest_with_camera_fields(cap, bytes, time)?.digest(),
+        manifest_with_camera_fields(cap, time, bytes)?.digest()
+    );
+    for invalid in [
+        r#""max_sensor_bytes":0,"#,
+        r#""max_sensor_bytes":null,"#,
+        r#""retain_hot_ns":null,"#,
+        r#""retain_hot_ns":-1,"#,
+        r#""retain_hot_ns":"1d","#,
+    ] {
+        assert!(manifest_with_camera_fields(cap, invalid, "").is_err());
+    }
+    Ok(())
 }
 
 #[test]

@@ -224,6 +224,8 @@ fn real_http_mjpeg_driver_decodes_real_pixels_and_refuses_401() -> TestResult {
         stall_timeout_ms: 5000,
         ring_max_frames: 16,
         ring_max_bytes: 128 * 1024,
+        retain_hot_ns: None,
+        max_sensor_bytes: None,
         gop_frames: 4,
         auth_realm: None,
         allow_inband_sps_pps: false,

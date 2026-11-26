@@ -96,6 +96,14 @@ pub(super) fn restart_required_field(
                 "camera_ring_max_bytes",
             ),
             (
+                previous.retain_hot_ns != camera.retain_hot_ns,
+                "camera_retain_hot_ns",
+            ),
+            (
+                previous.max_sensor_bytes != camera.max_sensor_bytes,
+                "camera_max_sensor_bytes",
+            ),
+            (
                 previous.auth_realm != camera.auth_realm,
                 "camera_auth_realm",
             ),

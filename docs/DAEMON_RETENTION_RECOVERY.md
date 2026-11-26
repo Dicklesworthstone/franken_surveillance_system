@@ -50,6 +50,21 @@ These guarantees cover running-process ownership and canonical commits whose
 catalog publication was interrupted. Frames that never reached a canonical
 commit are not made durable against process termination by this mechanism.
 
+## Per-camera retention
+
+Each camera in the daemon's `fss.site_manifest.v1` may set `retain_hot_ns`
+and `max_sensor_bytes` independently. Omitted fields inherit the site's
+`retain_hot_ns` and `ring_cap_bytes`, respectively. The duration is a
+nonnegative integer in nanoseconds. Zero makes unheld media eligible at its
+capture end. The byte quota must be positive and covers retained media for
+that sensor. `ring_max_bytes` controls the separate in-memory acquisition buffer.
+
+On a maintenance tick the daemon applies age expiry, then per-sensor quotas,
+then deployment-wide pressure. A per-camera quota cannot reserve space against
+site-wide pressure. An active hold keeps its recording through quota and age
+expiry. Retention changes take effect on a drained restart, including for
+recordings recovered from earlier runs.
+
 ## Recorded media and durable pins
 
 New daemon GOP roots use the semantic kind `media-gop-v2`. Their FSMC source

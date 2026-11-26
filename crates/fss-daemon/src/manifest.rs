@@ -169,6 +169,10 @@ pub struct CameraManifestEntry {
     pub ring_max_frames: usize,
     /// Bounded per-camera ring capacity in bytes (default `32 MiB`).
     pub ring_max_bytes: usize,
+    /// Optional on-disk hot retention duration, in nanoseconds. Inherits the site duration.
+    pub retain_hot_ns: Option<u64>,
+    /// Optional on-disk media quota for this camera. Inherits the deployment ceiling.
+    pub max_sensor_bytes: Option<u64>,
     /// Target frames packed into each coarse-grained `FSMC` media chunk.
     pub gop_frames: usize,
     /// Optional explicit RTSP Digest authentication realm pinned for this camera (defaults to `"fss"`).
@@ -460,6 +464,11 @@ impl SiteManifest {
                     ),
                 });
             }
+            if cam.max_sensor_bytes == Some(0) {
+                return Err(DaemonError::InvalidManifest {
+                    detail: format!("camera `{}` max_sensor_bytes must be >= 1", cam.sensor_id),
+                });
+            }
             if cam.ring_max_bytes < 1_024 {
                 return Err(DaemonError::InvalidManifest {
                     detail: format!("camera `{}` ring_max_bytes must be >= 1024", cam.sensor_id),
@@ -607,6 +616,14 @@ impl SiteManifest {
             enc.u64(cam.ring_max_frames as u64);
             enc.u64(cam.ring_max_bytes as u64);
             enc.u64(cam.gop_frames as u64);
+            if let Some(duration) = cam.retain_hot_ns {
+                enc.text("retain_hot_ns");
+                enc.u64(duration);
+            }
+            if let Some(bytes) = cam.max_sensor_bytes {
+                enc.text("max_sensor_bytes");
+                enc.u64(bytes);
+            }
             if let Some(realm) = &cam.auth_realm {
                 enc.text("auth_realm");
                 enc.text(realm);

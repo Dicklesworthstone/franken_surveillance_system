@@ -134,6 +134,8 @@ fn entry(addr: std::net::SocketAddr) -> Result<CameraManifestEntry, Box<dyn Erro
         stall_timeout_ms: 5_000,
         ring_max_frames: 16,
         ring_max_bytes: 128 * 1_024,
+        retain_hot_ns: None,
+        max_sensor_bytes: None,
         gop_frames: 4,
         auth_realm: None,
         allow_inband_sps_pps: false,

@@ -245,6 +245,16 @@ fn reload_refuses_startup_owned_changes_before_mutating_any_live_owner() -> Test
             r#""ring_max_bytes":65536"#,
         ),
         (
+            "camera retention time",
+            r#""ring_max_bytes":32768"#,
+            r#""ring_max_bytes":32768,"retain_hot_ns":1000"#,
+        ),
+        (
+            "camera storage quota",
+            r#""ring_max_bytes":32768"#,
+            r#""ring_max_bytes":32768,"max_sensor_bytes":65536"#,
+        ),
+        (
             "auth realm",
             r#""endpoint":"synthetic://cam-a""#,
             r#""endpoint":"synthetic://cam-a","auth_realm":"other-realm""#,

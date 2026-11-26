@@ -110,6 +110,14 @@ pub(crate) fn parse_camera_entry(
         stall_timeout_ms,
         ring_max_frames,
         ring_max_bytes,
+        retain_hot_ns: obj
+            .get("retain_hot_ns")
+            .map(|_| req_u64(obj, "retain_hot_ns"))
+            .transpose()?,
+        max_sensor_bytes: obj
+            .get("max_sensor_bytes")
+            .map(|_| req_u64(obj, "max_sensor_bytes"))
+            .transpose()?,
         gop_frames,
         auth_realm,
         allow_inband_sps_pps,

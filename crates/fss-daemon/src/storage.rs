@@ -25,7 +25,7 @@ use fss_ledger::{EpochLedgerConfig, IncompleteTailPolicy, MerkleEpochLedger};
 use fss_pack::{
     BackgroundScrubber, CapacityPressure, CompactionPolicy, PACK_KIND_MEDIA_CHUNK,
     PACK_KIND_METADATA, PackConfig, PackStore, RetentionCandidate, RetentionEvictionBatch,
-    RetentionPlanOutcome, RetentionRingConfig, ScrubBudget, plan_retention,
+    RetentionPlanOutcome, RetentionRingConfig, ScrubBudget, SensorRetentionPolicy, plan_retention,
 };
 use fss_projection_store::{
     CommitCombiner, CommitCombinerConfig, CommitProposal, CoverageStatus, CoverageWitnessPayload,
@@ -93,6 +93,23 @@ impl StorageEngine {
         manifest: &SiteManifest,
         root_override: Option<&Path>,
     ) -> Result<Self, DaemonError> {
+        let mut retention_config = RetentionRingConfig::new(
+            manifest.retain_hot_ns,
+            manifest.ring_cap_bytes,
+            manifest.ring_cap_bytes,
+            manifest.soft_watermark_pct,
+            manifest.hard_watermark_pct,
+        )?;
+        for camera in &manifest.cameras {
+            if camera.retain_hot_ns.is_some() || camera.max_sensor_bytes.is_some() {
+                let policy = SensorRetentionPolicy::new(
+                    camera.sensor_id.as_str(),
+                    camera.retain_hot_ns.unwrap_or(manifest.retain_hot_ns),
+                    camera.max_sensor_bytes.unwrap_or(manifest.ring_cap_bytes),
+                )?;
+                retention_config = retention_config.with_sensor_policy(policy)?;
+            }
+        }
         let root_dir = root_override
             .unwrap_or(&manifest.deployment_root)
             .to_path_buf();
@@ -186,14 +203,6 @@ impl StorageEngine {
             LedgerPackProjectionSink::new(ledger, Arc::clone(&pack_store), Arc::clone(&projection));
         let combiner = Arc::new(CommitCombiner::new(sink, CommitCombinerConfig::default())?);
         let forward_requests = Arc::new(ForwardRequestStore::open(&root_dir)?);
-
-        let retention_config = RetentionRingConfig::new(
-            manifest.retain_hot_ns,
-            manifest.ring_cap_bytes,
-            manifest.ring_cap_bytes,
-            manifest.soft_watermark_pct,
-            manifest.hard_watermark_pct,
-        )?;
 
         // Seed monotonic chunk & delta sequences strictly past any prior daemon run's
         // committed sequence and published `gop:` root IDs so daemon restarts never collide
