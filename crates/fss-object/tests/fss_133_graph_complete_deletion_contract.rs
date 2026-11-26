@@ -435,3 +435,141 @@ fn holds_shared_parents_hidden_ref_leaks_indeterminate_auth_and_hostile_wire() -
     );
     Ok(())
 }
+
+#[test]
+fn partial_apply_preserves_paths_and_reconciles_the_exact_plan_once() -> TestResult {
+    let root = d("manifest");
+    let index = d("index");
+    let local = d("local");
+    let remote = d("remote");
+    let mut catalog = ArchiveDeletionCatalog::new();
+    catalog.insert(node(
+        root,
+        DeletionArtifactClass::Manifest,
+        1,
+        &[local, index],
+    ));
+    catalog.insert(node(index, DeletionArtifactClass::IndexOrCache, 2, &[remote]));
+    catalog.insert(node(local, DeletionArtifactClass::LocalReplica, 4, &[]));
+    catalog.insert(node(remote, DeletionArtifactClass::RemoteReplica, 8, &[]));
+    let auth = DeletionAuthorityContext::approved(d("basis"), 1, 2, d("approved"));
+    let plan = DeletionClosureExecutor::plan_closure(&catalog, root, &auth, vec![], TimestampNs(1), false)?;
+    let partial = DeletionClosureExecutor::execute_and_verify(
+        &mut catalog,
+        &plan,
+        &auth,
+        &[remote].into(),
+        TimestampNs(2),
+        false,
+    )?;
+    assert_eq!(partial.deleted_digests, vec![local]);
+    assert_eq!(partial.deleted_bytes, 4);
+    assert_eq!(partial.indeterminate_digests, vec![remote]);
+    assert!(catalog.get(&root).is_some_and(|n| n.reachable));
+    assert!(catalog.tombstone_for(&root).is_none());
+
+    let remaining = DeletionClosureExecutor::plan_closure(&catalog, root, &auth, vec![], TimestampNs(3), false)?;
+    assert!(remaining.members.iter().any(|m| m.digest == remote));
+    let retry = DeletionClosureExecutor::execute_and_verify(
+        &mut catalog,
+        &plan,
+        &auth,
+        &[remote].into(),
+        TimestampNs(3),
+        false,
+    )?;
+    assert_eq!(retry, partial);
+
+    let mut changed = catalog.clone();
+    let mut held_remote = node(remote, DeletionArtifactClass::RemoteReplica, 8, &[]);
+    held_remote.active_holds.insert("hold".into());
+    changed.insert(held_remote);
+    assert!(matches!(
+        DeletionClosureExecutor::execute_and_verify(
+            &mut changed,
+            &plan,
+            &auth,
+            &BTreeSet::new(),
+            TimestampNs(4),
+            false,
+        ),
+        Err(DeletionClosureError::StalePlanOrAuthority(_))
+    ));
+    assert!(changed.get(&remote).is_some_and(|n| n.reachable));
+    // A late stale report for an already confirmed deletion cannot undo that outcome.
+    let receipt = DeletionClosureExecutor::execute_and_verify(
+        &mut catalog,
+        &plan,
+        &auth,
+        &[local].into(),
+        TimestampNs(5),
+        false,
+    )?;
+    assert_eq!(receipt.state, DeletionClosureState::UnreachabilityVerified);
+    assert_eq!(receipt.deleted_digests.len(), 4);
+    assert_eq!(receipt.deleted_bytes, 15);
+    assert_eq!(receipt.tombstone_root_digest, catalog.tombstone_for(&root));
+    assert_eq!(
+        receipt,
+        DeletionClosureExecutor::execute_and_verify(
+            &mut catalog,
+            &plan,
+            &auth,
+            &BTreeSet::new(),
+            TimestampNs(6),
+            false,
+        )?
+    );
+    let mut revoked = auth;
+    revoked.deletion_capability_active = false;
+    assert!(matches!(
+        DeletionClosureExecutor::execute_and_verify(
+            &mut catalog,
+            &plan,
+            &revoked,
+            &BTreeSet::new(),
+            TimestampNs(7),
+            false,
+        ),
+        Err(DeletionClosureError::AuthorityRevoked(_))
+    ));
+    Ok(())
+}
+
+#[test]
+fn incomplete_membership_and_external_aliases_prevent_deletion() -> TestResult {
+    let mut catalog = ArchiveDeletionCatalog::new();
+    let root = d("manifest");
+    let child = d("child");
+    catalog.insert(node(root, DeletionArtifactClass::Manifest, 1, &[child]));
+    let auth = DeletionAuthorityContext::approved(d("basis"), 1, 2, d("approved"));
+    assert!(matches!(
+        DeletionClosureExecutor::plan_closure(&catalog, root, &auth, vec![], TimestampNs(1), false),
+        Err(DeletionClosureError::InvalidInput(_))
+    ));
+    catalog.insert(node(child, DeletionArtifactClass::SourceChunk, 1, &[]));
+    let mut other = node(d("other-index"), DeletionArtifactClass::IndexOrCache, 1, &[]);
+    other.hidden_reference_aliases.insert(child);
+    catalog.insert(other);
+    let mut plan = DeletionClosureExecutor::plan_closure(&catalog, root, &auth, vec![], TimestampNs(2), false)?;
+    assert_eq!(plan.blockers.len(), 1);
+    assert_eq!(plan.blockers[0].target_digest, child);
+    assert_eq!(plan.blockers[0].reference_id, d("other-index").to_string());
+    // A caller-supplied recomputed checksum cannot remove a witnessed blocker.
+    plan.blockers.clear();
+    plan.plan_digest = plan.compute_digest()?;
+    assert!(matches!(
+        DeletionClosureExecutor::execute_and_verify(
+            &mut catalog,
+            &plan,
+            &auth,
+            &BTreeSet::new(),
+            TimestampNs(3),
+            false,
+        ),
+        Err(DeletionClosureError::StalePlanOrAuthority(_))
+    ));
+    assert!(catalog.get(&child).is_some_and(|n| n.reachable));
+    assert!(catalog.tombstone_for(&root).is_none());
+    Ok(())
+}

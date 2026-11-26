@@ -383,6 +383,8 @@ pub struct ArchiveDeletionCatalog {
     surviving_hidden_refs: BTreeMap<ContentDigest, BTreeSet<ContentDigest>>,
     /// Published tombstone roots keyed by deleted target root digest.
     tombstones: BTreeMap<ContentDigest, ContentDigest>,
+    /// Latest execution per root, bound to the catalog state immediately after apply.
+    executions: BTreeMap<ContentDigest, (ContentDigest, DeletionClosureReceipt)>,
 }
 
 impl ArchiveDeletionCatalog {
@@ -438,14 +440,20 @@ impl ArchiveDeletionCatalog {
         Ok(ContentDigest::sha256(&bytes))
     }
 
-    fn live_parents_of(&self, target: &ContentDigest) -> Vec<ContentDigest> {
-        let mut parents = Vec::new();
-        for (parent_digest, node) in &self.nodes {
-            if node.reachable && node.dependencies.contains(target) {
-                parents.push(*parent_digest);
-            }
-        }
-        parents
+    /// Enumerate each live inbound edge once, including secondary index/cache aliases.
+    fn external_references<'a>(
+        &'a self,
+        members: &'a BTreeSet<ContentDigest>,
+    ) -> impl Iterator<Item = (ContentDigest, ContentDigest)> + 'a {
+        self.nodes
+            .iter()
+            .filter(move |(parent, node)| node.reachable && !members.contains(*parent))
+            .flat_map(move |(parent, node)| {
+                node.dependencies
+                    .union(&node.hidden_reference_aliases)
+                    .filter(move |target| members.contains(*target))
+                    .map(move |target| (*parent, *target))
+            })
     }
 }
 
@@ -955,7 +963,12 @@ impl DeletionClosureExecutor {
                 if visited.contains_key(next) {
                     continue;
                 }
-                if !catalog.nodes.get(next).is_some_and(|n| n.reachable) {
+                let child = catalog.nodes.get(next).ok_or_else(|| {
+                    DeletionClosureError::InvalidInput(format!(
+                        "archive closure is incomplete: {curr} references unknown artifact {next}"
+                    ))
+                })?;
+                if !child.reachable {
                     continue;
                 }
                 if next_depth > MAX_DELETION_CLOSURE_DEPTH {
@@ -991,21 +1004,20 @@ impl DeletionClosureExecutor {
                     reference_id: hold_id.clone(),
                 });
             }
-            for parent in catalog.live_parents_of(&digest) {
-                if !closure_set.contains(&parent) {
-                    blockers.push(DeletionBlocker {
-                        target_digest: digest,
-                        kind: "live_external_parent".to_owned(),
-                        reference_id: parent.to_string(),
-                    });
-                }
-            }
             total_planned_bytes = total_planned_bytes.saturating_add(node.byte_len);
             members.push(PlannedDeletionMember {
                 digest,
                 class: node.class,
                 byte_len: node.byte_len,
                 depth,
+            });
+        }
+
+        for (parent, target) in catalog.external_references(&closure_set) {
+            blockers.push(DeletionBlocker {
+                target_digest: target,
+                kind: "live_external_parent".to_owned(),
+                reference_id: parent.to_string(),
             });
         }
 
@@ -1069,22 +1081,79 @@ impl DeletionClosureExecutor {
             });
         }
         let current_catalog_digest = catalog.catalog_state_digest()?;
-        if current_catalog_digest != plan.catalog_state_digest {
+        let previous = catalog
+            .executions
+            .get(&plan.root_digest)
+            .filter(|(_, receipt)| receipt.plan_digest == plan.plan_digest);
+        let expected_state = previous.map_or(plan.catalog_state_digest, |(state, _)| *state);
+        if current_catalog_digest != expected_state {
             return Err(DeletionClosureError::StalePlanOrAuthority(
-                "archive deletion catalog mutated after plan sealing; replan required".to_owned(),
+                "archive deletion catalog mutated after planning or apply; replan required"
+                    .to_owned(),
             ));
+        }
+        if let Some((_, receipt)) = previous {
+            if receipt.state != DeletionClosureState::Indeterminate {
+                return Ok(receipt.clone());
+            }
+        } else {
+            // A checksum only proves the supplied fields agree. Re-derive membership and
+            // holds from this catalog before accepting a new plan for destructive execution.
+            let witnessed = Self::plan_closure(
+                catalog,
+                plan.root_digest,
+                authority,
+                plan.unknown_external_copies.clone(),
+                plan.planned_at,
+                false,
+            )?;
+            if witnessed != *plan {
+                return Err(DeletionClosureError::StalePlanOrAuthority(
+                    "deletion plan does not match the witnessed archive closure".to_owned(),
+                ));
+            }
         }
 
         let mut deleted_set = BTreeSet::new();
-        let mut indeterminate_set = BTreeSet::new();
-        let mut deleted_bytes = 0_u64;
-
+        let mut deleted_bytes = 0;
+        let mut completed_at = completed_at.max(plan.planned_at);
+        if let Some((_, receipt)) = previous {
+            deleted_set.extend(receipt.deleted_digests.iter().copied());
+            deleted_bytes = receipt.deleted_bytes;
+            completed_at = completed_at.max(receipt.completed_at);
+        }
+        let indeterminate_set: BTreeSet<_> = plan
+            .members
+            .iter()
+            .map(|member| member.digest)
+            .filter(|digest| {
+                remote_indeterminate_targets.contains(digest) && !deleted_set.contains(digest)
+            })
+            .collect();
+        if let Some((_, receipt)) = previous
+            && receipt
+                .indeterminate_digests
+                .iter()
+                .copied()
+                .eq(indeterminate_set.iter().copied())
+        {
+            return Ok(receipt.clone());
+        }
         for member in &plan.members {
-            if remote_indeterminate_targets.contains(&member.digest) {
-                indeterminate_set.insert(member.digest);
+            if deleted_set.contains(&member.digest) || indeterminate_set.contains(&member.digest) {
                 continue;
             }
             if let Some(node) = catalog.nodes.get_mut(&member.digest) {
+                // Keep the path to every outstanding replica discoverable for a fresh
+                // plan, even if the authority or an unrelated catalog row later changes.
+                if !indeterminate_set.is_empty()
+                    && (node.digest == plan.root_digest
+                        || !node.dependencies.is_empty()
+                        || !node.hidden_reference_aliases.is_empty()
+                        || node.simulate_surviving_hidden_ref.is_some())
+                {
+                    continue;
+                }
                 node.reachable = false;
                 deleted_set.insert(member.digest);
                 deleted_bytes = deleted_bytes.saturating_add(node.byte_len);
@@ -1098,26 +1167,28 @@ impl DeletionClosureExecutor {
             }
         }
 
-        let deleted_digests: Vec<ContentDigest> = deleted_set.iter().copied().collect();
-        let indeterminate_digests: Vec<ContentDigest> = indeterminate_set.iter().copied().collect();
-
-        // If any remote/provider deletion was ambiguous, NEVER publish final verified unreachability!
-        if !indeterminate_digests.is_empty() {
-            return seal_deletion_receipt(
+        let deleted_digests: Vec<_> = deleted_set.iter().copied().collect();
+        if !indeterminate_set.is_empty() {
+            let receipt = seal_deletion_receipt(
                 plan,
                 None,
                 DeletionClosureState::Indeterminate,
                 deleted_digests,
-                indeterminate_digests,
+                indeterminate_set.into_iter().collect(),
                 Vec::new(),
                 deleted_bytes,
-                completed_at.max(plan.planned_at),
+                completed_at,
+            )?;
+            catalog.executions.insert(
+                plan.root_digest,
+                (catalog.catalog_state_digest()?, receipt.clone()),
             );
+            return Ok(receipt);
         }
 
         // Publish canonical tombstone root only after every planned member was deleted.
         let tombstone_root_digest =
-            compute_tombstone_root(plan, &deleted_digests, completed_at.max(plan.planned_at))?;
+            compute_tombstone_root(plan, &deleted_digests, completed_at)?;
         catalog
             .tombstones
             .insert(plan.root_digest, tombstone_root_digest);
@@ -1137,11 +1208,12 @@ impl DeletionClosureExecutor {
                     leaks.insert(alias);
                 }
             }
-            // Also verify no live non-deleted node still points to any deleted member.
-            for parent in catalog.live_parents_of(&member.digest) {
-                leaks.insert(parent);
-            }
         }
+        leaks.extend(
+            catalog
+                .external_references(&deleted_set)
+                .map(|(parent, _)| parent),
+        );
         let surviving_hidden_references: Vec<ContentDigest> = leaks.into_iter().collect();
 
         let final_state = if surviving_hidden_references.is_empty() {
@@ -1150,7 +1222,7 @@ impl DeletionClosureExecutor {
             DeletionClosureState::HiddenReferenceLeakDetected
         };
 
-        seal_deletion_receipt(
+        let receipt = seal_deletion_receipt(
             plan,
             Some(tombstone_root_digest),
             final_state,
@@ -1158,8 +1230,13 @@ impl DeletionClosureExecutor {
             Vec::new(),
             surviving_hidden_references,
             deleted_bytes,
-            completed_at.max(plan.planned_at),
-        )
+            completed_at,
+        )?;
+        catalog.executions.insert(
+            plan.root_digest,
+            (catalog.catalog_state_digest()?, receipt.clone()),
+        );
+        Ok(receipt)
     }
 }
 
