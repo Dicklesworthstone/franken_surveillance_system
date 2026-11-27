@@ -626,6 +626,19 @@ fn full_semantic_and_archive_lifecycle_enforces_root_last_non_collapse_and_por()
         1,
     )?;
 
+    // A new policy epoch invalidates the previously authorized disclosure, even when
+    // the transfer capability is still active and all the bytes are verified.
+    let mut stale_exposure = coord.clone();
+    let mut changed = stale_exposure.authority().clone();
+    changed.privacy_epoch += 1;
+    stale_exposure.update_authority(changed);
+    let before = stale_exposure.clone();
+    assert!(matches!(
+        stale_exposure.apply_event(10, next_ts(), publish.clone(), 0, 1),
+        Err(AtpLifecycleError::StaleAnchorOrGeneration { .. })
+    ));
+    assert_eq!(stale_exposure, before);
+
     // A provider may publish first, but a sample cannot prove committed reachability yet.
     let mut remote_first = coord.clone();
     remote_first.apply_event(10, next_ts(), publish.clone(), 0, 1)?;
@@ -1496,5 +1509,69 @@ fn indeterminate_quarantine_revocation_bounds_and_version_refusals() -> TestResu
         "all_fault_classes_enforced",
         "pass",
     );
+    Ok(())
+}
+
+#[test]
+fn path_growth_requires_current_fence_budget_and_authority_while_drain_survives_revocation() -> TestResult {
+    let spec = base_spec(false);
+    let auth = base_authority(&spec);
+    let mut coord = AtpLifecycleCoordinator::new(spec, auth.clone())?;
+    let discover = LifecycleEvent::PathDiscover {
+        path_id: "p".to_owned(),
+        failure_domain: "zone".to_owned(),
+    };
+    assert!(matches!(
+        coord.apply_event(11, TimestampNs(0), discover.clone(), 0, 1),
+        Err(AtpLifecycleError::StaleFence { active: 10, supplied: 11 })
+    ));
+    assert!(coord.journal().records().is_empty());
+    let mut journal = coord.journal().clone();
+    journal.append(11, TimestampNs(0), discover.clone(), 0, 1)?;
+    assert!(matches!(
+        AtpLifecycleCoordinator::resume_from_framed_bytes(
+            coord.spec().clone(),
+            auth.clone(),
+            &journal.export_framed_prefix(1)?,
+        ),
+        Err(AtpLifecycleError::StaleFence { active: 10, supplied: 11 })
+    ));
+    coord.apply_event(10, TimestampNs(1), discover, 0, 1)?;
+    let transition = |to| LifecycleEvent::PathTransition {
+        path_id: "p".to_owned(),
+        to,
+        reason: "test".to_owned(),
+    };
+    for to in [PathState::Candidate, PathState::Probing, PathState::Active] {
+        coord.apply_event(10, TimestampNs(1), transition(to), 0, 1)?;
+    }
+    let work = |in_flight_ops, open_handles| LifecycleEvent::PathWorkDelta {
+        path_id: "p".to_owned(),
+        in_flight_ops,
+        live_buffers: 0,
+        open_handles,
+    };
+    coord.apply_event(10, TimestampNs(2), work(2, 1), 0, 1)?;
+    assert!(matches!(
+        coord.apply_event(10, TimestampNs(3), work(1, 2), 0, auth.max_ops_budget),
+        Err(AtpLifecycleError::BudgetExhausted { .. })
+    ));
+    let mut revoked = auth.clone();
+    revoked.capability_active = false;
+    coord.update_authority(revoked);
+    let before = coord.clone();
+    assert!(matches!(
+        coord.apply_event(10, TimestampNs(3), work(1, 2), 0, 1),
+        Err(AtpLifecycleError::AuthorityRevoked { .. })
+    ));
+    assert_eq!(coord, before);
+    coord.apply_event(10, TimestampNs(4), transition(PathState::Draining), 0, 1)?;
+    coord.apply_event(10, TimestampNs(5), work(0, 0), 0, 1)?;
+    coord.update_authority(auth);
+    assert!(matches!(
+        coord.apply_event(10, TimestampNs(6), work(1, 0), 0, 1),
+        Err(AtpLifecycleError::PathNotActive { state: PathState::Draining, .. })
+    ));
+    coord.apply_event(10, TimestampNs(7), transition(PathState::Closed), 0, 1)?;
     Ok(())
 }

@@ -39,6 +39,7 @@ pub struct AtpLifecycleCoordinator {
     semantic_state: SemanticTransferState,
     archive_state: Option<ArchivePublicationState>,
     active_fence: u64,
+    exposure_policy_epoch: Option<u64>,
     authority: AuthoritySnapshot,
     counters: TransferCounters,
     children: BTreeMap<ContentDigest, ChildTransferRecord>,
@@ -101,6 +102,7 @@ impl AtpLifecycleCoordinator {
 
         Ok(Self {
             active_fence: spec.initial_fence,
+            exposure_policy_epoch: None,
             spec,
             transfer_id,
             semantic_state: SemanticTransferState::Proposed,
@@ -350,7 +352,7 @@ impl AtpLifecycleCoordinator {
         work_bytes: u64,
         work_ops: u64,
     ) -> Result<JournalRecord, AtpLifecycleError> {
-        if fence < self.active_fence {
+        if fence != self.active_fence {
             return Err(AtpLifecycleError::StaleFence {
                 active: self.active_fence,
                 supplied: fence,
@@ -385,20 +387,42 @@ impl AtpLifecycleCoordinator {
                     limit: self.authority.max_ops_budget,
                 })?;
 
-        let requires_live_authority = !matches!(
-            event,
-            LifecycleEvent::RequestCancel { .. }
-                | LifecycleEvent::PathWorkDelta { .. }
-                | LifecycleEvent::PathTransition {
-                    to: PathState::Draining | PathState::Closed | PathState::Suspect,
-                    ..
+        let requires_live_authority = match &event {
+            LifecycleEvent::PathWorkDelta {
+                path_id,
+                in_flight_ops,
+                live_buffers,
+                open_handles,
+            } => {
+                let path = self.paths.get(path_id).ok_or_else(|| AtpLifecycleError::UnknownPath {
+                    path_id: path_id.clone(),
+                })?;
+                let grows = *in_flight_ops > path.in_flight_ops
+                    || *live_buffers > path.live_buffers
+                    || *open_handles > path.open_handles;
+                if grows && self.cancel_requested {
+                    return Err(AtpLifecycleError::CancellationInProgress);
                 }
-                | LifecycleEvent::FinalizeCancel { .. }
-                | LifecycleEvent::Reject { .. }
-                | LifecycleEvent::Quarantine { .. }
-                | LifecycleEvent::FailArchive { .. }
-                | LifecycleEvent::MarkIndeterminate { .. }
-        );
+                if grows && path.state == PathState::Draining {
+                    return Err(AtpLifecycleError::PathNotActive {
+                        path_id: path_id.clone(),
+                        state: path.state,
+                    });
+                }
+                grows
+            }
+            LifecycleEvent::RequestCancel { .. }
+            | LifecycleEvent::PathTransition {
+                to: PathState::Draining | PathState::Closed | PathState::Suspect,
+                ..
+            }
+            | LifecycleEvent::FinalizeCancel { .. }
+            | LifecycleEvent::Reject { .. }
+            | LifecycleEvent::Quarantine { .. }
+            | LifecycleEvent::FailArchive { .. }
+            | LifecycleEvent::MarkIndeterminate { .. } => false,
+            _ => true,
+        };
         if requires_live_authority {
             self.authority.validate_active(&self.spec)?;
             if new_bytes > self.authority.max_bytes_budget {
@@ -614,13 +638,6 @@ impl AtpLifecycleCoordinator {
                         from: PathState::Closed.canonical_id(),
                         to: PathState::Active.canonical_id(),
                     });
-                }
-                if self.cancel_requested
-                    && (*in_flight_ops > path.in_flight_ops
-                        || *live_buffers > path.live_buffers
-                        || *open_handles > path.open_handles)
-                {
-                    return Err(AtpLifecycleError::CancellationInProgress);
                 }
                 path.in_flight_ops = *in_flight_ops;
                 path.live_buffers = *live_buffers;
@@ -879,6 +896,7 @@ impl AtpLifecycleCoordinator {
                     });
                 }
                 self.transition_archive(ArchivePublicationState::ExposureReady)?;
+                self.exposure_policy_epoch = Some(*policy_epoch);
             }
 
             LifecycleEvent::AdvanceFence { new_fence } => {
@@ -954,6 +972,13 @@ impl AtpLifecycleCoordinator {
                             ),
                         });
                     }
+                }
+                if self.archive_state == Some(ArchivePublicationState::ExposureReady)
+                    && self.exposure_policy_epoch != Some(self.authority.privacy_epoch)
+                {
+                    return Err(AtpLifecycleError::StaleAnchorOrGeneration {
+                        reason: "archive exposure approval predates the current privacy epoch".to_owned(),
+                    });
                 }
                 self.transition_archive(ArchivePublicationState::RootPublished)?;
                 self.provider_tuple = Some(provider_tuple.clone());
