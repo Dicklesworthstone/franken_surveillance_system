@@ -50,7 +50,9 @@ use crate::storage_types::{
 };
 use forward_requests::ForwardRequestStore;
 use gop::{PendingGopPublication, recover_unpublished_gops};
-use retention::{RetainedRoot, RetiredRoot, recover_retained_roots};
+use retention::{
+    RetainedRoot, RetentionIntent, RetiredRoot, recover_retained_roots, recover_retention_intents,
+};
 
 pub use crate::storage_types::{
     MaintenanceTickReport, StorageCommitReceipt, StorageHeadSnapshot, StorageShutdownSummary,
@@ -73,6 +75,8 @@ pub struct StorageEngine {
     candidates: BTreeMap<String, RetentionCandidate>,
     candidate_roots: BTreeMap<String, RetainedRoot>,
     pending_deletions: Vec<RetiredRoot>,
+    retention_intents: BTreeMap<ContentDigest, RetentionIntent>,
+    retention_reopen_required: bool,
     gop_buffers: BTreeMap<SensorId, Vec<Arc<CameraFrame>>>,
     gop_adapters: BTreeMap<SensorId, CameraAdapterKind>,
     pending_gop_publications: BTreeMap<SensorId, PendingGopPublication>,
@@ -175,6 +179,7 @@ impl StorageEngine {
             &resolver,
         )?);
         recover_unpublished_gops(&pack_store, &canonical_objects, &projection, &ledger)?;
+        let retention_intents = recover_retention_intents(&pack_store, &canonical_objects)?;
         let initial_gens: BTreeMap<ObjectId, u64> = canonical_objects
             .into_iter()
             .map(|(id, rev)| (id, rev.generation))
@@ -226,6 +231,8 @@ impl StorageEngine {
             candidates,
             candidate_roots,
             pending_deletions,
+            retention_intents,
+            retention_reopen_required: false,
             gop_buffers: BTreeMap::new(),
             gop_adapters: BTreeMap::new(),
             pending_gop_publications: BTreeMap::new(),
@@ -240,6 +247,7 @@ impl StorageEngine {
         };
         engine.refresh_retention_pins();
         engine.refresh_catalog_reference_pins()?;
+        engine.resume_committed_retention_intents()?;
         engine.resume_pending_retention_deletions()?;
         let current = engine.retention_plan_candidates()?;
         let used = current.iter().fold(0_u64, |sum, candidate| {
@@ -618,6 +626,7 @@ impl StorageEngine {
         }
         self.synchronize_retired_roots()?;
         self.refresh_retention_pins();
+        self.resume_committed_retention_intents()?;
         self.resume_pending_retention_deletions()?;
         let candidates_vec = self.retention_plan_candidates_for_eviction()?;
         let mut outcome = plan_retention(&self.retention_config, &candidates_vec, now_ns)?;
@@ -843,6 +852,7 @@ impl StorageEngine {
         // Import metadata remains canonical history rather than a deleting digest, but
         // a new reference to it still pins its source media closure. Recheck those pins
         // while publication is fenced; this path only reads the catalog.
+        self.refresh_retention_pins();
         self.refresh_catalog_reference_pins()?;
         if batch.tombstones.iter().any(|tomb| {
             self.candidates
@@ -863,6 +873,13 @@ impl StorageEngine {
         }
         let proof = prepared.commit(Some(head_seq))?;
         let evicted = batch.tombstones.len() as u64;
+        let completed: BTreeSet<_> = batch
+            .tombstones
+            .iter()
+            .map(|tomb| tomb.import_id.as_str())
+            .collect();
+        self.retention_intents
+            .retain(|_, intent| !intent.root_ids().all(|id| completed.contains(id)));
         for tomb in &batch.tombstones {
             self.candidates.remove(&tomb.import_id);
             self.candidate_roots.remove(&tomb.import_id);

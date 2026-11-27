@@ -1,8 +1,12 @@
 #![forbid(unsafe_code)]
 //! Rebuildable media retention, durable pins, and canonical retirement before pack reclaim.
 
+mod recovery;
 #[cfg(test)]
 mod tests;
+
+use recovery::{PENDING_RETIREMENT_BLOCKER, RETENTION_INTENT_PREFIX, UNPROVEN_RETIREMENT_BLOCKER};
+pub(super) use recovery::{RetentionIntent, recover_retention_intents};
 
 use std::collections::BTreeSet;
 
@@ -531,6 +535,26 @@ impl StorageEngine {
                 }
             }
         }
+        let pending: BTreeSet<_> = self
+            .retention_intents
+            .values()
+            .flat_map(RetentionIntent::root_ids)
+            .collect();
+        for (id, root) in &self.candidate_roots {
+            if let Some(candidate) = self.candidates.get_mut(id) {
+                if pending.contains(id.as_str()) {
+                    candidate
+                        .held_by
+                        .push(PENDING_RETIREMENT_BLOCKER.to_owned());
+                } else if snapshot.get_footage_import(&root.media_digest).is_none() {
+                    // Historical target-only deletions lack the exact original catalog
+                    // intent. Absence is a blocker, never new physical deletion authority.
+                    candidate
+                        .held_by
+                        .push(UNPROVEN_RETIREMENT_BLOCKER.to_owned());
+                }
+            }
+        }
         for candidate in self.candidates.values_mut() {
             candidate.held_by.sort();
             candidate.held_by.dedup();
@@ -633,8 +657,18 @@ impl StorageEngine {
             .values()
             .flat_map(|candidate| candidate.object_digests.iter().copied())
             .collect();
+        let exact_sources: BTreeSet<_> = self
+            .retention_intents
+            .values()
+            .map(|intent| intent.source)
+            .collect();
         let mut completed = BTreeSet::new();
         for root in &self.pending_deletions {
+            // A source's grouped intent may be blocked by another root's metadata hold
+            // or reference. Per-root legacy cleanup must not bypass that broader closure.
+            if exact_sources.contains(&root.media_digest) {
+                continue;
+            }
             // An object tombstone is already irreversible. Repair any index removal
             // interrupted after its fsync, without granting a new deletion.
             if self
@@ -758,19 +792,24 @@ impl StorageEngine {
         Ok(candidates)
     }
 
-    /// Retire indexed footage in bounded canonical batches before any physical tombstone.
-    /// A restart after the canonical commit recovers still-live roots and safely retries
-    /// pack cleanup; already-retired rows do not create duplicate semantic retirements.
+    /// Retire indexed footage with a durable exact intent in each target's canonical
+    /// commit. A committed prefix survives a later chunk failure with its original scope.
     pub(super) fn commit_retention_deletions(
         &mut self,
         batch: &RetentionEvictionBatch,
         cx: &AuthorityCx,
         tree: &RegionTree,
     ) -> Result<u64, DaemonError> {
+        if self.retention_reopen_required {
+            return Err(CombinerError::SinkFailure(
+                "retention commit outcome is indeterminate; reopen storage before retry".to_owned(),
+            )
+            .into());
+        }
         let evicted: BTreeSet<_> = batch
             .tombstones
             .iter()
-            .map(|t| t.import_id.as_str())
+            .map(|tomb| tomb.import_id.as_str())
             .collect();
         let retained: BTreeSet<_> = self
             .candidates
@@ -782,72 +821,132 @@ impl StorageEngine {
         let targets: BTreeSet<_> = batch
             .tombstones
             .iter()
-            .filter_map(|t| self.candidate_roots.get(&t.import_id))
+            .filter_map(|tomb| self.candidate_roots.get(&tomb.import_id))
             .map(|root| root.media_digest)
             .filter(|digest| {
                 !retained.contains(digest) && snapshot.get_footage_import(digest).is_some()
             })
             .collect();
         let targets: Vec<_> = targets.into_iter().collect();
-        for chunk in targets.chunks(256) {
-            let mut objects = Vec::with_capacity(chunk.len());
-            let mut deltas = Vec::with_capacity(chunk.len());
-            let mut generations = Vec::with_capacity(chunk.len());
-            for target in chunk {
-                let bytes = ProjectionRecordPayload::DeletionTombstone(DeletionTombstonePayload {
-                    target: DeletionTarget::FootageImport(*target),
-                })
-                .encode_bytes()?;
-                let digest = ContentDigest::sha256(&bytes);
-                let object_id =
-                    ObjectId::parse(format!("obj:retention-delete:{}", target.to_text()))?;
-                let (prior_generation, new_generation) = self.next_object_generation(&object_id)?;
-                generations.push((object_id.clone(), new_generation));
-                objects.push(OwnedPackObject::with_digest(
-                    PACK_KIND_METADATA,
-                    0,
-                    bytes,
-                    digest,
-                ));
-                deltas.push(EvidenceDelta {
-                    delta_id: format!(
-                        "delta:retention-delete:{}:{new_generation}",
-                        target.to_text()
-                    ),
-                    family: FAMILY_DELETION_TOMBSTONE.to_owned(),
-                    object_id,
-                    prior_generation,
-                    new_generation,
-                    validity: CaptureInterval::new(batch.evaluated_at_ns, batch.evaluated_at_ns)?,
-                    plane: Plane::Authority,
-                    payload_digest: digest,
-                    witness_digest: Some(batch.batch_digest()),
-                    operation_id: None,
-                });
-            }
-            let mut request = fss_core::CanonicalEncoder::new();
-            request.text("fss.daemon.retention-delete-request.v1");
-            request.digest(batch.batch_digest());
-            for delta in &deltas {
-                request.text(&delta.delta_id);
-                request.digest(delta.payload_digest);
-            }
-            let request_digest = ContentDigest::sha256(&request.finish_checked()?);
-            self.combiner.submit_with_authority(
-                cx,
-                tree,
-                CommitProposal {
-                    request_digest,
-                    sensor_scope: "retention:delete".to_owned(),
-                    objects,
-                    deltas,
-                    batch_id_prefix: "retention-delete".to_owned(),
-                },
-            )?;
-            for (id, generation) in generations {
-                self.record_object_generation(id, generation)?;
-            }
+        let intents = self.prepare_retention_intents(batch, &targets)?;
+        for chunk in intents.chunks(256) {
+            self.commit_retention_intent_chunk(chunk, cx, tree)?;
         }
         Ok(self.projection.head_anchor().commit_sequence)
     }
+
+    fn commit_retention_intent_chunk(
+        &mut self,
+        chunk: &[(ContentDigest, RetentionIntent, Vec<u8>)],
+        cx: &AuthorityCx,
+        tree: &RegionTree,
+    ) -> Result<(), DaemonError> {
+        if chunk.is_empty() || chunk.len() > 256 {
+            return Err(CombinerError::InvalidProposal(
+                "retention chunk must contain 1..=256 targets",
+            )
+            .into());
+        }
+        let mut objects = Vec::with_capacity(chunk.len() * 2);
+        let mut deltas = Vec::with_capacity(chunk.len());
+        for (intent_digest, intent, intent_bytes) in chunk {
+            let bytes = ProjectionRecordPayload::DeletionTombstone(DeletionTombstonePayload {
+                target: DeletionTarget::FootageImport(intent.source),
+            })
+            .encode_bytes()?;
+            let payload_digest = ContentDigest::sha256(&bytes);
+            let object_id = ObjectId::parse(format!(
+                "{RETENTION_INTENT_PREFIX}{}",
+                intent_digest.to_text()
+            ))?;
+            if self.next_object_generation(&object_id)?.0.is_some() {
+                return Err(CombinerError::InvalidProposal(
+                    "retention intent is already committed; resume its exact scope",
+                )
+                .into());
+            }
+            objects.push(OwnedPackObject::with_digest(
+                PACK_KIND_METADATA,
+                0,
+                bytes,
+                payload_digest,
+            ));
+            objects.push(OwnedPackObject::with_digest(
+                PACK_KIND_METADATA,
+                0,
+                intent_bytes.clone(),
+                *intent_digest,
+            ));
+            deltas.push(EvidenceDelta {
+                delta_id: format!("delta:retention-delete:v2:{}", intent_digest.to_text()),
+                family: FAMILY_DELETION_TOMBSTONE.to_owned(),
+                object_id,
+                prior_generation: None,
+                new_generation: 1,
+                validity: CaptureInterval::new(intent.evaluated_at, intent.evaluated_at)?,
+                plane: Plane::Authority,
+                payload_digest,
+                witness_digest: Some(*intent_digest),
+                operation_id: None,
+            });
+        }
+        let mut request = CanonicalEncoder::new();
+        request.text("fss.daemon.retention-delete-request.v2");
+        for delta in &deltas {
+            request.text(&delta.delta_id);
+            request.digest(delta.payload_digest);
+        }
+        let request_digest = ContentDigest::sha256(&request.finish_checked()?);
+        let result = self.combiner.submit_with_authority(
+            cx,
+            tree,
+            CommitProposal {
+                request_digest,
+                sensor_scope: "retention:delete".to_owned(),
+                objects,
+                deltas,
+                batch_id_prefix: "retention-delete".to_owned(),
+            },
+        );
+        self.accept_retention_intent_result(chunk, result)
+    }
+
+    /// The receipt boundary is separate from staging so crash tests can lose an already
+    /// durable acknowledgement without inventing new canonical authority.
+    fn accept_retention_intent_result(
+        &mut self,
+        chunk: &[(ContentDigest, RetentionIntent, Vec<u8>)],
+        result: Result<fss_projection_store::CoalescedCommitReceipt, CombinerError>,
+    ) -> Result<(), DaemonError> {
+        if let Err(error) = result {
+            if !retention_definitely_precommit(&error) {
+                // Projection publication or the receipt may have failed after durable
+                // authority. No further deletion/replanning is permitted until replay.
+                self.retention_reopen_required = true;
+            }
+            return Err(error.into());
+        }
+        // Record acknowledged intent before any fallible generation-cache maintenance.
+        for (digest, intent, _) in chunk {
+            self.retention_intents.insert(*digest, intent.clone());
+        }
+        for (digest, _, _) in chunk {
+            let id = ObjectId::parse(format!("{RETENTION_INTENT_PREFIX}{}", digest.to_text()))?;
+            self.record_object_generation(id, 1)?;
+        }
+        Ok(())
+    }
+}
+
+fn retention_definitely_precommit(error: &CombinerError) -> bool {
+    matches!(
+        error,
+        CombinerError::InvalidConfig(_)
+            | CombinerError::InvalidProposal(_)
+            | CombinerError::QueueFull { .. }
+            | CombinerError::DuplicateObjectInProposal { .. }
+            | CombinerError::GenerationConflict { .. }
+            | CombinerError::Cancelled
+            | CombinerError::Shutdown
+    )
 }

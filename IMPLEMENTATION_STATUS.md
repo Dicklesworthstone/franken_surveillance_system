@@ -5,6 +5,44 @@
 **Current change qualification:** each dated section below states its exact verification boundary. Native passes for one component do not qualify other changes, and prior receipts do not qualify new bytes.
 **Release authority:** repository-owned local qualification (`scripts/qualify.sh`) and retained DSR receipts, not hosted CI
 
+## Recoverable exact daemon retirement across storage boundaries — 2026-11-27
+
+Each new canonical source retirement now commits a bounded immutable intent alongside
+its unchanged FootageImport deletion payload. The canonical v2 object ID binds the
+intent digest; intent bytes preserve the original full-plan digest, evaluation time,
+source, complete selected GOP catalog descriptors and metadata closure, byte/sensor
+accounting and original reasons. Whole-pass validation precedes the first chunk; each
+proposal commits at most 256 independently recoverable source groups.
+
+Storage reopen and maintenance discover pending work only from committed authority
+objects, verify target/validity/encoding, then revalidate exact catalog identity and
+current protections under the publication fence. Partial canonical and catalog prefixes
+resume their original scope and reasons without another canonical deletion. A staged
+child or absent row alone grants no recovery authority. New holds, metadata references
+or a newer visible import defer cleanup; changed/superseded descriptors refuse. Shared
+source groups remain protected together, including against the legacy per-root path.
+
+Admission and recovery enforce 256 roots / 256 KiB per intent and an aggregate pending
+inventory of 65,536 intents / 64 MiB encoded bytes, including previously deferred work.
+An uncertain combiner acknowledgement fences further retention in that owner until
+reopen and canonical replay. Existing FSPP deletion payload and catalog encodings remain
+unchanged; FSDR v1 and the v2 deletion/request identities are additive. Canonical replay
+metadata stays retained. Matching recovery code is required for this new contract.
+
+Thirteen new regression functions cover canonical-to-catalog crash recovery, the first
+256-target chunk of a larger pass, lost acknowledgements, later source/metadata holds,
+all four external reference forms, staged/legacy non-authority, reimport and catalog
+substitution, partial catalog reasons, shared-source fallback protection and strict
+intent decoding/authority discovery.
+
+**Verification boundary:** independent source and lifecycle review identified and
+fixed grouped fallback and cumulative-bound gaps; pinned nightly formatting parsed
+all five storage/pack files. The integrated native check passed `fss-core` but was killed by SIGKILL while compiling
+unchanged `asupersync`, before reaching the modified storage targets. Retention tests remain unexecuted; the
+separate codec-only IPC pass described below does not validate this recovery path.
+Authored regressions and source review alone do not qualify a release. This advances
+`fss-vit-je36t.6` / `fss-x4a.13` without closing those broad custody requirements.
+
 ## Exact manifest generation approval through daemon IPC and MCP — 2026-11-27
 
 Manifest reload now previews the configured source through the live daemon and seals

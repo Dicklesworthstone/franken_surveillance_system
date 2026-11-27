@@ -145,10 +145,42 @@ Catalog publication, supersession, root tombstoning, catalog compaction and inte
 root cleanup acquire the same fence. Ordinary object appends and reads remain available
 to the canonical combiner. Dropping preparation without committing changes no pack state.
 
-This does not create an atomic transaction across the canonical ledger and pack catalog.
-Interruption or I/O failure after canonical retirement can still leave partial durable
-work. Exact-intent crash recovery across that boundary remains open. Existing hold
-authority and format-specific graph closure checks still apply.
+The ledger and pack catalog still have separate durable boundaries. To recover an
+interruption between them, each new canonical source retirement now commits an exact
+bounded intent in the same proposal as its unchanged deletion payload. The intent is
+content-addressed by the canonical object ID
+`obj:retention-delete:v2:<intent digest>` and retained as metadata/witness input. It binds
+the original plan digest, evaluation time, source digest, complete selected GOP catalog
+descriptors, import metadata references, sensor/byte accounting and original reasons.
+Every source group is complete; proposals contain at most 256 groups.
+
+On reopen and before new maintenance planning, the daemon discovers intents only from
+committed authority objects. It verifies their native encoding, payload target and
+validity, then revalidates the exact catalog descriptors and current authority. It
+reuses the original reasons under the catalog mutation fence. A committed prefix can
+resume independently of an uncommitted suffix, without a second canonical deletion.
+A missing query row, staged intent bytes or an old target-only tombstone cannot grant
+this new recovery authority.
+
+Current source or metadata holds, surviving direct or metadata references, and a newer
+visible import defer cleanup. A superseded or substituted catalog descriptor refuses.
+The entire shared-source group remains protected if any member is blocked, and the
+older per-root cleanup path cannot bypass a pending group's protection. Canonical
+projection metadata remains available for replay and is never included in media
+reclamation.
+
+Intent decoding is bounded to 256 roots and 256 KiB per source. Pending recovery is
+bounded to 65,536 intents and 64 MiB total encoded intent bytes. Admission accounts for
+both existing deferred work and the entire proposed pass before its first canonical
+mutation. Exact identity is preflighted for the whole pass. An ambiguous submission
+receipt fences further retention in that running owner until storage is reopened and
+canonical history is replayed. Existing hold authority and format-specific graph
+closure checks still apply.
+
+The new `FSDR` v1 metadata format and v2 deletion object/request identities are
+additive; the canonical `FSPP` deletion payload and existing catalog encodings are
+unchanged. Older binaries do not implement this exact-intent recovery contract. Use a
+matching recovery implementation; do not discard pending intent metadata to downgrade.
 
 ## Qualification and development handoff — 2026-11-27
 
@@ -161,8 +193,8 @@ and updated existing fixtures cover those boundaries. Embedded MCP tool schemas 
 parsed and their camera-supervision branches checked, and changed-path content hashes
 were verified.
 
-Pinned nightly formatting succeeded for the daemon/IPC/client files in the exact reload
-increment. Native compilation and test execution remain unqualified: earlier attempts
+Pinned nightly formatting succeeded for the daemon/IPC/client reload files and the
+storage/pack files in the exact retirement recovery increment. Native compilation and test execution remain unqualified: earlier attempts
 exhausted disk in unchanged `pkcs8`; a current-head IPC attempt was killed in unchanged
 `syn`. A second integrated check passed `fss-core` but was killed by SIGKILL compiling
 unchanged `asupersync` before reaching the modified integration targets. A separate
@@ -187,6 +219,6 @@ cargo +nightly-2026-08-31 test --locked -p fss-cli --test operational_mcp_target
 ```
 
 Run the repository's pinned formatting and relevant qualification lanes before making a
-release claim. The highest-impact remaining implementation work includes exact durable retention
-intent recovery and evidence-backed control outcome reconciliation with an explicit
-operator resumption policy.
+release claim. The highest-impact remaining implementation work includes evidence-backed control
+outcome reconciliation with an explicit operator resumption policy and the repository's
+broader qualified retention/archive custody contracts.

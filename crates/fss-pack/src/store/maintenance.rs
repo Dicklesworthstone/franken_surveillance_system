@@ -205,7 +205,8 @@ impl PackStore {
     /// Completes object deletion interrupted after a root catalog tombstone was committed.
     ///
     /// Only the exact root object is eligible; children and metadata are never inferred as
-    /// deletable. A live root or metadata reference defers cleanup without changing state.
+    /// deletable. A live reference to the source or its retained import metadata defers
+    /// cleanup without changing state; metadata protects the source closure, but is not deleted.
     /// The original catalog reason is copied into the durable object tombstone log before
     /// removing the object from the live index. Repeated calls preserve that first reason.
     ///
@@ -267,6 +268,10 @@ impl PackStore {
             if page.entries.iter().any(|live| {
                 live.record.root_digest == expected_digest
                     || live.record.metadata_digest == Some(expected_digest)
+                    || entry.record.metadata_digest.is_some_and(|metadata| {
+                        live.record.root_digest == metadata
+                            || live.record.metadata_digest == Some(metadata)
+                    })
             }) {
                 return Ok(false);
             }

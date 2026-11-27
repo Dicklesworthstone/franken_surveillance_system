@@ -258,6 +258,25 @@ superseded or disabled policies, while an already durable exact deletion can res
 without reinterpretation or deleted source bytes. Existing unpinned selections and
 their JSON projections remain unchanged.
 
+## Exact daemon retirement recovery metadata
+
+| Format ID | Domain | Authority | Encoding and compatibility |
+|---|---|---|---|
+| `FMT-026` | `fss.daemon.retention_intent.v1` | exact child of committed canonical source deletion | Owner: fss-daemon::storage::retention::recovery. CanonicalEncoder bytes `FSDR`, u32 version 1, text domain, source/full-original-plan/original-object-reason digests, TimestampNs evaluation time, u64 root count, then strictly root-ID-ordered VirtualRootRecord canonical descriptors, sensor text, u64 media bytes, reason tag and original reason digest. Closed tags 1..4 and whole decoder consumption; malformed, missing or inconsistent children refuse. At most 256 roots and 256 KiB per intent; cumulative pending inventory at most 65,536 intents and 64 MiB encoded bytes, checked before new canonical mutation and on recovery. |
+
+The unchanged FSPP `DeletionTarget::FootageImport` payload is committed under
+`obj:retention-delete:v2:<SHA-256 intent digest>`, generation 1, Authority plane and
+the intent's exact evaluation-time validity. Its proposal includes the intent bytes
+and witness digest. Recovery authority comes from that committed object identity,
+verified payload and matching child, never from staged bytes or query-row absence.
+Old v1 deletion objects remain readable but do not acquire inferred exact-intent
+authority. Catalog/root/object tombstone encodings are unchanged. Recovered work
+retains original reasons and scope; a later hold, live source/metadata reference or
+reimport defers cleanup, and a changed descriptor or supersession refuses. The old
+per-root cleanup route cannot bypass a pending shared-source group. Canonical
+projection metadata is retained for replay. An older implementation does not provide
+this new recovery guarantee; pending metadata must be retained for a matching owner.
+
 ## Process-local canonical interpretation domains
 
 These canonical encodings identify derived replay interpretations, not JSON documents,
