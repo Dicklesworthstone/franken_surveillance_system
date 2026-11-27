@@ -127,8 +127,11 @@ checkfile 14 mp4-unit-limit crates/fss-container/tests/fixtures/fragmented_av.mp
   --test doc_052_media_delivery_decision_card_contract \
   --test doc_054_frame_pyramid_contract
 
-# FSS-056 / FSS-060 / FSS-125 — keyframe-aware chunker, decode/timestamp oracle, and malformed corpus minimizer.
+# FSS-056 / FSS-060 / FSS-125 / TEST-MEDIA-MALFORMED-001 — keyframe-aware chunker, decode/timestamp oracle,
+# malformed corpus minimizer, and cross-crate hostile codec/container + output-bounds proof family.
 "${RUN[@]}" cargo --offline test --locked -q -p fss-container \
   --test fss_056_keyframe_chunker_contract \
   --test fss_060_decode_timestamp_oracle_contract \
   --test fss_125_malformed_corpus_minimizer_contract
+"${RUN[@]}" cargo --offline test --locked -q -p fss-reference \
+  --test test_media_malformed_001_proof_family
