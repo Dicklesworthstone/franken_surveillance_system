@@ -25,7 +25,8 @@ use crate::format::{DurabilityMode, PackId, sync_dir};
 pub use audit::{
     ColdAuditConfig, ColdPackRestoreReceipt, ColdRangeSampleResult, ColdRetrievabilityAuditReceipt,
     ColdRetrievabilityVerdict, PACK_COLD_RETRIEVABILITY_AUDIT_DOMAIN,
-    audit_cold_pack_retrievability, restore_cold_pack, restore_cold_pack_to_dir,
+    audit_cold_pack_retrievability, audit_cold_pack_retrievability_with_cancel, restore_cold_pack,
+    restore_cold_pack_to_dir,
 };
 pub use manifest::{
     COLD_ARCHIVE_MANIFEST_VERSION, ColdArchivePolicy, ColdPackArchiveManifest, ColdProviderKind,

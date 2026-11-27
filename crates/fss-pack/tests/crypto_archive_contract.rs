@@ -1613,6 +1613,29 @@ fn cold_tier_loopback_s3_e2e_archive_audit_tamper_evict_and_restore() -> TestRes
     assert!(!audit_p1.requires_repair_obligation);
     assert_eq!(audit_p1.range_samples_verified, 3);
     audit_p1.verify_digest()?;
+    let json = audit_p1.to_canonical_json();
+    for sample in &audit_p1.sample_results {
+        assert!(json.contains(&sample.sample_sha256.to_text()));
+    }
+
+    // Revocation while the first range request is in flight suppresses the receipt
+    // and prevents the remaining ranges and the full GET from starting.
+    let checks = std::cell::Cell::new(0);
+    assert!(matches!(
+        fss_pack::audit_cold_pack_retrievability_with_cancel(
+            &mut transport,
+            &arch_p1.manifest,
+            &full_audit_cfg,
+            now,
+            &|| {
+                let n = checks.get() + 1;
+                checks.set(n);
+                n == 3
+            }
+        ),
+        Err(PackError::Cancelled)
+    ));
+    assert_eq!(checks.get(), 3);
 
     let audit_p2 = audit_cold_pack_retrievability(
         &mut transport,

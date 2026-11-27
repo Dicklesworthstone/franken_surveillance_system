@@ -169,8 +169,19 @@ impl ColdRetrievabilityAuditReceipt {
             || "null".to_owned(),
             |e| format!("\"{}\"", escape_json_str(e)),
         );
+        let samples: Vec<_> = self
+            .sample_results
+            .iter()
+            .map(|sample| {
+                format!(
+                    r#"{{"offset":{},"len":{},"sample_sha256":"{}","etag_matched":{}}}"#,
+                    sample.offset, sample.len, sample.sample_sha256, sample.etag_matched
+                )
+            })
+            .collect();
+        let samples = samples.join(",");
         format!(
-            "{{\"schema\":\"{PACK_COLD_RETRIEVABILITY_AUDIT_DOMAIN}\",\"manifest_digest\":\"{}\",\"pack_id\":\"{}\",\"object_key\":\"{}\",\"expected_ciphertext_sha256\":\"{}\",\"observed_ciphertext_sha256\":{observed_sha},\"observed_etag\":{observed_etag},\"range_samples_requested\":{},\"range_samples_verified\":{},\"whole_pack_sha256_verified\":{},\"bytes_verified\":{},\"verdict\":\"{}\",\"requires_repair_obligation\":{},\"detail\":\"{}\",\"audited_at_ns\":{},\"receipt_digest\":\"{}\"}}",
+            "{{\"schema\":\"{PACK_COLD_RETRIEVABILITY_AUDIT_DOMAIN}\",\"manifest_digest\":\"{}\",\"pack_id\":\"{}\",\"object_key\":\"{}\",\"expected_ciphertext_sha256\":\"{}\",\"observed_ciphertext_sha256\":{observed_sha},\"observed_etag\":{observed_etag},\"range_samples_requested\":{},\"range_samples_verified\":{},\"sample_results\":[{samples}],\"whole_pack_sha256_verified\":{},\"bytes_verified\":{},\"verdict\":\"{}\",\"requires_repair_obligation\":{},\"detail\":\"{}\",\"audited_at_ns\":{},\"receipt_digest\":\"{}\"}}",
             self.manifest_digest,
             self.pack_id,
             escape_json_str(&self.object_key),
@@ -219,6 +230,27 @@ pub fn audit_cold_pack_retrievability(
     config: &ColdAuditConfig,
     now_ns: TimestampNs,
 ) -> Result<ColdRetrievabilityAuditReceipt, PackError> {
+    audit_cold_pack_retrievability_with_cancel(transport, manifest, config, now_ns, &|| false)
+}
+
+/// Audits a cold pack with cooperative cancellation between bounded transport operations.
+/// An in-flight transport call runs to completion or its configured timeout. Cancellation
+/// discards its outcome before the next request or receipt.
+pub fn audit_cold_pack_retrievability_with_cancel(
+    transport: &mut dyn ColdPackTransport,
+    manifest: &ColdPackArchiveManifest,
+    config: &ColdAuditConfig,
+    now_ns: TimestampNs,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<ColdRetrievabilityAuditReceipt, PackError> {
+    let checkpoint = || {
+        if cancelled() {
+            Err(PackError::Cancelled)
+        } else {
+            Ok(())
+        }
+    };
+    checkpoint()?;
     manifest.verify_digest()?;
     if config.deterministic_sample_count > 8 || config.sample_range_bytes == 0 {
         return Err(PackError::InvalidConfig {
@@ -234,7 +266,10 @@ pub fn audit_cold_pack_retrievability(
     let mut observed_etag: Option<String> = None;
 
     for (start, end) in ranges {
-        match transport.get_object_range(&manifest.object_key, start, end, now_ns) {
+        checkpoint()?;
+        let response = transport.get_object_range(&manifest.object_key, start, end, now_ns);
+        checkpoint()?;
+        match response {
             Ok(resp) => {
                 let etag_matched = resp.etag == manifest.etag;
                 observed_etag = Some(resp.etag.clone());
@@ -309,30 +344,32 @@ pub fn audit_cold_pack_retrievability(
         );
     }
 
-    let get_resp =
-        match transport.get_object(&manifest.object_key, config.max_download_bytes, now_ns) {
-            Ok(r) => r,
-            Err(err) => {
-                let (verdict, detail) = classify_read_error(
-                    err,
-                    "whole-pack GET",
-                    "cold pack disappeared before whole-pack GET (HTTP 404)",
-                );
-                return finalize_audit_receipt(
-                    manifest,
-                    None,
-                    observed_etag,
-                    requested_count,
-                    verified_samples,
-                    sample_results,
-                    false,
-                    bytes_verified,
-                    verdict,
-                    detail,
-                    now_ns,
-                );
-            }
-        };
+    checkpoint()?;
+    let response = transport.get_object(&manifest.object_key, config.max_download_bytes, now_ns);
+    checkpoint()?;
+    let get_resp = match response {
+        Ok(r) => r,
+        Err(err) => {
+            let (verdict, detail) = classify_read_error(
+                err,
+                "whole-pack GET",
+                "cold pack disappeared before whole-pack GET (HTTP 404)",
+            );
+            return finalize_audit_receipt(
+                manifest,
+                None,
+                observed_etag,
+                requested_count,
+                verified_samples,
+                sample_results,
+                false,
+                bytes_verified,
+                verdict,
+                detail,
+                now_ns,
+            );
+        }
+    };
 
     observed_etag = Some(get_resp.etag.clone());
     let observed_sha = ContentDigest::sha256(&get_resp.body);
