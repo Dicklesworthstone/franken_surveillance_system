@@ -247,6 +247,12 @@ fn ground_mask_coverage_handles_the_horizon_and_closed_zone_edges() -> TestResul
     assert!(!ground_zone_masked(&mask, identity, [48., 3., 1.5, 2.]));
     assert!(!ground_zone_masked(&mask, identity, [100., 4., 1., 1.]));
     assert!(ground_zone_masked(&mask, [0.; 9], [1., 1., 1., 1.]));
+    // Forward-project a masked pixel and use that exact ground coordinate as the
+    // inclusive zone boundary. Inverse floating-point arithmetic falls just below it.
+    let scale = 1.0 / 3.0;
+    let scaled = [scale, 0., 0., 0., 1., 0., 0., 0., 1.];
+    let mask = policy([96, 48], &[[7, 5, 1, 1]])?;
+    assert!(ground_zone_masked(&mask, scaled, [0., 4., 7. * scale, 1.]));
     Ok(())
 }
 

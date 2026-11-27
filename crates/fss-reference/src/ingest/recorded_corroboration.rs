@@ -1934,7 +1934,7 @@ fn camera_coverage(
     // The retained binding and the rule used to interpret it both identify a masked
     // analysis. Earlier coverage used corner bounds without checking the horizon.
     let ground_mask_rule = camera.privacy.policy().map(|_| {
-        ContentDigest::sha256(b"fss.ground-mask-preimage.v2:front-side:closed-zone-edges")
+        ContentDigest::sha256(b"fss.ground-mask-preimage.v3:front-side:outward-tolerance:closed-zone-edges")
     });
     bind_cascade_parameters(
         &mut parameters,

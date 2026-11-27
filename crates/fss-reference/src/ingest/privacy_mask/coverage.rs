@@ -16,7 +16,7 @@ use std::collections::BTreeSet;
 use fss_core::{CaptureInterval, ContractError};
 
 use super::PrivacyMaskPolicy;
-use crate::ingest::ground_visibility::{homography_pixel, invert};
+use crate::ingest::ground_visibility::{ROUND_TRIP_TOLERANCE, homography_pixel, invert};
 use crate::ingest::recorded_coverage::{CoverageRecord, UncoveredInterval, UncoveredReason};
 
 fn hull(a: Option<CaptureInterval>, b: Option<CaptureInterval>) -> Option<CaptureInterval> {
@@ -119,12 +119,15 @@ pub fn ground_zone_masked(policy: &PrivacyMaskPolicy, matrix: [f64; 9], zone: [f
         ];
     }
     let [width, height] = policy.resolution();
-    let left = bounds[0].floor().max(0.0);
-    let top = bounds[1].floor().max(0.0);
+    // Outward pixel tolerance matches the visibility round-trip convention. For
+    // example, 7 * (1/3) can map back to 6.999999999999999 rather than 7.
+    let tolerance = |value: f64| ROUND_TRIP_TOLERANCE * (1.0 + value.abs());
+    let left = (bounds[0] - tolerance(bounds[0])).floor().max(0.0);
+    let top = (bounds[1] - tolerance(bounds[1])).floor().max(0.0);
     // GroundZone::contains includes the maximum x and y. An endpoint exactly at
     // integer column k touches pixel k, so its exclusive right edge is k + 1.
-    let right = (bounds[2].floor() + 1.0).min(f64::from(width));
-    let bottom = (bounds[3].floor() + 1.0).min(f64::from(height));
+    let right = ((bounds[2] + tolerance(bounds[2])).floor() + 1.0).min(f64::from(width));
+    let bottom = ((bounds[3] + tolerance(bounds[3])).floor() + 1.0).min(f64::from(height));
     if left >= right || top >= bottom {
         return false;
     }
