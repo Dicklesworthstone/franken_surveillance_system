@@ -24,6 +24,7 @@ export RCH_SHIM_LOCAL_IDE="${RCH_SHIM_LOCAL_IDE:-1}"
   --test uploader_source_contract \
   --test completion_observation_contract \
   --test fss_068_incident_retrieval_contract \
+  --test fss_069_restore_fault_matrix_contract \
   --test retrieval_observation_contract \
   --test remote_eventual_consistency_contract
 

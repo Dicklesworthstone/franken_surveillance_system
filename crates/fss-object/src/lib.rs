@@ -43,6 +43,8 @@ pub mod provider;
 pub mod repair_gate;
 /// Archive replication-state and retrievability challenge ledger (`FSS-131`, `fss-x4a.13.15`).
 pub mod replication;
+/// Deterministic remote archive restore and fault-injection matrix (`FSS-069`, `fss-x4a.13.9`).
+pub mod restore_fault_matrix;
 /// Graph-aware local retention, evidence holds, and bounded expiry execution.
 pub mod retention;
 mod spool;

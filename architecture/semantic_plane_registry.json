@@ -1808,6 +1808,7 @@
     "crates/fss-object/src/provider/remote_simulator/faults.rs": "authority",
     "crates/fss-object/src/provider/remote_simulator/listing.rs": "authority",
     "crates/fss-object/src/replication.rs": "authority",
+    "crates/fss-object/src/restore_fault_matrix.rs": "authority",
     "crates/fss-object/src/retention.rs": "authority",
     "crates/fss-object/src/retention/checkpoint.rs": "authority",
     "crates/fss-object/src/retention/checkpoint/tests.rs": "support",
