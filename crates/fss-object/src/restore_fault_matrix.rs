@@ -219,7 +219,20 @@ impl CanonicalDecode for RestoreFaultCaseReport {
             1 => true,
             _ => return Err(ContractError::InvalidIdentifier),
         };
-        if passed != (expected == observed) || (verified_objects == 0 && verified_bytes != 0) {
+        let outcome_counts_valid = match observed {
+            RestoreScenarioOutcome::RestoredVerifiedComplete
+            | RestoreScenarioOutcome::RecoveredViaReplicaFailover => verified_objects > 0,
+            RestoreScenarioOutcome::UnauthorizedRefused
+            | RestoreScenarioOutcome::CancelledCleanly => {
+                verified_objects == 0 && verified_bytes == 0
+            }
+            RestoreScenarioOutcome::PartialDegradedPreserved
+            | RestoreScenarioOutcome::IndeterminatePreserved => true,
+        };
+        if passed != (expected == observed)
+            || (verified_objects == 0 && verified_bytes != 0)
+            || !outcome_counts_valid
+        {
             return Err(ContractError::InvalidIdentifier);
         }
         Ok(Self {
@@ -357,6 +370,7 @@ impl CanonicalDecode for RestoreFaultMatrixReceipt {
         if !is_clean_label(&matrix_id)
             || generation.0 == 0
             || !(1..=MAX_MATRIX_SCENARIOS).contains(&count)
+            || count > decoder.remaining() / 49
         {
             return Err(ContractError::InvalidIdentifier);
         }
@@ -604,7 +618,9 @@ pub fn run_restore_fault_matrix(
                         || false,
                     )
                     .map_err(|_| RestoreMatrixError::FixtureConstructionFailed)?;
-                    if r_failover.status == IncidentRetrievalStatus::VerifiedRetrievableComplete {
+                    if r_failover.status == IncidentRetrievalStatus::VerifiedRetrievableComplete
+                        && r_failover.verified_objects.len() == 5
+                    {
                         observed = RestoreScenarioOutcome::RecoveredViaReplicaFailover;
                         final_objects = r_failover.verified_objects.len() as u32;
                         final_bytes = r_failover.verified_bytes;

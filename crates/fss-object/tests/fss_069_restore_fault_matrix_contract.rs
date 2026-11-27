@@ -169,7 +169,7 @@ fn fss_069_refuses_invalid_config_duplicate_scenarios_cancellation_and_forged_re
             .is_err()
     );
 
-    let mut forged_passed = receipt;
+    let mut forged_passed = receipt.clone();
     forged_passed.cases[0].observed = RestoreScenarioOutcome::PartialDegradedPreserved;
     forged_passed.cases[0].passed = true; // contradiction: expected != observed!
     forged_passed.receipt_digest = forged_passed.computed_digest();
@@ -177,6 +177,33 @@ fn fss_069_refuses_invalid_config_duplicate_scenarios_cancellation_and_forged_re
     forged_passed.encode_canonical(&mut enc2);
     assert!(
         RestoreFaultMatrixReceipt::decode_canonical(&mut CanonicalDecoder::new(&enc2.finish()))
+            .is_err()
+    );
+
+    // Wire forgery claiming RestoredVerifiedComplete with 0 verified objects MUST be rejected!
+    let mut forged_zero = receipt.clone();
+    forged_zero.cases[0].verified_objects = 0;
+    forged_zero.cases[0].verified_bytes = 0;
+    forged_zero.receipt_digest = forged_zero.computed_digest();
+    let mut enc3 = CanonicalEncoder::new();
+    forged_zero.encode_canonical(&mut enc3);
+    assert!(
+        RestoreFaultMatrixReceipt::decode_canonical(&mut CanonicalDecoder::new(&enc3.finish()))
+            .is_err()
+    );
+
+    // Wire forgery claiming UnauthorizedRefused with >0 verified objects MUST be rejected!
+    let mut forged_unauth_reads = receipt;
+    forged_unauth_reads.cases[0].expected = RestoreScenarioOutcome::UnauthorizedRefused;
+    forged_unauth_reads.cases[0].observed = RestoreScenarioOutcome::UnauthorizedRefused;
+    forged_unauth_reads.cases[0].passed = true;
+    forged_unauth_reads.cases[0].verified_objects = 1;
+    forged_unauth_reads.cases[0].verified_bytes = 64;
+    forged_unauth_reads.receipt_digest = forged_unauth_reads.computed_digest();
+    let mut enc4 = CanonicalEncoder::new();
+    forged_unauth_reads.encode_canonical(&mut enc4);
+    assert!(
+        RestoreFaultMatrixReceipt::decode_canonical(&mut CanonicalDecoder::new(&enc4.finish()))
             .is_err()
     );
     Ok(())

@@ -540,6 +540,7 @@ pub fn verify_incident_retrieval(
 
     let mut verified_objects = BTreeSet::new();
     let mut verified_bytes: u64 = 0;
+    let mut scanned_bytes: u64 = 0;
     let mut missing_digests = BTreeSet::new();
     let mut corrupt_digests = BTreeSet::new();
     let mut below_custody_floor_digests = BTreeSet::new();
@@ -556,7 +557,7 @@ pub fn verify_incident_retrieval(
         if visited_count > authority.max_objects {
             return Err(IncidentRetrievalError::BudgetExceeded {
                 objects: visited_count,
-                bytes: verified_bytes,
+                bytes: scanned_bytes,
             });
         }
 
@@ -575,14 +576,23 @@ pub fn verify_incident_retrieval(
             continue;
         }
 
-        // Enforce per-object byte budget BEFORE hashing so a hostile oversized blob cannot burn CPU.
+        // Enforce cumulative byte scan budget BEFORE SHA-256 hashing so even a flood of corrupt
+        // or below-floor blobs cannot exceed `authority.max_bytes` total hashed bytes.
         let obj_len = record.bytes.len() as u64;
-        if obj_len > authority.max_bytes {
+        let next_scanned =
+            scanned_bytes
+                .checked_add(obj_len)
+                .ok_or(IncidentRetrievalError::BudgetExceeded {
+                    objects: visited_count,
+                    bytes: u64::MAX,
+                })?;
+        if next_scanned > authority.max_bytes {
             return Err(IncidentRetrievalError::BudgetExceeded {
                 objects: visited_count,
-                bytes: obj_len,
+                bytes: next_scanned,
             });
         }
+        scanned_bytes = next_scanned;
 
         // Independent SHA-256 digest check over retrieved bytes.
         if record.digest != digest || ContentDigest::sha256(&record.bytes) != digest {

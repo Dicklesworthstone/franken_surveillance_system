@@ -337,5 +337,20 @@ fn fss_068_preserves_authority_custody_floor_corruption_indeterminate_budget_can
         IncidentRetrievalReceipt::decode_canonical(&mut CanonicalDecoder::new(&bad_enc3.finish()))
             .is_err()
     );
+
+    // 9. Cumulative SHA-256 scan budget bounds corrupt-object floods before hashing excess bytes!
+    let mut corrupt_flood_auth = make_authority([root_digest], CustodyLevel::Retrievable);
+    corrupt_flood_auth.max_bytes = (store_corrupt[&root_digest].bytes.len() + 10) as u64;
+    assert!(matches!(
+        verify_incident_retrieval(
+            &corrupt_flood_auth,
+            root_digest,
+            &store_corrupt,
+            None,
+            TimestampNs(800),
+            || false,
+        ),
+        Err(IncidentRetrievalError::BudgetExceeded { .. })
+    ));
     Ok(())
 }

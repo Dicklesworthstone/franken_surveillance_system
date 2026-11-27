@@ -394,7 +394,16 @@ impl CanonicalDecode for MinimizedReproducerReceipt {
         let original_len = decoder.u64()?;
         let minimized_digest = decoder.digest()?;
         let minimized_len = decoder.u64()?;
-        let minimized_bytes = decoder.bytes()?.to_vec();
+        if !(1..=MAX_MINIMIZER_INPUT_BYTES as u64).contains(&original_len)
+            || minimized_len > original_len
+        {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        let raw_minimized = decoder.bytes()?;
+        if raw_minimized.len() as u64 != minimized_len {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        let minimized_bytes = raw_minimized.to_vec();
         let predicate_evaluations = decoder.u32()?;
         let max_evaluations = decoder.u32()?;
         let budget_exhausted = decode_bool(decoder)?;
@@ -404,9 +413,6 @@ impl CanonicalDecode for MinimizedReproducerReceipt {
         if !validate_label(&case_id)
             || !validate_label(&failure_signature)
             || generation.0 == 0
-            || !(1..=MAX_MINIMIZER_INPUT_BYTES as u64).contains(&original_len)
-            || minimized_len > original_len
-            || minimized_bytes.len() as u64 != minimized_len
             || ContentDigest::sha256(&minimized_bytes) != minimized_digest
             || !(2..=MAX_MINIMIZER_EVALUATIONS).contains(&max_evaluations)
             || !(2..=max_evaluations).contains(&predicate_evaluations)
