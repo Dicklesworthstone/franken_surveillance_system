@@ -64,6 +64,9 @@ pub mod enforce;
 /// Coverage honesty over masked zones.
 pub mod coverage;
 
+/// Pixel coverage changes in a proposed mask declaration.
+pub mod impact;
+
 /// The sensor's current mask on live, recording and replay decode paths.
 pub mod live;
 
@@ -660,6 +663,8 @@ pub struct MaskDeclaration {
     pub generation: Option<u64>,
     /// The policy digest this declaration replaces (`None`: no policy was retained).
     pub replaces: Option<ContentDigest>,
+    /// Change from the mask in force immediately before this call.
+    pub impact: impact::MaskImpact,
 }
 
 /// Previews a declaration: computes the policy and approval digests; writes nothing.
@@ -671,10 +676,11 @@ pub fn preview_mask(
     let digest = policy.digest();
     let current = generations.last().map(|(g, d, _)| (*g, *d));
     let already = current.is_some_and(|(_, d)| d == digest);
-    // Validate the current record's custody before proposing to replace it.
-    if let Some((generation, current_digest)) = current {
-        read_policy(deployment, policy.sensor_id(), generation, current_digest)?;
-    }
+    // Compare with the actual retained policy after verifying its custody.
+    let previous = current
+        .map(|(generation, digest)| read_policy(deployment, policy.sensor_id(), generation, digest))
+        .transpose()?;
+    let impact = impact::MaskImpact::between(previous.as_ref().map(|r| &r.policy), policy);
     Ok(MaskDeclaration {
         policy: policy.clone(),
         policy_digest: digest,
@@ -686,6 +692,7 @@ pub fn preview_mask(
         },
         generation: current.map(|(g, _)| g),
         replaces: current.map(|(_, d)| d).filter(|d| *d != digest),
+        impact,
     })
 }
 

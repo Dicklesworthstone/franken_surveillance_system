@@ -558,6 +558,10 @@ fn declaration_requires_the_exact_current_approval_and_reruns_write_nothing() ->
         "transform:bounding_box_redact"
     );
     assert_eq!(preview.get("unmasked_access")?.text()?, "refused");
+    let impact = preview.get("pixel_impact")?;
+    assert_eq!(impact.get("comparison")?.text()?, "first_declaration");
+    assert_eq!(impact.get("newly_masked_pixels")?.number()?, 96 * 32);
+    assert_eq!(impact.get("newly_visible_pixels")?.number()?, 0);
     let approval = preview.get("approval_digest")?.text()?.to_owned();
     assert!(
         preview
@@ -585,6 +589,7 @@ fn declaration_requires_the_exact_current_approval_and_reruns_write_nothing() ->
     assert_eq!(retained.get("status")?.text()?, "retained");
     assert_eq!(retained.get("generation")?.number()?, 1);
     assert_eq!(retained.get("approve_command")?, &Json::Null);
+    assert_eq!(retained.get("pixel_impact")?, preview.get("pixel_impact")?);
     let after = retained.get("authority_sequence")?.number()?;
     assert!(after > sequence);
     let rerun = report(&mask(&root, "declare", sensor, &approve)?)?;
@@ -603,6 +608,33 @@ fn declaration_requires_the_exact_current_approval_and_reruns_write_nothing() ->
     // An approval previewed against generation 1 is stale once generation 2 exists.
     let stale_spec = ["--resolution", "96x48", "--rect", "0,0,48,48"];
     let stale = report(&mask(&root, "declare", sensor, &stale_spec)?)?;
+    let change = stale.get("pixel_impact")?;
+    assert_eq!(change.get("comparison")?.text()?, "same_resolution");
+    assert_eq!(change.get("still_masked_pixels")?.number()?, 48 * 32);
+    assert_eq!(change.get("newly_visible_pixels")?.number()?, 48 * 32);
+    assert_eq!(change.get("newly_masked_pixels")?.number()?, 48 * 16);
+    let resized = report(&mask(
+        &root,
+        "declare",
+        sensor,
+        &[
+            "--resolution",
+            "48x48",
+            "--rect",
+            "0,0,32,32",
+            "--rect",
+            "16,16,32,32",
+        ],
+    )?)?;
+    let change = resized.get("pixel_impact")?;
+    assert_eq!(change.get("comparison")?.text()?, "resolution_changed");
+    assert_eq!(change.get("previous_masked_pixels")?.number()?, 96 * 32);
+    assert_eq!(
+        change.get("proposed_masked_pixels")?.number()?,
+        2 * 32 * 32 - 16 * 16
+    );
+    assert_eq!(change.get("newly_visible_pixels")?, &Json::Null);
+    assert_eq!(change.get("newly_masked_pixels")?, &Json::Null);
     let stale_approval = stale.get("approval_digest")?.text()?.to_owned();
     let second = declare(&root, sensor, "96x48", &["0,0,96,16"])?;
     assert_eq!(second.get("generation")?.number()?, 2);

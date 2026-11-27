@@ -58,7 +58,11 @@ and replay decode paths (fss-g9gml):
   (`transform:bounding_box_redact` regions). Preview, then exact approval over the sensor's
   current policy; one `privacy_mask_policy` authority generation per approval; stale approvals are
   refused before any write. Policies can be replaced, never silently relaxed by a model; there is
-  no removal command.
+  no removal command. The declaration report’s `pixel_impact` counts the union of masked pixels
+  before and after the change. On the same pixel grid, `newly_visible_pixels` counts pixels the
+  proposed replacement exposes, `newly_masked_pixels` counts the additional pixels it hides, and
+  `still_masked_pixels` counts the intersection. A resolution change reports the two independent
+  counts and leaves the cross-grid comparison fields null. These areas describe decoded pixels.
 - **Enforcement at decode.** Every retained decode path (JPEG/MJPEG luma and RGB, H.264, H.265,
   video RGB) fills masked pixels (luma 16, chroma 128, RGB 16,16,16) before the foreground model,
   tracker, zone gate, detector package, cascade, PGM export or any other consumer sees them. The

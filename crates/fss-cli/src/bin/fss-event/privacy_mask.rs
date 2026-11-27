@@ -182,6 +182,26 @@ fn optional(value: Option<String>) -> String {
     value.map_or_else(|| "null".to_owned(), |v| format!("\"{v}\""))
 }
 
+fn impact_json(impact: fss_reference::ingest::privacy_mask::impact::MaskImpact) -> String {
+    let count = |n: Option<u32>| n.map_or_else(|| "null".to_owned(), |v| v.to_string());
+    let previous_resolution = impact
+        .previous_resolution
+        .map_or_else(|| "null".to_owned(), |[w, h]| format!("[{w},{h}]"));
+    let basis = match (impact.previous_resolution, impact.still_masked) {
+        (None, _) => "first_declaration",
+        (Some(_), Some(_)) => "same_resolution",
+        (Some(_), None) => "resolution_changed",
+    };
+    format!(
+        "{{\"comparison\":\"{basis}\",\"previous_resolution\":{previous_resolution},\"previous_masked_pixels\":{},\"proposed_masked_pixels\":{},\"still_masked_pixels\":{},\"newly_masked_pixels\":{},\"newly_visible_pixels\":{}}}",
+        impact.previous_masked,
+        impact.proposed_masked,
+        count(impact.still_masked),
+        count(impact.newly_masked()),
+        count(impact.newly_visible()),
+    )
+}
+
 /// Previews, declares or shows, and prints the JSON report.
 pub(super) fn run(
     action: &PrivacyMaskAction,
@@ -225,7 +245,7 @@ pub(super) fn run(
                 .map(|r| format!("[{},{},{},{}]", r.x(), r.y(), r.width(), r.height()))
                 .collect();
             format!(
-                "{{\"format\":\"fss.privacy_mask_declaration.v1\",\"sensor_id\":\"{}\",\"status\":\"{}\",\"policy_digest\":\"{}\",\"approval_digest\":\"{}\",\"approve_command\":{command},\"generation\":{},\"replaces\":{},\"stream_resolution\":[{},{}],\"masked_rectangles\":[{}],\"applied_redaction_transform\":\"{}\",\"privacy_mask\":{},\"unmasked_access\":\"refused\",\"authority_sequence\":{}}}",
+                "{{\"format\":\"fss.privacy_mask_declaration.v1\",\"sensor_id\":\"{}\",\"status\":\"{}\",\"policy_digest\":\"{}\",\"approval_digest\":\"{}\",\"approve_command\":{command},\"generation\":{},\"replaces\":{},\"stream_resolution\":[{},{}],\"masked_rectangles\":[{}],\"pixel_impact\":{},\"applied_redaction_transform\":\"{}\",\"privacy_mask\":{},\"unmasked_access\":\"refused\",\"authority_sequence\":{}}}",
                 action.sensor,
                 declaration.status.as_str(),
                 declaration.policy_digest,
@@ -237,6 +257,7 @@ pub(super) fn run(
                 resolution[0],
                 resolution[1],
                 regions.join(","),
+                impact_json(declaration.impact),
                 fss_reference::ingest::privacy_mask::mask_transform().as_str(),
                 current_mask(deployment, &action.sensor)?.to_json(),
                 deployment.current_anchor().commit_sequence
