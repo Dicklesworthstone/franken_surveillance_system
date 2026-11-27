@@ -6,6 +6,7 @@
 
 mod crash_matrix;
 mod decode;
+mod replay_rtsp;
 mod file_activity;
 mod recover;
 mod scenario;
@@ -93,6 +94,7 @@ fn run_action(action: LabAction) -> Result<String, String> {
             check_root_empty(&root)?;
             crash_matrix_command(&scenario, json, &root)
         }
+        LabAction::ReplayRtsp { input } => replay_rtsp::run(&input),
         LabAction::Decode {
             input,
             root,

@@ -205,6 +205,14 @@ pub fn serialize_transcript(records: &[TranscriptRecord]) -> Vec<u8> {
 
 /// Parses raw container bytes into typed transcript records.
 pub fn parse_transcript(data: &[u8]) -> Result<Vec<TranscriptRecord>, MediaFixtureError> {
+    parse_transcript_bounded(data, usize::MAX)
+}
+
+/// Parses recorded input while bounding allocations for per-record metadata.
+pub fn parse_transcript_bounded(
+    data: &[u8],
+    max_records: usize,
+) -> Result<Vec<TranscriptRecord>, MediaFixtureError> {
     if data.len() < RTSP_TRANSCRIPT_MAGIC_HEADER.len()
         || &data[..RTSP_TRANSCRIPT_MAGIC_HEADER.len()] != RTSP_TRANSCRIPT_MAGIC_HEADER
     {
@@ -216,7 +224,10 @@ pub fn parse_transcript(data: &[u8]) -> Result<Vec<TranscriptRecord>, MediaFixtu
     let mut records = Vec::new();
 
     while pos < data.len() {
-        if pos + 9 > data.len() {
+        if records.len() == max_records {
+            return Err(MediaFixtureError::InvalidParam("transcript record limit"));
+        }
+        if data.len() - pos < 9 {
             return Err(MediaFixtureError::TruncatedData);
         }
         let dir_byte = data[pos];
@@ -229,7 +240,7 @@ pub fn parse_transcript(data: &[u8]) -> Result<Vec<TranscriptRecord>, MediaFixtu
             as usize;
         pos += 9;
 
-        if pos + len > data.len() {
+        if len > data.len() - pos {
             return Err(MediaFixtureError::TruncatedData);
         }
         let bytes = data[pos..pos + len].to_vec();

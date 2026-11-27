@@ -26,6 +26,11 @@ pub const VALID_SCENARIOS: [&str; 7] = [
 /// Typed action requested of the `fss-lab` binary.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LabAction {
+    /// Replay a credential-free recorded RTSP session through the native AVC client.
+    ReplayRtsp {
+        /// Local transcript file.
+        input: PathBuf,
+    },
     /// Print help text.
     Help,
     /// List available scenarios in JSON format.
@@ -114,7 +119,8 @@ impl LabInterpretation {
 #[must_use]
 pub const fn help_text() -> &'static str {
     "fss-lab — deterministic reference surveillance laboratory\n\n\
-USAGE\n  fss-lab list\n  fss-lab run <scenario> --root <dir>\n  fss-lab matrix --root <dir>\n  fss-lab replay <scenario> --root <dir> [--repeat N]\n  fss-lab self-test --root <dir>\n  fss-lab crash-matrix --root <dir> [--scenario intrusion] [--json]\n  fss-lab recover --root <dir> <action>... [--json]\n  fss-lab decode --input <jpeg|mjpeg> --root <dir> --interpretation gray|ycbcr [--json]\n\n\
+USAGE\n  fss-lab list\n  fss-lab replay-rtsp <transcript-file>\n  fss-lab run <scenario> --root <dir>\n  fss-lab matrix --root <dir>\n  fss-lab replay <scenario> --root <dir> [--repeat N]\n  fss-lab self-test --root <dir>\n  fss-lab crash-matrix --root <dir> [--scenario intrusion] [--json]\n  fss-lab recover --root <dir> <action>... [--json]\n  fss-lab decode --input <jpeg|mjpeg> --root <dir> --interpretation gray|ycbcr [--json]\n\n\
+REPLAY-RTSP\n  Reads a local FSS v1 interleaved AVC transcript (up to 8 MiB and 8192 records).\n  Emits a JSON report of recorded RTSP transitions, RTP and RTCP datagrams and observed gaps.\n  Track 0 and RTP/RTCP channels 0/1 are required. Session-wide commands may use the exact\n  initial presentation URI or negotiated URI. Requires acknowledged teardown. No network connection, media publication or live coverage claim.\n\n\
 SCENARIOS\n  quiet           complete coverage and a certified absence\n  raccoon         benign wildlife with no alert effect\n  intrusion       independently corroborated person and verified alert\n  sneaky          material person residual plus an observability gap\n  lost-ack        indeterminate alert dispatch resolved by reconciliation\n  corrupt-source  source corruption detected before evidence publication\n  file-activity   recorded JPEG frames scored by the real scalar executor (run/replay only)\n\n\
 DECODE\n  Imports the recorded file through the file-ingest adapter into an empty root, decodes every\n  retained capsule with the canonical JPEG decoder after verifying its custody, and prints one\n  row per capsule (decoded tensor digest, or the receipted refusal) plus every omitted span.\n  Never prints pixels. Decoded luma is derived from retained custody, not new evidence.\n\n\
 CRASH MATRIX\n  Injects one in-process fault per publish cut point, ledger cut point, journal append phase,\n  lost alert acknowledgement and cancellation stage, reopens each sub-root, and compares the\n  recovery class with the documented one. Exit 0 when the verdict is pass, 1 otherwise.\n  In-process injection is not process death or power loss.\n\n\
@@ -160,6 +166,21 @@ pub fn parse_lab_tokens(tokens: &[ArgToken]) -> Result<LabAction, CliError> {
                 });
             }
             Ok(LabAction::List)
+        }
+        "replay-rtsp" => {
+            let input = tokens.get(1).filter(|t| !t.raw.is_empty() && !is_option_shaped(t.as_str())).ok_or_else(|| CliError::MissingValue {
+                option: "replay-rtsp".into(),
+                command: Some("replay-rtsp".into()),
+                expected: "recorded RTSP transcript file".into(),
+            })?;
+            if let Some(extra) = tokens.get(2) {
+                return Err(CliError::TrailingArgument {
+                    argument: extra.raw.clone(),
+                    index: extra.index,
+                    command: Some("replay-rtsp".into()),
+                });
+            }
+            Ok(LabAction::ReplayRtsp { input: PathBuf::from(&input.raw) })
         }
         "matrix" => parse_matrix_command(tokens),
         "self-test" => parse_self_test_command(tokens),
