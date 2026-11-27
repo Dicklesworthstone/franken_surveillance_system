@@ -1,0 +1,5 @@
+fss-evaluation-candidates.v1
+# Synthetic prior model over the class-breakdown clips.
+candidate	old-person	positive	person	-	205	800000
+candidate	old-vehicle	positive	vehicle	-	305	990000
+candidate	person-a	negative	person	-	15	810000

@@ -7,6 +7,8 @@ use fss_core::{CanonicalEncoder, ContentDigest};
 use fss_reference::evaluation::{LabelSet, MAX_EVALUATION_CLIPS, MAX_EVALUATION_ID_BYTES};
 
 use super::{Failure, Result, integer, object, rows, text};
+#[path = "holdout/comparison.rs"]
+mod comparison;
 
 const MANIFEST_SCHEMA: &str = "fss-evaluation-holdout.v1";
 const RECEIPT_SCHEMA: &str = "fss.evaluation.holdout.v1";

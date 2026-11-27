@@ -19,6 +19,7 @@ use std::process::ExitCode;
 
 use fss_cli::escape_json_str;
 use fss_fusion::{ScoreCalibration, SplitConformalCalibrator, minimum_calibration_samples};
+use fss_reference::evaluation::FixedOperatingPoint;
 use fss_reference::evaluation::class_breakdown::{ClassBreakdown, MAX_EVALUATION_CLASSES};
 use fss_reference::evaluation::{
     CandidateDisposition, CandidateSet, ClosedIntervalNs, EvaluationCounts, EvaluationError,
@@ -36,10 +37,12 @@ const HELP: &str = "fss-evaluate --labels LABELS.tsv --candidates CANDIDATES.tsv
 --max-false-alerts N --per-observed-ns N \
 [--early-tolerance-ns N] [--late-tolerance-ns N] [--fixed-threshold-ppm PPM] \
 [--calibration-bins PPM,PPM,... --calibration-generation ID] \
-[--conformal-alpha-ppm PPM] [--class-breakdown all|CLASS,CLASS,...] [--holdout-manifest SPLITS.tsv]\n\n\
+[--conformal-alpha-ppm PPM] [--class-breakdown all|CLASS,CLASS,...] [--holdout-manifest SPLITS.tsv] [--baseline-candidates FILE --baseline-model-generation ID]\n\n\
 Read-only event evaluation; emits JSON to stdout. No threshold is activated.\n\
 With --holdout-manifest, require exact holdout clip membership, disjoint declared properties,\n\
 sessions and recording digests, and the manifest's fixed threshold; calibration is refused.\n\
+With --baseline-candidates and --baseline-model-generation, compare both models on the same held-out\n\
+labels, pipeline, policy, and fixed threshold. The comparison lists gained and lost truth events.\n\
 Use --fixed-threshold-ppm to measure a threshold chosen before inspecting these labels.\n\
 The fixed operating point includes all scored candidates at or above it, even over budget.\n\
 With --class-breakdown, every observed class is reported at that same fixed threshold,\n\
@@ -100,6 +103,7 @@ struct Options {
     fixed_threshold_ppm: Option<u32>,
     class_inventory: Option<Vec<String>>,
     holdout_manifest: Option<PathBuf>,
+    baseline: Option<(PathBuf, String)>,
 }
 
 fn integer(value: &str) -> Result<u64> {
@@ -127,7 +131,7 @@ fn unicode(value: &OsStr) -> Result<&str> {
 fn parse_options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>> {
     let mut bounded = Vec::new();
     for arg in args {
-        if bounded.len() == 30 {
+        if bounded.len() == 34 {
             return Err(Failure::new("evaluation.cli.arguments_limit"));
         }
         bounded.push(arg);
@@ -156,6 +160,8 @@ fn parse_options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Opti
                 | "--fixed-threshold-ppm"
                 | "--class-breakdown"
                 | "--holdout-manifest"
+                | "--baseline-candidates"
+                | "--baseline-model-generation"
         ) {
             return Err(Failure::new("evaluation.cli.unknown_option"));
         }
@@ -228,7 +234,18 @@ fn parse_options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Opti
     {
         return Err(Failure::new("evaluation.holdout.options"));
     }
+    let baseline = match (
+        values.get("--baseline-candidates"),
+        values.get("--baseline-model-generation"),
+    ) {
+        (None, None) => None,
+        (Some(path), Some(model)) if holdout_manifest.is_some() => {
+            Some((PathBuf::from(path), unicode(model)?.to_owned()))
+        }
+        _ => return Err(Failure::new("evaluation.comparison.options")),
+    };
     Ok(Some(Options {
+        baseline,
         labels: PathBuf::from(required(&values, "--labels")?),
         candidates: PathBuf::from(required(&values, "--candidates")?),
         identity,
@@ -742,28 +759,32 @@ fn report_json(report: &EvaluationReport) -> String {
     ])
 }
 
+fn fixed_json(fixed: &FixedOperatingPoint) -> String {
+    let budget_state = match fixed.within_budget {
+        Some(true) => "within_budget",
+        Some(false) => "over_budget",
+        None => "no_observed_time",
+    };
+    object(&[
+        ("threshold_ppm", fixed.threshold_ppm.to_string()),
+        ("true_positives", fixed.true_positives.to_string()),
+        ("false_positives", fixed.false_positives.to_string()),
+        ("false_negatives", fixed.false_negatives.to_string()),
+        ("precision", ratio(fixed.precision)),
+        ("recall", ratio(fixed.recall)),
+        ("observed_ns", text(&fixed.observed_ns.to_string())),
+        ("budget_state", text(budget_state)),
+        ("time_to_detect", timing(fixed.time_to_detect)),
+        ("report_digest", text(&fixed.report_digest.to_string())),
+        ("digest", text(&fixed.digest.to_string())),
+    ])
+}
+
 fn report_with_threshold(report: &EvaluationReport, threshold_ppm: Option<u32>) -> Result<String> {
     let mut json = report_json(report);
     if let Some(threshold_ppm) = threshold_ppm {
         let fixed = report.at_threshold(threshold_ppm)?;
-        let budget_state = match fixed.within_budget {
-            Some(true) => "within_budget",
-            Some(false) => "over_budget",
-            None => "no_observed_time",
-        };
-        let projection = object(&[
-            ("threshold_ppm", fixed.threshold_ppm.to_string()),
-            ("true_positives", fixed.true_positives.to_string()),
-            ("false_positives", fixed.false_positives.to_string()),
-            ("false_negatives", fixed.false_negatives.to_string()),
-            ("precision", ratio(fixed.precision)),
-            ("recall", ratio(fixed.recall)),
-            ("observed_ns", text(&fixed.observed_ns.to_string())),
-            ("budget_state", text(budget_state)),
-            ("time_to_detect", timing(fixed.time_to_detect)),
-            ("report_digest", text(&fixed.report_digest.to_string())),
-            ("digest", text(&fixed.digest.to_string())),
-        ]);
+        let projection = fixed_json(&fixed);
         let body = json
             .strip_suffix('}')
             .ok_or_else(|| Failure::new("evaluation.cli.internal"))?;
@@ -939,6 +960,24 @@ fn run(args: impl IntoIterator<Item = OsString>) -> Result<String> {
             .strip_suffix('}')
             .ok_or_else(|| Failure::new("evaluation.cli.internal"))?;
         json = format!("{body},\"holdout\":{}}}", holdout.receipt(report.digest)?);
+        if let Some((path, model_generation)) = options.baseline {
+            let baseline_identity = EvaluationIdentity {
+                model_generation,
+                ..options.identity.clone()
+            };
+            let baseline_candidates = parse_candidates(&read_input(&path)?)?;
+            let baseline = evaluate(
+                &baseline_identity,
+                &options.policy,
+                &labels,
+                &baseline_candidates,
+            )?;
+            let comparison = holdout.compare(&baseline, &report)?;
+            let body = json
+                .strip_suffix('}')
+                .ok_or_else(|| Failure::new("evaluation.cli.internal"))?;
+            json = format!("{body},\"model_comparison\":{comparison}}}");
+        }
     }
     let conformal_generation = options
         .calibration

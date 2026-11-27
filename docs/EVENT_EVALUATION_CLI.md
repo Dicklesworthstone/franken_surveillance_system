@@ -156,6 +156,28 @@ completeness of a model's training history, the timestamps of threshold selectio
 the identity of differently encoded recordings. The manifest reader never opens footage.
 [Working synthetic manifest](../fixtures/evaluation/cli-smoke/holdout.tsv).
 
+## Compare two model generations on held-out clips
+
+Pass `--baseline-candidates` and `--baseline-model-generation` alongside the challenger
+candidates, holdout manifest and fixed threshold. Both models use the same labels, clip
+exposure, matching tolerances, pipeline generation and false-alert policy. For example,
+from the repository root:
+
+```sh
+fixture=fixtures/evaluation/cli-smoke
+fss-evaluate --labels "$fixture/class-labels.tsv" --candidates "$fixture/class-candidates.tsv" \
+  --pipeline-generation synthetic-pipeline --model-generation challenger --policy-generation fixed \
+  --max-false-alerts 0 --per-observed-ns 1000 --fixed-threshold-ppm 800000 \
+  --holdout-manifest "$fixture/comparison-holdout.tsv" \
+  --baseline-candidates "$fixture/comparison-baseline.tsv" --baseline-model-generation prior
+```
+
+The `model_comparison` contains both fixed operating points, including precision, recall,
+timing and false-alert budget status. Gained and lost events are paired by labeled truth
+identity. An event wholly inside a coverage gap stays unobservable for both models.
+Candidate IDs are local to each input. The comparison digest binds the manifest and both
+fixed operating points in baseline/challenger order. This example uses synthetic data.
+
 ## Evaluate retained native package tracks
 
 First retain a complete native detection report using the existing `fss-file import` and

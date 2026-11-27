@@ -430,3 +430,58 @@ fn heldout_cli_binds_the_threshold_and_refuses_calibration_on_holdout() -> TestR
         "evaluation.holdout.options",
     )
 }
+
+#[test]
+fn paired_holdout_identifies_lost_and_gained_events_at_the_locked_threshold() -> TestResult {
+    let score = |new: &str, old: &str| {
+        command("class-labels.tsv", new, "0", "1000")
+            .args(["--fixed-threshold-ppm", "800000", "--holdout-manifest"])
+            .arg(fixture("comparison-holdout.tsv"))
+            .arg("--baseline-candidates")
+            .arg(fixture(old))
+            .args(["--baseline-model-generation", "prior"])
+            .output()
+    };
+    let forward = score("class-candidates.tsv", "comparison-baseline.tsv")?;
+    assert!(
+        forward.status.success(),
+        "{}",
+        String::from_utf8_lossy(&forward.stderr)
+    );
+    let json = std::str::from_utf8(&forward.stdout)?;
+    let paired = json
+        .split_once("\"model_comparison\":")
+        .ok_or("missing model comparison")?
+        .1;
+    assert!(paired.contains("\"baseline_model_generation\":\"prior\""));
+    assert!(paired.contains("\"gained_event_ids\":[\"person-a\"]"));
+    assert!(paired.contains("\"lost_event_ids\":[\"person-b\",\"vehicle\"]"));
+    assert!(paired.contains("\"missed_by_both\":1,\"not_observable\":1"));
+    assert!(paired.contains("\"true_positives\":2,\"false_positives\":1"));
+    assert!(paired.contains("\"true_positives\":1,\"false_positives\":3"));
+    assert_eq!(
+        forward.stdout,
+        score("class-candidates.tsv", "comparison-baseline.tsv")?.stdout
+    );
+
+    let reverse = score("comparison-baseline.tsv", "class-candidates.tsv")?;
+    let json = std::str::from_utf8(&reverse.stdout)?;
+    assert!(json.contains("\"gained_event_ids\":[\"person-b\",\"vehicle\"]"));
+    assert!(json.contains("\"lost_event_ids\":[\"person-a\"]"));
+
+    assert_refusal(
+        &score("class-candidates.tsv", "unknown-clip-candidates.tsv")?,
+        "evaluation.unknown_clip",
+    )?;
+    let no_manifest = command("class-labels.tsv", "class-candidates.tsv", "0", "1000")
+        .arg("--baseline-candidates")
+        .arg(fixture("comparison-baseline.tsv"))
+        .args([
+            "--baseline-model-generation",
+            "prior",
+            "--fixed-threshold-ppm",
+            "800000",
+        ])
+        .output()?;
+    assert_refusal(&no_manifest, "evaluation.comparison.options")
+}
