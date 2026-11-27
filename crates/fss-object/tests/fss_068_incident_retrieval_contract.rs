@@ -302,5 +302,40 @@ fn fss_068_preserves_authority_custody_floor_corruption_indeterminate_budget_can
         IncidentRetrievalReceipt::decode_canonical(&mut CanonicalDecoder::new(&bad_enc2.finish()))
             .is_err()
     );
+
+    // 8. Non-manifest incident root must be refused as corrupt (cannot bypass manifest closure),
+    //    and wire-level forged receipt duplicating a digest across verified & corrupt sets refused!
+    let (plain_root_digest, plain_root_rec) = leaf_record(
+        b"plain-blob-pretending-to-be-root",
+        CustodyLevel::Retrievable,
+    );
+    let mut plain_store = BTreeMap::new();
+    plain_store.insert(plain_root_digest, plain_root_rec);
+    let plain_auth = make_authority([plain_root_digest], CustodyLevel::Retrievable);
+    let r_plain_root = verify_incident_retrieval(
+        &plain_auth,
+        plain_root_digest,
+        &plain_store,
+        None,
+        TimestampNs(700),
+        || false,
+    )?;
+    assert_eq!(
+        r_plain_root.status,
+        IncidentRetrievalStatus::PartialCorruptOrMissing
+    );
+    assert_eq!(r_plain_root.corrupt_digests, vec![plain_root_digest]);
+    assert!(r_plain_root.verified_objects.is_empty());
+
+    let mut forged_overlap = r_corrupt;
+    forged_overlap.verified_objects.push(c1_digest);
+    forged_overlap.verified_objects.sort_unstable();
+    forged_overlap.receipt_digest = forged_overlap.computed_digest();
+    let mut bad_enc3 = CanonicalEncoder::new();
+    forged_overlap.encode_canonical(&mut bad_enc3);
+    assert!(
+        IncidentRetrievalReceipt::decode_canonical(&mut CanonicalDecoder::new(&bad_enc3.finish()))
+            .is_err()
+    );
     Ok(())
 }

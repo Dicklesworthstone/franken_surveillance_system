@@ -410,6 +410,7 @@ impl CanonicalDecode for MinimizedReproducerReceipt {
             || ContentDigest::sha256(&minimized_bytes) != minimized_digest
             || !(2..=MAX_MINIMIZER_EVALUATIONS).contains(&max_evaluations)
             || !(2..=max_evaluations).contains(&predicate_evaluations)
+            || (budget_exhausted && predicate_evaluations != max_evaluations)
             || !reproduces_failure
         {
             return Err(ContractError::InvalidIdentifier);
@@ -558,26 +559,30 @@ pub fn minimize_reproducer(
             break;
         }
 
-        // Stage 2: deterministic single-byte deletion sweep (right-to-left keeps prefix stable).
-        let mut pos = best.len();
-        while pos > 0 {
-            pos -= 1;
-            let mut candidate = Vec::with_capacity(best.len() - 1);
-            candidate.extend_from_slice(&best[..pos]);
-            candidate.extend_from_slice(&best[pos + 1..]);
-            match try_candidate(
-                &candidate,
-                &mut evals,
-                &mut budget_exhausted,
-                &mut is_cancelled,
-                &mut predicate,
-            )? {
-                Some(true) => {
-                    best = candidate;
-                    improved = true;
+        // Stage 2: single-byte deletion sweep when Stage 1 did not already test every 1-byte
+        // deletion (i.e. when `best.len() == 1` to test empty, or if granularity stopped early).
+        let stage1_covered_singles = best.len() >= 2 && granularity >= best.len();
+        if !stage1_covered_singles {
+            let mut pos = best.len();
+            while pos > 0 {
+                pos -= 1;
+                let mut candidate = Vec::with_capacity(best.len() - 1);
+                candidate.extend_from_slice(&best[..pos]);
+                candidate.extend_from_slice(&best[pos + 1..]);
+                match try_candidate(
+                    &candidate,
+                    &mut evals,
+                    &mut budget_exhausted,
+                    &mut is_cancelled,
+                    &mut predicate,
+                )? {
+                    Some(true) => {
+                        best = candidate;
+                        improved = true;
+                    }
+                    Some(false) => {}
+                    None => break,
                 }
-                Some(false) => {}
-                None => break,
             }
         }
         if budget_exhausted || !improved {

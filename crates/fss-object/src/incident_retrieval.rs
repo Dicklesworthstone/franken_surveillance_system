@@ -313,7 +313,9 @@ fn decode_sorted_digest_list(
     decoder: &mut CanonicalDecoder<'_>,
 ) -> Result<Vec<ContentDigest>, ContractError> {
     let count = usize::try_from(decoder.u64()?).map_err(|_| ContractError::InvalidIdentifier)?;
-    if count > MAX_INCIDENT_OBJECTS {
+    // Prevent hostile wire pre-allocation beyond both MAX_INCIDENT_OBJECTS and remaining bytes
+    // (each canonical ContentDigest occupies 1 algorithm tag byte + 32 digest bytes = 33 bytes).
+    if count > MAX_INCIDENT_OBJECTS || count > decoder.remaining() / 33 {
         return Err(ContractError::InvalidIdentifier);
     }
     let mut out = Vec::with_capacity(count);
@@ -396,8 +398,27 @@ impl CanonicalDecode for IncidentRetrievalReceipt {
             || generation.0 == 0
             || read_local_source
             || verified_bytes > MAX_INCIDENT_BYTES
+            || (verified_objects.is_empty() && verified_bytes != 0)
         {
             return Err(ContractError::InvalidIdentifier);
+        }
+
+        // Every digest across verified and defect sets must be pairwise disjoint and bounded.
+        let mut all_seen = BTreeSet::new();
+        for list in [
+            &verified_objects,
+            &missing_digests,
+            &corrupt_digests,
+            &below_custody_floor_digests,
+            &tombstoned_digests,
+            &indeterminate_digests,
+            &uncovered_encryption_digests,
+        ] {
+            for &d in list {
+                if !all_seen.insert(d) || all_seen.len() > MAX_INCIDENT_OBJECTS {
+                    return Err(ContractError::InvalidIdentifier);
+                }
+            }
         }
 
         // Strict non-collapse status invariants enforced even against recomputed SHA-256 forgeries!
@@ -409,7 +430,9 @@ impl CanonicalDecode for IncidentRetrievalReceipt {
         let has_indeterminate = !indeterminate_digests.is_empty();
         let status_valid = match status {
             IncidentRetrievalStatus::VerifiedRetrievableComplete => {
-                !verified_objects.is_empty() && !has_hard_defect && !has_indeterminate
+                verified_objects.binary_search(&incident_root).is_ok()
+                    && !has_hard_defect
+                    && !has_indeterminate
             }
             IncidentRetrievalStatus::UnauthorizedScope => {
                 verified_objects.is_empty()
@@ -472,6 +495,11 @@ pub fn verify_incident_retrieval(
         return Err(IncidentRetrievalError::Cancelled);
     }
 
+    if let Some(ctx) = encryption_context
+        && (ctx.generation.0 == 0 || ctx.protected_objects.is_empty())
+    {
+        return Err(IncidentRetrievalError::InvalidAuthority);
+    }
     let enc_ctx_digest = encryption_context.map(EncryptionContextManifest::digest);
 
     // Authority-before-read: unauthorized root NEVER reads object bytes or expands graph edges!
@@ -547,6 +575,15 @@ pub fn verify_incident_retrieval(
             continue;
         }
 
+        // Enforce per-object byte budget BEFORE hashing so a hostile oversized blob cannot burn CPU.
+        let obj_len = record.bytes.len() as u64;
+        if obj_len > authority.max_bytes {
+            return Err(IncidentRetrievalError::BudgetExceeded {
+                objects: visited_count,
+                bytes: obj_len,
+            });
+        }
+
         // Independent SHA-256 digest check over retrieved bytes.
         if record.digest != digest || ContentDigest::sha256(&record.bytes) != digest {
             corrupt_digests.insert(digest);
@@ -559,7 +596,6 @@ pub fn verify_incident_retrieval(
             continue;
         }
 
-        let obj_len = record.bytes.len() as u64;
         let next_bytes =
             verified_bytes
                 .checked_add(obj_len)
@@ -572,6 +608,12 @@ pub fn verify_incident_retrieval(
                 objects: visited_count,
                 bytes: next_bytes,
             });
+        }
+
+        // Incident root MUST be a valid ObjectManifest; a non-manifest root cannot stand in for closure.
+        if digest == incident_root && !record.is_manifest {
+            corrupt_digests.insert(digest);
+            continue;
         }
 
         if record.is_manifest {

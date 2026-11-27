@@ -313,5 +313,18 @@ fn fss_125_refuses_non_failing_input_oversized_cancel_nondeterministic_and_respe
         ),
         Err(MinimizerError::NondeterministicPredicate)
     );
+
+    // 6. Wire forgery claiming `budget_exhausted = true` while `predicate_evaluations < max_evaluations` refused!
+    let mut forged_budget = tight;
+    forged_budget.predicate_evaluations = 2;
+    forged_budget.max_evaluations = 10;
+    forged_budget.budget_exhausted = true;
+    forged_budget.receipt_digest = forged_budget.computed_digest();
+    let mut bad_enc = CanonicalEncoder::new();
+    forged_budget.encode_canonical(&mut bad_enc);
+    assert!(
+        MinimizedReproducerReceipt::decode_canonical(&mut CanonicalDecoder::new(&bad_enc.finish()))
+            .is_err()
+    );
     Ok(())
 }
