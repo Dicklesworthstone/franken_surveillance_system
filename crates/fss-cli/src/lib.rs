@@ -127,6 +127,8 @@ pub mod supervisor;
 pub mod token;
 /// Canonical source-verified detector track reads shared by CLI and MCP.
 pub mod tracks_query_cmd;
+/// Direct Rust API, CLI, and MCP transcript-equivalence harness (FSS-235).
+pub mod transcript_equivalence;
 /// Pure native UniFi selection, private argument composition and outer approval.
 pub mod unifi_plan;
 /// Cohesive unified `fss <domain> <verb>` operational grammar, flag normalizer, and ergonomics linter.
@@ -198,6 +200,13 @@ pub use status_cmd::{
     execute_status_with, parse_status_args,
 };
 pub use token::{ArgToken, MAX_ARG_TOKEN_BYTES, is_option_shaped, tokenize_os_args};
+pub use transcript_equivalence::{
+    AffordanceClassification, EquivalenceError, EquivalenceMismatch, MAX_IGNORED_KEYS,
+    MAX_SURFACE_OUTPUT_BYTES, MAX_TOKEN_SUBSTITUTIONS, MAX_TRANSCRIPT_STEPS, NormalizationPolicy,
+    PROTECTED_SEMANTIC_KEYS, SemanticProjection, StepEquivalenceRow, SurfaceKind, TokenNormalizer,
+    TranscriptEquivalenceReport, build_report, compare_step, execute_rust_api_argv,
+    project_surface_response, render_canonical_json_normalized,
+};
 pub use unified::{
     CanonicalIdKind, DomainSpec, FlagSpec, FlagTranslationMode, LintFinding, LintReport,
     TOP_LEVEL_HELP_SPECS, TopLevelHelpSpec, TranslatedCompanionCall, UNIFIED_DOMAINS,

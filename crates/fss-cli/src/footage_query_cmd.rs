@@ -107,6 +107,9 @@ pub(crate) fn parse_query_command(tokens: &[ArgToken]) -> Result<FssCommand, Cli
             .map(Box::new)
             .map(FssCommand::EventHydrationQuery);
     }
+    if crate::query_cmd::selects_ops_query_target(tokens) {
+        return crate::query_cmd::parse_query_args(tokens).map(FssCommand::Query);
+    }
     let values = collect_options(
         "query",
         tokens,

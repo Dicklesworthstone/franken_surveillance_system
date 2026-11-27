@@ -189,6 +189,12 @@ pub fn parse_query_args(tokens: &[ArgToken]) -> Result<QueryArgs, CliError> {
     })
 }
 
+/// Returns `true` when `tokens` select one of the five operational `AOP-005 query` targets
+/// (`cameras`, `graph`, `fusion`, `holds`, `privacy-masks`).
+pub(crate) fn selects_ops_query_target(tokens: &[ArgToken]) -> bool {
+    detect_ops_query_target(tokens).is_some()
+}
+
 fn detect_ops_query_target(tokens: &[ArgToken]) -> Option<&'static str> {
     let mut iter = tokens.iter().enumerate();
     while let Some((_, tok)) = iter.next() {
@@ -238,11 +244,19 @@ fn parse_ops_query_args(target: &'static str, tokens: &[ArgToken]) -> Result<Que
     let mut without_domains: Vec<String> = Vec::new();
     let mut granted_capabilities: BTreeSet<String> = BTreeSet::new();
     let mut saw_json = false;
+    let mut saw_target = false;
 
     let mut i = 1_usize; // skip "query"
     while i < tokens.len() {
         let tok = &tokens[i];
         if tok.as_str() == "--json" {
+            if saw_json {
+                return Err(CliError::DuplicateOption {
+                    option: "--json".to_owned(),
+                    command: Some("query".to_owned()),
+                    index: tok.index,
+                });
+            }
             saw_json = true;
             i += 1;
             continue;
@@ -261,6 +275,13 @@ fn parse_ops_query_args(target: &'static str, tokens: &[ArgToken]) -> Result<Que
         i += 1;
         match flag {
             "--target" => {
+                if saw_target {
+                    return Err(CliError::DuplicateOption {
+                        option: "--target".to_owned(),
+                        command: Some("query".to_owned()),
+                        index: idx,
+                    });
+                }
                 if val != target {
                     return Err(malformed(
                         "--target",
@@ -269,6 +290,7 @@ fn parse_ops_query_args(target: &'static str, tokens: &[ArgToken]) -> Result<Que
                         idx,
                     ));
                 }
+                saw_target = true;
             }
             "--root" => {
                 if root.is_some() {
