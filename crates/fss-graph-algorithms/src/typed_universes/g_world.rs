@@ -1187,6 +1187,11 @@ impl WorldFactorGraph {
             }
             visible_factors.insert(factor.factor_id.clone(), factor);
         }
+        if visible_factors.len() != projection.node_count() {
+            return Err(TypedUniverseError::MalformedWire(
+                "wire G_world factor count disagrees with embedded projection".to_owned(),
+            ));
+        }
         let e_len = usize::try_from(dec.u64().map_err(map_err)?)
             .map_err(|_| TypedUniverseError::MalformedWire("edge count overflow".to_owned()))?;
         if e_len > MAX_UNIVERSE_ITEMS * 4 || e_len.saturating_mul(12) > dec.remaining() {
@@ -1204,7 +1209,16 @@ impl WorldFactorGraph {
                     "wire world edge references unknown factor".to_owned(),
                 ));
             }
-            visible_edges.insert(edge);
+            if !visible_edges.insert(edge) {
+                return Err(TypedUniverseError::MalformedWire(
+                    "duplicate wire G_world edge".to_owned(),
+                ));
+            }
+        }
+        if visible_edges.len() != projection.edge_count() {
+            return Err(TypedUniverseError::MalformedWire(
+                "wire G_world edge count disagrees with embedded projection".to_owned(),
+            ));
         }
         let (migrated, tombstoned_fields) = if version == LEGACY_UNIVERSE_WIRE_VERSION {
             let _deprecated_flag = dec.u8().map_err(map_err)?;

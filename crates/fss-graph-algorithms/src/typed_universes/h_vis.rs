@@ -1122,6 +1122,19 @@ impl VisibilityHypergraph {
             }
             visible_factors.insert(factor.factor_id.clone(), factor);
         }
+        let proj_factor_count = projection
+            .node_handles()
+            .into_iter()
+            .filter_map(|h| projection.node(h).ok())
+            .filter(|n| n.node_id.starts_with("factor/"))
+            .count();
+        if projection.absence_boundary().certifies_absence()
+            && visible_factors.len() != proj_factor_count
+        {
+            return Err(TypedUniverseError::MalformedWire(
+                "wire H_vis factor count disagrees with certified embedded projection".to_owned(),
+            ));
+        }
         let (migrated, tombstoned_fields) = if version == LEGACY_UNIVERSE_WIRE_VERSION {
             let _deprecated_flat_score = dec.u32().map_err(map_err)?;
             (

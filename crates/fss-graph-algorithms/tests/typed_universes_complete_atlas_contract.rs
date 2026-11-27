@@ -1195,6 +1195,40 @@ fn proj_evidence_001_append_only_supersession_invalidation_and_counterfactuals()
     assert!(rep2.invalidated_nodes.contains(&"dec:alert-1".to_owned()));
     assert_eq!(rep2.superseded_history_nodes, vec!["det:v1-old".to_owned()]);
 
+    // Superseded target decision itself MUST NOT report `decision_currently_supported == true`!
+    let gev_sup = gev.apply_deltas(
+        anchor(503),
+        ContentDigest::sha256(b"hist:503"),
+        Generation(1),
+        &scope,
+        &[
+            EvidenceGraphDelta::AppendNode(mk_node(
+                "dec:alert-2",
+                EvidenceGraphNodeKind::PolicyDecision,
+                WorldKnowledgeState::Hypothesized,
+                WorldProvenanceClass::DerivedCognition,
+                WorldHypothesisDisposition::Supported,
+                EvidenceEffectOutcome::Prepared,
+                2,
+            )),
+            EvidenceGraphDelta::AppendEdge(EvidenceGraphEdge {
+                source_id: "dec:alert-2".to_owned(),
+                target_id: "dec:alert-1".to_owned(),
+                kind: EvidenceEdgeKind::Supersedes,
+            }),
+        ],
+        complete_absence(),
+        || false,
+    )?;
+    let rep_sup =
+        gev_sup.explain_decision_and_counterfactuals("dec:alert-1", None, 10_000, || false)?;
+    assert!(!rep_sup.decision_currently_supported);
+    assert!(
+        rep_sup
+            .superseded_history_nodes
+            .contains(&"dec:alert-1".to_owned())
+    );
+
     // 4. v1 -> v2 tombstone migration.
     let v1_bytes = gev2.to_legacy_v1_fixture_bytes(true)?;
     let (migrated, mig) = CausalEvidenceGraph::from_canonical_bytes(&v1_bytes)?;
@@ -1475,6 +1509,45 @@ fn proj_object_001_root_last_custody_holds_and_graph_complete_deletion() -> Test
     assert_eq!(
         audit_ok.deletion_verdict,
         ObjectClosureVerdict::DeletionClosureAdmitted
+    );
+
+    // An alternate EvidenceRoot referencing a secondary index in `deletion_closure` MUST block deletion!
+    let shared_idx_blocked = repaired.apply_deltas(
+        anchor(603),
+        ContentDigest::sha256(b"hist:603"),
+        Generation(1),
+        &scope,
+        &[
+            ObjectGraphDelta::UpsertNode(mk_obj(
+                "root:ev-idx-sharer",
+                ArchiveObjectKind::EvidenceRoot,
+                2,
+                ObjectCustodyState::Retrievable,
+                false,
+            )),
+            ObjectGraphDelta::AddEdge(ArchiveObjectEdge {
+                source_id: "root:ev-idx-sharer".to_owned(),
+                target_id: "idx:sec-1".to_owned(),
+                kind: ObjectEdgeKind::References,
+            }),
+        ],
+        complete_absence(),
+        || false,
+    )?;
+    let audit_idx_blocked = shared_idx_blocked.audit_root_closure_and_deletion(
+        "root:ev-1",
+        ObjectCustodyState::Published,
+        10_000,
+        || false,
+    )?;
+    assert_eq!(
+        audit_idx_blocked.deletion_verdict,
+        ObjectClosureVerdict::DeletionBlocked
+    );
+    assert!(
+        audit_idx_blocked
+            .deletion_blockers
+            .contains(&"shared_alternate_root:root:ev-idx-sharer:idx:sec-1".to_owned())
     );
 
     let v1_bytes = repaired.to_legacy_v1_fixture_bytes(true)?;

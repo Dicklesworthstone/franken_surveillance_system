@@ -885,6 +885,11 @@ impl TrackAssociationGraph {
             }
             visible_nodes.insert(node.tracklet_id.clone(), node);
         }
+        if visible_nodes.len() != projection.node_count() {
+            return Err(TypedUniverseError::MalformedWire(
+                "wire G_assoc node count disagrees with embedded projection".to_owned(),
+            ));
+        }
         let e_len = usize::try_from(dec.u64().map_err(map_err)?)
             .map_err(|_| TypedUniverseError::MalformedWire("edge count overflow".to_owned()))?;
         if e_len > MAX_UNIVERSE_ITEMS * 4 || e_len.saturating_mul(24) > dec.remaining() {
@@ -895,6 +900,11 @@ impl TrackAssociationGraph {
         let mut visible_edges = BTreeMap::new();
         for _ in 0..e_len {
             let edge = AssocCandidateEdge::decode_body(&mut dec)?;
+            if visible_edges.contains_key(&edge.edge_id) {
+                return Err(TypedUniverseError::MalformedWire(
+                    "duplicate wire G_assoc edge_id".to_owned(),
+                ));
+            }
             let (Some(src), Some(dst)) = (
                 visible_nodes.get(&edge.source_id),
                 visible_nodes.get(&edge.target_id),
@@ -909,6 +919,11 @@ impl TrackAssociationGraph {
                 ));
             }
             visible_edges.insert(edge.edge_id.clone(), edge);
+        }
+        if visible_edges.len() != projection.edge_count() {
+            return Err(TypedUniverseError::MalformedWire(
+                "wire G_assoc edge count disagrees with embedded projection".to_owned(),
+            ));
         }
         let (migrated, tombstoned_fields) = if version == LEGACY_UNIVERSE_WIRE_VERSION {
             let _deprecated_flag = dec.u8().map_err(map_err)?;

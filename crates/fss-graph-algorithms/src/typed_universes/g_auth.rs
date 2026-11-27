@@ -923,6 +923,11 @@ impl AuthorityGraph {
             }
             visible_nodes.insert(node.node_id.clone(), node);
         }
+        if visible_nodes.len() != projection.node_count() {
+            return Err(TypedUniverseError::MalformedWire(
+                "wire G_auth node count disagrees with embedded projection".to_owned(),
+            ));
+        }
         let e_len = usize::try_from(dec.u64().map_err(map_err)?)
             .map_err(|_| TypedUniverseError::MalformedWire("edge count overflow".to_owned()))?;
         if e_len > MAX_UNIVERSE_ITEMS * 4 || e_len.saturating_mul(20) > dec.remaining() {
@@ -963,7 +968,16 @@ impl AuthorityGraph {
                 ));
             }
             decoded_edges.push(edge.clone());
-            visible_edges.insert(edge);
+            if !visible_edges.insert(edge) {
+                return Err(TypedUniverseError::MalformedWire(
+                    "duplicate wire G_auth edge".to_owned(),
+                ));
+            }
+        }
+        if visible_edges.len() != projection.edge_count() {
+            return Err(TypedUniverseError::MalformedWire(
+                "wire G_auth edge count disagrees with embedded projection".to_owned(),
+            ));
         }
         let mut wire_del_parents: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
         for edge in &decoded_edges {

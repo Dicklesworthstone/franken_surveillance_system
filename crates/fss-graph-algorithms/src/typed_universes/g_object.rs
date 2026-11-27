@@ -683,7 +683,7 @@ impl ArchiveObjectGraph {
             alt_seen.insert(alt_id.as_str());
             while let Some(u) = alt_q.pop_front() {
                 budget.charge(1, &mut is_cancelled)?;
-                if u != alt_id && reachable.contains(u) {
+                if u != alt_id && deletion_closure.contains(u) {
                     deletion_blockers.insert(format!("shared_alternate_root:{alt_id}:{u}"));
                 }
                 for edge in &self.visible_edges {
@@ -880,6 +880,11 @@ impl ArchiveObjectGraph {
             }
             visible_nodes.insert(node.object_id.clone(), node);
         }
+        if visible_nodes.len() != projection.node_count() {
+            return Err(TypedUniverseError::MalformedWire(
+                "wire G_object node count disagrees with embedded projection".to_owned(),
+            ));
+        }
         let e_len = usize::try_from(dec.u64().map_err(map_err)?)
             .map_err(|_| TypedUniverseError::MalformedWire("edge count overflow".to_owned()))?;
         if e_len > MAX_UNIVERSE_ITEMS * 4 || e_len.saturating_mul(9) > dec.remaining() {
@@ -897,7 +902,16 @@ impl ArchiveObjectGraph {
                     "wire G_object edge references unknown node".to_owned(),
                 ));
             }
-            visible_edges.insert(edge);
+            if !visible_edges.insert(edge) {
+                return Err(TypedUniverseError::MalformedWire(
+                    "duplicate wire G_object edge".to_owned(),
+                ));
+            }
+        }
+        if visible_edges.len() != projection.edge_count() {
+            return Err(TypedUniverseError::MalformedWire(
+                "wire G_object edge count disagrees with embedded projection".to_owned(),
+            ));
         }
         let (migrated, tombstoned_fields) = if version == LEGACY_UNIVERSE_WIRE_VERSION {
             let _deprecated_flag = dec.u8().map_err(map_err)?;

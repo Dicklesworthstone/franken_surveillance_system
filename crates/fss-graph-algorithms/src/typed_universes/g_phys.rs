@@ -869,6 +869,11 @@ impl PhysicalTopologyGraph {
             }
             visible_nodes.insert(node.node_id.clone(), node);
         }
+        if visible_nodes.len() != projection.node_count() {
+            return Err(TypedUniverseError::MalformedWire(
+                "wire G_phys node count disagrees with embedded projection".to_owned(),
+            ));
+        }
         let e_len = usize::try_from(dec.u64().map_err(map_err)?)
             .map_err(|_| TypedUniverseError::MalformedWire("edge count overflow".to_owned()))?;
         if e_len > MAX_UNIVERSE_ITEMS * 4 || e_len.saturating_mul(32) > dec.remaining() {
@@ -892,6 +897,11 @@ impl PhysicalTopologyGraph {
                 ));
             }
             visible_edges.insert(edge.edge_id.clone(), edge);
+        }
+        if visible_edges.len() != projection.edge_count() {
+            return Err(TypedUniverseError::MalformedWire(
+                "wire G_phys edge count disagrees with embedded projection".to_owned(),
+            ));
         }
         let (migrated, tombstoned_fields) = if version == LEGACY_UNIVERSE_WIRE_VERSION {
             let _deprecated_flag = dec.u8().map_err(map_err)?;
