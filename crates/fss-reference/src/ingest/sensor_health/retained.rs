@@ -19,6 +19,7 @@ use super::{
     policy_digest, screen_optical_quality,
 };
 use crate::ingest::RetainedFileImport;
+use crate::ingest::osd_mask::ImageRect;
 use crate::ingest::privacy_mask::current_mask;
 use crate::ingest::recorded_decode::h264::{
     RecordedH264RangeV2 as RecordedH264Range, RecordedH264Request,
@@ -62,6 +63,67 @@ impl From<HealthError> for ScreeningError {
     }
 }
 
+/// Spatial scope and thresholds for one optical preflight. Temporal health always uses the
+/// complete privacy-masked frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OpticalScreenOptions {
+    /// Integer sharpness and saturation thresholds.
+    pub thresholds: OpticalThresholds,
+    /// Exact decoded pixel rectangle. An absent rectangle selects the whole frame.
+    pub region: Option<ImageRect>,
+}
+
+// Called after the full frame has passed HealthScreen's size and length checks. A region
+// outside even one frame invalidates the request; clipping would silently change its scope.
+fn screen_region(
+    frame: HealthFrame<'_>,
+    region: ImageRect,
+    thresholds: OpticalThresholds,
+    cropped: &mut Vec<u8>,
+    cx: &ReplayCx,
+) -> Result<OpticalQualityMetrics, HealthError> {
+    if region.width == 0 || region.height == 0 || !region.fits_within(frame.dimensions) {
+        return Err(HealthError::InvalidImage);
+    }
+    cropped.clear();
+    let x = region.x as usize;
+    let width = region.width as usize;
+    let height = region.height as usize;
+    cropped.reserve(width * height);
+    for row in frame
+        .pixels
+        .chunks_exact(frame.dimensions[0] as usize)
+        .skip(region.y as usize)
+        .take(height)
+    {
+        cx.checkpoint("sensor_health:optical_region_row")
+            .map_err(|_| HealthError::Cancelled)?;
+        cropped.extend_from_slice(&row[x..x + width]);
+    }
+    // Two rectangles can contain identical bytes. Their generation binds source geometry and
+    // exact coordinates. The report also binds the matching whole-frame observation.
+    let mut e = CanonicalEncoder::new();
+    e.text(OPTICAL_QUALITY_DOMAIN);
+    e.text("region_xywh");
+    e.digest(frame.source_generation);
+    for dim in frame.dimensions {
+        e.u32(dim);
+    }
+    for value in [region.x, region.y, region.width, region.height] {
+        e.u32(value);
+    }
+    screen_optical_quality(
+        HealthFrame {
+            source_generation: ContentDigest::sha256(&e.finish()),
+            dimensions: [region.width, region.height],
+            pixels: cropped,
+            ..frame
+        },
+        thresholds,
+        cx,
+    )
+}
+
 /// Complete source-bound screening record. It is a diagnostic, not retained authority.
 #[derive(Clone, Debug)]
 pub struct ScreeningReport {
@@ -74,6 +136,7 @@ pub struct ScreeningReport {
     samples_used: u64,
     observations: Vec<HealthObservation>,
     optical_observations: Vec<OpticalQualityMetrics>,
+    optical_region: Option<ImageRect>,
 }
 
 impl ScreeningReport {
@@ -104,6 +167,30 @@ impl ScreeningReport {
         optical_thresholds: Option<OpticalThresholds>,
         cx: &ReplayCx,
     ) -> Result<Self, ScreeningError> {
+        Self::analyze_with_optical_scope(
+            deployment,
+            plan,
+            limits,
+            maximum_samples,
+            optical_thresholds.map(|thresholds| OpticalScreenOptions {
+                thresholds,
+                region: None,
+            }),
+            cx,
+        )
+    }
+
+    /// Screen the full masked plane for temporal faults and the selected region for optical
+    /// faults. Every requested rectangle must fit every decoded frame. Returned regional
+    /// measurements name the cropped luma, while conservative observations name the full frame.
+    pub fn analyze_with_optical_scope(
+        deployment: &ReferenceDeployment,
+        plan: &WatchPlan,
+        limits: &WatchLimits,
+        maximum_samples: u64,
+        optical: Option<OpticalScreenOptions>,
+        cx: &ReplayCx,
+    ) -> Result<Self, ScreeningError> {
         cx.checkpoint("sensor_health:source")
             .map_err(|_| HealthError::Cancelled)?;
         plan.validate().map_err(ScreeningError::Plan)?;
@@ -125,7 +212,8 @@ impl ScreeningReport {
         let mut complete = !spans.iter().any(|span| span.gap_before);
         let mut screen = HealthScreen::new(maximum_samples);
         let mut observations = Vec::with_capacity(plan.segment_count);
-        let mut optical_observations = if optical_thresholds.is_some() {
+        let mut cropped = Vec::new();
+        let mut optical_observations = if optical.is_some() {
             Vec::with_capacity(plan.segment_count)
         } else {
             Vec::new()
@@ -163,9 +251,14 @@ impl ScreeningReport {
                 pixels,
             };
             let observation = screen.observe(frame, cx)?;
-            if let Some(thresholds) = optical_thresholds {
-                let optical = screen_optical_quality(frame, thresholds, cx)?;
-                optical_observations.push(optical);
+            if let Some(options) = optical {
+                let metric = match options.region {
+                    Some(region) => {
+                        screen_region(frame, region, options.thresholds, &mut cropped, cx)?
+                    }
+                    None => screen_optical_quality(frame, options.thresholds, cx)?,
+                };
+                optical_observations.push(metric);
             }
             if let Some(first) = observations.first() {
                 let first: &HealthObservation = first;
@@ -284,6 +377,7 @@ impl ScreeningReport {
             samples_used: screen.samples_used(),
             observations,
             optical_observations,
+            optical_region: optical.and_then(|options| options.region),
         })
     }
 
@@ -304,6 +398,12 @@ impl ScreeningReport {
     #[must_use]
     pub fn optical_observations(&self) -> &[OpticalQualityMetrics] {
         &self.optical_observations
+    }
+
+    /// Pixel scope of the optical observations. When present, optical findings and admission
+    /// refer to this exact region, and temporal observations still describe the whole frame.
+    pub fn optical_region(&self) -> Option<ImageRect> {
+        self.optical_region
     }
 
     /// True if any screened frame exhibited an additive optical degradation finding.
@@ -374,13 +474,19 @@ impl ScreeningReport {
                 )
             })
             .collect();
+        let region_json = self.optical_region.map_or_else(String::new, |r| {
+            format!(
+                "\"optical_scope\":\"region\",\"region_xywh\":[{},{},{},{}],",
+                r.x, r.y, r.width, r.height,
+            )
+        });
         let optical_digest = self
             .optical_digest()
             .map_or_else(|| "null".to_owned(), |d| format!("\"{d}\""));
         format!(
             concat!(
                 "{{\"domain\":\"{}\",\"report_digest\":\"{}\",\"optical_report_digest\":{},",
-                "\"import_identity\":\"{}\",\"frames_screened\":{},\"range_complete\":{},",
+                "{}\"import_identity\":\"{}\",\"frames_screened\":{},\"range_complete\":{},",
                 "\"optical_admitted\":{},\"has_optical_findings\":{},",
                 "\"health_certified\":false,\"tamper_proven\":false,",
                 "\"absence_certifiable\":false,\"effect_authority\":false,\"frames\":[{}]}}"
@@ -388,6 +494,7 @@ impl ScreeningReport {
             OPTICAL_QUALITY_DOMAIN,
             self.digest(),
             optical_digest,
+            region_json,
             self.import_identity,
             rows.len(),
             self.range_complete,

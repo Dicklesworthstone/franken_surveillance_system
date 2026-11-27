@@ -16,12 +16,13 @@ use fss_cli::{ERR_CLI_MALFORMED_VALUE, ERR_CLI_RUNTIME_FAILURE, ExitIdentity};
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{BudgetVector, ContentDigest, DigestAlgorithm, OperationId, PrincipalId};
 use fss_reference::ingest::RetainedFileImport;
+use fss_reference::ingest::osd_mask::ImageRect;
 use fss_reference::ingest::recorded_decode::ComponentInterpretation;
 use fss_reference::ingest::recorded_watch::{
     MAX_WATCH_FRAMES, WatchDetectorConfig, WatchLimits, WatchPlan, WatchTrackerConfig, WatchZone,
 };
 use fss_reference::ingest::sensor_health::OpticalThresholds;
-use fss_reference::ingest::sensor_health::retained::ScreeningReport;
+use fss_reference::ingest::sensor_health::retained::{OpticalScreenOptions, ScreeningReport};
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
 type Run<T> = Result<T, Box<dyn Error>>;
@@ -33,9 +34,10 @@ const HELP: &str = "fss-event health optical --root EXISTING_DIR --site SITE\n\
   --import-id sha256:IMPORT --interpretation gray|ycbcr\n\
   [--first-segment N] [--segment-count M (1..128)] [--principal ID]\n\
   [--min-laplacian-variance-x1000 N] [--glare-luma-min N (0..255)]\n\
-  [--max-glare-ppm N (0..1000000)] [--max-samples N] [--report-out FILE]\n\
+  [--max-glare-ppm N (0..1000000)] [--region X,Y,W,H] [--max-samples N] [--report-out FILE]\n\
 Screens privacy-masked retained luma frames for severe defocus blur (exact integer 4-neighbor\n\
-Laplacian variance) and localized highlight glare saturation. Emits bounded diagnostic JSON\n\
+Laplacian variance) and localized highlight glare saturation. --region screens an exact pixel\n\
+rectangle for optical faults while temporal screening uses the full frame. Emits diagnostic JSON\n\
 with zero raw pixels; never certifies health, tamper, absence, or effect authority.\n";
 
 const OPTIONS: &[&str] = &[
@@ -49,6 +51,7 @@ const OPTIONS: &[&str] = &[
     "--min-laplacian-variance-x1000",
     "--glare-luma-min",
     "--max-glare-ppm",
+    "--region",
     "--max-samples",
     "--report-out",
 ];
@@ -63,6 +66,7 @@ struct OpticalOptions {
     first_segment: usize,
     segment_count: Option<usize>,
     thresholds: OpticalThresholds,
+    region: Option<ImageRect>,
     max_samples: u64,
     report_out: Option<PathBuf>,
 }
@@ -99,7 +103,9 @@ fn opt_u64(
 }
 
 fn parse(args: &[OsString]) -> Result<OpticalOptions, String> {
-    if args.len() > 25 || args.iter().any(|arg| arg.as_encoded_bytes().len() > 4096) {
+    if args.len() > 1 + 2 * OPTIONS.len()
+        || args.iter().any(|arg| arg.as_encoded_bytes().len() > 4096)
+    {
         return Err("argument bounds exceeded".into());
     }
     if args.first().and_then(|arg| arg.to_str()) != Some("optical") {
@@ -154,6 +160,15 @@ fn parse(args: &[OsString]) -> Result<OpticalOptions, String> {
         None
     };
 
+    let region = values
+        .get("--region")
+        .map(|_| {
+            ImageRect::parse_xywh(req_text(&values, "--region")?).map_err(|_| {
+                "--region requires X,Y,W,H in decoded pixels with positive width and height"
+                    .to_owned()
+            })
+        })
+        .transpose()?;
     let defaults = OpticalThresholds::default();
     let thresholds = OpticalThresholds {
         min_laplacian_variance_x1000: opt_u64(
@@ -195,6 +210,7 @@ fn parse(args: &[OsString]) -> Result<OpticalOptions, String> {
         first_segment,
         segment_count,
         thresholds,
+        region,
         max_samples,
         report_out: values.get("--report-out").map(PathBuf::from),
     })
@@ -250,12 +266,15 @@ fn run(options: OpticalOptions) -> Run<String> {
             detector: WatchDetectorConfig::default(),
             tracker: WatchTrackerConfig::default(),
         };
-        let report = ScreeningReport::analyze_with_optical(
+        let report = ScreeningReport::analyze_with_optical_scope(
             &deployment,
             &plan,
             &limits,
             options.max_samples,
-            Some(options.thresholds),
+            Some(OpticalScreenOptions {
+                thresholds: options.thresholds,
+                region: options.region,
+            }),
             &cx,
         )?;
         let output = format!("{}\n", report.to_optical_json());
@@ -354,8 +373,13 @@ mod tests {
                 glared[(y * w + x) as usize] = 255;
             }
         }
+        // A saturated tile on an otherwise sharp frame occupies only 2% of the view.
+        let mut local_glare = sharp.clone();
+        for row in local_glare.chunks_exact_mut(w as usize).skip(32).take(8) {
+            row[48..56].fill(255);
+        }
         let mut bytes = Vec::new();
-        for frame in [&sharp, &blurred, &glared] {
+        for frame in [&sharp, &blurred, &glared, &local_glare] {
             bytes.extend(encode_jpeg(w, h, frame, &cfg)?);
         }
         let path = dir.0.join("sample.mjpeg");
@@ -411,6 +435,41 @@ mod tests {
         assert!(json.contains("\"optical_admitted\":false"), "{json}");
         assert!(json.contains("\"health_certified\":false"), "{json}");
         assert!(json.contains("\"effect_authority\":false"), "{json}");
+
+        let mut one_frame = argv;
+        one_frame.extend([
+            "--first-segment".into(),
+            "3".into(),
+            "--segment-count".into(),
+            "1".into(),
+        ]);
+        let whole = run(parse(&one_frame)?)?;
+        assert!(whole.contains("\"optical_admitted\":true"), "{whole}");
+        one_frame.push("--region".into());
+        one_frame.push("48,32,8,8".into());
+        let affected = run(parse(&one_frame)?)?;
+        for expected in [
+            "\"region_xywh\":[48,32,8,8]",
+            "\"glare_ppm\":1000000",
+            "\"severe_blur\"",
+            "\"localized_highlight_glare\"",
+            "\"optical_admitted\":false",
+        ] {
+            assert!(affected.contains(expected), "{affected}");
+        }
+        let last = one_frame.last_mut().ok_or("missing region")?;
+        *last = "0,32,8,8".into();
+        let clear = run(parse(&one_frame)?)?;
+        assert!(clear.contains("\"optical_admitted\":true"), "{clear}");
+        let last = one_frame.last_mut().ok_or("missing region")?;
+        *last = "63,47,8,8".into();
+        assert!(
+            run(parse(&one_frame)?).is_err(),
+            "must reject partial rectangles"
+        );
+        let last = one_frame.last_mut().ok_or("missing region")?;
+        *last = "0,0,0,8".into();
+        assert!(parse(&one_frame).is_err(), "must reject an empty rectangle");
         Ok(())
     }
 
