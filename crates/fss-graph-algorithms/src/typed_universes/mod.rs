@@ -1,23 +1,12 @@
 #![forbid(unsafe_code)]
-//! Typed FSS graph projection universes (`H_vis`, `G_effect`, `G_auth`, `G_world`)
-//! built over [`crate::projection::ImmutableGraphProjection`] (`FSS-151`) with
-//! deterministic versioning, `v1 -> v2` migration, removed-field tombstones,
-//! incremental vs full-rebuild equivalence, and [`fss_core::GraphAlgorithmWitness`] emission.
+//! Complete 12-universe typed FSS graph projection atlas (`G_phys`, `H_vis`, `G_sensor`, `G_time`,
+//! `G_assoc`, `G_evidence`, `G_effect`, `G_object`, `G_auth`, `G_memory`, `G_agent`, `G_world`)
+//! built over [`crate::projection::ImmutableGraphProjection`] (`FSS-151`) with explicit lossless
+//! registry crosswalk ([`CANONICAL_PROJECTION_CROSSWALK`]), deterministic versioning, `v1 -> v2`
+//! migration, removed-field tombstones, incremental vs full-rebuild equivalence, and
+//! [`fss_core::GraphAlgorithmWitness`] emission (`GRAPH-PROJECTION-SEMANTICS-001`, `fss-x4a.23.69`).
 //!
-//! Covers:
-//! - [`h_vis`] (`PROJ-VISIBILITY-001`, `fss-x4a.23.69.2`): 12-dimension visibility & coverage
-//!   hypergraph `H_vis` + linked lossy camera-to-cell bipartite projection;
-//! - [`g_effect`] (`PROJ-EFFECT-001`, `fss-x4a.23.69.7`): effect & obligation dependency graph
-//!   `G_effect` with wait-cycle detection, critical path, cancellation potential, and honest
-//!   completion;
-//! - [`g_auth`] (`PROJ-AUTH-001`, `fss-x4a.23.69.9`): trust & authority graph `G_auth` with
-//!   monotone narrowing, type-distinct authority edges, cache partitioning, and capability
-//!   noninterference;
-//! - [`g_world`] (`PROJ-WORLD-001`, `fss-x4a.23.69.12`): factorized `WorldEnvelope` graph
-//!   `G_world` with protected high-loss world survival across compression/rerank/handoff,
-//!   typed affordance classification, and plan binding/invalidation.
-//!
-//! All four projections are derived cognition (`grants_effect_authority() == false`): none of
+//! All twelve projections are derived cognition (`grants_effect_authority() == false`): none of
 //! them ever becomes canonical truth, upgrades absent coverage, or authorizes an effect.
 
 use std::collections::BTreeMap;
@@ -31,10 +20,123 @@ use fss_core::{
 
 use crate::projection::{GraphUniverse, ProjectionError};
 
+pub mod g_agent;
+pub mod g_assoc;
 pub mod g_auth;
 pub mod g_effect;
+pub mod g_evidence;
+pub mod g_memory;
+pub mod g_object;
+pub mod g_phys;
+pub mod g_sensor;
+pub mod g_time;
 pub mod g_world;
 pub mod h_vis;
+
+/// Lossless semantic crosswalk entry reconciling each normative typed [`GraphUniverse`] with the
+/// machine-readable projection registry name (`GRAPH-PROJECTION-SEMANTICS-001`, `fss-x4a.23.69`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProjectionCrosswalkEntry {
+    /// Normative typed graph universe.
+    pub universe: GraphUniverse,
+    /// Stable requirement / projection contract ID.
+    pub projection_ref: &'static str,
+    /// Machine-readable projection registry name (`DigitalTwinGraph`, `SensorCoverageGraph`, etc.).
+    pub registry_projection_name: &'static str,
+    /// True iff this mapping is an explicit composed view rather than a lossy collapse.
+    pub is_composed_view: bool,
+    /// Preserved semantic distinction that must never be collapsed.
+    pub preserved_distinction: &'static str,
+}
+
+/// Complete, exhaustive 12-universe lossless crosswalk reconciling `G_phys..G_world` with the
+/// machine projection registry (`GRAPH-PROJECTION-SEMANTICS-001`).
+pub const CANONICAL_PROJECTION_CROSSWALK: [ProjectionCrosswalkEntry; 12] = [
+    ProjectionCrosswalkEntry {
+        universe: GraphUniverse::GPhys,
+        projection_ref: "PROJ-PHYSICAL-001",
+        registry_projection_name: "DigitalTwinGraph",
+        is_composed_view: false,
+        preserved_distinction: "Parallel behavioral traversal edges (walk/crawl/climb/doors) with transit intervals & uncertainty",
+    },
+    ProjectionCrosswalkEntry {
+        universe: GraphUniverse::HVis,
+        projection_ref: "PROJ-VISIBILITY-001",
+        registry_projection_name: "SensorCoverageGraph",
+        is_composed_view: false,
+        preserved_distinction: "12-dimension detection-opportunity factor hypergraph linked to lossy camera-cell bipartite view",
+    },
+    ProjectionCrosswalkEntry {
+        universe: GraphUniverse::GSensor,
+        projection_ref: "PROJ-SENSOR-001",
+        registry_projection_name: "DeviceFailureGraph",
+        is_composed_view: false,
+        preserved_distinction: "Directed 7-verb hardware/network/power/clock/model dependency & shared-failure domains",
+    },
+    ProjectionCrosswalkEntry {
+        universe: GraphUniverse::GTime,
+        projection_ref: "PROJ-TIME-001",
+        registry_projection_name: "SpatioTemporalTrackGraph",
+        is_composed_view: true,
+        preserved_distinction: "Interval-widened time-expanded transit feasibility with clock uncertainty & unobserved routes",
+    },
+    ProjectionCrosswalkEntry {
+        universe: GraphUniverse::GAssoc,
+        projection_ref: "PROJ-ASSOC-001",
+        registry_projection_name: "SpatioTemporalTrackGraph",
+        is_composed_view: true,
+        preserved_distinction: "Decomposed k-best anonymous tracklet hypotheses preserving ambiguity margins & probes",
+    },
+    ProjectionCrosswalkEntry {
+        universe: GraphUniverse::GEvidence,
+        projection_ref: "PROJ-EVIDENCE-001",
+        registry_projection_name: "EvidenceClaimGraph",
+        is_composed_view: false,
+        preserved_distinction: "Append-only 8-verb causal derivation, supersession, invalidation & counterfactual explanation",
+    },
+    ProjectionCrosswalkEntry {
+        universe: GraphUniverse::GEffect,
+        projection_ref: "PROJ-EFFECT-001",
+        registry_projection_name: "PlanObligationGraph",
+        is_composed_view: false,
+        preserved_distinction: "7-verb obligation/fence/wait-cycle graph keeping dispatched/observed/verified/indeterminate distinct",
+    },
+    ProjectionCrosswalkEntry {
+        universe: GraphUniverse::GObject,
+        projection_ref: "PROJ-OBJECT-001",
+        registry_projection_name: "ArchiveObjectGraph",
+        is_composed_view: false,
+        preserved_distinction: "Root-last 6-state custody closure & graph-complete hold/replica/index deletion reachability",
+    },
+    ProjectionCrosswalkEntry {
+        universe: GraphUniverse::GAuth,
+        projection_ref: "PROJ-AUTH-001",
+        registry_projection_name: "AuthorityGraph",
+        is_composed_view: false,
+        preserved_distinction: "Monotone-narrowed 7-verb capability graph with cache partitioning & noninterference",
+    },
+    ProjectionCrosswalkEntry {
+        universe: GraphUniverse::GMemory,
+        projection_ref: "PROJ-MEMORY-001",
+        registry_projection_name: "OperationalMemoryGraph",
+        is_composed_view: false,
+        preserved_distinction: "Advisory-only evidence-backed memory graph retaining counterexamples & firmware/TTL fences",
+    },
+    ProjectionCrosswalkEntry {
+        universe: GraphUniverse::GAgent,
+        projection_ref: "PROJ-AGENT-001",
+        registry_projection_name: "IncidentCausalGraph",
+        is_composed_view: true,
+        preserved_distinction: "12-verb mission/workspace/handoff cognitive-control graph with zero conversational-only obligations",
+    },
+    ProjectionCrosswalkEntry {
+        universe: GraphUniverse::GWorld,
+        projection_ref: "PROJ-WORLD-001",
+        registry_projection_name: "IncidentCausalGraph",
+        is_composed_view: true,
+        preserved_distinction: "Factorized WorldEnvelope preserving unproven protected high-loss worlds across rerank & handoff",
+    },
+];
 
 /// Legacy compatible wire version supported for deterministic old-to-new migration.
 pub const LEGACY_UNIVERSE_WIRE_VERSION: u32 = 1;
