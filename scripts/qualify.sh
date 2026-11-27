@@ -380,7 +380,7 @@ policy_lane() {
     scripts/e2e/fss_056_keyframe_chunker.sh scripts/e2e/fss_057_preview_fanout.sh \
     scripts/e2e/fss_058_buffer_accounting.sh \
     scripts/e2e/fss_060_decode_timestamp_oracle.sh scripts/e2e/fss_064_multipart_idempotency.sh \
-    scripts/e2e/fss_068_incident_retrieval.sh \
+    scripts/e2e/fss_068_incident_retrieval.sh scripts/e2e/fss_069_restore_fault_matrix.sh \
     scripts/e2e/fss_115_fragmented_mp4_cmaf.sh scripts/e2e/fss_117_mjpeg_vertical_slice.sh \
     scripts/e2e/fss_118_ffmpeg_lab_differential.sh \
     scripts/e2e/fss_119_frame_pool.sh scripts/e2e/fss_120_source_to_tensor_lineage.sh \
@@ -390,7 +390,8 @@ policy_lane() {
     scripts/e2e/fss_143_preprocess_postprocess_fusion.sh scripts/e2e/fss_150_thermal_pressure_scheduler.sh \
     scripts/e2e/fss_192_release_publication.sh scripts/e2e/fss_194_github_unavailable_release.sh \
     scripts/e2e/fss_195_claim_evaluator.sh scripts/e2e/fss_241_contract_basis.sh \
-    scripts/e2e/test_schedule_001.sh \
+    scripts/e2e/model_invariants_proof.sh \
+    scripts/e2e/test_model_host_001.sh scripts/e2e/test_schedule_001.sh \
     scripts/lanes/adapter.sh scripts/lanes/agent.sh scripts/lanes/archive.sh scripts/lanes/custody.sh \
     scripts/lanes/lab.sh scripts/lanes/media.sh scripts/lanes/model.sh scripts/lanes/perf.sh \
     scripts/lanes/reference.sh scripts/lanes/security.sh scripts/lanes/threat.sh \
