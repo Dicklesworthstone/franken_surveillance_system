@@ -392,7 +392,8 @@ policy_lane() {
     scripts/e2e/fss_192_release_publication.sh scripts/e2e/fss_194_github_unavailable_release.sh \
     scripts/e2e/fss_195_claim_evaluator.sh scripts/e2e/fss_241_contract_basis.sh \
     scripts/e2e/model_invariants_proof.sh \
-    scripts/e2e/test_model_host_001.sh scripts/e2e/test_schedule_001.sh \
+    scripts/e2e/test_media_malformed_001.sh scripts/e2e/test_model_host_001.sh \
+    scripts/e2e/test_schedule_001.sh scripts/e2e/typed_universes_publication.sh \
     scripts/e2e/xfer_invariants_proof.sh \
     scripts/lanes/adapter.sh scripts/lanes/agent.sh scripts/lanes/archive.sh scripts/lanes/custody.sh \
     scripts/lanes/lab.sh scripts/lanes/media.sh scripts/lanes/model.sh scripts/lanes/perf.sh \

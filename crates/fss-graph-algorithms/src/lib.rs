@@ -81,6 +81,8 @@ pub mod stream_capacity;
 pub mod submodular;
 pub mod temporal;
 pub mod topo;
+/// Typed FSS graph projection universes (`H_vis`, `G_effect`, `G_auth`, `G_world`).
+pub mod typed_universes;
 pub mod weighted;
 pub mod zset;
 

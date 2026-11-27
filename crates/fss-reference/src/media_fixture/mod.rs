@@ -35,7 +35,8 @@ pub use rtsp::{
     generate_transcript_bad_content_length, generate_transcript_clean,
     generate_transcript_get_parameter_keepalive, generate_transcript_interleave_split,
     generate_transcript_rtcp_rsize, generate_transcript_session_timeout,
-    generate_transcript_sr_absent, parse_transcript, parse_transcript_bounded, serialize_transcript,
+    generate_transcript_sr_absent, parse_transcript, parse_transcript_bounded,
+    serialize_transcript,
 };
 
 use std::fmt;
