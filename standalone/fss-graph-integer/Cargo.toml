@@ -1,0 +1,10 @@
+[package]
+name = "fss-graph-integer"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Standalone checked-integer graph algorithms with explicit proof witnesses"
+license = "MIT"
+repository = "https://github.com/Dicklesworthstone/franken_surveillance_system"
+
+[dependencies]
