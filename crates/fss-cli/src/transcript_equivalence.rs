@@ -299,7 +299,6 @@ impl NormalizationPolicy {
             "handoffId",
             "handoffRoot",
             "planId",
-            "caseId",
             "claimId",
             "proposalId",
             "feedbackId",
@@ -461,6 +460,16 @@ impl TokenNormalizer {
         }
     }
 
+    /// Returns `true` when this normalizer performs zero literal substitutions
+    /// and zero heuristic token masking.
+    #[must_use]
+    pub fn is_noop(&self) -> bool {
+        self.replacements.is_empty()
+            && !self.normalize_embedded_unix_ns
+            && !self.normalize_embedded_sha256
+            && !self.normalize_instance_ids
+    }
+
     /// Adds a literal `(needle, placeholder)` substitution.
     pub fn push(
         &mut self,
@@ -504,6 +513,10 @@ impl TokenNormalizer {
     }
 }
 
+fn is_word_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
 /// Masks ONLY the trailing 64-hex binding digest of `anchor:<16hex>:<commit>:<effects>:<64hex>`
 /// while preserving `<site>:<commit>:<effects>` verbatim so commit/effect drift still fails closed.
 fn mask_anchor_binding_hashes(input: &str) -> String {
@@ -511,7 +524,8 @@ fn mask_anchor_binding_hashes(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut i = 0_usize;
     while i < bytes.len() {
-        if input[i..].starts_with("anchor:") {
+        let prev_is_word = i > 0 && is_word_byte(bytes[i - 1]);
+        if !prev_is_word && input[i..].starts_with("anchor:") {
             let tail = &input[i..];
             // anchor:<16hex>:<digits>:<e<digits>|none>:<64hex>
             let mut segs = tail.splitn(6, ':');
@@ -559,7 +573,8 @@ fn mask_embedded_sha256(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut i = 0_usize;
     while i < bytes.len() {
-        if input[i..].starts_with("sha256:") && i + 7 + 64 <= bytes.len() {
+        let prev_is_word = i > 0 && is_word_byte(bytes[i - 1]);
+        if !prev_is_word && input[i..].starts_with("sha256:") && i + 7 + 64 <= bytes.len() {
             let hex = &bytes[i + 7..i + 7 + 64];
             let next_is_hex = i + 7 + 64 < bytes.len() && bytes[i + 7 + 64].is_ascii_hexdigit();
             if !next_is_hex
@@ -607,23 +622,28 @@ fn mask_instance_hex_ids(input: &str) -> String {
     let mut i = 0_usize;
     while i < bytes.len() {
         let mut matched = false;
-        for prefix in PREFIXES {
-            if input[i..].starts_with(prefix) {
-                let hex_start = i + prefix.len();
-                let mut hex_end = hex_start;
-                while hex_end < bytes.len()
-                    && (bytes[hex_end].is_ascii_digit() || (b'a'..=b'f').contains(&bytes[hex_end]))
-                {
-                    hex_end += 1;
-                }
-                let hex_len = hex_end - hex_start;
-                let next_is_alnum = hex_end < bytes.len() && bytes[hex_end].is_ascii_alphanumeric();
-                if hex_len >= 16 && !next_is_alnum {
-                    out.push_str(prefix);
-                    out.push_str("<HEX_ID>");
-                    i = hex_end;
-                    matched = true;
-                    break;
+        let prev_is_word = i > 0 && is_word_byte(bytes[i - 1]);
+        if !prev_is_word {
+            for prefix in PREFIXES {
+                if input[i..].starts_with(prefix) {
+                    let hex_start = i + prefix.len();
+                    let mut hex_end = hex_start;
+                    while hex_end < bytes.len()
+                        && (bytes[hex_end].is_ascii_digit()
+                            || (b'a'..=b'f').contains(&bytes[hex_end]))
+                    {
+                        hex_end += 1;
+                    }
+                    let hex_len = hex_end - hex_start;
+                    let next_is_alnum =
+                        hex_end < bytes.len() && bytes[hex_end].is_ascii_alphanumeric();
+                    if hex_len >= 16 && !next_is_alnum {
+                        out.push_str(prefix);
+                        out.push_str("<HEX_ID>");
+                        i = hex_end;
+                        matched = true;
+                        break;
+                    }
                 }
             }
         }
@@ -977,6 +997,12 @@ pub fn project_surface_response(
     tokens: &TokenNormalizer,
 ) -> Result<SemanticProjection, EquivalenceError> {
     policy.validate()?;
+    if policy.mode == "exact" && !tokens.is_noop() {
+        return Err(EquivalenceError::InvalidNormalizationPolicy {
+            detail: "exact normalization policy forbids non-empty or heuristic TokenNormalizer"
+                .to_owned(),
+        });
+    }
     let trimmed = raw_json.trim();
     if trimmed.is_empty() || trimmed.len() > MAX_SURFACE_OUTPUT_BYTES {
         return Err(EquivalenceError::OutputBudgetExceeded {
@@ -1095,6 +1121,12 @@ pub fn execute_rust_api_argv(
     tokens: &TokenNormalizer,
 ) -> Result<(SemanticProjection, String), EquivalenceError> {
     policy.validate()?;
+    if policy.mode == "exact" && !tokens.is_noop() {
+        return Err(EquivalenceError::InvalidNormalizationPolicy {
+            detail: "exact normalization policy forbids non-empty or heuristic TokenNormalizer"
+                .to_owned(),
+        });
+    }
     let command = parse_fss_args(argv.iter().cloned()).map_err(|err| {
         EquivalenceError::RustApiParseFailed {
             error_id: err.error_id().to_owned(),
@@ -1161,11 +1193,34 @@ pub fn compare_step(
         cli.operation_id.as_deref(),
         mcp.operation_id.as_deref(),
     );
-    // Verify expected_operation_id against envelope operationId (doctor uses fss.doctor.v1 without operationId).
-    if rust_api.schema != "fss.doctor.v1"
-        && (rust_api.operation_id.as_deref() != Some(expected_operation_id.as_str())
-            || cli.operation_id.as_deref() != Some(expected_operation_id.as_str())
-            || mcp.operation_id.as_deref() != Some(expected_operation_id.as_str()))
+    // Verify expected_operation_id against envelope operationId.
+    // Only AOP-014 doctor may omit operationId when returning `fss.doctor.v1`.
+    if expected_operation_id == "AOP-014" {
+        let ok_doctor = |p: &SemanticProjection| {
+            p.schema == "fss.doctor.v1" || p.operation_id.as_deref() == Some("AOP-014")
+        };
+        if !ok_doctor(&rust_api) || !ok_doctor(&cli) || !ok_doctor(&mcp) {
+            mismatches.push(EquivalenceMismatch {
+                step_index,
+                step_label: step_label.clone(),
+                field: format!("expected_operation_id({expected_operation_id})"),
+                rust_api: rust_api
+                    .operation_id
+                    .clone()
+                    .unwrap_or_else(|| format!("schema:{}", rust_api.schema)),
+                cli: cli
+                    .operation_id
+                    .clone()
+                    .unwrap_or_else(|| format!("schema:{}", cli.schema)),
+                mcp: mcp
+                    .operation_id
+                    .clone()
+                    .unwrap_or_else(|| format!("schema:{}", mcp.schema)),
+            });
+        }
+    } else if rust_api.operation_id.as_deref() != Some(expected_operation_id.as_str())
+        || cli.operation_id.as_deref() != Some(expected_operation_id.as_str())
+        || mcp.operation_id.as_deref() != Some(expected_operation_id.as_str())
     {
         mismatches.push(EquivalenceMismatch {
             step_index,
@@ -1528,8 +1583,16 @@ fn extract_string_array(val: Option<&Value>, tokens: &TokenNormalizer) -> Vec<St
     };
     items
         .iter()
-        .filter_map(Value::text)
-        .map(|s| tokens.apply(s))
+        .map(|item| match item.text() {
+            Some(s) => tokens.apply(s),
+            None => {
+                let raw = render_canonical_json_normalized(item, &BTreeSet::new(), tokens);
+                format!(
+                    "<non-string:{}>",
+                    crate::redact::sanitize_and_truncate(&raw, 128)
+                )
+            }
+        })
         .collect()
 }
 
@@ -1563,31 +1626,35 @@ fn extract_control_envelope(
     let mut out = Vec::with_capacity(items.len());
     for item in items {
         let Some(obj) = item.object() else {
+            out.push(AffordanceClassification {
+                affordance_id: "<non-object-affordance>".to_owned(),
+                robustness_class: "<invalid>".to_owned(),
+            });
             continue;
         };
         let affordance_id = obj
             .get("affordanceId")
             .and_then(Value::text)
             .map(|s| tokens.apply(s))
-            .unwrap_or_default();
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "<missing-affordance-id>".to_owned());
         let robustness_class = obj
             .get("robustnessClass")
             .or_else(|| obj.get("class"))
             .and_then(Value::text)
+            .filter(|s| !s.is_empty())
             .unwrap_or("<missing>")
             .to_owned();
-        if !affordance_id.is_empty() {
-            out.push(AffordanceClassification {
-                affordance_id,
-                robustness_class,
-            });
-        }
+        out.push(AffordanceClassification {
+            affordance_id,
+            robustness_class,
+        });
     }
     out
 }
 
 fn first_diff_hint(label_a: &str, a: &str, label_b: &str, b: &str) -> String {
-    fn slice_window(s: &str, offset: usize) -> &str {
+    fn slice_window(s: &str, offset: usize) -> String {
         let mut start = offset.saturating_sub(32);
         while start > 0 && !s.is_char_boundary(start) {
             start -= 1;
@@ -1596,7 +1663,7 @@ fn first_diff_hint(label_a: &str, a: &str, label_b: &str, b: &str) -> String {
         while end < s.len() && !s.is_char_boundary(end) {
             end += 1;
         }
-        &s[start..end]
+        crate::redact::sanitize_and_truncate(&s[start..end], 120)
     }
     let offset = a
         .bytes()
@@ -1874,5 +1941,110 @@ mod tests {
             TokenNormalizer::stateful_clone().apply(&sample),
             "Session session:<HEX_ID> expires at <UNIX_NS> ns; count 1600; published <SHA256>; moved to anchor:3f3e90e95f59458c:11:e7:<ANCHOR_BINDING>"
         );
+    }
+
+    #[test]
+    fn exact_policy_refuses_non_noop_token_normalizer() -> TestResult {
+        let policy = NormalizationPolicy::exact();
+        let sample = sample_envelope(
+            "ok",
+            "null",
+            "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "same",
+        );
+        assert!(matches!(
+            project_surface_response(
+                SurfaceKind::RustApi,
+                false,
+                &sample,
+                1,
+                &policy,
+                &TokenNormalizer::stateful_clone(),
+            ),
+            Err(EquivalenceError::InvalidNormalizationPolicy { .. })
+        ));
+        let mut lit = TokenNormalizer::none();
+        lit.push("same", "<REPLACED>")?;
+        assert!(matches!(
+            project_surface_response(SurfaceKind::Cli, false, &sample, 1, &policy, &lit),
+            Err(EquivalenceError::InvalidNormalizationPolicy { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn doctor_schema_cannot_bypass_non_doctor_operation_check() -> TestResult {
+        let policy = NormalizationPolicy::exact();
+        let tokens = TokenNormalizer::none();
+        let doctor = r#"{"schema":"fss.doctor.v1","verdict":"ok","possibly_stale":false}"#;
+        let p_api =
+            project_surface_response(SurfaceKind::RustApi, false, doctor, 1, &policy, &tokens)?;
+        let p_cli = project_surface_response(SurfaceKind::Cli, false, doctor, 1, &policy, &tokens)?;
+        let p_mcp = project_surface_response(SurfaceKind::Mcp, false, doctor, 1, &policy, &tokens)?;
+
+        let ok_row = compare_step(
+            0,
+            "doctor",
+            "AOP-014",
+            &policy,
+            p_api.clone(),
+            p_cli.clone(),
+            p_mcp.clone(),
+        )?;
+        assert!(ok_row.equivalent, "mismatches: {:?}", ok_row.mismatches);
+
+        let bad_row = compare_step(1, "fake-orient", "AOP-003", &policy, p_api, p_cli, p_mcp)?;
+        assert!(!bad_row.equivalent);
+        assert!(
+            bad_row
+                .mismatches
+                .iter()
+                .any(|m| m.field == "expected_operation_id(AOP-003)")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn token_masking_respects_word_boundaries_and_preserves_case_id_and_malformed_entries()
+    -> TestResult {
+        let norm = TokenNormalizer::stateful_clone();
+        let intact = "replan:0123456789abcdef impression:0123456789abcdef notsha256:2a66dff2340be41e1fd7c04f567e3421dbc6be1d69f1e3fdcc778a0bd6461d55 reanchor:3f3e90e95f59458c:11:e7:d37ac53c44974ae7fa37805b26fb02f02d56703a7ca887b95534bbd9a72f7a20";
+        assert_eq!(norm.apply(intact), intact);
+
+        // Caller-specified caseId is NOT ignored in stateful_clone policy.
+        assert!(
+            !NormalizationPolicy::stateful_clone()
+                .ignored_keys
+                .contains("caseId")
+        );
+
+        // Non-string array entries and malformed affordances must not vanish silently.
+        let malformed_env = r#"{"schema":"fss.agent_response_envelope.v1","operationId":"AOP-003","outcome":"ok","warnings":[123,"ok"],"affordances":[42,{"robustnessClass":"robust"}]}"#;
+        let proj = project_surface_response(
+            SurfaceKind::Cli,
+            false,
+            malformed_env,
+            1,
+            &NormalizationPolicy::exact(),
+            &TokenNormalizer::none(),
+        )?;
+        assert!(proj.warnings.iter().any(|w| w.contains("<non-string:123>")));
+        assert!(
+            proj.control_envelope
+                .iter()
+                .any(|a| a.affordance_id == "<non-object-affordance>")
+        );
+        assert!(
+            proj.control_envelope
+                .iter()
+                .any(|a| a.affordance_id == "<missing-affordance-id>")
+        );
+
+        // Control characters in diff hints must be sanitized.
+        let hint = first_diff_hint("a", "ok\x1b[31mred\n", "b", "ok\x1b[32mgreen\n");
+        assert!(!hint.contains('\x1b'));
+        assert!(!hint.contains('\n'));
+        Ok(())
     }
 }

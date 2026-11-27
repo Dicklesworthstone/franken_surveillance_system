@@ -286,3 +286,116 @@ fn cancellation_during_query_refusal_rendering_keeps_the_cancelled_outcome() -> 
     assert_eq!(snapshot(&root)?, before);
     Ok(())
 }
+
+#[test]
+fn ops_query_parser_refuses_duplicates_empty_root_positionals_and_inverted_bounds() -> TestResult {
+    // Duplicate single-valued options must fail closed with DuplicateOption.
+    for extra in [
+        vec!["--target", "cameras", "--root", "/other/root"],
+        vec![
+            "--target",
+            "cameras",
+            "--principal",
+            "principal:a",
+            "--principal",
+            "principal:b",
+        ],
+        vec![
+            "--target",
+            "cameras",
+            "--camera-id",
+            "cam:a",
+            "--camera-id",
+            "cam:b",
+        ],
+        vec![
+            "--target",
+            "graph",
+            "--projection",
+            "SensorCoverageGraph",
+            "--projection",
+            "SensorCoverageGraph",
+        ],
+        vec![
+            "--target",
+            "fusion",
+            "--prior-lo",
+            "-500",
+            "--prior-lo",
+            "-450",
+        ],
+        vec![
+            "--target", "holds", "--sensor", "sensor:a", "--sensor", "sensor:b",
+        ],
+    ] {
+        let err = parse(&extra).expect_err(&format!("duplicate must fail: {extra:?}"));
+        assert!(
+            matches!(err, CliError::DuplicateOption { .. }),
+            "expected DuplicateOption for {extra:?}, got {err:?}"
+        );
+    }
+
+    // Unexpected positional token must fail with UnexpectedPositional.
+    let err = parse(&["--target", "cameras", "stray-positional"])
+        .expect_err("positional token must fail");
+    assert!(
+        matches!(err, CliError::UnexpectedPositional { .. }),
+        "expected UnexpectedPositional, got {err:?}"
+    );
+
+    // Empty --root must be refused.
+    let empty_root_tokens = tokenize_os_args(
+        ["query", "--json", "--target", "cameras", "--root="]
+            .into_iter()
+            .map(OsString::from),
+    )?;
+    assert!(matches!(
+        parse_query_args(&empty_root_tokens),
+        Err(CliError::MalformedValue { .. })
+    ));
+
+    // Inverted attested interval and inverted fusion prior must fail closed.
+    assert!(matches!(
+        parse(&[
+            "--target",
+            "holds",
+            "--attested-earliest-ns",
+            "200",
+            "--attested-latest-ns",
+            "100",
+        ]),
+        Err(CliError::MalformedValue { .. })
+    ));
+    assert!(matches!(
+        parse(&[
+            "--target",
+            "fusion",
+            "--prior-lo",
+            "100",
+            "--prior-hi",
+            "-100",
+        ]),
+        Err(CliError::MalformedValue { .. })
+    ));
+    assert!(matches!(
+        parse(&["--target", "fusion", "--min-independent-support", "0"]),
+        Err(CliError::MalformedValue { .. })
+    ));
+
+    // Empty capability and >32 distinct capabilities must fail closed.
+    assert!(matches!(
+        parse(&["--target", "cameras", "--capability", ""]),
+        Err(CliError::MalformedValue { .. })
+    ));
+    let mut cap_args: Vec<String> = vec!["--target".to_owned(), "cameras".to_owned()];
+    for i in 0..33 {
+        cap_args.push("--capability".to_owned());
+        cap_args.push(format!("CAP-TEST-{i:03}"));
+    }
+    let cap_refs: Vec<&str> = cap_args.iter().map(String::as_str).collect();
+    assert!(matches!(
+        parse(&cap_refs),
+        Err(CliError::MalformedValue { .. })
+    ));
+    Ok(())
+}

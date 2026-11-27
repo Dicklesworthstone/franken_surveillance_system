@@ -222,6 +222,21 @@ fn detect_ops_query_target(tokens: &[ArgToken]) -> Option<&'static str> {
 
 fn parse_ops_query_args(target: &'static str, tokens: &[ArgToken]) -> Result<QueryArgs, CliError> {
     use std::collections::BTreeSet;
+    const MAX_OPS_CAPABILITIES: usize = 32;
+    const MAX_OPS_WITHOUT_ENTRIES: usize = 16;
+
+    fn set_once<T>(slot: &mut Option<T>, flag: &str, idx: usize, value: T) -> Result<(), CliError> {
+        if slot.is_some() {
+            return Err(CliError::DuplicateOption {
+                option: flag.to_owned(),
+                command: Some("query".to_owned()),
+                index: idx,
+            });
+        }
+        *slot = Some(value);
+        Ok(())
+    }
+
     let mut root: Option<PathBuf> = None;
     let mut principal_raw: Option<String> = None;
     let mut session_raw: Option<String> = None;
@@ -232,12 +247,13 @@ fn parse_ops_query_args(target: &'static str, tokens: &[ArgToken]) -> Result<Que
     let mut root_node: Option<String> = None;
     let mut event_id_raw: Option<String> = None;
     let mut sensor_raw: Option<String> = None;
-    let mut coverage_state = "complete".to_owned();
-    let mut prior = (-500_i64, -400_i64);
-    let mut alert_threshold = 1000_i64;
-    let mut retain_threshold = 0_i64;
-    let mut reject_threshold = -1000_i64;
-    let mut min_independent_support = 2_u32;
+    let mut coverage_state: Option<String> = None;
+    let mut prior_lo: Option<i64> = None;
+    let mut prior_hi: Option<i64> = None;
+    let mut alert_threshold: Option<i64> = None;
+    let mut retain_threshold: Option<i64> = None;
+    let mut reject_threshold: Option<i64> = None;
+    let mut min_independent_support: Option<u32> = None;
     let mut attested_earliest: Option<i128> = None;
     let mut attested_latest: Option<i128> = None;
     let mut without_sensors: Vec<String> = Vec::new();
@@ -249,6 +265,13 @@ fn parse_ops_query_args(target: &'static str, tokens: &[ArgToken]) -> Result<Que
     let mut i = 1_usize; // skip "query"
     while i < tokens.len() {
         let tok = &tokens[i];
+        if !tok.as_str().starts_with("--") {
+            return Err(CliError::UnexpectedPositional {
+                argument: tok.raw.clone(),
+                command: Some("query".to_owned()),
+                index: tok.index,
+            });
+        }
         if tok.as_str() == "--json" {
             if saw_json {
                 return Err(CliError::DuplicateOption {
@@ -293,45 +316,148 @@ fn parse_ops_query_args(target: &'static str, tokens: &[ArgToken]) -> Result<Que
                 saw_target = true;
             }
             "--root" => {
-                if root.is_some() {
-                    return Err(malformed("--root", &val, "duplicate --root", idx));
+                if val.is_empty() {
+                    return Err(malformed(
+                        "--root",
+                        "",
+                        "deployment root path must not be empty",
+                        idx,
+                    ));
                 }
-                root = Some(PathBuf::from(val));
+                set_once(&mut root, "--root", idx, PathBuf::from(val))?;
             }
-            "--principal" => principal_raw = Some(val),
-            "--session" => session_raw = Some(val),
+            "--principal" => set_once(&mut principal_raw, "--principal", idx, val)?,
+            "--session" => set_once(&mut session_raw, "--session", idx, val)?,
             "--capability" => {
+                if val.is_empty() || val.len() > 128 || val.chars().any(char::is_control) {
+                    return Err(malformed(
+                        "--capability",
+                        "[redacted]",
+                        "capability must be 1..=128 control-free characters",
+                        idx,
+                    ));
+                }
+                if granted_capabilities.len() >= MAX_OPS_CAPABILITIES
+                    && !granted_capabilities.contains(&val)
+                {
+                    return Err(malformed(
+                        "--capability",
+                        "[redacted]",
+                        "too many --capability grants (max 32)",
+                        idx,
+                    ));
+                }
                 granted_capabilities.insert(val);
             }
-            "--camera-id" if target == "cameras" => camera_id = Some(val),
-            "--site-id" if target == "cameras" => site_id = Some(val),
-            "--projection" if target == "graph" => projection_raw = Some(val),
-            "--algorithm" if target == "graph" => algorithm_raw = Some(val),
-            "--root-node" if target == "graph" => root_node = Some(val),
-            "--event-id" if target == "fusion" => event_id_raw = Some(val),
-            "--without-sensor" if target == "fusion" => without_sensors.push(val),
-            "--without-domain" if target == "fusion" => without_domains.push(val),
-            "--coverage" if target == "fusion" => coverage_state = val,
-            "--prior-lo" if target == "fusion" => prior.0 = number::<i64>("--prior-lo", &val, idx)?,
-            "--prior-hi" if target == "fusion" => prior.1 = number::<i64>("--prior-hi", &val, idx)?,
+            "--camera-id" if target == "cameras" => {
+                set_once(&mut camera_id, "--camera-id", idx, val)?
+            }
+            "--site-id" if target == "cameras" => set_once(&mut site_id, "--site-id", idx, val)?,
+            "--projection" if target == "graph" => {
+                set_once(&mut projection_raw, "--projection", idx, val)?
+            }
+            "--algorithm" if target == "graph" => {
+                set_once(&mut algorithm_raw, "--algorithm", idx, val)?
+            }
+            "--root-node" if target == "graph" => {
+                set_once(&mut root_node, "--root-node", idx, val)?
+            }
+            "--event-id" if target == "fusion" => {
+                set_once(&mut event_id_raw, "--event-id", idx, val)?
+            }
+            "--without-sensor" if target == "fusion" => {
+                if val.is_empty() || val.len() > 128 || val.chars().any(char::is_control) {
+                    return Err(malformed(
+                        "--without-sensor",
+                        "[redacted]",
+                        "sensor identifier must be 1..=128 control-free characters",
+                        idx,
+                    ));
+                }
+                if without_sensors.len() >= MAX_OPS_WITHOUT_ENTRIES {
+                    return Err(malformed(
+                        "--without-sensor",
+                        "[redacted]",
+                        "too many --without-sensor values (max 16)",
+                        idx,
+                    ));
+                }
+                without_sensors.push(val);
+            }
+            "--without-domain" if target == "fusion" => {
+                if val.is_empty() || val.len() > 128 || val.chars().any(char::is_control) {
+                    return Err(malformed(
+                        "--without-domain",
+                        "[redacted]",
+                        "domain identifier must be 1..=128 control-free characters",
+                        idx,
+                    ));
+                }
+                if without_domains.len() >= MAX_OPS_WITHOUT_ENTRIES {
+                    return Err(malformed(
+                        "--without-domain",
+                        "[redacted]",
+                        "too many --without-domain values (max 16)",
+                        idx,
+                    ));
+                }
+                without_domains.push(val);
+            }
+            "--coverage" if target == "fusion" => {
+                set_once(&mut coverage_state, "--coverage", idx, val)?
+            }
+            "--prior-lo" if target == "fusion" => {
+                let parsed = number::<i64>("--prior-lo", &val, idx)?;
+                set_once(&mut prior_lo, "--prior-lo", idx, parsed)?;
+            }
+            "--prior-hi" if target == "fusion" => {
+                let parsed = number::<i64>("--prior-hi", &val, idx)?;
+                set_once(&mut prior_hi, "--prior-hi", idx, parsed)?;
+            }
             "--alert-threshold" if target == "fusion" => {
-                alert_threshold = number::<i64>("--alert-threshold", &val, idx)?;
+                let parsed = number::<i64>("--alert-threshold", &val, idx)?;
+                set_once(&mut alert_threshold, "--alert-threshold", idx, parsed)?;
             }
             "--retain-threshold" if target == "fusion" => {
-                retain_threshold = number::<i64>("--retain-threshold", &val, idx)?;
+                let parsed = number::<i64>("--retain-threshold", &val, idx)?;
+                set_once(&mut retain_threshold, "--retain-threshold", idx, parsed)?;
             }
             "--reject-threshold" if target == "fusion" => {
-                reject_threshold = number::<i64>("--reject-threshold", &val, idx)?;
+                let parsed = number::<i64>("--reject-threshold", &val, idx)?;
+                set_once(&mut reject_threshold, "--reject-threshold", idx, parsed)?;
             }
             "--min-independent-support" if target == "fusion" => {
-                min_independent_support = number::<u32>("--min-independent-support", &val, idx)?;
+                let parsed = number::<u32>("--min-independent-support", &val, idx)?;
+                if !(1..=16).contains(&parsed) {
+                    return Err(malformed(
+                        "--min-independent-support",
+                        &val,
+                        "min-independent-support must be in 1..=16",
+                        idx,
+                    ));
+                }
+                set_once(
+                    &mut min_independent_support,
+                    "--min-independent-support",
+                    idx,
+                    parsed,
+                )?;
             }
-            "--sensor" if matches!(target, "holds" | "privacy-masks") => sensor_raw = Some(val),
+            "--sensor" if matches!(target, "holds" | "privacy-masks") => {
+                set_once(&mut sensor_raw, "--sensor", idx, val)?
+            }
             "--attested-earliest-ns" if target == "holds" => {
-                attested_earliest = Some(number::<i128>("--attested-earliest-ns", &val, idx)?);
+                let parsed = number::<i128>("--attested-earliest-ns", &val, idx)?;
+                set_once(
+                    &mut attested_earliest,
+                    "--attested-earliest-ns",
+                    idx,
+                    parsed,
+                )?;
             }
             "--attested-latest-ns" if target == "holds" => {
-                attested_latest = Some(number::<i128>("--attested-latest-ns", &val, idx)?);
+                let parsed = number::<i128>("--attested-latest-ns", &val, idx)?;
+                set_once(&mut attested_latest, "--attested-latest-ns", idx, parsed)?;
             }
             _ => {
                 return Err(CliError::UnknownOption {
@@ -354,6 +480,20 @@ fn parse_ops_query_args(target: &'static str, tokens: &[ArgToken]) -> Result<Que
         command: Some("query".to_owned()),
         expected: "existing deployment directory path".to_owned(),
     })?;
+    let prior = (prior_lo.unwrap_or(-500), prior_hi.unwrap_or(-400));
+    if target == "fusion" && prior.0 > prior.1 {
+        return Err(malformed(
+            "--prior-lo",
+            "[redacted]",
+            "prior-lo must be <= prior-hi",
+            0,
+        ));
+    }
+    let coverage_state = coverage_state.unwrap_or_else(|| "complete".to_owned());
+    let alert_threshold = alert_threshold.unwrap_or(1000);
+    let retain_threshold = retain_threshold.unwrap_or(0);
+    let reject_threshold = reject_threshold.unwrap_or(-1000);
+    let min_independent_support = min_independent_support.unwrap_or(2);
     let principal_id = fss_core::PrincipalId::parse(
         principal_raw.unwrap_or_else(|| "principal:local-operator".to_owned()),
     )
@@ -420,7 +560,15 @@ fn parse_ops_query_args(target: &'static str, tokens: &[ArgToken]) -> Result<Que
                 })
                 .transpose()?,
             attested_now_ns: match (attested_earliest, attested_latest) {
-                (Some(a), Some(b)) => Some((a, b)),
+                (Some(a), Some(b)) if a <= b => Some((a, b)),
+                (Some(_), Some(_)) => {
+                    return Err(malformed(
+                        "--attested-earliest-ns",
+                        "[redacted]",
+                        "attested-earliest-ns must be <= attested-latest-ns",
+                        0,
+                    ));
+                }
                 (None, None) => None,
                 _ => {
                     return Err(malformed(
