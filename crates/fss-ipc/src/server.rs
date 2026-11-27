@@ -170,6 +170,17 @@ pub trait DaemonIpcHandler: Send + Sync + 'static {
         )
     }
 
+    /// Reads a configured manifest candidate without admitting a reload.
+    /// Older handlers fail closed rather than issuing an unbound approval.
+    fn preview_manifest_reload(&self, ctx: &RequestContext) -> IpcResponse {
+        crate::server_conn::make_refused(
+            ctx.request_id,
+            crate::error::ERR_IPC_CAPABILITY_DENIED_001,
+            "manifest reload preview unavailable",
+            false,
+        )
+    }
+
     /// Streams committed deltas after `since_commit_seq` (up to `max_batch`) and returns end reason.
     fn subscribe_deltas(
         &self,

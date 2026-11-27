@@ -73,7 +73,6 @@ fn every_control_requires_its_exact_site_operation_and_target_approval() -> Test
         (BoundedControlOp::StartCamera, Some("sensor:front")),
         (BoundedControlOp::StopCamera, Some("sensor:front")),
         (BoundedControlOp::SnapshotCamera, Some("sensor:front")),
-        (BoundedControlOp::ReloadManifest, None),
         (BoundedControlOp::ProbeDetect, Some("sensor:front")),
         (BoundedControlOp::ProbeDetect, None),
         (BoundedControlOp::TriggerScrub, None),
@@ -347,5 +346,70 @@ fn shutdown_is_separately_approved_and_bypasses_queue_capacity() -> TestResult {
         true,
     );
     assert_eq!(handler.shared.drain_control_commands().len(), 1024);
+    Ok(())
+}
+
+#[test]
+fn reload_approval_binds_deployment_root_active_and_candidate_generations() {
+    let root = ContentDigest::sha256(b"root");
+    let active = ContentDigest::sha256(b"active");
+    let candidate = ContentDigest::sha256(b"candidate");
+    let other = ContentDigest::sha256(b"other");
+    let approval = manifest_reload_approval_digest("site-control", root, active, candidate);
+    assert_eq!(
+        approval,
+        manifest_reload_approval_digest("site-control", root, active, candidate)
+    );
+    for changed in [
+        manifest_reload_approval_digest("site-other", root, active, candidate),
+        manifest_reload_approval_digest("site-control", other, active, candidate),
+        manifest_reload_approval_digest("site-control", root, other, candidate),
+        manifest_reload_approval_digest("site-control", root, active, other),
+        manifest_reload_approval_digest("site-control", root, candidate, active),
+        control_op_approval_digest("site-control", BoundedControlOp::ReloadManifest, None),
+    ] {
+        assert_ne!(approval, changed);
+    }
+}
+
+#[test]
+fn reload_preview_requires_observe_authority_source_and_non_cancelled_owner() -> TestResult {
+    let handler = handler();
+    let mut ctx = context()?;
+    assert_refused(
+        handler.preview_manifest_reload(&ctx),
+        fss_ipc::ERR_IPC_CAPABILITY_DENIED_001,
+        false,
+    );
+    ctx.granted_capabilities.push(CAP_OBSERVE_STATUS.to_owned());
+    assert_refused(
+        handler.preview_manifest_reload(&ctx),
+        crate::error::ERR_DAEMON_MANIFEST_INVALID_001,
+        false,
+    );
+    ctx.cancel.cancel(CancelReason::ClientCancelRequest);
+    assert!(matches!(
+        handler.preview_manifest_reload(&ctx),
+        IpcResponse::Cancelled { request_id: 7 }
+    ));
+    assert!(handler.shared.drain_control_commands().is_empty());
+    Ok(())
+}
+
+#[test]
+fn unkeyed_reload_cannot_reuse_the_old_operation_only_approval() -> TestResult {
+    let handler = handler();
+    let ctx = context()?;
+    assert_refused(
+        handler.submit_bounded_control(
+            &ctx,
+            BoundedControlOp::ReloadManifest,
+            None,
+            control_op_approval_digest("site-control", BoundedControlOp::ReloadManifest, None),
+        ),
+        ERR_DAEMON_CONTROL_APPROVAL_001,
+        false,
+    );
+    assert!(handler.shared.drain_control_commands().is_empty());
     Ok(())
 }

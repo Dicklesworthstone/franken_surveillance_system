@@ -53,6 +53,11 @@ pub enum IpcRequest {
         /// Configured source identifier.
         camera_id: String,
     },
+    /// Inspect the configured reload candidate without changing the active generation.
+    PreviewManifestReload {
+        /// Client-assigned correlation identifier.
+        request_id: u64,
+    },
     /// Query live supervisor telemetry and ledger head state.
     QueryLiveStatus {
         /// Client-assigned correlation identifier.
@@ -110,6 +115,7 @@ impl IpcRequest {
         match self {
             Self::SubmitDeltaBatch { request_id, .. }
             | Self::QueryRetentionForecast { request_id, .. }
+            | Self::PreviewManifestReload { request_id }
             | Self::QueryLiveStatus { request_id, .. }
             | Self::SubscribeDeltas { request_id, .. }
             | Self::SubmitBoundedControl { request_id, .. }
@@ -124,6 +130,7 @@ impl IpcRequest {
         match self {
             Self::SubmitDeltaBatch { .. } => "submit_delta_batch",
             Self::QueryRetentionForecast { .. } => "query_retention_forecast",
+            Self::PreviewManifestReload { .. } => "preview_manifest_reload",
             Self::QueryLiveStatus { .. } => "query_live_status",
             Self::SubscribeDeltas { .. } => "subscribe_deltas",
             Self::SubmitBoundedControl { .. } => "submit_bounded_control",
@@ -167,6 +174,10 @@ impl CanonicalEncode for IpcRequest {
                 encoder.tag(6);
                 encoder.u64(*request_id);
                 encoder.text(camera_id);
+            }
+            Self::PreviewManifestReload { request_id } => {
+                encoder.tag(8);
+                encoder.u64(*request_id);
             }
             Self::QueryLiveStatus {
                 request_id,
@@ -232,7 +243,9 @@ impl CanonicalEncode for IpcRequest {
     fn try_canonical_bytes(&self) -> Result<Vec<u8>, ContractError> {
         // Core digest bytes do not carry the process-local laboratory marker.
         // Validate it before checked serialization can erase that distinction.
-        if let Self::SubmitIdempotentControl { idempotency_key, .. } = self
+        if let Self::SubmitIdempotentControl {
+            idempotency_key, ..
+        } = self
             && (idempotency_key.algorithm() != DigestAlgorithm::Sha256
                 || idempotency_key.is_laboratory()
                 || idempotency_key.bytes() == [0; 32])
@@ -278,6 +291,9 @@ impl CanonicalDecode for IpcRequest {
                     camera_id: camera_id.to_owned(),
                 })
             }
+            8 => Ok(Self::PreviewManifestReload {
+                request_id: decoder.u64()?,
+            }),
             2 => Ok(Self::QueryLiveStatus {
                 request_id: decoder.u64()?,
                 include_cameras: decoder.bool()?,
@@ -358,6 +374,18 @@ pub enum IpcResponse {
         /// Latest published assessment for this camera.
         forecast: CameraRetentionForecast,
     },
+    /// Binds an inspected candidate to the exact active generation and deployment.
+    /// This is read-only preparation, not admission or activation.
+    ManifestReloadPreview {
+        /// Correlated client request identifier.
+        request_id: u64,
+        /// Canonical generation currently active in the supervisor.
+        active_manifest_digest: ContentDigest,
+        /// Canonical generation read from the configured bounded manifest source.
+        candidate_manifest_digest: ContentDigest,
+        /// Exact approval required with a durable retry key for reload admission.
+        approval_digest: ContentDigest,
+    },
     /// Returns live daemon telemetry for `QueryLiveStatus`.
     LiveStatus(LiveDaemonStatus),
     /// Emits one committed delta event inside a `SubscribeDeltas` stream.
@@ -428,6 +456,7 @@ impl IpcResponse {
             | Self::ControlReplayed { request_id, .. }
             | Self::Cancelled { request_id }
             | Self::RetentionForecast { request_id, .. }
+            | Self::ManifestReloadPreview { request_id, .. }
             | Self::Refused { request_id, .. } => *request_id,
             Self::LiveStatus(status) => status.request_id,
         }
@@ -462,6 +491,18 @@ impl CanonicalEncode for IpcResponse {
                 encoder.tag(8);
                 encoder.u64(*request_id);
                 forecast.encode_canonical(encoder);
+            }
+            Self::ManifestReloadPreview {
+                request_id,
+                active_manifest_digest,
+                candidate_manifest_digest,
+                approval_digest,
+            } => {
+                encoder.tag(10);
+                encoder.u64(*request_id);
+                encoder.digest(*active_manifest_digest);
+                encoder.digest(*candidate_manifest_digest);
+                encoder.digest(*approval_digest);
             }
             Self::LiveStatus(status) => {
                 encoder.tag(2);
@@ -538,6 +579,12 @@ impl CanonicalDecode for IpcResponse {
             8 => Ok(Self::RetentionForecast {
                 request_id: decoder.u64()?,
                 forecast: CameraRetentionForecast::decode_canonical(decoder)?,
+            }),
+            10 => Ok(Self::ManifestReloadPreview {
+                request_id: decoder.u64()?,
+                active_manifest_digest: decoder.digest()?,
+                candidate_manifest_digest: decoder.digest()?,
+                approval_digest: decoder.digest()?,
             }),
             2 => Ok(Self::LiveStatus(LiveDaemonStatus::decode_canonical(
                 decoder,

@@ -31,6 +31,12 @@ use crate::error::{DaemonError, ERR_DAEMON_CONTROL_APPROVAL_001, ERR_DAEMON_UNKN
 mod delta_log;
 mod forwarding;
 pub mod journal;
+mod manifest_reload;
+
+use manifest_reload::ManifestReloadSource;
+pub use manifest_reload::{
+    DAEMON_MANIFEST_RELOAD_APPROVAL_DOMAIN, manifest_reload_approval_digest,
+};
 
 use delta_log::BufferedDeltaLog;
 use forwarding::ForwardedBatches;
@@ -75,6 +81,7 @@ pub fn daemon_stop_approval_digest(
 }
 
 /// Computes the deterministic approval digest for a camera or maintenance bounded control op.
+/// Manifest reload instead requires `manifest_reload_approval_digest` from a live preview.
 #[must_use]
 pub fn control_op_approval_digest(
     deployment_id: &str,
@@ -189,6 +196,7 @@ pub struct ControlPlaneShared {
     shutdown_requested: AtomicBool,
     status_snapshot: RwLock<ControlStatusSnapshot>,
     retention_forecasts: RwLock<BTreeMap<String, CameraRetentionForecast>>,
+    manifest_reload_source: RwLock<Option<ManifestReloadSource>>,
     delta_log: Mutex<BufferedDeltaLog>,
     delta_notify: Condvar,
     control_queue: Mutex<VecDeque<PendingControlCommand>>,
@@ -256,6 +264,7 @@ impl ControlPlaneShared {
             shutdown_requested: AtomicBool::new(false),
             status_snapshot: RwLock::new(initial_status),
             retention_forecasts: RwLock::new(BTreeMap::new()),
+            manifest_reload_source: RwLock::new(None),
             delta_log: Mutex::new(BufferedDeltaLog::new(initial_seq)),
             delta_notify: Condvar::new(),
             control_queue: Mutex::new(VecDeque::new()),
@@ -632,6 +641,30 @@ impl DaemonIpcHandler for DaemonIpcHandlerAdapter {
         }
     }
 
+    fn preview_manifest_reload(&self, ctx: &RequestContext) -> IpcResponse {
+        if !ctx
+            .granted_capabilities
+            .iter()
+            .any(|cap| cap == CAP_OBSERVE_STATUS)
+        {
+            return make_refused(
+                ctx.request_id,
+                fss_ipc::ERR_IPC_CAPABILITY_DENIED_001,
+                "manifest reload preview requires CAP-OBSERVE-STATUS-001",
+                false,
+            );
+        }
+        match self.shared.read_manifest_reload_preview(ctx) {
+            Ok(preview) => IpcResponse::ManifestReloadPreview {
+                request_id: ctx.request_id,
+                active_manifest_digest: preview.active_manifest_digest,
+                candidate_manifest_digest: preview.candidate_manifest_digest,
+                approval_digest: preview.approval_digest,
+            },
+            Err(response) => response,
+        }
+    }
+
     fn query_live_status(
         &self,
         ctx: &RequestContext,
@@ -902,8 +935,17 @@ impl DaemonIpcHandlerAdapter {
                 false,
             );
         }
-        if approval_digest
-            != control_op_approval_digest(&self.shared.deployment_id, op, target_camera_id)
+        if op == BoundedControlOp::ReloadManifest && idempotency_key.is_none() {
+            return make_refused(
+                ctx.request_id,
+                ERR_DAEMON_CONTROL_APPROVAL_001,
+                "manifest reload requires an exact live preview approval and durable retry key",
+                false,
+            );
+        }
+        if op != BoundedControlOp::ReloadManifest
+            && approval_digest
+                != control_op_approval_digest(&self.shared.deployment_id, op, target_camera_id)
         {
             return make_refused(
                 ctx.request_id,
@@ -939,13 +981,10 @@ impl DaemonIpcHandlerAdapter {
         }
         // Resolve retained keys before current admission limits. A retry is inspection,
         // including during shutdown or after its camera leaves the current manifest.
-        if let Some(response) = self.shared.replay_control(
-            ctx,
-            op,
-            target_camera_id,
-            approval_digest,
-            idempotency_key,
-        ) {
+        if let Some(response) =
+            self.shared
+                .replay_control(ctx, op, target_camera_id, approval_digest, idempotency_key)
+        {
             return response;
         }
         if self.shared.is_shutdown_requested() {
@@ -974,10 +1013,83 @@ impl DaemonIpcHandlerAdapter {
                 true,
             );
         }
-        let command = match self
-            .shared
-            .retain_control(ctx, op, target_camera_id, approval_digest, idempotency_key)
-        {
+        if op == BoundedControlOp::ReloadManifest {
+            // File I/O is bounded but must not hold the admission mutex. Resolve the
+            // retained key first so exact retries remain inspectable after source drift.
+            drop(queue);
+            let preview = match self.shared.read_manifest_reload_preview(ctx) {
+                Ok(preview) => preview,
+                Err(response) => return response,
+            };
+            queue = match self.shared.control_queue.lock() {
+                Ok(queue) => queue,
+                Err(_) => {
+                    return make_refused(
+                        ctx.request_id,
+                        crate::error::ERR_DAEMON_SHUTDOWN_001,
+                        "control queue is unavailable; no command was admitted",
+                        false,
+                    );
+                }
+            };
+            if ctx.is_cancelled() {
+                return IpcResponse::Cancelled {
+                    request_id: ctx.request_id,
+                };
+            }
+            // Another request may have claimed the same key while the file was read.
+            if let Some(response) = self.shared.replay_control(
+                ctx,
+                op,
+                target_camera_id,
+                approval_digest,
+                idempotency_key,
+            ) {
+                return response;
+            }
+            if self.shared.is_shutdown_requested() {
+                return make_refused(
+                    ctx.request_id,
+                    ERR_IPC_SERVER_SHUTDOWN_001,
+                    "daemon is draining for shutdown",
+                    true,
+                );
+            }
+            let active_unchanged = match self.shared.manifest_reload_preview_is_current(&preview) {
+                Ok(unchanged) => unchanged,
+                Err(error) => {
+                    return make_refused(
+                        ctx.request_id,
+                        error.error_id(),
+                        "manifest reload source is unavailable",
+                        false,
+                    );
+                }
+            };
+            if !active_unchanged || approval_digest != preview.approval_digest {
+                return make_refused(
+                    ctx.request_id,
+                    ERR_DAEMON_CONTROL_APPROVAL_001,
+                    "manifest reload approval does not bind the current active and candidate generations; preview again",
+                    false,
+                );
+            }
+            if queue.len() >= MAX_QUEUED_CONTROL_COMMANDS {
+                return make_refused(
+                    ctx.request_id,
+                    "ERR-BUDGET-EXHAUSTED-001",
+                    "bounded control queue is full; wait for the supervisor to drain and retry",
+                    true,
+                );
+            }
+        }
+        let command = match self.shared.retain_control(
+            ctx,
+            op,
+            target_camera_id,
+            approval_digest,
+            idempotency_key,
+        ) {
             Ok(command) => command,
             Err(error) => {
                 return make_refused(

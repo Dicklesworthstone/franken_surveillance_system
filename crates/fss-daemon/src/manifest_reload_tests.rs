@@ -17,7 +17,7 @@ use fss_ipc::{
 use crate::{
     CameraAdapterKind, CameraManifestEntry, DaemonRuntimeDescriptor, DaemonStartConfig,
     DaemonSupervisor, SensorDisconnectReason, SensorDriver, SensorDriverEvent, SensorState,
-    SiteManifest, SyntheticCameraControl, SyntheticCameraDriver, control_op_approval_digest,
+    SiteManifest, SyntheticCameraControl, SyntheticCameraDriver,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -49,6 +49,7 @@ impl Drop for TempDir {
 struct RecordingDriver {
     inner: SyntheticCameraDriver,
     updates: Arc<AtomicUsize>,
+    replacement_on_update: Option<(PathBuf, String)>,
 }
 
 impl SensorDriver for RecordingDriver {
@@ -78,6 +79,9 @@ impl SensorDriver for RecordingDriver {
 
     fn update_manifest_entry(&mut self, entry: &CameraManifestEntry) {
         self.updates.fetch_add(1, Ordering::Relaxed);
+        if let Some((path, text)) = self.replacement_on_update.take() {
+            let _ = fs::write(path, text);
+        }
         self.inner.update_manifest_entry(entry);
     }
 }
@@ -127,6 +131,14 @@ fn start_supervisor(
     dir: &TempDir,
     enable_ipc: bool,
 ) -> Result<(DaemonSupervisor, Arc<AtomicUsize>, String), Box<dyn std::error::Error>> {
+    start_supervisor_with_replacement(dir, enable_ipc, None)
+}
+
+fn start_supervisor_with_replacement(
+    dir: &TempDir,
+    enable_ipc: bool,
+    replacement: Option<&str>,
+) -> Result<(DaemonSupervisor, Arc<AtomicUsize>, String), Box<dyn std::error::Error>> {
     let text = manifest_json(&dir.0, &[camera_json("cam-a"), camera_json("cam-b")]);
     fs::write(dir.manifest_path(), &text)?;
     let manifest = SiteManifest::parse_json(&text)?;
@@ -139,6 +151,8 @@ fn start_supervisor(
             Box::new(RecordingDriver {
                 inner: SyntheticCameraDriver::new(entry, control),
                 updates: Arc::clone(&updates),
+                replacement_on_update: replacement
+                    .map(|text| (dir.manifest_path(), text.to_owned())),
             }),
         );
     }
@@ -151,6 +165,84 @@ fn start_supervisor(
     let first_tick = supervisor.step_tick(START_NS + 100_000_000)?;
     assert!(first_tick.frames_received >= 2);
     Ok((supervisor, updates, text))
+}
+
+fn reload_current_candidate(
+    supervisor: &mut DaemonSupervisor,
+    operation: &OperationId,
+) -> TestResult {
+    let path = supervisor
+        .manifest_path
+        .as_ref()
+        .ok_or("reload source missing")?;
+    let candidate = SiteManifest::from_file(path)?;
+    let shared = supervisor
+        .control_shared
+        .as_ref()
+        .ok_or("control owner missing")?;
+    let approval =
+        shared.expected_manifest_reload_approval(supervisor.manifest.digest(), candidate.digest());
+    supervisor.handle_reload_manifest(operation, approval)?;
+    Ok(())
+}
+
+fn reload_client(dir: &TempDir) -> Result<IpcClient, Box<dyn std::error::Error>> {
+    reload_client_as(dir, "principal:local-operator")
+}
+
+fn reload_client_as(
+    dir: &TempDir,
+    principal: &str,
+) -> Result<IpcClient, Box<dyn std::error::Error>> {
+    let descriptor = DaemonRuntimeDescriptor::read_from_root(&dir.0)?;
+    Ok(IpcClient::connect(IpcClientConfig {
+        deployment_root: dir.0.clone(),
+        deployment_id: descriptor.site_id,
+        contract_basis_digest: descriptor.contract_basis_digest,
+        principal: PrincipalId::parse(principal)?,
+        capabilities: vec!["CAP-OBSERVE-STATUS-001".to_owned()],
+        io_timeout: Duration::from_secs(3),
+    })?)
+}
+
+fn preview_reload(
+    client: &mut IpcClient,
+) -> Result<(ContentDigest, ContentDigest, ContentDigest), Box<dyn std::error::Error>> {
+    let request = client.next_request_id();
+    match client.preview_manifest_reload(request)? {
+        IpcResponse::ManifestReloadPreview {
+            request_id,
+            active_manifest_digest,
+            candidate_manifest_digest,
+            approval_digest,
+        } => {
+            assert_eq!(request_id, request);
+            Ok((
+                active_manifest_digest,
+                candidate_manifest_digest,
+                approval_digest,
+            ))
+        }
+        response => Err(format!("reload preview refused: {response:?}").into()),
+    }
+}
+
+fn reload_operation_summaries(dir: &TempDir) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let mut observer = reload_client(dir)?;
+    let request = observer.next_request_id();
+    let mut summaries = Vec::new();
+    for item in observer.subscribe_deltas(request, 0, 64)? {
+        if let DeltaSubscriptionItem::Event {
+            summary_canonical, ..
+        } = item?
+        {
+            let summary = DeltaEventSummary::from_canonical_bytes(&summary_canonical)?;
+            if summary.summary.starts_with("manifest_reload") {
+                summaries.push(summary.summary);
+            }
+        }
+    }
+    Ok(summaries)
 }
 
 fn finish(supervisor: DaemonSupervisor) -> TestResult {
@@ -275,7 +367,7 @@ fn reload_refuses_startup_owned_changes_before_mutating_any_live_owner() -> Test
         let candidate = text.replacen(old, new, 1).replace("0,0,4,4", "0,0,8,4");
         let _ = SiteManifest::parse_json(&candidate)?;
         fs::write(dir.manifest_path(), candidate)?;
-        supervisor.handle_reload_manifest(&operation)?;
+        reload_current_candidate(&mut supervisor, &operation)?;
         assert_eq!(supervisor.manifest, before, "{label}");
         for slot in supervisor.sensors.values() {
             let original = before
@@ -325,7 +417,7 @@ fn reload_refuses_startup_owned_changes_before_mutating_any_live_owner() -> Test
         };
         let _ = SiteManifest::parse_json(&candidate)?;
         fs::write(dir.manifest_path(), candidate)?;
-        supervisor.handle_reload_manifest(&operation)?;
+        reload_current_candidate(&mut supervisor, &operation)?;
         assert_eq!(supervisor.manifest, before, "{field}");
         assert_eq!(updates.load(Ordering::Relaxed), 0, "{field}");
         assert_eq!(supervisor.perception.pool_metrics(), metrics, "{field}");
@@ -351,7 +443,7 @@ fn reload_cannot_add_remove_or_replace_live_camera_inventory() -> TestResult {
         let candidate = manifest_json(&dir.0, &cameras).replace("0,0,4,4", "0,0,8,4");
         let _ = SiteManifest::parse_json(&candidate)?;
         fs::write(dir.manifest_path(), candidate)?;
-        supervisor.handle_reload_manifest(&operation)?;
+        reload_current_candidate(&mut supervisor, &operation)?;
         assert_eq!(supervisor.manifest, before);
         assert_eq!(supervisor.sensors.len(), 2);
         assert!(
@@ -387,7 +479,7 @@ fn reload_noop_and_timing_changes_preserve_accumulated_clock_evidence() -> TestR
     let metrics = supervisor.perception.pool_metrics();
 
     // A re-read of the same validated manifest must not reset the cascade or clock estimator.
-    supervisor.handle_reload_manifest(&operation)?;
+    reload_current_candidate(&mut supervisor, &operation)?;
     assert_eq!(updates.load(Ordering::Relaxed), 0);
     assert_eq!(supervisor.perception.pool_metrics(), metrics);
     assert_eq!(
@@ -416,7 +508,7 @@ fn reload_noop_and_timing_changes_preserve_accumulated_clock_evidence() -> TestR
         .replacen(r#""gop_frames":4"#, r#""gop_frames":8"#, 1);
     let expected = SiteManifest::parse_json(&candidate)?;
     fs::write(dir.manifest_path(), candidate)?;
-    supervisor.handle_reload_manifest(&operation)?;
+    reload_current_candidate(&mut supervisor, &operation)?;
     assert_eq!(supervisor.manifest, expected);
     assert_eq!(updates.load(Ordering::Relaxed), 1);
     assert_eq!(supervisor.perception.pool_metrics(), metrics);
@@ -452,7 +544,10 @@ fn reload_applies_supported_perception_fields_without_rebinding_resources() -> T
         .replace("power:cam-a", "power:replacement");
     let expected = SiteManifest::parse_json(&candidate)?;
     fs::write(dir.manifest_path(), candidate)?;
-    supervisor.handle_reload_manifest(&OperationId::parse("op:reload:perception")?)?;
+    reload_current_candidate(
+        &mut supervisor,
+        &OperationId::parse("op:reload:perception")?,
+    )?;
     assert_eq!(supervisor.manifest, expected);
     assert_eq!(
         supervisor.perception.corroborator().topology_digest(),
@@ -519,7 +614,7 @@ fn reload_unavailable_or_corrupt_model_keeps_the_active_generation() -> TestResu
             .replace("0,0,4,4", "0,0,8,4");
         let _ = SiteManifest::parse_json(&candidate)?;
         fs::write(dir.manifest_path(), candidate)?;
-        supervisor.handle_reload_manifest(&operation)?;
+        reload_current_candidate(&mut supervisor, &operation)?;
         assert_eq!(supervisor.manifest, before, "{name}");
         assert_eq!(updates.load(Ordering::Relaxed), 0, "{name}");
         assert_eq!(supervisor.perception.pool_metrics(), metrics, "{name}");
@@ -559,19 +654,21 @@ fn queued_reload_refusals_are_correlated_and_do_not_stop_camera_ticks() -> TestR
         capabilities: vec!["CAP-OBSERVE-STATUS-001".to_owned()],
         io_timeout: Duration::from_secs(3),
     })?;
-    let approval =
-        control_op_approval_digest(&descriptor.site_id, BoundedControlOp::ReloadManifest, None);
     let unsupported = text.replacen(r#""dimensions":[32,32]"#, r#""dimensions":[64,32]"#, 1);
     let _ = SiteManifest::parse_json(&unsupported)?;
     for (index, candidate) in [unsupported.as_str(), "{malformed"].iter().enumerate() {
-        fs::write(dir.manifest_path(), candidate)?;
+        // A valid preview/admission must precede the malformed-on-disk execution case.
+        fs::write(dir.manifest_path(), &unsupported)?;
+        let (_, _, approval) = preview_reload(&mut client)?;
         let request = client.next_request_id();
-        let response = client.submit_bounded_control(
+        let response = client.submit_idempotent_control(
             request,
+            ContentDigest::sha256(format!("reload-refusal-{index}").as_bytes()),
             BoundedControlOp::ReloadManifest,
             None,
             approval,
         )?;
+        fs::write(dir.manifest_path(), candidate)?;
         let IpcResponse::ControlAccepted { operation_id, .. } = response else {
             return Err("reload was not queued".into());
         };
@@ -625,5 +722,311 @@ fn queued_reload_refusals_are_correlated_and_do_not_stop_camera_ticks() -> TestR
             .frames_received
             >= 2
     );
+    finish(supervisor)
+}
+
+#[test]
+fn live_reload_preview_binds_exact_generations_and_refuses_stale_or_legacy_approval() -> TestResult
+{
+    let dir = TempDir::new()?;
+    let (supervisor, updates, text) = start_supervisor(&dir, true)?;
+    let active = supervisor.manifest.digest();
+    let candidate_a = text.replacen(r#""gop_frames":4"#, r#""gop_frames":8"#, 1);
+    let expected_a = SiteManifest::parse_json(&candidate_a)?.digest();
+    fs::write(dir.manifest_path(), &candidate_a)?;
+    let mut client = reload_client(&dir)?;
+    let (preview_active, preview_candidate, approval) = preview_reload(&mut client)?;
+    assert_eq!(preview_active, active);
+    assert_eq!(preview_candidate, expected_a);
+    assert_ne!(active, expected_a);
+    assert_eq!(updates.load(Ordering::Relaxed), 0);
+    assert_eq!(supervisor.manifest.digest(), active);
+    let shared = supervisor
+        .control_shared
+        .as_ref()
+        .ok_or("control owner missing")?;
+    assert_eq!(shared.queued_control_command_count()?, 0);
+
+    let legacy = crate::control::control_op_approval_digest(
+        &supervisor.manifest.site_id,
+        BoundedControlOp::ReloadManifest,
+        None,
+    );
+    for keyed in [false, true] {
+        let request = client.next_request_id();
+        let response = if keyed {
+            client.submit_idempotent_control(
+                request,
+                ContentDigest::sha256(b"legacy-reload-approval"),
+                BoundedControlOp::ReloadManifest,
+                None,
+                legacy,
+            )?
+        } else {
+            client.submit_bounded_control(
+                request,
+                BoundedControlOp::ReloadManifest,
+                None,
+                approval,
+            )?
+        };
+        assert!(matches!(response, IpcResponse::Refused { ref error_id, .. }
+            if error_id.as_str() == crate::ERR_DAEMON_CONTROL_APPROVAL_001));
+    }
+
+    let candidate_b = text.replacen(r#""gop_frames":4"#, r#""gop_frames":16"#, 1);
+    fs::write(dir.manifest_path(), candidate_b)?;
+    let request = client.next_request_id();
+    let response = client.submit_idempotent_control(
+        request,
+        ContentDigest::sha256(b"stale-reload-candidate"),
+        BoundedControlOp::ReloadManifest,
+        None,
+        approval,
+    )?;
+    assert!(matches!(response, IpcResponse::Refused { ref error_id, .. }
+        if error_id.as_str() == crate::ERR_DAEMON_CONTROL_APPROVAL_001));
+    let (same_active, different_candidate, different_approval) = preview_reload(&mut client)?;
+    assert_eq!(same_active, active);
+    assert_ne!(different_candidate, expected_a);
+    assert_ne!(different_approval, approval);
+    assert_eq!(shared.queued_control_command_count()?, 0);
+    assert_eq!(supervisor.manifest.digest(), active);
+    assert_eq!(updates.load(Ordering::Relaxed), 0);
+    drop(client);
+    finish(supervisor)
+}
+
+#[test]
+fn queued_reload_refuses_candidate_drift_and_exact_retry_survives_missing_source_and_restart()
+-> TestResult {
+    let dir = TempDir::new()?;
+    let (mut supervisor, updates, text) = start_supervisor(&dir, true)?;
+    let original = supervisor.manifest.clone();
+    let original_clock = supervisor
+        .perception
+        .corroborator()
+        .clock_receipt("sensor:cam-a")?;
+    let candidate_a = text.replace("0,0,4,4", "0,0,8,4");
+    fs::write(dir.manifest_path(), candidate_a)?;
+    let mut client = reload_client(&dir)?;
+    let (_, _, approval) = preview_reload(&mut client)?;
+    let key = ContentDigest::sha256(b"reload-candidate-drift-retained-key");
+    let request = client.next_request_id();
+    let IpcResponse::ControlAccepted { operation_id, .. } = client.submit_idempotent_control(
+        request,
+        key,
+        BoundedControlOp::ReloadManifest,
+        None,
+        approval,
+    )?
+    else {
+        return Err("approved reload was not admitted".into());
+    };
+
+    // The already queued approval must never authorize later replacement content.
+    fs::write(dir.manifest_path(), text.replace("0,0,4,4", "0,0,16,4"))?;
+    supervisor.process_control_commands_step(
+        START_NS + 200_000_000,
+        fss_core::TimestampNs(START_NS + 200_000_000),
+    )?;
+    assert_eq!(supervisor.manifest, original);
+    assert_eq!(updates.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        supervisor
+            .perception
+            .corroborator()
+            .clock_receipt("sensor:cam-a")?,
+        original_clock,
+    );
+    assert!(
+        supervisor
+            .step_tick(START_NS + 200_000_000)?
+            .frames_received
+            >= 2
+    );
+    let summaries = reload_operation_summaries(&dir)?;
+    assert!(summaries.iter().any(
+        |summary| summary.contains("reason=approval_generation_mismatch")
+            && summary.contains(&format!("operation_id={}", operation_id.as_str()))
+    ));
+
+    fs::remove_file(dir.manifest_path())?;
+    let request = client.next_request_id();
+    assert!(matches!(
+        client.submit_idempotent_control(request, key, BoundedControlOp::ReloadManifest, None, approval)?,
+        IpcResponse::ControlReplayed {
+            operation_id: ref replayed,
+            progress: fss_ipc::RetainedControlProgress::SubsystemReturned,
+            recovered: false, ..
+        } if replayed == &operation_id
+    ));
+    let request = client.next_request_id();
+    assert!(matches!(
+        client.submit_idempotent_control(
+            request, key, BoundedControlOp::ReloadManifest, None,
+            ContentDigest::sha256(b"changed retained approval"),
+        )?,
+        IpcResponse::Refused { ref error_id, .. }
+            if error_id.as_str() == "ERR-IDEMPOTENCY-CONFLICT-001"
+    ));
+    let mut changed_principal = reload_client_as(&dir, "principal:other-operator")?;
+    let request = changed_principal.next_request_id();
+    assert!(matches!(
+        changed_principal.submit_idempotent_control(
+            request, key, BoundedControlOp::ReloadManifest, None, approval,
+        )?,
+        IpcResponse::Refused { ref error_id, .. }
+            if error_id.as_str() == "ERR-IDEMPOTENCY-CONFLICT-001"
+    ));
+    drop(changed_principal);
+    assert_eq!(updates.load(Ordering::Relaxed), 0);
+    drop(client);
+    finish(supervisor)?;
+
+    // Recover from the validated startup object; the reload source deliberately stays absent.
+    let mut config = DaemonStartConfig::new(original);
+    config.manifest_path = Some(dir.manifest_path());
+    config.started_at_ns = START_NS + 1_000_000_000;
+    config.enable_ipc = true;
+    let restarted = DaemonSupervisor::start(config)?;
+    let mut client = reload_client(&dir)?;
+    let request = client.next_request_id();
+    assert!(matches!(
+        client.submit_idempotent_control(request, key, BoundedControlOp::ReloadManifest, None, approval)?,
+        IpcResponse::ControlReplayed {
+            operation_id: ref replayed,
+            progress: fss_ipc::RetainedControlProgress::SubsystemReturned,
+            recovered: true, ..
+        } if replayed == &operation_id
+    ));
+    assert_eq!(
+        restarted
+            .control_shared
+            .as_ref()
+            .ok_or("control owner missing")?
+            .queued_control_command_count()?,
+        0,
+    );
+    let request = client.next_request_id();
+    assert!(matches!(
+        client.preview_manifest_reload(request)?,
+        IpcResponse::Refused { .. }
+    ));
+    drop(client);
+    finish(restarted)
+}
+
+#[test]
+fn queued_reload_revalidates_active_generation_and_publishes_the_applied_candidate() -> TestResult {
+    let dir = TempDir::new()?;
+    let (mut supervisor, updates, text) = start_supervisor(&dir, true)?;
+    let candidate = text.replacen(r#""gop_frames":4"#, r#""gop_frames":8"#, 1);
+    let expected = SiteManifest::parse_json(&candidate)?;
+    fs::write(dir.manifest_path(), candidate)?;
+    let mut client = reload_client(&dir)?;
+    let (old_active, candidate_digest, approval) = preview_reload(&mut client)?;
+    assert_ne!(old_active, candidate_digest);
+    let mut operations = Vec::new();
+    for index in 0..2 {
+        let request = client.next_request_id();
+        let response = client.submit_idempotent_control(
+            request,
+            ContentDigest::sha256(format!("reload-generation-fence-{index}").as_bytes()),
+            BoundedControlOp::ReloadManifest,
+            None,
+            approval,
+        )?;
+        let IpcResponse::ControlAccepted { operation_id, .. } = response else {
+            return Err(format!("reload was not queued: {response:?}").into());
+        };
+        operations.push(operation_id);
+    }
+    assert!(
+        supervisor
+            .step_tick(START_NS + 200_000_000)?
+            .frames_received
+            >= 2
+    );
+    assert_eq!(supervisor.manifest, expected);
+    assert_eq!(updates.load(Ordering::Relaxed), 1);
+    let summaries = reload_operation_summaries(&dir)?;
+    assert!(
+        summaries
+            .iter()
+            .any(|summary| summary.starts_with("manifest_reloaded")
+                && summary.contains(&format!("operation_id={}", operations[0].as_str())))
+    );
+    assert!(summaries.iter().any(
+        |summary| summary.contains("reason=approval_generation_mismatch")
+            && summary.contains(&format!("operation_id={}", operations[1].as_str()))
+    ));
+    let (new_active, same_candidate, new_approval) = preview_reload(&mut client)?;
+    assert_eq!(new_active, candidate_digest);
+    assert_eq!(same_candidate, candidate_digest);
+    assert_ne!(approval, new_approval);
+
+    let request = client.next_request_id();
+    assert!(matches!(
+        client.submit_idempotent_control(
+            request, ContentDigest::sha256(b"stale-active-generation"),
+            BoundedControlOp::ReloadManifest, None, approval,
+        )?,
+        IpcResponse::Refused { ref error_id, .. }
+            if error_id.as_str() == crate::ERR_DAEMON_CONTROL_APPROVAL_001
+    ));
+    drop(client);
+    finish(supervisor)
+}
+
+#[test]
+fn reload_applies_one_owned_snapshot_even_if_source_changes_during_driver_update() -> TestResult {
+    let dir = TempDir::new()?;
+    let replacement = manifest_json(&dir.0, &[camera_json("cam-a"), camera_json("cam-b")])
+        .replacen(r#""gop_frames":4"#, r#""gop_frames":16"#, 1);
+    let replacement_digest = SiteManifest::parse_json(&replacement)?.digest();
+    let (mut supervisor, updates, text) =
+        start_supervisor_with_replacement(&dir, true, Some(&replacement))?;
+    let candidate = text.replacen(r#""gop_frames":4"#, r#""gop_frames":8"#, 1);
+    let approved = SiteManifest::parse_json(&candidate)?;
+    fs::write(dir.manifest_path(), candidate)?;
+    let mut client = reload_client(&dir)?;
+    let (_, candidate_digest, approval) = preview_reload(&mut client)?;
+    assert_eq!(candidate_digest, approved.digest());
+    let request = client.next_request_id();
+    assert!(matches!(
+        client.submit_idempotent_control(
+            request,
+            ContentDigest::sha256(b"reload-owned-snapshot"),
+            BoundedControlOp::ReloadManifest,
+            None,
+            approval,
+        )?,
+        IpcResponse::ControlAccepted { .. }
+    ));
+    assert!(
+        supervisor
+            .step_tick(START_NS + 200_000_000)?
+            .frames_received
+            >= 2
+    );
+    assert_eq!(updates.load(Ordering::Relaxed), 1);
+    assert_eq!(fs::read_to_string(dir.manifest_path())?, replacement);
+    assert_eq!(supervisor.manifest, approved);
+    for camera in &approved.cameras {
+        assert_eq!(
+            &supervisor
+                .sensors
+                .get(&camera.sensor_id)
+                .ok_or("missing camera")?
+                .entry,
+            camera,
+        );
+    }
+    let (active, pending, _) = preview_reload(&mut client)?;
+    assert_eq!(active, approved.digest());
+    assert_eq!(pending, replacement_digest);
+    assert_ne!(active, pending);
+    drop(client);
     finish(supervisor)
 }

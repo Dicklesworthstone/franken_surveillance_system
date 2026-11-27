@@ -6,18 +6,16 @@ use std::io::Cursor;
 
 use fss_core::{
     CanonicalDecode, CanonicalEncode, CanonicalEncoder, ContentDigest, DeltaPriority,
-    DigestAlgorithm, MeaningfulDeltaClass,
-    OperationId, PrincipalId, validate_error_id,
+    DigestAlgorithm, MeaningfulDeltaClass, OperationId, PrincipalId, validate_error_id,
 };
 use fss_ipc::{
     ActiveScrubStatus, BoundedControlOp, CameraLiveStatus, ControlOperationState,
     DeltaEventSummary, ERR_DAEMON_OFFLINE_001, ERR_IPC_HANDSHAKE_MISMATCH_001, FrameFlags,
     HandshakeAccepted, HandshakeRejected, HandshakeRequest, HandshakeResponse, IPC_ERROR_IDS,
     IPC_PROTOCOL_VERSION, IpcError, IpcRequest, IpcResponse, LiveDaemonStatus,
-    MAX_REQUEST_FRAME_BYTES, MAX_RESPONSE_FRAME_BYTES, RetainedControlProgress, RingWatermarkStatus,
-    StreamEndReason,
-    crc32c, decode_frame_from_slice, encode_frame_header, encode_frame_to_vec, parse_error_id,
-    read_frame, validate_capabilities,
+    MAX_REQUEST_FRAME_BYTES, MAX_RESPONSE_FRAME_BYTES, RetainedControlProgress,
+    RingWatermarkStatus, StreamEndReason, crc32c, decode_frame_from_slice, encode_frame_header,
+    encode_frame_to_vec, parse_error_id, read_frame, validate_capabilities,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -84,6 +82,7 @@ fn canonical_wire_round_trip_every_message_variant() -> TestResult {
     }
 
     let requests = vec![
+        IpcRequest::PreviewManifestReload { request_id: 12 },
         IpcRequest::QueryRetentionForecast {
             request_id: 11,
             camera_id: "sensor:front".to_owned(),
@@ -173,6 +172,12 @@ fn canonical_wire_round_trip_every_message_variant() -> TestResult {
 
     let err_id = parse_error_id(ERR_DAEMON_OFFLINE_001)?;
     let responses = vec![
+        IpcResponse::ManifestReloadPreview {
+            request_id: 12,
+            active_manifest_digest: digest_a,
+            candidate_manifest_digest: digest_b,
+            approval_digest: ContentDigest::sha256(b"reload approval"),
+        },
         IpcResponse::RetentionForecast {
             request_id: 11,
             forecast: fss_ipc::CameraRetentionForecast {
@@ -368,7 +373,6 @@ fn oversized_frames_refused_before_allocation_for_request_and_response() -> Test
     Ok(())
 }
 
-
 #[test]
 fn keyed_control_wire_is_additive_and_preserves_legacy_tag_four_bytes() -> TestResult {
     let approval = ContentDigest::sha256(b"approved bounded control");
@@ -479,5 +483,69 @@ fn keyed_control_wire_refuses_zero_keys_unknown_boundaries_and_trailing_bytes() 
     let mut trailing = response.try_canonical_bytes()?;
     trailing.push(0);
     assert!(IpcResponse::from_canonical_bytes(&trailing).is_err());
+    Ok(())
+}
+
+#[test]
+fn reload_preview_wire_uses_additive_tags_and_rejects_incomplete_or_trailing_fields() -> TestResult
+{
+    let request_id = 91;
+    let active = ContentDigest::sha256(b"active manifest");
+    let candidate = ContentDigest::sha256(b"candidate manifest");
+    let approval = ContentDigest::sha256(b"bound approval");
+    let request = IpcRequest::PreviewManifestReload { request_id };
+    let mut expected = CanonicalEncoder::new();
+    expected.tag(8);
+    expected.u64(request_id);
+    let bytes = expected.finish();
+    assert_eq!(request.try_canonical_bytes()?, bytes);
+    assert_eq!(IpcRequest::from_canonical_bytes(&bytes)?, request);
+    assert_eq!(request.request_id(), request_id);
+    assert_eq!(request.op_name(), "preview_manifest_reload");
+    assert!(IpcRequest::from_canonical_bytes(&bytes[..bytes.len() - 1]).is_err());
+    let mut trailing = bytes;
+    trailing.push(0);
+    assert!(IpcRequest::from_canonical_bytes(&trailing).is_err());
+
+    let response = IpcResponse::ManifestReloadPreview {
+        request_id,
+        active_manifest_digest: active,
+        candidate_manifest_digest: candidate,
+        approval_digest: approval,
+    };
+    let mut expected = CanonicalEncoder::new();
+    expected.tag(10);
+    expected.u64(request_id);
+    expected.digest(active);
+    expected.digest(candidate);
+    expected.digest(approval);
+    let bytes = expected.finish();
+    assert_eq!(response.try_canonical_bytes()?, bytes);
+    assert_eq!(IpcResponse::from_canonical_bytes(&bytes)?, response);
+    assert_eq!(response.request_id(), request_id);
+    for length in 0..bytes.len() {
+        assert!(IpcResponse::from_canonical_bytes(&bytes[..length]).is_err());
+    }
+    let mut trailing = bytes;
+    trailing.push(0);
+    assert!(IpcResponse::from_canonical_bytes(&trailing).is_err());
+
+    // A legacy reload envelope remains decodable; its unsafe generic approval is
+    // refused by the real daemon, rather than silently changing old wire meanings.
+    let legacy = IpcRequest::SubmitBoundedControl {
+        request_id,
+        op: BoundedControlOp::ReloadManifest,
+        target_camera_id: None,
+        approval_digest: approval,
+    };
+    let mut expected = CanonicalEncoder::new();
+    expected.tag(4);
+    expected.u64(request_id);
+    expected.tag(4); // ReloadManifest.
+    expected.bool(false);
+    expected.digest(approval);
+    let expected = expected.finish();
+    assert_eq!(legacy.try_canonical_bytes()?, expected);
+    assert_eq!(IpcRequest::from_canonical_bytes(&expected)?, legacy);
     Ok(())
 }

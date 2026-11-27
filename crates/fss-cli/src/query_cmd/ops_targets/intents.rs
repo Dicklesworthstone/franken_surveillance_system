@@ -15,13 +15,12 @@ use std::time::Duration;
 
 use fss_core::{
     AgentView, BudgetVector, CanonicalEncode, CanonicalEncoder, CaptureInterval, Completeness,
-    ContentDigest,
-    ContextAuthority, ExecutionBoundary, KnowledgeState, LedgerAnchor, OperationId, PrincipalId,
-    ResponseSafeRetry, RootAuthoritySpec, SensorId, SessionId, TimestampNs,
+    ContentDigest, ContextAuthority, ExecutionBoundary, KnowledgeState, LedgerAnchor, OperationId,
+    PrincipalId, ResponseSafeRetry, RootAuthoritySpec, SensorId, SessionId, TimestampNs,
 };
 use fss_daemon::control::{
     DAEMON_STOP_TARGET, DaemonRuntimeDescriptor, control_op_approval_digest,
-    daemon_stop_approval_digest,
+    daemon_stop_approval_digest, manifest_reload_approval_digest,
 };
 use fss_ipc::{
     BoundedControlOp, ControlOperationState, IpcClient, IpcClientConfig, IpcResponse,
@@ -456,7 +455,8 @@ fn run_privacy_mask(
     ]);
     let preview = ctx.approval.is_none();
     Ok(IntentOutcome {
-        possibly_occurred: Vec::new(),        anchor,
+        possibly_occurred: Vec::new(),
+        anchor,
         payload_json,
         proof_pointers: vec![
             decl.policy_digest.to_text(),
@@ -585,7 +585,8 @@ fn run_evidence_hold(
     ]);
     let preview = ctx.approval.is_none();
     Ok(IntentOutcome {
-        possibly_occurred: Vec::new(),        anchor,
+        possibly_occurred: Vec::new(),
+        anchor,
         payload_json,
         proof_pointers: vec![
             receipt.record.digest().to_text(),
@@ -772,37 +773,85 @@ fn run_camera_supervision(
         .map(str::to_owned)
         .or_else(|| descriptor_res.as_ref().ok().map(|d| d.site_id.clone()))
         .unwrap_or_else(|| ctx.site_lineage.to_owned());
-    let expected_approval =
-        if op == BoundedControlOp::StopCamera && camera_id == Some(DAEMON_STOP_TARGET) {
-            daemon_stop_approval_digest(&deployment_id, deployment_root_digest(ctx.root))
-        } else {
-            control_op_approval_digest(&deployment_id, op, camera_id)
-        };
+    let reload_preview = if op == BoundedControlOp::ReloadManifest && ctx.approval.is_none() {
+        let descriptor = descriptor_res.as_ref().map_err(|err| {
+            OpsError::DaemonUnavailable(format!(
+                "daemon_unavailable: exact reload preview requires the live manifest owner ({err})"
+            ))
+        })?;
+        Some(request_manifest_reload_preview(
+            ctx,
+            &deployment_id,
+            descriptor,
+        )?)
+    } else {
+        None
+    };
+    let expected_approval = if op == BoundedControlOp::ReloadManifest {
+        // A commit carries the original sealed approval. Fetching a fresh preview here would
+        // replace its identity after file/active-generation drift and prevent exact replay.
+        // The daemon first resolves the retained key, then validates fresh admission.
+        reload_preview
+            .map(|preview| preview.approval_digest)
+            .or(ctx.approval)
+            .ok_or_else(|| {
+                OpsError::ApprovalRequired("reload preview approval is required".into())
+            })?
+    } else if op == BoundedControlOp::StopCamera && camera_id == Some(DAEMON_STOP_TARGET) {
+        daemon_stop_approval_digest(&deployment_id, deployment_root_digest(ctx.root))
+    } else {
+        control_op_approval_digest(&deployment_id, op, camera_id)
+    };
+    if !is_valid_sha256(expected_approval) || expected_approval.is_laboratory() {
+        return Err(OpsError::ApprovalMismatch(
+            "control approval must be canonical nonzero SHA-256".into(),
+        ));
+    }
     let idem = camera_control_request_key(ctx, expected_approval, request_key)?;
 
     let Some(supplied_approval) = ctx.approval else {
         let daemon_live = descriptor_res.is_ok();
-        let payload_json = object(&[
+        let mut payload_fields = vec![
             ("intent", string("camera-supervision")),
             ("status", string("proposed")),
             ("authorityChanged", "false".to_owned()),
             ("deploymentId", string(&deployment_id)),
             ("op", string(op.as_str())),
-            ("cameraId", camera_id.map_or_else(|| "null".to_owned(), string)),
+            (
+                "cameraId",
+                camera_id.map_or_else(|| "null".to_owned(), string),
+            ),
             ("daemonLive", daemon_live.to_string()),
             ("approvalDigest", string(&expected_approval.to_text())),
             ("idempotencyKey", string(&idem.to_text())),
             ("semanticCompletionProved", "false".to_owned()),
-        ]);
+        ];
+        let mut proof_pointers = vec![
+            ctx.anchor.state_root.to_text(),
+            expected_approval.to_text(),
+            idem.to_text(),
+        ];
+        if let Some(preview) = reload_preview {
+            payload_fields.push((
+                "activeManifestDigest",
+                string(&preview.active_manifest_digest.to_text()),
+            ));
+            payload_fields.push((
+                "candidateManifestDigest",
+                string(&preview.candidate_manifest_digest.to_text()),
+            ));
+            proof_pointers.push(preview.active_manifest_digest.to_text());
+            proof_pointers.push(preview.candidate_manifest_digest.to_text());
+        }
         return Ok(IntentOutcome {
             anchor: ctx.anchor.clone(),
-            payload_json,
-            proof_pointers: vec![
-                ctx.anchor.state_root.to_text(), expected_approval.to_text(), idem.to_text(),
-            ],
+            payload_json: object(&payload_fields),
+            proof_pointers,
             warnings: vec![
                 "Preview only; commit with the exact approvalDigest and idempotencyKey. Keep the key for retries; choose a new key for a distinct intended operation.".to_owned(),
-                if daemon_live {
+                if reload_preview.is_some() {
+                    "Reload approval binds the exact active and candidate manifest digests. Fresh admission and execution refuse drift; retries keep the original approval and key."
+                } else if daemon_live {
                     "The descriptor is present; commit still requires a live daemon with durable keyed-control support."
                 } else {
                     "The daemon is offline; commit refuses until a compatible daemon is started."
@@ -828,22 +877,8 @@ fn run_camera_supervision(
     let descriptor = descriptor_res.map_err(|err| {
         OpsError::DaemonUnavailable(format!("daemon_unavailable: fss-daemon is offline ({err}); start fss-daemon before committing camera-supervision"))
     })?;
-    let mut client = IpcClient::connect(IpcClientConfig {
-        deployment_root: ctx.root.to_path_buf(),
-        deployment_id: deployment_id.clone(),
-        contract_basis_digest: descriptor.contract_basis_digest,
-        principal: ctx.principal.clone(),
-        capabilities: vec![
-            CAP_OBSERVE_STATUS.to_owned(),
-            CAP_AGENT_PLAN_COMMIT.to_owned(),
-        ],
-        io_timeout: Duration::from_secs(5),
-    })
-    .map_err(|err| {
-        OpsError::DaemonUnavailable(format!(
-            "daemon_unavailable: fss-ipc connect failed ({err})"
-        ))
-    })?;
+    let mut client =
+        connect_control_client(ctx, &deployment_id, &descriptor, CAP_AGENT_PLAN_COMMIT)?;
 
     let req_id = client.next_request_id();
     let response = client
@@ -857,9 +892,115 @@ fn run_camera_supervision(
             )
         })?;
     camera_control_response(
-        ctx, op, camera_id, &deployment_id, descriptor.descriptor_digest(),
-        supplied_approval, idem, req_id, response,
+        ctx,
+        op,
+        camera_id,
+        &deployment_id,
+        descriptor.descriptor_digest(),
+        supplied_approval,
+        idem,
+        req_id,
+        response,
     )
+}
+
+#[derive(Clone, Copy)]
+struct ManifestReloadPreview {
+    active_manifest_digest: ContentDigest,
+    candidate_manifest_digest: ContentDigest,
+    approval_digest: ContentDigest,
+}
+
+fn connect_control_client(
+    ctx: &IntentCtx<'_>,
+    deployment_id: &str,
+    descriptor: &DaemonRuntimeDescriptor,
+    capability: &str,
+) -> Result<IpcClient, OpsError> {
+    IpcClient::connect(IpcClientConfig {
+        deployment_root: ctx.root.to_path_buf(),
+        deployment_id: deployment_id.to_owned(),
+        contract_basis_digest: descriptor.contract_basis_digest,
+        principal: ctx.principal.clone(),
+        capabilities: vec![CAP_OBSERVE_STATUS.to_owned(), capability.to_owned()],
+        io_timeout: Duration::from_secs(5),
+    })
+    .map_err(|err| {
+        OpsError::DaemonUnavailable(format!(
+            "daemon_unavailable: fss-ipc connect failed ({err})"
+        ))
+    })
+}
+
+fn request_manifest_reload_preview(
+    ctx: &IntentCtx<'_>,
+    deployment_id: &str,
+    descriptor: &DaemonRuntimeDescriptor,
+) -> Result<ManifestReloadPreview, OpsError> {
+    let mut client =
+        connect_control_client(ctx, deployment_id, descriptor, CAP_AGENT_PLAN_PREPARE)?;
+    let request_id = client.next_request_id();
+    let response = client.preview_manifest_reload(request_id).map_err(|err| {
+        OpsError::DaemonUnavailable(format!(
+            "daemon_unavailable: exact manifest reload preview failed ({err})"
+        ))
+    })?;
+    validate_manifest_reload_preview(ctx, deployment_id, request_id, response)
+}
+
+fn validate_manifest_reload_preview(
+    ctx: &IntentCtx<'_>,
+    deployment_id: &str,
+    request_id: u64,
+    response: IpcResponse,
+) -> Result<ManifestReloadPreview, OpsError> {
+    if response.request_id() != request_id {
+        return Err(OpsError::OperationFailed(
+            "manifest reload preview response does not match its request".into(),
+        ));
+    }
+    match response {
+        IpcResponse::ManifestReloadPreview {
+            active_manifest_digest,
+            candidate_manifest_digest,
+            approval_digest,
+            ..
+        } => {
+            if [
+                active_manifest_digest,
+                candidate_manifest_digest,
+                approval_digest,
+            ]
+            .into_iter()
+            .any(|digest| !is_valid_sha256(digest) || digest.is_laboratory())
+                || approval_digest
+                    != manifest_reload_approval_digest(
+                        deployment_id,
+                        deployment_root_digest(ctx.root),
+                        active_manifest_digest,
+                        candidate_manifest_digest,
+                    )
+            {
+                return Err(OpsError::OperationFailed(
+                    "manifest reload preview does not bind this deployment and exact active/candidate generations".into(),
+                ));
+            }
+            Ok(ManifestReloadPreview {
+                active_manifest_digest,
+                candidate_manifest_digest,
+                approval_digest,
+            })
+        }
+        IpcResponse::Refused {
+            error_id, reason, ..
+        } => Err(OpsError::OperationFailed(format!(
+            "daemon refused exact manifest reload preview ({error_id}): {reason}"
+        ))),
+        IpcResponse::Cancelled { .. } => Err(OpsError::Cancelled),
+        _ => Err(OpsError::OperationFailed(
+            "unexpected fss-ipc response to PreviewManifestReload".into(),
+        )),
+    }
 }
 
 fn control_outcome_uncertain(
@@ -892,7 +1033,9 @@ fn camera_control_response(
 ) -> Result<IntentOutcome, OpsError> {
     if response.request_id() != request_id {
         return Err(control_outcome_uncertain(
-            ctx, approval, key,
+            ctx,
+            approval,
+            key,
             format!(
                 "Control response correlation {} does not match submitted request {request_id}; no receipt is attributed to this key.",
                 response.request_id()

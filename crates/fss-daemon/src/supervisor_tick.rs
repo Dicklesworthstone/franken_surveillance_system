@@ -149,7 +149,7 @@ impl DaemonSupervisor {
                 self.handle_snapshot_camera(cmd.target_camera_id.as_deref())?;
             }
             BoundedControlOp::ReloadManifest => {
-                self.handle_reload_manifest(&cmd.operation_id)?;
+                self.handle_reload_manifest(&cmd.operation_id, cmd.approval_digest)?;
             }
             BoundedControlOp::ProbeDetect => {
                 self.handle_probe_detect(cmd.target_camera_id.as_deref())?;
@@ -224,8 +224,27 @@ impl DaemonSupervisor {
     fn handle_reload_manifest(
         &mut self,
         operation_id: &fss_core::OperationId,
+        approval_digest: fss_core::ContentDigest,
     ) -> Result<(), DaemonError> {
         let head = self.storage.head_snapshot()?;
+        if self
+            .control_shared
+            .as_ref()
+            .is_none_or(|shared| shared.is_shutdown_requested())
+        {
+            self.broadcast_delta(
+                head.commit_sequence,
+                self.manifest.digest(),
+                MeaningfulDeltaClass::SensorHealth,
+                DeltaPriority::High,
+                format!(
+                    "manifest_reload_refused reason=owner_unavailable error_id={} operation_id={}",
+                    fss_ipc::ERR_IPC_SERVER_SHUTDOWN_001,
+                    operation_id.as_str()
+                ),
+            );
+            return Ok(());
+        }
         let Some(path) = self.manifest_path.clone() else {
             self.broadcast_delta(
                 head.commit_sequence,
@@ -257,6 +276,27 @@ impl DaemonSupervisor {
                 return Ok(());
             }
         };
+
+        // The configured file is mutable. Bind this one owned parse to the approved
+        // candidate and the actual current generation before any live owner changes.
+        // A later file replacement cannot alter the snapshot applied below.
+        let active_digest = self.manifest.digest();
+        let candidate_digest = reloaded.digest();
+        if !self.control_shared.as_ref().is_some_and(|shared| {
+            !shared.is_shutdown_requested()
+                && shared.expected_manifest_reload_approval(active_digest, candidate_digest)
+                    == approval_digest
+        }) {
+            self.broadcast_delta(
+                head.commit_sequence, active_digest,
+                MeaningfulDeltaClass::SensorHealth, DeltaPriority::High,
+                format!(
+                    "manifest_reload_refused reason=approval_generation_mismatch error_id={} operation_id={}",
+                    crate::ERR_DAEMON_CONTROL_APPROVAL_001, operation_id.as_str()
+                ),
+            );
+            return Ok(());
+        }
 
         // The runtime has fixed storage, IPC, region, ring, source, and vault owners.
         // Validate the whole candidate before changing any driver's metadata or cognition.
@@ -335,6 +375,9 @@ impl DaemonSupervisor {
         let digest = reloaded.digest();
         let site = reloaded.site_id.clone();
         self.manifest = reloaded;
+        if let Some(shared) = &self.control_shared {
+            shared.publish_active_manifest_digest(digest)?;
+        }
         self.broadcast_delta(
             head.commit_sequence,
             digest,

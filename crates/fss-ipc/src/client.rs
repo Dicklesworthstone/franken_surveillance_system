@@ -290,6 +290,11 @@ impl IpcClient {
         })
     }
 
+    /// Previews the exact configured manifest candidate and active-generation precondition.
+    pub fn preview_manifest_reload(&mut self, request_id: u64) -> Result<IpcResponse, IpcError> {
+        self.request(&IpcRequest::PreviewManifestReload { request_id })
+    }
+
     /// Submits a closed-enum bounded supervisor control operation.
     pub fn submit_bounded_control(
         &mut self,
@@ -520,6 +525,7 @@ fn response_outcome_label(response: &IpcResponse) -> &str {
     match response {
         IpcResponse::DeltaBatchCommitted { .. }
         | IpcResponse::RetentionForecast { .. }
+        | IpcResponse::ManifestReloadPreview { .. }
         | IpcResponse::LiveStatus(_)
         | IpcResponse::DeltaEvent { .. }
         | IpcResponse::ControlAccepted { .. } => "ok",

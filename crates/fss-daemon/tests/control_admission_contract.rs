@@ -120,7 +120,6 @@ fn every_control_binds_approval_to_deployment_operation_and_target_over_uds() ->
         (BoundedControlOp::StartCamera, Some(CAMERA_A)),
         (BoundedControlOp::StopCamera, Some(CAMERA_A)),
         (BoundedControlOp::SnapshotCamera, Some(CAMERA_A)),
-        (BoundedControlOp::ReloadManifest, None),
         (BoundedControlOp::ProbeDetect, Some(CAMERA_A)),
         (BoundedControlOp::ProbeDetect, None),
         (BoundedControlOp::TriggerScrub, None),

@@ -5,6 +5,43 @@
 **Current change qualification:** each dated section below states its exact verification boundary. Native passes for one component do not qualify other changes, and prior receipts do not qualify new bytes.
 **Release authority:** repository-owned local qualification (`scripts/qualify.sh`) and retained DSR receipts, not hosted CI
 
+## Exact manifest generation approval through daemon IPC and MCP — 2026-11-27
+
+Manifest reload now previews the configured source through the live daemon and seals
+deployment, root, active configuration and candidate configuration into one approval.
+The typed operational executor and MCP plan expose both canonical manifest digests.
+Commit requires the original explicit retry key and approval and does not silently
+preview another candidate. Fresh unkeyed or generic operation-only reloads refuse.
+
+Retained key lookup precedes source reads, preserving inspection after file replacement,
+file removal or restart. Fresh admission checks both generations and rechecks source
+and active identity after bounded file I/O. At dispatch, the supervisor independently
+checks its actual active generation and one owned parsed candidate against the retained
+approval before changing live owners. It applies that same snapshot and publishes the
+new active digest afterward. Existing restart-required fields remain disallowed.
+
+IPC request tag 8 and response tag 10 are additive; keyed intake and journal encodings
+are unchanged. Approval identity follows canonical parsed fields, not JSON whitespace.
+Regression coverage includes authority/correlation checks, source drift before admission
+and dispatch, competing queued generations, original retries after source removal and
+restart, changed-intent key conflicts, offline preview refusal, and source replacement
+during application without substitution of the approved snapshot.
+
+**Verification boundary:** independent production/API review and pinned nightly
+formatting cover the changed reload/IPC/client files. A current-head IPC test attempt was killed by SIGKILL in unchanged `syn`.
+A second integrated check passed `fss-core` but was killed compiling unchanged
+`asupersync` before reaching modified integration targets. A separate temporary harness
+compiled the unchanged production IPC codec modules and actual `fss-core`, then ran the
+exact six `ipc_wire_protocol.rs` tests: 6 passed, 0 failed. No runtime/server mocks or
+production feature changes were used. This validates the selected codecs and wire tests,
+not client/server integration, daemon reload or retention recovery. A broader prior-path
+format check found other outstanding differences. Full compilation, integration test
+execution and release qualification remain open.
+
+This advances `fss-x4a.30.1.7` / INV-007. Durable semantic outcome verification and
+operator-authorized resumption remain separate work. Admission and subsystem return
+still do not certify that a reload succeeded. See `docs/daemon_control_retries.md`.
+
 ## Explicit camera-control retry keys and truthful client outcomes — 2026-11-27
 
 Operational camera-supervision previews now return a request key bound to deployment

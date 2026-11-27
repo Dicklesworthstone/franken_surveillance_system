@@ -440,12 +440,19 @@ fn ipc_snapshot_reload_manifest_and_probe_detect_execute_real_operations() -> Te
     ));
 
     // 2. Submit ReloadManifest
-    let reload_approval =
-        control_op_approval_digest(&desc.site_id, BoundedControlOp::ReloadManifest, None);
+    let preview_request = ctrl_client.next_request_id();
+    let IpcResponse::ManifestReloadPreview {
+        approval_digest: reload_approval,
+        ..
+    } = ctrl_client.preview_manifest_reload(preview_request)?
+    else {
+        return Err("reload preview unavailable".into());
+    };
     let r2 = ctrl_client.next_request_id();
     assert!(matches!(
-        ctrl_client.submit_bounded_control(
+        ctrl_client.submit_idempotent_control(
             r2,
+            ContentDigest::sha256(b"interop-approved-reload"),
             BoundedControlOp::ReloadManifest,
             None,
             reload_approval,

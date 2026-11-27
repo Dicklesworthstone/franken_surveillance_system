@@ -451,6 +451,10 @@ fn execute_one(
             let resp = shared.handler.query_retention_forecast(ctx, &camera_id);
             send_response(writer, FrameFlags::RESPONSE, &resp)
         }
+        IpcRequest::PreviewManifestReload { .. } => {
+            let response = shared.handler.preview_manifest_reload(ctx);
+            send_response(writer, FrameFlags::RESPONSE, &response)
+        }
         IpcRequest::QueryLiveStatus {
             include_cameras,
             include_ring,

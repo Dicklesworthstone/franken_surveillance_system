@@ -240,6 +240,7 @@ impl DaemonSupervisor {
             storage.forward_writer(),
             control_journal,
         );
+        shared.configure_manifest_reload(config.manifest_path.clone(), config.manifest.digest())?;
         let control = if config.enable_ipc {
             shared.publish_retention_forecasts(
                 storage.camera_retention_forecasts(sensors.keys(), now),

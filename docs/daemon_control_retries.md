@@ -89,8 +89,38 @@ omission remains valid for older producers. Consumers should use the matching up
 inspection schema.
 
 These changes do not upgrade legacy unkeyed callers, authorize resumed execution,
-provide physical device completion proof, or bind a mutable reload-manifest candidate
-to its exact approved bytes. Those remain separate contracts.
+or provide physical device completion proof. Manifest reload has the stricter exact
+generation contract below; its old generic approval is no longer fresh admission authority.
+
+### Exact manifest reload approval
+
+A `reload_manifest` preview requires a live daemon. The daemon reads its configured
+manifest source with the existing bounded regular-file loader and returns
+`activeManifestDigest`, `candidateManifestDigest`, `approvalDigest`, and the client
+request's `idempotencyKey`. The approval binds deployment ID, deployment-root digest,
+active manifest digest and candidate manifest digest under
+`fss.daemon.manifest_reload_approval.v1`. Manifest identity is the complete parsed
+canonical configuration, so JSON whitespace does not create another generation.
+The caller cannot supply an arbitrary file path.
+
+Commit and retry preserve the original approval and key. They do not silently preview
+a new candidate or replace the approved generation. The daemon resolves a retained key
+before reading the source again, including when the source has changed or disappeared.
+A changed approval or authority under that key refuses.
+
+Fresh admission checks the current active and candidate generations. Before applying
+a queued reload, the supervisor reads one owned candidate snapshot and checks the
+approval against both that snapshot and its actual active manifest. A changed candidate
+or intervening reload refuses before changing live owners. The supervisor applies that
+same parsed snapshot; replacing the file during application cannot substitute its bytes.
+The existing hot-reload allowlist still refuses settings that require a restart.
+
+Preview uses additive IPC request tag 8 and response tag 10. The response carries all
+three digests, and the client verifies correlation and recomputes the approval for its
+deployment and root. Fresh reloads require durable keyed intake; legacy unkeyed reloads
+and generic operation-only approvals refuse. Retained historical keys remain inspectable
+and inert after restart. A reload admission or subsystem-return receipt still does not
+prove semantic completion; inspect the correlated owner outcome and active generation.
 
 The operational payload names `fss.agent_ops_intent_plan.v1` and
 `fss.agent_ops_intent_commit.v1` predate this change. Their complete published payload
@@ -131,11 +161,18 @@ and updated existing fixtures cover those boundaries. Embedded MCP tool schemas 
 parsed and their camera-supervision branches checked, and changed-path content hashes
 were verified.
 
-Native Rust formatting, compilation and execution remain unverified. The first focused
-build exhausted disk in unchanged `pkcs8` before tests ran. The execution host then
-became unavailable; a brief return could not load the pinned Rust compiler shared
-library before another disconnect. No retained passing qualification receipt exists
-for these new bytes.
+Pinned nightly formatting succeeded for the daemon/IPC/client files in the exact reload
+increment. Native compilation and test execution remain unqualified: earlier attempts
+exhausted disk in unchanged `pkcs8`; a current-head IPC attempt was killed in unchanged
+`syn`. A second integrated check passed `fss-core` but was killed by SIGKILL compiling
+unchanged `asupersync` before reaching the modified integration targets. A separate
+codec-only harness compiled the exact production IPC control/error/handshake/protocol/
+security/status/transport modules with the actual `fss-core` and ran the unchanged
+`ipc_wire_protocol.rs`: all six tests passed, including reload tags, legacy bytes,
+invalid keys, roundtrips and frame limits. It used no runtime/server mocks or production
+feature changes. This does not qualify client/server integration, daemon reload or
+retention recovery. A broader prior-path format check also found outstanding differences.
+Source review and authored integration regressions are not passing release receipts.
 
 On a healthy pinned-toolchain host, the focused continuation is:
 
@@ -150,6 +187,6 @@ cargo +nightly-2026-08-31 test --locked -p fss-cli --test operational_mcp_target
 ```
 
 Run the repository's pinned formatting and relevant qualification lanes before making a
-release claim. The highest-impact next implementation work is exact durable retention
-intent recovery, immutable reload-candidate binding, and evidence-backed control outcome
-reconciliation with an explicit operator resumption policy.
+release claim. The highest-impact remaining implementation work includes exact durable retention
+intent recovery and evidence-backed control outcome reconciliation with an explicit
+operator resumption policy.
