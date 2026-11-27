@@ -7,3 +7,5 @@ Standalone no-dependency exact-integer graph algorithms. This package has no `fs
 Run `cargo test --manifest-path standalone/fss-graph-integer/Cargo.toml` for focused tests. This is a partial step toward repository issue #2; it does not extract or requalify the existing certified `fss-graph-algorithms` crate, add signed assignment or temporal reachability, or claim publishing/tagging.
 
 The assignment module supplies a bounded deterministic Hungarian minimum-cost perfect matching over complete square signed-i128 cost matrices. Its result includes checked primal and dual optimality witnesses. Sparse and rectangular policies, and parity with the existing registered FSS algorithm, remain separate work.
+
+The nested Cargo workspace is explicit so this package can be built on its own. Exhaustive small-graph min-cut and signed assignment permutation oracles accompany the example regressions. Native execution and publishing have not been performed in this connector-only session.

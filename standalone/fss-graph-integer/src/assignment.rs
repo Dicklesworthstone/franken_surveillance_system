@@ -183,3 +183,37 @@ mod tests {
             vec![i128::MAX, i128::MAX]], budget()), Err(AssignmentError::Overflow));
     }
 }
+
+
+#[cfg(test)]
+mod exhaustive_assignment_oracle {
+    use super::*;
+    #[test]
+    fn exact_vs_permutation_oracle_for_signed_three_by_three() {
+        let budget = AssignmentBudget { max_dimension: 3, max_steps: 100_000 };
+        let permutations = [
+            [0,1,2], [0,2,1], [1,0,2],
+            [1,2,0], [2,0,1], [2,1,0]
+        ];
+        for seed in 0..100_i128 {
+            let mut x = seed + 17;
+            let mut matrix = vec![vec![0_i128; 3]; 3];
+            for row in &mut matrix {
+                for value in row {
+                    x = (x * 37 + 11) % 101;
+                    *value = x - 50;
+                }
+            }
+            let expected = permutations.iter().map(|p| {
+                (0..3).map(|i| matrix[i][p[i]]).sum::<i128>()
+            }).min().unwrap();
+            let got = minimum_cost_assignment(&matrix, budget).unwrap();
+            assert_eq!(got.objective, expected, "seed {seed}");
+            for i in 0..3 {
+                for j in 0..3 {
+                    assert!(got.row_dual[i] + got.column_dual[j] <= matrix[i][j]);
+                }
+            }
+        }
+    }
+}

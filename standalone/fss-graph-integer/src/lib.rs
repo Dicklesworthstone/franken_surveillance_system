@@ -251,3 +251,35 @@ mod tests {
         assert_eq!(max_flow_min_cut(&v, &e, "s", "t", budget()), Err(Error::Overflow));
     }
 }
+
+
+#[cfg(test)]
+mod cut_oracle_tests {
+    use super::*;
+    #[test]
+    fn exhaustive_three_vertex_cut_duality() {
+        let names = vec!["s".into(), "m".into(), "t".into()];
+        let possible = [("s","m"), ("m","t"), ("s","t"), ("t","m")];
+        let budget = FlowBudget { max_vertices: 3, max_arcs: 4, max_scans: 10_000 };
+        for case in 0..81_u32 {
+            let mut number = case;
+            let arcs: Vec<_> = possible.iter().map(|&(a,b)| {
+                let capacity = i128::from(number % 3);
+                number /= 3;
+                CapacityArc { from: a.into(), to: b.into(), capacity }
+            }).collect();
+            let witness = max_flow_min_cut(&names, &arcs, "s", "t", budget).unwrap();
+            let mut optimum = i128::MAX;
+            // Every s-containing, t-excluding cut of the three vertices.
+            for includes_middle in [false, true] {
+                let cut = arcs.iter().filter(|a| {
+                    let inside = |v: &str| v == "s" || (includes_middle && v == "m");
+                    inside(&a.from) && !inside(&a.to)
+                }).map(|a| a.capacity).sum::<i128>();
+                optimum = optimum.min(cut);
+            }
+            assert_eq!(witness.value, optimum, "capacity tuple case {case}");
+            assert!(witness.scans <= budget.max_scans);
+        }
+    }
+}
