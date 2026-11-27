@@ -341,7 +341,10 @@ pub(crate) struct CameraSlot {
     pub(crate) continuity_frames: u8,
     pub(crate) input_rate: crate::frame_rate::RecentFrameRate,
     pub(crate) health: Option<CameraHealth>,
-    pub(crate) last_frame_ns: i128,
+    // Starts at session admission to bound idle acquisition and reject older frames.
+    pub(crate) session_progress_ns: i128,
+    // Actual receive time survives reconnects. None defers to durable liveness on restart.
+    pub(crate) last_observation: Option<fss_core::TimestampNs>,
     pub(crate) next_reconnect_ns: i128,
     pub(crate) reconnects: u64,
     pub(crate) frames_ingested: u64,

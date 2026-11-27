@@ -206,7 +206,8 @@ impl DaemonSupervisor {
                     health: config
                         .sensor_health_policy
                         .map(|policy| crate::health::CameraHealth::new(policy, entry.dimensions)),
-                    last_frame_ns: now_ns,
+                    session_progress_ns: now_ns,
+                    last_observation: None,
                     next_reconnect_ns,
                     reconnects: u64::from(state == SensorState::GapBackoff),
                     frames_ingested: 0,
@@ -537,17 +538,13 @@ impl DaemonSupervisor {
         for (sid, slot) in &mut self.sensors {
             slot.driver.disconnect();
             slot.state = SensorState::Draining;
-            let last_frame = slot
-                .previous_frame
-                .as_ref()
-                .map(|(_, _, ns)| TimestampNs(*ns));
             if let Err(err) = self.storage.commit_recorder_boundary(
                 sid,
                 &slot.entry.primary_zone,
                 SensorLivenessStatus::Offline,
                 slot.active_gaps.max(1),
                 CaptureInterval::point(now),
-                last_frame,
+                slot.last_observation,
                 self.regions.storage_ledger_cx(),
                 self.regions.region_tree(),
             ) {

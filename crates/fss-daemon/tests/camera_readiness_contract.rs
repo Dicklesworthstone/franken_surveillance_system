@@ -367,6 +367,46 @@ fn one_tick_run_closes_coverage_and_restart_witnesses_only_the_offline_interval(
 }
 
 #[test]
+fn an_idle_restarted_session_and_its_retry_never_advance_last_seen() -> TestResult {
+    let mut first = Fixture::new(64)?;
+    let frame_at = TimestampNs(START_NS + 100_000_000);
+    first.queue([Input::frame(), Input::frame()])?;
+    first.supervisor.step_tick(frame_at.0)?;
+    first.supervisor.shutdown_graceful()?;
+
+    let opened_at = TimestampNs(START_NS + 60_000_000_000);
+    let mut fixture = Fixture::open_at(first._dir, opened_at.0, 64, 4, false)?;
+    let liveness = |fixture: &Fixture| {
+        fixture.supervisor.storage().projection().snapshot_latest()
+            .get_sensor_liveness(&fixture.sensor_id).cloned().ok_or("missing sensor liveness")
+    };
+    let timeout = TimestampNs(opened_at.0 + 5_000_000_001);
+    let lost = fixture.supervisor.step_tick(timeout.0)?;
+    assert_eq!(lost.frames_received, 0);
+    assert_eq!(fixture.view()?.state, SensorState::GapBackoff);
+    assert_eq!(liveness(&fixture)?.state, SensorLivenessStatus::Offline);
+    assert_eq!(liveness(&fixture)?.last_seen_ns, frame_at);
+    assert_eq!(fixture.coverage()?.window, CaptureInterval::new(opened_at, timeout)?);
+
+    let retry_at = TimestampNs(timeout.0 + 1_000_000_000);
+    let retry = fixture.supervisor.step_tick(retry_at.0)?;
+    assert_eq!(retry.reconnects_completed, 1);
+    assert_eq!(retry.frames_received, 0);
+    assert_eq!(liveness(&fixture)?.state, SensorLivenessStatus::Unknown);
+    assert_eq!(liveness(&fixture)?.last_seen_ns, frame_at);
+    assert_eq!(fixture.coverage()?.window, CaptureInterval::new(timeout, retry_at)?);
+
+    // A fresh observation may advance last-seen even when the same poll ends in a drop.
+    let observed = TimestampNs(retry_at.0 + 100_000_000);
+    fixture.queue([Input::frame(), Input::Disconnect])?;
+    let tick = fixture.supervisor.step_tick(observed.0)?;
+    assert_eq!(tick.frames_received, 1);
+    assert_eq!(liveness(&fixture)?.state, SensorLivenessStatus::Offline);
+    assert_eq!(liveness(&fixture)?.last_seen_ns, observed);
+    fixture.finish()
+}
+
+#[test]
 fn accepted_idle_session_is_not_covered_and_first_frame_watchdog_still_runs() -> TestResult {
     let mut fixture = Fixture::new(64)?;
     assert_eq!(fixture.view()?.state, SensorState::Connecting);

@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use fss_core::{DeltaPriority, MeaningfulDeltaClass, ResourcePressure, SensorId, TimestampNs};
+use fss_core::{CaptureInterval, DeltaPriority, MeaningfulDeltaClass, ResourcePressure, SensorId, TimestampNs};
 use fss_ipc::BoundedControlOp;
 use fss_projection_store::{CoverageStatus, SensorLivenessStatus};
 use fss_reference::ingest::live_corroborate::{CorroborationOutcome, LiveCorroborationDecision};
@@ -108,20 +108,19 @@ impl DaemonSupervisor {
                     self.perception.invalidate_sensor(&slot.entry)?;
                     slot.active_gaps = slot.active_gaps.saturating_add(1);
                     let zone = slot.entry.primary_zone.clone();
-                    let last = TimestampNs(slot.last_frame_ns);
+                    let since = TimestampNs(slot.session_progress_ns);
                     let _ = self.regions.drain_failed_sensor_region(
                         &sid,
                         SensorDisconnectReason::OperatorStopped.as_str(),
                         now,
                     )?;
-                    let receipt = self.storage.commit_coverage_and_liveness(
+                    let receipt = self.storage.commit_recorder_boundary(
                         &sid,
                         &zone,
-                        CoverageStatus::NotObservable,
                         SensorLivenessStatus::Offline,
                         slot.active_gaps,
-                        last,
-                        now,
+                        CaptureInterval::new(since.min(now), now)?,
+                        slot.last_observation,
                         self.regions.storage_ledger_cx(),
                         self.regions.region_tree(),
                     )?;
@@ -526,7 +525,7 @@ impl DaemonSupervisor {
                                 health.reset();
                             }
                             invalidate_perception = true;
-                            slot.last_frame_ns = now_ns;
+                            slot.session_progress_ns = now_ns;
                             slot.active_gaps = slot.active_gaps.max(1);
                             slot.peak_concurrent_sessions = slot
                                 .peak_concurrent_sessions
@@ -557,7 +556,7 @@ impl DaemonSupervisor {
                                     || frame.stream_generation != slot.stream_generation
                                     || frame.sequence == 0
                                     || frame.host_receive_ns > now_ns
-                                    || frame.host_receive_ns < slot.last_frame_ns
+                                    || frame.host_receive_ns < slot.session_progress_ns
                                     || now_ns.saturating_sub(frame.host_receive_ns) > stall_ns
                                     || slot.previous_frame.as_ref().is_some_and(
                                         |(stream_id, sequence, received_ns)| {
@@ -585,7 +584,7 @@ impl DaemonSupervisor {
                                             "invalid_current_generation_frame".to_owned(),
                                         ),
                                         slot.entry.primary_zone.clone(),
-                                        TimestampNs(slot.last_frame_ns),
+                                        TimestampNs(slot.session_progress_ns),
                                         slot.active_gaps,
                                     ));
                                     break;
@@ -606,7 +605,8 @@ impl DaemonSupervisor {
                                 slot.peak_concurrent_sessions = slot
                                     .peak_concurrent_sessions
                                     .max(slot.driver.active_session_count());
-                                slot.last_frame_ns = received_ns;
+                                slot.session_progress_ns = received_ns;
+                                slot.last_observation = Some(TimestampNs(received_ns));
                                 let lag_ns = now_ns.saturating_sub(received_ns).max(0);
                                 slot.last_ingest_lag_ms =
                                     u64::try_from(lag_ns / 1_000_000).unwrap_or(u64::MAX);
@@ -697,7 +697,7 @@ impl DaemonSupervisor {
                             SensorDriverEvent::Idle => {
                                 let stall_ns = i128::from(slot.entry.stall_timeout_ms)
                                     .saturating_mul(1_000_000);
-                                if now_ns.saturating_sub(slot.last_frame_ns) > stall_ns {
+                                if now_ns.saturating_sub(slot.session_progress_ns) > stall_ns {
                                     slot.driver.disconnect();
                                     slot.state = SensorState::GapBackoff;
                                     slot.previous_frame = None;
@@ -714,7 +714,7 @@ impl DaemonSupervisor {
                                     disconnect_ev = Some((
                                         SensorDisconnectReason::StalledPackets,
                                         slot.entry.primary_zone.clone(),
-                                        TimestampNs(slot.last_frame_ns),
+                                        TimestampNs(slot.session_progress_ns),
                                         slot.active_gaps,
                                     ));
                                 }
@@ -737,7 +737,7 @@ impl DaemonSupervisor {
                                 disconnect_ev = Some((
                                     reason,
                                     slot.entry.primary_zone.clone(),
-                                    TimestampNs(slot.last_frame_ns),
+                                    TimestampNs(slot.session_progress_ns),
                                     slot.active_gaps,
                                 ));
                                 break;
@@ -753,14 +753,14 @@ impl DaemonSupervisor {
 
             if let Some((generation, zone, gaps)) = reconnect_ev {
                 let _ = self.regions.spawn_sensor_region(sid, generation, now)?;
-                let receipt = self.storage.commit_coverage_and_liveness(
+                let open_window = self.storage.recorder_open_window(sid, &zone, now);
+                let receipt = self.storage.commit_recorder_boundary(
                     sid,
                     &zone,
-                    CoverageStatus::NotObservable,
                     SensorLivenessStatus::Unknown,
                     gaps,
-                    now,
-                    now,
+                    open_window,
+                    None,
                     self.regions.storage_ledger_cx(),
                     self.regions.region_tree(),
                 )?;
@@ -859,11 +859,13 @@ impl DaemonSupervisor {
                 out.coverage_gaps_emitted = out.coverage_gaps_emitted.saturating_add(1);
             }
 
-            if let Some((reason, zone, last_seen, gaps)) = disconnect_ev {
-                let adapter = self
+            if let Some((reason, zone, since, gaps)) = disconnect_ev {
+                let (adapter, last_observation) = self
                     .sensors
                     .get(sid)
-                    .map_or(CameraAdapterKind::Synthetic, |s| s.entry.adapter);
+                    .map_or((CameraAdapterKind::Synthetic, None), |slot| {
+                        (slot.entry.adapter, slot.last_observation)
+                    });
                 if !self.storage.is_quota_pinned() {
                     let _ = self.storage.flush_camera_gop(
                         sid,
@@ -875,14 +877,13 @@ impl DaemonSupervisor {
                 let _ = self
                     .regions
                     .drain_failed_sensor_region(sid, reason.as_str(), now)?;
-                let receipt = self.storage.commit_coverage_and_liveness(
+                let receipt = self.storage.commit_recorder_boundary(
                     sid,
                     &zone,
-                    CoverageStatus::NotObservable,
                     SensorLivenessStatus::Offline,
                     gaps,
-                    last_seen,
-                    now,
+                    CaptureInterval::new(since.min(now), now)?,
+                    last_observation,
                     self.regions.storage_ledger_cx(),
                     self.regions.region_tree(),
                 )?;
