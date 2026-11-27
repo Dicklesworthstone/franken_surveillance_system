@@ -226,7 +226,7 @@ fn committed_package_is_exact_deterministic_redacted_and_independently_readable(
 }
 
 #[test]
-fn preview_and_root_only_publication_are_not_committed_export_authority() -> Test {
+fn root_only_or_misbound_publication_cannot_attest_a_committed_export() -> Test {
     let mut fixture = Fixture::new("uncommitted", 100)?;
     let preview = preview_export(
         &fixture.deployment,
@@ -264,6 +264,51 @@ fn preview_and_root_only_publication_are_not_committed_export_authority() -> Tes
         Err(PackageError::Export(ExportError::CustodyMismatch))
     ));
     assert_eq!(fixture.snapshot()?, before);
+
+    // Independent digest checks of the record and manifest still succeed when a
+    // ledger entry points at the right bytes under the wrong batch identity.
+    let id = record.digest().to_text();
+    let hex = id
+        .strip_prefix("sha256:")
+        .ok_or("SHA-256 record expected")?;
+    let mut children = vec![preview.root(), record.digest()];
+    children.sort_unstable();
+    fixture.deployment.append_evidence_export_batch(
+        fss_core::BatchId::parse("batch:evidence-export:misbound")?,
+        vec![fss_core::EvidenceDelta {
+            delta_id: format!("delta:evidence-export:{hex}"),
+            family: crate::evidence_export::FAMILY_EVIDENCE_EXPORT.to_owned(),
+            object_id: fss_core::ObjectId::parse(format!("object:evidence-export:{hex}"))?,
+            prior_generation: None,
+            new_generation: 1,
+            validity: CaptureInterval::new(TimestampNs(10), TimestampNs(20))?,
+            plane: fss_core::Plane::Authority,
+            payload_digest: preview.root(),
+            witness_digest: Some(record.digest()),
+            operation_id: None,
+        }],
+        children,
+        &fixture.cx,
+    )?;
+    assert!(matches!(
+        prepare_package(
+            &fixture.deployment,
+            preview.root(),
+            &scope(30, 40)?,
+            &fixture.auth,
+            &fixture.cx
+        ),
+        Err(PackageError::Export(ExportError::CustodyMismatch))
+    ));
+    assert!(matches!(
+        preview_export(
+            &fixture.deployment,
+            &fixture.request,
+            &fixture.auth,
+            &fixture.cx
+        ),
+        Err(ExportError::CustodyMismatch)
+    ));
     Ok(())
 }
 

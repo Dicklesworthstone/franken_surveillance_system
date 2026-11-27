@@ -5,6 +5,7 @@
 //! zone/track identifiers, model tensors, and live archive roots are never manifest children.
 //! Existing event/source custody is referenced by digest text only.
 
+use crate::deletion::{DeletionError, DeletionIndex, MAX_DELETION_RECORD_BYTES};
 use crate::event_review::{ReviewError, read_current_event_metadata};
 use crate::ingest::FileIngestError;
 use crate::retained_source::RetainedSource;
@@ -453,6 +454,10 @@ pub enum ExportError {
     StaleApproval,
     /// Retained custody differs from the record being exported.
     CustodyMismatch,
+    /// A durable deletion record denies this export, including before physical removal.
+    Deleted,
+    /// The committed deletion history could not be verified.
+    DeletionHistory,
     /// A declared bound was exhausted.
     Limit,
     /// Cooperative cancellation.
@@ -474,7 +479,8 @@ impl ExportError {
             Self::Unauthorized => "ERR-AUTH-DENIED-001",
             Self::StaleRevision => "ERR-EXPORT-REVISION-STALE-001",
             Self::StaleApproval => "ERR-EXPORT-APPROVAL-STALE-001",
-            Self::CustodyMismatch => "ERR-EXPORT-CUSTODY-001",
+            Self::Deleted => "ERR-EVIDENCE-DELETED-001",
+            Self::DeletionHistory | Self::CustodyMismatch => "ERR-EXPORT-CUSTODY-001",
             Self::Limit => "ERR-EXPORT-BOUND-001",
             Self::Cancelled => "ERR-EXPORT-CANCELLED-001",
             _ => "ERR-EXPORT-STORAGE-001",
@@ -491,6 +497,8 @@ impl fmt::Display for ExportError {
             }
             Self::StaleApproval => f.write_str("export approval does not match this exact package"),
             Self::CustodyMismatch => f.write_str("export or event custody mismatch"),
+            Self::Deleted => f.write_str("export custody was deleted"),
+            Self::DeletionHistory => f.write_str("export deletion history is unverifiable"),
             Self::Limit => f.write_str("evidence export bound exceeded"),
             Self::Cancelled => f.write_str("evidence export cancelled before commit"),
             Self::Contract(e) => write!(f, "export contract: {e}"),
@@ -501,6 +509,14 @@ impl fmt::Display for ExportError {
     }
 }
 impl std::error::Error for ExportError {}
+impl From<DeletionError> for ExportError {
+    fn from(error: DeletionError) -> Self {
+        match error {
+            DeletionError::Cancelled { .. } => Self::Cancelled,
+            _ => Self::DeletionHistory,
+        }
+    }
+}
 impl From<ContractError> for ExportError {
     fn from(v: ContractError) -> Self {
         Self::Contract(v)
@@ -696,7 +712,10 @@ pub fn preview_export(
                 && current.generation == 1
                 && current.payload_digest == root =>
         {
-            verify_custody(deployment, &record)?;
+            let (retained, _) = read_export(deployment, root, authority, cx)?;
+            if retained != record {
+                return Err(ExportError::CustodyMismatch);
+            }
             true
         }
         Some(_) => return Err(ExportError::CustodyMismatch),
@@ -748,10 +767,39 @@ pub fn read_export(
                 return Err(ExportError::CustodyMismatch);
             }
             let witness = delta.witness_digest.ok_or(ExportError::CustodyMismatch)?;
-            found = Some((delta.object_id.clone(), witness, batch.new_anchor.clone()));
+            found = Some((batch, delta, witness));
         }
     }
-    let (object_id, record_digest, anchor) = found.ok_or(ExportError::CustodyMismatch)?;
+    let (batch, delta, record_digest) = found.ok_or(ExportError::CustodyMismatch)?;
+    let deleted =
+        DeletionIndex::from_batches::<ExportError>(deployment.ledger().batches(), |digest| {
+            checkpoint(cx, "evidence_export:readback")?;
+            deployment
+                .read_object_bounded(digest, MAX_DELETION_RECORD_BYTES)
+                .map_err(|error| match error {
+                    FileIngestError::CancellationRequested { .. } => ExportError::Cancelled,
+                    _ => ExportError::DeletionHistory,
+                })
+        })?;
+    if deleted.object(export_root).is_some()
+        || deleted.object(record_digest).is_some()
+        || deleted.unit_deleted(batch.batch_id.as_str())
+        || deleted.unit_deleted(&format!("slot:export-{}", hex(record_digest)))
+    {
+        return Err(ExportError::Deleted);
+    }
+    let current = deployment
+        .ledger()
+        .current()
+        .objects
+        .get(&delta.object_id)
+        .ok_or(ExportError::CustodyMismatch)?;
+    if current.family != FAMILY_EVIDENCE_EXPORT
+        || current.generation != delta.new_generation
+        || current.payload_digest != export_root
+    {
+        return Err(ExportError::CustodyMismatch);
+    }
     let manifest_bytes = deployment
         .read_object_bounded(export_root, MAX_EXPORT_RECORD_BYTES)
         .map_err(read_error)?;
@@ -767,7 +815,9 @@ pub fn read_export(
         .read_object_bounded(record_digest, MAX_EXPORT_RECORD_BYTES)
         .map_err(read_error)?;
     let record = EventExportRecord::from_bytes(&bytes, record_digest)?;
-    if record.object_id()? != object_id
+    if batch.batch_id != record.batch_id()?
+        || batch.deltas != [record.delta()?]
+        || batch.children != record.children()?
         || record.manifest()? != manifest
         || record.site() != deployment.site_lineage()
     {
@@ -776,7 +826,7 @@ pub fn read_export(
     verify_custody(deployment, &record)?;
     checkpoint(cx, "evidence_export:readback_complete")?;
     deployment.verify_read_head().map_err(read_error)?;
-    Ok((record, anchor))
+    Ok((record, batch.new_anchor.clone()))
 }
 
 /// Commits an exactly approved export root-last and retains its record.

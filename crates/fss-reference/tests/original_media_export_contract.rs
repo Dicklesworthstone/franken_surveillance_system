@@ -796,3 +796,65 @@ fn corroborated_event_discloses_exactly_one_selected_camera_and_binds_switching_
     assert_eq!(f.snapshot(), before);
     Ok(())
 }
+
+#[test]
+fn redacted_export_readback_refuses_an_interrupted_deletion_before_unlink() -> Test {
+    use fss_reference::deletion::{
+        DeletionError, STAGE_DELETION_RECORD_APPENDED, commit_deletion, plan_deletion,
+    };
+    use fss_reference::evidence_export::{ExportError, commit_export, preview_export, read_export};
+    use fss_reference::export_package::{PackageError, PackageScope, prepare_package};
+
+    let mut f = Fixture::new("redacted-export-deletion")?;
+    let mut request = f.request.event.clone();
+    request.purpose = format!("Review recording {}", f.request.import_identity);
+    let preview = preview_export(&f.deployment, &request, &f.authority, &f.cx)?;
+    commit_export(
+        &mut f.deployment,
+        &request,
+        preview.approval(),
+        &f.authority,
+        &f.cx,
+    )?;
+    let root = preview.root();
+    assert_eq!(
+        read_export(&f.deployment, root, &f.authority, &f.cx)?.0,
+        *preview.record()
+    );
+    let plan = plan_deletion(&f.deployment, f.request.import_identity, &f.cx)?;
+    assert!(plan.deletable.iter().any(|object| object.digest == root));
+    let stop = ReplayCx::from_context_authority(&f.authority, f.deployment.root())?;
+    stop.set_cancel_at_checkpoint(STAGE_DELETION_RECORD_APPENDED);
+    assert!(matches!(
+        commit_deletion(
+            &mut f.deployment,
+            plan.digest()?,
+            plan.approval_digest(ACTOR)?,
+            ACTOR,
+            &stop
+        ),
+        Err(DeletionError::Cancelled {
+            stage: STAGE_DELETION_RECORD_APPENDED
+        })
+    ));
+
+    // Both files still exist. The durable deletion header has already withdrawn custody.
+    for digest in [root, preview.record().digest()] {
+        assert!(f.deployment.publisher().object_name_present(digest));
+    }
+    let before = f.snapshot();
+    assert!(matches!(
+        read_export(&f.deployment, root, &f.authority, &f.cx),
+        Err(ExportError::Deleted)
+    ));
+    let scope = PackageScope {
+        recipient: request.recipient,
+        attested_now: f.request.attested_now,
+    };
+    assert!(matches!(
+        prepare_package(&f.deployment, root, &scope, &f.authority, &f.cx),
+        Err(PackageError::Deleted)
+    ));
+    assert_eq!(f.snapshot(), before);
+    Ok(())
+}

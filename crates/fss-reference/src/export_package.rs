@@ -13,12 +13,11 @@
 use std::fmt;
 
 use fss_core::region::ContextAuthority;
-use fss_core::{CaptureInterval, ContentDigest, DigestAlgorithm, ObjectId};
+use fss_core::{CaptureInterval, ContentDigest, DigestAlgorithm};
 
-use crate::deletion::{DeletionError, DeletionIndex, MAX_DELETION_RECORD_BYTES};
 use crate::evidence_export::{
-    CAP_EXPORT_COMMIT, CAP_EXPORT_PREPARE, EXPORT_OBJECT_PREFIX, EventExportRecord, ExportError,
-    FAMILY_EVIDENCE_EXPORT, MAX_EXPORT_RECORD_BYTES, MAX_RECIPIENT_BYTES, read_export,
+    CAP_EXPORT_COMMIT, CAP_EXPORT_PREPARE, EventExportRecord, ExportError, MAX_EXPORT_RECORD_BYTES,
+    MAX_RECIPIENT_BYTES, read_export,
 };
 use crate::ingest::FileIngestError;
 use crate::{ReplayCx, RetainedSource};
@@ -195,13 +194,18 @@ impl std::error::Error for PackageError {
 }
 impl From<ExportError> for PackageError {
     fn from(error: ExportError) -> Self {
-        Self::Export(error)
+        match error {
+            ExportError::Deleted => Self::Deleted,
+            ExportError::DeletionHistory => Self::AuthorityChanged,
+            other => Self::Export(other),
+        }
     }
 }
-impl From<DeletionError> for PackageError {
-    fn from(error: DeletionError) -> Self {
+
+impl From<crate::deletion::DeletionError> for PackageError {
+    fn from(error: crate::deletion::DeletionError) -> Self {
         match error {
-            DeletionError::Cancelled { .. } => Self::Cancelled,
+            crate::deletion::DeletionError::Cancelled { .. } => Self::Cancelled,
             _ => Self::AuthorityChanged,
         }
     }
@@ -327,41 +331,9 @@ pub fn prepare_package(
     cx.checkpoint("export_package:read")
         .map_err(|_| PackageError::Cancelled)?;
     deployment.verify_read_head().map_err(read_error)?;
-    let deleted =
-        DeletionIndex::from_batches::<PackageError>(deployment.ledger().batches(), |digest| {
-            deployment
-                .read_object_bounded(digest, MAX_DELETION_RECORD_BYTES)
-                .map_err(read_error)
-        })?;
-    if deleted.object(export_root).is_some() {
-        return Err(PackageError::Deleted);
-    }
     let (record, _) = read_export(deployment, export_root, authority, cx)?;
-    if deleted.object(record.digest()).is_some() {
-        return Err(PackageError::Deleted);
-    }
     if authority.principal != record.principal() || record.site() != deployment.site_lineage() {
         return Err(PackageError::Unauthorized);
-    }
-    let hex: String = record
-        .digest()
-        .bytes()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
-    let object = ObjectId::parse(format!("{EXPORT_OBJECT_PREFIX}{hex}"))
-        .map_err(|_| PackageError::AuthorityChanged)?;
-    let current = deployment
-        .ledger()
-        .current()
-        .objects
-        .get(&object)
-        .ok_or(PackageError::AuthorityChanged)?;
-    if current.family != FAMILY_EVIDENCE_EXPORT
-        || current.generation != 1
-        || current.payload_digest != export_root
-    {
-        return Err(PackageError::AuthorityChanged);
     }
     scope.admits(&record)?;
     let bytes = encode_record(&record)?;
