@@ -374,7 +374,8 @@ policy_lane() {
   run shell-syntax bash -n scripts/qualify.sh scripts/release_qualify.sh scripts/publish_to_github.sh \
     scripts/e2e/run.sh scripts/e2e/lib.sh scripts/e2e/selftest.sh \
     scripts/e2e/doc_039_mechanical_sympathy_doctrine.sh \
-    scripts/e2e/doc_041_media_derivative_receipt.sh scripts/e2e/doc_054_frame_pyramid_tiling.sh \
+    scripts/e2e/doc_041_media_derivative_receipt.sh scripts/e2e/doc_049_bocpd_regime_monitor.sh \
+    scripts/e2e/doc_052_media_delivery_decision_card.sh scripts/e2e/doc_054_frame_pyramid_tiling.sh \
     scripts/e2e/fss_035_backup_restore_manifest.sh scripts/e2e/fss_053_media_probe.sh \
     scripts/e2e/fss_054_pure_rust_decode_engine.sh scripts/e2e/fss_055_encode_rendition_kernels.sh \
     scripts/e2e/fss_056_keyframe_chunker.sh scripts/e2e/fss_057_preview_fanout.sh \
@@ -392,6 +393,7 @@ policy_lane() {
     scripts/e2e/fss_195_claim_evaluator.sh scripts/e2e/fss_241_contract_basis.sh \
     scripts/e2e/model_invariants_proof.sh \
     scripts/e2e/test_model_host_001.sh scripts/e2e/test_schedule_001.sh \
+    scripts/e2e/xfer_invariants_proof.sh \
     scripts/lanes/adapter.sh scripts/lanes/agent.sh scripts/lanes/archive.sh scripts/lanes/custody.sh \
     scripts/lanes/lab.sh scripts/lanes/media.sh scripts/lanes/model.sh scripts/lanes/perf.sh \
     scripts/lanes/reference.sh scripts/lanes/security.sh scripts/lanes/threat.sh \

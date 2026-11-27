@@ -567,7 +567,11 @@ impl JobResourceAdmissionLedger {
         let next_act = self
             .reserved_activation_bytes
             .checked_add(req.activation_memory_bytes)
-            .unwrap_or(u64::MAX);
+            .ok_or(ResourceEnvelopeViolation::BoundExceeded {
+                dimension: EnvelopeDimension::ActivationMemoryBytes,
+                requested: u64::MAX,
+                limit: self.envelope.max_activation_memory_bytes,
+            })?;
         if next_act > self.envelope.max_activation_memory_bytes {
             return Err(ResourceEnvelopeViolation::BoundExceeded {
                 dimension: EnvelopeDimension::ActivationMemoryBytes,
@@ -578,7 +582,11 @@ impl JobResourceAdmissionLedger {
         let next_scratch = self
             .reserved_scratch_bytes
             .checked_add(req.scratch_memory_bytes)
-            .unwrap_or(u64::MAX);
+            .ok_or(ResourceEnvelopeViolation::BoundExceeded {
+                dimension: EnvelopeDimension::ScratchMemoryBytes,
+                requested: u64::MAX,
+                limit: self.envelope.max_scratch_memory_bytes,
+            })?;
         if next_scratch > self.envelope.max_scratch_memory_bytes {
             return Err(ResourceEnvelopeViolation::BoundExceeded {
                 dimension: EnvelopeDimension::ScratchMemoryBytes,

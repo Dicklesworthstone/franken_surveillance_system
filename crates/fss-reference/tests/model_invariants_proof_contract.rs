@@ -406,7 +406,7 @@ fn model_inv_008_hard_resource_envelopes_enforce_all_eight_dimensions_and_bounde
     let plan = CompiledScalarPlan::compile(&graph, MemoryPlanLimits::default(), &cx)?;
 
     let preprocess = PreprocessProgram::new(4, 4, ChannelTransform::Rgb, true);
-    let img = preprocess.execute_bytes(&vec![90_u8; 48], 4, 4, 3, GEN)?;
+    let img = preprocess.execute_bytes(&[90_u8; 48], 4, 4, 3, GEN)?;
     let params: BTreeMap<String, Tensor> = imported.parameters().clone();
     let mut all_inputs: Vec<(String, Tensor)> =
         params.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
