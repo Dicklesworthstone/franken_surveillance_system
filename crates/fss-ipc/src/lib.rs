@@ -58,7 +58,7 @@ pub use handshake::{
 pub use protocol::{
     BoundedControlOp, ControlOperationState, DeltaEventSummary, IPC_DELTA_SUMMARY_DIGEST_DOMAIN,
     IPC_REQUEST_DIGEST_DOMAIN, IPC_RESPONSE_DIGEST_DOMAIN, IpcRequest, IpcResponse,
-    StreamEndReason,
+    RetainedControlProgress, StreamEndReason,
 };
 pub use security::{
     DAEMON_SOCKET_NAME, FORBIDDEN_GROUP_WORLD_MASK, IPC_DEPLOYMENT_ROOT_DIGEST_DOMAIN,

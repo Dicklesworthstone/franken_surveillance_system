@@ -5,7 +5,8 @@ use std::error::Error;
 use std::io::Cursor;
 
 use fss_core::{
-    CanonicalDecode, CanonicalEncode, ContentDigest, DeltaPriority, MeaningfulDeltaClass,
+    CanonicalDecode, CanonicalEncode, CanonicalEncoder, ContentDigest, DeltaPriority,
+    DigestAlgorithm, MeaningfulDeltaClass,
     OperationId, PrincipalId, validate_error_id,
 };
 use fss_ipc::{
@@ -13,7 +14,8 @@ use fss_ipc::{
     DeltaEventSummary, ERR_DAEMON_OFFLINE_001, ERR_IPC_HANDSHAKE_MISMATCH_001, FrameFlags,
     HandshakeAccepted, HandshakeRejected, HandshakeRequest, HandshakeResponse, IPC_ERROR_IDS,
     IPC_PROTOCOL_VERSION, IpcError, IpcRequest, IpcResponse, LiveDaemonStatus,
-    MAX_REQUEST_FRAME_BYTES, MAX_RESPONSE_FRAME_BYTES, RingWatermarkStatus, StreamEndReason,
+    MAX_REQUEST_FRAME_BYTES, MAX_RESPONSE_FRAME_BYTES, RetainedControlProgress, RingWatermarkStatus,
+    StreamEndReason,
     crc32c, decode_frame_from_slice, encode_frame_header, encode_frame_to_vec, parse_error_id,
     read_frame, validate_capabilities,
 };
@@ -363,5 +365,119 @@ fn oversized_frames_refused_before_allocation_for_request_and_response() -> Test
             limit: MAX_RESPONSE_FRAME_BYTES
         }) if actual == MAX_RESPONSE_FRAME_BYTES + 1
     ));
+    Ok(())
+}
+
+
+#[test]
+fn keyed_control_wire_is_additive_and_preserves_legacy_tag_four_bytes() -> TestResult {
+    let approval = ContentDigest::sha256(b"approved bounded control");
+    let key = ContentDigest::sha256(b"one intended action");
+    let request_id = 81;
+    let op = BoundedControlOp::StopCamera;
+    let camera = "sensor:front";
+    let legacy = IpcRequest::SubmitBoundedControl {
+        request_id,
+        op,
+        target_camera_id: Some(camera.to_owned()),
+        approval_digest: approval,
+    };
+    // Freeze the original envelope independently of the new request encoder.
+    let mut original = CanonicalEncoder::new();
+    original.tag(4);
+    original.u64(request_id);
+    original.tag(2); // StopCamera.
+    original.bool(true);
+    original.text(camera);
+    original.digest(approval);
+    let original = original.finish();
+    assert_eq!(legacy.try_canonical_bytes()?, original);
+    assert_eq!(IpcRequest::from_canonical_bytes(&original)?, legacy);
+
+    let keyed = IpcRequest::SubmitIdempotentControl {
+        request_id,
+        idempotency_key: key,
+        op,
+        target_camera_id: Some(camera.to_owned()),
+        approval_digest: approval,
+    };
+    let mut expected = CanonicalEncoder::new();
+    expected.tag(7);
+    expected.u64(request_id);
+    expected.digest(key);
+    expected.tag(2);
+    expected.bool(true);
+    expected.text(camera);
+    expected.digest(approval);
+    let expected = expected.finish();
+    assert_eq!(keyed.try_canonical_bytes()?, expected);
+    assert_ne!(expected, original);
+    assert_eq!(IpcRequest::from_canonical_bytes(&expected)?, keyed);
+    assert_eq!(keyed.request_id(), request_id);
+    assert_eq!(keyed.op_name(), "submit_idempotent_control");
+
+    for progress in [
+        RetainedControlProgress::NeverStarted,
+        RetainedControlProgress::DispatchStarted,
+        RetainedControlProgress::SubsystemReturned,
+        RetainedControlProgress::CancelledBeforeExecution,
+    ] {
+        for recovered in [false, true] {
+            let response = IpcResponse::ControlReplayed {
+                request_id,
+                operation_id: OperationId::parse("op:ctrl:retained")?,
+                progress,
+                recovered,
+            };
+            let bytes = response.try_canonical_bytes()?;
+            assert_eq!(IpcResponse::from_canonical_bytes(&bytes)?, response);
+            assert_eq!(response.request_id(), request_id);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn keyed_control_wire_refuses_zero_keys_unknown_boundaries_and_trailing_bytes() -> TestResult {
+    for key in [
+        ContentDigest::new(DigestAlgorithm::Sha256, [0; 32]),
+        ContentDigest::new(DigestAlgorithm::Blake3, [1; 32]),
+    ] {
+        let request = IpcRequest::SubmitIdempotentControl {
+            request_id: 9,
+            idempotency_key: key,
+            op: BoundedControlOp::TriggerScrub,
+            target_camera_id: None,
+            approval_digest: ContentDigest::sha256(b"approval"),
+        };
+        assert!(request.try_canonical_bytes().is_err());
+        assert!(IpcRequest::from_canonical_bytes(&request.canonical_bytes()).is_err());
+    }
+    let laboratory = IpcRequest::SubmitIdempotentControl {
+        request_id: 9,
+        idempotency_key: ContentDigest::new_laboratory(DigestAlgorithm::Sha256, [1; 32]),
+        op: BoundedControlOp::TriggerScrub,
+        target_camera_id: None,
+        approval_digest: ContentDigest::sha256(b"approval"),
+    };
+    assert!(laboratory.try_canonical_bytes().is_err());
+
+    let mut malformed = CanonicalEncoder::new();
+    malformed.tag(9);
+    malformed.u64(9);
+    OperationId::parse("op:ctrl:retained")?.encode_canonical(&mut malformed);
+    malformed.tag(5); // No fifth retained execution boundary.
+    malformed.bool(true);
+    assert!(IpcResponse::from_canonical_bytes(&malformed.finish()).is_err());
+
+    let response = IpcResponse::ControlReplayed {
+        request_id: 9,
+        operation_id: OperationId::parse("op:ctrl:retained")?,
+        progress: RetainedControlProgress::DispatchStarted,
+        recovered: true,
+    };
+    let mut trailing = response.try_canonical_bytes()?;
+    trailing.push(0);
+    assert!(IpcResponse::from_canonical_bytes(&trailing).is_err());
     Ok(())
 }

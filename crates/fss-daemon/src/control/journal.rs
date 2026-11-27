@@ -23,6 +23,7 @@ mod files;
 mod tests;
 
 pub use files::inspect_control_history;
+pub use fss_ipc::RetainedControlProgress as ControlProgress;
 
 /// Versioned canonical control bookkeeping domain. These records are not evidence-ledger facts.
 pub const CONTROL_JOURNAL_DOMAIN: &str = "fss.daemon.control_journal.v1";
@@ -33,37 +34,13 @@ pub const MAX_CONTROL_RECORD_BYTES: usize = 16 * 1024;
 /// Maximum entries copied into one inspection report; older entries remain retained.
 pub const MAX_CONTROL_INSPECTION_ENTRIES: usize = 1_024;
 
-/// Last retained execution boundary. No variant proves semantic effect completion.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ControlProgress {
-    /// Intake was retained, but no dispatch boundary was retained.
-    NeverStarted,
-    /// A fence preceded the subsystem call; a crash can leave the outcome unknown.
-    DispatchStarted,
-    /// The subsystem returned; its own completion and verification contracts still apply.
-    SubsystemReturned,
-    /// The owning process cancelled the request before its subsystem began execution.
-    CancelledBeforeExecution,
-}
-
-impl ControlProgress {
-    /// Stable diagnostic spelling for the retained boundary.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::NeverStarted => "never_started",
-            Self::DispatchStarted => "dispatch_started",
-            Self::SubsystemReturned => "subsystem_returned",
-            Self::CancelledBeforeExecution => "cancelled_before_execution",
-        }
-    }
-}
-
 /// Original accepted control and its most recent durable execution boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ControlHistoryEntry {
     /// Original stable operation identity and exact approved command.
     pub command: PendingControlCommand,
+    /// Stable caller retry key, absent only for legacy unkeyed admissions.
+    pub idempotency_key: Option<ContentDigest>,
     /// Original authenticated principal; recovery does not restore a live grant.
     pub principal: PrincipalId,
     /// Exact semantic universe admitted by the original connection.
@@ -117,10 +94,14 @@ impl ControlHistoryReport {
                     .map(|value| format!("\"{}\"", escape_json(value)))
                     .collect::<Vec<_>>()
                     .join(",");
+                let key = entry.idempotency_key.map_or_else(
+                    || "null".to_owned(),
+                    |digest| format!("\"{}\"", digest.to_text()),
+                );
                 format!(
                     concat!(
                         "{{\"operation_id\":\"{}\",\"operation\":\"{}\",",
-                        "\"target_camera_id\":{},\"approval_digest\":\"{}\",",
+                        "\"target_camera_id\":{},\"approval_digest\":\"{}\",\"idempotency_key\":{},",
                         "\"principal\":\"{}\",\"contract_basis_digest\":\"{}\",",
                         "\"granted_capabilities\":[{}],\"connection_id\":{},\"request_id\":{},",
                         "\"accepted_sequence\":{},\"progress\":\"{}\",\"recovered\":{}}}"
@@ -129,6 +110,7 @@ impl ControlHistoryReport {
                     entry.command.op.as_str(),
                     target,
                     entry.command.approval_digest.to_text(),
+                    key,
                     escape_json(entry.principal.as_str()),
                     entry.contract_basis_digest.to_text(),
                     capabilities,
@@ -173,8 +155,15 @@ pub struct DurableControlJournal {
     store: Box<dyn EffectJournalStore>,
     entries: Vec<ControlHistoryEntry>,
     indexes: BTreeMap<OperationId, usize>,
+    retry_indexes: BTreeMap<ContentDigest, usize>,
     live: BTreeSet<OperationId>,
     poisoned: bool,
+}
+
+pub(super) enum ControlReplayLookup<'a> {
+    Missing,
+    Match(&'a ControlHistoryEntry),
+    Conflict,
 }
 
 impl DurableControlJournal {
@@ -215,6 +204,7 @@ impl DurableControlJournal {
         }
         let mut entries: Vec<ControlHistoryEntry> = Vec::new();
         let mut indexes = BTreeMap::new();
+        let mut retry_indexes = BTreeMap::new();
         for (index, bytes) in store.records().iter().enumerate().skip(1) {
             match codec::decode(&scope, bytes)? {
                 codec::Record::Accepted(mut entry) => {
@@ -229,6 +219,11 @@ impl DurableControlJournal {
                         .is_some()
                     {
                         return Err(invalid("duplicate retained control identity"));
+                    }
+                    if let Some(key) = entry.idempotency_key
+                        && retry_indexes.insert(key, entries.len()).is_some()
+                    {
+                        return Err(invalid("duplicate retained control retry key"));
                     }
                     entries.push(entry);
                 }
@@ -251,6 +246,7 @@ impl DurableControlJournal {
             store,
             entries,
             indexes,
+            retry_indexes,
             live: BTreeSet::new(),
             poisoned: false,
         })
@@ -278,12 +274,61 @@ impl DurableControlJournal {
         })
     }
 
+    #[cfg(test)]
     pub(super) fn admit(
         &mut self,
         context: &RequestContext,
         op: BoundedControlOp,
         target: Option<&str>,
         approval: ContentDigest,
+    ) -> Result<PendingControlCommand, EffectPersistenceError> {
+        self.admit_request(context, op, target, approval, None)
+    }
+
+    /// Exact retry lookup does not restore live authority or append history.
+    pub(super) fn replay(
+        &self,
+        context: &RequestContext,
+        key: ContentDigest,
+        op: BoundedControlOp,
+        target: Option<&str>,
+        approval: ContentDigest,
+    ) -> Result<ControlReplayLookup<'_>, EffectPersistenceError> {
+        if self.poisoned {
+            return Err(EffectPersistenceError::Poisoned);
+        }
+        if context.deployment_id != self.scope.deployment_id
+            || context.contract_basis_digest != self.scope.basis_digest
+            || !codec::digest_valid(key)
+        {
+            return Err(invalid("invalid control retry scope or key"));
+        }
+        let Some(&index) = self.retry_indexes.get(&key) else {
+            return Ok(ControlReplayLookup::Missing);
+        };
+        let entry = &self.entries[index];
+        let mut capabilities = context.granted_capabilities.clone();
+        capabilities.sort();
+        capabilities.dedup();
+        if entry.principal != context.principal
+            || entry.contract_basis_digest != context.contract_basis_digest
+            || entry.granted_capabilities != capabilities
+            || entry.command.op != op
+            || entry.command.target_camera_id.as_deref() != target
+            || entry.command.approval_digest != approval
+        {
+            return Ok(ControlReplayLookup::Conflict);
+        }
+        Ok(ControlReplayLookup::Match(entry))
+    }
+
+    pub(super) fn admit_request(
+        &mut self,
+        context: &RequestContext,
+        op: BoundedControlOp,
+        target: Option<&str>,
+        approval: ContentDigest,
+        key: Option<ContentDigest>,
     ) -> Result<PendingControlCommand, EffectPersistenceError> {
         if self.poisoned {
             return Err(EffectPersistenceError::Poisoned);
@@ -294,6 +339,9 @@ impl DurableControlJournal {
             return Err(invalid(
                 "control admission context differs from journal scope",
             ));
+        }
+        if key.is_some_and(|key| !codec::digest_valid(key) || self.retry_indexes.contains_key(&key)) {
+            return Err(invalid("invalid or already retained control retry key"));
         }
         let sequence = self
             .store
@@ -310,6 +358,7 @@ impl DurableControlJournal {
                 target_camera_id: target.map(str::to_owned),
                 approval_digest: approval,
             },
+            idempotency_key: key,
             principal: context.principal.clone(),
             contract_basis_digest: context.contract_basis_digest,
             granted_capabilities: capabilities,
@@ -338,6 +387,9 @@ impl DurableControlJournal {
         self.live.insert(entry.command.operation_id.clone());
         self.indexes
             .insert(entry.command.operation_id.clone(), self.entries.len());
+        if let Some(key) = key {
+            self.retry_indexes.insert(key, self.entries.len());
+        }
         let command = entry.command.clone();
         self.entries.push(entry);
         Ok(command)

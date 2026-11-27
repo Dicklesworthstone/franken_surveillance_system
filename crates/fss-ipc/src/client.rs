@@ -286,6 +286,25 @@ impl IpcClient {
         })
     }
 
+    /// Submits or inspects the exact durable control bound to a caller-assigned retry key.
+    /// A retry returns the original operation and retained boundary without redispatch.
+    pub fn submit_idempotent_control(
+        &mut self,
+        request_id: u64,
+        idempotency_key: ContentDigest,
+        op: BoundedControlOp,
+        target_camera_id: Option<String>,
+        approval_digest: ContentDigest,
+    ) -> Result<IpcResponse, IpcError> {
+        self.request(&IpcRequest::SubmitIdempotentControl {
+            request_id,
+            idempotency_key,
+            op,
+            target_camera_id,
+            approval_digest,
+        })
+    }
+
     /// Sends a cooperative `CancelRequest` for `target_request_id`.
     pub fn cancel_request(&mut self, target_request_id: u64) -> Result<IpcResponse, IpcError> {
         self.request(&IpcRequest::CancelRequest { target_request_id })
@@ -484,6 +503,7 @@ fn response_outcome_label(response: &IpcResponse) -> &str {
         | IpcResponse::LiveStatus(_)
         | IpcResponse::DeltaEvent { .. }
         | IpcResponse::ControlAccepted { .. } => "ok",
+        IpcResponse::ControlReplayed { progress, .. } => progress.as_str(),
         IpcResponse::StreamEnd { reason, .. } => reason.as_str(),
         IpcResponse::Cancelled { .. } => "cancelled",
         IpcResponse::Refused { error_id, .. } => error_id.as_str(),

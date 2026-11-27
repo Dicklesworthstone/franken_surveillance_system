@@ -511,6 +511,31 @@ fn execute_one(
             };
             send_response(writer, FrameFlags::RESPONSE, &resp)
         }
+        IpcRequest::SubmitIdempotentControl {
+            idempotency_key,
+            op,
+            target_camera_id,
+            approval_digest,
+            ..
+        } => {
+            let response = if op.requires_camera_id() && target_camera_id.is_none() {
+                make_refused(
+                    req_id,
+                    ERR_IPC_WIRE_CORRUPT_001,
+                    "bounded control requires target_camera_id",
+                    false,
+                )
+            } else {
+                shared.handler.submit_idempotent_control(
+                    ctx,
+                    idempotency_key,
+                    op,
+                    target_camera_id.as_deref(),
+                    approval_digest,
+                )
+            };
+            send_response(writer, FrameFlags::RESPONSE, &response)
+        }
         IpcRequest::CancelRequest { target_request_id } => send_response(
             writer,
             FrameFlags::RESPONSE,

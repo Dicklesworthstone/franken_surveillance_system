@@ -55,12 +55,14 @@ impl Drop for TempDeployment {
 
 struct SimpleHandler {
     head_seq: AtomicU64,
+    controls: AtomicU64,
 }
 
 impl SimpleHandler {
     fn new() -> Self {
         Self {
             head_seq: AtomicU64::new(10),
+            controls: AtomicU64::new(0),
         }
     }
 }
@@ -139,6 +141,7 @@ impl DaemonIpcHandler for SimpleHandler {
         _target_camera_id: Option<&str>,
         _approval_digest: ContentDigest,
     ) -> IpcResponse {
+        self.controls.fetch_add(1, Ordering::AcqRel);
         match OperationId::parse(format!("op:{}:{}", op.as_str(), ctx.request_id)) {
             Ok(operation_id) => IpcResponse::ControlAccepted {
                 request_id: ctx.request_id,
@@ -382,6 +385,72 @@ fn stale_socket_recovery_and_live_duplicate_bind_refusal() -> TestResult {
     ))?;
     let status = client.query_live_status(1, true, true)?;
     assert!(matches!(status, IpcResponse::LiveStatus(_)));
+    server.shutdown()?;
+    Ok(())
+}
+
+
+#[test]
+fn unsupported_keyed_controls_refuse_without_falling_back_to_legacy_dispatch() -> TestResult {
+    let tmp = TempDeployment::new("keyed-unsupported")?;
+    let basis = test_basis();
+    let handler = Arc::new(SimpleHandler::new());
+    let server = IpcServer::bind(
+        IpcServerConfig::new(tmp.path(), "site:keyed", basis.basis_digest(), "d1"),
+        handler.clone(),
+    )?;
+    let mut client = IpcClient::connect(IpcClientConfig::from_contract_basis(
+        tmp.path(),
+        "site:keyed",
+        &basis,
+        test_principal()?,
+        vec!["CAP-AGENT-CAMERA-CONTROL-001".to_owned()],
+    ))?;
+    let approval = ContentDigest::sha256(b"approval");
+    let response = client.submit_idempotent_control(
+        1,
+        ContentDigest::sha256(b"one control"),
+        BoundedControlOp::StopCamera,
+        Some("sensor:front".to_owned()),
+        approval,
+    )?;
+    assert!(matches!(
+        response,
+        IpcResponse::Refused { error_id, retryable: false, .. }
+            if error_id.as_str() == fss_ipc::ERR_IPC_CAPABILITY_DENIED_001
+    ));
+    assert_eq!(handler.controls.load(Ordering::Acquire), 0);
+
+    // The additive method does not change a legacy handler's existing endpoint.
+    assert!(matches!(
+        client.submit_bounded_control(
+            2,
+            BoundedControlOp::StopCamera,
+            Some("sensor:front".to_owned()),
+            approval,
+        )?,
+        IpcResponse::ControlAccepted { .. }
+    ));
+    assert_eq!(handler.controls.load(Ordering::Acquire), 1);
+
+    // Both endpoints enforce the same mandatory target before invoking a handler.
+    for response in [
+        client.submit_bounded_control(3, BoundedControlOp::StopCamera, None, approval)?,
+        client.submit_idempotent_control(
+            4,
+            ContentDigest::sha256(b"missing target"),
+            BoundedControlOp::StopCamera,
+            None,
+            approval,
+        )?,
+    ] {
+        assert!(matches!(
+            response,
+            IpcResponse::Refused { error_id, .. }
+                if error_id.as_str() == fss_ipc::ERR_IPC_WIRE_CORRUPT_001
+        ));
+    }
+    assert_eq!(handler.controls.load(Ordering::Acquire), 1);
     server.shutdown()?;
     Ok(())
 }

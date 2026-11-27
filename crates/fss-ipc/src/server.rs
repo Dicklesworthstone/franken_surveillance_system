@@ -187,6 +187,24 @@ pub trait DaemonIpcHandler: Send + Sync + 'static {
         target_camera_id: Option<&str>,
         approval_digest: ContentDigest,
     ) -> IpcResponse;
+
+    /// Admits or replays a durably keyed control. The default never falls back to
+    /// unkeyed dispatch, since that would discard the caller's retry guarantee.
+    fn submit_idempotent_control(
+        &self,
+        ctx: &RequestContext,
+        _idempotency_key: ContentDigest,
+        _op: BoundedControlOp,
+        _target_camera_id: Option<&str>,
+        _approval_digest: ContentDigest,
+    ) -> IpcResponse {
+        crate::server_conn::make_refused(
+            ctx.request_id,
+            crate::error::ERR_IPC_CAPABILITY_DENIED_001,
+            "durable idempotent control is unavailable",
+            false,
+        )
+    }
 }
 
 /// Configuration for binding an owner-authenticated [`IpcServer`].

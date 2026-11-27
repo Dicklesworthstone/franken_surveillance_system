@@ -3,12 +3,12 @@
 
 use fss_core::{
     CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, ContentDigest,
-    ContractError, ErrorId, OperationId,
+    ContractError, DigestAlgorithm, ErrorId, OperationId,
 };
 
 pub use crate::control::{
     BoundedControlOp, ControlOperationState, DeltaEventSummary, IPC_DELTA_SUMMARY_DIGEST_DOMAIN,
-    StreamEndReason,
+    RetainedControlProgress, StreamEndReason,
 };
 pub use crate::handshake::{
     HandshakeAccepted, HandshakeRejected, HandshakeRequest, HandshakeResponse,
@@ -82,6 +82,20 @@ pub enum IpcRequest {
         /// Explicit approval digest pinning the planned control action.
         approval_digest: ContentDigest,
     },
+    /// Admit or inspect the exact durable request bound to a caller-assigned retry key.
+    /// Repeating a key never queues or dispatches the original operation again.
+    SubmitIdempotentControl {
+        /// Client-assigned correlation identifier, independent of retry identity.
+        request_id: u64,
+        /// Nonzero SHA-256 key reused only for this exact intended action.
+        idempotency_key: ContentDigest,
+        /// Strictly closed bounded control operation.
+        op: BoundedControlOp,
+        /// Optional target camera identifier (required for camera-scoped ops).
+        target_camera_id: Option<String>,
+        /// Explicit approval digest pinning the planned control action.
+        approval_digest: ContentDigest,
+    },
     /// Cooperatively cancel an in-flight request by its target request identifier.
     CancelRequest {
         /// Identifier of the in-flight request to cancel.
@@ -98,7 +112,8 @@ impl IpcRequest {
             | Self::QueryRetentionForecast { request_id, .. }
             | Self::QueryLiveStatus { request_id, .. }
             | Self::SubscribeDeltas { request_id, .. }
-            | Self::SubmitBoundedControl { request_id, .. } => *request_id,
+            | Self::SubmitBoundedControl { request_id, .. }
+            | Self::SubmitIdempotentControl { request_id, .. } => *request_id,
             Self::CancelRequest { target_request_id } => *target_request_id,
         }
     }
@@ -112,6 +127,7 @@ impl IpcRequest {
             Self::QueryLiveStatus { .. } => "query_live_status",
             Self::SubscribeDeltas { .. } => "subscribe_deltas",
             Self::SubmitBoundedControl { .. } => "submit_bounded_control",
+            Self::SubmitIdempotentControl { .. } => "submit_idempotent_control",
             Self::CancelRequest { .. } => "cancel_request",
         }
     }
@@ -190,11 +206,42 @@ impl CanonicalEncode for IpcRequest {
                 }
                 encoder.digest(*approval_digest);
             }
+            Self::SubmitIdempotentControl {
+                request_id,
+                idempotency_key,
+                op,
+                target_camera_id,
+                approval_digest,
+            } => {
+                encoder.tag(7);
+                encoder.u64(*request_id);
+                encoder.digest(*idempotency_key);
+                op.encode_canonical(encoder);
+                encoder.bool(target_camera_id.is_some());
+                if let Some(camera) = target_camera_id {
+                    encoder.text(camera);
+                }
+                encoder.digest(*approval_digest);
+            }
             Self::CancelRequest { target_request_id } => {
                 encoder.tag(5);
                 encoder.u64(*target_request_id);
             }
         }
+    }
+    fn try_canonical_bytes(&self) -> Result<Vec<u8>, ContractError> {
+        // Core digest bytes do not carry the process-local laboratory marker.
+        // Validate it before checked serialization can erase that distinction.
+        if let Self::SubmitIdempotentControl { idempotency_key, .. } = self
+            && (idempotency_key.algorithm() != DigestAlgorithm::Sha256
+                || idempotency_key.is_laboratory()
+                || idempotency_key.bytes() == [0; 32])
+        {
+            return Err(ContractError::InvalidDigest);
+        }
+        let mut encoder = CanonicalEncoder::new();
+        self.encode_canonical(&mut encoder);
+        encoder.finish_checked()
     }
 }
 
@@ -241,8 +288,20 @@ impl CanonicalDecode for IpcRequest {
                 since_commit_seq: decoder.u64()?,
                 max_batch: decoder.u32()?,
             }),
-            4 => {
+            tag @ (4 | 7) => {
                 let request_id = decoder.u64()?;
+                let idempotency_key = if tag == 7 {
+                    let key = decoder.digest()?;
+                    if key.algorithm() != DigestAlgorithm::Sha256
+                        || key.is_laboratory()
+                        || key.bytes() == [0; 32]
+                    {
+                        return Err(ContractError::InvalidDigest);
+                    }
+                    Some(key)
+                } else {
+                    None
+                };
                 let op = BoundedControlOp::decode_canonical(decoder)?;
                 let target_camera_id = if decoder.bool()? {
                     let cam = decoder.text()?.to_owned();
@@ -254,11 +313,20 @@ impl CanonicalDecode for IpcRequest {
                     None
                 };
                 let approval_digest = decoder.digest()?;
-                Ok(Self::SubmitBoundedControl {
-                    request_id,
-                    op,
-                    target_camera_id,
-                    approval_digest,
+                Ok(match idempotency_key {
+                    Some(idempotency_key) => Self::SubmitIdempotentControl {
+                        request_id,
+                        idempotency_key,
+                        op,
+                        target_camera_id,
+                        approval_digest,
+                    },
+                    None => Self::SubmitBoundedControl {
+                        request_id,
+                        op,
+                        target_camera_id,
+                        approval_digest,
+                    },
                 })
             }
             5 => Ok(Self::CancelRequest {
@@ -319,6 +387,17 @@ pub enum IpcResponse {
         /// Current lifecycle state of the admitted operation.
         state: ControlOperationState,
     },
+    /// Returns the original operation's retained boundary without admitting new work.
+    ControlReplayed {
+        /// Correlated retry request identifier; independent of the original correlation.
+        request_id: u64,
+        /// Stable identity assigned when the original request was durably admitted.
+        operation_id: OperationId,
+        /// Most recent retained execution boundary, not a semantic completion claim.
+        progress: RetainedControlProgress,
+        /// The operation predates this daemon owner and remains inert after recovery.
+        recovered: bool,
+    },
     /// Confirms cooperative cancellation of a request.
     Cancelled {
         /// Cancelled request identifier.
@@ -346,6 +425,7 @@ impl IpcResponse {
             | Self::DeltaEvent { request_id, .. }
             | Self::StreamEnd { request_id, .. }
             | Self::ControlAccepted { request_id, .. }
+            | Self::ControlReplayed { request_id, .. }
             | Self::Cancelled { request_id }
             | Self::RetentionForecast { request_id, .. }
             | Self::Refused { request_id, .. } => *request_id,
@@ -414,6 +494,18 @@ impl CanonicalEncode for IpcResponse {
                 operation_id.encode_canonical(encoder);
                 state.encode_canonical(encoder);
             }
+            Self::ControlReplayed {
+                request_id,
+                operation_id,
+                progress,
+                recovered,
+            } => {
+                encoder.tag(9);
+                encoder.u64(*request_id);
+                operation_id.encode_canonical(encoder);
+                progress.encode_canonical(encoder);
+                encoder.bool(*recovered);
+            }
             Self::Cancelled { request_id } => {
                 encoder.tag(6);
                 encoder.u64(*request_id);
@@ -473,6 +565,12 @@ impl CanonicalDecode for IpcResponse {
                 request_id: decoder.u64()?,
                 operation_id: OperationId::decode_canonical(decoder)?,
                 state: ControlOperationState::decode_canonical(decoder)?,
+            }),
+            9 => Ok(Self::ControlReplayed {
+                request_id: decoder.u64()?,
+                operation_id: OperationId::decode_canonical(decoder)?,
+                progress: RetainedControlProgress::decode_canonical(decoder)?,
+                recovered: decoder.bool()?,
             }),
             6 => Ok(Self::Cancelled {
                 request_id: decoder.u64()?,

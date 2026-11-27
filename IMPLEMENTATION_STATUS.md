@@ -5,6 +5,47 @@
 **Current change qualification:** each dated section below states its exact verification boundary. Native passes for one component do not qualify other changes, and prior receipts do not qualify new bytes.
 **Release authority:** repository-owned local qualification (`scripts/qualify.sh`) and retained DSR receipts, not hosted CI
 
+## Durable keyed control admission and inert retry receipts — 2026-11-27
+
+The local daemon IPC now accepts a stable nonzero SHA-256 control retry key. Lookup
+and admission share the existing queue lock, so concurrent identical requests create
+one retained admission and one queued command. An exact retry returns the original
+operation ID and its latest retained boundary without appending history, queueing
+or dispatching again. A reused key with changed principal, normalized grants,
+operation, target or approval refuses. Verified journal scope binds deployment,
+root and ContractBasis; connection and request IDs remain correlations.
+
+Retry inspection precedes fresh queue, shutdown and known-camera admission checks.
+The journal reconstructs a bounded key index at startup and rejects duplicate keys.
+Recovered controls remain inert, including accepted-but-never-dispatched requests:
+a retry receipt does not revive their execution authority. Retained dispatch and
+subsystem-return boundaries do not prove semantic completion. Uncertain journal
+acknowledgements continue to fence the current owner until verified recovery.
+
+Request tag 7, replay-response tag 9 and keyed admission-record tag 5 are additive.
+Legacy request tag 4 and unkeyed record tag 1 retain their byte encoding. Unsupported
+handlers and process-local owners refuse keyed control rather than falling back.
+Older binaries cannot interpret new keyed requests or keyed history records and
+must refuse them; this is not a downgrade-compatible journal. Inspection v1 adds
+an optional nullable idempotency_key so older diagnostic output remains valid.
+
+Eleven new regression functions cover wire compatibility, invalid keys, unsupported
+owners, exact authority binding, concurrent duplicate admission, full queues and
+shutdown, all restart boundaries, ambiguous append acknowledgements, duplicate-key
+corruption, and live UDS reconnection.
+
+**Verification boundary:** independent source/API, lock-order, compatibility and
+recovery reviews found no blocking issue. Native formatting, compilation and tests
+remain unverified because the execution host exhausted disk and the recovered
+toolchain could not run before the executor became unavailable again. These
+authored regressions are not passing qualification receipts.
+
+This implements a concrete `fss-x4a.30.1.7` / INV-007 retry gap. Canonical device
+outcome verification, operator-authorized resumption, immutable reload-candidate
+binding, and complete backup/migration custody remain separate work. Existing
+unkeyed clients retain their old behavior; the separate client integration must
+explicitly carry the preview key into every keyed commit and retry.
+
 ## Guarded daemon retention before canonical retirement — 2026-11-27
 
 The daemon now prepares eviction against a stable catalog before committing canonical

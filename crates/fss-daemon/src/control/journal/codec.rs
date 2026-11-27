@@ -25,7 +25,7 @@ fn text_valid(value: &str) -> bool {
     !value.is_empty() && value.len() <= 256 && !value.bytes().any(|byte| byte.is_ascii_control())
 }
 
-fn digest_valid(value: ContentDigest) -> bool {
+pub(super) fn digest_valid(value: ContentDigest) -> bool {
     value.algorithm() == DigestAlgorithm::Sha256
         && !value.is_laboratory()
         && value.bytes() != [0; 32]
@@ -79,6 +79,7 @@ fn validate_entry(
             != operation_id(scope, entry.command.op, entry.accepted_sequence)?
         || !text_valid(entry.principal.as_str())
         || !digest_valid(entry.command.approval_digest)
+        || entry.idempotency_key.is_some_and(|key| !digest_valid(key))
         || entry
             .command
             .target_camera_id
@@ -112,7 +113,10 @@ pub(super) fn encode(scope: &Scope, record: &Record) -> Result<Vec<u8>, EffectPe
     match record {
         Record::Accepted(entry) => {
             validate_entry(scope, entry)?;
-            enc.tag(1);
+            enc.tag(if entry.idempotency_key.is_some() { 5 } else { 1 });
+            if let Some(key) = entry.idempotency_key {
+                enc.digest(key);
+            }
             enc.u64(entry.accepted_sequence);
             enc.text(entry.command.operation_id.as_str());
             entry.command.op.encode_canonical(&mut enc);
@@ -170,7 +174,12 @@ pub(super) fn decode(scope: &Scope, bytes: &[u8]) -> Result<Record, EffectPersis
     }
     let tag = dec.tag().map_err(malformed)?;
     let record = match tag {
-        1 => {
+        1 | 5 => {
+            let idempotency_key = if tag == 5 {
+                Some(dec.digest().map_err(malformed)?)
+            } else {
+                None
+            };
             let accepted_sequence = dec.u64().map_err(malformed)?;
             let operation_id =
                 OperationId::parse(dec.text().map_err(malformed)?).map_err(malformed)?;
@@ -193,6 +202,7 @@ pub(super) fn decode(scope: &Scope, bytes: &[u8]) -> Result<Record, EffectPersis
                 granted_capabilities.push(dec.text().map_err(malformed)?.to_owned());
             }
             Record::Accepted(ControlHistoryEntry {
+                idempotency_key,
                 command: PendingControlCommand {
                     operation_id,
                     op,

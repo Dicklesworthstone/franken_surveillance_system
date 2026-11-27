@@ -115,6 +115,56 @@ impl CanonicalDecode for ControlOperationState {
     }
 }
 
+/// Last durably recorded boundary of an idempotent supervisor control request.
+/// These bookkeeping states never prove the target subsystem's semantic completion.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RetainedControlProgress {
+    /// Intake is retained; no dispatch boundary is retained.
+    NeverStarted,
+    /// Dispatch was fenced; its outcome may be unknown after interruption.
+    DispatchStarted,
+    /// The subsystem returned; verification belongs to the subsystem's own contract.
+    SubsystemReturned,
+    /// Cancellation was retained before subsystem execution began.
+    CancelledBeforeExecution,
+}
+
+impl RetainedControlProgress {
+    /// Stable diagnostic spelling of the retained execution boundary.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NeverStarted => "never_started",
+            Self::DispatchStarted => "dispatch_started",
+            Self::SubsystemReturned => "subsystem_returned",
+            Self::CancelledBeforeExecution => "cancelled_before_execution",
+        }
+    }
+}
+
+impl CanonicalEncode for RetainedControlProgress {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.tag(match self {
+            Self::NeverStarted => 1,
+            Self::DispatchStarted => 2,
+            Self::SubsystemReturned => 3,
+            Self::CancelledBeforeExecution => 4,
+        });
+    }
+}
+
+impl CanonicalDecode for RetainedControlProgress {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        match decoder.tag()? {
+            1 => Ok(Self::NeverStarted),
+            2 => Ok(Self::DispatchStarted),
+            3 => Ok(Self::SubsystemReturned),
+            4 => Ok(Self::CancelledBeforeExecution),
+            _ => Err(ContractError::InvalidIdentifier),
+        }
+    }
+}
+
 /// Terminal reason closing a `SubscribeDeltas` response stream.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StreamEndReason {

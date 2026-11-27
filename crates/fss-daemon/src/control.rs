@@ -34,7 +34,7 @@ pub mod journal;
 
 use delta_log::BufferedDeltaLog;
 use forwarding::ForwardedBatches;
-use journal::{ControlHistoryReport, ControlProgress, DurableControlJournal};
+use journal::{ControlHistoryReport, ControlProgress, ControlReplayLookup, DurableControlJournal};
 
 #[cfg(test)]
 #[path = "control_tests.rs"]
@@ -410,6 +410,7 @@ impl ControlPlaneShared {
         op: BoundedControlOp,
         target: Option<&str>,
         approval: ContentDigest,
+        idempotency_key: Option<ContentDigest>,
     ) -> Result<PendingControlCommand, DaemonError> {
         let mut guard = self
             .control_journal
@@ -420,7 +421,7 @@ impl ControlPlaneShared {
         match guard.as_mut() {
             Some(journal) => {
                 let result = journal
-                    .admit(ctx, op, target, approval)
+                    .admit_request(ctx, op, target, approval, idempotency_key)
                     .map_err(DaemonError::ControlHistory);
                 if journal.is_poisoned() {
                     self.shutdown_requested.store(true, Ordering::Release);
@@ -428,12 +429,67 @@ impl ControlPlaneShared {
                 }
                 result
             }
+            None if idempotency_key.is_some() => Err(DaemonError::ControlHistory(
+                fss_runtime::effect_journal::EffectPersistenceError::InvalidHistory(
+                    "keyed control requires durable intake",
+                ),
+            )),
             None => Ok(PendingControlCommand {
                 operation_id: self.alloc_operation_id(op),
                 op,
                 target_camera_id: target.map(str::to_owned),
                 approval_digest: approval,
             }),
+        }
+    }
+
+    /// Looks up a retained key while the caller owns the queue admission lock.
+    /// Returning a replay never restores live dispatch authority or changes history.
+    fn replay_control(
+        &self,
+        ctx: &RequestContext,
+        op: BoundedControlOp,
+        target: Option<&str>,
+        approval: ContentDigest,
+        idempotency_key: Option<ContentDigest>,
+    ) -> Option<IpcResponse> {
+        let key = idempotency_key?;
+        let Ok(guard) = self.control_journal.lock() else {
+            return Some(make_refused(
+                ctx.request_id,
+                crate::error::ERR_DAEMON_SHUTDOWN_001,
+                "durable control history is unavailable",
+                false,
+            ));
+        };
+        let Some(journal) = guard.as_ref() else {
+            return Some(make_refused(
+                ctx.request_id,
+                fss_ipc::ERR_IPC_CAPABILITY_DENIED_001,
+                "keyed control requires a durable control owner",
+                false,
+            ));
+        };
+        match journal.replay(ctx, key, op, target, approval) {
+            Ok(ControlReplayLookup::Missing) => None,
+            Ok(ControlReplayLookup::Match(entry)) => Some(IpcResponse::ControlReplayed {
+                request_id: ctx.request_id,
+                operation_id: entry.command.operation_id.clone(),
+                progress: entry.progress,
+                recovered: entry.recovered,
+            }),
+            Ok(ControlReplayLookup::Conflict) => Some(make_refused(
+                ctx.request_id,
+                "ERR-IDEMPOTENCY-CONFLICT-001",
+                "control retry key is already bound to different request authority or intent",
+                false,
+            )),
+            Err(error) => Some(make_refused(
+                ctx.request_id,
+                DaemonError::ControlHistory(error).error_id(),
+                "control retry history could not be verified",
+                false,
+            )),
         }
     }
 
@@ -690,6 +746,36 @@ impl DaemonIpcHandler for DaemonIpcHandlerAdapter {
         target_camera_id: Option<&str>,
         approval_digest: ContentDigest,
     ) -> IpcResponse {
+        self.submit_control(ctx, op, target_camera_id, approval_digest, None)
+    }
+
+    fn submit_idempotent_control(
+        &self,
+        ctx: &RequestContext,
+        idempotency_key: ContentDigest,
+        op: BoundedControlOp,
+        target_camera_id: Option<&str>,
+        approval_digest: ContentDigest,
+    ) -> IpcResponse {
+        self.submit_control(
+            ctx,
+            op,
+            target_camera_id,
+            approval_digest,
+            Some(idempotency_key),
+        )
+    }
+}
+
+impl DaemonIpcHandlerAdapter {
+    fn submit_control(
+        &self,
+        ctx: &RequestContext,
+        op: BoundedControlOp,
+        target_camera_id: Option<&str>,
+        approval_digest: ContentDigest,
+        idempotency_key: Option<ContentDigest>,
+    ) -> IpcResponse {
         if ctx.is_cancelled() {
             return IpcResponse::Cancelled {
                 request_id: ctx.request_id,
@@ -714,11 +800,21 @@ impl DaemonIpcHandler for DaemonIpcHandlerAdapter {
                     request_id: ctx.request_id,
                 };
             }
+            if let Some(response) = self.shared.replay_control(
+                ctx,
+                op,
+                target_camera_id,
+                approval_digest,
+                idempotency_key,
+            ) {
+                return response;
+            }
             let command = match self.shared.retain_control(
                 ctx,
                 op,
                 target_camera_id,
                 approval_digest,
+                idempotency_key,
             ) {
                 Ok(command) => command,
                 Err(error) => {
@@ -778,7 +874,7 @@ impl DaemonIpcHandler for DaemonIpcHandlerAdapter {
                 state: ControlOperationState::Accepted,
             };
         }
-        if self.shared.is_shutdown_requested() {
+        if idempotency_key.is_none() && self.shared.is_shutdown_requested() {
             return make_refused(
                 ctx.request_id,
                 ERR_IPC_SERVER_SHUTDOWN_001,
@@ -816,7 +912,8 @@ impl DaemonIpcHandler for DaemonIpcHandlerAdapter {
                 false,
             );
         }
-        if let Some(cam_id) = target_camera_id
+        if idempotency_key.is_none()
+            && let Some(cam_id) = target_camera_id
             && !self.shared.known_cameras.iter().any(|c| c == cam_id)
         {
             return make_refused(
@@ -840,12 +937,33 @@ impl DaemonIpcHandler for DaemonIpcHandlerAdapter {
                 request_id: ctx.request_id,
             };
         }
+        // Resolve retained keys before current admission limits. A retry is inspection,
+        // including during shutdown or after its camera leaves the current manifest.
+        if let Some(response) = self.shared.replay_control(
+            ctx,
+            op,
+            target_camera_id,
+            approval_digest,
+            idempotency_key,
+        ) {
+            return response;
+        }
         if self.shared.is_shutdown_requested() {
             return make_refused(
                 ctx.request_id,
                 ERR_IPC_SERVER_SHUTDOWN_001,
                 "daemon is draining for shutdown",
                 true,
+            );
+        }
+        if let Some(cam_id) = target_camera_id
+            && !self.shared.known_cameras.iter().any(|c| c == cam_id)
+        {
+            return make_refused(
+                ctx.request_id,
+                ERR_DAEMON_UNKNOWN_CAMERA_001,
+                &format!("unknown target camera `{cam_id}`"),
+                false,
             );
         }
         if queue.len() >= MAX_QUEUED_CONTROL_COMMANDS {
@@ -858,7 +976,7 @@ impl DaemonIpcHandler for DaemonIpcHandlerAdapter {
         }
         let command = match self
             .shared
-            .retain_control(ctx, op, target_camera_id, approval_digest)
+            .retain_control(ctx, op, target_camera_id, approval_digest, idempotency_key)
         {
             Ok(command) => command,
             Err(error) => {

@@ -606,3 +606,458 @@ fn corrupt_retained_control_bytes_never_become_recovered_authority() -> Test {
     assert!(DurableControlJournal::open(&root.0, SITE, Arc::new(HostSpoolIo)).is_err());
     Ok(())
 }
+
+
+#[test]
+fn keyed_retry_binds_exact_authority_and_intent_but_not_transport_correlation() -> Test {
+    let mut journal =
+        DurableControlJournal::from_store(scope(), Box::new(MemoryStore::new(32, None)), true)?;
+    let key = ContentDigest::sha256(b"one intended camera stop");
+    let op = BoundedControlOp::StopCamera;
+    let approval = control_op_approval_digest(SITE, op, Some(CAMERA));
+    let original = context()?;
+    let command = journal.admit_request(&original, op, Some(CAMERA), approval, Some(key))?;
+    let head = journal.inspect(1)?.head;
+
+    let mut retry = original.clone();
+    retry.request_id += 10;
+    retry.connection_id += 20;
+    retry.granted_capabilities.reverse();
+    retry.granted_capabilities.dedup();
+    let ControlReplayLookup::Match(entry) =
+        journal.replay(&retry, key, op, Some(CAMERA), approval)?
+    else {
+        return Err("exact retry did not find retained control".into());
+    };
+    assert_eq!(entry.command, command);
+    assert_eq!(entry.request_id, original.request_id);
+    assert_eq!(entry.connection_id, original.connection_id);
+    assert_eq!(entry.progress, ControlProgress::NeverStarted);
+    assert!(!entry.recovered);
+
+    let mut other_principal = retry.clone();
+    other_principal.principal = PrincipalId::parse("principal:other-owner")?;
+    let mut other_grants = retry.clone();
+    other_grants.granted_capabilities.clear();
+    for changed in [&other_principal, &other_grants] {
+        assert!(matches!(
+            journal.replay(changed, key, op, Some(CAMERA), approval)?,
+            ControlReplayLookup::Conflict
+        ));
+    }
+    for (changed_op, changed_target, changed_approval) in [
+        (BoundedControlOp::StartCamera, Some(CAMERA), approval),
+        (op, Some("sensor:back"), approval),
+        (op, Some(CAMERA), ContentDigest::sha256(b"other approval")),
+    ] {
+        assert!(matches!(
+            journal.replay(&retry, key, changed_op, changed_target, changed_approval)?,
+            ControlReplayLookup::Conflict
+        ));
+    }
+    for wrong_basis in [false, true] {
+        let mut foreign = retry.clone();
+        if wrong_basis {
+            foreign.contract_basis_digest = ContentDigest::sha256(b"other basis");
+        } else {
+            foreign.deployment_id = "site-other".to_owned();
+        }
+        assert!(journal.replay(&foreign, key, op, Some(CAMERA), approval).is_err());
+    }
+    for invalid_key in [
+        ContentDigest::new(fss_core::DigestAlgorithm::Sha256, [0; 32]),
+        ContentDigest::new(fss_core::DigestAlgorithm::Blake3, [1; 32]),
+        ContentDigest::new_laboratory(fss_core::DigestAlgorithm::Sha256, [1; 32]),
+    ] {
+        assert!(journal.replay(&retry, invalid_key, op, Some(CAMERA), approval).is_err());
+        assert!(journal.admit_request(
+            &retry, op, Some(CAMERA), approval, Some(invalid_key),
+        ).is_err());
+    }
+    assert_eq!(journal.inspect(1)?.head, head);
+    assert!(journal.admit_request(&retry, op, Some(CAMERA), approval, Some(key)).is_err());
+
+    let independent_key = ContentDigest::sha256(b"a second intentional camera stop");
+    assert!(matches!(
+        journal.replay(&retry, independent_key, op, Some(CAMERA), approval)?,
+        ControlReplayLookup::Missing
+    ));
+    let independent =
+        journal.admit_request(&retry, op, Some(CAMERA), approval, Some(independent_key))?;
+    assert_ne!(independent.operation_id, command.operation_id);
+    assert_eq!(journal.inspect(2)?.total_entries, 2);
+    Ok(())
+}
+
+#[test]
+fn keyed_history_reopens_every_boundary_without_reconstructing_live_work() -> Test {
+    let root = TempRoot::new()?;
+    let mut journal = DurableControlJournal::open(&root.0, SITE, Arc::new(HostSpoolIo))?;
+    let ctx = context()?;
+    let op = BoundedControlOp::StopCamera;
+    let approval = control_op_approval_digest(SITE, op, Some(CAMERA));
+    let boundaries = [
+        ControlProgress::NeverStarted,
+        ControlProgress::DispatchStarted,
+        ControlProgress::SubsystemReturned,
+        ControlProgress::CancelledBeforeExecution,
+    ];
+    let mut originals = Vec::new();
+    for (index, progress) in boundaries.into_iter().enumerate() {
+        let key = ContentDigest::sha256(&[index as u8 + 1]);
+        let command = journal.admit_request(&ctx, op, Some(CAMERA), approval, Some(key))?;
+        if matches!(progress, ControlProgress::DispatchStarted | ControlProgress::SubsystemReturned) {
+            journal.transition(&command.operation_id, ControlProgress::DispatchStarted)?;
+        }
+        if matches!(progress, ControlProgress::SubsystemReturned | ControlProgress::CancelledBeforeExecution) {
+            journal.transition(&command.operation_id, progress)?;
+        }
+        originals.push((key, command, progress));
+    }
+    // Existing tag-1 admissions stay readable alongside additive keyed admissions.
+    let legacy = admit(&mut journal, op)?;
+    let before = journal.inspect(5)?;
+    assert_eq!(before.entries[4].idempotency_key, None);
+    drop(journal);
+
+    let reopened = DurableControlJournal::open(&root.0, SITE, Arc::new(HostSpoolIo))?;
+    let mut owner = handler(reopened);
+    Arc::get_mut(&mut owner.shared).ok_or("unexpected shared owner")?.known_cameras.clear();
+    assert_eq!(owner.shared.queued_control_command_count()?, 0);
+    assert!(matches!(
+        owner.submit_idempotent_control(
+            &ctx, ContentDigest::sha256(b"fresh removed-camera control"), op, Some(CAMERA), approval,
+        ),
+        IpcResponse::Refused { error_id, .. }
+            if error_id.as_str() == crate::error::ERR_DAEMON_UNKNOWN_CAMERA_001
+    ));
+    for (key, command, progress) in originals {
+        assert_eq!(
+            owner.submit_idempotent_control(&ctx, key, op, Some(CAMERA), approval),
+            IpcResponse::ControlReplayed {
+                request_id: ctx.request_id,
+                operation_id: command.operation_id.clone(),
+                progress,
+                recovered: true,
+            }
+        );
+        assert!(owner.shared.record_control_progress(
+            &command.operation_id,
+            ControlProgress::DispatchStarted,
+        ).is_err());
+    }
+    assert_eq!(owner.shared.queued_control_command_count()?, 0);
+    assert!(owner.shared.take_control_command()?.is_none());
+    let after = owner.shared.control_history(5)?.ok_or("missing history")?;
+    assert_eq!(after.head, before.head);
+    assert_eq!(after.entries[4].command, legacy);
+    assert!(after.to_json().contains("\"idempotency_key\":null"));
+    assert!(after.to_json().contains("\"automatic_replay\":false"));
+    assert!(after.to_json().contains("\"semantic_completion_proved\":false"));
+    Ok(())
+}
+
+#[test]
+fn concurrent_keyed_retries_admit_exactly_one_command_and_one_history_record() -> Test {
+    let journal =
+        DurableControlJournal::from_store(scope(), Box::new(MemoryStore::new(32, None)), true)?;
+    let owner = Arc::new(handler(journal));
+    let key = ContentDigest::sha256(b"concurrent intended stop");
+    let op = BoundedControlOp::StopCamera;
+    let approval = control_op_approval_digest(SITE, op, Some(CAMERA));
+    let mut callers = Vec::new();
+    for index in 0..8 {
+        let mut ctx = context()?;
+        ctx.connection_id += index;
+        ctx.request_id += index;
+        callers.push(ctx);
+    }
+    let responses = std::thread::scope(|scope| {
+        let handles: Vec<_> = callers.into_iter().map(|ctx| {
+            let owner = Arc::clone(&owner);
+            scope.spawn(move || {
+                owner.submit_idempotent_control(&ctx, key, op, Some(CAMERA), approval)
+            })
+        }).collect();
+        handles.into_iter().map(|handle| {
+            handle.join().map_err(|_| "control caller panicked")
+        }).collect::<Result<Vec<_>, _>>()
+    })?;
+    let mut admitted = 0;
+    let mut ids = Vec::new();
+    for response in responses {
+        match response {
+            IpcResponse::ControlAccepted { operation_id, state: ControlOperationState::Queued, .. } => {
+                admitted += 1;
+                ids.push(operation_id);
+            }
+            IpcResponse::ControlReplayed {
+                operation_id, progress: ControlProgress::NeverStarted, recovered: false, ..
+            } => ids.push(operation_id),
+            other => return Err(format!("unexpected concurrent result: {other:?}").into()),
+        }
+    }
+    assert_eq!(admitted, 1);
+    assert!(ids.windows(2).all(|pair| pair[0] == pair[1]));
+    assert_eq!(owner.shared.queued_control_command_count()?, 1);
+    let before = owner.shared.control_history(1)?.ok_or("missing history")?;
+    assert_eq!(before.total_entries, 1);
+    assert_eq!(before.head.sequence, 2);
+
+    let command = owner.shared.take_control_command()?.ok_or("missing admitted command")?;
+    assert_eq!(command.operation_id, ids[0]);
+    for progress in [ControlProgress::DispatchStarted, ControlProgress::SubsystemReturned] {
+        if progress == ControlProgress::SubsystemReturned {
+            owner.shared.record_control_progress(&command.operation_id, progress)?;
+        }
+        let before = owner.shared.control_history(1)?.ok_or("missing history")?.head;
+        assert_eq!(
+            owner.submit_idempotent_control(&context()?, key, op, Some(CAMERA), approval),
+            IpcResponse::ControlReplayed {
+                request_id: context()?.request_id,
+                operation_id: command.operation_id.clone(),
+                progress,
+                recovered: false,
+            }
+        );
+        assert_eq!(owner.shared.control_history(1)?.ok_or("missing history")?.head, before);
+    }
+    assert_eq!(owner.shared.queued_control_command_count()?, 0);
+    Ok(())
+}
+
+#[test]
+fn keyed_retry_survives_full_queue_and_shutdown_without_admitting_fresh_work() -> Test {
+    let journal = DurableControlJournal::from_store(
+        scope(),
+        Box::new(MemoryStore::new(4_000, None)),
+        true,
+    )?;
+    let owner = handler(journal);
+    let ctx = context()?;
+    let op = BoundedControlOp::StopCamera;
+    let approval = control_op_approval_digest(SITE, op, Some(CAMERA));
+    let limit = crate::control::MAX_QUEUED_CONTROL_COMMANDS;
+    let key = ContentDigest::sha256(&0_u64.to_be_bytes());
+    let mut first = None;
+    for index in 0..limit {
+        let response = owner.submit_idempotent_control(
+            &ctx,
+            ContentDigest::sha256(&(index as u64).to_be_bytes()),
+            op,
+            Some(CAMERA),
+            approval,
+        );
+        let IpcResponse::ControlAccepted { operation_id, .. } = response else {
+            return Err(format!("queue refused below capacity: {response:?}").into());
+        };
+        if index == 0 {
+            first = Some(operation_id);
+        }
+    }
+    let operation_id = first.ok_or("missing first operation")?;
+    let head = owner.shared.control_history(1)?.ok_or("missing history")?.head;
+    assert_eq!(
+        owner.submit_idempotent_control(&ctx, key, op, Some(CAMERA), approval),
+        IpcResponse::ControlReplayed {
+            request_id: ctx.request_id,
+            operation_id: operation_id.clone(),
+            progress: ControlProgress::NeverStarted,
+            recovered: false,
+        }
+    );
+    assert_eq!(owner.shared.control_history(1)?.ok_or("missing history")?.head, head);
+    let fresh = ContentDigest::sha256(b"fresh action beyond queue limit");
+    assert!(matches!(
+        owner.submit_idempotent_control(&ctx, fresh, op, Some(CAMERA), approval),
+        IpcResponse::Refused { error_id, .. } if error_id.as_str() == "ERR-BUDGET-EXHAUSTED-001"
+    ));
+    assert_eq!(owner.shared.queued_control_command_count()?, limit);
+    let (cancelled, error) = owner.shared.cancel_unstarted_controls();
+    assert!(error.is_none());
+    assert_eq!(cancelled.len(), limit);
+    let stopped_head = owner.shared.control_history(1)?.ok_or("missing history")?.head;
+    assert_eq!(
+        owner.submit_idempotent_control(&ctx, key, op, Some(CAMERA), approval),
+        IpcResponse::ControlReplayed {
+            request_id: ctx.request_id,
+            operation_id,
+            progress: ControlProgress::CancelledBeforeExecution,
+            recovered: false,
+        }
+    );
+    assert!(matches!(
+        owner.submit_idempotent_control(&ctx, fresh, op, Some(CAMERA), approval),
+        IpcResponse::Refused { error_id, .. }
+            if error_id.as_str() == fss_ipc::ERR_IPC_SERVER_SHUTDOWN_001
+    ));
+    assert_eq!(owner.shared.queued_control_command_count()?, 0);
+    assert_eq!(owner.shared.control_history(1)?.ok_or("missing history")?.head, stopped_head);
+    Ok(())
+}
+
+#[test]
+fn keyed_lost_acknowledgements_are_fenced_then_recovered_only_as_inert_receipts() -> Test {
+    let ctx = context()?;
+    let key = ContentDigest::sha256(b"lost acknowledgement control");
+    let op = BoundedControlOp::StopCamera;
+    let approval = control_op_approval_digest(SITE, op, Some(CAMERA));
+    for failure_record in [2, 3, 4] {
+        let mut journal = DurableControlJournal::from_store(
+            scope(),
+            Box::new(MemoryStore::new(16, Some(failure_record))),
+            true,
+        )?;
+        let admitted = journal.admit_request(&ctx, op, Some(CAMERA), approval, Some(key));
+        if failure_record == 2 {
+            assert!(admitted.is_err());
+        } else {
+            let command = admitted?;
+            let dispatch = journal.transition(&command.operation_id, ControlProgress::DispatchStarted);
+            if failure_record == 3 {
+                assert!(dispatch.is_err());
+            } else {
+                dispatch?;
+                assert!(journal.transition(&command.operation_id, ControlProgress::SubsystemReturned).is_err());
+            }
+        }
+        assert!(matches!(
+            journal.replay(&ctx, key, op, Some(CAMERA), approval),
+            Err(EffectPersistenceError::Poisoned)
+        ));
+        let DurableControlJournal { scope, store, .. } = journal;
+        let mut recovered = DurableControlJournal::from_store(scope, store, false)?;
+        let expected = match failure_record {
+            2 => ControlProgress::NeverStarted,
+            3 => ControlProgress::DispatchStarted,
+            _ => ControlProgress::SubsystemReturned,
+        };
+        let ControlReplayLookup::Match(entry) =
+            recovered.replay(&ctx, key, op, Some(CAMERA), approval)?
+        else {
+            return Err("retained lost-ack request was not found".into());
+        };
+        assert_eq!(entry.progress, expected);
+        assert!(entry.recovered);
+        let operation_id = entry.command.operation_id.clone();
+        let before = recovered.inspect(1)?.head;
+        assert!(recovered.transition(&operation_id, ControlProgress::DispatchStarted).is_err());
+        assert_eq!(recovered.inspect(1)?.head, before);
+    }
+    Ok(())
+}
+
+#[test]
+fn canonical_history_with_duplicate_key_is_refused_without_choosing_an_operation() -> Test {
+    let mut journal =
+        DurableControlJournal::from_store(scope(), Box::new(MemoryStore::new(16, None)), true)?;
+    let key = ContentDigest::sha256(b"one key");
+    let op = BoundedControlOp::StopCamera;
+    journal.admit_request(
+        &context()?, op, Some(CAMERA),
+        control_op_approval_digest(SITE, op, Some(CAMERA)), Some(key),
+    )?;
+    let mut duplicate = journal.entries[0].clone();
+    duplicate.accepted_sequence += 1;
+    duplicate.command.operation_id =
+        codec::operation_id(&journal.scope, op, duplicate.accepted_sequence)?;
+    let bytes = codec::encode(&journal.scope, &codec::Record::Accepted(duplicate))?;
+    let DurableControlJournal { scope, mut store, .. } = journal;
+    store.append(store.head(), &bytes)?;
+    assert!(DurableControlJournal::from_store(scope, store, false).is_err());
+    Ok(())
+}
+
+
+#[test]
+fn live_keyed_control_reconnect_reuses_receipt_and_refuses_changed_grants() -> Test {
+    let root = TempRoot::new()?;
+    let journal = DurableControlJournal::open(&root.0, SITE, Arc::new(HostSpoolIo))?;
+    let owner = Arc::new(handler(journal));
+    let basis = reference_contract_basis();
+    let server = fss_ipc::IpcServer::bind(
+        fss_ipc::IpcServerConfig::new(&root.0, SITE, basis.basis_digest(), "daemon:keyed-test"),
+        owner.clone(),
+    )?;
+    let ctx = context()?;
+    let mut capabilities = ctx.granted_capabilities.clone();
+    capabilities.sort();
+    capabilities.dedup();
+    let config = fss_ipc::IpcClientConfig::from_contract_basis(
+        &root.0, SITE, &basis, ctx.principal.clone(), capabilities.clone(),
+    );
+    let mut first_client = fss_ipc::IpcClient::connect(config)?;
+    let key = ContentDigest::sha256(b"live keyed request");
+    let op = BoundedControlOp::StopCamera;
+    let approval = control_op_approval_digest(SITE, op, Some(CAMERA));
+    let response = first_client.submit_idempotent_control(
+        101, key, op, Some(CAMERA.to_owned()), approval,
+    )?;
+    let IpcResponse::ControlAccepted { operation_id, state: ControlOperationState::Queued, .. } = response else {
+        return Err(format!("keyed wire intake refused: {response:?}").into());
+    };
+    drop(first_client);
+
+    capabilities.reverse();
+    let mut retry_client = fss_ipc::IpcClient::connect(
+        fss_ipc::IpcClientConfig::from_contract_basis(
+            &root.0, SITE, &basis, ctx.principal.clone(), capabilities,
+        ),
+    )?;
+    assert_eq!(
+        retry_client.submit_idempotent_control(202, key, op, Some(CAMERA.to_owned()), approval)?,
+        IpcResponse::ControlReplayed {
+            request_id: 202,
+            operation_id: operation_id.clone(),
+            progress: ControlProgress::NeverStarted,
+            recovered: false,
+        }
+    );
+    let mut changed_client = fss_ipc::IpcClient::connect(
+        fss_ipc::IpcClientConfig::from_contract_basis(
+            &root.0, SITE, &basis, ctx.principal, vec!["CAP-OBSERVE-STATUS-001".to_owned()],
+        ),
+    )?;
+    assert!(matches!(
+        changed_client.submit_idempotent_control(303, key, op, Some(CAMERA.to_owned()), approval)?,
+        IpcResponse::Refused { error_id, retryable: false, .. }
+            if error_id.as_str() == "ERR-IDEMPOTENCY-CONFLICT-001"
+    ));
+    assert_eq!(owner.shared.queued_control_command_count()?, 1);
+    let history = owner.shared.control_history(1)?.ok_or("missing history")?;
+    assert_eq!(history.total_entries, 1);
+    assert_eq!(history.head.sequence, 2);
+    assert_eq!(history.entries[0].command.operation_id, operation_id);
+    server.shutdown()?;
+    Ok(())
+}
+
+#[test]
+fn keyed_daemon_shutdown_replays_its_retained_return_boundary_without_new_history() -> Test {
+    let journal =
+        DurableControlJournal::from_store(scope(), Box::new(MemoryStore::new(16, None)), true)?;
+    let owner = handler(journal);
+    let ctx = context()?;
+    let key = ContentDigest::sha256(b"one shutdown request");
+    let op = BoundedControlOp::StopCamera;
+    let target = Some(crate::control::DAEMON_STOP_TARGET);
+    let approval = owner.shared.expected_stop_approval();
+    let first = owner.submit_idempotent_control(&ctx, key, op, target, approval);
+    let IpcResponse::ControlAccepted { operation_id, .. } = first else {
+        return Err(format!("shutdown not accepted: {first:?}").into());
+    };
+    assert!(owner.shared.is_shutdown_requested());
+    let head = owner.shared.control_history(1)?.ok_or("missing history")?.head;
+    assert_eq!(
+        owner.submit_idempotent_control(&ctx, key, op, target, approval),
+        IpcResponse::ControlReplayed {
+            request_id: ctx.request_id,
+            operation_id,
+            progress: ControlProgress::SubsystemReturned,
+            recovered: false,
+        }
+    );
+    assert_eq!(owner.shared.control_history(1)?.ok_or("missing history")?.head, head);
+    assert_eq!(owner.shared.queued_control_command_count()?, 0);
+    Ok(())
+}

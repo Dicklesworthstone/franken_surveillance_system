@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://franken-surveillance-system.invalid/schemas/daemon_control_history.v1.json",
   "title": "Durable daemon control history inspection",
-  "description": "Bounded diagnostic projection of retained control bookkeeping. It never grants replay authority or proves semantic completion. Native decoding enforces u64 sequence bounds, canonical capability order, deployment scope, and pinned journal custody.",
+  "description": "Bounded diagnostic projection of retained control bookkeeping. It never grants replay authority or proves semantic completion. Native decoding enforces u64 sequence bounds, canonical capability order, exact keyed request identity, deployment scope, and pinned journal custody.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -148,6 +148,17 @@
         },
         "recovered": {
           "type": "boolean"
+        },
+        "idempotency_key": {
+          "description": "Stable caller retry identity for keyed admissions; null for legacy unkeyed records. Older v1 inspection output may omit this additive diagnostic field. Native admission requires nonzero canonical SHA-256.",
+          "oneOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     }
