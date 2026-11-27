@@ -6,7 +6,6 @@
 
 use std::collections::BTreeMap;
 use std::error::Error;
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
 use fss_core::{
@@ -218,19 +217,13 @@ fn test_model_host_001_oom_hang_cancel_crash_malformed_cleanup_and_privacy_proof
     ));
 
     // =========================================================================
-    // 3. CRASH / PANIC QUARANTINE + POST-FAULT RESIDENT POOL REUSE (0 reload storm)
+    // 3. MULTI-WORKER FAULT ISOLATION & POST-FAULT RESIDENT POOL REUSE (0 reload storm)
     // =========================================================================
     let cx = ScalarExecCx::new();
     let model_pool = ResidentModelPool::default_bounded();
     let resident = model_pool.load_or_get_activity_committed(KernelBackend::OptimizedCpuV1, &cx)?;
     assert_eq!(model_pool.metrics_snapshot().loads, 1);
 
-    let panicked = catch_unwind(AssertUnwindSafe(|| -> () {
-        panic!("simulated hostile model host panic inside isolated worker");
-    }));
-    assert!(panicked.is_err());
-
-    // After quarantined crash, resident pool still serves nominal work cleanly with loads == 1!
     let cam = SensorId::parse("sensor:tmh001-cam")?;
     let dims = [32_u32, 32_u32];
     let baseline_ref = Arc::new(ReferenceFramePixels {
@@ -242,7 +235,10 @@ fn test_model_host_001_oom_hang_cancel_crash_malformed_cleanup_and_privacy_proof
         pixels: vec![190_u8; 32 * 32],
     };
     let workers = WorkerPoolExecutor::new(WorkerPoolConfig::with_workers(2)?)?;
-    let task = InferenceTask {
+
+    // Real multi-worker fault #1: hostile task missing baseline reference frame fails cleanly
+    // inside scoped worker threads and aborts sibling work with zero orphaned threads.
+    let bad_task = InferenceTask {
         canonical_index: 0,
         stream_order: 0,
         frame_sequence: 1,
@@ -251,17 +247,50 @@ fn test_model_host_001_oom_hang_cancel_crash_malformed_cleanup_and_privacy_proof
         capture_interval: CaptureInterval::new(TimestampNs(10_000), TimestampNs(20_000))?,
         dimensions: dims,
         pixels: &frame_input,
-        reference_pixels: Some(baseline_ref),
+        reference_pixels: None,
         model_key: resident.key(),
     };
-    let post_crash_results = workers.execute_tasks(&model_pool, &[task], &cx)?;
-    assert_eq!(post_crash_results.len(), 1);
+    let good_task = InferenceTask {
+        canonical_index: 1,
+        stream_order: 0,
+        frame_sequence: 2,
+        sensor_id: &cam,
+        source_digest: ContentDigest::sha256(frame_input.as_bytes()),
+        capture_interval: CaptureInterval::new(TimestampNs(20_000), TimestampNs(30_000))?,
+        dimensions: dims,
+        pixels: &frame_input,
+        reference_pixels: Some(Arc::clone(&baseline_ref)),
+        model_key: resident.key(),
+    };
+    assert!(
+        workers
+            .execute_tasks(&model_pool, &[bad_task, good_task.clone()], &cx)
+            .is_err()
+    );
+
+    // Real multi-worker fault #2: cancelled context during scoped worker dispatch drains cleanly.
+    let worker_cancel_cx = ScalarExecCx::new();
+    worker_cancel_cx.request_cancellation();
+    assert!(
+        workers
+            .execute_tasks(
+                &model_pool,
+                std::slice::from_ref(&good_task),
+                &worker_cancel_cx
+            )
+            .is_err()
+    );
+    assert!(worker_cancel_cx.is_drain_completed());
+
+    // After real multi-worker faults, resident pool still serves nominal work cleanly with loads == 1!
+    let post_fault_results = workers.execute_tasks(&model_pool, &[good_task], &cx)?;
+    assert_eq!(post_fault_results.len(), 1);
     assert_eq!(model_pool.metrics_snapshot().loads, 1);
     proof_lines.push(emit_proof_line(
-        "crash_quarantine_and_recovery",
-        "panic_isolated_and_pool_reused_without_reload",
-        "panic_isolated_and_pool_reused_without_reload",
-        ContentDigest::sha256(b"tmh001:crash-quarantine-ok"),
+        "worker_fault_isolation_and_recovery",
+        "scoped_worker_fault_and_cancel_isolated_pool_reused",
+        "scoped_worker_fault_and_cancel_isolated_pool_reused",
+        ContentDigest::sha256(b"tmh001:worker-fault-isolation-ok"),
         "ok",
     ));
 
