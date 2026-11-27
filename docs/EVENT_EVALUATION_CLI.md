@@ -115,6 +115,47 @@ leave stdout empty, and write a single `fss.evaluation.cli_error.v1` diagnostic 
 an error code, an optional source line, and `effect_started: false`. Diagnostics omit source
 rows and local file paths. Output-write failure exits 1. `--help` alone prints usage and exits 0.
 
+## Evaluate a property-held-out split
+
+For the declared-label and candidate workflow, record the split inventory and the chosen
+threshold before inspecting holdout labels. Pass the manifest alongside the existing
+arguments:
+
+```sh
+fss-evaluate --labels holdout-labels.tsv --candidates holdout-candidates.tsv \
+  --pipeline-generation pipeline-1 --model-generation model-1 --policy-generation policy-1 \
+  --max-false-alerts 1 --per-observed-ns 86400000000000 \
+  --holdout-manifest split.tsv --fixed-threshold-ppm 800000
+```
+
+The first line of the manifest is `fss-evaluation-holdout.v1`. Supply one
+`threshold_ppm<TAB>PPM` row. Each remaining data row has six tab-separated fields:
+
+```text
+clip  PARTITION  CLIP_ID  PROPERTY_ID  SESSION_ID  SOURCE_RECORDING_SHA256
+```
+
+Use `training`, `calibration` or `holdout` for the partition. Include all known training
+clips and at least one clip each for calibration and holdout. Each partition admits up
+to 4,096 clips. Use stable opaque IDs for clips, properties and globally distinct capture
+sessions. Use the lowercase `sha256:` digest of the source recording from which the clip
+was cut. Excerpts of the same recording share its digest. A clip may appear only once,
+each session must belong to one property, and no property, session or recording may
+span partitions. Label rows must cover exactly the holdout clip inventory, including
+negative clips. Candidate rows must belong to labeled clips.
+
+The evaluator refuses a differing fixed threshold or requests for score calibration or
+conformal fitting on the holdout. The `holdout` result binds the evaluation digest to the
+canonical complete split manifest and its declared threshold. Row reordering preserves
+the binding. Raw property, session and recording identifiers are omitted from the receipt.
+Use the **fixed operating point** for the prespecified threshold. The pooled curve and
+budget-selected operating point are descriptive measurements of the evaluated split.
+
+The check establishes consistency among supplied declarations. It cannot verify the
+completeness of a model's training history, the timestamps of threshold selection, or
+the identity of differently encoded recordings. The manifest reader never opens footage.
+[Working synthetic manifest](../fixtures/evaluation/cli-smoke/holdout.tsv).
+
 ## Evaluate retained native package tracks
 
 First retain a complete native detection report using the existing `fss-file import` and

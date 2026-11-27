@@ -5,6 +5,8 @@
 //! candidates from existing native custody. Neither mode runs a detector, certifies coverage,
 //! activates thresholds, publishes evaluation authority, or sends alerts.
 
+#[path = "fss-evaluate/holdout.rs"]
+mod holdout;
 #[path = "fss-evaluate/retained_package.rs"]
 mod retained_package;
 
@@ -34,8 +36,10 @@ const HELP: &str = "fss-evaluate --labels LABELS.tsv --candidates CANDIDATES.tsv
 --max-false-alerts N --per-observed-ns N \
 [--early-tolerance-ns N] [--late-tolerance-ns N] [--fixed-threshold-ppm PPM] \
 [--calibration-bins PPM,PPM,... --calibration-generation ID] \
-[--conformal-alpha-ppm PPM] [--class-breakdown all|CLASS,CLASS,...]\n\n\
+[--conformal-alpha-ppm PPM] [--class-breakdown all|CLASS,CLASS,...] [--holdout-manifest SPLITS.tsv]\n\n\
 Read-only event evaluation; emits JSON to stdout. No threshold is activated.\n\
+With --holdout-manifest, require exact holdout clip membership, disjoint declared properties,\n\
+sessions and recording digests, and the manifest's fixed threshold; calibration is refused.\n\
 Use --fixed-threshold-ppm to measure a threshold chosen before inspecting these labels.\n\
 The fixed operating point includes all scored candidates at or above it, even over budget.\n\
 With --class-breakdown, every observed class is reported at that same fixed threshold,\n\
@@ -95,6 +99,7 @@ struct Options {
     conformal_alpha_ppm: Option<u32>,
     fixed_threshold_ppm: Option<u32>,
     class_inventory: Option<Vec<String>>,
+    holdout_manifest: Option<PathBuf>,
 }
 
 fn integer(value: &str) -> Result<u64> {
@@ -122,7 +127,7 @@ fn unicode(value: &OsStr) -> Result<&str> {
 fn parse_options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>> {
     let mut bounded = Vec::new();
     for arg in args {
-        if bounded.len() == 28 {
+        if bounded.len() == 30 {
             return Err(Failure::new("evaluation.cli.arguments_limit"));
         }
         bounded.push(arg);
@@ -150,6 +155,7 @@ fn parse_options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Opti
                 | "--conformal-alpha-ppm"
                 | "--fixed-threshold-ppm"
                 | "--class-breakdown"
+                | "--holdout-manifest"
         ) {
             return Err(Failure::new("evaluation.cli.unknown_option"));
         }
@@ -215,6 +221,13 @@ fn parse_options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Opti
             Some(alpha)
         }
     };
+    let holdout_manifest = values.get("--holdout-manifest").map(PathBuf::from);
+    let fixed_threshold_ppm = fixed_threshold(&values)?;
+    if holdout_manifest.is_some()
+        && (fixed_threshold_ppm.is_none() || calibration.is_some() || conformal_alpha_ppm.is_some())
+    {
+        return Err(Failure::new("evaluation.holdout.options"));
+    }
     Ok(Some(Options {
         labels: PathBuf::from(required(&values, "--labels")?),
         candidates: PathBuf::from(required(&values, "--candidates")?),
@@ -222,7 +235,8 @@ fn parse_options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Opti
         policy,
         calibration,
         conformal_alpha_ppm,
-        fixed_threshold_ppm: fixed_threshold(&values)?,
+        holdout_manifest,
+        fixed_threshold_ppm,
         class_inventory: class_inventory(&values)?,
     }))
 }
@@ -905,6 +919,11 @@ fn run(args: impl IntoIterator<Item = OsString>) -> Result<String> {
         return Ok(HELP.to_owned());
     };
     let labels = parse_labels(&read_input(&options.labels)?)?;
+    let holdout = options
+        .holdout_manifest
+        .as_deref()
+        .map(|path| holdout::validate(&read_input(path)?, &labels, options.fixed_threshold_ppm))
+        .transpose()?;
     let candidates = parse_candidates(&read_input(&options.candidates)?)?;
     let report = evaluate(&options.identity, &options.policy, &labels, &candidates)?;
     let mut json = report_with_breakdown(
@@ -915,6 +934,10 @@ fn run(args: impl IntoIterator<Item = OsString>) -> Result<String> {
         options.class_inventory.as_deref(),
         &|| false,
     )?;
+    if let Some(holdout) = holdout {
+        let body = json.strip_suffix('}').ok_or_else(|| Failure::new("evaluation.cli.internal"))?;
+        json = format!("{body},\"holdout\":{}}}", holdout.receipt(report.digest)?);
+    }
     let conformal_generation = options
         .calibration
         .as_ref()

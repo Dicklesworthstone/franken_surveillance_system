@@ -80,6 +80,8 @@ candidate-by-truth matching once per class. It verifies that labels and candidat
 match the parent report's canonical input digests before emitting class metrics.
 
 These reports are derived measurements, not evidence of deployment quality.
-Coverage and holdout split membership remain caller declarations. This feature
-does not provide property/session split enforcement, confidence intervals,
-hard-negative subtype manifests or a multi-clip native corpus reader.
+Coverage and split membership come from caller declarations. For the TSV workflow,
+use [a holdout manifest](EVENT_EVALUATION_CLI.md#evaluate-a-property-held-out-split)
+to enforce disjoint declared properties, sessions and source recordings and complete
+holdout membership at the chosen threshold. Class metrics still lack confidence
+intervals, hard-negative subtype manifests and a multi-clip native corpus reader.

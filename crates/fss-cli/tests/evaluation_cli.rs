@@ -390,3 +390,28 @@ fn class_breakdown_requires_fixed_threshold_and_refuses_invalid_inventory() -> T
     )?;
     Ok(())
 }
+
+#[test]
+fn heldout_cli_binds_the_threshold_and_refuses_calibration_on_holdout() -> TestResult {
+    let holdout = || {
+        let mut evaluate = command("labels.tsv", "candidates.tsv", "0", "1000");
+        evaluate.arg("--holdout-manifest").arg(fixture("holdout.tsv"));
+        evaluate
+    };
+    let output = holdout().args(["--fixed-threshold-ppm", "800000"]).output()?;
+    assert!(output.status.success(), "{}", std::str::from_utf8(&output.stderr)?);
+    let json = std::str::from_utf8(&output.stdout)?;
+    assert!(json.contains("\"schema\":\"fss.evaluation.holdout.v1\""));
+    assert!(json.contains("\"membership_basis\":\"caller_declared\""));
+    assert!(json.contains("\"training_clips\":1,\"calibration_clips\":1,\"holdout_clips\":1"));
+    assert!(json.contains("\"manifest_digest\":\"sha256:"));
+    assert_refusal(&holdout().output()?, "evaluation.holdout.options")?;
+    assert_refusal(
+        &holdout().args(["--fixed-threshold-ppm", "0"]).output()?,
+        "evaluation.holdout.threshold",
+    )?;
+    assert_refusal(
+        &holdout().args(["--fixed-threshold-ppm", "800000", "--conformal-alpha-ppm", "100000"]).output()?,
+        "evaluation.holdout.options",
+    )
+}

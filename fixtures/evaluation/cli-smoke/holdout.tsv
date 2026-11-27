@@ -1,0 +1,6 @@
+fss-evaluation-holdout.v1
+# Synthetic declarations for the CLI test only.
+threshold_ppm	800000
+clip	training	t	training-property	training-session	sha256:1111111111111111111111111111111111111111111111111111111111111111
+clip	calibration	cal	cal-property	cal-session	sha256:2222222222222222222222222222222222222222222222222222222222222222
+clip	holdout	c	held-property	held-session	sha256:3333333333333333333333333333333333333333333333333333333333333333
