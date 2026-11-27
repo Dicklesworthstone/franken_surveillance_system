@@ -155,7 +155,8 @@ impl PackStore {
                 expected_digest.algorithm(),
             ));
         }
-        let catalog = self.catalog.read().map_err(|_| PackError::LockPoisoned)?;
+        // Exclusive ownership fences append and compaction until index removal is finished.
+        let catalog = self.catalog.write().map_err(|_| PackError::LockPoisoned)?;
         let entry = catalog
             .get_root(root_id)
             .ok_or_else(|| PackError::RootNotFound(root_id.to_owned()))?;
@@ -344,6 +345,8 @@ impl PackStore {
         policy: CompactionPolicy,
         cut_point: Option<PackCutPoint>,
     ) -> Result<PackCompactionReceipt, PackError> {
+        // A digest selected for copying must remain live until the replacement is installed.
+        let _catalog = self.catalog.read().map_err(|_| PackError::LockPoisoned)?;
         execute_pack_compaction(
             &self.packs_dir,
             &self.index_dir,

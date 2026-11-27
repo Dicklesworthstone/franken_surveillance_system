@@ -5,6 +5,7 @@
 
 pub mod control;
 mod control_client;
+mod frame_rate;
 pub mod error;
 pub mod health;
 pub mod manifest;
@@ -68,5 +69,5 @@ pub use supervisor::{
 };
 pub use telemetry::{
     DaemonTelemetrySnapshot, SensorTelemetryRecord, escape_json, render_live_status_json,
-    render_stop_accepted_json,
+    render_live_status_text, render_stop_accepted_json,
 };

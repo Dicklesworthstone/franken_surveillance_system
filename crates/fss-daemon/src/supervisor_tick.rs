@@ -474,6 +474,7 @@ impl DaemonSupervisor {
                     match slot.driver.connect(next_gen) {
                         Ok(()) => {
                             slot.stream_generation = next_gen;
+                            slot.input_rate = Default::default();
                             slot.state = SensorState::Connecting;
                             slot.previous_frame = None;
                             slot.continuity_frames = 0;
@@ -586,6 +587,12 @@ impl DaemonSupervisor {
                                     ));
                                 }
                                 let push = slot.ring.push(frame);
+                                if !contiguous {
+                                    slot.input_rate = Default::default();
+                                }
+                                if push.admitted {
+                                    slot.input_rate.observe(received_ns);
+                                }
                                 if push.shed_frames > 0 {
                                     out.frames_shed =
                                         out.frames_shed.saturating_add(push.shed_frames);

@@ -14,15 +14,15 @@
 //! ```
 
 use std::collections::HashMap;
-use std::fs::{File, OpenOptions};
-use std::io::{Seek, SeekFrom};
+use std::fs::{self, File, OpenOptions};
+use std::io::{ErrorKind, Seek, SeekFrom};
 use std::path::Path;
 
 use fss_core::{ContentDigest, DigestAlgorithm};
 
 use crate::crc32c::crc32c;
 use crate::error::{PackError, PackIoOperation};
-use crate::format::{DurabilityMode, read_exact_at_bounded, write_all_bounded};
+use crate::format::{DurabilityMode, read_exact_at_bounded, sync_dir, write_all_bounded};
 
 /// Magic bytes for each fixed-size object tombstone frame.
 pub const OBJECT_TOMBSTONE_MAGIC: [u8; 4] = *b"FSTD";
@@ -48,13 +48,64 @@ impl ObjectTombstoneLog {
     /// the log: silently dropping it could make previously deleted evidence readable again.
     /// Read failures also propagate without truncating deletion history.
     pub fn open(path: &Path, durability: DurabilityMode) -> Result<Self, PackError> {
-        let mut file = OpenOptions::new()
+        let file = OpenOptions::new()
             .create(true)
             .read(true)
             .write(true)
             .truncate(false)
             .open(path)
             .map_err(|err| PackError::io(PackIoOperation::Open, err))?;
+        Self::recover(file, durability)
+    }
+
+    /// An established pack store must retain its deletion history even if the derived index
+    /// can be rebuilt from sealed packs. Only bootstrap a new log in empty storage directories.
+    /// The caller holds the exclusive store lock across this check and recovery.
+    pub(crate) fn open_for_store(
+        roots: &Path,
+        packs: &Path,
+        index: &Path,
+        durability: DurabilityMode,
+    ) -> Result<Self, PackError> {
+        let path = roots.join("object-tombstones.fssr");
+        let mut options = OpenOptions::new();
+        options.read(true).write(true);
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_file() => {}
+            Ok(_) => {
+                return Err(PackError::CorruptCatalog {
+                    detail: "object tombstone log is not a regular file".to_owned(),
+                });
+            }
+            Err(err) if err.kind() == ErrorKind::NotFound => {
+                for directory in [roots, packs, index] {
+                    let mut contents = fs::read_dir(directory)
+                        .map_err(|e| PackError::io(PackIoOperation::ReadDir, e))?;
+                    if contents
+                        .next()
+                        .transpose()
+                        .map_err(|e| PackError::io(PackIoOperation::ReadDir, e))?
+                        .is_some()
+                    {
+                        return Err(PackError::CorruptCatalog {
+                            detail: "populated store is missing its object tombstone log"
+                                .to_owned(),
+                        });
+                    }
+                }
+                options.create_new(true);
+            }
+            Err(err) => return Err(PackError::io(PackIoOperation::Metadata, err)),
+        }
+        let file = options
+            .open(&path)
+            .map_err(|e| PackError::io(PackIoOperation::Open, e))?;
+        // Includes retries after a failed bootstrap directory sync.
+        sync_dir(roots, durability)?;
+        Self::recover(file, durability)
+    }
+
+    fn recover(mut file: File, durability: DurabilityMode) -> Result<Self, PackError> {
         let file_len = file
             .metadata()
             .map_err(|err| PackError::io(PackIoOperation::Metadata, err))?

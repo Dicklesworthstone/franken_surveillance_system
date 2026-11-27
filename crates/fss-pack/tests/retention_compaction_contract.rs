@@ -885,6 +885,49 @@ fn catalog_retirement_recovery_finishes_object_deletion_and_compaction() -> Test
             .total_bytes_reclaimed,
         0
     );
+
+    // A restore/reimport must not physically reintroduce deleted payloads or commit
+    // the innocent prefix of a mixed batch, even after reclamation and restart.
+    drop(store);
+    let store = PackStore::open(&dir.path, cfg)?;
+    let new_payload = b"uncommitted fresh source";
+    let fresh_digest = ContentDigest::sha256(new_payload);
+    let inputs = [
+        PackObjectInput::new(PACK_KIND_RAW_PAYLOAD, 0, new_payload),
+        PackObjectInput::new(PACK_KIND_MEDIA_CHUNK, 0, &media),
+    ];
+    let bytes_before_retry = store.on_disk_pack_bytes()?;
+    let fsyncs_before_retry = store.telemetry_snapshot()?.pack_fsync_count;
+    assert!(matches!(
+        store.append_batch(&inputs),
+        Err(PackError::EvidenceDeleted { digest, reason_digest })
+            if digest == media_digest && reason_digest == reason
+    ));
+    let retry_root = VirtualRootRecord::new(
+        "gop:retry",
+        fresh_digest,
+        "media-gop-v2",
+        2,
+        128,
+        1,
+        TimestampNs(22),
+        None,
+    )?;
+    assert!(matches!(
+        store.publish_graph(&inputs, retry_root),
+        Err(PackError::EvidenceDeleted { digest, reason_digest })
+            if digest == media_digest && reason_digest == reason
+    ));
+    assert!(store.get_root("gop:retry")?.is_none());
+    assert!(store.lookup(&fresh_digest)?.is_none());
+    assert!(store.lookup(&media_digest)?.is_none());
+    assert_eq!(store.on_disk_pack_bytes()?, bytes_before_retry);
+    assert_eq!(
+        store.telemetry_snapshot()?.pack_fsync_count,
+        fsyncs_before_retry
+    );
+    let _ = store.append_batch(&inputs[..1])?;
+    assert_eq!(store.read_verified(&fresh_digest)?, new_payload);
     Ok(())
 }
 

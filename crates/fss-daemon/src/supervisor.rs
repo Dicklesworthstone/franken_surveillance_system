@@ -184,6 +184,7 @@ impl DaemonSupervisor {
                     stream_generation: 1,
                     previous_frame: None,
                     continuity_frames: 0,
+                    input_rate: Default::default(),
                     health: config
                         .sensor_health_policy
                         .map(|policy| crate::health::CameraHealth::new(policy, entry.dimensions)),
@@ -201,7 +202,7 @@ impl DaemonSupervisor {
         }
 
         let head = storage.head_snapshot()?;
-        let initial_status = build_control_status(&head, &sensors);
+        let initial_status = build_control_status(&head, &sensors, now_ns);
         let ipc_root = config
             .manifest
             .ipc_socket_override
@@ -356,7 +357,7 @@ impl DaemonSupervisor {
 
         let head = self.storage.head_snapshot()?;
         if let Some(shared) = &self.control_shared {
-            shared.publish_status(build_control_status(&head, &self.sensors));
+            shared.publish_status(build_control_status(&head, &self.sensors, now_ns));
             if self.control.is_some() {
                 shared.publish_retention_forecasts(
                     self.storage
@@ -723,7 +724,7 @@ impl DaemonSupervisor {
                     sensor_id: slot.entry.sensor_id.as_str().to_owned(),
                     state: slot.state.as_str().to_owned(),
                     stream_generation: slot.stream_generation,
-                    fps_in: (stats.total_enqueued as f64) / elapsed_secs,
+                    fps_in: f64::from(slot.input_fps_milli(self.last_now_ns)) / 1_000.0,
                     fps_decode: (slot.frames_decoded as f64) / elapsed_secs,
                     ingest_lag_ms: slot.last_ingest_lag_ms,
                     queue_depth: stats.current_frames,
