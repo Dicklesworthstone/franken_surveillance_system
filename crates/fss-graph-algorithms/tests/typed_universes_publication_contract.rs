@@ -405,6 +405,34 @@ fn g_effect_closed_loop_honest_completion_wait_cycles_stale_fences_and_v1_migrat
     assert_eq!(ok.critical_path_duration_ms, Some(75));
     assert!(!ok.grants_effect_authority);
 
+    // A high-duration RecommendationPlan MUST NOT hijack the executable critical path!
+    let mut rec_heavy = nodes.clone();
+    rec_heavy[0].duration_ms = 99_999;
+    let geff_rec_heavy = EffectObligationGraph::build(
+        "proj:g-effect-rec-heavy",
+        Generation(1),
+        anchor(20),
+        ContentDigest::sha256(b"hist:20"),
+        &scope,
+        rec_heavy,
+        edges.clone(),
+        complete_absence(),
+        || false,
+    )?;
+    let ok_rec = geff_rec_heavy.analyze_obligations(1_000, || false)?;
+    assert_eq!(ok_rec.critical_path_duration_ms, Some(75));
+    assert_eq!(
+        ok_rec.critical_path.as_deref(),
+        Some(
+            &[
+                "intent-1".to_owned(),
+                "dispatch-1".to_owned(),
+                "obs-1".to_owned(),
+                "verify-1".to_owned()
+            ][..]
+        )
+    );
+
     // Recommendation trying to emit `Verifies` or `Fences` edge MUST fail closed!
     let bad_rec = EffectObligationGraph::build(
         "proj:bad-rec",
@@ -774,6 +802,87 @@ fn g_auth_monotone_narrowing_noninterference_cache_partitioning_and_v1_migration
         v_guest.witness.output_digest(),
         v_guest_after.witness.output_digest()
     );
+    // True capability noninterference across anchors: cache partition key, visible degree,
+    // output digest, decision path, and witness operation counts stay invariant to hidden edges
+    // added on `p:owner`!
+    assert_eq!(
+        v_guest.witness.dominant_operation_counts(),
+        v_guest_after.witness.dominant_operation_counts()
+    );
+    assert_eq!(
+        v_guest.witness.decision_path_digest(),
+        v_guest_after.witness.decision_path_digest()
+    );
+    // And at the exact SAME anchor, even the complete witness digest is bit-for-bit identical!
+    let mut same_anchor_nodes = nodes.clone();
+    same_anchor_nodes.push(auth_node(
+        "res:vault-cam",
+        AuthNodeKind::ScopedResource,
+        "prop-alpha",
+        &["cam:back"],
+        100_000,
+        false,
+    ));
+    let mut same_anchor_edges = edges.clone();
+    same_anchor_edges.push(AuthEdgeSpec {
+        source_id: "p:owner".to_owned(),
+        target_id: "res:vault-cam".to_owned(),
+        kind: AuthEdgeKind::MayRead,
+        expires_at_ns: TimestampNs(100_000),
+        revoked: false,
+    });
+    let same_anchor_with_secret = AuthorityGraph::build(
+        "proj:g-auth-alpha",
+        Generation(1),
+        anchor(30),
+        ContentDigest::sha256(b"hist:30-secret"),
+        &scope,
+        same_anchor_nodes,
+        same_anchor_edges,
+        complete_absence(),
+        || false,
+    )?;
+    let v_guest_same_anchor = same_anchor_with_secret.query_principal_view(
+        "p:guest",
+        TimestampNs(10_000),
+        1_000,
+        || false,
+        || false,
+    )?;
+    assert_eq!(
+        v_guest.witness.digest(),
+        v_guest_same_anchor.witness.digest()
+    );
+
+    // Fail-closed narrowing: revoking a narrowing policy MUST fail closed, never widen scope!
+    let mut revoked_pol = auth_node(
+        "pol:front-only",
+        AuthNodeKind::Policy,
+        "prop-alpha",
+        &["cam:front"],
+        100_000,
+        true,
+    );
+    revoked_pol.revoked = true;
+    let gauth_revoked_pol = gauth.apply_deltas(
+        anchor(32),
+        ContentDigest::sha256(b"hist:32"),
+        Generation(1),
+        &scope,
+        &[AuthDelta::UpsertNode(revoked_pol)],
+        complete_absence(),
+        || false,
+    )?;
+    assert!(matches!(
+        gauth_revoked_pol.query_principal_view(
+            "p:guest",
+            TimestampNs(10_000),
+            1_000,
+            || false,
+            || false
+        ),
+        Err(TypedUniverseError::AuthorityViolation(_))
+    ));
 
     // 2. WorkClaim / ATP / Recommendation / Cognition CANNOT carry MayCommit!
     let mut bad_claim_edges = edges.clone();
@@ -1127,6 +1236,29 @@ fn g_world_protected_high_loss_survival_affordance_classification_plan_invalidat
         },
     ];
     let (classified, witness) = gworld.classify_affordances(&actions, 1_000, || false)?;
+    // Insertion-order invariance: reversed candidate slice yields bit-identical witness digest!
+    let mut actions_rev = actions.clone();
+    actions_rev.reverse();
+    let (classified_rev, witness_rev) =
+        gworld.classify_affordances(&actions_rev, 1_000, || false)?;
+    assert_eq!(classified, classified_rev);
+    assert_eq!(witness.digest(), witness_rev.digest());
+
+    // Duplicate action_id refused fail-closed!
+    let mut dup_actions = actions.clone();
+    dup_actions.push(actions[0].clone());
+    assert!(matches!(
+        gworld.classify_affordances(&dup_actions, 1_000, || false),
+        Err(TypedUniverseError::InvalidInput(_))
+    ));
+
+    // Stale affordance missing a newly added protected world refused by bind_plan!
+    let mut stale_aff = classified[1].clone();
+    stale_aff.checked_protected_worlds.clear();
+    assert!(matches!(
+        gworld.bind_plan("plan:stale-aff", &stale_aff),
+        Err(TypedUniverseError::MixedAnchorOrGeneration(_))
+    ));
     assert_eq!(classified[0].classification, AffordanceClass::Blocked); // siren blocked by protected unsafe world!
     assert_eq!(
         classified[1].classification,

@@ -881,9 +881,22 @@ impl WorldFactorGraph {
             .map(|f| f.factor_id.clone())
             .collect();
 
-        let mut results = Vec::with_capacity(candidates.len());
+        // Canonicalize candidate order & reject duplicates BEFORE hashing decision_path_digest
+        // so affordance classification is 100% insertion-order-invariant (CGSE tie-break!).
+        let mut sorted_candidates: Vec<&CandidateWorldAction> = candidates.iter().collect();
+        sorted_candidates.sort_by(|a, b| a.action_id.cmp(&b.action_id));
+        for pair in sorted_candidates.windows(2) {
+            if pair[0].action_id == pair[1].action_id {
+                return Err(TypedUniverseError::InvalidInput(format!(
+                    "duplicate action_id '{}'",
+                    pair[0].action_id
+                )));
+            }
+        }
+
+        let mut results = Vec::with_capacity(sorted_candidates.len());
         let mut path_enc = CanonicalEncoder::new();
-        for cand in candidates {
+        for cand in sorted_candidates {
             budget.charge(1, &mut is_cancelled)?;
             validate_clean_label(&cand.action_id, "action_id")?;
 
@@ -983,6 +996,37 @@ impl WorldFactorGraph {
                 "cannot bind plan '{}' to {:?} affordance '{}'",
                 plan_id, affordance.classification, affordance.action_id
             )));
+        }
+        // Verify affordance was checked against ALL currently active unproven protected worlds
+        // and does not hit any active unproven protected unsafe world!
+        let checked_set: BTreeSet<&str> = affordance
+            .checked_protected_worlds
+            .iter()
+            .map(String::as_str)
+            .collect();
+        for factor in self.visible_factors.values() {
+            if factor.is_unproven_protected_world()
+                && !checked_set.contains(factor.factor_id.as_str())
+            {
+                return Err(TypedUniverseError::MixedAnchorOrGeneration(format!(
+                    "stale affordance '{}' omitted active protected world '{}'",
+                    affordance.action_id, factor.factor_id
+                )));
+            }
+        }
+        for unsafe_id in &affordance.active_unsafe_worlds {
+            if self
+                .visible_factors
+                .get(unsafe_id)
+                .is_some_and(WorldFactorSpec::is_unproven_protected_world)
+            {
+                return Err(TypedUniverseError::ProtectedWorldDeletionForbidden(
+                    format!(
+                        "cannot bind plan '{}' against active protected unsafe world '{unsafe_id}'",
+                        plan_id
+                    ),
+                ));
+            }
         }
         let mut enc = CanonicalEncoder::new();
         enc.text(&plan_id);
@@ -1131,6 +1175,16 @@ impl WorldFactorGraph {
                     "duplicate world factor_id in wire fixture".to_owned(),
                 ));
             }
+            let Some(handle) = projection.handle_for_node_id(&factor.factor_id) else {
+                return Err(TypedUniverseError::MalformedWire(
+                    "wire world factor missing from embedded G_world projection".to_owned(),
+                ));
+            };
+            if projection.node(handle)?.payload_digest != factor.factor_digest() {
+                return Err(TypedUniverseError::MalformedWire(
+                    "wire world factor digest disagrees with embedded projection".to_owned(),
+                ));
+            }
             visible_factors.insert(factor.factor_id.clone(), factor);
         }
         let e_len = usize::try_from(dec.u64().map_err(map_err)?)
@@ -1142,7 +1196,15 @@ impl WorldFactorGraph {
         }
         let mut visible_edges = BTreeSet::new();
         for _ in 0..e_len {
-            visible_edges.insert(WorldFactorEdge::decode_body(&mut dec)?);
+            let edge = WorldFactorEdge::decode_body(&mut dec)?;
+            if !visible_factors.contains_key(&edge.source_id)
+                || !visible_factors.contains_key(&edge.target_id)
+            {
+                return Err(TypedUniverseError::MalformedWire(
+                    "wire world edge references unknown factor".to_owned(),
+                ));
+            }
+            visible_edges.insert(edge);
         }
         let (migrated, tombstoned_fields) = if version == LEGACY_UNIVERSE_WIRE_VERSION {
             let _deprecated_flag = dec.u8().map_err(map_err)?;

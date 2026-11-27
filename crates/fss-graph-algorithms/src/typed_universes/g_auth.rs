@@ -632,77 +632,97 @@ impl AuthorityGraph {
             )));
         }
 
-        // Compute effective narrowed scope by intersecting any active NarrowedBy policy nodes.
+        // Walk principal and its delegation ancestor chain ONLY via `DelegatedFrom` / `NarrowedBy`
+        // edges so unrelated principals' edges NEVER perturb budget counters (true noninterference!).
+        // Any revoked or expired narrowing policy fails closed rather than silently widening scope.
         let mut effective_scopes = principal.scope_tags.clone();
-        for edge in &self.visible_edges {
-            budget.charge(1, &mut is_cancelled)?;
-            if is_revoked_now() {
-                return Err(TypedUniverseError::AuthorityViolation(
-                    "mid-query revocation observed during narrowing resolution".to_owned(),
-                ));
-            }
-            if edge.source_id == principal_id
-                && edge.kind == AuthEdgeKind::NarrowedBy
-                && !edge.revoked
-                && now_ns.0 <= edge.expires_at_ns.0
-                && let Some(policy) = self.visible_nodes.get(&edge.target_id)
-                && !policy.revoked
-                && now_ns.0 <= policy.expires_at_ns.0
-            {
-                effective_scopes = effective_scopes
-                    .intersection(&policy.scope_tags)
-                    .cloned()
-                    .collect();
-            }
-        }
-
-        // Check whether any active ancestor in a DelegatedFrom chain is revoked or expired!
         let mut cur_ancestors = vec![principal_id];
         let mut visited_anc = BTreeSet::new();
         while let Some(node_id) = cur_ancestors.pop() {
             if !visited_anc.insert(node_id) {
                 continue;
             }
-            for edge in &self.visible_edges {
+            for edge in self.visible_edges.iter().filter(|e| e.source_id == node_id) {
+                if !matches!(
+                    edge.kind,
+                    AuthEdgeKind::NarrowedBy | AuthEdgeKind::DelegatedFrom
+                ) {
+                    continue;
+                }
                 budget.charge(1, &mut is_cancelled)?;
-                if edge.source_id == node_id && edge.kind == AuthEdgeKind::DelegatedFrom {
+                if is_revoked_now() {
+                    return Err(TypedUniverseError::AuthorityViolation(
+                        "mid-query revocation observed during narrowing/delegation resolution"
+                            .to_owned(),
+                    ));
+                }
+                if edge.kind == AuthEdgeKind::NarrowedBy {
+                    if edge.revoked || now_ns.0 > edge.expires_at_ns.0 {
+                        return Err(TypedUniverseError::AuthorityViolation(
+                            "narrowing policy edge revoked or expired; fail closed".to_owned(),
+                        ));
+                    }
+                    let Some(policy) = self.visible_nodes.get(&edge.target_id) else {
+                        return Err(TypedUniverseError::AuthorityViolation(
+                            "narrowing policy node absent; fail closed".to_owned(),
+                        ));
+                    };
+                    if policy.revoked || now_ns.0 > policy.expires_at_ns.0 {
+                        return Err(TypedUniverseError::AuthorityViolation(format!(
+                            "narrowing policy '{}' revoked or expired; fail closed",
+                            policy.node_id
+                        )));
+                    }
+                    effective_scopes = effective_scopes
+                        .intersection(&policy.scope_tags)
+                        .cloned()
+                        .collect();
+                } else if edge.kind == AuthEdgeKind::DelegatedFrom {
                     if edge.revoked || now_ns.0 > edge.expires_at_ns.0 {
                         return Err(TypedUniverseError::AuthorityViolation(
                             "delegation chain edge revoked or expired".to_owned(),
                         ));
                     }
-                    if let Some(parent) = self.visible_nodes.get(&edge.target_id) {
-                        if parent.revoked || now_ns.0 > parent.expires_at_ns.0 {
-                            return Err(TypedUniverseError::AuthorityViolation(format!(
-                                "delegation ancestor '{}' revoked or expired",
-                                parent.node_id
-                            )));
-                        }
-                        effective_scopes = effective_scopes
-                            .intersection(&parent.scope_tags)
-                            .cloned()
-                            .collect();
-                        cur_ancestors.push(parent.node_id.as_str());
+                    let Some(parent) = self.visible_nodes.get(&edge.target_id) else {
+                        return Err(TypedUniverseError::AuthorityViolation(
+                            "delegation ancestor absent; fail closed".to_owned(),
+                        ));
+                    };
+                    if parent.revoked || now_ns.0 > parent.expires_at_ns.0 {
+                        return Err(TypedUniverseError::AuthorityViolation(format!(
+                            "delegation ancestor '{}' revoked or expired",
+                            parent.node_id
+                        )));
                     }
+                    effective_scopes = effective_scopes
+                        .intersection(&parent.scope_tags)
+                        .cloned()
+                        .collect();
+                    cur_ancestors.push(parent.node_id.as_str());
                 }
             }
         }
 
-        // Resolve strictly authorized edges for this principal (filtering BEFORE counting/degree!).
+        // Resolve strictly authorized edges originating from `principal_id` ONLY (filtering BEFORE
+        // counting/degree and charging budget strictly on `principal_id`'s own incident edges!).
         let mut readable_resources = BTreeSet::new();
         let mut derivable_resources = BTreeSet::new();
         let mut preparable_effects = BTreeSet::new();
         let mut committable_effects = BTreeSet::new();
         let mut visible_targets = BTreeSet::new();
 
-        for edge in &self.visible_edges {
+        for edge in self
+            .visible_edges
+            .iter()
+            .filter(|e| e.source_id == principal_id)
+        {
             budget.charge(1, &mut is_cancelled)?;
             if is_revoked_now() {
                 return Err(TypedUniverseError::AuthorityViolation(
                     "mid-query revocation observed during capability expansion".to_owned(),
                 ));
             }
-            if edge.source_id != principal_id || edge.revoked || now_ns.0 > edge.expires_at_ns.0 {
+            if edge.revoked || now_ns.0 > edge.expires_at_ns.0 {
                 continue;
             }
             let Some(target) = self.visible_nodes.get(&edge.target_id) else {
@@ -891,6 +911,16 @@ impl AuthorityGraph {
                     "duplicate auth node_id in wire fixture".to_owned(),
                 ));
             }
+            let Some(handle) = projection.handle_for_node_id(&node.node_id) else {
+                return Err(TypedUniverseError::MalformedWire(
+                    "wire auth node missing from embedded G_auth projection".to_owned(),
+                ));
+            };
+            if projection.node(handle)?.payload_digest != node.node_digest() {
+                return Err(TypedUniverseError::MalformedWire(
+                    "wire auth node digest disagrees with embedded projection".to_owned(),
+                ));
+            }
             visible_nodes.insert(node.node_id.clone(), node);
         }
         let e_len = usize::try_from(dec.u64().map_err(map_err)?)
@@ -901,9 +931,50 @@ impl AuthorityGraph {
             ));
         }
         let mut visible_edges = BTreeSet::new();
+        let mut decoded_edges = Vec::with_capacity(e_len);
         for _ in 0..e_len {
-            visible_edges.insert(AuthEdgeSpec::decode_body(&mut dec)?);
+            let edge = AuthEdgeSpec::decode_body(&mut dec)?;
+            let Some(src) = visible_nodes.get(&edge.source_id) else {
+                return Err(TypedUniverseError::MalformedWire(
+                    "wire auth edge source missing".to_owned(),
+                ));
+            };
+            let Some(dst) = visible_nodes.get(&edge.target_id) else {
+                return Err(TypedUniverseError::MalformedWire(
+                    "wire auth edge target missing".to_owned(),
+                ));
+            };
+            if src.property_id != dst.property_id {
+                return Err(TypedUniverseError::AuthorityViolation(
+                    "wire cross-property auth edge forbidden".to_owned(),
+                ));
+            }
+            if edge.kind == AuthEdgeKind::MayCommit && src.kind.is_non_committing_artifact() {
+                return Err(TypedUniverseError::AuthorityViolation(
+                    "wire non-committing artifact cannot carry may-commit".to_owned(),
+                ));
+            }
+            if edge.kind == AuthEdgeKind::DelegatedFrom
+                && (!src.scope_tags.is_subset(&dst.scope_tags)
+                    || src.expires_at_ns.0 > dst.expires_at_ns.0)
+            {
+                return Err(TypedUniverseError::AuthorityViolation(
+                    "wire delegation violates monotone narrowing".to_owned(),
+                ));
+            }
+            decoded_edges.push(edge.clone());
+            visible_edges.insert(edge);
         }
+        let mut wire_del_parents: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for edge in &decoded_edges {
+            if edge.kind == AuthEdgeKind::DelegatedFrom {
+                wire_del_parents
+                    .entry(edge.source_id.as_str())
+                    .or_default()
+                    .push(edge.target_id.as_str());
+            }
+        }
+        detect_delegation_cycles(&visible_nodes, &wire_del_parents)?;
         let (migrated, tombstoned_fields) = if version == LEGACY_UNIVERSE_WIRE_VERSION {
             let _deprecated_flag = dec.u8().map_err(map_err)?;
             (

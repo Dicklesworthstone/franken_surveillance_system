@@ -1104,6 +1104,22 @@ impl VisibilityHypergraph {
                     "duplicate factor_id in wire fixture".to_owned(),
                 ));
             }
+            let f_node = format!("factor/{}", factor.factor_id);
+            let c_node = format!("camera/{}", factor.camera_id);
+            let cell_node = format!("cell/{}", factor.target_cell_id);
+            let Some(handle) = projection.handle_for_node_id(&f_node) else {
+                return Err(TypedUniverseError::MalformedWire(
+                    "wire factor missing from embedded H_vis projection".to_owned(),
+                ));
+            };
+            if projection.node(handle)?.payload_digest != factor.factor_digest()
+                || projection.handle_for_node_id(&c_node).is_none()
+                || projection.handle_for_node_id(&cell_node).is_none()
+            {
+                return Err(TypedUniverseError::MalformedWire(
+                    "wire factor inconsistent with embedded H_vis projection".to_owned(),
+                ));
+            }
             visible_factors.insert(factor.factor_id.clone(), factor);
         }
         let (migrated, tombstoned_fields) = if version == LEGACY_UNIVERSE_WIRE_VERSION {

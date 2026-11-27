@@ -718,26 +718,42 @@ impl EffectObligationGraph {
                     }
                 }
             }
-            let mut best_dist = vec![0_u64; n];
+            let is_exec: Vec<bool> = node_ids
+                .iter()
+                .map(|id| {
+                    self.visible_nodes
+                        .get(id)
+                        .is_some_and(|s| s.kind != EffectNodeKind::RecommendationPlan)
+                })
+                .collect();
+            let dur_of: Vec<u64> = node_ids
+                .iter()
+                .enumerate()
+                .map(|(i, id)| {
+                    if is_exec[i] {
+                        self.visible_nodes.get(id).map_or(0, |s| s.duration_ms)
+                    } else {
+                        0
+                    }
+                })
+                .collect();
+            let mut best_dist = dur_of.clone();
+            let mut best_hops: Vec<usize> = is_exec.iter().map(|&e| usize::from(e)).collect();
             let mut pred: Vec<Option<usize>> = vec![None; n];
             for &u in &topo {
                 budget.charge(1, &mut is_cancelled)?;
-                let dur = self
-                    .visible_nodes
-                    .get(&node_ids[u])
-                    .map_or(0, |s| s.duration_ms);
-                let u_end = best_dist[u].saturating_add(dur);
-                if best_dist[u] == 0 {
-                    best_dist[u] = u_end;
+                if !is_exec[u] {
+                    continue;
                 }
                 for &v in &adj[u] {
-                    let v_dur = self
-                        .visible_nodes
-                        .get(&node_ids[v])
-                        .map_or(0, |s| s.duration_ms);
-                    let cand = best_dist[u].saturating_add(v_dur);
-                    if cand > best_dist[v] {
+                    if !is_exec[v] {
+                        continue;
+                    }
+                    let cand = best_dist[u].saturating_add(dur_of[v]);
+                    let cand_hops = best_hops[u].saturating_add(1);
+                    if cand > best_dist[v] || (cand == best_dist[v] && cand_hops > best_hops[v]) {
                         best_dist[v] = cand;
+                        best_hops[v] = cand_hops;
                         pred[v] = Some(u);
                     }
                 }
@@ -745,7 +761,8 @@ impl EffectObligationGraph {
             if let Some((end_idx, &max_dur)) = best_dist
                 .iter()
                 .enumerate()
-                .max_by_key(|&(idx, &d)| (d, std::cmp::Reverse(idx)))
+                .filter(|&(idx, _)| is_exec[idx])
+                .max_by_key(|&(idx, &d)| (d, best_hops[idx], std::cmp::Reverse(idx)))
             {
                 let mut path_rev = Vec::new();
                 let mut cur = Some(end_idx);
@@ -976,6 +993,23 @@ impl EffectObligationGraph {
                     "duplicate effect node_id in wire fixture".to_owned(),
                 ));
             }
+            if node.authority_anchor.site_lineage != projection.anchor().site_lineage
+                || node.authority_anchor.commit_sequence > projection.anchor().commit_sequence
+            {
+                return Err(TypedUniverseError::MalformedWire(
+                    "wire effect node anchor diverges from embedded projection".to_owned(),
+                ));
+            }
+            let Some(handle) = projection.handle_for_node_id(&node.node_id) else {
+                return Err(TypedUniverseError::MalformedWire(
+                    "wire effect node missing from embedded G_effect projection".to_owned(),
+                ));
+            };
+            if projection.node(handle)?.payload_digest != node.node_digest() {
+                return Err(TypedUniverseError::MalformedWire(
+                    "wire effect node digest disagrees with embedded projection".to_owned(),
+                ));
+            }
             visible_nodes.insert(node.node_id.clone(), node);
         }
         let e_len = usize::try_from(dec.u64().map_err(map_err)?)
@@ -988,6 +1022,23 @@ impl EffectObligationGraph {
         let mut visible_edges = BTreeSet::new();
         for _ in 0..e_len {
             let edge = EffectEdgeSpec::decode_body(&mut dec)?;
+            let Some(src) = visible_nodes.get(&edge.source_id) else {
+                return Err(TypedUniverseError::MalformedWire(
+                    "wire effect edge source missing".to_owned(),
+                ));
+            };
+            if !visible_nodes.contains_key(&edge.target_id) {
+                return Err(TypedUniverseError::MalformedWire(
+                    "wire effect edge target missing".to_owned(),
+                ));
+            }
+            if src.kind == EffectNodeKind::RecommendationPlan
+                && edge.kind != EffectEdgeKind::Recommends
+            {
+                return Err(TypedUniverseError::AuthorityViolation(
+                    "wire recommendation node cannot carry authoritative edge".to_owned(),
+                ));
+            }
             visible_edges.insert(edge);
         }
         let (migrated, tombstoned_fields) = if version == LEGACY_UNIVERSE_WIRE_VERSION {
