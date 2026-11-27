@@ -19,7 +19,8 @@ pub struct CameraLiveStatus {
     pub camera_id: String,
     /// Whether the camera worker is actively running.
     pub running: bool,
-    /// Observed ingest frame rate in milli-FPS (e.g., `30_000` = `30.000 FPS`).
+    /// Recent ring admission rate in milli-FPS, over the last ten completed 100 ms
+    /// host-receive-time buckets. Disconnected sources report zero.
     pub fps_milli: u32,
     /// Cumulative reconnect count since daemon start.
     pub reconnect_count: u64,

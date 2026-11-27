@@ -14,7 +14,7 @@ pub struct SensorTelemetryRecord {
     pub state: String,
     /// Current stream generation ordinal (`1`-based, increments on reconnect).
     pub stream_generation: u64,
-    /// Observed ingest frame rate in frames per second.
+    /// Frames admitted in the last second of completed 100 ms receive-time buckets.
     pub fps_in: f64,
     /// Observed decode/perception frame rate in frames per second.
     pub fps_decode: f64,
@@ -141,6 +141,36 @@ impl DaemonTelemetrySnapshot {
         );
         out
     }
+}
+
+/// Render an operator status summary and one row per camera from the same live IPC snapshot.
+#[must_use]
+pub fn render_live_status_text(
+    desc: &crate::control::DaemonRuntimeDescriptor,
+    status: &fss_ipc::LiveDaemonStatus,
+) -> String {
+    let mut out = format!(
+        "site={} pid={} uptime_ms={} head_seq={} cameras={}",
+        escape_json(&desc.site_id),
+        desc.pid,
+        status.daemon_uptime_ms,
+        status.head_commit_sequence,
+        status.cameras.len(),
+    );
+    for camera in &status.cameras {
+        let _ = write!(
+            out,
+            "\n  camera={} streaming={} fps={}.{:03} frames_ingested={} reconnects={} queue_depth={}",
+            escape_json(&camera.camera_id),
+            camera.running,
+            camera.fps_milli / 1_000,
+            camera.fps_milli % 1_000,
+            camera.frames_ingested,
+            camera.reconnect_count,
+            camera.queue_depth,
+        );
+    }
+    out
 }
 
 /// Renders deterministic non-secret `fss.daemon_status.v1` JSON from a live IPC query result.

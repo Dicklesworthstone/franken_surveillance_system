@@ -13,7 +13,7 @@ use fss_core::PrincipalId;
 use fss_daemon::{
     DaemonStartConfig, DaemonSupervisor, SensorHealthPolicy, SiteManifest, escape_json,
     query_camera_retention_forecast, query_live_daemon_status, render_live_status_json,
-    render_stop_accepted_json, request_live_daemon_stop,
+    render_live_status_text, render_stop_accepted_json, request_live_daemon_stop,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -217,12 +217,8 @@ fn status_cmd(args: &[String]) -> ExitCode {
         println!("{}", render_live_status_json(&desc, &status));
     } else {
         println!(
-            "fss-daemon running site={} pid={} uptime_ms={} head_seq={} cameras={}",
-            desc.site_id,
-            desc.pid,
-            status.daemon_uptime_ms,
-            status.head_commit_sequence,
-            status.cameras.len()
+            "fss-daemon running {}",
+            render_live_status_text(&desc, &status)
         );
     }
     ExitCode::SUCCESS

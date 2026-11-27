@@ -339,6 +339,7 @@ pub(crate) struct CameraSlot {
     pub(crate) previous_frame: Option<(fss_core::StreamId, u64, i128)>,
     // Contiguous admitted samples since the latest source or retention gap, capped at two.
     pub(crate) continuity_frames: u8,
+    pub(crate) input_rate: crate::frame_rate::RecentFrameRate,
     pub(crate) health: Option<CameraHealth>,
     pub(crate) last_frame_ns: i128,
     pub(crate) next_reconnect_ns: i128,
@@ -351,9 +352,19 @@ pub(crate) struct CameraSlot {
     pub(crate) peak_concurrent_sessions: u32,
 }
 
+impl CameraSlot {
+    pub(crate) fn input_fps_milli(&self, now_ns: i128) -> u32 {
+        match self.state {
+            SensorState::Connecting | SensorState::Streaming => self.input_rate.milli_fps(now_ns),
+            SensorState::Stopped | SensorState::GapBackoff | SensorState::Draining => 0,
+        }
+    }
+}
+
 pub(crate) fn build_control_status(
     head: &StorageHeadSnapshot,
     sensors: &BTreeMap<SensorId, CameraSlot>,
+    now_ns: i128,
 ) -> ControlStatusSnapshot {
     let cameras = sensors
         .values()
@@ -362,8 +373,7 @@ pub(crate) fn build_control_status(
             CameraLiveStatus {
                 camera_id: slot.entry.sensor_id.as_str().to_owned(),
                 running: slot.state == SensorState::Streaming,
-                fps_milli: u32::try_from(stats.total_enqueued.saturating_mul(1_000))
-                    .unwrap_or(u32::MAX),
+                fps_milli: slot.input_fps_milli(now_ns),
                 reconnect_count: slot.reconnects,
                 queue_depth: u32::try_from(stats.current_frames).unwrap_or(u32::MAX),
                 frames_ingested: slot.frames_ingested,

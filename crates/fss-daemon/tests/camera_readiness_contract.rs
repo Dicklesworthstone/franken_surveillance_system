@@ -328,6 +328,43 @@ fn readiness_requires_two_retained_samples_and_reconnect_proves_it_again() -> Te
 }
 
 #[test]
+fn live_rate_counts_recent_admissions_and_resets_across_gaps() -> TestResult {
+    let mut fixture = Fixture::with_gop_frames_and_ipc(64, 4, true)?;
+    let principal = fss_core::PrincipalId::parse("principal:local-operator")?;
+    let check = |fixture: &mut Fixture, elapsed_ms: i128, expected_milli: u32| -> TestResult {
+        let tick = fixture
+            .supervisor
+            .step_tick(START_NS + elapsed_ms * 1_000_000)?;
+        let (desc, live) =
+            fss_daemon::query_live_daemon_status(&fixture._dir.0, None, principal.clone())?;
+        assert_eq!(live.cameras[0].fps_milli, expected_milli);
+        let text = fss_daemon::render_live_status_text(&desc, &live);
+        assert!(text.contains("\n  camera=sensor:readiness streaming="));
+        assert!(text.contains(&format!(" fps={}.000 ", expected_milli / 1_000)));
+        assert_eq!(
+            tick.telemetry.sensors[0].fps_in,
+            f64::from(expected_milli) / 1_000.0
+        );
+        Ok(())
+    };
+
+    fixture.queue([Input::frame(), Input::frame()])?;
+    check(&mut fixture, 100, 0)?; // current 100 ms bucket is incomplete
+    check(&mut fixture, 200, 2_000)?;
+    fixture.queue([Input::Frame(FrameMutation::Discontinuity)])?;
+    check(&mut fixture, 300, 0)?;
+    check(&mut fixture, 400, 1_000)?;
+    fixture.queue([Input::Disconnect])?;
+    check(&mut fixture, 450, 0)?;
+    check(&mut fixture, 800, 0)?; // prior generation still inside the time window
+    fixture.queue([Input::frame(), Input::frame(), Input::frame()])?;
+    check(&mut fixture, 900, 0)?;
+    check(&mut fixture, 1_000, 3_000)?;
+    check(&mut fixture, 2_000, 0)?; // idle, before the five-second stall timeout
+    fixture.finish()
+}
+
+#[test]
 fn frame_received_before_session_acceptance_is_rejected() -> TestResult {
     let mut fixture = Fixture::new(64)?;
     fixture.queue([Input::Frame(FrameMutation::ReceiveTime(START_NS - 1))])?;

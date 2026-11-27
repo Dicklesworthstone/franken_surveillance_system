@@ -18,7 +18,7 @@ use fss_core::json_input::MAX_INPUT_BYTES;
 use fss_daemon::{
     DaemonError, DaemonStartConfig, DaemonSupervisor, SensorHealthPolicy,
     SiteManifest as DaemonSiteManifest, query_live_daemon_status, render_live_status_json,
-    render_stop_accepted_json, request_live_daemon_stop,
+    render_live_status_text, render_stop_accepted_json, request_live_daemon_stop,
 };
 use fss_reference::site::{MAX_SITE_SOURCES, SiteManifest, parse_manifest, parse_probe_receipts};
 
@@ -847,14 +847,7 @@ fn execute_site_status(args: &SiteStatusArgs) -> (String, ExitIdentity) {
     let out = if args.json {
         render_live_status_json(&d, &s)
     } else {
-        format!(
-            "fss site status site={} pid={} uptime_ms={} head_seq={} cameras={}",
-            d.site_id,
-            d.pid,
-            s.daemon_uptime_ms,
-            s.head_commit_sequence,
-            s.cameras.len()
-        )
+        format!("fss site status {}", render_live_status_text(&d, &s))
     };
     (out, ExitIdentity::SUCCESS)
 }
