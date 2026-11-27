@@ -15,7 +15,7 @@ use fss_daemon::{
     SensorState, SiteManifest, SyntheticCameraControl, SyntheticCameraDriver, SyntheticFrameSpec,
 };
 use fss_projection_store::{
-    CombinerError, CoverageStatus, ProjectedCoverageState, ProjectionStore,
+    CombinerError, CoverageStatus, ProjectedCoverageState, ProjectionStore, SensorLivenessStatus,
 };
 use fss_reference::ingest::model_pool::{FramePixelInput, ModelPoolError};
 
@@ -284,7 +284,12 @@ fn restart_without_a_gop_reserves_a_fresh_stream_before_accepting_frames() -> Te
     let mut next = Fixture::open_at(_dir, START_NS + 2_000_000_000, 64, 4, false)?;
     let new_generation = next.view()?.stream_generation;
     assert!(new_generation > previous);
-    assert_eq!(next.coverage()?.status, CoverageStatus::NotObservable);
+    let opening = next.coverage()?;
+    assert_eq!(opening.status, CoverageStatus::NotObservable);
+    assert_eq!(
+        opening.window,
+        CaptureInterval::point(TimestampNs(START_NS + 2_000_000_000))
+    );
     next.queue([Input::frame()])?;
     next.supervisor.step_tick(START_NS + 2_100_000_000)?;
     next.queue([Input::frame()])?;
@@ -296,6 +301,69 @@ fn restart_without_a_gop_reserves_a_fresh_stream_before_accepting_frames() -> Te
     assert_eq!(next.coverage()?.status, CoverageStatus::NotObservable);
     assert_eq!(next.view()?.state, SensorState::GapBackoff);
     next.finish()
+}
+
+#[test]
+fn one_tick_run_closes_coverage_and_restart_witnesses_only_the_offline_interval() -> TestResult {
+    let first = Fixture::new(64)?;
+    first.queue([Input::frame(), Input::frame()])?;
+    let projection = Arc::clone(first.supervisor.storage().projection());
+    let shutdown = first
+        .supervisor
+        .run_until_stopped(Some(1), Duration::ZERO)?;
+    assert_eq!(shutdown.ticks_executed, 1);
+    assert_eq!(shutdown.coverage_gaps, 1);
+    let snapshot = projection.snapshot_latest();
+    let offline = snapshot
+        .get_sensor_liveness(&first.sensor_id)
+        .ok_or("missing offline boundary")?;
+    let loss = snapshot
+        .get_coverage(&first.sensor_id, "yard")
+        .ok_or("missing coverage boundary")?;
+    assert_eq!(offline.state, SensorLivenessStatus::Offline);
+    assert_eq!(loss.status, CoverageStatus::NotObservable);
+    assert_eq!(loss.active_gaps, 1);
+    assert_eq!(loss.committed_sequence, offline.committed_sequence);
+    assert_eq!(loss.committed_sequence, shutdown.head_commit_sequence);
+    let stopped_at = offline.observed_at_ns;
+    let frame_at = offline.last_seen_ns;
+    assert!(frame_at > TimestampNs(START_NS) && frame_at < stopped_at);
+    assert_eq!(loss.window, CaptureInterval::point(stopped_at));
+    drop(snapshot);
+    drop(projection);
+
+    let restarted_at = TimestampNs(stopped_at.0 + 3_600_000_000_000);
+    let mut restarted = Fixture::open_at(first._dir, restarted_at.0, 64, 4, false)?;
+    let awaiting = restarted.coverage()?;
+    assert_eq!(awaiting.status, CoverageStatus::NotObservable);
+    assert_eq!(
+        awaiting.window,
+        CaptureInterval::new(stopped_at, restarted_at)?
+    );
+    let snapshot = restarted
+        .supervisor
+        .storage()
+        .projection()
+        .snapshot_latest();
+    let pending = snapshot
+        .get_sensor_liveness(&restarted.sensor_id)
+        .ok_or("missing opening boundary")?;
+    assert_eq!(pending.state, SensorLivenessStatus::Unknown);
+    assert_eq!(pending.last_seen_ns, frame_at);
+    assert_eq!(pending.observed_at_ns, restarted_at);
+    assert_eq!(pending.committed_sequence, awaiting.committed_sequence);
+    assert_eq!(restarted.view()?.ring.current_frames, 0);
+    restarted.queue([Input::frame()])?;
+    restarted
+        .supervisor
+        .step_tick(restarted_at.0 + 10_000_000)?;
+    assert_eq!(restarted.coverage()?.status, CoverageStatus::NotObservable);
+    restarted.queue([Input::frame()])?;
+    restarted
+        .supervisor
+        .step_tick(restarted_at.0 + 20_000_000)?;
+    assert_eq!(restarted.coverage()?.status, CoverageStatus::Covered);
+    restarted.finish()
 }
 
 #[test]

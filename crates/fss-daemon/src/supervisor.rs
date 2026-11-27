@@ -12,11 +12,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use fss_core::{
-    BudgetVector, ContentDigest, ContextAuthority, DeltaPriority, MeaningfulDeltaClass,
-    OperationId, RootAuthoritySpec, SensorId, TimestampNs,
+    BudgetVector, CaptureInterval, ContentDigest, ContextAuthority, DeltaPriority,
+    MeaningfulDeltaClass, OperationId, RootAuthoritySpec, SensorId, TimestampNs,
 };
 use fss_pack::ERR_STORAGE_QUOTA_PINNED_001;
-use fss_projection_store::{CoverageStatus, SensorLivenessStatus};
+use fss_projection_store::SensorLivenessStatus;
 use fss_vault::{
     CAP_SECRET_READ_001, LocalEncryptedVault, MAX_SECRET_BYTES, SecretAccessCx, SecretBytes,
     SecretError, SecretScope, SecretStore,
@@ -146,14 +146,15 @@ impl DaemonSupervisor {
             );
             // Advance the durable head before opening the driver. Even a process
             // loss during connect leaves this lifetime's first generation reserved.
-            storage.commit_coverage_and_liveness(
+            let open_window =
+                storage.recorder_open_window(&entry.sensor_id, &entry.primary_zone, now);
+            storage.commit_recorder_boundary(
                 &entry.sensor_id,
                 &entry.primary_zone,
-                CoverageStatus::NotObservable,
                 SensorLivenessStatus::Unknown,
                 1,
-                now,
-                now,
+                open_window,
+                None,
                 regions.storage_ledger_cx(),
                 regions.region_tree(),
             )?;
@@ -167,14 +168,13 @@ impl DaemonSupervisor {
                             now,
                         )?;
                         let delay_ms = backoff.next_delay_ms();
-                        let _ = storage.commit_coverage_and_liveness(
+                        storage.commit_recorder_boundary(
                             &entry.sensor_id,
                             &entry.primary_zone,
-                            CoverageStatus::NotObservable,
                             SensorLivenessStatus::Offline,
                             1,
-                            now,
-                            now,
+                            open_window,
+                            None,
                             regions.storage_ledger_cx(),
                             regions.region_tree(),
                         )?;
@@ -531,12 +531,33 @@ impl DaemonSupervisor {
             }
         }
 
-        if let Err(err) = self.regions.request_shutdown(now) {
-            first_error.get_or_insert(err);
-        }
-        for slot in self.sensors.values_mut() {
+        // Close the source after draining admitted bytes, then publish its offline
+        // boundary while storage authority is still alive. Keep draining other cameras
+        // if a publication fails.
+        for (sid, slot) in &mut self.sensors {
             slot.driver.disconnect();
             slot.state = SensorState::Draining;
+            let last_frame = slot
+                .previous_frame
+                .as_ref()
+                .map(|(_, _, ns)| TimestampNs(*ns));
+            if let Err(err) = self.storage.commit_recorder_boundary(
+                sid,
+                &slot.entry.primary_zone,
+                SensorLivenessStatus::Offline,
+                slot.active_gaps.max(1),
+                CaptureInterval::point(now),
+                last_frame,
+                self.regions.storage_ledger_cx(),
+                self.regions.region_tree(),
+            ) {
+                first_error.get_or_insert(err);
+            } else if slot.active_gaps == 0 {
+                self.coverage_gaps = self.coverage_gaps.saturating_add(1);
+            }
+        }
+        if let Err(err) = self.regions.request_shutdown(now) {
+            first_error.get_or_insert(err);
         }
         self.perception.request_cancellation();
 

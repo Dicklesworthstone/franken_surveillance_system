@@ -313,6 +313,72 @@ impl StorageEngine {
         &self.candidates
     }
 
+    /// Extends a restart gap only from a paired, previously committed offline witness
+    /// for the same sensor and zone. An unclean stop has no proven shutdown time.
+    pub(crate) fn recorder_open_window(
+        &self,
+        sensor_id: &SensorId,
+        zone_id: &str,
+        now: TimestampNs,
+    ) -> CaptureInterval {
+        let snapshot = self.projection.snapshot_latest();
+        if let (Some(coverage), Some(live)) = (
+            snapshot.get_coverage(sensor_id, zone_id),
+            snapshot.get_sensor_liveness(sensor_id),
+        ) && live.state == SensorLivenessStatus::Offline
+            && coverage.status == CoverageStatus::NotObservable
+            && coverage.committed_sequence == live.committed_sequence
+            && live.observed_at_ns <= now
+        {
+            return CaptureInterval {
+                earliest: live.observed_at_ns,
+                latest: now,
+            };
+        }
+        CaptureInterval::point(now)
+    }
+
+    /// Records the loss or reopening of recorder custody without advancing the source's
+    /// last observation to the time of a lifecycle event.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn commit_recorder_boundary(
+        &mut self,
+        sensor_id: &SensorId,
+        zone_id: &str,
+        liveness: SensorLivenessStatus,
+        active_gaps: u32,
+        window: CaptureInterval,
+        last_frame: Option<TimestampNs>,
+        cx: &AuthorityCx,
+        tree: &RegionTree,
+    ) -> Result<StorageCommitReceipt, DaemonError> {
+        let snapshot = self.projection.snapshot_latest();
+        let last_seen = last_frame
+            .or_else(|| {
+                snapshot
+                    .get_sensor_liveness(sensor_id)
+                    .map(|live| live.last_seen_ns)
+            })
+            .unwrap_or(window.latest)
+            .min(window.latest);
+        let health_conflicts = snapshot
+            .get_coverage(sensor_id, zone_id)
+            .map_or(0, |coverage| coverage.health_conflicts);
+        self.commit_coverage_and_liveness_with_evidence(
+            sensor_id,
+            zone_id,
+            CoverageStatus::NotObservable,
+            liveness,
+            active_gaps,
+            health_conflicts,
+            last_seen,
+            window,
+            None,
+            cx,
+            tree,
+        )
+    }
+
     /// Atomically commits paired `coverage_witness` and `sensor_liveness` authority deltas.
     #[allow(clippy::too_many_arguments)]
     pub fn commit_coverage_and_liveness(
@@ -335,7 +401,7 @@ impl StorageEngine {
             active_gaps,
             0,
             last_seen_ns,
-            now_ns,
+            CaptureInterval::new(last_seen_ns.min(now_ns), now_ns)?,
             None,
             cx,
             tree,
@@ -376,7 +442,7 @@ impl StorageEngine {
             active_gaps,
             health_conflicts,
             last_seen_ns,
-            now_ns,
+            CaptureInterval::new(last_seen_ns.min(now_ns), now_ns)?,
             Some(evidence),
             cx,
             tree,
@@ -393,17 +459,12 @@ impl StorageEngine {
         active_gaps: u32,
         health_conflicts: u32,
         last_seen_ns: TimestampNs,
-        now_ns: TimestampNs,
+        window: CaptureInterval,
         evidence: Option<&[u8]>,
         cx: &AuthorityCx,
         tree: &RegionTree,
     ) -> Result<StorageCommitReceipt, DaemonError> {
-        let start = if last_seen_ns <= now_ns {
-            last_seen_ns
-        } else {
-            now_ns
-        };
-        let window = CaptureInterval::new(start, now_ns)?;
+        let now_ns = window.latest;
         let cov_bytes = ProjectionRecordPayload::CoverageWitness(CoverageWitnessPayload {
             sensor_id: sensor_id.clone(),
             zone_id: zone_id.to_owned(),
