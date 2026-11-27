@@ -677,6 +677,50 @@ pub struct ZoneCoverage {
     pub pose_robustness: Option<PoseRobustness>,
 }
 
+impl ZoneCoverage {
+    // Both lists are serialized in source segment order. Merge their spans without expanding
+    // a long missing run; a witness can never share a position with an explicit coverage gap.
+    fn validate_partition(&self, first: u64, last: u64) -> Result<(), ContractError> {
+        if self.witnesses.len() > MAX_COVERAGE_INTERVALS
+            || self.uncovered.len() > MAX_COVERAGE_INTERVALS
+        {
+            return Err(ContractError::BudgetExhausted);
+        }
+        let mut witnesses = self.witnesses.iter().peekable();
+        let mut gaps = self.uncovered.iter().peekable();
+        // u128 lets the exclusive end represent even the last possible u64 segment.
+        let mut next = u128::from(first);
+        while witnesses.peek().is_some() || gaps.peek().is_some() {
+            let take_witness = witnesses.peek().is_some_and(|w| {
+                gaps.peek()
+                    .is_none_or(|gap| w.first_segment <= gap.first_segment)
+            });
+            let (start, end) = if take_witness {
+                let w = witnesses.next().ok_or(ContractError::CoverageUncertified)?;
+                if w.last_segment
+                    .checked_sub(w.first_segment)
+                    .and_then(|span| span.checked_add(1))
+                    != Some(w.frames)
+                {
+                    return Err(ContractError::CoverageUncertified);
+                }
+                (w.first_segment, w.last_segment)
+            } else {
+                let gap = gaps.next().ok_or(ContractError::CoverageUncertified)?;
+                (gap.first_segment, gap.last_segment)
+            };
+            if u128::from(start) != next || end < start || end > last {
+                return Err(ContractError::CoverageUncertified);
+            }
+            next = u128::from(end) + 1;
+        }
+        if next != u128::from(last) + 1 {
+            return Err(ContractError::CoverageUncertified);
+        }
+        Ok(())
+    }
+}
+
 /// Everything one analysed recording retains about coverage.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CoverageRecord {
@@ -1726,6 +1770,7 @@ impl CoverageRecord {
             receipt.validate_for(self)?;
         }
         for zone in &self.zones {
+            zone.validate_partition(self.first_segment, self.last_segment)?;
             for interval in &zone.uncovered {
                 if interval.reason == UncoveredReason::SensorHealthDegraded
                     && health_summary.is_none_or(|summary| {

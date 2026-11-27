@@ -225,6 +225,41 @@ fn tampered_or_inconsistent_records_are_refused() -> TestResult {
 }
 
 #[test]
+fn retained_witnesses_and_gaps_must_partition_the_exact_source_range() -> TestResult {
+    let decoded = frames(0..14)?;
+    let record = build_coverage(&input(
+        &decoded,
+        &[false; 14],
+        OPERATOR_TIME_LABEL,
+        vec![zone(Vec::new(), true)],
+    ))?;
+    let reject = |record: &CoverageRecord| {
+        let bytes = record.to_bytes();
+        assert_eq!(
+            CoverageRecord::from_bytes(&bytes, ContentDigest::sha256(&bytes)),
+            Err(ContractError::CoverageUncertified)
+        );
+    };
+    let mut changed = record.clone();
+    // An explicit unobserved interval must not overlap the first certified frame.
+    changed.zones[0].uncovered[0].last_segment += 1;
+    reject(&changed);
+    let mut changed = record.clone();
+    changed.zones[0].uncovered[0].last_segment -= 1;
+    reject(&changed);
+    let mut changed = record.clone();
+    changed.zones[0].witnesses[0].frames -= 1;
+    reject(&changed);
+    let mut changed = record.clone();
+    let _ = changed.zones[0].uncovered.pop();
+    reject(&changed);
+    let mut changed = record;
+    changed.zones[0].uncovered.reverse();
+    reject(&changed);
+    Ok(())
+}
+
+#[test]
 fn identity_ignores_the_anchor_but_the_approval_binds_it() -> TestResult {
     let frames = frames(0..14)?;
     let gaps = vec![false; 14];
