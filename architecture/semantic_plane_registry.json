@@ -3281,6 +3281,16 @@
       "file": "crates/fss-reference/src/review_media/render.rs",
       "plane": "authority",
       "description": "Sealed deterministic native decoded and privacy-screened pixels, timeline, complete source pins and bounded render receipt; grants no effect authority."
+    },
+    "BocpdAdvisoryReceipt": {
+      "file": "crates/fss-runtime/src/bocpd_regime.rs",
+      "plane": "cognition",
+      "description": "Canonical bounded scalar BOCPD advisory policy activation or negative-evidence rollback receipt (DOC-049); derived cognition only, never event or effect authority."
+    },
+    "MediaDeliveryDecisionCard": {
+      "file": "crates/fss-tensor/src/media_delivery_card.rs",
+      "plane": "cognition",
+      "description": "Canonical remux-before-transcode, live delivery surface, archive tier, and backend-neutral portability decision card (DOC-052); derived cognition only, never grants effect authority."
     }
   }
 }
