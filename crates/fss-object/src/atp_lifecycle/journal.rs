@@ -22,8 +22,8 @@ use fss_core::{
 use super::crosswalk::{ArchiveObjectState, ArchivePublicationState, PathState};
 use super::{
     ATP_LIFECYCLE_FORMAT_VERSION, ATP_LIFECYCLE_JOURNAL_RECORD_DOMAIN, AtpLifecycleError,
-    IndeterminateTransferObligation, MAX_JOURNAL_RECORDS, MAX_LABEL_BYTES, ProofOfRetrievability,
-    StagedChildDisposition, TransferId,
+    IndeterminateTransferObligation, MAX_FAILURE_DOMAINS, MAX_JOURNAL_RECORDS, MAX_LABEL_BYTES,
+    MAX_TRANSFER_CHILDREN, ProofOfRetrievability, StagedChildDisposition, TransferId,
 };
 
 /// Maximum canonical byte length of one serialized journal record (64 KiB).
@@ -222,6 +222,31 @@ pub enum LifecycleEvent {
 }
 
 impl LifecycleEvent {
+    // Nested lists have their own wire bounds, independent of the overall record length.
+    fn check_list_bounds(&self) -> Result<(), AtpLifecycleError> {
+        let fits = match self {
+            Self::SatisfyDurability { failure_domains }
+            | Self::QualifyReplicas { failure_domains } => {
+                failure_domains.len() <= MAX_FAILURE_DOMAINS
+                    && failure_domains.iter().all(|d| d.len() <= MAX_LABEL_BYTES)
+            }
+            Self::Quarantine { affected_children, .. } => {
+                affected_children.len() <= MAX_TRANSFER_CHILDREN
+            }
+            Self::FinalizeCancel { child_dispositions } => {
+                child_dispositions.len() <= MAX_TRANSFER_CHILDREN
+            }
+            _ => true,
+        };
+        if fits {
+            Ok(())
+        } else {
+            Err(AtpLifecycleError::JournalBoundsExceeded {
+                reason: "event list exceeds the canonical journal decoder bounds".to_owned(),
+            })
+        }
+    }
+
     fn tag(&self) -> u8 {
         match self {
             Self::Reserve { .. } => 1,
@@ -484,7 +509,7 @@ impl CanonicalDecode for LifecycleEvent {
             13 => Ok(Self::MarkChildrenVerified),
             14 => Ok(Self::CloseGraph),
             15 => Ok(Self::SatisfyDurability {
-                failure_domains: decode_bounded_text_list(decoder, 32)?,
+                failure_domains: decode_bounded_text_list(decoder, MAX_FAILURE_DOMAINS)?,
             }),
             16 => Ok(Self::MarkExposureReady {
                 policy_epoch: decoder.u64()?,
@@ -501,7 +526,7 @@ impl CanonicalDecode for LifecycleEvent {
                 provider_tuple: decoder.text()?.to_owned(),
             }),
             20 => Ok(Self::QualifyReplicas {
-                failure_domains: decode_bounded_text_list(decoder, 32)?,
+                failure_domains: decode_bounded_text_list(decoder, MAX_FAILURE_DOMAINS)?,
             }),
             21 => Ok(Self::VerifyRetrievability {
                 proof: ProofOfRetrievability::decode_canonical(decoder)?,
@@ -526,7 +551,7 @@ impl CanonicalDecode for LifecycleEvent {
                 let reason = decoder.text()?.to_owned();
                 let count = usize::try_from(decoder.u64()?)
                     .map_err(|_| ContractError::InvalidIdentifier)?;
-                if count > 4_096 || count.saturating_mul(33) > decoder.remaining() {
+                if count > MAX_TRANSFER_CHILDREN || count.saturating_mul(33) > decoder.remaining() {
                     return Err(ContractError::InvalidIdentifier);
                 }
                 let mut affected_children = Vec::with_capacity(count);
@@ -544,7 +569,7 @@ impl CanonicalDecode for LifecycleEvent {
             30 => {
                 let count = usize::try_from(decoder.u64()?)
                     .map_err(|_| ContractError::InvalidIdentifier)?;
-                if count > 4_096 || count.saturating_mul(34) > decoder.remaining() {
+                if count > MAX_TRANSFER_CHILDREN || count.saturating_mul(34) > decoder.remaining() {
                     return Err(ContractError::InvalidIdentifier);
                 }
                 let mut child_dispositions = Vec::with_capacity(count);
@@ -651,6 +676,7 @@ impl JournalRecord {
 
     /// Serializes this record (body + sealed digest) to exact canonical bytes.
     pub fn to_canonical_bytes(&self) -> Result<Vec<u8>, AtpLifecycleError> {
+        self.event.check_list_bounds()?;
         let mut enc = CanonicalEncoder::new();
         self.encode_body(&mut enc);
         enc.digest(self.record_digest);
@@ -790,6 +816,7 @@ pub struct TransferJournal {
     transfer_id: TransferId,
     max_records: usize,
     records: Vec<JournalRecord>,
+    framed_bytes: u64,
 }
 
 impl TransferJournal {
@@ -806,6 +833,7 @@ impl TransferJournal {
             transfer_id,
             max_records,
             records: Vec::new(),
+            framed_bytes: 0,
         })
     }
 
@@ -823,6 +851,7 @@ impl TransferJournal {
                 reason: format!("journal record cap ({}) exhausted", self.max_records),
             });
         }
+        event.check_list_bounds()?;
         let seq = self.records.len() as u64;
         let prev_digest = self.records.last().map(|r| r.record_digest);
         let record = JournalRecord::seal(
@@ -835,8 +864,14 @@ impl TransferJournal {
             work_bytes,
             work_ops,
         );
-        // Validate canonical serialization bound up front.
-        let _ = record.to_canonical_bytes()?;
+        let record_len = record.to_canonical_bytes()?.len() as u64;
+        let next_size = self.framed_bytes + 4 + record_len;
+        if next_size > MAX_JOURNAL_FILE_BYTES {
+            return Err(AtpLifecycleError::JournalBoundsExceeded {
+                reason: format!("framed journal size {next_size} exceeds max {MAX_JOURNAL_FILE_BYTES}"),
+            });
+        }
+        self.framed_bytes = next_size;
         self.records.push(record.clone());
         Ok(record)
     }
@@ -882,6 +917,11 @@ impl TransferJournal {
                 reason: format!(
                     "max_records ({max_records}) must be within 1..={MAX_JOURNAL_RECORDS}"
                 ),
+            });
+        }
+        if framed.len() as u64 > MAX_JOURNAL_FILE_BYTES {
+            return Err(AtpLifecycleError::JournalBoundsExceeded {
+                reason: format!("framed journal exceeds max {MAX_JOURNAL_FILE_BYTES} bytes"),
             });
         }
         let mut pos = 0usize;
