@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# MODEL-INV-002 / MODEL-INV-003 / MODEL-INV-005 / MODEL-INV-007 E2E verification:
+# MODEL-INV-002 / MODEL-INV-003 / MODEL-INV-005 / MODEL-INV-007 / MODEL-INV-008 E2E verification:
 # versioned preprocessing program, explicit typed tensor semantics, derived-only non-authority
-# outputs, offline immutable model artifacts, and foreign runtime absence proof.
+# outputs, offline immutable model artifacts, hard 8-dimension resource envelopes, and foreign
+# runtime absence proof.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

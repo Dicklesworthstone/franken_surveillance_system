@@ -12,10 +12,16 @@ use std::collections::BTreeMap;
 use std::error::Error;
 use std::sync::Arc;
 
-use fss_core::{ContentDigest, Generation, TimestampNs};
-use fss_model_ir::{
-    OnnxExportLimits, OnnxLimits, decode_canonical_model_ir, export_onnx_artifacts, import_onnx,
+use fss_core::{ContentDigest, Generation, ResourcePressure, TimestampNs};
+use fss_model_ir::quotas::{
+    EnvelopeDimension, JobResourceAdmissionLedger, JobResourceEnvelope, JobResourceRequest,
+    MemoryAdmission, ResourceEnvelopeViolation,
 };
+use fss_model_ir::{
+    MemoryPlanLimits, OnnxExportLimits, OnnxLimits, decode_canonical_model_ir,
+    export_onnx_artifacts, import_onnx,
+};
+use fss_reference::planned_scalar::{CompiledScalarPlan, PeakExecBudget, PlannedExecError};
 use fss_reference::{
     ChannelTransform, ExecBudget, PreprocessProgram, ReceiptOutcome, ReceiptRecordContext,
     ScalarExecCx, execute_and_record_receipt, is_latest_generation,
@@ -260,6 +266,172 @@ fn model_inv_005_and_007_outputs_are_derived_evidence_and_offline_immutable_only
         "CAPLOG {{\"invariants\":[\"MODEL-INV-005\",\"MODEL-INV-007\"],\"is_source_custody\":{},\"reference_only\":{},\"verdict\":\"ok\"}}",
         deriv.is_source_custody,
         rec.is_reference_only()
+    );
+    Ok(())
+}
+
+#[test]
+fn model_inv_008_hard_resource_envelopes_enforce_all_eight_dimensions_and_bounded_queue()
+-> TestResult {
+    // 1. All 8 MODEL-INV-008 dimensions + bounded queue depth + pressure abstention enforced!
+    let env = JobResourceEnvelope {
+        max_input_bytes: 1_024,
+        max_decoded_pixels: 4_096,
+        max_tokens: 128,
+        max_activation_memory_bytes: 8_192,
+        max_scratch_memory_bytes: 4_096,
+        max_operator_work: 50_000,
+        max_deadline_ns: 25_000_000,
+        max_output_bytes: 2_048,
+        max_queued_jobs: 2,
+    };
+    let mut ledger = JobResourceAdmissionLedger::new(env, MemoryAdmission::RefuseConstrained)?;
+    let ok_req = JobResourceRequest {
+        input_bytes: 512,
+        decoded_pixels: 1_024,
+        tokens: 32,
+        activation_memory_bytes: 4_096,
+        scratch_memory_bytes: 2_048,
+        operator_work: 10_000,
+        deadline_ns: 10_000_000,
+        output_bytes: 1_024,
+    };
+
+    // Every single one of the 8 dimensions fails closed with exact EnvelopeDimension & zero debit!
+    let violation_cases: [(EnvelopeDimension, JobResourceRequest); 8] = [
+        (
+            EnvelopeDimension::InputBytes,
+            JobResourceRequest {
+                input_bytes: 1_025,
+                ..ok_req
+            },
+        ),
+        (
+            EnvelopeDimension::DecodedPixels,
+            JobResourceRequest {
+                decoded_pixels: 4_097,
+                ..ok_req
+            },
+        ),
+        (
+            EnvelopeDimension::Tokens,
+            JobResourceRequest {
+                tokens: 129,
+                ..ok_req
+            },
+        ),
+        (
+            EnvelopeDimension::ActivationMemoryBytes,
+            JobResourceRequest {
+                activation_memory_bytes: 8_193,
+                ..ok_req
+            },
+        ),
+        (
+            EnvelopeDimension::ScratchMemoryBytes,
+            JobResourceRequest {
+                scratch_memory_bytes: 4_097,
+                ..ok_req
+            },
+        ),
+        (
+            EnvelopeDimension::OperatorWork,
+            JobResourceRequest {
+                operator_work: 50_001,
+                ..ok_req
+            },
+        ),
+        (
+            EnvelopeDimension::DeadlineNs,
+            JobResourceRequest {
+                deadline_ns: 25_000_001,
+                ..ok_req
+            },
+        ),
+        (
+            EnvelopeDimension::OutputBytes,
+            JobResourceRequest {
+                output_bytes: 2_049,
+                ..ok_req
+            },
+        ),
+    ];
+    for (dim, bad_req) in violation_cases {
+        let err = ledger.reserve_job(bad_req, ResourcePressure::Nominal);
+        assert!(matches!(
+            err,
+            Err(ResourceEnvelopeViolation::BoundExceeded { dimension, .. }) if dimension == dim
+        ));
+        assert_eq!(ledger.active_jobs(), 0);
+        assert_eq!(ledger.reserved_activation_bytes(), 0);
+    }
+
+    // Critical pressure abstains cleanly without mutating reservations!
+    assert_eq!(
+        ledger.reserve_job(ok_req, ResourcePressure::Critical),
+        Err(ResourceEnvelopeViolation::PressureAbstained(
+            ResourcePressure::Critical
+        ))
+    );
+
+    // Bounded queueing + aggregate memory ceiling: 2 jobs succeed, 3rd is refused (no unbounded queue)!
+    let r1 = ledger.reserve_job(ok_req, ResourcePressure::Nominal)?;
+    let r2 = ledger.reserve_job(ok_req, ResourcePressure::Nominal)?;
+    assert_eq!(ledger.active_jobs(), 2);
+    assert_eq!(ledger.reserved_activation_bytes(), 8_192);
+    assert!(matches!(
+        ledger.reserve_job(ok_req, ResourcePressure::Nominal),
+        Err(ResourceEnvelopeViolation::BoundExceeded {
+            dimension: EnvelopeDimension::QueuedJobs,
+            ..
+        })
+    ));
+    ledger.release_job(r1);
+    ledger.release_job(r2);
+    assert_eq!(ledger.active_jobs(), 0);
+    assert_eq!(ledger.reserved_activation_bytes(), 0);
+    assert_eq!(ledger.reserved_scratch_bytes(), 0);
+
+    // 2. Real compiled scalar plan enforces exact activation peak & scratch ceilings before running!
+    let imported = import_onnx(
+        DETECTOR_ONNX,
+        ContentDigest::sha256(DETECTOR_ONNX),
+        GEN,
+        OnnxLimits::default(),
+        &|| false,
+    )?;
+    let artifacts = export_onnx_artifacts(&imported, OnnxExportLimits::default(), &|| false)?;
+    let graph = decode_canonical_model_ir(artifacts.graph_bytes(), artifacts.graph_digest())?;
+    let cx = ScalarExecCx::new();
+    let plan = CompiledScalarPlan::compile(&graph, MemoryPlanLimits::default(), &cx)?;
+
+    let preprocess = PreprocessProgram::new(4, 4, ChannelTransform::Rgb, true);
+    let img = preprocess.execute_bytes(&vec![90_u8; 48], 4, 4, 3, GEN)?;
+    let params: BTreeMap<String, Tensor> = imported.parameters().clone();
+    let mut all_inputs: Vec<(String, Tensor)> =
+        params.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    all_inputs.push(("image".to_owned(), img));
+    let borrowed: Vec<(&str, Tensor)> = all_inputs
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.clone()))
+        .collect();
+
+    let reqs = plan.minimum_requirements();
+    let tight_scratch = PeakExecBudget::new(
+        reqs.macs,
+        reqs.peak_bytes,
+        reqs.scratch_bytes.saturating_sub(1),
+    );
+    assert!(matches!(
+        plan.run(&borrowed, tight_scratch, &cx),
+        Err(PlannedExecError::BudgetExceeded { .. })
+    ));
+    let exact_ok = PeakExecBudget::new(reqs.macs, reqs.peak_bytes, reqs.scratch_bytes);
+    assert!(plan.run(&borrowed, exact_ok, &cx).is_ok());
+
+    println!(
+        "CAPLOG {{\"invariant\":\"MODEL-INV-008\",\"dimensions_enforced\":9,\"plan_macs\":{},\"plan_peak_bytes\":{},\"verdict\":\"ok\"}}",
+        reqs.macs, reqs.peak_bytes
     );
     Ok(())
 }

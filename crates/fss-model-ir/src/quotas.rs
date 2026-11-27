@@ -296,3 +296,332 @@ impl InvocationQuotaLedger {
 fn model_root_of(prepared: &PreparedInvocation) -> ContentDigest {
     prepared.spec().model_root
 }
+
+/// Exact bounded resource dimension checked by [`JobResourceAdmissionLedger`] (`MODEL-INV-008`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EnvelopeDimension {
+    /// Serialized input tensor / payload bytes.
+    InputBytes,
+    /// Decoded image pixels admitted into preprocessing.
+    DecodedPixels,
+    /// Token count admitted into sequence/multimodal models.
+    Tokens,
+    /// Peak live activation memory in bytes.
+    ActivationMemoryBytes,
+    /// Operator temporary scratch memory in bytes.
+    ScratchMemoryBytes,
+    /// Logical operator work units (MACs / FLOPs).
+    OperatorWork,
+    /// Hard job execution deadline in nanoseconds.
+    DeadlineNs,
+    /// Maximum serialized output bytes.
+    OutputBytes,
+    /// Bounded concurrent / queued job count (prevents unbounded queueing).
+    QueuedJobs,
+}
+
+impl EnvelopeDimension {
+    /// Stable canonical machine label.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::InputBytes => "input_bytes",
+            Self::DecodedPixels => "decoded_pixels",
+            Self::Tokens => "tokens",
+            Self::ActivationMemoryBytes => "activation_memory_bytes",
+            Self::ScratchMemoryBytes => "scratch_memory_bytes",
+            Self::OperatorWork => "operator_work",
+            Self::DeadlineNs => "deadline_ns",
+            Self::OutputBytes => "output_bytes",
+            Self::QueuedJobs => "queued_jobs",
+        }
+    }
+}
+
+/// Hard eight-dimension plus queue-depth resource envelope (`MODEL-INV-008`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct JobResourceEnvelope {
+    /// Maximum input payload bytes per job.
+    pub max_input_bytes: u64,
+    /// Maximum decoded pixels per job.
+    pub max_decoded_pixels: u64,
+    /// Maximum tokens per job.
+    pub max_tokens: u64,
+    /// Maximum activation memory in bytes (per-job and aggregate host pool ceiling).
+    pub max_activation_memory_bytes: u64,
+    /// Maximum scratch memory in bytes (per-job and aggregate host pool ceiling).
+    pub max_scratch_memory_bytes: u64,
+    /// Maximum logical operator work units per job.
+    pub max_operator_work: u64,
+    /// Maximum execution deadline in nanoseconds per job.
+    pub max_deadline_ns: u64,
+    /// Maximum output bytes per job.
+    pub max_output_bytes: u64,
+    /// Hard ceiling on simultaneously admitted/queued jobs (no unbounded queueing).
+    pub max_queued_jobs: u32,
+}
+
+/// Resource reservation request presented before a model job starts (`MODEL-INV-008`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct JobResourceRequest {
+    /// Requested input payload bytes.
+    pub input_bytes: u64,
+    /// Requested decoded pixels.
+    pub decoded_pixels: u64,
+    /// Requested token count.
+    pub tokens: u64,
+    /// Requested activation memory bytes.
+    pub activation_memory_bytes: u64,
+    /// Requested scratch memory bytes.
+    pub scratch_memory_bytes: u64,
+    /// Requested operator work units.
+    pub operator_work: u64,
+    /// Requested execution deadline in nanoseconds.
+    pub deadline_ns: u64,
+    /// Requested output bytes.
+    pub output_bytes: u64,
+}
+
+/// Typed fail-closed refusal when any hard resource envelope bound is exceeded (`MODEL-INV-008`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ResourceEnvelopeViolation {
+    /// Envelope limit was zero or invalid.
+    InvalidEnvelope(EnvelopeDimension),
+    /// A specific per-job or aggregate hard bound was exceeded (never host OOM or unbounded queue).
+    BoundExceeded {
+        /// Exact violated resource dimension.
+        dimension: EnvelopeDimension,
+        /// Requested (or projected aggregate) amount.
+        requested: u64,
+        /// Configured hard ceiling.
+        limit: u64,
+    },
+    /// Host memory pressure refused new admission cleanly as typed abstention.
+    PressureAbstained(ResourcePressure),
+}
+
+impl std::fmt::Display for ResourceEnvelopeViolation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidEnvelope(dim) => {
+                write!(
+                    f,
+                    "invalid zero resource envelope bound for {}",
+                    dim.as_str()
+                )
+            }
+            Self::BoundExceeded {
+                dimension,
+                requested,
+                limit,
+            } => write!(
+                f,
+                "hard resource envelope exceeded on {}: requested {requested} > limit {limit}",
+                dimension.as_str()
+            ),
+            Self::PressureAbstained(p) => {
+                write!(
+                    f,
+                    "resource envelope abstained under pressure '{}'",
+                    p.as_str()
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for ResourceEnvelopeViolation {}
+
+/// Active reservation handle returned by [`JobResourceAdmissionLedger::reserve_job`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct JobEnvelopeReservation {
+    /// Reserved activation memory bytes.
+    pub activation_memory_bytes: u64,
+    /// Reserved scratch memory bytes.
+    pub scratch_memory_bytes: u64,
+}
+
+/// Deterministic hard resource-envelope admission ledger enforcing all 8 `MODEL-INV-008`
+/// dimensions plus bounded queue depth with atomic reserve/release accounting.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct JobResourceAdmissionLedger {
+    envelope: JobResourceEnvelope,
+    policy: MemoryAdmission,
+    active_jobs: u32,
+    reserved_activation_bytes: u64,
+    reserved_scratch_bytes: u64,
+}
+
+impl JobResourceAdmissionLedger {
+    /// Creates a validated admission ledger; refuses zero ceilings fail-closed.
+    pub fn new(
+        envelope: JobResourceEnvelope,
+        policy: MemoryAdmission,
+    ) -> Result<Self, ResourceEnvelopeViolation> {
+        let checks = [
+            (EnvelopeDimension::InputBytes, envelope.max_input_bytes),
+            (
+                EnvelopeDimension::DecodedPixels,
+                envelope.max_decoded_pixels,
+            ),
+            (EnvelopeDimension::Tokens, envelope.max_tokens),
+            (
+                EnvelopeDimension::ActivationMemoryBytes,
+                envelope.max_activation_memory_bytes,
+            ),
+            (
+                EnvelopeDimension::ScratchMemoryBytes,
+                envelope.max_scratch_memory_bytes,
+            ),
+            (EnvelopeDimension::OperatorWork, envelope.max_operator_work),
+            (EnvelopeDimension::DeadlineNs, envelope.max_deadline_ns),
+            (EnvelopeDimension::OutputBytes, envelope.max_output_bytes),
+            (
+                EnvelopeDimension::QueuedJobs,
+                u64::from(envelope.max_queued_jobs),
+            ),
+        ];
+        for (dim, limit) in checks {
+            if limit == 0 {
+                return Err(ResourceEnvelopeViolation::InvalidEnvelope(dim));
+            }
+        }
+        Ok(Self {
+            envelope,
+            policy,
+            active_jobs: 0,
+            reserved_activation_bytes: 0,
+            reserved_scratch_bytes: 0,
+        })
+    }
+
+    /// Atomically checks all 8 per-job bounds, pressure policy, queue depth, and aggregate
+    /// activation/scratch ceilings before placing a reservation. On any violation, zero state mutates.
+    pub fn reserve_job(
+        &mut self,
+        req: JobResourceRequest,
+        pressure: ResourcePressure,
+    ) -> Result<JobEnvelopeReservation, ResourceEnvelopeViolation> {
+        if !self.policy.admits(pressure) {
+            return Err(ResourceEnvelopeViolation::PressureAbstained(pressure));
+        }
+        let per_job = [
+            (
+                EnvelopeDimension::InputBytes,
+                req.input_bytes,
+                self.envelope.max_input_bytes,
+            ),
+            (
+                EnvelopeDimension::DecodedPixels,
+                req.decoded_pixels,
+                self.envelope.max_decoded_pixels,
+            ),
+            (
+                EnvelopeDimension::Tokens,
+                req.tokens,
+                self.envelope.max_tokens,
+            ),
+            (
+                EnvelopeDimension::ActivationMemoryBytes,
+                req.activation_memory_bytes,
+                self.envelope.max_activation_memory_bytes,
+            ),
+            (
+                EnvelopeDimension::ScratchMemoryBytes,
+                req.scratch_memory_bytes,
+                self.envelope.max_scratch_memory_bytes,
+            ),
+            (
+                EnvelopeDimension::OperatorWork,
+                req.operator_work,
+                self.envelope.max_operator_work,
+            ),
+            (
+                EnvelopeDimension::DeadlineNs,
+                req.deadline_ns,
+                self.envelope.max_deadline_ns,
+            ),
+            (
+                EnvelopeDimension::OutputBytes,
+                req.output_bytes,
+                self.envelope.max_output_bytes,
+            ),
+        ];
+        for (dimension, requested, limit) in per_job {
+            if requested > limit {
+                return Err(ResourceEnvelopeViolation::BoundExceeded {
+                    dimension,
+                    requested,
+                    limit,
+                });
+            }
+        }
+        let next_jobs = self.active_jobs.saturating_add(1);
+        if next_jobs > self.envelope.max_queued_jobs {
+            return Err(ResourceEnvelopeViolation::BoundExceeded {
+                dimension: EnvelopeDimension::QueuedJobs,
+                requested: u64::from(next_jobs),
+                limit: u64::from(self.envelope.max_queued_jobs),
+            });
+        }
+        let next_act = self
+            .reserved_activation_bytes
+            .checked_add(req.activation_memory_bytes)
+            .unwrap_or(u64::MAX);
+        if next_act > self.envelope.max_activation_memory_bytes {
+            return Err(ResourceEnvelopeViolation::BoundExceeded {
+                dimension: EnvelopeDimension::ActivationMemoryBytes,
+                requested: next_act,
+                limit: self.envelope.max_activation_memory_bytes,
+            });
+        }
+        let next_scratch = self
+            .reserved_scratch_bytes
+            .checked_add(req.scratch_memory_bytes)
+            .unwrap_or(u64::MAX);
+        if next_scratch > self.envelope.max_scratch_memory_bytes {
+            return Err(ResourceEnvelopeViolation::BoundExceeded {
+                dimension: EnvelopeDimension::ScratchMemoryBytes,
+                requested: next_scratch,
+                limit: self.envelope.max_scratch_memory_bytes,
+            });
+        }
+
+        self.active_jobs = next_jobs;
+        self.reserved_activation_bytes = next_act;
+        self.reserved_scratch_bytes = next_scratch;
+        Ok(JobEnvelopeReservation {
+            activation_memory_bytes: req.activation_memory_bytes,
+            scratch_memory_bytes: req.scratch_memory_bytes,
+        })
+    }
+
+    /// Releases a previously granted reservation upon completion, cancellation, or abstention.
+    pub fn release_job(&mut self, reservation: JobEnvelopeReservation) {
+        self.active_jobs = self.active_jobs.saturating_sub(1);
+        self.reserved_activation_bytes = self
+            .reserved_activation_bytes
+            .saturating_sub(reservation.activation_memory_bytes);
+        self.reserved_scratch_bytes = self
+            .reserved_scratch_bytes
+            .saturating_sub(reservation.scratch_memory_bytes);
+    }
+
+    /// Current active/queued job count.
+    #[must_use]
+    pub const fn active_jobs(&self) -> u32 {
+        self.active_jobs
+    }
+
+    /// Current aggregate reserved activation memory bytes.
+    #[must_use]
+    pub const fn reserved_activation_bytes(&self) -> u64 {
+        self.reserved_activation_bytes
+    }
+
+    /// Current aggregate reserved scratch memory bytes.
+    #[must_use]
+    pub const fn reserved_scratch_bytes(&self) -> u64 {
+        self.reserved_scratch_bytes
+    }
+}
