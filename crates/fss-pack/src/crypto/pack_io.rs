@@ -22,15 +22,16 @@ use crate::crypto::pack_codec::next_temp_seq;
 use crate::error::{PackError, PackIoOperation};
 use crate::format::{DurabilityMode, PackId, read_exact_at_bounded, sync_dir, write_all_bounded};
 
-pub(crate) use crate::crypto::pack_codec::{publish_restored_pack, write_file_atomic};
 pub use crate::crypto::pack_codec::{
     DEFAULT_ENCRYPTION_CHUNK_BYTES, DecryptedPackReceipt, ENCRYPTED_PACK_END_MAGIC,
     ENCRYPTED_PACK_HEADER_LEN, ENCRYPTED_PACK_MAGIC, ENCRYPTED_PACK_TRAILER_LEN,
     ENCRYPTED_PACK_TRAILER_MAGIC, ENCRYPTED_PACK_VERSION, EncryptedPackHeader,
     EncryptedPackReceipt, EncryptedPackTrailer, EncryptedRecordReceipt, EncryptedStreamKind,
-    decrypt_and_verify_ledger_epoch_segment, decrypt_and_verify_pack_file, decrypt_and_verify_sealed_pack_file,
-    encrypt_ledger_epoch_segment, encrypt_pack_file, encrypt_pack_file_with_pin,
+    decrypt_and_verify_ledger_epoch_segment, decrypt_and_verify_pack_file,
+    decrypt_and_verify_sealed_pack_file, encrypt_ledger_epoch_segment, encrypt_pack_file,
+    encrypt_pack_file_with_pin,
 };
+pub(crate) use crate::crypto::pack_codec::{publish_restored_pack, write_file_atomic};
 
 /// Atomic encrypted packfile writer that NEVER writes raw plaintext bytes to disk.
 pub struct EncryptedPackWriter {
@@ -190,7 +191,10 @@ impl EncryptedPackWriter {
         self.finish_with_pin(None)
     }
 
-    pub(crate) fn finish_with_pin(mut self, expected: Option<ContentDigest>) -> Result<EncryptedPackReceipt, PackError> {
+    pub(crate) fn finish_with_pin(
+        mut self,
+        expected: Option<ContentDigest>,
+    ) -> Result<EncryptedPackReceipt, PackError> {
         let plaintext_sha_raw = self
             .plaintext_hasher
             .clone()

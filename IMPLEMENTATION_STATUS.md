@@ -1,9 +1,44 @@
 # Implementation status
 
-**As of:** 2026-11-26 America/New_York (dated feature sections retain their original verification scope)
+**As of:** 2026-11-27 America/New_York (dated feature sections retain their original verification scope)
 **Project state:** prior retained snapshots are locally qualified on `darwin-arm64` across policy, scale, crash-recovery, daemon soak, lab, media, archive, privacy, model, geometry, threat, agent, adapter-loopback, and macOS parity lanes; multi-target DSR release matrix (`linux-x86_64`, `windows-x86_64`) and physical hardware-tuple field qualification remain open
 **Current change qualification:** each dated section below states its exact verification boundary. Native passes for one component do not qualify other changes, and prior receipts do not qualify new bytes.
 **Release authority:** repository-owned local qualification (`scripts/qualify.sh`) and retained DSR receipts, not hosted CI
+
+## Privacy masks, sealed archives, holdout evaluation and the live cockpit — 2026-11-27
+
+Mask declarations report the number of pixels a replacement would expose, newly mask
+or keep masked. A resolution change reports each grid's totals and leaves the pixel
+comparison unknown. Ground-zone coverage withholds an absence witness when a projected
+zone crosses the horizon or its closed extent can touch a masked pixel. The masked
+analysis identity includes this projection rule.
+
+Local and cold archive verification now require the footer to account for the entire
+record stream, including its order in the file, header fields, CRC32C and payload SHA-256.
+Cold upload checks the approved seal against the bytes selected for encryption before
+creating a key or sending a request. Local seal checks the full-file digest before
+publishing encrypted output. Encrypted verification checks the inner pack before writing
+decrypted output.
+
+The declared-input `fss-evaluate --holdout-manifest` workflow checks the fixed threshold,
+the exact holdout clip inventory and separation of property, session and recording IDs.
+Its receipt binds the declaration to the evaluation result. Measuring detection quality
+still requires independently labeled footage.
+
+The live cockpit clears private frame data on disconnect, unreadable frames and tab
+suspension. A fresh stream supplies the replacement frame. All 64 admitted event rows
+are inspectable in the browser. A projected corroborated event can retain its lifecycle
+state even when the decision summary is unavailable. Counts of independent clusters now
+require a matching decision for the committed revision.
+
+All 28 Node dashboard model and controller tests passed. Isolated Linux builds using Rust
+1.100.1 passed 23 declared-input evaluator tests, seven archive framing and digest tests,
+two privacy tests and the revision-specific fusion test. The privacy tests included a
+raster comparison over 2,000 policy pairs. The seven archive tests also passed on the
+repository's pinned nightly. A single-job Cargo check of the archive integration target with locked dependencies
+stopped when the host killed the compiler in the unchanged `nix` 0.31.4 dependency, before
+`fss-pack` compiled. Full workspace integration, hardware testing and multi-target
+qualification remain open for this change.
 
 ## Receipt certification refuses poisoned projection publication — 2026-11-26
 

@@ -41,9 +41,18 @@ impl Holdout {
         Ok(object(&[
             ("schema", text(RECEIPT_SCHEMA)),
             ("membership_basis", text("caller_declared")),
-            ("training_clips", self.counts[Partition::Training as usize].to_string()),
-            ("calibration_clips", self.counts[Partition::Calibration as usize].to_string()),
-            ("holdout_clips", self.counts[Partition::Holdout as usize].to_string()),
+            (
+                "training_clips",
+                self.counts[Partition::Training as usize].to_string(),
+            ),
+            (
+                "calibration_clips",
+                self.counts[Partition::Calibration as usize].to_string(),
+            ),
+            (
+                "holdout_clips",
+                self.counts[Partition::Holdout as usize].to_string(),
+            ),
             ("fixed_threshold_ppm", self.threshold_ppm.to_string()),
             ("manifest_digest", text(&self.manifest_digest.to_string())),
             ("report_digest", text(&report.to_string())),
@@ -90,7 +99,10 @@ pub(super) fn validate(input: &str, labels: &LabelSet, fixed: Option<u32>) -> Re
         }
         // Require the unique lowercase SHA-256 spelling, so aliases cannot bypass separation.
         let canonical_source = source.strip_prefix("sha256:").is_some_and(|hex| {
-            hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            hex.len() == 64
+                && hex
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
         });
         if !canonical_source {
             return Err(Failure::new("evaluation.holdout.source_digest").at(line));
@@ -163,12 +175,36 @@ mod tests {
         let labels = super::super::parse_labels(LABELS)?;
         let source = "3".repeat(64);
         for (old, new, expected) in [
-            ("training-property", "held-property", "evaluation.holdout.group_conflict"),
-            ("cal-session", "held-session", "evaluation.holdout.group_conflict"),
-            (&source[..], &"2".repeat(64)[..], "evaluation.holdout.group_conflict"),
-            ("holdout\tc\t", "holdout\tcal\t", "evaluation.holdout.duplicate_clip"),
-            ("holdout\tc\t", "holdout\tunscored\t", "evaluation.holdout.membership"),
-            ("clip\tcalibration", "clip\ttraining", "evaluation.holdout.empty_partition"),
+            (
+                "training-property",
+                "held-property",
+                "evaluation.holdout.group_conflict",
+            ),
+            (
+                "cal-session",
+                "held-session",
+                "evaluation.holdout.group_conflict",
+            ),
+            (
+                &source[..],
+                &"2".repeat(64)[..],
+                "evaluation.holdout.group_conflict",
+            ),
+            (
+                "holdout\tc\t",
+                "holdout\tcal\t",
+                "evaluation.holdout.duplicate_clip",
+            ),
+            (
+                "holdout\tc\t",
+                "holdout\tunscored\t",
+                "evaluation.holdout.membership",
+            ),
+            (
+                "clip\tcalibration",
+                "clip\ttraining",
+                "evaluation.holdout.empty_partition",
+            ),
             ("800000", "800001", "evaluation.holdout.threshold"),
             ("sha256:", "SHA256:", "evaluation.holdout.source_digest"),
         ] {
@@ -182,7 +218,9 @@ mod tests {
         let extra = format!("{LABELS}clip\tcal\t1000\n");
         let extra = super::super::parse_labels(&extra)?;
         assert_eq!(
-            validate(MANIFEST, &extra, Some(800_000)).err().map(|e| e.code),
+            validate(MANIFEST, &extra, Some(800_000))
+                .err()
+                .map(|e| e.code),
             Some("evaluation.holdout.membership")
         );
         Ok(())

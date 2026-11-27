@@ -523,7 +523,11 @@ pub fn decrypt_and_verify_pack_file(
     durability: DurabilityMode,
 ) -> Result<DecryptedPackReceipt, PackError> {
     let (plaintext, receipt) = read_authenticated_pack_file(
-        enc_pack_path.as_ref(), expected_pack_id, expected_schema_epoch, catalog, kek,
+        enc_pack_path.as_ref(),
+        expected_pack_id,
+        expected_schema_epoch,
+        catalog,
+        kek,
     )?;
     write_file_atomic(dest_pack_path.as_ref(), &plaintext, durability)?;
     Ok(receipt)
@@ -541,7 +545,11 @@ pub fn decrypt_and_verify_sealed_pack_file(
     durability: DurabilityMode,
 ) -> Result<DecryptedPackReceipt, PackError> {
     let (plaintext, receipt) = read_authenticated_pack_file(
-        enc_pack_path.as_ref(), expected_pack_id, expected_schema_epoch, catalog, kek,
+        enc_pack_path.as_ref(),
+        expected_pack_id,
+        expected_schema_epoch,
+        catalog,
+        kek,
     )?;
     crate::packfile::verify_sealed_pack_bytes(expected_pack_id, &plaintext)?;
     write_file_atomic(dest_pack_path.as_ref(), &plaintext, durability)?;

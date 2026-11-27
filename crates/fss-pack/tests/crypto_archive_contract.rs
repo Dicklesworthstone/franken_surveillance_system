@@ -1183,14 +1183,21 @@ fn cryptographic_erasure_destroys_dek_and_isolates_unrelated_packs() -> TestResu
 
 #[test]
 fn local_archive_verification_binds_streamed_payload_and_publication() -> TestResult {
-    use fss_pack::crypto::pack_io::{decrypt_and_verify_sealed_pack_file, encrypt_pack_file_with_pin};
+    use fss_pack::crypto::pack_io::{
+        decrypt_and_verify_sealed_pack_file, encrypt_pack_file_with_pin,
+    };
     use fss_pack::packfile::verify_sealed_pack_with_digest;
 
     let dir = TempDir::new("complete-local-pack")?;
     let store = PackStore::open(dir.path.join("store"), PackConfig::default())?;
     let payload = vec![19; 150_000];
     let digest = ContentDigest::sha256(&payload);
-    let _ = store.append_batch(&[PackObjectInput::with_digest(PACK_KIND_MEDIA_CHUNK, 1, &payload, digest)])?;
+    let _ = store.append_batch(&[PackObjectInput::with_digest(
+        PACK_KIND_MEDIA_CHUNK,
+        1,
+        &payload,
+        digest,
+    )])?;
     let sealed = store.seal_active_pack()?.ok_or("missing sealed pack")?;
     let id = sealed.pack_id;
     let source = store.packs_dir().join(id.file_name());
@@ -1215,15 +1222,26 @@ fn local_archive_verification_binds_streamed_payload_and_publication() -> TestRe
     let kek = make_kek(1, "local-seal", 0x91)?;
     let mut entropy = LabEntropy::from_seed([0x37; 32]);
     let mut catalog = KeyEnvelopeCatalog::open_or_create(
-        dir.path.join("keys.fskc"), KeyEpoch(1), kek.scope(), DurabilityMode::Fsync,
+        dir.path.join("keys.fskc"),
+        KeyEpoch(1),
+        kek.scope(),
+        DurabilityMode::Fsync,
     )?;
     let encrypted = dir.path.join("pack.fsep");
     fs::write(&encrypted, b"existing output")?;
     let (dek, _) = catalog.create_and_wrap_dek(&kek, &mut entropy, &[id], TimestampNs(17))?;
     assert!(matches!(
         encrypt_pack_file_with_pin(
-            &source, &encrypted, id, SCHEMA_EPOCH_PACKFILE, dek, KeyEpoch(1),
-            65_536, &mut entropy, DurabilityMode::Fsync, Some(pin),
+            &source,
+            &encrypted,
+            id,
+            SCHEMA_EPOCH_PACKFILE,
+            dek,
+            KeyEpoch(1),
+            65_536,
+            &mut entropy,
+            DurabilityMode::Fsync,
+            Some(pin),
         ),
         Err(PackError::DigestMismatch { .. })
     ));
@@ -1233,13 +1251,26 @@ fn local_archive_verification_binds_streamed_payload_and_publication() -> TestRe
     // containing invalid FSSP data. Archive verification must refuse its output.
     let (dek, _) = catalog.create_and_wrap_dek(&kek, &mut entropy, &[id], TimestampNs(18))?;
     encrypt_pack_file(
-        &source, &encrypted, id, SCHEMA_EPOCH_PACKFILE, dek, KeyEpoch(1),
-        65_536, &mut entropy, DurabilityMode::Fsync,
+        &source,
+        &encrypted,
+        id,
+        SCHEMA_EPOCH_PACKFILE,
+        dek,
+        KeyEpoch(1),
+        65_536,
+        &mut entropy,
+        DurabilityMode::Fsync,
     )?;
     let restored = dir.path.join("restored.fssp");
     assert!(matches!(
         decrypt_and_verify_sealed_pack_file(
-            &encrypted, &restored, id, SCHEMA_EPOCH_PACKFILE, &catalog, &kek, DurabilityMode::Fsync,
+            &encrypted,
+            &restored,
+            id,
+            SCHEMA_EPOCH_PACKFILE,
+            &catalog,
+            &kek,
+            DurabilityMode::Fsync,
         ),
         Err(PackError::CorruptPack { .. })
     ));

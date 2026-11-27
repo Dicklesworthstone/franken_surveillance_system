@@ -935,7 +935,9 @@ fn run(args: impl IntoIterator<Item = OsString>) -> Result<String> {
         &|| false,
     )?;
     if let Some(holdout) = holdout {
-        let body = json.strip_suffix('}').ok_or_else(|| Failure::new("evaluation.cli.internal"))?;
+        let body = json
+            .strip_suffix('}')
+            .ok_or_else(|| Failure::new("evaluation.cli.internal"))?;
         json = format!("{body},\"holdout\":{}}}", holdout.receipt(report.digest)?);
     }
     let conformal_generation = options

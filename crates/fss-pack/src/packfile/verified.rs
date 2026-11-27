@@ -8,8 +8,9 @@ use fss_core::{ContentDigest, DigestAlgorithm, Sha256Hasher};
 use crate::crc32c::Crc32cHasher;
 use crate::error::{PackError, PackIoOperation};
 use crate::format::{
-    PACK_FOOTER_ENTRY_LEN, PACK_FOOTER_MAGIC, PACK_FOOTER_PREFIX_LEN, PACK_FOOTER_TAIL_LEN, PACK_RECORD_HEADER_LEN, PACK_RECORD_OVERHEAD_LEN,
-    PackFooter, PackId, decode_footer_tail, decode_record_header, decode_sealed_footer,
+    PACK_FOOTER_ENTRY_LEN, PACK_FOOTER_MAGIC, PACK_FOOTER_PREFIX_LEN, PACK_FOOTER_TAIL_LEN,
+    PACK_RECORD_HEADER_LEN, PACK_RECORD_OVERHEAD_LEN, PackFooter, PackId, decode_footer_tail,
+    decode_record_header, decode_sealed_footer,
 };
 
 /// Returns the canonical footer and SHA-256 of the complete verified file, including its trailer.
@@ -34,11 +35,16 @@ pub(crate) fn verify<R: Read + Seek>(
     let tail = decode_footer_tail(&tail_bytes)
         .ok_or_else(|| corrupt(tail_start, "missing FSSE footer end magic"))?;
     if tail.footer_offset > tail_start - PACK_FOOTER_PREFIX_LEN as u64 {
-        return Err(corrupt(tail.footer_offset, "sealed footer offset outside file"));
+        return Err(corrupt(
+            tail.footer_offset,
+            "sealed footer offset outside file",
+        ));
     }
-    let footer_len =
-        usize::try_from(file_len - tail.footer_offset).map_err(|_| PackError::ArithmeticOverflow)?;
-    reader.seek(SeekFrom::Start(tail.footer_offset)).map_err(io)?;
+    let footer_len = usize::try_from(file_len - tail.footer_offset)
+        .map_err(|_| PackError::ArithmeticOverflow)?;
+    reader
+        .seek(SeekFrom::Start(tail.footer_offset))
+        .map_err(io)?;
     let mut prefix = [0; PACK_FOOTER_PREFIX_LEN];
     reader.read_exact(&mut prefix).map_err(io)?;
     let mut count_bytes = [0; 8];
@@ -49,11 +55,16 @@ pub(crate) fn verify<R: Read + Seek>(
         || count > tail.footer_offset / PACK_RECORD_OVERHEAD_LEN as u64
         || count.checked_mul(PACK_FOOTER_ENTRY_LEN as u64) != Some(entries_bytes as u64)
     {
-        return Err(corrupt(tail.footer_offset, "invalid sealed footer inventory size"));
+        return Err(corrupt(
+            tail.footer_offset,
+            "invalid sealed footer inventory size",
+        ));
     }
     let mut footer_bytes = vec![0; footer_len];
     footer_bytes[..prefix.len()].copy_from_slice(&prefix);
-    reader.read_exact(&mut footer_bytes[prefix.len()..]).map_err(io)?;
+    reader
+        .read_exact(&mut footer_bytes[prefix.len()..])
+        .map_err(io)?;
     let mut footer = decode_sealed_footer(pack_id, tail.footer_offset, &footer_bytes)?;
 
     reader.seek(SeekFrom::Start(0)).map_err(io)?;
@@ -63,7 +74,10 @@ pub(crate) fn verify<R: Read + Seek>(
     footer.entries.sort_unstable_by_key(|entry| entry.offset);
     for entry in &footer.entries {
         if entry.offset != next_offset {
-            return Err(corrupt(entry.offset, "sealed footer omits or overlaps record bytes"));
+            return Err(corrupt(
+                entry.offset,
+                "sealed footer omits or overlaps record bytes",
+            ));
         }
         let mut header_bytes = [0; PACK_RECORD_HEADER_LEN];
         reader.read_exact(&mut header_bytes).map_err(io)?;
@@ -73,7 +87,10 @@ pub(crate) fn verify<R: Read + Seek>(
             || header.flags != entry.flags
             || header.content_sha256 != entry.sha256
         {
-            return Err(corrupt(entry.offset, "sealed footer fields differ from record header"));
+            return Err(corrupt(
+                entry.offset,
+                "sealed footer fields differ from record header",
+            ));
         }
 
         whole.update(&header_bytes);
@@ -95,25 +112,39 @@ pub(crate) fn verify<R: Read + Seek>(
         let stored = u32::from_be_bytes(trailer);
         let actual = crc.finalize();
         if actual != stored {
-            return Err(PackError::CrcMismatch { expected: stored, actual });
+            return Err(PackError::CrcMismatch {
+                expected: stored,
+                actual,
+            });
         }
         let actual = ContentDigest::new(
             DigestAlgorithm::Sha256,
-            payload.finalize().map_err(|_| PackError::ArithmeticOverflow)?,
+            payload
+                .finalize()
+                .map_err(|_| PackError::ArithmeticOverflow)?,
         );
         if actual != entry.digest() {
-            return Err(PackError::DigestMismatch { expected: entry.digest(), actual });
+            return Err(PackError::DigestMismatch {
+                expected: entry.digest(),
+                actual,
+            });
         }
         // decode_sealed_footer already checked that the complete span fits the file.
         next_offset = entry.offset + PACK_RECORD_OVERHEAD_LEN as u64 + entry.len;
     }
     if next_offset != footer.footer_offset {
-        return Err(corrupt(next_offset, "sealed footer leaves trailing record bytes unindexed"));
+        return Err(corrupt(
+            next_offset,
+            "sealed footer leaves trailing record bytes unindexed",
+        ));
     }
 
     let prefix_len = footer_bytes.len() - 36;
     whole.update(&footer_bytes[..prefix_len]);
-    let sealed_digest = whole.clone().finalize().map_err(|_| PackError::ArithmeticOverflow)?;
+    let sealed_digest = whole
+        .clone()
+        .finalize()
+        .map_err(|_| PackError::ArithmeticOverflow)?;
     if sealed_digest != footer.whole_pack_sha256 {
         return Err(PackError::DigestMismatch {
             expected: ContentDigest::new(DigestAlgorithm::Sha256, footer.whole_pack_sha256),
@@ -121,7 +152,12 @@ pub(crate) fn verify<R: Read + Seek>(
         });
     }
     whole.update(&footer_bytes[prefix_len..]);
-    let file_digest = whole.finalize().map_err(|_| PackError::ArithmeticOverflow)?;
+    let file_digest = whole
+        .finalize()
+        .map_err(|_| PackError::ArithmeticOverflow)?;
     footer.entries.sort_unstable();
-    Ok((footer, ContentDigest::new(DigestAlgorithm::Sha256, file_digest)))
+    Ok((
+        footer,
+        ContentDigest::new(DigestAlgorithm::Sha256, file_digest),
+    ))
 }

@@ -609,8 +609,7 @@ mod tests {
                 state: "corroborated".to_owned(),
                 epistemic_classification: "Corroborated".to_owned(),
                 failure_domain_clusters: 2,
-                fusion_summary: "corroborated event=event:live:1 clusters=2 rev=1"
-                    .to_owned(),
+                fusion_summary: "corroborated event=event:live:1 clusters=2 rev=1".to_owned(),
                 zones: vec!["driveway".to_owned()],
                 sensors: vec![
                     "sensor:wyze-51".to_owned(),
