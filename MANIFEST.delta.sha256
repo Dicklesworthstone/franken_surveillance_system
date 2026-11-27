@@ -1,0 +1,4 @@
+a51d13c4430c5aa3d142843553887cc568008a8433b289befcdb22209c8a08b5  crates/fss-cli/src/bin/fss-dashboard/live_projection.rs
+ac72b412f7fb0fd297b0c2de841392de57d882c5b5cd96961f56b20f5789f900  crates/fss-cli/src/bin/fss-dashboard/live_render.rs
+4c70280fb35e40208037e85cb529a8c9f6138806922b9b41aad3248b7a94c2d1  crates/fss-cli/src/bin/fss-dashboard/web/live.js
+73bd832b2a4cd86af51ac3eea4368b34ce97f440dbffb38271e11700c492cd4e  crates/fss-cli/tests/dashboard_live_contract.rs

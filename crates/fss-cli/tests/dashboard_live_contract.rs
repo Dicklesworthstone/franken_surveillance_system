@@ -459,6 +459,16 @@ fn live_cockpit_headless_tui_and_stopped_daemon_mvcc_fallback_are_readonly() -> 
             >= 1
     );
 
+    // The MVCC event retains its lifecycle after restart, while the live decision
+    // summary containing an independent cluster count is no longer in this client.
+    for event in obj_field(&parsed, "events")?.array().ok_or("events")? {
+        assert_eq!(obj_field(event, "failure_domain_clusters")?.integer(), Some(0));
+        assert_eq!(
+            obj_field(event, "fusion_summary")?.text(),
+            Some("fusion details unavailable for this revision")
+        );
+    }
+
     // 2. Headless `--live --tui` 6-pane terminal cockpit snapshot.
     let tui_out = Command::new(env!("CARGO_BIN_EXE_fss-dashboard"))
         .args(["--live", "--root"])

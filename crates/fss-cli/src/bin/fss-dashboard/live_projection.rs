@@ -130,6 +130,46 @@ fn build_cameras_from_mvcc(
     rows
 }
 
+// The projection carries lifecycle state but no count of independent clusters. Only
+// the supervisor's decision summary for this committed revision can supply that count.
+fn fusion_decision<'a>(
+    deltas: &'a [LiveDeltaEntry],
+    event_id: &str,
+    revision: u64,
+    sequence: u64,
+    corroborated: bool,
+) -> Option<&'a str> {
+    deltas.iter().rev().find_map(|d| {
+        if d.commit_sequence != sequence || d.delta_class != "Hypothesis" {
+            return None;
+        }
+        let mut fields = d.summary.split_ascii_whitespace();
+        let kind = fields.next()?;
+        if fields.next()?.strip_prefix("event=")? != event_id {
+            return None;
+        }
+        match kind {
+            "corroborated" if corroborated => {
+                let clusters = fields
+                    .next()?
+                    .strip_prefix("clusters=")?
+                    .parse::<u32>()
+                    .ok()?;
+                let rev = fields.next()?.strip_prefix("rev=")?.parse::<u64>().ok()?;
+                if clusters == 0 || rev != revision {
+                    return None;
+                }
+            }
+            "shared_failure_domain_held" if !corroborated => {
+                fields.next()?.strip_prefix("domains=")?;
+            }
+            "insufficient_evidence_held" if !corroborated => {}
+            _ => return None,
+        }
+        fields.next().is_none().then_some(d.summary.as_str())
+    })
+}
+
 fn build_events_from_mvcc(
     root: &Path,
     snapshot: &ProjectionSnapshot,
@@ -137,54 +177,35 @@ fn build_events_from_mvcc(
     recent_deltas: &[LiveDeltaEntry],
 ) -> Vec<LiveEventRow> {
     let page = snapshot.query_events(&EventQueryFilter::default(), MAX_FRAME_EVENTS);
-    let mut delta_hints: BTreeMap<String, &LiveDeltaEntry> = BTreeMap::new();
-    for d in recent_deltas {
-        if let Some(ev_id) = parse_delta_kv(&d.summary, "event") {
-            delta_hints.insert(ev_id.to_owned(), d);
-        }
-    }
     let root_str = root.to_string_lossy();
     let mut rows: Vec<LiveEventRow> = page
         .entries
         .iter()
         .map(|ev: &ProjectedEventSummary| {
-            let hint = delta_hints.get(ev.event_id.as_str()).copied();
-            let shared_held = hint.is_some_and(|d| d.summary.contains("shared_failure_domain_held"));
-            let clusters = hint
-                .and_then(|d| parse_delta_kv(&d.summary, "clusters"))
-                .and_then(|v| v.parse::<u32>().ok())
-                .unwrap_or_else(|| {
-                    if ev.corroborated || ev.state == EventState::Corroborated {
-                        u32::try_from(ev.sensor_ids.len().max(2)).unwrap_or(2)
-                    } else if shared_held {
-                        1
-                    } else {
-                        u32::try_from(ev.sensor_ids.len()).unwrap_or(0)
-                    }
-                });
-            let epistemic = if ev.corroborated || ev.state == EventState::Corroborated {
+            let corroborated = ev.corroborated || ev.state == EventState::Corroborated;
+            let decision = fusion_decision(
+                recent_deltas,
+                ev.event_id.as_str(),
+                ev.revision,
+                ev.committed_sequence,
+                corroborated,
+            );
+            let clusters = decision
+                .and_then(|summary| parse_delta_kv(summary, "clusters"))
+                .and_then(|count| count.parse::<u32>().ok())
+                .unwrap_or(0);
+            let epistemic = if corroborated {
                 "Corroborated"
-            } else if shared_held {
+            } else if decision.is_some_and(|s| s.starts_with("shared_failure_domain_held ")) {
                 "SharedFailureDomainHeld"
             } else if ev.state == EventState::Indeterminate {
                 "Indeterminate"
             } else {
                 "Observed"
             };
-            let fusion_summary = if let Some(d) = hint {
-                if d.summary.contains("shared_failure_domain_held") {
-                    let doms = parse_delta_kv(&d.summary, "domains").unwrap_or("shared");
-                    format!("held(shared_failure_domain={doms}; clusters=1)")
-                } else if d.summary.contains("corroborated") {
-                    format!("corroborated(independent_clusters={clusters}; milliban_llr=positive)")
-                } else {
-                    d.summary.clone()
-                }
-            } else if ev.corroborated {
-                format!("corroborated(independent_clusters={clusters})")
-            } else {
-                "uncorroborated_or_held(single_cluster_or_uncalibrated)".to_owned()
-            };
+            let fusion_summary = decision
+                .unwrap_or("fusion details unavailable for this revision")
+                .to_owned();
             let rev_digest = ev.revision_digest.to_text();
             LiveEventRow {
                 event_id: ev.event_id.as_str().to_owned(),
@@ -375,7 +396,7 @@ fn build_situation_and_storage(
         attention.push(LiveAttentionItem {
             priority: "high".to_owned(),
             category: "corroborated_event".to_owned(),
-            summary: format!("{count} multi-cluster corroborated event(s) eligible for preview->approve alert planning."),
+            summary: format!("{count} committed corroborated event(s) available for review."),
         });
     }
     if orient.not_observable_zones > 0 {
@@ -498,7 +519,7 @@ fn assemble_frame_from_v1(
         .take(MAX_FRAME_EVENTS)
         .map(|retained| {
             let ev = &retained.event;
-            let clusters = u32::try_from(retained.failure_domains().len()).unwrap_or(0);
+            let declared_domains = retained.failure_domains().len();
             let epistemic = if ev.state == EventState::Corroborated {
                 "Corroborated"
             } else if ev.state == EventState::Indeterminate {
@@ -512,9 +533,9 @@ fn assemble_frame_from_v1(
                 kind: ev.kind.as_str().to_owned(),
                 state: ev.state.as_str().to_owned(),
                 epistemic_classification: epistemic.to_owned(),
-                failure_domain_clusters: clusters,
+                failure_domain_clusters: 0,
                 fusion_summary: format!(
-                    "probability=[{:.3},{:.3}] domains={clusters}",
+                    "probability=[{:.3},{:.3}] declared_domains={declared_domains}",
                     ev.probability.lower, ev.probability.upper
                 ),
                 zones: ev.zone_ids.clone(),
@@ -728,5 +749,50 @@ pub fn assemble_live_frame(
                 },
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod fusion_tests {
+    use super::*;
+
+    #[test]
+    fn only_the_exact_committed_decision_can_explain_a_revision() {
+        let mut delta = LiveDeltaEntry {
+            commit_sequence: 17,
+            delta_digest: String::new(),
+            delta_class: "Hypothesis".to_owned(),
+            priority: "High".to_owned(),
+            summary: "corroborated event=event:a clusters=2 rev=3".to_owned(),
+            latency_ms: None,
+        };
+        let check = |d: &LiveDeltaEntry, sequence, revision, corroborated| {
+            fusion_decision(
+                std::slice::from_ref(d),
+                "event:a",
+                revision,
+                sequence,
+                corroborated,
+            )
+            .is_some()
+        };
+        assert!(check(&delta, 17, 3, true));
+        assert!(!check(&delta, 16, 3, true));
+        assert!(!check(&delta, 17, 4, true));
+        assert!(!check(&delta, 17, 3, false));
+        for summary in [
+            "corroborated event=event:b clusters=2 rev=3",
+            "uncorroborated event=event:a clusters=2 rev=3",
+            "corroborated event=event:a clusters=? rev=3",
+            "corroborated event=event:a clusters=2 rev=3 clusters=9",
+        ] {
+            delta.summary = summary.to_owned();
+            assert!(!check(&delta, 17, 3, true));
+        }
+        delta.summary = "shared_failure_domain_held event=event:a domains=lan".to_owned();
+        assert!(check(&delta, 17, 3, false));
+        assert!(!check(&delta, 17, 3, true));
+        delta.delta_class = "SensorHealth".to_owned();
+        assert!(!check(&delta, 17, 3, false));
     }
 }

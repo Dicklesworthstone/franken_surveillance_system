@@ -66,7 +66,7 @@ function renderFrame(f) {
       card.append(
         el('span', `tag ${tone}`, e.epistemic_classification),
         el('strong', '', `${e.event_id} `),
-        el('span', '', `clusters=${e.failure_domain_clusters} · ${e.fusion_summary}`),
+        el('span', '', `clusters=${e.failure_domain_clusters || 'unknown'} · ${e.fusion_summary}`),
         el('div', '', `handle=${e.privacy_masked_handle.handle_id} · raw_media=${e.privacy_masked_handle.raw_media_exposed}`),
       );
       return card;

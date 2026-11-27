@@ -435,7 +435,11 @@ pub fn render_live_tui(frame: &LiveCockpitFrame, ansi: bool) -> String {
                 ev.event_id,
                 ev.epistemic_classification,
                 ev.state,
-                ev.failure_domain_clusters,
+                if ev.failure_domain_clusters == 0 {
+                    "unknown".to_owned()
+                } else {
+                    ev.failure_domain_clusters.to_string()
+                },
                 ev.zones.join(","),
                 ev.fusion_summary,
                 ev.privacy_masked_handle.handle_id,
@@ -598,7 +602,7 @@ mod tests {
                 state: "corroborated".to_owned(),
                 epistemic_classification: "Corroborated".to_owned(),
                 failure_domain_clusters: 2,
-                fusion_summary: "corroborated(independent_clusters=2; milliban_llr=positive)"
+                fusion_summary: "corroborated event=event:live:1 clusters=2 rev=1"
                     .to_owned(),
                 zones: vec!["driveway".to_owned()],
                 sensors: vec![
