@@ -15,7 +15,7 @@ use crate::control::journal::ControlProgress;
 use crate::error::DaemonError;
 use crate::manifest::CameraAdapterKind;
 use crate::sensor::{CameraFrame, SensorDisconnectReason, SensorDriverEvent, SensorState};
-use crate::supervisor::DaemonSupervisor;
+use crate::supervisor::{DaemonSupervisor, next_stream_generation};
 
 const MAX_POLLS_PER_CAMERA_PER_TICK: usize = 128;
 
@@ -470,7 +470,7 @@ impl DaemonSupervisor {
 
             if let Some(slot) = self.sensors.get_mut(sid) {
                 if slot.state == SensorState::GapBackoff && now_ns >= slot.next_reconnect_ns {
-                    let next_gen = slot.stream_generation.saturating_add(1);
+                    let next_gen = next_stream_generation(slot.stream_generation)?;
                     match slot.driver.connect(next_gen) {
                         Ok(()) => {
                             slot.stream_generation = next_gen;

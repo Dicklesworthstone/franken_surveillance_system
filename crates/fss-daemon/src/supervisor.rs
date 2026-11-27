@@ -45,6 +45,14 @@ use crate::telemetry::{DaemonTelemetrySnapshot, SensorTelemetryRecord};
 
 const MAX_TELEMETRY_LINES: usize = 512;
 
+pub(crate) fn next_stream_generation(previous: u64) -> Result<u64, DaemonError> {
+    previous
+        .checked_add(1)
+        .ok_or_else(|| DaemonError::InvalidConfig {
+            detail: "stream generation space exhausted".to_owned(),
+        })
+}
+
 #[cfg(test)]
 #[path = "supervisor_failure_tests.rs"]
 mod failure_tests;
@@ -95,7 +103,16 @@ impl DaemonSupervisor {
             Arc::new(fss_object::HostSpoolIo),
         )
         .map_err(DaemonError::ControlHistory)?;
-        let mut regions = DaemonRegionTree::initialize(&config.manifest, &config.principal, now)?;
+        // Every admitted generation publishes at least one canonical transition. A
+        // verified, replayed head therefore bounds earlier stream ordinals, including
+        // generations whose GOPs never filled or whose footage has since expired.
+        let first_generation = next_stream_generation(storage.head_snapshot()?.commit_sequence)?;
+        let mut regions = DaemonRegionTree::initialize_at_generation(
+            &config.manifest,
+            &config.principal,
+            now,
+            first_generation,
+        )?;
         let perception = PerceptionEngine::new(&config.manifest, config.perception_config)?;
 
         let mut resolved_vault_creds = resolve_camera_credentials_from_vault(
@@ -120,55 +137,56 @@ impl DaemonSupervisor {
             } else {
                 default_driver_for_camera(entry)
             };
-            let ring = BoundedFrameRing::new(entry.ring_max_frames, entry.ring_max_bytes)?;
+            let mut ring = BoundedFrameRing::new(entry.ring_max_frames, entry.ring_max_bytes)?;
+            ring.start_generation(first_generation);
             let mut backoff = BackoffSchedule::new(
                 entry.sensor_id.as_str(),
                 entry.reconnect_min_ms,
                 entry.reconnect_max_ms,
             );
-            let (state, next_reconnect_ns, peak_sessions, active_gaps) = match driver.connect(1) {
-                Ok(()) => {
-                    let _ = storage.commit_coverage_and_liveness(
-                        &entry.sensor_id,
-                        &entry.primary_zone,
-                        CoverageStatus::NotObservable,
-                        SensorLivenessStatus::Unknown,
-                        1,
-                        now,
-                        now,
-                        regions.storage_ledger_cx(),
-                        regions.region_tree(),
-                    )?;
-                    // Transport acceptance is not evidence of a usable frame or continuity.
-                    (SensorState::Connecting, 0, driver.active_session_count(), 1)
-                }
-                Err(reason) => {
-                    let _ = regions.drain_failed_sensor_region(
-                        &entry.sensor_id,
-                        reason.as_str(),
-                        now,
-                    )?;
-                    let delay_ms = backoff.next_delay_ms();
-                    let _ = storage.commit_coverage_and_liveness(
-                        &entry.sensor_id,
-                        &entry.primary_zone,
-                        CoverageStatus::NotObservable,
-                        SensorLivenessStatus::Offline,
-                        1,
-                        now,
-                        now,
-                        regions.storage_ledger_cx(),
-                        regions.region_tree(),
-                    )?;
-                    coverage_gaps = coverage_gaps.saturating_add(1);
-                    (
-                        SensorState::GapBackoff,
-                        now_ns.saturating_add(i128::from(delay_ms) * 1_000_000),
-                        0,
-                        1,
-                    )
-                }
-            };
+            // Advance the durable head before opening the driver. Even a process
+            // loss during connect leaves this lifetime's first generation reserved.
+            storage.commit_coverage_and_liveness(
+                &entry.sensor_id,
+                &entry.primary_zone,
+                CoverageStatus::NotObservable,
+                SensorLivenessStatus::Unknown,
+                1,
+                now,
+                now,
+                regions.storage_ledger_cx(),
+                regions.region_tree(),
+            )?;
+            let (state, next_reconnect_ns, peak_sessions, active_gaps) =
+                match driver.connect(first_generation) {
+                    Ok(()) => (SensorState::Connecting, 0, driver.active_session_count(), 1),
+                    Err(reason) => {
+                        let _ = regions.drain_failed_sensor_region(
+                            &entry.sensor_id,
+                            reason.as_str(),
+                            now,
+                        )?;
+                        let delay_ms = backoff.next_delay_ms();
+                        let _ = storage.commit_coverage_and_liveness(
+                            &entry.sensor_id,
+                            &entry.primary_zone,
+                            CoverageStatus::NotObservable,
+                            SensorLivenessStatus::Offline,
+                            1,
+                            now,
+                            now,
+                            regions.storage_ledger_cx(),
+                            regions.region_tree(),
+                        )?;
+                        coverage_gaps = coverage_gaps.saturating_add(1);
+                        (
+                            SensorState::GapBackoff,
+                            now_ns.saturating_add(i128::from(delay_ms) * 1_000_000),
+                            0,
+                            1,
+                        )
+                    }
+                };
 
             sensors.insert(
                 entry.sensor_id.clone(),
@@ -176,12 +194,12 @@ impl DaemonSupervisor {
                     entry: entry.clone(),
                     driver,
                     ring,
-                    ingest_cursor: RingConsumerCursor::new(1),
-                    perception_cursor: RingConsumerCursor::new(1),
-                    preview_cursor: RingConsumerCursor::new(1),
+                    ingest_cursor: RingConsumerCursor::new(first_generation),
+                    perception_cursor: RingConsumerCursor::new(first_generation),
+                    preview_cursor: RingConsumerCursor::new(first_generation),
                     backoff,
                     state,
-                    stream_generation: 1,
+                    stream_generation: first_generation,
                     previous_frame: None,
                     continuity_frames: 0,
                     input_rate: Default::default(),

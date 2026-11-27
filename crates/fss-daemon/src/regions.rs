@@ -94,6 +94,15 @@ impl DaemonRegionTree {
         principal: &str,
         now: TimestampNs,
     ) -> Result<Self, DaemonError> {
+        Self::initialize_at_generation(manifest, principal, now, 1)
+    }
+
+    pub(crate) fn initialize_at_generation(
+        manifest: &SiteManifest,
+        principal: &str,
+        now: TimestampNs,
+        first_generation: u64,
+    ) -> Result<Self, DaemonError> {
         let trace_id = format!("trace:daemon:{}", sanitize_id_part(&manifest.site_id));
         let anchor_universe = manifest.digest();
         let all_caps = daemon_root_capabilities();
@@ -282,7 +291,7 @@ impl DaemonRegionTree {
         };
 
         for cam in &manifest.cameras {
-            daemon_tree.spawn_sensor_region(&cam.sensor_id, 1, now)?;
+            daemon_tree.spawn_sensor_region(&cam.sensor_id, first_generation, now)?;
         }
 
         Ok(daemon_tree)

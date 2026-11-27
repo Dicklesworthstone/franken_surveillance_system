@@ -170,7 +170,22 @@ impl Fixture {
         gop_frames: usize,
         enable_ipc: bool,
     ) -> Result<Self, TestError> {
-        let dir = TempDir::new()?;
+        Self::open_at(
+            TempDir::new()?,
+            START_NS,
+            ring_max_frames,
+            gop_frames,
+            enable_ipc,
+        )
+    }
+
+    fn open_at(
+        dir: TempDir,
+        start_ns: i128,
+        ring_max_frames: usize,
+        gop_frames: usize,
+        enable_ipc: bool,
+    ) -> Result<Self, TestError> {
         let root = dir.0.to_string_lossy();
         let manifest = SiteManifest::parse_json(&format!(
             r#"{{
@@ -207,7 +222,7 @@ impl Fixture {
         });
         let mut config = DaemonStartConfig::new(manifest);
         config.custom_drivers = BTreeMap::from([(sensor_id.clone(), driver)]);
-        config.started_at_ns = START_NS;
+        config.started_at_ns = start_ns;
         config.enable_ipc = enable_ipc;
         Ok(Self {
             supervisor: DaemonSupervisor::start(config)?,
@@ -250,6 +265,37 @@ impl Fixture {
         assert_eq!(report.leaked_obligations, 0);
         Ok(())
     }
+}
+
+#[test]
+fn restart_without_a_gop_reserves_a_fresh_stream_before_accepting_frames() -> TestResult {
+    let mut first = Fixture::new(64)?;
+    let stale = first.view()?.stream_generation;
+    first.queue([Input::Disconnect])?;
+    first.supervisor.step_tick(START_NS + 100_000_000)?;
+    first.supervisor.step_tick(START_NS + 1_000_000_000)?;
+    let previous = first.view()?.stream_generation;
+    assert!(previous > stale);
+    // Lose the in-memory ring and region state before a single GOP is published.
+    let Fixture {
+        supervisor, _dir, ..
+    } = first;
+    drop(supervisor);
+    let mut next = Fixture::open_at(_dir, START_NS + 2_000_000_000, 64, 4, false)?;
+    let new_generation = next.view()?.stream_generation;
+    assert!(new_generation > previous);
+    assert_eq!(next.coverage()?.status, CoverageStatus::NotObservable);
+    next.queue([Input::frame()])?;
+    next.supervisor.step_tick(START_NS + 2_100_000_000)?;
+    next.queue([Input::frame()])?;
+    next.supervisor.step_tick(START_NS + 2_200_000_000)?;
+    assert_eq!(next.coverage()?.status, CoverageStatus::Covered);
+    // Same sensor/stream/sequence space, but the old lifetime is never admitted.
+    next.queue([Input::Frame(FrameMutation::Generation(previous))])?;
+    next.supervisor.step_tick(START_NS + 2_300_000_000)?;
+    assert_eq!(next.coverage()?.status, CoverageStatus::NotObservable);
+    assert_eq!(next.view()?.state, SensorState::GapBackoff);
+    next.finish()
 }
 
 #[test]
