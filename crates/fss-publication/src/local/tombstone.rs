@@ -7,10 +7,10 @@ use std::path::{Path, PathBuf};
 use fss_core::{ContentDigest, TombstoneRecord};
 use fss_object::{DiscardReceipt, ObjectManifest, SpoolError, VerifiedObjectCatalog};
 
-use super::fs_io::{digest_file_stem, io_error, read_bounded, write_all};
+use super::fs_io::{digest_file_stem, directory_present, io_error, read_bounded, write_all};
 use super::record;
 use super::{
-    CapacityResource, LOCAL_ROOTS_DIR, LOCAL_TOMBSTONES_DIR, LocalIoOperation,
+    CapacityResource, LOCAL_ROOTS_DIR, LOCAL_SPOOL_DIR, LOCAL_TOMBSTONES_DIR, LocalIoOperation,
     LocalPublicationError, LocalRootPublisher, MAX_ROOT_RECORD_BYTES, ROOT_INDETERMINATE_SUFFIX,
     ROOT_RECORD_SUFFIX, ROOT_TEMP_SUFFIX, ReferenceRole, SlotName, TOMBSTONE_RECORD_SUFFIX,
     TombstoneOutcome, root_record_bytes,
@@ -208,6 +208,31 @@ impl LocalRootPublisher {
     #[must_use]
     pub fn object_name_present(&self, digest: ContentDigest) -> bool {
         self.spool.name_present(digest)
+    }
+
+    /// Confirm the owned directories exist before interpreting missing deletion names.
+    /// A missing directory or a replacement symlink cannot witness an empty namespace.
+    pub fn verify_deletion_directories(&self) -> Result<(), LocalPublicationError> {
+        let spool = self.root.join(LOCAL_SPOOL_DIR);
+        let objects = spool.join(fss_object::SPOOL_OBJECTS_DIR);
+        let holds = spool.join(fss_object::SPOOL_HOLDS_DIR);
+        for path in [&self.root, &spool, &objects, &holds, &self.roots_dir] {
+            if !directory_present(self.io.as_ref(), path)? {
+                return Err(LocalPublicationError::InvalidLayout { path: path.clone() });
+            }
+        }
+        Ok(())
+    }
+
+    /// Inspect the root record name without following its final component. Only an
+    /// observed missing name counts as absent, even when the slot is absent from memory.
+    pub fn root_record_name_present(&self, slot: &SlotName) -> Result<bool, LocalPublicationError> {
+        let path = self.roots_dir.join(format!("{slot}{ROOT_RECORD_SUFFIX}"));
+        match self.io.symlink_metadata(&path) {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(io_error(LocalIoOperation::Inspect, &path, &error)),
+        }
     }
 
     /// Removes exactly the orphaned temporary records classified on open or left by a failed

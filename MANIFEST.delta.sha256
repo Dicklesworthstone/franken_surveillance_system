@@ -1,2 +1,5 @@
 f9fb4889f412393d410a45c0361cd4de1d40fa40ca3e8046f99951e746351cdc  crates/fss-object/src/atp_lifecycle/journal.rs
 a7deaaeeb33322c13dfe8f2e7709cb43c68c6a6a19a74692b897aa3855e15cc6  crates/fss-object/tests/atp_journal_bounds.rs
+a478a89e37ba024efc97b9fb0e3b3968fd0c461f3a31c8d002ee38f2856b3a49  crates/fss-publication/src/local/tombstone.rs
+a170ade8933559420515f0e4c34950ea34d2572e4c05e90288cb534f80aed2e6  crates/fss-reference/src/deletion/commit.rs
+405f8e80c04e9733c429571954870e1f5be2668faaae756feac805f7fe01617d  crates/fss-reference/tests/deletion_custody_refusal_contract.rs

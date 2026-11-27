@@ -331,6 +331,7 @@ fn commit_request(
                 .spool()
                 .read_bounded(completion_digest, MAX_DELETION_RECORD_BYTES)?;
             let completion = DeletionCompletion::decode(&bytes, completion_digest)?;
+            verify_removal(deployment, &plan, cx)?;
             return Ok(CommitReceipt {
                 outcome: CommitOutcome::AlreadyComplete,
                 plan_digest,
@@ -421,37 +422,7 @@ fn apply(
             .remove_deleted_object(object.digest, plan_digest)?;
         checkpoint(cx, STAGE_DELETION_OBJECT_REMOVED)?;
     }
-    // Verify on the filesystem, not only in the index, before claiming anything.
-    for object in &plan.deletable {
-        if deployment
-            .publisher()
-            .spool()
-            .state(object.digest)
-            .is_some()
-            || deployment.publisher().object_name_present(object.digest)
-        {
-            return Err(DeletionError::Incomplete {
-                detail: format!("{} is still present in the spool", object.digest),
-            });
-        }
-    }
-    for retraction in &plan.retractions {
-        let slot = SlotName::parse(&retraction.slot).map_err(|_| DeletionError::RecordMismatch)?;
-        let record = deployment
-            .publisher()
-            .root_dir()
-            .join(fss_publication::LOCAL_ROOTS_DIR)
-            .join(format!(
-                "{}{}",
-                retraction.slot,
-                fss_publication::ROOT_RECORD_SUFFIX
-            ));
-        if deployment.publisher().root(&slot).is_some() || record.exists() {
-            return Err(DeletionError::Incomplete {
-                detail: format!("root {} is still published", retraction.slot),
-            });
-        }
-    }
+    verify_removal(deployment, &plan, cx)?;
     let completion = DeletionCompletion::of(&plan)?;
     let completion_bytes = completion.canonical_bytes()?;
     let completion_digest = deployment.stage_payload(&completion_bytes)?;
@@ -472,4 +443,35 @@ fn apply(
         completion,
         authority_sequence: deployment.current_anchor().commit_sequence,
     })
+}
+
+/// The completion record attests to an earlier removal. A current claim of absence
+/// also requires inspecting each name, including on an otherwise idempotent retry.
+fn verify_removal(
+    deployment: &ReferenceDeployment,
+    plan: &DeletionPlan,
+    cx: &ReplayCx,
+) -> Result<(), DeletionError> {
+    let publisher = deployment.publisher();
+    publisher.verify_deletion_directories()?;
+    for object in &plan.deletable {
+        checkpoint(cx, super::STAGE_DELETION_SCAN)?;
+        if publisher.spool().state(object.digest).is_some()
+            || publisher.object_name_present(object.digest)
+        {
+            return Err(DeletionError::Incomplete {
+                detail: format!("cannot verify absence of {} from the spool", object.digest),
+            });
+        }
+    }
+    for retraction in &plan.retractions {
+        checkpoint(cx, super::STAGE_DELETION_SCAN)?;
+        let slot = SlotName::parse(&retraction.slot).map_err(|_| DeletionError::RecordMismatch)?;
+        if publisher.root(&slot).is_some() || publisher.root_record_name_present(&slot)? {
+            return Err(DeletionError::Incomplete {
+                detail: format!("root record for {} is still present", retraction.slot),
+            });
+        }
+    }
+    Ok(())
 }

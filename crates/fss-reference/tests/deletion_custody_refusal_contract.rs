@@ -10,7 +10,9 @@ use std::path::{Path, PathBuf};
 
 use file_import_fault_support::{TestResult, cx, fixture, fresh_dir, open, request, standard};
 use fss_core::ContentDigest;
-use fss_reference::deletion::{CommitOutcome, DeletionError, commit_deletion, plan_deletion};
+use fss_reference::deletion::{
+    CommitOutcome, CommitReceipt, DeletionError, DeletionPlan, commit_deletion, plan_deletion,
+};
 use fss_reference::{FileIngestAdapter, ReferenceDeployment, ReplayCx};
 
 type ResultOf<T> = Result<T, Box<dyn std::error::Error>>;
@@ -60,6 +62,16 @@ impl Harness {
             import,
             context,
         })
+    }
+
+    fn commit(&mut self, plan: &DeletionPlan) -> Result<CommitReceipt, DeletionError> {
+        commit_deletion(
+            &mut self.deployment,
+            plan.digest()?,
+            plan.approval_digest(PRINCIPAL)?,
+            PRINCIPAL,
+            &self.context,
+        )
     }
 
     fn refusal(&self, digest: ContentDigest) -> ResultOf<String> {
@@ -309,5 +321,85 @@ fn readable_staged_objects_remain_admissible_without_promoting_their_state() -> 
     )?;
     assert_eq!(receipt.outcome, CommitOutcome::Completed);
     assert!(!harness.deployment.publisher().object_name_present(target));
+    Ok(())
+}
+
+#[test]
+fn retry_requires_all_deleted_names_to_remain_absent() -> TestResult {
+    let mut harness = Harness::new("post-completion")?;
+    let plan = plan_deletion(&harness.deployment, harness.import, &harness.context)?;
+    let object = plan.deletable.first().ok_or("empty closure")?.digest;
+    let publisher = harness.deployment.publisher();
+    let object_path = publisher.spool().object_path(object);
+    let hold_path = publisher
+        .root_dir()
+        .join(fss_publication::LOCAL_SPOOL_DIR)
+        .join(fss_object::SPOOL_HOLDS_DIR)
+        .join(object_path.file_name().ok_or("missing object name")?);
+    let slot = &plan.retractions.first().ok_or("missing retraction")?.slot;
+    let record_path = publisher
+        .root_dir()
+        .join(fss_publication::LOCAL_ROOTS_DIR)
+        .join(format!("{slot}{}", fss_publication::ROOT_RECORD_SUFFIX));
+    let completion = harness.commit(&plan)?;
+    let mut harness = harness.reopen()?;
+    for path in [object_path, hold_path, record_path] {
+        fs::write(&path, b"unexpected surviving entry")?;
+        let before = snapshot(&harness.root)?;
+        assert!(matches!(
+            harness.commit(&plan),
+            Err(DeletionError::Incomplete { .. })
+        ));
+        assert_eq!(snapshot(&harness.root)?, before);
+        fs::remove_file(&path)?;
+    }
+    let retry = harness.commit(&plan)?;
+    assert_eq!(retry.outcome, CommitOutcome::AlreadyComplete);
+    assert_eq!(retry.completion_digest, completion.completion_digest);
+    assert_eq!(retry.authority_sequence, completion.authority_sequence);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn dangling_root_record_cannot_witness_deletion() -> TestResult {
+    let mut harness = Harness::new("dangling-root")?;
+    let plan = plan_deletion(&harness.deployment, harness.import, &harness.context)?;
+    let slot = &plan.retractions.first().ok_or("missing retraction")?.slot;
+    let path = harness
+        .deployment
+        .publisher()
+        .root_dir()
+        .join(fss_publication::LOCAL_ROOTS_DIR)
+        .join(format!("{slot}{}", fss_publication::ROOT_RECORD_SUFFIX));
+    harness.commit(&plan)?;
+    std::os::unix::fs::symlink("missing-root", &path)?;
+    assert!(matches!(
+        harness.commit(&plan),
+        Err(DeletionError::Incomplete { .. })
+    ));
+    assert_eq!(fs::read_link(path)?, Path::new("missing-root"));
+    Ok(())
+}
+
+#[test]
+fn missing_custody_directory_cannot_witness_deletion() -> TestResult {
+    let mut harness = Harness::new("unobservable-root")?;
+    let plan = plan_deletion(&harness.deployment, harness.import, &harness.context)?;
+    let directory = harness
+        .deployment
+        .publisher()
+        .root_dir()
+        .join(fss_publication::LOCAL_ROOTS_DIR);
+    let displaced = directory.with_file_name("displaced-root-records");
+    let completion = harness.commit(&plan)?;
+    fs::rename(&directory, &displaced)?;
+    assert!(matches!(harness.commit(&plan), Err(DeletionError::Publication(
+        fss_publication::LocalPublicationError::InvalidLayout { path }
+    )) if path == directory));
+    fs::rename(displaced, directory)?;
+    let retry = harness.commit(&plan)?;
+    assert_eq!(retry.completion_digest, completion.completion_digest);
+    assert_eq!(retry.authority_sequence, completion.authority_sequence);
     Ok(())
 }
