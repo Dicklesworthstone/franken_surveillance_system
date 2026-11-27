@@ -126,8 +126,12 @@ impl PackStore {
             }
         }
 
-        let tombstone_log =
-            ObjectTombstoneLog::open_for_store(&roots_dir, &packs_dir, &index_dir, config.durability)?;
+        let tombstone_log = ObjectTombstoneLog::open_for_store(
+            &roots_dir,
+            &packs_dir,
+            &index_dir,
+            config.durability,
+        )?;
         let tombstoned_snapshot = tombstone_log.snapshot_map();
 
         let (pack_index, active_state, next_seq, pack_recovery) =
@@ -145,6 +149,7 @@ impl PackStore {
             index_dir.clone(),
             config,
             Arc::clone(&index),
+            Arc::clone(&tombstones),
             active_state,
             next_seq,
             Arc::clone(&pack_fsync_count),
@@ -204,6 +209,15 @@ impl PackStore {
 
     /// Appends a batch of objects with group-commit durability and automatic deduplication.
     pub fn append_batch(
+        &self,
+        objects: &[PackObjectInput<'_>],
+    ) -> Result<Vec<PackLocation>, PackError> {
+        // Hold the deletion fence from the batch digest preflight through index publication.
+        let _catalog = self.catalog.read().map_err(|_| PackError::LockPoisoned)?;
+        self.append_under_catalog_lock(objects)
+    }
+
+    fn append_under_catalog_lock(
         &self,
         objects: &[PackObjectInput<'_>],
     ) -> Result<Vec<PackLocation>, PackError> {
@@ -307,31 +321,27 @@ impl PackStore {
         cut_point: Option<PackCutPoint>,
     ) -> Result<GraphPublishReceipt, PackError> {
         root_record.validate()?;
-        {
-            let catalog_guard = self.catalog.read().map_err(|_| PackError::LockPoisoned)?;
-            if catalog_guard.get_root(&root_record.root_id).is_some() {
-                return Err(PackError::RootAlreadyExists(root_record.root_id));
-            }
+        // The complete supplied batch stays protected against deletion until its root is
+        // visible. This includes children outside the descriptor's direct root/metadata pair.
+        let mut catalog_guard = self.catalog.write().map_err(|_| PackError::LockPoisoned)?;
+        if catalog_guard.get_root(&root_record.root_id).is_some() {
+            return Err(PackError::RootAlreadyExists(root_record.root_id));
         }
 
         let pack_fsyncs_before = self.pack_fsync_count.load(Ordering::Relaxed);
-        let child_locations = self.append_batch(children)?;
+        let child_locations = self.append_under_catalog_lock(children)?;
         let pack_fsyncs_after = self.pack_fsync_count.load(Ordering::Relaxed);
 
-        let (receipt, catalog_fsyncs) = {
-            let mut catalog_guard = self.catalog.write().map_err(|_| PackError::LockPoisoned)?;
-            let custody = publication::PublicationCustody::new(self)?;
-            custody.verify_root(&root_record)?;
-            if let Some(PackCutPoint::AfterPackSyncBeforeRootAppend) = cut_point {
-                return Err(PackError::InjectedCrash(
-                    PackCutPoint::AfterPackSyncBeforeRootAppend,
-                ));
-            }
-            let before = catalog_guard.fsync_count();
-            let receipt = catalog_guard.publish_root(root_record)?;
-            let after = catalog_guard.fsync_count();
-            (receipt, after.saturating_sub(before))
-        };
+        let custody = publication::PublicationCustody::new(self)?;
+        custody.verify_root(&root_record)?;
+        if let Some(PackCutPoint::AfterPackSyncBeforeRootAppend) = cut_point {
+            return Err(PackError::InjectedCrash(
+                PackCutPoint::AfterPackSyncBeforeRootAppend,
+            ));
+        }
+        let before = catalog_guard.fsync_count();
+        let receipt = catalog_guard.publish_root(root_record)?;
+        let catalog_fsyncs = catalog_guard.fsync_count().saturating_sub(before);
 
         Ok(GraphPublishReceipt {
             child_locations,

@@ -26,6 +26,7 @@ use crate::format::{
     sync_dir, write_all_bounded,
 };
 use crate::index::{IndexRebuildReason, PackIndex, PackInventoryEntry};
+use crate::retention::ObjectTombstoneLog;
 
 pub use recovery::verify_sealed_pack;
 pub(crate) use recovery::{
@@ -188,17 +189,20 @@ pub struct PackWriter {
     index_dir: PathBuf,
     config: PackConfig,
     index: Arc<RwLock<PackIndex>>,
+    tombstones: Arc<RwLock<ObjectTombstoneLog>>,
     active: Option<ActivePackState>,
     next_seq: u64,
     fsync_count: Arc<AtomicU64>,
 }
 
 impl PackWriter {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         packs_dir: PathBuf,
         index_dir: PathBuf,
         config: PackConfig,
         index: Arc<RwLock<PackIndex>>,
+        tombstones: Arc<RwLock<ObjectTombstoneLog>>,
         active: Option<ActivePackState>,
         next_seq: u64,
         fsync_count: Arc<AtomicU64>,
@@ -208,6 +212,7 @@ impl PackWriter {
             index_dir,
             config,
             index,
+            tombstones,
             active,
             next_seq,
             fsync_count,
@@ -268,6 +273,23 @@ impl PackWriter {
                 }
             }
             prepared.push((digest_bytes, idx));
+        }
+
+        // Check actual payload identities before deduplication, pack rotation, or any write.
+        // Catalog ownership prevents deletion commitment until this append finishes.
+        {
+            let tombstones = self
+                .tombstones
+                .read()
+                .map_err(|_| PackError::LockPoisoned)?;
+            for (digest, _) in &prepared {
+                if let Some(reason_digest) = tombstones.get_sha256(digest) {
+                    return Err(PackError::EvidenceDeleted {
+                        digest: ContentDigest::new(DigestAlgorithm::Sha256, *digest),
+                        reason_digest,
+                    });
+                }
+            }
         }
 
         let mut results: Vec<Option<PackLocation>> = vec![None; objects.len()];
