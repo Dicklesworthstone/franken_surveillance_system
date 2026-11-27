@@ -22,6 +22,8 @@ pub mod error;
 pub mod frame_pool;
 /// Shared multi-scale frame pyramids, cache tiling, and accelerator isolation (`DOC-054`).
 pub mod frame_pyramid;
+/// Deterministic media movement, live delivery, archive tier, and portability card (`DOC-052`).
+pub mod media_delivery_card;
 /// Registered media pressure degradation ladder (`FSS-121`).
 pub mod media_pressure;
 /// Live preview bounded fan-out (`FSS-057`).
@@ -54,6 +56,13 @@ pub use frame_pyramid::{
     AcceleratorCandidate, AcceleratorGateDecision, FRAME_PYRAMID_RECEIPT_DOMAIN, FramePyramid,
     FramePyramidError, FramePyramidReceipt, PyramidLevelEntry, TilePlan, TileRegion,
     adjudicate_accelerator_against_scalar, downsample_2x_box_u8,
+};
+pub use media_delivery_card::{
+    ArchiveStorageTier, BackendPlacementChild, ClampedDeliveryRejection, CodecSupportStatus,
+    EvaluatedDeliveryOption, LiveDeliverySurface, LiveGatewaySpec,
+    MEDIA_DELIVERY_DECISION_CARD_DOMAIN, MediaDeliveryCandidate, MediaDeliveryCardError,
+    MediaDeliveryConstraints, MediaDeliveryDecisionCard, MediaMovementMode, TierPricingQuote,
+    TranscodeJustification, evaluate_media_delivery_card,
 };
 pub use media_pressure::{
     MEDIA_PRESSURE_LADDER_RECEIPT_DOMAIN, MediaDegradationRung, MediaPressureController,

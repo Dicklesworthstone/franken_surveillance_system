@@ -124,6 +124,7 @@ checkfile 14 mp4-unit-limit crates/fss-container/tests/fixtures/fragmented_av.mp
   --test fss_120_source_to_tensor_lineage_contract \
   --test fss_121_media_pressure_ladder_contract \
   --test doc_041_media_derivative_receipt_contract \
+  --test doc_052_media_delivery_decision_card_contract \
   --test doc_054_frame_pyramid_contract
 
 # FSS-056 / FSS-060 / FSS-125 — keyframe-aware chunker, decode/timestamp oracle, and malformed corpus minimizer.
