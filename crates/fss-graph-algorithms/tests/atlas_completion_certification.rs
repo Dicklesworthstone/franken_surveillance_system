@@ -51,14 +51,14 @@ fn all_27_graph_algorithms_are_registered_and_implemented() -> TestResult {
     let implemented_count = registry_text.matches("\"status\": \"implemented\"").count();
     let specified_count = registry_text.matches("\"status\": \"specified\"").count();
     assert_eq!(
-        implemented_count, 27,
-        "all 27 registered graph algorithms must have status=implemented"
+        implemented_count, 36,
+        "all 36 registered graph algorithms must have status=implemented"
     );
     assert_eq!(
         specified_count, 0,
         "no registered graph algorithm may remain status=specified"
     );
-    emit_log("ALL-27-ATLAS", 27, "certified");
+    emit_log("ALL-36-ATLAS", 36, "certified");
     Ok(())
 }
 

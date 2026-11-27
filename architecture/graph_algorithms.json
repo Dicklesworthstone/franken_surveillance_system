@@ -822,6 +822,272 @@
         "crates/fss-graph-algorithms/src/certified.rs",
         "crates/fss-graph-algorithms/tests/atlas_completion_certification.rs"
       ]
+    },
+    {
+      "id": "ALG-FACILITY-001",
+      "name": "facility_location_k_center_p_median",
+      "owner": "fss-graph-algorithms",
+      "projection": [
+        "SensorCoverageGraph",
+        "DeviceFailureGraph",
+        "DigitalTwinGraph"
+      ],
+      "decision": "Select camera, compute, cache, or viewpoint placements keeping facility-location, k-center, and p-median objectives distinct under capacity, privacy, and failure-domain constraints",
+      "authoritativeness": "derived",
+      "tieBreak": "canonical objective then lexicographic facility identity tuple",
+      "complexityWitness": "subset evaluations, distance lookups, and greedy swap scans",
+      "outputSizeWitness": "<= k selected facilities plus |D| demand assignments",
+      "exactness": "bounded_exact_or_approximate",
+      "gate": "INT-FNX-001",
+      "status": "implemented",
+      "implementationId": "fss-graph-algorithms:alg-facility-001:exact-small-and-greedy-swap:v1",
+      "tieBreakPolicyId": "tie:min-objective-then-lexicographic-facility-id-tuple:v1",
+      "policyId": "graph-policy:facility-placement:distinct-fl-kcenter-pmedian:capacity-privacy-domain-constraints:tie:min-objective-then-lexicographic-facility-id-tuple:v1",
+      "complexityBoundId": "bound:alg-facility-001:exact-comb-or-greedy-swap-polynomial:v1",
+      "projectionBinding": "caller-built canonical FacilityProblem (fss.graph.facility_projection.v1) bound into inputDigest; cost row COST-GRAPH-001",
+      "qualification": "not_qualified: certified against in-tree exhaustive placement oracle on seeded instances; INT-FNX-001 sealed NetworkX differential remains open",
+      "evidence": [
+        "crates/fss-graph-algorithms/src/facility.rs",
+        "crates/fss-graph-algorithms/src/certified.rs",
+        "crates/fss-graph-algorithms/tests/atlas_gap_families_certification.rs"
+      ]
+    },
+    {
+      "id": "ALG-ISO-001",
+      "name": "canonical_graph_hashing_and_isomorphism",
+      "owner": "fss-graph-algorithms",
+      "projection": [
+        "DigitalTwinGraph",
+        "SensorCoverageGraph",
+        "DeviceFailureGraph",
+        "EvidenceClaimGraph"
+      ],
+      "decision": "Detect scene/topology/config drift with labeled directed multiedge WL fingerprints (candidate relation only) and bounded exact isomorphism verification",
+      "authoritativeness": "derived",
+      "tieBreak": "canonical node color class then lexicographic stable identity",
+      "complexityWitness": "WL refinement rounds, color hashes, and backtracking probes",
+      "outputSizeWitness": "<= |V| node color hashes plus exact bijection or refutation",
+      "exactness": "bounded_exact_with_candidate_hash",
+      "gate": "INT-FNX-001",
+      "status": "implemented",
+      "implementationId": "fss-graph-algorithms:alg-iso-001:labeled-directed-wl-and-exact-iso:v1",
+      "tieBreakPolicyId": "tie:canonical-wl-color-class-then-lexicographic-node-id:v1",
+      "policyId": "graph-policy:labeled-directed-multigraph:wl-candidate-hash-plus-bounded-exact-iso:tie:canonical-wl-color-class-then-lexicographic-node-id:v1",
+      "complexityBoundId": "bound:alg-iso-001:wl-linear-plus-bounded-backtrack-probes:v1",
+      "projectionBinding": "caller-built canonical LabeledMultigraph pair (fss.graph.iso_projection.v1) bound into inputDigest; cost row COST-GRAPH-001",
+      "qualification": "not_qualified: certified against permutation-invariance, non-isomorphic WL collision, and exhaustive bijection oracles; INT-FNX-001 sealed NetworkX differential remains open",
+      "evidence": [
+        "crates/fss-graph-algorithms/src/isomorphism.rs",
+        "crates/fss-graph-algorithms/src/certified.rs",
+        "crates/fss-graph-algorithms/tests/atlas_gap_families_certification.rs"
+      ]
+    },
+    {
+      "id": "ALG-MOTIF-001",
+      "name": "motif_and_triadic_census",
+      "owner": "fss-graph-algorithms",
+      "projection": [
+        "IncidentCausalGraph",
+        "OperationalMemoryGraph",
+        "DeviceFailureGraph",
+        "SpatioTemporalTrackGraph"
+      ],
+      "decision": "Compute exact 16-class MAN triadic census and recurring routine candidates for memory curation without whitelisting behavior or establishing corroboration",
+      "authoritativeness": "derived",
+      "tieBreak": "canonical triad MAN class then lexicographic node triple",
+      "complexityWitness": "triad classifications and routine candidate aggregations",
+      "outputSizeWitness": "<= 16 MAN triad classes plus bounded routine candidates",
+      "exactness": "exact_or_bounded_advisory",
+      "gate": "INT-FNX-001",
+      "status": "implemented",
+      "implementationId": "fss-graph-algorithms:alg-motif-001:exact-man-triad-census:v1",
+      "tieBreakPolicyId": "tie:canonical-man-class-then-lexicographic-node-triple:v1",
+      "policyId": "graph-policy:directed:man-16-triadic-census:non-whitelisting-advisory:tie:canonical-man-class-then-lexicographic-node-triple:v1",
+      "complexityBoundId": "bound:alg-motif-001:cubic-bounded-triad-scan:v1",
+      "projectionBinding": "caller-built directed WeightedGraph (fss.graph.motif_projection.v1) bound into inputDigest; cost row COST-GRAPH-001",
+      "qualification": "not_qualified: certified against exhaustive 64-directed-triad oracle and C(n,3) sum invariants; INT-FNX-001 sealed NetworkX differential remains open",
+      "evidence": [
+        "crates/fss-graph-algorithms/src/motif.rs",
+        "crates/fss-graph-algorithms/src/certified.rs",
+        "crates/fss-graph-algorithms/tests/atlas_gap_families_certification.rs"
+      ]
+    },
+    {
+      "id": "ALG-SUBISO-001",
+      "name": "bounded_vf2_subgraph_matching",
+      "owner": "fss-graph-algorithms",
+      "projection": [
+        "EvidenceClaimGraph",
+        "IncidentCausalGraph",
+        "DigitalTwinGraph",
+        "SpatioTemporalTrackGraph"
+      ],
+      "decision": "Match labeled directed incident, route, scene, or adapter motifs under hard size/probe/match caps where noncompletion returns unknown rather than no-match",
+      "authoritativeness": "derived",
+      "tieBreak": "lexicographic target-node mapping tuple over canonical pattern order",
+      "complexityWitness": "VF2 feasibility probes and candidate degree prunings",
+      "outputSizeWitness": "<= max_matches bounded pattern-to-target embeddings",
+      "exactness": "bounded_exact",
+      "gate": "INT-FNX-001",
+      "status": "implemented",
+      "implementationId": "fss-graph-algorithms:alg-subiso-001:bounded-vf2-induced-and-monomorphic:v1",
+      "tieBreakPolicyId": "tie:lexicographic-target-mapping-over-sorted-pattern-ids:v1",
+      "policyId": "graph-policy:labeled-directed-subgraph:bounded-vf2:noncompletion-is-unknown:tie:lexicographic-target-mapping-over-sorted-pattern-ids:v1",
+      "complexityBoundId": "bound:alg-subiso-001:bounded-vf2-probes-and-match-cap:v1",
+      "projectionBinding": "caller-built canonical LabeledMultigraph pattern and target (fss.graph.subiso_projection.v1) bound into inputDigest; cost row COST-GRAPH-001",
+      "qualification": "not_qualified: certified against exhaustive injection-enumeration oracle for induced and monomorphic modes plus probe-cap UnknownBounded tests; INT-FNX-001 sealed NetworkX differential remains open",
+      "evidence": [
+        "crates/fss-graph-algorithms/src/subiso.rs",
+        "crates/fss-graph-algorithms/src/certified.rs",
+        "crates/fss-graph-algorithms/tests/atlas_gap_families_certification.rs"
+      ]
+    },
+    {
+      "id": "ALG-KCORE-001",
+      "name": "k_core_and_k_truss_decomposition",
+      "owner": "fss-graph-algorithms",
+      "projection": [
+        "SpatioTemporalTrackGraph",
+        "SensorCoverageGraph",
+        "OperationalMemoryGraph",
+        "EvidenceClaimGraph"
+      ],
+      "decision": "Compute exact iterative k-core node peeling and k-truss edge triangle-support decomposition plus failure-domain diversity without treating dense edges as independent corroboration",
+      "authoritativeness": "derived",
+      "tieBreak": "ascending core or truss peeling order then stable node and edge identity",
+      "complexityWitness": "core peeling steps, triangle enumerations, and truss peeling updates",
+      "outputSizeWitness": "<= |V| core numbers plus <= |E| edge truss numbers",
+      "exactness": "exact",
+      "gate": "INT-FNX-001",
+      "status": "implemented",
+      "implementationId": "fss-graph-algorithms:alg-kcore-001:exact-peeling-core-and-truss:v1",
+      "tieBreakPolicyId": "tie:ascending-peel-level-then-stable-node-and-edge-id:v1",
+      "policyId": "graph-policy:undirected:simple-strict:exact-kcore-and-ktruss-peeling:non-corroborating:tie:ascending-peel-level-then-stable-node-and-edge-id:v1",
+      "complexityBoundId": "bound:alg-kcore-001:peeling-plus-triangle-support:v1",
+      "projectionBinding": "caller-built canonical UndirectedGraph (fss.graph.kcore_projection.v1) plus node failure domains bound into inputDigest; cost row COST-GRAPH-001",
+      "qualification": "not_qualified: certified against direct fixpoint k-core and k-truss definition oracles on seeded graphs; INT-FNX-001 sealed NetworkX differential remains open",
+      "evidence": [
+        "crates/fss-graph-algorithms/src/kcore.rs",
+        "crates/fss-graph-algorithms/src/certified.rs",
+        "crates/fss-graph-algorithms/tests/atlas_gap_families_certification.rs"
+      ]
+    },
+    {
+      "id": "ALG-PLANAR-001",
+      "name": "planarity_and_layer_consistency",
+      "owner": "fss-graph-algorithms",
+      "projection": [
+        "DigitalTwinGraph",
+        "SensorCoverageGraph"
+      ],
+      "decision": "Validate one explicitly declared 2D property layer via exact DMP planarity and Euler face self-certification without replacing metric calibration or assuming global 3D planarity",
+      "authoritativeness": "derived",
+      "tieBreak": "declared layer then stable node and edge identity",
+      "complexityWitness": "biconnected DFS visits, DMP fragment scans, and face splits",
+      "outputSizeWitness": "<= |F| <= 2|V| face cycles or nonplanarity obstruction witness",
+      "exactness": "exact",
+      "gate": "INT-FNX-001",
+      "status": "implemented",
+      "implementationId": "fss-graph-algorithms:alg-planar-001:exact-dmp-planar-embedding:v1",
+      "tieBreakPolicyId": "tie:declared-layer-then-ascending-node-and-face-order:v1",
+      "policyId": "graph-policy:undirected:declared-2d-layer:exact-dmp-planarity:no-metric-replacement:tie:declared-layer-then-ascending-node-and-face-order:v1",
+      "complexityBoundId": "bound:alg-planar-001:biconnected-plus-dmp-quadratic:v1",
+      "projectionBinding": "caller-built UndirectedGraph plus DeclaredLayerSpec (fss.graph.planar_projection.v1) bound into inputDigest; cost row COST-GRAPH-001",
+      "qualification": "not_qualified: certified against Euler face-cycle validation and classic planar/nonplanar families (K4, cube, octahedron, K5, K3,3, Petersen, subdivisions); INT-FNX-001 sealed NetworkX differential remains open",
+      "evidence": [
+        "crates/fss-graph-algorithms/src/planar.rs",
+        "crates/fss-graph-algorithms/src/certified.rs",
+        "crates/fss-graph-algorithms/tests/atlas_gap_families_certification.rs"
+      ]
+    },
+    {
+      "id": "ALG-LINKPRED-001",
+      "name": "non_authoritative_link_prediction_with_verifier",
+      "owner": "fss-graph-algorithms",
+      "projection": [
+        "SpatioTemporalTrackGraph",
+        "EvidenceClaimGraph",
+        "OperationalMemoryGraph"
+      ],
+      "decision": "Propose advisory missing-edge candidates via generation-pinned integer scoring and enforce mandatory exact verification for source evidence, temporal/geometry feasibility, capability visibility, and contradiction absence",
+      "authoritativeness": "derived",
+      "tieBreak": "descending exact score then lexicographic endpoint identity pair",
+      "complexityWitness": "candidate pair scorings and exact verifier checks",
+      "outputSizeWitness": "<= max_suggestions verified advisory candidates",
+      "exactness": "approximate_advisory_with_exact_verification",
+      "gate": "INT-FNX-001",
+      "status": "implemented",
+      "implementationId": "fss-graph-algorithms:alg-linkpred-001:jaccard-cn-plus-exact-verifier:v1",
+      "tieBreakPolicyId": "tie:descending-jaccard-cn-score-then-lexicographic-pair:v1",
+      "policyId": "graph-policy:undirected:non-authoritative-link-prediction:mandatory-exact-verifier:tie:descending-jaccard-cn-score-then-lexicographic-pair:v1",
+      "complexityBoundId": "bound:alg-linkpred-001:pair-scan-plus-exact-verifier:v1",
+      "projectionBinding": "caller-built UndirectedGraph plus LinkVerifierContext (fss.graph.linkpred_projection.v1) bound into inputDigest; cost row COST-GRAPH-001",
+      "qualification": "not_qualified: certified against exact Jaccard/CN reference scorer and adversarial verifier-rejection tests; INT-FNX-001 sealed NetworkX differential remains open",
+      "evidence": [
+        "crates/fss-graph-algorithms/src/link_pred.rs",
+        "crates/fss-graph-algorithms/src/certified.rs",
+        "crates/fss-graph-algorithms/tests/atlas_gap_families_certification.rs"
+      ]
+    },
+    {
+      "id": "ALG-CDS-001",
+      "name": "connected_dominating_set_and_resilient_backbone",
+      "owner": "fss-graph-algorithms",
+      "projection": [
+        "SensorCoverageGraph",
+        "DeviceFailureGraph",
+        "DigitalTwinGraph"
+      ],
+      "decision": "Design connected observer/control/relay backbones with explicit k-domination depth, cut-vertex biconnectivity constraints, and failure-domain diversity distinct from fragile MST/Steiner baselines",
+      "authoritativeness": "derived",
+      "tieBreak": "minimum total cost then cardinality then lexicographic backbone node tuple",
+      "complexityWitness": "subset connectivity checks, domination audits, and greedy augmentations",
+      "outputSizeWitness": "<= |V| backbone nodes plus cut-vertex resilience diagnostics",
+      "exactness": "bounded_exact_or_approximate",
+      "gate": "INT-FNX-001",
+      "status": "implemented",
+      "implementationId": "fss-graph-algorithms:alg-cds-001:exact-small-and-greedy-resilient-cds:v1",
+      "tieBreakPolicyId": "tie:min-cost-then-size-then-lexicographic-backbone-ids:v1",
+      "policyId": "graph-policy:undirected:connected-dominating-backbone:explicit-k-domination-and-biconnectivity:tie:min-cost-then-size-then-lexicographic-backbone-ids:v1",
+      "complexityBoundId": "bound:alg-cds-001:exact-2n-small-or-cubic-greedy-prune:v1",
+      "projectionBinding": "caller-built UndirectedGraph plus CdsBackboneConfig (fss.graph.cds_projection.v1) bound into inputDigest; cost row COST-GRAPH-001",
+      "qualification": "not_qualified: certified against independent subset-enumeration CDS/biconnected oracle on seeded topologies; INT-FNX-001 sealed NetworkX differential remains open",
+      "evidence": [
+        "crates/fss-graph-algorithms/src/cds.rs",
+        "crates/fss-graph-algorithms/src/certified.rs",
+        "crates/fss-graph-algorithms/tests/atlas_gap_families_certification.rs"
+      ]
+    },
+    {
+      "id": "ALG-HYPER-001",
+      "name": "native_hypergraph_and_factor_reasoning",
+      "owner": "fss-graph-algorithms",
+      "projection": [
+        "SensorCoverageGraph",
+        "EvidenceClaimGraph",
+        "ArchiveObjectGraph",
+        "AuthorityGraph",
+        "IncidentCausalGraph"
+      ],
+      "decision": "Preserve multi-entity hyperedges and factors with explicit arity, roles, uncertainty, and provenance, computing native s-walk components, pairwise-distortion flags, and minimal hitting sets",
+      "authoritativeness": "derived",
+      "tieBreak": "canonical hyperedge identity then sorted member role and entity identity",
+      "complexityWitness": "hyperedge incidence overlaps, s-walk traversals, and hitting-set checks",
+      "outputSizeWitness": "<= |E_H| s-components plus <= |V| minimal hitting-set entities",
+      "exactness": "exact",
+      "gate": "INT-FNX-001",
+      "status": "implemented",
+      "implementationId": "fss-graph-algorithms:alg-hyper-001:native-s-walk-and-hitting-set:v1",
+      "tieBreakPolicyId": "tie:canonical-hyperedge-id-then-sorted-member-role-entity:v1",
+      "policyId": "graph-policy:native-hypergraph:arity-role-uncertainty-provenance-preserved:tie:canonical-hyperedge-id-then-sorted-member-role-entity:v1",
+      "complexityBoundId": "bound:alg-hyper-001:native-incidence-overlap-plus-bounded-hitting-set:v1",
+      "projectionBinding": "caller-built NativeHypergraph (fss.graph.hyper_projection.v1) declaring native vs bipartite factor mode bound into inputDigest; cost row COST-GRAPH-001",
+      "qualification": "not_qualified: certified against independent s-connectivity and hitting-set enumeration oracles plus pairwise-expansion distortion proofs; INT-FNX-001 sealed NetworkX differential remains open",
+      "evidence": [
+        "crates/fss-graph-algorithms/src/hypergraph.rs",
+        "crates/fss-graph-algorithms/src/certified.rs",
+        "crates/fss-graph-algorithms/tests/atlas_gap_families_certification.rs"
+      ]
     }
   ],
   "drifts": [

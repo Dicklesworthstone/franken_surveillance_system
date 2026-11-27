@@ -233,6 +233,42 @@ Outputs schedule inspection/recalibration; they do not declare an intrusion.
 
 **Decision:** find the cheapest set of independent evidence paths satisfying a policy’s corroboration constraints. This is a registered constrained optimization problem, not “two models agree.”
 
+### `ALG-FACILITY-001` — facility location, k-center, and p-median optimization
+
+**Decision:** select camera, compute, cache, or calibration-viewpoint placements under explicit distance, capacity, installation, privacy, and failure-domain diversity constraints while keeping facility-location, k-center worst-case radius, and p-median total weighted distance strictly distinct from set cover. Uses exact exhaustive search on bounded small instances and labeled greedy-swap approximation with measured regret otherwise.
+
+### `ALG-ISO-001` — canonical graph hashing, isomorphism, and topology-drift detection
+
+**Decision:** detect scene, topology, and configuration drift using labeled directed multiedge Weisfeiler-Lehman fingerprints as a candidate relation only (`hash_proves_identity == false`), backed by bounded exact backtracking isomorphism verification where budget exhaustion returns `UnknownBudgetExhausted`, never false non-isomorphism.
+
+### `ALG-MOTIF-001` — motif, triadic-census, and routine-structure analysis
+
+**Decision:** compute exact 16-class directed MAN triadic censuses and recurring routine-motif candidates for evidence-linked memory curation. Motif density never whitelists behavior, establishes corroboration, or grants/suppresses effects; novel deviations only raise investigation priority.
+
+### `ALG-SUBISO-001` — bounded VF2-class subgraph matching
+
+**Decision:** match labeled directed incident, route, scene, and adapter patterns under hard pattern-size, match-count, and probe-budget ceilings with cooperative cancellation. Noncompletion returns `UnknownBounded`, never false `NoMatch`.
+
+### `ALG-KCORE-001` — k-core, k-truss, and robust-support decomposition
+
+**Decision:** compute exact iterative k-core vertex peeling and k-truss edge triangle-support peeling alongside distinct failure-domain counts in high-core subgraphs. Dense correlated edges never certify independent corroboration.
+
+### `ALG-PLANAR-001` — planarity and declared-layer geometric consistency checks
+
+**Decision:** validate a single explicitly named 2D property layer (`declared_layer_id`, `geometry_generation`, `ignored_crossings_overpasses`) via exact biconnected-component DMP planarity and Euler face self-certification (`V - E + F = 2`). Never replaces metric camera calibration or implies global 3D site planarity.
+
+### `ALG-LINKPRED-001` — non-authoritative link prediction with exact verification
+
+**Decision:** score non-adjacent candidate links with a generation-pinned integer scorer and pass every candidate through a mandatory exact verifier checking source evidence, temporal/geometry feasibility, capability visibility, and contradiction absence. Predictions never create canonical edges, identity, corroboration, or effects.
+
+### `ALG-CDS-001` — connected dominating set and resilient observer-backbone design
+
+**Decision:** synthesize connected observer, relay, and survey backbones with explicit k-domination depth, biconnectivity/cut-vertex resilience constraints, and failure-domain diversity, explicitly distinguishing resilient connected domination from fragile MST/Steiner cost baselines.
+
+### `ALG-HYPER-001` — native hypergraph and factor-graph reasoning
+
+**Decision:** preserve multi-entity visibility, corroboration, manifest, and policy factors (`arity >= 2`) with explicit roles, uncertainty, and provenance rather than lossy pairwise clique expansion. Declares native vs bipartite factor mode, detects pairwise semantic distortion, and computes native `s`-walk components and minimal hitting sets.
+
 ## 5. Cross-camera association graph
 
 Nodes are tracklets with time intervals, appearance/motion features, zones, and source failure domains. Candidate edges exist only when:

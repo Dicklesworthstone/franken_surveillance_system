@@ -31,6 +31,15 @@ Machine source: `architecture/graph_algorithms.json`. Full motivation, numeric p
 | `ALG-RELIABILITY-001` | `reliability_bounds` | `DeviceFailureGraph`, `ArchiveObjectGraph` | `bounded_statistical` | `INT-FNX-001` |
 | `ALG-FACTOR-001` | `factorized_free_join` | `EvidenceClaimGraph`, `SpatioTemporalTrackGraph` | `exact` | `INT-FNX-001` |
 | `ALG-ZSET-001` | `zset_incremental_maintenance` | `SensorCoverageGraph`, `SpatioTemporalTrackGraph`, `EvidenceClaimGraph`, `IncidentCausalGraph`, `DeviceFailureGraph`, `ArchiveObjectGraph`, `AuthorityGraph`, `PlanObligationGraph`, `OperationalMemoryGraph`, `DigitalTwinGraph` | `exact` | `INT-FNX-001` |
+| `ALG-FACILITY-001` | `facility_location_k_center_p_median` | `SensorCoverageGraph`, `DeviceFailureGraph`, `DigitalTwinGraph` | `bounded_exact_or_approximate` | `INT-FNX-001` |
+| `ALG-ISO-001` | `canonical_graph_hashing_and_isomorphism` | `DigitalTwinGraph`, `SensorCoverageGraph`, `DeviceFailureGraph`, `EvidenceClaimGraph` | `bounded_exact_with_candidate_hash` | `INT-FNX-001` |
+| `ALG-MOTIF-001` | `motif_and_triadic_census` | `IncidentCausalGraph`, `OperationalMemoryGraph`, `DeviceFailureGraph`, `SpatioTemporalTrackGraph` | `exact_or_bounded_advisory` | `INT-FNX-001` |
+| `ALG-SUBISO-001` | `bounded_vf2_subgraph_matching` | `EvidenceClaimGraph`, `IncidentCausalGraph`, `DigitalTwinGraph`, `SpatioTemporalTrackGraph` | `bounded_exact` | `INT-FNX-001` |
+| `ALG-KCORE-001` | `k_core_and_k_truss_decomposition` | `SpatioTemporalTrackGraph`, `SensorCoverageGraph`, `OperationalMemoryGraph`, `EvidenceClaimGraph` | `exact` | `INT-FNX-001` |
+| `ALG-PLANAR-001` | `planarity_and_layer_consistency` | `DigitalTwinGraph`, `SensorCoverageGraph` | `exact` | `INT-FNX-001` |
+| `ALG-LINKPRED-001` | `non_authoritative_link_prediction_with_verifier` | `SpatioTemporalTrackGraph`, `EvidenceClaimGraph`, `OperationalMemoryGraph` | `approximate_advisory_with_exact_verification` | `INT-FNX-001` |
+| `ALG-CDS-001` | `connected_dominating_set_and_resilient_backbone` | `SensorCoverageGraph`, `DeviceFailureGraph`, `DigitalTwinGraph` | `bounded_exact_or_approximate` | `INT-FNX-001` |
+| `ALG-HYPER-001` | `native_hypergraph_and_factor_reasoning` | `SensorCoverageGraph`, `EvidenceClaimGraph`, `ArchiveObjectGraph`, `AuthorityGraph`, `IncidentCausalGraph` | `exact` | `INT-FNX-001` |
 
 ## Implementation status
 
@@ -63,6 +72,15 @@ decision-path digests):
 - `ALG-INTERDICT-001`: minimum-cost sensor set whose loss opens an unobserved entry-to-target walk (exact up to 20 relevant sensors; explicitly approximate upper bound beyond), or an existing blind path; the additive exact robust-placement mode now selects affordable proposed cameras to maximize the minimum sensor-loss cost, with separate named installation/loss units, explicit baseline and defended paths, canonical ties and one cumulative cancellable work budget. Limits and witness generation are in `architecture/robust_placement_reference.json`; existing interdiction bytes remain unchanged. Both modes are reference implementations; physical coverage and aggregate qualification remain open.
 - `ALG-SETCOVER-001`: bounded unit-cost evidence/sensor set selection with mandatory and excluded constraints, exhaustive exact-small search up to 20 optional eligible sets, and greedy marginal-gain selection beyond; plus resilient failure-scenario coverage (`resilient_cover.rs`).
 - `ALG-SUBMOD-001`: budgeted positive-weight coverage selection with exact `u128` marginal-utility-to-cost ratio comparison, mandatory/excluded constraints, and explicit residual gap reporting (`submodular.rs`).
+- `ALG-FACILITY-001`: distinct facility-location, k-center, and p-median placement optimization under capacity, privacy, and failure-domain diversity constraints; exact small-instance search plus greedy 1-swap with measured regret upper bound (`facility.rs`).
+- `ALG-ISO-001`: labeled directed multigraph WL candidate fingerprinting (`hash_proves_identity == false`) plus bounded exact backtracking isomorphism verification and label-drift reporting (`isomorphism.rs`).
+- `ALG-MOTIF-001`: exact 16-class directed MAN triadic census (`003..300`) and bounded non-whitelisting routine-motif candidates (`motif.rs`).
+- `ALG-SUBISO-001`: bounded VF2-class labeled induced/monomorphic subgraph matching with hard size/probe/match ceilings where noncompletion returns `UnknownBounded`, never `NoMatch` (`subiso.rs`).
+- `ALG-KCORE-001`: exact iterative k-core node peeling, k-truss edge triangle-support peeling, and max-core failure-domain diversity diagnostics (`kcore.rs`).
+- `ALG-PLANAR-001`: exact biconnected-component Demoucron–Malgrange–Pertuiset (DMP) planarity testing with Euler `V - E + F = 2` face self-certification on declared 2D property layers (`planar.rs`).
+- `ALG-LINKPRED-001`: non-authoritative generation-pinned Jaccard/Common-Neighbors candidate scoring paired with a mandatory exact verifier for evidence backing, temporal/geometry feasibility, capability visibility, and contradiction absence (`link_pred.rs`).
+- `ALG-CDS-001`: connected dominating set and resilient observer-backbone synthesis with explicit k-domination depth, biconnectivity/cut-vertex diagnostics, and failure-domain diversity (`cds.rs`).
+- `ALG-HYPER-001`: native multi-entity hypergraph and factor-graph reasoning preserving arity, roles, uncertainty, and provenance, with native `s`-walk components, pairwise-distortion detection, and minimal hitting sets (`hypergraph.rs`).
 
 Each is certified on seeded directed and undirected graphs (random, DAG, cycle, clique, star,
 path, layered, joined cycles, empty) or seeded assignment problems, insertion-order metamorphic

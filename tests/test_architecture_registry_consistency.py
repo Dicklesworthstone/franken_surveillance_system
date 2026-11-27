@@ -95,15 +95,15 @@ class TestLiveRepoConsistency(unittest.TestCase):
         self.assertEqual(summary["status"], "pass")
         self.assertEqual(summary["error_count"], 0)
         self.assertEqual(summary["invariants_count"], 116)
-        self.assertEqual(summary["algorithms_count"], 27)
+        self.assertEqual(summary["algorithms_count"], 36)
         self.assertEqual(summary["publication_primitives_count"], 13)
         self.assertEqual(summary["franken_imports_count"], 47)
         self.assertEqual(summary["agent_operations_count"], 14)
         self.assertEqual(summary["agent_views_count"], 8)
         self.assertEqual(summary["qualification_lanes_count"], 16)
         self.assertEqual(summary["costs_count"], 41)
-        # 221 interchange/CLI declarations (including fss.cli.diagnostic.v1) and 15 native format registrations.
-        self.assertEqual(summary["schemas_count"], 236)
+        # 222 interchange/CLI declarations (including fss.cli.diagnostic.v1 and scale/macos schemas) and 15 native format registrations.
+        self.assertEqual(summary["schemas_count"], 237)
         self.assertGreater(summary["known_active_ids"], 800)
         self.assertGreaterEqual(summary["tombstone_ids"], 14)
 

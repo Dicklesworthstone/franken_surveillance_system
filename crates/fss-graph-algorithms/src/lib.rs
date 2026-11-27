@@ -28,6 +28,8 @@ pub mod assignment;
 pub mod bridges;
 /// Canonical graph serialization and cryptographic hash verification (`FSS-153`, `fss-x4a.23.3`).
 pub mod canonical_codec;
+/// Connected dominating set and resilient observer-backbone design (`ALG-CDS-001`, `fss-x4a.23.70.8`).
+pub mod cds;
 pub mod centrality;
 pub mod certified;
 pub mod community;
@@ -45,6 +47,8 @@ pub mod evidence;
 pub mod evidence_brief;
 /// Exact historical event references with complete-lineage validation and witnessed support.
 pub mod evidence_history;
+/// Facility location, k-center, and p-median placement optimization (`ALG-FACILITY-001`, `fss-x4a.23.70.1`).
+pub mod facility;
 pub mod factorized_join;
 /// Capability-projected factorized graph-relational query reference planner (`FSS-162`, `fss-x4a.23.12`).
 pub mod factorized_planner;
@@ -53,11 +57,23 @@ pub mod flow;
 pub mod gomory_hu;
 pub mod graph;
 pub mod hits;
+/// Native hypergraph and factor-graph reasoning (`ALG-HYPER-001`, `fss-x4a.23.70.9`).
+pub mod hypergraph;
 pub mod interdiction;
+/// Canonical graph hashing, isomorphism, and topology-drift detection (`ALG-ISO-001`, `fss-x4a.23.70.2`).
+pub mod isomorphism;
+/// Exact k-core, k-truss, and robust-support decomposition (`ALG-KCORE-001`, `fss-x4a.23.70.5`).
+pub mod kcore;
 pub mod ksp;
+/// Non-authoritative link prediction with mandatory exact verification (`ALG-LINKPRED-001`, `fss-x4a.23.70.7`).
+pub mod link_pred;
 pub mod min_cost_flow;
+/// Exact 16-class directed MAN triadic census and routine-structure analysis (`ALG-MOTIF-001`, `fss-x4a.23.70.3`).
+pub mod motif;
 pub mod oracles;
 pub mod paths;
+/// Exact declared-layer 2D planarity and geometric consistency checks (`ALG-PLANAR-001`, `fss-x4a.23.70.6`).
+pub mod planar;
 pub mod ppr;
 /// Immutable graph projection and generational-handle core (`FSS-151`, `fss-x4a.23.1`).
 pub mod projection;
@@ -77,11 +93,13 @@ pub mod spectral;
 pub mod steiner;
 /// Exact aggregate camera-demand routing with shared capacity, failure, cost and cut proofs.
 pub mod stream_capacity;
+/// Bounded VF2-class labeled subgraph matching (`ALG-SUBISO-001`, `fss-x4a.23.70.4`).
+pub mod subiso;
 /// Budgeted positive-weight coverage with exact integer ratio ranking and explicit omissions.
 pub mod submodular;
 pub mod temporal;
 pub mod topo;
-/// Typed FSS graph projection universes (`H_vis`, `G_effect`, `G_auth`, `G_world`).
+/// Complete 12-universe typed FSS graph projection atlas (`G_phys..G_world`, `GRAPH-PROJECTION-SEMANTICS-001`).
 pub mod typed_universes;
 pub mod weighted;
 pub mod zset;
