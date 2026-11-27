@@ -26,7 +26,7 @@ use fss_pack::{
     DekId, DurabilityMode, ERR_CRYPTO_AUTH_FAILED_001, ERR_CRYPTO_KEY_ERASED_001,
     EncryptedStreamKind, KeyEncryptionKey, KeyEnvelopeCatalog, KeyEpoch,
     MAX_COLD_MANIFEST_DOWNLOAD_BYTES, PackConfig, PackError, PackId, PackStore,
-    S3CompatiblePackTransport, SCHEMA_EPOCH_PACKFILE, archive_sealed_pack,
+    S3CompatiblePackTransport, SCHEMA_EPOCH_PACKFILE, archive_sealed_pack_with_pin,
     decrypt_and_verify_pack_bytes, decrypt_and_verify_pack_file, encrypt_pack_file,
     fetch_cold_pack_manifest, restore_cold_pack_to_dir, verify_sealed_pack,
 };
@@ -803,9 +803,10 @@ fn exec_upload(args: &[ArgToken]) -> (String, ExitIdentity) {
         };
     let mut entropy = OsEntropy::new();
     let now = current_timestamp_ns();
-    let res = archive_sealed_pack(
+    let res = archive_sealed_pack_with_pin(
         &packs_dir,
         pack_id,
+        Some(whole_sha),
         &policy,
         &mut catalog,
         &kek,

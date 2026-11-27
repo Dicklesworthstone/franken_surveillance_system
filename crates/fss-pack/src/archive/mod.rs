@@ -97,6 +97,39 @@ pub fn archive_sealed_pack(
     durability: DurabilityMode,
     now_ns: TimestampNs,
 ) -> Result<ColdPackArchiveReceipt, PackError> {
+    archive_sealed_pack_with_pin(
+        packs_dir,
+        pack_id,
+        None,
+        policy,
+        catalog,
+        kek,
+        transport,
+        entropy,
+        local_manifest_dir,
+        durability,
+        now_ns,
+    )
+}
+
+/// Archives a sealed pack after checking its optional, independently supplied FSSF
+/// whole-pack digest against the actual verified plaintext selected for encryption.
+/// A mismatched approval is refused before key creation or any transport operation.
+/// Pass `None` to select the current contents, as in [`archive_sealed_pack`].
+#[allow(clippy::too_many_arguments)]
+pub fn archive_sealed_pack_with_pin(
+    packs_dir: &Path,
+    pack_id: PackId,
+    expected_whole_pack_sha256: Option<ContentDigest>,
+    policy: &ColdArchivePolicy,
+    catalog: &mut KeyEnvelopeCatalog,
+    kek: &KeyEncryptionKey,
+    transport: &mut dyn ColdPackTransport,
+    entropy: &mut dyn EntropySource,
+    local_manifest_dir: Option<&Path>,
+    durability: DurabilityMode,
+    now_ns: TimestampNs,
+) -> Result<ColdPackArchiveReceipt, PackError> {
     policy.validate()?;
     // 1. Verify the same bounded bytes that encryption will consume.
     let pack_path = packs_dir.join(pack_id.file_name());
@@ -134,7 +167,12 @@ pub fn archive_sealed_pack(
             detail: "sealed pack grew during archive admission".to_owned(),
         });
     }
-    drop(audit::verify_sealed_pack_bytes(pack_id, &plaintext_pack)?);
+    let (actual, _) = audit::verify_sealed_pack_bytes(pack_id, &plaintext_pack)?;
+    if let Some(expected) = expected_whole_pack_sha256
+        && actual != expected
+    {
+        return Err(PackError::DigestMismatch { expected, actual });
+    }
 
     // 2. Mint and wrap a per-pack 256-bit DEK under the active site KEK.
     let (dek, wrapped_env) = catalog.create_and_wrap_dek(kek, entropy, &[pack_id], now_ns)?;

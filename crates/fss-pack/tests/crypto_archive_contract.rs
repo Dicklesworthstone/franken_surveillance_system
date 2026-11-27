@@ -1305,10 +1305,37 @@ fn cold_tier_loopback_s3_e2e_archive_audit_tamper_evict_and_restore() -> TestRes
     assert_eq!(catalog.active_dek_count(), 0);
     assert!(server.requests().is_empty());
 
+    // A valid pack copied into the approved path must still match the exact
+    // seal approved before credentials were loaded.
+    fs::copy(
+        store.packs_dir().join(sealed_p2.pack_id.file_name()),
+        damaged_dir.join(sealed_p1.pack_id.file_name()),
+    )?;
+    let approved = sealed_p1.whole_pack_digest;
+    assert!(matches!(
+        fss_pack::archive_sealed_pack_with_pin(
+            &damaged_dir,
+            sealed_p1.pack_id,
+            Some(approved),
+            &policy,
+            &mut catalog,
+            &kek,
+            &mut transport,
+            &mut entropy,
+            None,
+            DurabilityMode::Fsync,
+            now,
+        ),
+        Err(PackError::DigestMismatch { expected, .. }) if expected == approved
+    ));
+    assert_eq!(catalog.active_dek_count(), 0);
+    assert!(server.requests().is_empty());
+
     // Archive P1 (SinglePut) and P2 (Multipart)
-    let arch_p1 = archive_sealed_pack(
+    let arch_p1 = fss_pack::archive_sealed_pack_with_pin(
         store.packs_dir(),
         sealed_p1.pack_id,
+        Some(approved),
         &policy,
         &mut catalog,
         &kek,

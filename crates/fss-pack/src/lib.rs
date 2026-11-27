@@ -46,8 +46,8 @@ pub use archive::{
     DEFAULT_MULTIPART_THRESHOLD_BYTES, LocalPackEvictionReceipt, MAX_COLD_MANIFEST_DOWNLOAD_BYTES,
     PACK_COLD_ARCHIVE_MANIFEST_DOMAIN, PACK_COLD_ENDPOINT_DOMAIN,
     PACK_COLD_RETRIEVABILITY_AUDIT_DOMAIN, S3CompatiblePackTransport, archive_sealed_pack,
-    audit_cold_pack_retrievability, evict_local_sealed_pack, fetch_cold_pack_manifest,
-    restore_cold_pack, restore_cold_pack_to_dir,
+    archive_sealed_pack_with_pin, audit_cold_pack_retrievability, evict_local_sealed_pack,
+    fetch_cold_pack_manifest, restore_cold_pack, restore_cold_pack_to_dir,
 };
 pub use catalog::{
     CATALOG_FORMAT_VERSION, CATALOG_JOURNAL_MAGIC, CATALOG_SNAPSHOT_MAGIC, CatalogRecoveryReport,

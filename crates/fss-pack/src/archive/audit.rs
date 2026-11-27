@@ -573,14 +573,14 @@ fn download_decrypt_and_verify_pack(
         });
     }
 
-    let verified_records = verify_sealed_pack_bytes(manifest.pack_id, &plaintext_pack)?;
+    let (_, verified_records) = verify_sealed_pack_bytes(manifest.pack_id, &plaintext_pack)?;
     Ok((plaintext_pack, verified_records))
 }
 
 pub(super) fn verify_sealed_pack_bytes(
     pack_id: PackId,
     raw: &[u8],
-) -> Result<Vec<VerifiedInnerRecord>, PackError> {
+) -> Result<(ContentDigest, Vec<VerifiedInnerRecord>), PackError> {
     if raw.len() < PACK_FOOTER_PREFIX_LEN + PACK_FOOTER_TAIL_LEN {
         return Err(PackError::CorruptPack {
             pack_id,
@@ -683,7 +683,10 @@ pub(super) fn verify_sealed_pack_bytes(
 
     // Preserve canonical order for append_batch and its returned locations.
     records.sort_unstable_by_key(|record| (record.digest, record.payload_start));
-    Ok(records)
+    Ok((
+        ContentDigest::new(DigestAlgorithm::Sha256, whole_sha),
+        records,
+    ))
 }
 
 fn build_audit_ranges(total_bytes: u64, config: &ColdAuditConfig) -> Vec<(u64, u64)> {

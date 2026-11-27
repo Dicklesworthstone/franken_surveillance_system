@@ -38,7 +38,7 @@ fn seal(mut bytes: Vec<u8>, entries: &[PackFooterEntry]) -> Result<Vec<u8>, Pack
 #[test]
 fn complete_index_preserves_canonical_restore_order() -> Result<(), PackError> {
     let (bytes, mut entries) = records();
-    let verified = verify_sealed_pack_bytes(PACK, &seal(bytes.clone(), &entries)?)?;
+    let (_, verified) = verify_sealed_pack_bytes(PACK, &seal(bytes.clone(), &entries)?)?;
     entries.sort_unstable();
     assert_eq!(verified.len(), entries.len());
     for (record, entry) in verified.iter().zip(entries) {
