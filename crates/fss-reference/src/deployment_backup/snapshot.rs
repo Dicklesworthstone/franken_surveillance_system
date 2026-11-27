@@ -144,20 +144,17 @@ pub(super) fn inventory(
             if total > limits.max_total_bytes {
                 return Err(BackupError::Limit("inventory_bytes"));
             }
-            let bytes = io.read_exact(&entry.path(), limits.max_file_bytes)?;
-            if bytes.len() as u64 != metadata.len() {
-                return Err(BackupError::Changed);
-            }
+            let digest = io.digest_listed(&entry.path(), &metadata)?;
             if (name.starts_with("objects/spool/verified/")
                 || name.starts_with("agent/publications/spool/verified/"))
-                && !bytes.is_empty()
+                && metadata.len() != 0
             {
                 return Err(BackupError::Corrupt("verification_marker"));
             }
             files.push(BackupFile {
                 path: name,
-                bytes: bytes.len() as u64,
-                digest: ContentDigest::sha256(&bytes),
+                bytes: metadata.len(),
+                digest,
             });
         }
     }

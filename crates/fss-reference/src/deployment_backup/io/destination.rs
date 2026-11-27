@@ -232,14 +232,24 @@ impl WriteTree {
         bytes: &[u8],
         gate: &dyn Fn() -> Result<()>,
     ) -> Result<File> {
-        self.write_new_before_open(path, bytes, gate, &|| Ok(()))
+        self.write_stream(path, gate, |write| write(bytes))
     }
-    fn write_new_before_open(
+
+    pub(in crate::deployment_backup) fn write_stream(
         &self,
         path: &Path,
-        bytes: &[u8],
+        gate: &dyn Fn() -> Result<()>,
+        produce: impl FnOnce(&mut dyn FnMut(&[u8]) -> Result<()>) -> Result<()>,
+    ) -> Result<File> {
+        self.write_stream_before_open(path, gate, &|| Ok(()), produce)
+    }
+
+    fn write_stream_before_open(
+        &self,
+        path: &Path,
         gate: &dyn Fn() -> Result<()>,
         before_open: &dyn Fn() -> Result<()>,
+        produce: impl FnOnce(&mut dyn FnMut(&[u8]) -> Result<()>) -> Result<()>,
     ) -> Result<File> {
         gate()?;
         self.check()?;
@@ -265,6 +275,25 @@ impl WriteTree {
         })?;
         regular(&file.metadata()?)?;
         self.check()?;
+        produce(&mut |bytes| self.write_bytes(&mut file, bytes, gate))?;
+        gate()?;
+        self.check()?;
+        file.sync_all()?;
+        parent.file.sync_all()?;
+        let before = file.metadata()?;
+        regular(&before)?;
+        if !same_file(&before, &fs::symlink_metadata(held)?) {
+            return Err(BackupError::Changed);
+        }
+        self.check()?;
+        Ok(file)
+    }
+    fn write_bytes(
+        &self,
+        file: &mut File,
+        bytes: &[u8],
+        gate: &dyn Fn() -> Result<()>,
+    ) -> Result<()> {
         let mut at = 0;
         let mut interruptions = 0;
         while at < bytes.len() {
@@ -280,17 +309,7 @@ impl WriteTree {
                 Err(error) => return Err(error.into()),
             }
         }
-        gate()?;
-        self.check()?;
-        file.sync_all()?;
-        parent.file.sync_all()?;
-        let before = file.metadata()?;
-        regular(&before)?;
-        if !same_file(&before, &fs::symlink_metadata(held)?) {
-            return Err(BackupError::Changed);
-        }
-        self.check()?;
-        Ok(file)
+        Ok(())
     }
     pub(in crate::deployment_backup) fn open_read(&self, path: &Path) -> Result<File> {
         self.check()?;
@@ -596,15 +615,15 @@ mod tests {
         fs::create_dir(&outside)?;
         let tree = WriteTree::reserve(&root, &|| Ok(()))?;
         let moved = base.join("old-selected");
-        let result = tree.write_new_before_open(
+        let result = tree.write_stream_before_open(
             &root.join("original"),
-            b"private original bytes",
             &|| Ok(()),
             &|| {
                 fs::rename(&root, &moved)?;
                 symlink(&outside, &root)?;
                 Ok(())
             },
+            |write| write(b"private original bytes"),
         );
         assert!(matches!(result, Err(BackupError::Changed)));
         assert!(fs::read_dir(&outside)?.next().is_none());

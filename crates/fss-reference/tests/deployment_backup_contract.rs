@@ -8,9 +8,9 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Write;
+use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use fss_core::{
     BudgetVector, ContentDigest, ContextAuthority, Generation, ObjectId, OperationId,
@@ -277,7 +277,11 @@ fn exact_roundtrip_keeps_originals_holds_deletion_and_fresh_store_identity() -> 
     )?;
     // A staged, unreferenced original is real custody and must survive too. Its verification
     // marker is retained independently of whether a manifest happens to reference it.
-    let unreferenced = source.stage_payload(b"approved-unreferenced-original")?;
+    // Exercise complete blocks plus a short final block through create, inspect and restore.
+    let original_payload: Vec<u8> = (0..(3 * 65_536 + 17))
+        .map(|index| (index % 251) as u8)
+        .collect();
+    let unreferenced = source.stage_payload(&original_payload)?;
     source.publisher_mut().verify_object(unreferenced)?;
     // The deployment deletion owner records authority tombstones in its ledger. Independently
     // exercise an existing local publisher tombstone whose denied original has been removed.
@@ -392,7 +396,7 @@ fn exact_roundtrip_keeps_originals_holds_deletion_and_fresh_store_identity() -> 
     );
     assert_eq!(
         restored.publisher().spool().read(unreferenced)?,
-        b"approved-unreferenced-original"
+        original_payload
     );
     assert!(
         restored
@@ -932,6 +936,63 @@ fn source_and_destination_authority_remain_live_during_semantic_reads_and_copy()
         .is_err()
     );
     assert_eq!(bytes_under(&f.source)?, before);
+    Ok(())
+}
+
+#[test]
+fn source_changes_during_copy_never_disclose_an_unapproved_block() -> Test {
+    struct ChangeDuringCopy {
+        source: PathBuf,
+        target: PathBuf,
+        changed: AtomicBool,
+    }
+    impl BackupAuthority for ChangeDuringCopy {
+        fn permit(&self, _: BackupAccess<'_>) -> bool {
+            // Simulate an out-of-band write after the first approved block is visible.
+            if !self.changed.load(Ordering::SeqCst)
+                && fs::metadata(&self.target).is_ok_and(|m| m.len() >= 65_536)
+                && !self.changed.swap(true, Ordering::SeqCst)
+            {
+                let edit = || -> std::io::Result<()> {
+                    let mut source = fs::OpenOptions::new().write(true).open(&self.source)?;
+                    source.seek(SeekFrom::Start(2 * 65_536))?;
+                    source.write_all(&[0x99])
+                };
+                return edit().is_ok();
+            }
+            true
+        }
+    }
+
+    let f = Fixture::new("change-during-copy")?;
+    let mut deployment = f.open()?;
+    let object = deployment.stage_payload(&vec![0x31; 3 * 65_536])?;
+    drop(deployment);
+    let manifest = f.plan()?;
+    let name = object.to_text();
+    let relative = Path::new("objects/spool/objects").join(&name[7..]);
+    let bundle = f.directory.0.join("partial-bundle");
+    let fault = ChangeDuringCopy {
+        source: f.source.join(&relative),
+        target: bundle.join(BACKUP_PAYLOAD_DIRECTORY).join(&relative),
+        changed: AtomicBool::new(false),
+    };
+    let approved = fs::read(&fault.source)?;
+    let result = create_backup(
+        &f.source,
+        &bundle,
+        manifest.digest(),
+        f.limits,
+        BackupLimits::default(),
+        &fault,
+        &f.cx()?,
+    );
+    assert!(matches!(result, Err(BackupError::Changed)));
+    assert!(fault.changed.load(Ordering::SeqCst));
+    let partial = fs::read(&fault.target)?;
+    assert!((65_536..=2 * 65_536).contains(&partial.len()));
+    assert_eq!(partial, &approved[..partial.len()]);
+    assert!(!bundle.join(BACKUP_MANIFEST_FILENAME).exists());
     Ok(())
 }
 

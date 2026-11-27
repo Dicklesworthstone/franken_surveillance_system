@@ -8,10 +8,13 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use fss_core::{ContentDigest, DigestAlgorithm, Sha256Hasher};
 use fss_ledger::{JournalFileMetadata, JournalReadIo};
 use fss_object::SpoolIo;
 
 use super::{BackupError, BackupLimits, ReplayCx, Result};
+
+pub(super) const BLOCK_BYTES: usize = 65_536;
 
 mod destination;
 pub(super) use destination::{PinnedSpoolIo, WriteTree};
@@ -331,6 +334,121 @@ impl<'a> ReadIo<'a> {
         }
         Ok(bytes)
     }
+    // Deterministic block boundaries even when the kernel returns a short read.
+    // Native readers and integrity checks share the same metering and revocation points.
+    fn visit_bounded(
+        &self,
+        file: &mut File,
+        limit: u64,
+        mut consume: impl FnMut(&[u8]) -> Result<()>,
+    ) -> io::Result<u64> {
+        self.call()?;
+        let meta = file.metadata()?;
+        regular(&meta).map_err(|error| self.fail(error))?;
+        let admitted = limit.min(meta.len().saturating_add(1));
+        if self
+            .bytes
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                n.checked_add(admitted)
+                    .filter(|next| *next <= self.max_bytes)
+            })
+            .is_err()
+        {
+            return Err(self.fail(BackupError::Limit("read_bytes")));
+        }
+        let mut left = admitted;
+        let mut interruptions = 0;
+        let mut buffer = [0_u8; BLOCK_BYTES];
+        let mut filled = 0;
+        while left > 0 {
+            self.call()?;
+            let wanted = left.min((buffer.len() - filled) as u64) as usize;
+            match file.read(&mut buffer[filled..filled + wanted]) {
+                Ok(0) => break,
+                Ok(n) => {
+                    filled += n;
+                    left -= n as u64;
+                    if filled == buffer.len() {
+                        consume(&buffer).map_err(|e| self.fail(e))?;
+                        filled = 0;
+                    }
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted && interruptions < 8 => {
+                    interruptions += 1;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        if filled != 0 {
+            consume(&buffer[..filled]).map_err(|e| self.fail(e))?;
+        }
+        self.bytes.fetch_sub(left, Ordering::SeqCst);
+        if !same_file(&meta, &file.metadata()?) {
+            return Err(self.fail(BackupError::Changed));
+        }
+        self.check().map_err(|error| self.fail(error))?;
+        Ok(admitted - left)
+    }
+
+    pub(super) fn visit_exact(
+        &self,
+        file: &mut File,
+        expected_bytes: u64,
+        consume: impl FnMut(&[u8]) -> Result<()>,
+    ) -> Result<()> {
+        self.check()?;
+        if file.metadata()?.len() != expected_bytes {
+            return Err(BackupError::Changed);
+        }
+        file.rewind()?;
+        let read = self.visit_bounded(file, expected_bytes.saturating_add(1), consume);
+        self.check()?;
+        if read? != expected_bytes {
+            return Err(BackupError::Changed);
+        }
+        Ok(())
+    }
+
+    pub(super) fn digest_blocks(
+        &self,
+        file: &mut File,
+        expected_bytes: u64,
+        mut consume: impl FnMut(&[u8]) -> Result<()>,
+    ) -> Result<ContentDigest> {
+        let mut hasher = Sha256Hasher::new();
+        self.visit_exact(file, expected_bytes, |block| {
+            hasher.update(block);
+            consume(block)
+        })?;
+        Ok(ContentDigest::new(
+            DigestAlgorithm::Sha256,
+            hasher.finalize().map_err(|_| BackupError::Limit("file_bytes"))?,
+        ))
+    }
+
+    pub(super) fn digest_owned(
+        &self,
+        file: &mut File,
+        expected_bytes: u64,
+    ) -> Result<ContentDigest> {
+        self.digest_blocks(file, expected_bytes, |_| Ok(()))
+    }
+
+    /// Bind the inventory digest to the file identity admitted by the directory scan.
+    pub(super) fn digest_listed(&self, path: &Path, listed: &Metadata) -> Result<ContentDigest> {
+        self.call()?;
+        let mut file = open_file(path, self.cx)?;
+        if !same_file(listed, &file.metadata()?) {
+            return Err(BackupError::Changed);
+        }
+        let digest = self.digest_owned(&mut file, listed.len())?;
+        if !same_file(listed, &fs::symlink_metadata(path)?) {
+            return Err(BackupError::Changed);
+        }
+        checked_path(path)?;
+        Ok(digest)
+    }
+
     fn read_exact_inner(&self, path: &Path, max_bytes: u64) -> Result<Vec<u8>> {
         self.call()?;
         let mut file = open_file(path, self.cx)?;
@@ -428,45 +546,11 @@ impl SpoolIo for ReadIo<'_> {
         open_file(path, self.cx).map_err(|error| self.fail(error))
     }
     fn read_bounded(&self, file: &mut File, limit: u64) -> io::Result<Vec<u8>> {
-        self.call()?;
-        let meta = file.metadata()?;
-        regular(&meta).map_err(|error| self.fail(error))?;
-        let admitted = limit.min(meta.len().saturating_add(1));
-        if self
-            .bytes
-            .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
-                n.checked_add(admitted)
-                    .filter(|next| *next <= self.max_bytes)
-            })
-            .is_err()
-        {
-            return Err(self.fail(BackupError::Limit("read_bytes")));
-        }
         let mut bytes = Vec::new();
-        let mut left = admitted;
-        let mut interruptions = 0;
-        let mut buffer = [0_u8; 65_536];
-        while left > 0 {
-            self.call()?;
-            let wanted = left.min(buffer.len() as u64) as usize;
-            match file.read(&mut buffer[..wanted]) {
-                Ok(0) => break,
-                Ok(n) => {
-                    bytes.extend_from_slice(&buffer[..n]);
-                    left -= n as u64;
-                }
-                Err(error) if error.kind() == io::ErrorKind::Interrupted && interruptions < 8 => {
-                    interruptions += 1;
-                }
-                Err(error) => return Err(error),
-            }
-        }
-        self.bytes
-            .fetch_sub(admitted - bytes.len() as u64, Ordering::SeqCst);
-        if !same_file(&meta, &file.metadata()?) {
-            return Err(self.fail(BackupError::Changed));
-        }
-        self.check().map_err(|error| self.fail(error))?;
+        self.visit_bounded(file, limit, |block| {
+            bytes.extend_from_slice(block);
+            Ok(())
+        })?;
         Ok(bytes)
     }
     fn rename(&self, _: &Path, _: &Path) -> io::Result<()> {

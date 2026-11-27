@@ -12,8 +12,10 @@ use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
 use fss_object::SpoolIo;
 use fss_publication::{AuthorityPublisher, LocalRootPublisher};
 
-use super::io::{PinnedSpoolIo, ReadIo, WriteTree, admit_root_directory, fresh_path, source_locks};
-use super::manifest::{BackupManifest, RestoreFence};
+use super::io::{
+    BLOCK_BYTES, PinnedSpoolIo, ReadIo, WriteTree, admit_root_directory, fresh_path, source_locks,
+};
+use super::manifest::{BackupFile, BackupManifest, RestoreFence};
 use super::snapshot::{DIRECTORIES, PAYLOAD_GUARD, SnapshotKind, snapshot, snapshot_with_agent};
 use super::{
     BACKUP_MANIFEST_FILENAME, BACKUP_PAYLOAD_DIRECTORY, BackupAccess, BackupAuthority, BackupError,
@@ -93,6 +95,51 @@ fn create_tree(
     Ok(())
 }
 
+/// Verify each large file before disclosing any original bytes. The second pass reads the
+/// same descriptor and checks each block against the first pass before writing it. These
+/// transient block digests do not change the canonical manifest or either on-disk layout.
+fn copy_approved(
+    source: &Path,
+    destination: &Path,
+    file: &BackupFile,
+    io: &ReadIo<'_>,
+    writer: &WriteTree,
+    gate: &dyn Fn() -> Result<()>,
+) -> Result<fs::File> {
+    if file.byte_len() <= BLOCK_BYTES as u64 {
+        let bytes = io.read_exact(source, file.byte_len())?;
+        if bytes.len() as u64 != file.byte_len() || ContentDigest::sha256(&bytes) != file.digest() {
+            return Err(BackupError::Changed);
+        }
+        return writer.write_new(destination, &bytes, gate);
+    }
+
+    let opened = SpoolIo::open_read(io, source);
+    io.check()?;
+    let mut source_file = opened?;
+    let mut blocks = Vec::new();
+    let digest = io.digest_blocks(&mut source_file, file.byte_len(), |block| {
+        blocks.push(ContentDigest::sha256(block).bytes());
+        Ok(())
+    })?;
+    if digest != file.digest() {
+        return Err(BackupError::Changed);
+    }
+    let mut expected = blocks.into_iter();
+    writer.write_stream(destination, gate, |write| {
+        io.visit_exact(&mut source_file, file.byte_len(), |block| {
+            if expected.next() != Some(ContentDigest::sha256(block).bytes()) {
+                return Err(BackupError::Changed);
+            }
+            write(block)
+        })?;
+        if expected.next().is_some() {
+            return Err(BackupError::Changed);
+        }
+        Ok(())
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn copy_files(
     source: &Path,
@@ -111,14 +158,17 @@ fn copy_files(
         checkpoint(cx, STAGE_BACKUP_COPY)?;
         gate()?;
         writer.check()?;
-        let bytes = io.read_exact(&source.join(file.relative_path()), file.byte_len())?;
-        if bytes.len() as u64 != file.byte_len() || ContentDigest::sha256(&bytes) != file.digest() {
-            return Err(BackupError::Changed);
-        }
-        let mut opened = writer.write_new(&destination.join(file.relative_path()), &bytes, gate)?;
-        let copied = io.read_owned(&mut opened, file.byte_len())?;
+        let mut opened = copy_approved(
+            &source.join(file.relative_path()),
+            &destination.join(file.relative_path()),
+            file,
+            io,
+            writer,
+            gate,
+        )?;
+        let copied = io.digest_owned(&mut opened, file.byte_len())?;
         writer.check()?;
-        if copied != bytes {
+        if copied != file.digest() {
             return Err(BackupError::Changed);
         }
     }
@@ -568,11 +618,11 @@ pub fn restore_backup(
     for file in manifest.files().iter().filter(|file| {
         file.relative_path() != "LAYOUT" && file.relative_path() != "ledger/journal.fssj"
     }) {
-        let bytes = io.read_owned(
+        let digest = io.digest_owned(
             &mut writer.open_read(&destination_root.join(file.relative_path()))?,
             file.byte_len(),
         )?;
-        if ContentDigest::sha256(&bytes) != file.digest() {
+        if digest != file.digest() {
             return Err(BackupError::Changed);
         }
     }
