@@ -485,3 +485,63 @@ fn paired_holdout_identifies_lost_and_gained_events_at_the_locked_threshold() ->
         .output()?;
     assert_refusal(&no_manifest, "evaluation.comparison.options")
 }
+
+#[test]
+fn pooled_budget_can_pass_while_a_negative_only_property_exceeds_it() -> TestResult {
+    let score = |labels, new, old, manifest| {
+        command(labels, new, "1", "600")
+            .args(["--fixed-threshold-ppm", "800000", "--holdout-manifest"])
+            .arg(fixture(manifest))
+            .arg("--baseline-candidates")
+            .arg(fixture(old))
+            .args(["--baseline-model-generation", "prior"])
+            .output()
+    };
+    let report = score(
+        "class-labels.tsv",
+        "class-candidates.tsv",
+        "comparison-baseline.tsv",
+        "comparison-holdout.tsv",
+    )?;
+    assert!(
+        report.status.success(),
+        "{}",
+        String::from_utf8_lossy(&report.stderr)
+    );
+    let (pooled, properties) = std::str::from_utf8(&report.stdout)?
+        .split_once("\"property_comparison\":")
+        .ok_or("missing property comparison")?;
+    assert!(pooled.contains("\"observed_ns\":\"1900\",\"budget_state\":\"within_budget\""));
+    let (east, west) = properties
+        .split_once("\"property_id\":\"west\"")
+        .ok_or("missing west")?;
+    assert!(east.contains("\"property_id\":\"east\",\"clips\":1"));
+    assert!(east.contains("\"observed_ns\":\"900\",\"budget_state\":\"within_budget\""));
+    let (old, new) = west
+        .split_once("\"challenger\":")
+        .ok_or("missing west challenger")?;
+    assert!(old.contains("\"true_positives\":0,\"false_positives\":1"));
+    assert!(new.contains("\"true_positives\":0,\"false_positives\":2"));
+    assert!(new.contains("\"observed_ns\":\"1000\",\"budget_state\":\"over_budget\""));
+    let blind = score(
+        "all-gap-labels.tsv",
+        "candidates.tsv",
+        "candidates.tsv",
+        "holdout.tsv",
+    )?;
+    assert!(
+        blind.status.success(),
+        "{}",
+        String::from_utf8_lossy(&blind.stderr)
+    );
+    let (_, properties) = std::str::from_utf8(&blind.stdout)?
+        .split_once("\"property_comparison\":")
+        .ok_or("missing blind property")?;
+    assert_eq!(
+        properties
+            .matches("\"observed_ns\":\"0\",\"budget_state\":\"no_observed_time\"")
+            .count(),
+        2
+    );
+    Ok(())
+}

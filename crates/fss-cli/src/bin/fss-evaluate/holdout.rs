@@ -25,6 +25,7 @@ pub(super) struct Holdout {
     manifest_digest: ContentDigest,
     threshold_ppm: u32,
     counts: [usize; 3],
+    property_by_clip: BTreeMap<String, String>,
 }
 
 fn digest(encoder: CanonicalEncoder) -> Result<ContentDigest> {
@@ -151,7 +152,11 @@ pub(super) fn validate(input: &str, labels: &LabelSet, fixed: Option<u32>) -> Re
     manifest.text(MANIFEST_SCHEMA);
     manifest.u32(threshold_ppm);
     manifest.u64(clips.len() as u64);
+    let mut property_by_clip = BTreeMap::new();
     for (clip, (partition, property, session, source)) in clips {
+        if partition == Partition::Holdout {
+            property_by_clip.insert(clip.to_owned(), property.to_owned());
+        }
         manifest.text(clip);
         manifest.tag(partition as u8);
         manifest.text(property);
@@ -162,6 +167,7 @@ pub(super) fn validate(input: &str, labels: &LabelSet, fixed: Option<u32>) -> Re
         manifest_digest: digest(manifest)?,
         threshold_ppm,
         counts,
+        property_by_clip,
     })
 }
 

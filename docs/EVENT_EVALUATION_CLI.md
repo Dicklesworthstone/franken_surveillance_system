@@ -178,6 +178,14 @@ identity. An event wholly inside a coverage gap stays unobservable for both mode
 Candidate IDs are local to each input. The comparison digest binds the manifest and both
 fixed operating points in baseline/challenger order. This example uses synthetic data.
 
+The same command emits a `property_comparison` in property-ID order. Each row scores all
+of that property's held-out clips under the shared threshold and false-alert budget. Rows
+retain negative-only clips and use the observed time after merging coverage gaps. A property
+with zero observed time reports `no_observed_time`. In the example above, changing the budget
+to `--max-false-alerts 1 --per-observed-ns 600` lets the challenger pass the pooled budget
+(three false alerts in 1,900 observed ns), while west exceeds it (two in 1,000 observed ns).
+The property receipt binds the manifest, both full reports and each pair of property results.
+
 ## Evaluate retained native package tracks
 
 First retain a complete native detection report using the existing `fss-file import` and

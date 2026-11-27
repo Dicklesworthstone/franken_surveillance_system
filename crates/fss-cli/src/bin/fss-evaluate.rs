@@ -973,10 +973,19 @@ fn run(args: impl IntoIterator<Item = OsString>) -> Result<String> {
                 &baseline_candidates,
             )?;
             let comparison = holdout.compare(&baseline, &report)?;
+            let properties = holdout.compare_properties(
+                &baseline,
+                &report,
+                &labels,
+                &baseline_candidates,
+                &candidates,
+            )?;
             let body = json
                 .strip_suffix('}')
                 .ok_or_else(|| Failure::new("evaluation.cli.internal"))?;
-            json = format!("{body},\"model_comparison\":{comparison}}}");
+            json = format!(
+                "{body},\"model_comparison\":{comparison},\"property_comparison\":{properties}}}"
+            );
         }
     }
     let conformal_generation = options
