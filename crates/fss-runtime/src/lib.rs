@@ -28,6 +28,8 @@
 /// Structured Asupersync 0.5.0 region runner, scoped non-detached workers, and `Cx` boundaries.
 pub mod asupersync_ops;
 pub mod authority;
+/// Bounded deterministic scalar BOCPD regime monitor for advisory adaptation (`DOC-049`).
+pub mod bocpd_regime;
 pub mod budget;
 pub mod cancellation;
 /// Native blocking-pool handoff with an explicit completion drain.
