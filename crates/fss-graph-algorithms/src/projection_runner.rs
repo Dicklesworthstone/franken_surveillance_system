@@ -159,6 +159,53 @@ impl<T> AuthorizedRunReceipt<T> {
             grants_effect_authority: false,
         }
     }
+
+    fn wrap_with_boundary(
+        view: &GraphSnapshotView,
+        absence_boundary: AbsenceBoundary,
+        result: T,
+    ) -> Self {
+        Self {
+            universe: view.universe(),
+            anchor: view.anchor().clone(),
+            projection_generation: view.generation(),
+            absence_boundary,
+            result,
+            grants_effect_authority: false,
+        }
+    }
+}
+
+/// Conservatively combines two [`AbsenceBoundary`] states across paired snapshots so an
+/// uncertified or redacted view can NEVER be laundered into [`AbsenceBoundary::CertifiedComplete`].
+fn combine_absence_boundaries(a: &AbsenceBoundary, b: &AbsenceBoundary) -> AbsenceBoundary {
+    match (a, b) {
+        (AbsenceBoundary::CertifiedComplete { .. }, AbsenceBoundary::CertifiedComplete { .. }) => {
+            a.clone()
+        }
+        (
+            AbsenceBoundary::UncertifiedOrRedacted {
+                redacted_node_count: ra,
+                suppressed_edge_count: sa,
+                reason: reason_a,
+            },
+            AbsenceBoundary::UncertifiedOrRedacted {
+                redacted_node_count: rb,
+                suppressed_edge_count: sb,
+                reason: reason_b,
+            },
+        ) => AbsenceBoundary::UncertifiedOrRedacted {
+            redacted_node_count: ra.max(rb).to_owned(),
+            suppressed_edge_count: sa.max(sb).to_owned(),
+            reason: if reason_a == reason_b {
+                reason_a.clone()
+            } else {
+                format!("{reason_a}; {reason_b}")
+            },
+        },
+        (uncertified @ AbsenceBoundary::UncertifiedOrRedacted { .. }, _)
+        | (_, uncertified @ AbsenceBoundary::UncertifiedOrRedacted { .. }) => uncertified.clone(),
+    }
 }
 
 /// Verifies cooperative cancellation, active authority/privacy scope, and exact catalog freshness
@@ -481,7 +528,15 @@ pub fn run_min_cost_flow_on_snapshots(
         budget,
         is_cancelled,
     )?;
-    Ok(AuthorizedRunReceipt::wrap(costs_view, run))
+    let combined_boundary = combine_absence_boundaries(
+        costs_view.absence_boundary(),
+        capacities_view.absence_boundary(),
+    );
+    Ok(AuthorizedRunReceipt::wrap_with_boundary(
+        costs_view,
+        combined_boundary,
+        run,
+    ))
 }
 
 /// `FSS-157` — Runs `ALG-MATCH-001` (optimal weighted bipartite assignment) gated by an authorized

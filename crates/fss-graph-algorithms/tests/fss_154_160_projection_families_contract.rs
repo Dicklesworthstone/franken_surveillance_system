@@ -1199,5 +1199,78 @@ fn fresh_eyes_side_input_privacy_universe_single_anchor_and_early_cancel_guards(
         ),
         Err(GraphError::Cancelled)
     );
+
+    // 7. Min-cost flow MUST NOT launder an uncertified/redacted capacity snapshot into CertifiedComplete!
+    let mut auth_mcf_red = ProjectionAuthorityScope::active_for(GraphUniverse::GAssoc, 10, 1);
+    auth_mcf_red
+        .redacted_node_ids
+        .insert("hidden-cap".to_owned());
+    let mut mcf_cat_a = GraphSnapshotCatalog::new();
+    let p_cost_clean = ImmutableGraphProjection::build(
+        GraphUniverse::GAssoc,
+        ProjectionOrientation::Directed,
+        anchor_at(85),
+        history_at(85),
+        &auth_mcf_red,
+        vec![node("s"), node("t")],
+        vec![edge("s", "t", "flow", 2)],
+        complete_absence("cov:85-cost"),
+        false,
+    )?;
+    let p_cap_redacted = ImmutableGraphProjection::build(
+        GraphUniverse::GAssoc,
+        ProjectionOrientation::Directed,
+        anchor_at(85),
+        history_at(85),
+        &auth_mcf_red,
+        vec![node("s"), node("t"), node("hidden-cap")],
+        vec![
+            edge("s", "t", "flow", 3),
+            edge("s", "hidden-cap", "flow", 1),
+        ],
+        complete_absence("cov:85-cap"),
+        false,
+    )?;
+    assert!(p_cost_clean.absence_boundary().certifies_absence());
+    assert!(!p_cap_redacted.absence_boundary().certifies_absence());
+    mcf_cat_a.publish(p_cost_clean, &auth_mcf_red, false)?;
+    let v_cost_clean = mcf_cat_a.acquire_view(GraphUniverse::GAssoc, &auth_mcf_red, false)?;
+    // Re-publish capacity projection at same anchor/universe in a paired catalog? Wait:
+    // authorize_snapshot_execution requires both views current in the same catalog, OR same view.
+    // Publish p_cap_redacted in mcf_cat_a and test redacted-cost + redacted-cap preservation:
+    mcf_cat_a.publish(p_cap_redacted, &auth_mcf_red, false)?;
+    let v_cap_red = mcf_cat_a.acquire_view(GraphUniverse::GAssoc, &auth_mcf_red, false)?;
+    // Verify stale v_cost_clean is rejected against v_cap_red, and valid v_cap_red preserves uncertified boundary!
+    assert!(matches!(
+        run_min_cost_flow_on_snapshots(
+            &v_cost_clean,
+            &v_cap_red,
+            &mcf_cat_a,
+            &auth_mcf_red,
+            "cost",
+            "cap",
+            "s",
+            "t",
+            1,
+            registered(&mcf_b),
+            &|| false,
+        ),
+        Err(AuthorizedRunError::StaleSnapshot(_))
+    ));
+    let mcf_red_receipt = run_min_cost_flow_on_snapshots(
+        &v_cap_red,
+        &v_cap_red,
+        &mcf_cat_a,
+        &auth_mcf_red,
+        "cost",
+        "cap",
+        "s",
+        "t",
+        1,
+        registered(&mcf_b),
+        &|| false,
+    )?;
+    assert!(!mcf_red_receipt.absence_boundary.certifies_absence());
+    assert!(!mcf_red_receipt.grants_effect_authority);
     Ok(())
 }

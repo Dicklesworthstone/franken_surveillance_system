@@ -34,7 +34,7 @@ e2e_expect_exit "operation_crosswalk_contract" 0
 
 e2e_step "mcp_14_ops_adversarial_security_and_privacy_mask_e2e" -- \
   env CARGO_NET_OFFLINE=true RUSTUP_AUTO_INSTALL=0 RCH_SHIM_LOCAL_IDE="${RCH_SHIM_LOCAL_IDE:-1}" \
-  "${RUN[@]}" cargo --offline test --locked -q -p fss-cli --test mcp_14_ops_adversarial_e2e scenario_2_adversarial_security_privacy_masks_and_refusals -- --nocapture
+  "${RUN[@]}" cargo --offline test --locked -q -p fss-cli --test mcp_14_ops_adversarial_e2e scenario_2_adversarial_privacy_mask_capability_and_canary_gauntlet -- --nocapture
 e2e_expect_exit "mcp_14_ops_adversarial_security_and_privacy_mask_e2e" 0
 
 e2e_step "mcp_control_contract" -- \

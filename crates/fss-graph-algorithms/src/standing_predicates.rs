@@ -437,11 +437,20 @@ impl StandingPredicateEngine {
         if !authority.capability_active
             || !authority.privacy_active
             || !authority.allowed_universes.contains(&universe)
+            || authority.allowed_planes.is_empty()
         {
             return Err(StandingPredicateError::AuthorityRevoked(format!(
-                "authority scope does not authorize {}",
+                "authority scope does not authorize {} with at least one semantic plane",
                 universe.as_str()
             )));
+        }
+        if initial_anchor.site_lineage.is_empty()
+            || initial_anchor.site_lineage.len() > 128
+            || initial_anchor.site_lineage.chars().any(char::is_control)
+        {
+            return Err(StandingPredicateError::InvalidPredicate(
+                "initial anchor site_lineage must be 1..=128 control-free bytes".to_owned(),
+            ));
         }
         if authority.authority_generation != authority.expected_authority_generation {
             return Err(StandingPredicateError::StaleAuthorityGeneration {
@@ -626,12 +635,25 @@ impl StandingPredicateEngine {
 
         // 2. Bilinear DBSP incremental 2-hop update:
         //    Delta(E join E) = (Delta E join E_prev) + (E_prev join Delta E) + (Delta E join Delta E).
+        if is_cancelled() {
+            return Err(StandingPredicateError::Cancelled);
+        }
+        let estimated_join_ops = (delta_arcs.len() as u64).max(1);
+        if ops.saturating_add(estimated_join_ops) > budget.max_operations {
+            return Err(StandingPredicateError::Graph(GraphError::BudgetExhausted {
+                dimension: "standing_predicate_ops",
+                limit: budget.max_operations,
+            }));
+        }
         let delta_two_hop = zset_incremental_equijoin(
             &self.state.arcs,
             &delta_arcs,
             &self.state.arcs,
             &delta_arcs,
         )?;
+        if is_cancelled() {
+            return Err(StandingPredicateError::Cancelled);
+        }
         let mut delta_pairs = ZSet::new();
         for ((u, _mid, w), &mult) in delta_two_hop.iter() {
             charge(&mut ops)?;
@@ -713,9 +735,13 @@ impl StandingPredicateEngine {
 
         let mut enc = CanonicalEncoder::new();
         enc.text(STANDING_PREDICATES_RECEIPT_DOMAIN);
+        enc.tag(0x52);
         enc.text(self.universe.as_str());
         enc.text(&anchor.site_lineage);
         enc.u64(batch.commit_sequence);
+        enc.u64(self.authority_generation);
+        enc.u64(self.privacy_epoch);
+        enc.digest(self.privacy_scope);
         enc.digest(anchor.state_root);
         enc.digest(state_digest);
         enc.u64(transitions.len() as u64);

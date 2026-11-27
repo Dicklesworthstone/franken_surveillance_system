@@ -936,8 +936,8 @@ mod control_key_tests {
     #[test]
     fn advertised_control_commit_requires_a_request_key() -> Result<(), &'static str> {
         for (schema, required) in [
-            (super::super::control::PLAN_TOOL, false),
-            (super::super::control::COMMIT_TOOL, true),
+            (crate::control::PLAN_TOOL, false),
+            (crate::control::COMMIT_TOOL, true),
         ] {
             let value = fss_cli::json_input::parse(schema).map_err(|_| "schema json")?;
             let branches = value.object().and_then(|v| v.get("inputSchema"))

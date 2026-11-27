@@ -68,6 +68,8 @@ impl TempDeployment {
         let base =
             std::env::temp_dir().join(format!("fss-wp180-{tag}-{}-{seq}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base)?;
+        let base = base.canonicalize()?;
         let root = base.join("dep");
         let vault_dir = base.join("vault");
         fs::create_dir_all(&vault_dir)?;
@@ -523,13 +525,15 @@ fn fss_177_live_request_owned_regions_cancel_drain_and_bounded_frames() -> TestR
         .and_then(Value::object)
         .and_then(|e| e.get("code"))
         .and_then(Value::integer);
-    let completed_result = cancel_reply
+    let cancelled_tool_error = cancel_reply
         .object()
         .and_then(|o| o.get("result"))
-        .is_some();
+        .and_then(Value::object)
+        .and_then(|r| r.get("isError"))
+        .and_then(Value::boolean);
     assert!(
-        cancelled_code == Some(-32800) || completed_result,
-        "cancelled request must either return -32800 or a preserved completed native result"
+        cancelled_code == Some(-32800) || cancelled_tool_error == Some(true),
+        "cancelled wait must return -32800 or an explicit cancelled/interrupted isError:true result"
     );
 
     // Retired request ID 102 cannot be reused in the same live transport session.
@@ -659,6 +663,24 @@ fn fss_178_durable_application_owned_tasks_survive_mcp_sigkill_and_reconnect() -
     )?;
     assert!(!res_err, "session_resume after SIGKILL failed: {res_body}");
     let resumed_session = text(&res_env, &["sessionId"])?.to_owned();
+
+    // Resumed orientation preserves exact mission and objective text after SIGKILL!
+    let (res_orient_err, res_orient_body, _) = mcp2.call_tool(
+        "session_orient",
+        &object(&[
+            ("session", string(&resumed_session)),
+            ("view", string("brief")),
+            ("budget_tokens", "1600".to_owned()),
+        ]),
+    )?;
+    assert!(
+        !res_orient_err,
+        "resumed session_orient failed: {res_orient_body}"
+    );
+    assert!(
+        res_orient_body.contains(mission) && res_orient_body.contains(objective),
+        "resumed session lost mission/objective after SIGKILL: {res_orient_body}"
+    );
 
     // Case survived SIGKILL intact!
     let (insp_err, insp_body, insp_env) = mcp2.call_tool(
@@ -908,20 +930,35 @@ fn fss_179_protocol_taint_secret_canary_and_redaction_conformance() -> TestResul
         }
     }
 
-    // 4. Scan ALL durable journals on disk -> ZERO canary secret leaks!
-    for rel in [
-        "agent/sessions/journal.fssj",
-        "ledger/journal.fssj",
-        "effects/journal.fssj",
-    ] {
-        let p = dep.root.join(rel);
-        if p.is_file() {
-            scanner.assert_clean(rel, &fs::read(&p)?)?;
+    // 4. Recursively scan EVERY file under deployment root AND encrypted vault dir -> ZERO plaintext leaks!
+    fn scan_tree(scanner: &CanaryLeakScanner, dir: &Path) -> TestResult<usize> {
+        let mut count = 0_usize;
+        if !dir.exists() {
+            return Ok(0);
         }
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                count += scan_tree(scanner, &path)?;
+            } else if path.is_file() {
+                let bytes = fs::read(&path)?;
+                scanner.assert_clean(&path.display().to_string(), &bytes)?;
+                count += 1;
+            }
+        }
+        Ok(count)
     }
+    let dep_files_scanned = scan_tree(&scanner, &dep.root)?;
+    let vault_files_scanned = scan_tree(&scanner, &dep.vault_dir)?;
+    assert!(dep_files_scanned > 0, "expected deployment files on disk");
+    assert!(
+        vault_files_scanned > 0,
+        "expected encrypted vault files on disk"
+    );
 
     println!(
-        "CAPLOG {{\"bead\":\"FSS-179\",\"canary_secrets_audited\":3,\"canary_leaks\":0,\"h3_dual_gate_enforced\":true,\"taint_inert\":true}}"
+        "CAPLOG {{\"bead\":\"FSS-179\",\"canary_secrets_audited\":3,\"canary_leaks\":0,\"dep_files_scanned\":{dep_files_scanned},\"vault_files_scanned\":{vault_files_scanned},\"h3_dual_gate_enforced\":true,\"taint_inert\":true}}"
     );
     Ok(())
 }

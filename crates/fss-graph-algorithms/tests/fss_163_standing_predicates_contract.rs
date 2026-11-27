@@ -448,5 +448,46 @@ fn fss_163_expected_auth_generation_privacy_scope_node_validation_and_anchor_rec
         rec_a.receipt_digest, rec_b.receipt_digest,
         "receipt_digest must bind anchor.state_root to prevent cross-branch collisions"
     );
+
+    // 5. Empty site_lineage and empty allowed_planes MUST fail closed at engine creation!
+    let mut bad_lineage = anchor_at(0);
+    bad_lineage.site_lineage = String::new();
+    assert!(matches!(
+        StandingPredicateEngine::new(GraphUniverse::GEvidence, bad_lineage, &auth, Vec::new(),),
+        Err(StandingPredicateError::InvalidPredicate(_))
+    ));
+    let mut empty_planes = auth.clone();
+    empty_planes.allowed_planes.clear();
+    assert!(matches!(
+        StandingPredicateEngine::new(
+            GraphUniverse::GEvidence,
+            anchor_at(0),
+            &empty_planes,
+            Vec::new(),
+        ),
+        Err(StandingPredicateError::AuthorityRevoked(_))
+    ));
+
+    // 6. Distinct authority_generation produces distinct receipt_digest even for identical deltas & anchor!
+    let auth_gen_6 = ProjectionAuthorityScope::active_for(GraphUniverse::GEvidence, 6, 1);
+    let mut engine_gen6 = StandingPredicateEngine::new(
+        GraphUniverse::GEvidence,
+        anchor_at(0),
+        &auth_gen_6,
+        vec![StandingPredicate {
+            predicate_id: "p:arc_ab".to_owned(),
+            kind: StandingPredicateKind::DirectedArcActive {
+                tail_id: "a".to_owned(),
+                head_id: "b".to_owned(),
+            },
+        }],
+    )?;
+    let rec_gen6 =
+        engine_gen6.apply_delta_batch(&batch, &anchor_a, &auth_gen_6, budget, &|| false)?;
+    assert_eq!(rec_a.state_digest, rec_gen6.state_digest);
+    assert_ne!(
+        rec_a.receipt_digest, rec_gen6.receipt_digest,
+        "receipt_digest must bind authority_generation/privacy_epoch"
+    );
     Ok(())
 }
