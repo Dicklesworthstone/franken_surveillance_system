@@ -670,7 +670,7 @@ fn parse_intent_camera_supervision(
     args: &BTreeMap<String, Value>,
     is_commit: bool,
 ) -> Result<OpsIntentKind, Refusal> {
-    let mut allowed = vec!["intent", "session", "op", "camera_id", "site_id"];
+    let mut allowed = vec!["intent", "session", "op", "camera_id", "site_id", "idempotency_key"];
     if is_commit {
         allowed.extend(["approval_digest", "approve"]);
     }
@@ -688,6 +688,7 @@ fn parse_intent_camera_supervision(
         op,
         camera_id: optional_clean_text(args, "camera_id", 128)?,
         site_id: optional_clean_text(args, "site_id", 128)?,
+        idempotency_key: args.get("idempotency_key").map(parse_sha256_value).transpose()?,
     })
 }
 
@@ -886,5 +887,76 @@ fn optional_string_vec(
             Ok(out)
         }
         _ => Err((-32602, "Expected bounded string array")),
+    }
+}
+
+#[cfg(test)]
+mod control_key_tests {
+    use super::*;
+
+    fn arguments(key: Option<&str>) -> BTreeMap<String, Value> {
+        let mut args = BTreeMap::from([
+            ("intent".to_owned(), Value::Text("camera-supervision".to_owned())),
+            ("op".to_owned(), Value::Text("snapshot_camera".to_owned())),
+            ("camera_id".to_owned(), Value::Text("sensor:front".to_owned())),
+        ]);
+        if let Some(key) = key {
+            args.insert("idempotency_key".to_owned(), Value::Text(key.to_owned()));
+        }
+        args
+    }
+
+    #[test]
+    fn control_key_is_preserved_and_invalid_or_authority_arguments_are_refused() {
+        let key = ContentDigest::sha256(b"mcp-control-request");
+        for is_commit in [false, true] {
+            let args = arguments(Some(&key.to_text()));
+            assert!(matches!(
+                parse_intent_camera_supervision(&args, is_commit),
+                Ok(OpsIntentKind::CameraSupervision { idempotency_key: Some(found), .. })
+                    if found == key
+            ));
+            for raw in [
+                "invalid".to_owned(),
+                format!("sha256:{}", "0".repeat(64)),
+                format!("blake3:{}", "1".repeat(64)),
+            ] {
+                assert!(parse_intent_camera_supervision(
+                    &arguments(Some(&raw)), is_commit
+                ).is_err());
+            }
+            for forbidden in ["principal", "root", "command", "capabilities"] {
+                let mut poisoned = arguments(Some(&key.to_text()));
+                poisoned.insert(forbidden.to_owned(), Value::Text("override".to_owned()));
+                assert!(parse_intent_camera_supervision(&poisoned, is_commit).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn advertised_control_commit_requires_a_request_key() -> Result<(), &'static str> {
+        for (schema, required) in [
+            (super::super::control::PLAN_TOOL, false),
+            (super::super::control::COMMIT_TOOL, true),
+        ] {
+            let value = fss_cli::json_input::parse(schema).map_err(|_| "schema json")?;
+            let branches = value.object().and_then(|v| v.get("inputSchema"))
+                .and_then(|v| v.object()).and_then(|v| v.get("oneOf"))
+                .and_then(|v| v.array()).ok_or("branches")?;
+            let branch = branches.iter().find(|branch| {
+                branch.object().and_then(|v| v.get("properties"))
+                    .and_then(|v| v.object()).and_then(|v| v.get("intent"))
+                    .and_then(|v| v.object()).and_then(|v| v.get("const"))
+                    .and_then(|v| v.text()) == Some("camera-supervision")
+            }).ok_or("control branch")?;
+            let fields = branch.object().ok_or("branch object")?;
+            let properties = fields.get("properties").and_then(|v| v.object())
+                .ok_or("properties")?;
+            assert!(properties.contains_key("idempotency_key"));
+            let is_required = fields.get("required").and_then(|v| v.array())
+                .ok_or("required")?.iter().any(|v| v.text() == Some("idempotency_key"));
+            assert_eq!(is_required, required);
+        }
+        Ok(())
     }
 }

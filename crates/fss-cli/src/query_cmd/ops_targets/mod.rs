@@ -13,7 +13,7 @@ use std::fs;
 use std::path::Path;
 
 use fss_core::{
-    AgentResponseEnvelope, AgentView, BudgetVector, CanonicalEncoder, Completeness, ContentDigest,
+    AgentResponseEnvelope, AgentView, BudgetVector, CanonicalEncode, CanonicalEncoder, Completeness, ContentDigest,
     ContextAuthority, DigestAlgorithm, ExecutionBoundary, KnowledgeState, LedgerAnchor,
     OperationId, PrincipalId, ResponseOutcome, ResponseSafeRetry, ResponseTaskState,
     RootAuthoritySpec, SessionId,
@@ -116,6 +116,17 @@ pub enum OpsError {
     ApprovalMismatch(String),
     /// Live daemon IPC was requested while `fss-daemon` is stopped or unreachable.
     DaemonUnavailable(String),
+    /// A keyed submission crossed the IPC boundary without a conclusive retained receipt.
+    ControlOutcomeUncertain {
+        /// Bounded transport or durable-history diagnostic.
+        detail: String,
+        /// Exact original key; changing it can admit a second operation.
+        idempotency_key: ContentDigest,
+        /// Exact approval used by the attempted submission.
+        approval_digest: ContentDigest,
+        /// Last verified input anchor, not an asserted post-effect state.
+        input_anchor: Box<LedgerAnchor>,
+    },
     /// Input parameters failed strict typed validation.
     InvalidRequest(String),
     /// Bounded output, work, or collection ceiling exceeded.
@@ -137,6 +148,7 @@ impl OpsError {
             Self::ApprovalRequired(_) => ERR_APPROVAL_REQUIRED,
             Self::ApprovalMismatch(_) => ERR_APPROVAL_MISMATCH,
             Self::DaemonUnavailable(_) => ERR_DAEMON_OFFLINE,
+            Self::ControlOutcomeUncertain { .. } => "ERR-EFFECT-INDETERMINATE-001",
             Self::InvalidRequest(_) => crate::error::ERR_CLI_MALFORMED_VALUE,
             Self::BoundsExceeded(_) => ERR_OPS_BOUNDS,
             Self::NotFound(_) => crate::orient_cmd::ERR_AGENT_EVENT_NOT_FOUND,
@@ -167,6 +179,7 @@ impl fmt::Display for OpsError {
             | Self::BoundsExceeded(detail)
             | Self::NotFound(detail)
             | Self::OperationFailed(detail) => f.write_str(detail),
+            Self::ControlOutcomeUncertain { detail, .. } => f.write_str(detail),
             Self::Cancelled => f.write_str("operational request cancelled before completion"),
         }
     }
@@ -494,22 +507,54 @@ pub(crate) fn render_refusal_envelope(
     enc.text(principal.as_str());
     enc.text(error.error_id());
     enc.text(&error.to_string());
+    let uncertain = match error {
+        OpsError::ControlOutcomeUncertain {
+            idempotency_key,
+            approval_digest,
+            input_anchor,
+            ..
+        } => Some((*idempotency_key, *approval_digest, input_anchor.as_ref())),
+        _ => None,
+    };
+    if let Some((key, approval, anchor)) = uncertain {
+        enc.digest(key);
+        enc.digest(approval);
+        anchor.encode_canonical(&mut enc);
+    }
     let fingerprint = ContentDigest::sha256(&enc.finish());
     let fp_text = fingerprint.to_text();
     let hex = fp_text.strip_prefix("sha256:").unwrap_or(&fp_text);
-    let anchor = LedgerAnchor::genesis("site:ops-refusal");
+    let anchor = uncertain.map_or_else(
+        || LedgerAnchor::genesis("site:ops-refusal"),
+        |(_, _, anchor)| anchor.clone(),
+    );
     let privacy = privacy_projection_json(
         &anchor,
-        "payload-free fail-closed operational refusal",
+        if uncertain.is_some() {
+            "original keyed control submission and uncertain execution boundary"
+        } else {
+            "payload-free fail-closed operational refusal"
+        },
         &[],
         &["all-requested-operational-data"],
     );
-    let payload_json = "null".to_owned();
+    let payload_json = uncertain.map_or_else(
+        || "null".to_owned(),
+        |(key, approval, _)| object(&[
+            ("intent", string("camera-supervision")),
+            ("status", string("indeterminate")),
+            ("idempotencyKey", string(&key.to_text())),
+            ("approvalDigest", string(&approval.to_text())),
+            ("operationId", "null".to_owned()),
+            ("semanticCompletionProved", "false".to_owned()),
+        ]),
+    );
     let payload_digest = ContentDigest::sha256(payload_json.as_bytes());
     let recovery = match error {
-        OpsError::DaemonUnavailable(_) => "retry_when_daemon_running",
+        OpsError::DaemonUnavailable(_) => "backoff",
+        OpsError::ControlOutcomeUncertain { .. } => "reconciliation_required",
         OpsError::ApprovalRequired(_) | OpsError::ApprovalMismatch(_) => {
-            "preview_and_supply_exact_approval"
+            "operator_action_required"
         }
         _ => "operator_action_required",
     };
@@ -528,9 +573,17 @@ pub(crate) fn render_refusal_envelope(
         AgentView::Case,
         Vec::new(),
         privacy,
-        ResponseOutcome::Refused,
+        if uncertain.is_some() {
+            ResponseOutcome::Indeterminate
+        } else {
+            ResponseOutcome::Refused
+        },
         None,
-        Some(ResponseTaskState::None),
+        Some(if uncertain.is_some() {
+            ResponseTaskState::Indeterminate
+        } else {
+            ResponseTaskState::None
+        }),
         Some(error.error_id().to_owned()),
         payload_schema,
         payload_json,
@@ -539,7 +592,11 @@ pub(crate) fn render_refusal_envelope(
         Completeness::Partial,
         vec![error.to_string()],
         Vec::new(),
-        vec!["Refused fail-closed before disclosing unauthorized or unapproved state.".to_owned()],
+        vec![if uncertain.is_some() {
+            "The daemon may have durably admitted or dispatched the original command. Retry only the exact original request with the same key, principal, deployment, capabilities and approval; never generate a replacement key to recover a lost reply."
+        } else {
+            "This refusal supplies no operation receipt or semantic completion proof."
+        }.to_owned()],
         agent_json::budget_summary(&BudgetVector::ZERO, &BudgetVector::ZERO),
         Vec::new(),
         Vec::new(),
@@ -547,16 +604,30 @@ pub(crate) fn render_refusal_envelope(
         None,
         None,
         None,
-        None,
+        uncertain.map(|(key, _, _)| key.to_text()),
         recovery,
-        ResponseSafeRetry::No,
+        if uncertain.is_some() {
+            ResponseSafeRetry::YesSameRequest
+        } else {
+            ResponseSafeRetry::No
+        },
         false,
-        ExecutionBoundary {
-            completed: vec![format!("Refused fail-closed ({}).", error.error_id())],
-            not_started: vec!["No unauthorized read, policy mutation, or effect occurred.".into()],
-            possibly_occurred: Vec::new(),
-            preserved_truth: vec!["Authority and effect boundaries remain intact.".into()],
-            invalidated: Vec::new(),
+        if uncertain.is_some() {
+            ExecutionBoundary {
+                completed: vec!["Attempted the exact approved keyed control submission.".into()],
+                not_started: vec!["No automatic replacement request or unkeyed fallback was attempted.".into()],
+                possibly_occurred: vec!["The daemon may have durably admitted or dispatched the original command; its semantic outcome is unknown.".into()],
+                preserved_truth: vec!["The original idempotency key and approval remain bound to this request; a retained replay grants no new execution authority.".into()],
+                invalidated: vec!["A missing or uncertain reply does not establish that no effect occurred.".into()],
+            }
+        } else {
+            ExecutionBoundary {
+                completed: vec![format!("Refused fail-closed ({}).", error.error_id())],
+                not_started: Vec::new(),
+                possibly_occurred: Vec::new(),
+                preserved_truth: vec!["This refusal asserts no operation receipt or semantic completion.".into()],
+                invalidated: Vec::new(),
+            }
         },
         0,
     );

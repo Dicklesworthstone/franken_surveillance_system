@@ -14,7 +14,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use fss_core::{
-    AgentView, BudgetVector, CanonicalEncoder, CaptureInterval, Completeness, ContentDigest,
+    AgentView, BudgetVector, CanonicalEncode, CanonicalEncoder, CaptureInterval, Completeness,
+    ContentDigest,
     ContextAuthority, ExecutionBoundary, KnowledgeState, LedgerAnchor, OperationId, PrincipalId,
     ResponseSafeRetry, RootAuthoritySpec, SensorId, SessionId, TimestampNs,
 };
@@ -24,7 +25,7 @@ use fss_daemon::control::{
 };
 use fss_ipc::{
     BoundedControlOp, ControlOperationState, IpcClient, IpcClientConfig, IpcResponse,
-    deployment_root_digest,
+    RetainedControlProgress, deployment_root_digest,
 };
 use fss_reference::agent_orient::{OrientLimits, read_deployment_cancellable};
 use fss_reference::deletion::holds::{
@@ -63,6 +64,8 @@ pub const INTENT_EVIDENCE_HOLD_DOMAIN: &str = "fss.ops_targets.intent_evidence_h
 pub const INTENT_RETENTION_POLICY_DOMAIN: &str = "fss.ops_targets.intent_retention_policy.v1";
 /// Canonical digest domain for `camera-supervision` operational intents.
 pub const INTENT_CAMERA_SUPERVISION_DOMAIN: &str = "fss.ops_targets.intent_camera_supervision.v1";
+/// Canonical digest domain for a proposed control request at an exact owner/anchor scope.
+pub const CAMERA_CONTROL_REQUEST_DOMAIN: &str = "fss.ops_targets.camera_control_request.v1";
 
 /// Closed set of operational intent variants admitted by `plan` and `commit`.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -116,6 +119,9 @@ pub enum OpsIntentKind {
         camera_id: Option<String>,
         /// Optional explicit site identifier override.
         site_id: Option<String>,
+        /// Stable key returned by preview. Required on commit and every retry;
+        /// use a distinct key for a distinct intentional operation.
+        idempotency_key: Option<ContentDigest>,
     },
 }
 
@@ -153,6 +159,7 @@ struct IntentOutcome {
     idempotency_key: String,
     completed_note: String,
     not_started: Vec<String>,
+    possibly_occurred: Vec<String>,
 }
 
 /// Executes an operational `plan` preview (read-only, zero mutations) and renders an envelope.
@@ -285,7 +292,14 @@ fn run_intent<'a>(
             op,
             camera_id,
             site_id,
-        } => run_camera_supervision(&ctx, *op, camera_id.as_deref(), site_id.as_deref())?,
+            idempotency_key,
+        } => run_camera_supervision(
+            &ctx,
+            *op,
+            camera_id.as_deref(),
+            site_id.as_deref(),
+            *idempotency_key,
+        )?,
     };
 
     Ok(OpsEnvelopeParams {
@@ -311,11 +325,15 @@ fn run_intent<'a>(
         decision_fingerprint: outcome.fingerprint,
         idempotency_key: Some(outcome.idempotency_key),
         safe_retry: ResponseSafeRetry::YesSameRequest,
-        recovery_class: "safe_idempotent_retry",
+        recovery_class: if is_commit {
+            "reconciliation_required"
+        } else {
+            "operator_action_required"
+        },
         boundary: ExecutionBoundary {
             completed: vec![outcome.completed_note],
             not_started: outcome.not_started,
-            possibly_occurred: Vec::new(),
+            possibly_occurred: outcome.possibly_occurred,
             preserved_truth: vec![
                 "Every mutating operational intent requires preview -> exact approval_digest -> capability-checked durable commit.".to_owned(),
             ],
@@ -438,7 +456,7 @@ fn run_privacy_mask(
     ]);
     let preview = ctx.approval.is_none();
     Ok(IntentOutcome {
-        anchor,
+        possibly_occurred: Vec::new(),        anchor,
         payload_json,
         proof_pointers: vec![
             decl.policy_digest.to_text(),
@@ -567,7 +585,7 @@ fn run_evidence_hold(
     ]);
     let preview = ctx.approval.is_none();
     Ok(IntentOutcome {
-        anchor,
+        possibly_occurred: Vec::new(),        anchor,
         payload_json,
         proof_pointers: vec![
             receipt.record.digest().to_text(),
@@ -682,7 +700,7 @@ fn run_retention_policy(
     ]);
     let preview = ctx.approval.is_none();
     Ok(IntentOutcome {
-        anchor, payload_json,
+        possibly_occurred: Vec::new(),        anchor, payload_json,
         proof_pointers: vec![receipt.record.digest().to_text(), approval_out.to_text(), idem.to_text()],
         warnings: vec![if preview {
             "Preview only; rerun commit with exact approvalDigest to adopt this retention policy. Adoption never deletes bytes."
@@ -699,11 +717,39 @@ fn run_retention_policy(
     })
 }
 
+fn camera_control_request_key(
+    ctx: &IntentCtx<'_>,
+    expected_approval: ContentDigest,
+    supplied_key: Option<ContentDigest>,
+) -> Result<ContentDigest, OpsError> {
+    if let Some(key) = supplied_key {
+        if !is_valid_sha256(key) || key.is_laboratory() {
+            return Err(OpsError::InvalidRequest(
+                "idempotency_key must be a canonical nonzero SHA-256 request identity".into(),
+            ));
+        }
+        return Ok(key);
+    }
+    if ctx.approval.is_some() {
+        return Err(OpsError::InvalidRequest(
+            "camera-supervision commit requires the idempotency_key returned by plan; retain it for every retry".into(),
+        ));
+    }
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text(CAMERA_CONTROL_REQUEST_DOMAIN);
+    encoder.digest(deployment_root_digest(ctx.root));
+    encoder.text(ctx.principal.as_str());
+    ctx.anchor.encode_canonical(&mut encoder);
+    encoder.digest(expected_approval);
+    Ok(ContentDigest::sha256(&encoder.finish()))
+}
+
 fn run_camera_supervision(
     ctx: &IntentCtx<'_>,
     op: BoundedControlOp,
     camera_id: Option<&str>,
     site_id_override: Option<&str>,
+    request_key: Option<ContentDigest>,
 ) -> Result<IntentOutcome, OpsError> {
     if op.requires_camera_id() && camera_id.is_none() {
         return Err(OpsError::InvalidRequest(format!(
@@ -732,11 +778,7 @@ fn run_camera_supervision(
         } else {
             control_op_approval_digest(&deployment_id, op, camera_id)
         };
-    let idem = idempotency_digest(
-        INTENT_CAMERA_SUPERVISION_DOMAIN,
-        expected_approval,
-        &format!("{}:{}", op.as_str(), camera_id.unwrap_or("*")),
-    );
+    let idem = camera_control_request_key(ctx, expected_approval, request_key)?;
 
     let Some(supplied_approval) = ctx.approval else {
         let daemon_live = descriptor_res.is_ok();
@@ -746,25 +788,34 @@ fn run_camera_supervision(
             ("authorityChanged", "false".to_owned()),
             ("deploymentId", string(&deployment_id)),
             ("op", string(op.as_str())),
-            (
-                "cameraId",
-                camera_id.map_or_else(|| "null".to_owned(), string),
-            ),
+            ("cameraId", camera_id.map_or_else(|| "null".to_owned(), string)),
             ("daemonLive", daemon_live.to_string()),
             ("approvalDigest", string(&expected_approval.to_text())),
             ("idempotencyKey", string(&idem.to_text())),
+            ("semanticCompletionProved", "false".to_owned()),
         ]);
         return Ok(IntentOutcome {
-            anchor: ctx.anchor.clone(), payload_json,
-            proof_pointers: vec![ctx.anchor.state_root.to_text(), expected_approval.to_text(), idem.to_text()],
-            warnings: vec![if daemon_live {
-                "Preview only; rerun commit with exact approvalDigest to dispatch this bounded control op over fss-ipc."
-            } else {
-                "Preview only; fss-daemon is currently offline, so commit will refuse with ERR-DAEMON-OFFLINE-001 until started."
-            }.to_owned()],
-            fingerprint: idem, idempotency_key: idem.to_text(),
-            completed_note: format!("Previewed bounded camera supervision op `{}` without contacting daemon control queue.", op.as_str()),
+            anchor: ctx.anchor.clone(),
+            payload_json,
+            proof_pointers: vec![
+                ctx.anchor.state_root.to_text(), expected_approval.to_text(), idem.to_text(),
+            ],
+            warnings: vec![
+                "Preview only; commit with the exact approvalDigest and idempotencyKey. Keep the key for retries; choose a new key for a distinct intended operation.".to_owned(),
+                if daemon_live {
+                    "The descriptor is present; commit still requires a live daemon with durable keyed-control support."
+                } else {
+                    "The daemon is offline; commit refuses until a compatible daemon is started."
+                }.to_owned(),
+            ],
+            fingerprint: idem,
+            idempotency_key: idem.to_text(),
+            completed_note: format!(
+                "Previewed bounded camera supervision op `{}` without contacting the control queue.",
+                op.as_str()
+            ),
             not_started: vec!["No IPC control command was dispatched during plan preview.".to_owned()],
+            possibly_occurred: Vec::new(),
         });
     };
 
@@ -796,68 +847,139 @@ fn run_camera_supervision(
 
     let req_id = client.next_request_id();
     let response = client
-        .submit_bounded_control(req_id, op, camera_id.map(str::to_owned), supplied_approval)
+        .submit_idempotent_control(
+            req_id, idem, op, camera_id.map(str::to_owned), supplied_approval,
+        )
         .map_err(|err| {
-            OpsError::DaemonUnavailable(format!(
-                "daemon_unavailable: fss-ipc submit failed ({err})"
-            ))
+            control_outcome_uncertain(
+                ctx, supplied_approval, idem,
+                format!("fss-ipc submission has no conclusive receipt ({err}); retain the original idempotency_key"),
+            )
         })?;
-    match response {
-        IpcResponse::ControlAccepted {
-            operation_id,
-            state,
-            ..
-        } => {
-            let state_label = match state {
+    camera_control_response(
+        ctx, op, camera_id, &deployment_id, descriptor.descriptor_digest(),
+        supplied_approval, idem, req_id, response,
+    )
+}
+
+fn control_outcome_uncertain(
+    ctx: &IntentCtx<'_>,
+    approval: ContentDigest,
+    key: ContentDigest,
+    detail: String,
+) -> OpsError {
+    // Keep the diagnostic bounded so the uncertainty envelope always retains its retry key.
+    let detail: String = detail.chars().take(768).collect();
+    OpsError::ControlOutcomeUncertain {
+        detail,
+        idempotency_key: key,
+        approval_digest: approval,
+        input_anchor: Box::new(ctx.anchor.clone()),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn camera_control_response(
+    ctx: &IntentCtx<'_>,
+    op: BoundedControlOp,
+    camera_id: Option<&str>,
+    deployment_id: &str,
+    descriptor_digest: ContentDigest,
+    approval: ContentDigest,
+    key: ContentDigest,
+    request_id: u64,
+    response: IpcResponse,
+) -> Result<IntentOutcome, OpsError> {
+    if response.request_id() != request_id {
+        return Err(control_outcome_uncertain(
+            ctx, approval, key,
+            format!(
+                "Control response correlation {} does not match submitted request {request_id}; no receipt is attributed to this key.",
+                response.request_id()
+            ),
+        ));
+    }
+    let (operation_id, status, progress, recovered) = match response {
+        IpcResponse::ControlAccepted { operation_id, state, .. } => {
+            let status = match state {
                 ControlOperationState::Queued => "queued",
                 ControlOperationState::Accepted => "accepted",
                 ControlOperationState::Executing => "executing",
                 ControlOperationState::Completed => "completed",
             };
-            let payload_json = object(&[
-                ("intent", string("camera-supervision")),
-                ("status", string(state_label)),
-                ("authorityChanged", "true".to_owned()),
-                ("deploymentId", string(&deployment_id)),
-                ("op", string(op.as_str())),
-                (
-                    "cameraId",
-                    camera_id.map_or_else(|| "null".to_owned(), string),
-                ),
-                ("operationId", string(operation_id.as_str())),
-                ("daemonLive", "true".to_owned()),
-                ("approvalDigest", string(&supplied_approval.to_text())),
-                ("idempotencyKey", string(&idem.to_text())),
-            ]);
-            Ok(IntentOutcome {
-                anchor: ctx.anchor.clone(),
-                payload_json,
-                proof_pointers: vec![
-                    ctx.anchor.state_root.to_text(),
-                    descriptor.descriptor_digest().to_text(),
-                    supplied_approval.to_text(),
-                    idem.to_text(),
-                ],
-                warnings: Vec::new(),
-                fingerprint: idem,
-                idempotency_key: idem.to_text(),
-                completed_note: format!(
-                    "Dispatched approved bounded control op `{}` over fss-ipc (operation={}, state={state_label}).",
-                    op.as_str(),
-                    operation_id.as_str()
-                ),
-                not_started: vec![
-                    "Zero shell execution; routed strictly over owner-only fss-ipc.".to_owned(),
-                ],
-            })
+            (operation_id, status, None, false)
         }
-        IpcResponse::Refused {
-            error_id, reason, ..
-        } => Err(OpsError::OperationFailed(format!(
-            "daemon refused bounded control ({error_id}): {reason}"
-        ))),
-        _ => Err(OpsError::OperationFailed(
-            "unexpected fss-ipc response to SubmitBoundedControl".into(),
+        IpcResponse::ControlReplayed { operation_id, progress, recovered, .. } => {
+            (operation_id, "replayed", Some(progress), recovered)
+        }
+        IpcResponse::Refused { error_id, reason, .. } => {
+            let detail = format!("daemon refused bounded control ({error_id}): {reason}");
+            return Err(if matches!(
+                error_id.as_str(),
+                fss_core::ERR_OP_RECONCILIATION_REQUIRED_001 | "ERR-DAEMON-SHUTDOWN-001"
+            ) {
+                control_outcome_uncertain(ctx, approval, key, detail)
+            } else {
+                OpsError::OperationFailed(detail)
+            });
+        }
+        IpcResponse::Cancelled { .. } => return Err(control_outcome_uncertain(
+            ctx, approval, key,
+            "Control submission was cancelled; reconcile the original key before deciding whether its retained operation executed.".to_owned(),
         )),
-    }
+        _ => return Err(control_outcome_uncertain(
+            ctx, approval, key,
+            "Unexpected fss-ipc response to SubmitIdempotentControl; the original submission outcome is unknown.".to_owned(),
+        )),
+    };
+    let replayed = progress.is_some();
+    let possibly_occurred = if matches!(
+        progress,
+        Some(RetainedControlProgress::DispatchStarted | RetainedControlProgress::SubsystemReturned)
+    ) {
+        vec!["The original command crossed its dispatch boundary; inspect subsystem evidence to establish its semantic outcome.".to_owned()]
+    } else {
+        Vec::new()
+    };
+    Ok(IntentOutcome {
+        anchor: ctx.anchor.clone(),
+        payload_json: object(&[
+            ("intent", string("camera-supervision")),
+            ("status", string(status)),
+            ("authorityChanged", (!replayed).to_string()),
+            ("deploymentId", string(deployment_id)),
+            ("op", string(op.as_str())),
+            ("cameraId", camera_id.map_or_else(|| "null".to_owned(), string)),
+            ("operationId", string(operation_id.as_str())),
+            ("daemonLive", "true".to_owned()),
+            ("approvalDigest", string(&approval.to_text())),
+            ("idempotencyKey", string(&key.to_text())),
+            ("replayed", replayed.to_string()),
+            ("progress", progress.map_or_else(|| "null".to_owned(), |p| string(p.as_str()))),
+            ("recovered", recovered.to_string()),
+            ("semanticCompletionProved", "false".to_owned()),
+        ]),
+        proof_pointers: vec![
+            ctx.anchor.state_root.to_text(), descriptor_digest.to_text(),
+            approval.to_text(), key.to_text(),
+        ],
+        warnings: vec![if recovered {
+            "This retained command belongs to an earlier daemon owner and remains inert. Replaying its receipt does not authorize resumption or prove completion."
+        } else {
+            "Admission and retained progress record control ownership; the subsystem must separately prove its semantic outcome."
+        }.to_owned()],
+        fingerprint: key,
+        idempotency_key: key.to_text(),
+        completed_note: format!(
+            "{} bounded control admission {} (state={status}).",
+            if replayed { "Returned retained" } else { "Durably accepted" },
+            operation_id.as_str(),
+        ),
+        not_started: vec![if replayed {
+            "This retry did not enqueue or dispatch another control command."
+        } else {
+            "No semantic effect completion was inferred from admission."
+        }.to_owned()],
+        possibly_occurred,
+    })
 }

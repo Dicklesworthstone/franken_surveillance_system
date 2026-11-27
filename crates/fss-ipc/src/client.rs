@@ -202,6 +202,9 @@ impl IpcClient {
     }
 
     /// Sends a unary request, awaits its correlated response, and records an [`IpcTraceEvent`].
+    ///
+    /// A response for another request is a protocol error, never an operation receipt.
+    /// Such an error does not prove that the submitted operation had no effect.
     pub fn request(&mut self, request: &IpcRequest) -> Result<IpcResponse, IpcError> {
         let started = Instant::now();
         let req_id = request.request_id();
@@ -215,6 +218,23 @@ impl IpcClient {
         };
         match self.recv_response_frame() {
             Ok((response, recv_bytes)) => {
+                if response.request_id() != req_id {
+                    let error = IpcError::InvalidFrame {
+                        reason: format!(
+                            "daemon response request_id {} does not match submitted request_id {req_id}; operation outcome is unknown",
+                            response.request_id()
+                        ),
+                    };
+                    self.record_trace(
+                        req_id,
+                        op,
+                        sent_bytes.saturating_add(recv_bytes),
+                        elapsed_us(started),
+                        error.error_id(),
+                        false,
+                    );
+                    return Err(error);
+                }
                 let outcome = response_outcome_label(&response);
                 self.record_trace(
                     req_id,

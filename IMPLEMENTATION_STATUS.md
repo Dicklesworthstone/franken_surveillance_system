@@ -5,6 +5,45 @@
 **Current change qualification:** each dated section below states its exact verification boundary. Native passes for one component do not qualify other changes, and prior receipts do not qualify new bytes.
 **Release authority:** repository-owned local qualification (`scripts/qualify.sh`) and retained DSR receipts, not hosted CI
 
+## Explicit camera-control retry keys and truthful client outcomes — 2026-11-27
+
+Operational camera-supervision previews now return a request key bound to deployment
+root, principal, complete input ledger anchor and exact approval. Commit requires the
+explicit key and preserves it across unrelated anchor changes. A distinct intentional
+operation may supply a distinct key during preview. The MCP plan/commit tool schemas
+now advertise the bounded camera-control branch, target rules and required commit key.
+
+The typed executor uses durable keyed IPC with no legacy fallback. Replays expose
+the original operation ID, retained progress and inert recovered status. Lost replies,
+mismatched response IDs, uncertain journal refusals and post-submission cancellation
+produce an indeterminate response retaining the original key, approval and input anchor.
+Execution boundaries preserve possible admission/dispatch and never infer semantic
+completion from a receipt. Successful and failure paths use existing registered recovery
+classes. Native unary IPC now checks response correlation before accepting any receipt;
+a mismatch reports a protocol error and never resubmits automatically.
+
+Seven new client regression functions cover stable preview keys and explicit retry
+after anchor drift, replay uncertainty, oversized transport diagnostics, uncertain
+shutdown boundaries, mismatched receipts, MCP key validation, and advertised schemas.
+An additional live UDS correlation regression covers mismatched acceptance and recovered
+replay receipts, original request tracing, no resubmission, valid status and cancellation
+target IDs. Existing offline/live operational fixtures now retain explicit keys; the
+process-local owner fixture correctly refuses durable control while telemetry remains
+available.
+
+**Verification boundary:** independent source/API and JSON schema/enum reviews found no
+blocking issue. Embedded tool schemas parse, and changed-path integrity hashes are
+verified. All new Rust regressions remain unexecuted, and native formatting/compilation
+remain unverified after disk exhaustion and repeated executor failure. No release
+qualification or broad bead closure is claimed.
+
+See `docs/daemon_control_retries.md` for exact retry behavior, compatibility, verification
+commands and remaining work. This also records the inherited operational-payload
+registration gap: existing opaque intent payloads are accepted by the current universal
+envelope, but are not a fully published additive operation profile for consumers that
+enforce the narrower operation payload allowlist. Exact reload-candidate binding,
+operator resumption and semantic effect verification remain open.
+
 ## Durable keyed control admission and inert retry receipts — 2026-11-27
 
 The local daemon IPC now accepts a stable nonzero SHA-256 control retry key. Lookup
@@ -43,8 +82,8 @@ authored regressions are not passing qualification receipts.
 This implements a concrete `fss-x4a.30.1.7` / INV-007 retry gap. Canonical device
 outcome verification, operator-authorized resumption, immutable reload-candidate
 binding, and complete backup/migration custody remain separate work. Existing
-unkeyed clients retain their old behavior; the separate client integration must
-explicitly carry the preview key into every keyed commit and retry.
+unkeyed clients retain their old behavior; the operational client integration above
+explicitly carries the preview key into every keyed commit and retry.
 
 ## Guarded daemon retention before canonical retirement — 2026-11-27
 

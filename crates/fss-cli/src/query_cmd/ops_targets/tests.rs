@@ -597,6 +597,7 @@ fn intents_require_approval_and_commit_idempotently() -> TestResult {
         op: BoundedControlOp::StartCamera,
         camera_id: Some("sensor:porch".into()),
         site_id: None,
+        idempotency_key: Some(ContentDigest::sha256(b"offline-supervision-request")),
     };
     let (sup_plan, exit) = execute_with_control(
         &OpsDispatch::PlanIntent(OpsIntentRequest {

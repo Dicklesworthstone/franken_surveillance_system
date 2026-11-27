@@ -40,7 +40,7 @@ use fss_daemon::control::{
 };
 use fss_daemon::error::DaemonError;
 use fss_ipc::{
-    ActiveScrubStatus, BoundedControlOp, CameraLiveStatus, RingWatermarkStatus,
+    ActiveScrubStatus, CameraLiveStatus, RingWatermarkStatus,
     deployment_root_digest,
 };
 use fss_reference::agent_orient::{
@@ -527,6 +527,11 @@ fn pure_mcp_operational_session_queries_probes_and_approval_gated_intents() -> T
         "approvalDigest",
     )?
     .to_owned();
+    let sup_key = text(
+        field(&extract_envelope(&p1[10])?.1, "payload")?,
+        "idempotencyKey",
+    )?
+    .to_owned();
     let wrong_app = ContentDigest::sha256(b"wrong-approval-digest").to_text();
 
     // Phase 2a: Missing/wrong approval refusals + privacy-mask commit + idempotent replay + fresh evidence-hold plan
@@ -583,7 +588,7 @@ fn pure_mcp_operational_session_queries_probes_and_approval_gated_intents() -> T
     let r2c = fixture.run_mcp_session(ALL_CAPS, &[
         (38, "commit", format!(r#"{{"intent":"retention-policy","sensor":"sensor:driveway-cam","enabled":true,"retain_for_ns":3600000000000,"max_retained_source_bytes":50000000,"attested_earliest_ns":1700000010000000000,"attested_latest_ns":1700000010000000000,"reason":"bounded ring cap","approval_digest":"{ret_app}"}}"#)),
         (39, "commit", format!(r#"{{"intent":"retention-policy","sensor":"sensor:driveway-cam","enabled":true,"retain_for_ns":3600000000000,"max_retained_source_bytes":50000000,"attested_earliest_ns":1700000010000000000,"attested_latest_ns":1700000010000000000,"reason":"bounded ring cap","approval_digest":"{ret_app}"}}"#)),
-        (40, "commit", format!(r#"{{"intent":"camera-supervision","op":"start_camera","camera_id":"sensor:driveway-cam","approval_digest":"{sup_app}"}}"#)),
+        (40, "commit", format!(r#"{{"intent":"camera-supervision","op":"start_camera","camera_id":"sensor:driveway-cam","approval_digest":"{sup_app}","idempotency_key":"{sup_key}"}}"#)),
         (41, "query", r#"{"target":"privacy-masks","sensor":"sensor:driveway-cam"}"#.to_owned()),
         (42, "query", r#"{"target":"holds"}"#.to_owned()),
     ])?;
@@ -657,7 +662,7 @@ fn pure_mcp_operational_session_queries_probes_and_approval_gated_intents() -> T
     )?;
     let p3 = fixture.run_mcp_session(ALL_CAPS, &[
         (50, "query", r#"{"target":"cameras"}"#.to_owned()),
-        (51, "commit", format!(r#"{{"intent":"camera-supervision","op":"start_camera","camera_id":"sensor:driveway-cam","approval_digest":"{sup_app}"}}"#)),
+        (51, "commit", format!(r#"{{"intent":"camera-supervision","op":"start_camera","camera_id":"sensor:driveway-cam","approval_digest":"{sup_app}","idempotency_key":"{sup_key}"}}"#)),
     ])?;
     let (is_err, cam_live) = extract_envelope(&p3[0])?;
     assert!(!is_err);
@@ -674,10 +679,11 @@ fn pure_mcp_operational_session_queries_probes_and_approval_gated_intents() -> T
         "sensor:driveway-cam"
     );
     let (is_err, sup_live) = extract_envelope(&p3[1])?;
-    assert!(!is_err && text(field(&sup_live, "payload")?, "status")? == "queued");
-    let drained = shared.drain_control_commands();
-    assert_eq!(drained.len(), 1);
-    assert_eq!(drained[0].op, BoundedControlOp::StartCamera);
+    // This deliberately process-local owner has no durable key journal. The new request
+    // must refuse instead of silently falling back to legacy duplicate-prone admission.
+    assert!(is_err);
+    assert!(format!("{sup_live:?}").contains("durable"));
+    assert!(shared.drain_control_commands().is_empty());
     server.shutdown()?;
 
     // Phase 4: Fail-closed capability denial on EVERY target/probe/intent + `-32602` escape-hatch rejection

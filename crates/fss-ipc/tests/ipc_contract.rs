@@ -454,3 +454,142 @@ fn unsupported_keyed_controls_refuse_without_falling_back_to_legacy_dispatch() -
     server.shutdown()?;
     Ok(())
 }
+
+
+/// Sends a well-formed control receipt for a different request to exercise client correlation.
+struct MismatchedControlHandler {
+    baseline: SimpleHandler,
+    response: IpcResponse,
+    calls: AtomicU64,
+}
+
+impl DaemonIpcHandler for MismatchedControlHandler {
+    fn submit_delta_batch(
+        &self,
+        ctx: &RequestContext,
+        key: ContentDigest,
+        bytes: &[u8],
+        approval: Option<ContentDigest>,
+    ) -> IpcResponse {
+        self.baseline.submit_delta_batch(ctx, key, bytes, approval)
+    }
+
+    fn query_live_status(
+        &self,
+        ctx: &RequestContext,
+        include_cameras: bool,
+        include_ring: bool,
+    ) -> IpcResponse {
+        self.baseline.query_live_status(ctx, include_cameras, include_ring)
+    }
+
+    fn subscribe_deltas(
+        &self,
+        ctx: &RequestContext,
+        since: u64,
+        maximum: u32,
+        sink: &mut DeltaStreamSink<'_>,
+    ) -> StreamEndReason {
+        self.baseline.subscribe_deltas(ctx, since, maximum, sink)
+    }
+
+    fn submit_bounded_control(
+        &self,
+        ctx: &RequestContext,
+        op: BoundedControlOp,
+        target: Option<&str>,
+        approval: ContentDigest,
+    ) -> IpcResponse {
+        self.baseline.submit_bounded_control(ctx, op, target, approval)
+    }
+
+    fn submit_idempotent_control(
+        &self,
+        _ctx: &RequestContext,
+        _key: ContentDigest,
+        _op: BoundedControlOp,
+        _target: Option<&str>,
+        _approval: ContentDigest,
+    ) -> IpcResponse {
+        self.calls.fetch_add(1, Ordering::AcqRel);
+        self.response.clone()
+    }
+}
+
+#[test]
+fn unary_client_refuses_mismatched_admission_and_replay_receipts_without_resubmission() -> TestResult {
+    let other_operation = OperationId::parse("op:control:another-request")?;
+    for response in [
+        IpcResponse::ControlAccepted {
+            request_id: 777,
+            operation_id: other_operation.clone(),
+            state: ControlOperationState::Queued,
+        },
+        IpcResponse::ControlReplayed {
+            request_id: 777,
+            operation_id: other_operation.clone(),
+            progress: fss_ipc::RetainedControlProgress::SubsystemReturned,
+            recovered: true,
+        },
+    ] {
+        let tmp = TempDeployment::new("correlation")?;
+        let basis = test_basis();
+        let handler = Arc::new(MismatchedControlHandler {
+            baseline: SimpleHandler::new(),
+            response,
+            calls: AtomicU64::new(0),
+        });
+        let server = IpcServer::bind(
+            IpcServerConfig::new(tmp.path(), "site:correlation", basis.basis_digest(), "d1"),
+            handler.clone(),
+        )?;
+        let mut client = IpcClient::connect(IpcClientConfig::from_contract_basis(
+            tmp.path(),
+            "site:correlation",
+            &basis,
+            test_principal()?,
+            vec!["CAP-AGENT-CAMERA-CONTROL-001".to_owned()],
+        ))?;
+
+        // Ordinary correlated replies and cancellation's target-ID contract stay valid.
+        assert!(matches!(
+            client.query_live_status(11, false, false)?,
+            IpcResponse::LiveStatus(status) if status.request_id == 11
+        ));
+        assert_eq!(
+            client.cancel_request(12)?,
+            IpcResponse::Cancelled { request_id: 12 }
+        );
+
+        let error = match client.submit_idempotent_control(
+            41,
+            ContentDigest::sha256(b"original intended action"),
+            BoundedControlOp::StopCamera,
+            Some("sensor:front".to_owned()),
+            ContentDigest::sha256(b"original approval"),
+        ) {
+            Err(error) => error,
+            Ok(response) => {
+                return Err(format!(
+                    "another request's receipt acknowledged this key: {response:?}"
+                ).into());
+            }
+        };
+        assert!(matches!(
+            &error,
+            IpcError::InvalidFrame { reason }
+                if reason.contains("777") && reason.contains("41")
+                    && reason.contains("outcome is unknown")
+        ));
+        assert_eq!(error.error_id(), fss_ipc::ERR_IPC_WIRE_CORRUPT_001);
+        assert_eq!(handler.calls.load(Ordering::Acquire), 1);
+        let trace = client.trace_events().last().ok_or("missing request trace")?;
+        assert_eq!(trace.req_id, 41);
+        assert_eq!(trace.op, "submit_idempotent_control");
+        assert_eq!(trace.outcome, fss_ipc::ERR_IPC_WIRE_CORRUPT_001);
+        assert!(trace.frame_bytes > 0);
+        assert!(!trace.fallback_used);
+        server.shutdown()?;
+    }
+    Ok(())
+}
