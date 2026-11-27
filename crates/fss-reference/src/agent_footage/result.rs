@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 //! Native query plan, exact continuation owner and epistemic projection.
 
+use std::ops::RangeInclusive;
+
 use super::*;
 use crate::agent_follow::snapshot_anchor_token;
 use crate::agent_orient::DeploymentSnapshot;
@@ -38,6 +40,10 @@ pub struct DeploymentFootageQuery {
     pub scanned_capsules: usize,
     /// Total matching records, independent of this page's length.
     pub matched_capsules: usize,
+    /// Maximal closed ranges unmatched by any admitted capsule's declared endpoints. Available
+    /// for exact sensor/stream queries with two finite bounds. Computed before pagination.
+    /// An empty vector does not establish recording continuity, clock alignment or observability.
+    pub metadata_gaps: Option<Vec<RangeInclusive<i128>>>,
     /// Complete imports outside the admitted file/native-camera/TUTK adapter set.
     pub other_adapter_imports: usize,
     /// Native cursor consumed by this page.
@@ -70,6 +76,30 @@ impl DeploymentFootageQuery {
             statement:"Physical presence, absence, live coverage, current source-payload availability, adapter-origin reconstruction, trusted UTC and capture-time precision are unknown. Zero matches or gap_before=false cannot establish physical absence or continuous recording. No source-media or adapter-origin proof bytes were read.".to_owned(),
             state:KnowledgeState::Unknown,provenance:"derived".to_owned(),evidence:Vec::new(),
         }];
+        if let Some(gaps) = &self.metadata_gaps {
+            propositions.push(EnvelopeProposition {
+                id: "claim:footage:window-index".to_owned(),
+                statement: format!(
+                    "Across all matching pages, the requested closed source-native range contains {} intervals outside every admitted capsule's declared endpoints. This compares indexed numbers only; uncertainty intervals, missing payloads and unaligned clocks prevent a recording-continuity or physical-coverage claim.",
+                    gaps.len()
+                ),
+                state: KnowledgeState::Known,
+                provenance: "derived".to_owned(),
+                evidence: vec![self.selection_witness.to_text()],
+            });
+            for (index, gap) in gaps.iter().enumerate() {
+                propositions.push(EnvelopeProposition {
+                    id: format!("claim:footage:metadata-gap:{index}"),
+                    statement: format!(
+                        "source_native_start_ns={}, source_native_end_ns={}, endpoints=inclusive, reason=no_overlapping_admitted_capsule_metadata. An observation from this range cannot be established from the indexed metadata.",
+                        gap.start(), gap.end()
+                    ),
+                    state: KnowledgeState::NotObservable,
+                    provenance: "derived".to_owned(),
+                    evidence: vec![self.selection_witness.to_text()],
+                });
+            }
+        }
         for row in &self.rows {
             let c = &row.capsule;
             propositions.push(EnvelopeProposition {
@@ -111,6 +141,42 @@ fn hex(d: ContentDigest) -> String {
         .map_or_else(String::new, |(_, h)| h.to_owned())
 }
 
+/// Complement of the closed integer intervals within the requested numeric window.
+pub(super) fn metadata_gaps(
+    from: i128,
+    through: i128,
+    mut intervals: Vec<(i128, i128)>,
+) -> Result<Vec<RangeInclusive<i128>>, FootageQueryError> {
+    // Input comes from at most MAX_FOOTAGE_CAPSULES verified rows. Sort a copy so that
+    // import/segment ordering and cursor identities remain independent of time ordering.
+    intervals.sort_unstable();
+    let mut next = from;
+    let mut gaps = Vec::new();
+    for (start, end) in intervals {
+        if start > through {
+            break;
+        }
+        if end < next {
+            continue;
+        }
+        if start > next {
+            gaps.push(next..=start - 1);
+            if gaps.len() > MAX_FOOTAGE_WINDOW_GAPS {
+                return Err(FootageQueryError::OverBudget);
+            }
+        }
+        if end >= through {
+            return Ok(gaps);
+        }
+        next = end + 1;
+    }
+    if gaps.len() == MAX_FOOTAGE_WINDOW_GAPS {
+        return Err(FootageQueryError::OverBudget);
+    }
+    gaps.push(next..=through);
+    Ok(gaps)
+}
+
 pub(super) fn compile(
     snapshot: DeploymentSnapshot,
     request: &FootageQueryRequest,
@@ -123,6 +189,22 @@ pub(super) fn compile(
         .iter()
         .filter(|r| request.filter.matches(&r.capsule))
         .collect();
+    let metadata_gaps = match (
+        &request.filter.sensor,
+        &request.filter.stream,
+        request.filter.from_ns,
+        request.filter.through_ns,
+    ) {
+        (Some(_), Some(_), Some(from), Some(through)) => Some(metadata_gaps(
+            from,
+            through,
+            selected
+                .iter()
+                .map(|r| (r.capsule.capture.earliest.0, r.capsule.capture.latest.0))
+                .collect(),
+        )?),
+        _ => None,
+    };
     let basis = reference_contract_basis();
     let mut e = CanonicalEncoder::new();
     // A broader adapter domain must never reinterpret a cursor issued for the file-only v1
@@ -285,6 +367,7 @@ pub(super) fn compile(
         mission_id,
         scanned_capsules: ordered.len(),
         matched_capsules: selected.len(),
+        metadata_gaps,
         other_adapter_imports,
         cursor,
         page,

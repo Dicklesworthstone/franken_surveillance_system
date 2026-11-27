@@ -31,6 +31,9 @@ use std::path::Path;
 pub const MAX_FOOTAGE_CAPSULES: usize = 16_384;
 /// Maximum returned capsule metadata records on one page.
 pub const MAX_FOOTAGE_ENTRIES: u32 = 32;
+/// Maximum exact gaps emitted for a fully scoped, closed metadata window. A larger
+/// complement refuses the query so that a gap cannot silently disappear from a page.
+pub const MAX_FOOTAGE_WINDOW_GAPS: usize = 32;
 /// Default page size, shared with the committed-event query.
 pub const DEFAULT_FOOTAGE_ENTRIES: u32 = 16;
 

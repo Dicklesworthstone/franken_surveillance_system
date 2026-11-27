@@ -198,10 +198,33 @@ fn conjunctive_source_native_overlap_keeps_unknown_windows_and_empty_is_not_abse
     req.filter.through_ns = Some(2_000_000_000);
     let result = query(&root, &req)?;
     assert_eq!(result.matched_capsules, receipt.capsule_count);
+    assert_eq!(result.metadata_gaps, Some(vec![]));
+    assert!(result.page.next_cursor.is_some());
+    req.continuation = result
+        .page
+        .next_cursor
+        .as_ref()
+        .map(|c| c.token().to_owned());
+    let second = query(&root, &req)?;
+    assert_eq!(second.metadata_gaps, result.metadata_gaps);
+    req.continuation = None;
+    req.filter.from_ns = Some(2_000_000_001);
+    req.filter.through_ns = Some(2_000_000_010);
+    let gap = query(&root, &req)?;
+    assert_eq!(gap.metadata_gaps, Some(vec![2_000_000_001..=2_000_000_010]));
+    let epistemic = gap.epistemic();
+    assert!(epistemic.propositions.iter().any(|p| {
+        p.id == "claim:footage:metadata-gap:0"
+            && p.state == fss_core::KnowledgeState::NotObservable
+            && p.evidence == [gap.selection_witness.to_text()]
+            && p.statement
+                .contains("reason=no_overlapping_admitted_capsule_metadata")
+    }));
     req.filter.from_ns = Some(2_000_000_001);
     req.filter.through_ns = None;
     let empty = query(&root, &req)?;
     assert!(empty.rows.is_empty());
+    assert!(empty.metadata_gaps.is_none());
     assert!(
         empty
             .epistemic()
@@ -218,6 +241,33 @@ fn conjunctive_source_native_overlap_keeps_unknown_windows_and_empty_is_not_abse
     assert!(matches!(
         query(&root, &req),
         Err(FootageQueryError::InvalidRequest(_))
+    ));
+    Ok(())
+}
+
+#[test]
+fn complete_metadata_gap_complement_handles_nanosecond_edges_and_refuses_fragment_overflow()
+-> TestResult {
+    use super::result::metadata_gaps;
+
+    let gaps = metadata_gaps(-4, 12, vec![(9, 10), (-20, -3), (6, 7), (6, 8), (0, 0)])?;
+    assert_eq!(gaps, vec![-2..=-1, 1..=5, 11..=12]);
+    assert_eq!(
+        metadata_gaps(i128::MIN, i128::MAX, vec![])?,
+        vec![i128::MIN..=i128::MAX]
+    );
+    assert_eq!(
+        metadata_gaps(i128::MIN, i128::MAX, vec![(i128::MIN, -1), (1, i128::MAX)])?,
+        vec![0..=0],
+    );
+    let alternating: Vec<_> = (1..64).step_by(2).map(|t| (t, t)).collect();
+    assert_eq!(
+        metadata_gaps(0, 63, alternating.clone())?.len(),
+        MAX_FOOTAGE_WINDOW_GAPS
+    );
+    assert!(matches!(
+        metadata_gaps(0, 64, alternating),
+        Err(FootageQueryError::OverBudget)
     ));
     Ok(())
 }
