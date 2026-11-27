@@ -7,6 +7,7 @@
 //! whole-pack SHA-256 once `target_pack_bytes` is reached.
 
 mod recovery;
+pub(crate) mod verified;
 
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
@@ -28,10 +29,15 @@ use crate::format::{
 use crate::index::{IndexRebuildReason, PackIndex, PackInventoryEntry};
 use crate::retention::ObjectTombstoneLog;
 
-pub use recovery::verify_sealed_pack;
+pub use recovery::{verify_sealed_pack, verify_sealed_pack_with_digest};
 pub(crate) use recovery::{
     read_sealed_footer_from_file, read_verified_location, recover_packs_and_index,
 };
+
+/// Verifies a complete sealed pack already held in memory, including every indexed payload.
+pub fn verify_sealed_pack_bytes(pack_id: PackId, bytes: &[u8]) -> Result<crate::format::PackFooter, PackError> {
+    verified::verify(&mut std::io::Cursor::new(bytes), pack_id).map(|(footer, _)| footer)
+}
 
 /// Soft and hard configurable quota limits for the pack store and virtual root catalog.
 ///

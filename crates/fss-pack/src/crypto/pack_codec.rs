@@ -440,6 +440,34 @@ pub fn encrypt_pack_file(
     entropy: &mut dyn EntropySource,
     durability: DurabilityMode,
 ) -> Result<EncryptedPackReceipt, PackError> {
+    encrypt_pack_file_with_pin(
+        source_pack_path,
+        dest_enc_path,
+        pack_id,
+        schema_epoch,
+        dek,
+        origin_key_epoch,
+        chunk_size,
+        entropy,
+        durability,
+        None,
+    )
+}
+
+/// Streams an encrypted file, comparing an optional verified full-file digest before publication.
+#[allow(clippy::too_many_arguments)]
+pub fn encrypt_pack_file_with_pin(
+    source_pack_path: impl AsRef<Path>,
+    dest_enc_path: impl AsRef<Path>,
+    pack_id: PackId,
+    schema_epoch: u32,
+    dek: DataEncryptionKey,
+    origin_key_epoch: KeyEpoch,
+    chunk_size: usize,
+    entropy: &mut dyn EntropySource,
+    durability: DurabilityMode,
+    expected_plaintext: Option<ContentDigest>,
+) -> Result<EncryptedPackReceipt, PackError> {
     if chunk_size == 0 || (chunk_size as u64) > MAX_AEAD_FRAME_PLAINTEXT_BYTES {
         return Err(PackError::InvalidConfig {
             detail: format!("chunk_size {chunk_size} outside 1..={MAX_AEAD_FRAME_PLAINTEXT_BYTES}"),
@@ -479,7 +507,7 @@ pub fn encrypt_pack_file(
         let _ = writer.write_record(&buf[..filled], entropy)?;
         wrote_any = true;
     }
-    writer.finish()
+    writer.finish_with_pin(expected_plaintext)
 }
 
 /// Authenticates and decrypts an `.fsep` file on disk and atomically writes the verified plaintext
@@ -494,23 +522,53 @@ pub fn decrypt_and_verify_pack_file(
     kek: &KeyEncryptionKey,
     durability: DurabilityMode,
 ) -> Result<DecryptedPackReceipt, PackError> {
+    let (plaintext, receipt) = read_authenticated_pack_file(
+        enc_pack_path.as_ref(), expected_pack_id, expected_schema_epoch, catalog, kek,
+    )?;
+    write_file_atomic(dest_pack_path.as_ref(), &plaintext, durability)?;
+    Ok(receipt)
+}
+
+/// Authenticates the FSEP envelope and verifies every sealed FSSP record before publishing output.
+#[allow(clippy::too_many_arguments)]
+pub fn decrypt_and_verify_sealed_pack_file(
+    enc_pack_path: impl AsRef<Path>,
+    dest_pack_path: impl AsRef<Path>,
+    expected_pack_id: PackId,
+    expected_schema_epoch: u32,
+    catalog: &KeyEnvelopeCatalog,
+    kek: &KeyEncryptionKey,
+    durability: DurabilityMode,
+) -> Result<DecryptedPackReceipt, PackError> {
+    let (plaintext, receipt) = read_authenticated_pack_file(
+        enc_pack_path.as_ref(), expected_pack_id, expected_schema_epoch, catalog, kek,
+    )?;
+    crate::packfile::verify_sealed_pack_bytes(expected_pack_id, &plaintext)?;
+    write_file_atomic(dest_pack_path.as_ref(), &plaintext, durability)?;
+    Ok(receipt)
+}
+
+fn read_authenticated_pack_file(
+    enc_pack_path: &Path,
+    expected_pack_id: PackId,
+    expected_schema_epoch: u32,
+    catalog: &KeyEnvelopeCatalog,
+    kek: &KeyEncryptionKey,
+) -> Result<(Vec<u8>, DecryptedPackReceipt), PackError> {
     let mut file =
         File::open(enc_pack_path).map_err(|err| PackError::io(PackIoOperation::Open, err))?;
     let mut ciphertext = Vec::new();
     file.read_to_end(&mut ciphertext)
         .map_err(|err| PackError::io(PackIoOperation::Read, err))?;
 
-    let (plaintext, receipt) = decrypt_and_verify_pack_bytes(
+    decrypt_and_verify_pack_bytes(
         &ciphertext,
         expected_pack_id,
         EncryptedStreamKind::SealedPackChunks,
         expected_schema_epoch,
         catalog,
         kek,
-    )?;
-
-    write_file_atomic(dest_pack_path.as_ref(), &plaintext, durability)?;
-    Ok(receipt)
+    )
 }
 
 /// Encrypts a canonical ledger epoch segment (`FSSE`/`FSST` bytes) under `SCHEMA_EPOCH_LEDGER_EPOCH`.

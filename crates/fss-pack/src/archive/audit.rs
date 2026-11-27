@@ -11,10 +11,7 @@
 
 use std::path::Path;
 
-use fss_core::{
-    CanonicalEncode, CanonicalEncoder, ContentDigest, DigestAlgorithm, TimestampNs, sha256,
-};
-use fss_vault::constant_time_eq;
+use fss_core::{CanonicalEncode, CanonicalEncoder, ContentDigest, DigestAlgorithm, TimestampNs};
 
 use crate::archive::manifest::ColdPackArchiveManifest;
 use crate::archive::s3_pack::ColdPackTransport;
@@ -25,10 +22,7 @@ use crate::crypto::pack_io::{
     EncryptedStreamKind, decrypt_and_verify_pack_bytes, publish_restored_pack,
 };
 use crate::error::PackError;
-use crate::format::{
-    DurabilityMode, PACK_FOOTER_PREFIX_LEN, PACK_FOOTER_TAIL_LEN, PACK_RECORD_OVERHEAD_LEN, PackId,
-    PackLocation, PackObjectInput, decode_footer_tail, decode_sealed_footer, verify_record_slice,
-};
+use crate::format::{DurabilityMode, PackId, PackLocation, PackObjectInput};
 use crate::store::PackStore;
 
 /// Canonical digest domain for [`ColdRetrievabilityAuditReceipt::receipt_digest`].
@@ -581,110 +575,24 @@ pub(super) fn verify_sealed_pack_bytes(
     pack_id: PackId,
     raw: &[u8],
 ) -> Result<(ContentDigest, Vec<VerifiedInnerRecord>), PackError> {
-    if raw.len() < PACK_FOOTER_PREFIX_LEN + PACK_FOOTER_TAIL_LEN {
-        return Err(PackError::CorruptPack {
-            pack_id,
-            offset: 0,
-            detail: "restored packfile shorter than minimum sealed footer".to_owned(),
-        });
-    }
-    let tail_start = raw.len() - PACK_FOOTER_TAIL_LEN;
-    let tail_arr: &[u8; PACK_FOOTER_TAIL_LEN] =
-        raw[tail_start..]
-            .try_into()
-            .map_err(|_| PackError::CorruptPack {
-                pack_id,
-                offset: tail_start as u64,
-                detail: "failed to slice restored footer tail".to_owned(),
-            })?;
-    let tail = decode_footer_tail(tail_arr).ok_or_else(|| PackError::CorruptPack {
-        pack_id,
-        offset: tail_start as u64,
-        detail: "restored packfile missing FSSE footer end magic".to_owned(),
-    })?;
-    let footer_offset_usize =
-        usize::try_from(tail.footer_offset).map_err(|_| PackError::ArithmeticOverflow)?;
-    if footer_offset_usize >= tail_start {
-        return Err(PackError::CorruptPack {
-            pack_id,
-            offset: tail.footer_offset,
-            detail: "restored footer_offset out of bounds".to_owned(),
-        });
-    }
-    let mut footer = decode_sealed_footer(pack_id, tail.footer_offset, &raw[footer_offset_usize..])?;
-
-    let whole_sha = sha256(&raw[..raw.len() - 36]);
-    if !constant_time_eq(&whole_sha, &footer.whole_pack_sha256) {
-        return Err(PackError::DigestMismatch {
-            expected: ContentDigest::new(DigestAlgorithm::Sha256, footer.whole_pack_sha256),
-            actual: ContentDigest::new(DigestAlgorithm::Sha256, whole_sha),
-        });
-    }
-
-    // Canonical footers are digest-sorted. In physical order every byte before
-    // FSSF must belong to exactly one indexed record.
-    footer.entries.sort_unstable_by_key(|entry| entry.offset);
-    let mut records = Vec::with_capacity(footer.entries.len());
-    let mut next_offset = 0;
-    for entry in &footer.entries {
-        let start = usize::try_from(entry.offset).map_err(|_| PackError::ArithmeticOverflow)?;
-        if start != next_offset {
-            return Err(PackError::CorruptPack {
-                pack_id,
-                offset: entry.offset,
-                detail: "sealed footer omits or overlaps record bytes".to_owned(),
-            });
-        }
-        let rec_len = usize::try_from(entry.len)
-            .ok()
-            .and_then(|n| n.checked_add(PACK_RECORD_OVERHEAD_LEN))
-            .ok_or(PackError::ArithmeticOverflow)?;
-        let end = start
-            .checked_add(rec_len)
-            .ok_or(PackError::ArithmeticOverflow)?;
-        if end > footer_offset_usize {
-            return Err(PackError::CorruptPack {
-                pack_id,
-                offset: entry.offset,
-                detail: "restored inner FSSP record exceeds footer offset".to_owned(),
-            });
-        }
-        let (hdr, _payload) = verify_record_slice(
-            pack_id,
-            entry.offset,
-            &raw[start..end],
-            Some(entry.digest()),
-        )?;
-        if entry.kind != hdr.object_kind || entry.flags != hdr.flags {
-            return Err(PackError::CorruptPack {
-                pack_id,
-                offset: entry.offset,
-                detail: "sealed footer kind or flags differ from record header".to_owned(),
-            });
-        }
-        next_offset = end;
-        let payload_start = start + crate::format::PACK_RECORD_HEADER_LEN;
-        let payload_end = end - crate::format::PACK_RECORD_TRAILER_LEN;
-        records.push(VerifiedInnerRecord {
-            digest: hdr.digest(),
-            object_kind: hdr.object_kind,
-            flags: hdr.flags,
-            payload_start,
-            payload_end,
-        });
-    }
-    if next_offset != footer_offset_usize {
-        return Err(PackError::CorruptPack {
-            pack_id,
-            offset: next_offset as u64,
-            detail: "sealed footer leaves trailing record bytes unindexed".to_owned(),
-        });
-    }
-
-    // Preserve canonical order for append_batch and its returned locations.
-    records.sort_unstable_by_key(|record| (record.digest, record.payload_start));
+    let (footer, _) = crate::packfile::verified::verify(&mut std::io::Cursor::new(raw), pack_id)?;
+    let records = footer
+        .entries
+        .iter()
+        .map(|entry| {
+            // The shared verifier proved these complete spans lie inside this byte slice.
+            let payload_start = entry.offset as usize + crate::format::PACK_RECORD_HEADER_LEN;
+            VerifiedInnerRecord {
+                digest: entry.digest(),
+                object_kind: entry.kind,
+                flags: entry.flags,
+                payload_start,
+                payload_end: payload_start + entry.len as usize,
+            }
+        })
+        .collect();
     Ok((
-        ContentDigest::new(DigestAlgorithm::Sha256, whole_sha),
+        ContentDigest::new(DigestAlgorithm::Sha256, footer.whole_pack_sha256),
         records,
     ))
 }

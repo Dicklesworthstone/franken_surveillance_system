@@ -28,8 +28,8 @@ pub use crate::crypto::pack_codec::{
     ENCRYPTED_PACK_HEADER_LEN, ENCRYPTED_PACK_MAGIC, ENCRYPTED_PACK_TRAILER_LEN,
     ENCRYPTED_PACK_TRAILER_MAGIC, ENCRYPTED_PACK_VERSION, EncryptedPackHeader,
     EncryptedPackReceipt, EncryptedPackTrailer, EncryptedRecordReceipt, EncryptedStreamKind,
-    decrypt_and_verify_ledger_epoch_segment, decrypt_and_verify_pack_file,
-    encrypt_ledger_epoch_segment, encrypt_pack_file,
+    decrypt_and_verify_ledger_epoch_segment, decrypt_and_verify_pack_file, decrypt_and_verify_sealed_pack_file,
+    encrypt_ledger_epoch_segment, encrypt_pack_file, encrypt_pack_file_with_pin,
 };
 
 /// Atomic encrypted packfile writer that NEVER writes raw plaintext bytes to disk.
@@ -186,12 +186,22 @@ impl EncryptedPackWriter {
     }
 
     /// Writes the authenticated `FSPT`..`FSPE` trailer, fsyncs, and atomically publishes the file.
-    pub fn finish(mut self) -> Result<EncryptedPackReceipt, PackError> {
+    pub fn finish(self) -> Result<EncryptedPackReceipt, PackError> {
+        self.finish_with_pin(None)
+    }
+
+    pub(crate) fn finish_with_pin(mut self, expected: Option<ContentDigest>) -> Result<EncryptedPackReceipt, PackError> {
         let plaintext_sha_raw = self
             .plaintext_hasher
             .clone()
             .finalize()
             .map_err(|_| PackError::ArithmeticOverflow)?;
+        let actual = ContentDigest::new(DigestAlgorithm::Sha256, plaintext_sha_raw);
+        if let Some(expected) = expected
+            && expected != actual
+        {
+            return Err(PackError::DigestMismatch { expected, actual });
+        }
         let (_trailer, trailer_bytes) = EncryptedPackTrailer::encode(
             self.frame_count,
             self.plaintext_bytes,

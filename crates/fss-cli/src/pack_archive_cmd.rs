@@ -27,9 +27,11 @@ use fss_pack::{
     EncryptedStreamKind, KeyEncryptionKey, KeyEnvelopeCatalog, KeyEpoch,
     MAX_COLD_MANIFEST_DOWNLOAD_BYTES, PackConfig, PackError, PackId, PackStore,
     S3CompatiblePackTransport, SCHEMA_EPOCH_PACKFILE, archive_sealed_pack_with_pin,
-    decrypt_and_verify_pack_bytes, decrypt_and_verify_pack_file, encrypt_pack_file,
+    decrypt_and_verify_pack_bytes,
     fetch_cold_pack_manifest, restore_cold_pack_to_dir, verify_sealed_pack,
 };
+use fss_pack::crypto::pack_io::{decrypt_and_verify_sealed_pack_file, encrypt_pack_file_with_pin};
+use fss_pack::packfile::{verify_sealed_pack_bytes, verify_sealed_pack_with_digest};
 use fss_vault::{
     AdapterFamily, CAP_SECRET_READ_001, ERR_SECRET_INVALID_INPUT_001, LocalEncryptedVault,
     OsEntropy, SecretId, SecretScope,
@@ -453,9 +455,10 @@ fn exec_seal(args: &[ArgToken]) -> (String, ExitIdentity) {
                 ExitIdentity::MISSING_VALUE,
             );
         };
-        if let Err(err) = verify_sealed_pack(&packs_dir, pack_id) {
-            return pack_err_to_json(err);
-        }
+        let (_, source_digest) = match verify_sealed_pack_with_digest(&packs_dir, pack_id) {
+            Ok(verified) => verified,
+            Err(err) => return pack_err_to_json(err),
+        };
         let Some(catalog_path) = &opts.key_catalog else {
             return err_json(
                 "ERR-CLI-MISSING-VALUE-001",
@@ -489,7 +492,7 @@ fn exec_seal(args: &[ArgToken]) -> (String, ExitIdentity) {
             }
         };
         let src_pack = packs_dir.join(pack_id.file_name());
-        let receipt = match encrypt_pack_file(
+        let receipt = match encrypt_pack_file_with_pin(
             &src_pack,
             out_path,
             pack_id,
@@ -499,6 +502,7 @@ fn exec_seal(args: &[ArgToken]) -> (String, ExitIdentity) {
             DEFAULT_ENCRYPTION_CHUNK_BYTES,
             &mut entropy,
             DurabilityMode::Fsync,
+            Some(source_digest),
         ) {
             Ok(r) => r,
             Err(err) => {
@@ -608,7 +612,7 @@ fn exec_verify(args: &[ArgToken]) -> (String, ExitIdentity) {
             }
         };
         let dec = if let Some(out_path) = &opts.out_file {
-            decrypt_and_verify_pack_file(
+            decrypt_and_verify_sealed_pack_file(
                 enc_path,
                 out_path,
                 pack_id,
@@ -627,7 +631,10 @@ fn exec_verify(args: &[ArgToken]) -> (String, ExitIdentity) {
                     &catalog,
                     &kek,
                 )
-                .map(|(_, receipt)| receipt),
+                .and_then(|(plaintext, receipt)| {
+                    verify_sealed_pack_bytes(pack_id, &plaintext)?;
+                    Ok(receipt)
+                }),
                 Err(err) => {
                     vault.lock();
                     return err;

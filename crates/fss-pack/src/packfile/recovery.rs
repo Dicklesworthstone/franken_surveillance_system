@@ -3,10 +3,10 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Seek, SeekFrom};
 use std::path::Path;
 
-use fss_core::{ContentDigest, DigestAlgorithm, Sha256Hasher};
+use fss_core::{ContentDigest, Sha256Hasher};
 
 use crate::compaction::COMPACT_STAGING_SUFFIX;
 use crate::error::{PackError, PackIoOperation};
@@ -55,55 +55,19 @@ pub(crate) fn read_verified_location(
     Ok(payload.to_vec())
 }
 
-/// Fully verifies a sealed packfile on disk: validates its `FSSF`..`FSSE` footer and streams
-/// the entire packfile in bounded 64 KiB chunks to confirm exact `whole_pack_sha256`.
+/// Verifies complete FSSP record inventory, metadata, CRC32C, payload SHA-256s and sealed digest.
 pub fn verify_sealed_pack(packs_dir: &Path, pack_id: PackId) -> Result<PackFooter, PackError> {
+    verify_sealed_pack_with_digest(packs_dir, pack_id).map(|(footer, _)| footer)
+}
+
+/// Also returns the digest of the entire verified file for later encryption or transfer.
+pub fn verify_sealed_pack_with_digest(
+    packs_dir: &Path,
+    pack_id: PackId,
+) -> Result<(PackFooter, ContentDigest), PackError> {
     let path = packs_dir.join(pack_id.file_name());
     let mut file = File::open(&path).map_err(|err| PackError::io(PackIoOperation::Open, err))?;
-    let file_len = file
-        .metadata()
-        .map_err(|err| PackError::io(PackIoOperation::Metadata, err))?
-        .len();
-    let footer = read_sealed_footer_from_file(&file, pack_id, file_len)?;
-
-    let hashed_len = file_len
-        .checked_sub(36)
-        .ok_or_else(|| PackError::CorruptPack {
-            pack_id,
-            offset: 0,
-            detail: "sealed pack shorter than trailer".to_owned(),
-        })?;
-    file.seek(SeekFrom::Start(0))
-        .map_err(|err| PackError::io(PackIoOperation::Read, err))?;
-    let mut hasher = Sha256Hasher::new();
-    let mut buf = [0_u8; 64 * 1024];
-    let mut remaining = hashed_len;
-    while remaining > 0 {
-        let to_read = usize::try_from(remaining.min(buf.len() as u64))
-            .map_err(|_| PackError::ArithmeticOverflow)?;
-        let n = file
-            .read(&mut buf[..to_read])
-            .map_err(|err| PackError::io(PackIoOperation::Read, err))?;
-        if n == 0 {
-            return Err(PackError::CorruptPack {
-                pack_id,
-                offset: hashed_len - remaining,
-                detail: "unexpected EOF while hashing sealed pack".to_owned(),
-            });
-        }
-        hasher.update(&buf[..n]);
-        remaining -= n as u64;
-    }
-    let computed = hasher
-        .finalize()
-        .map_err(|_| PackError::ArithmeticOverflow)?;
-    if computed != footer.whole_pack_sha256 {
-        return Err(PackError::DigestMismatch {
-            expected: ContentDigest::new(DigestAlgorithm::Sha256, footer.whole_pack_sha256),
-            actual: ContentDigest::new(DigestAlgorithm::Sha256, computed),
-        });
-    }
-    Ok(footer)
+    super::verified::verify(&mut file, pack_id)
 }
 
 /// Reads and structurally parses the `FSSF`..`FSSE` footer of a sealed packfile in O(footer_bytes).
