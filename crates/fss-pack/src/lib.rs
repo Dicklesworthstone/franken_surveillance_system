@@ -120,5 +120,5 @@ pub use scrubber::{
 };
 pub use store::{
     GraphPublishReceipt, PackReadBudget, PackReader, PackStore, PackTelemetrySnapshot,
-    StoreRecoveryReport,
+    PreparedEviction, StoreRecoveryReport,
 };

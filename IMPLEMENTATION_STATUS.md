@@ -5,6 +5,35 @@
 **Current change qualification:** each dated section below states its exact verification boundary. Native passes for one component do not qualify other changes, and prior receipts do not qualify new bytes.
 **Release authority:** repository-owned local qualification (`scripts/qualify.sh`) and retained DSR receipts, not hosted CI
 
+## Guarded daemon retention before canonical retirement — 2026-11-27
+
+The daemon now prepares eviction against a stable catalog before committing canonical
+footage retirement. A per-store catalog-mutation guard spans deterministic preflight,
+a fresh check of catalog-reference pins, canonical retirement and the exact prepared
+tombstone batch. A late direct reference to source media or retained import metadata
+therefore refuses while the original query rows and canonical head remain intact.
+Catalog publication, supersession and other mutations share this guard. Ordinary
+object appends and reads remain available so the combiner can retain retirement
+metadata without taking the catalog-mutation guard recursively.
+
+Three new regression functions cover all four source/import-metadata reference shapes,
+concurrent metadata append with fenced late publication, and dropping an uncommitted
+guard without changing evidence. Existing pack reference and daemon retention contracts
+remain applicable.
+
+**Verification boundary:** independent source and lock-order reviews found no blocking
+issue. The new Rust tests and pinned formatting remain unexecuted: the native build ran
+out of disk in unchanged `pkcs8` before reaching the test targets, and the recovered
+executor could not load its Rust compiler shared library before disconnecting again.
+Source review is not native qualification.
+
+This is a concrete retention correctness increment for `fss-vit-je36t.6` /
+`fss-x4a.13`, not a completed cross-store recovery protocol. An I/O failure or interruption
+after canonical retirement can still leave partial durable work; exact durable recovery
+across canonical history and pack catalogs remains open. Hold authority and
+format-specific recursive child closure remain owned by the existing daemon/graph paths.
+No on-disk format, deletion authority or release gate was broadened.
+
 ## Privacy masks, sealed archives, holdout evaluation and the live cockpit — 2026-11-27
 
 Mask declarations report the number of pixels a replacement would expose, newly mask

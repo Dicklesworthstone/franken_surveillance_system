@@ -836,15 +836,32 @@ impl StorageEngine {
         if batch.tombstones.is_empty() {
             return Ok((0, 0, 0));
         }
+        // Fence catalog publications and reject stale plans before retiring query rows.
+        // The separate mutation guard still permits the combiner's metadata appends.
+        let packs = Arc::clone(&self.pack_store);
+        let prepared = packs.prepare_eviction(batch)?;
+        // Import metadata remains canonical history rather than a deleting digest, but
+        // a new reference to it still pins its source media closure. Recheck those pins
+        // while publication is fenced; this path only reads the catalog.
+        self.refresh_catalog_reference_pins()?;
+        if batch.tombstones.iter().any(|tomb| {
+            self.candidates
+                .get(&tomb.import_id)
+                .is_some_and(RetentionCandidate::is_pinned)
+        }) {
+            return Err(fss_pack::PackError::RetentionPolicyViolation {
+                detail: "eviction plan is no longer unpinned at the catalog publication boundary"
+                    .to_owned(),
+            }
+            .into());
+        }
         // Query retirement is canonical before catalog tombstones or physical reclamation.
         // Historical projection metadata stays readable for replay from genesis.
         let head_seq = self.commit_retention_deletions(batch, cx, tree)?;
         if cx.is_cancel_requested(tree)? {
             return Err(fss_projection_store::CombinerError::Cancelled.into());
         }
-        let proof = self
-            .pack_store
-            .commit_eviction_tombstones(batch, Some(head_seq))?;
+        let proof = prepared.commit(Some(head_seq))?;
         let evicted = batch.tombstones.len() as u64;
         for tomb in &batch.tombstones {
             self.candidates.remove(&tomb.import_id);

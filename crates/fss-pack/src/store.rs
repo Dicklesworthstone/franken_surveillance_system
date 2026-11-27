@@ -30,6 +30,7 @@ use crate::packfile::{
 };
 use crate::retention::ObjectTombstoneLog;
 
+pub use maintenance::PreparedEviction;
 pub use reader::{PackReadBudget, PackReader};
 
 /// Combined recovery summary returned by [`PackStore::recovery_report`].
@@ -87,6 +88,9 @@ pub struct PackStore {
     reader_epochs: Arc<ReaderEpochTracker>,
     tombstones: Arc<RwLock<ObjectTombstoneLog>>,
     writer: Mutex<PackWriter>,
+    // Prepared retention holds this fence across canonical metadata appends. Keep it
+    // separate from the catalog RwLock so the combiner can still append/read objects.
+    catalog_mutation: Mutex<()>,
     catalog: RwLock<VirtualRootCatalog>,
     pack_fsync_count: Arc<AtomicU64>,
     recovery_report: StoreRecoveryReport,
@@ -166,6 +170,7 @@ impl PackStore {
             reader_epochs,
             tombstones,
             writer: Mutex::new(writer),
+            catalog_mutation: Mutex::new(()),
             catalog: RwLock::new(catalog),
             pack_fsync_count,
             recovery_report: StoreRecoveryReport {
@@ -323,6 +328,10 @@ impl PackStore {
         root_record.validate()?;
         // The complete supplied batch stays protected against deletion until its root is
         // visible. This includes children outside the descriptor's direct root/metadata pair.
+        let _mutation = self
+            .catalog_mutation
+            .lock()
+            .map_err(|_| PackError::LockPoisoned)?;
         let mut catalog_guard = self.catalog.write().map_err(|_| PackError::LockPoisoned)?;
         if catalog_guard.get_root(&root_record.root_id).is_some() {
             return Err(PackError::RootAlreadyExists(root_record.root_id));
@@ -359,6 +368,10 @@ impl PackStore {
         root_record: VirtualRootRecord,
     ) -> Result<RootPublishReceipt, PackError> {
         root_record.validate()?;
+        let _mutation = self
+            .catalog_mutation
+            .lock()
+            .map_err(|_| PackError::LockPoisoned)?;
         let mut catalog_guard = self.catalog.write().map_err(|_| PackError::LockPoisoned)?;
         let custody = publication::PublicationCustody::new(self)?;
         custody.verify_root(&root_record)?;
@@ -374,6 +387,10 @@ impl PackStore {
         for rec in root_records {
             rec.validate()?;
         }
+        let _mutation = self
+            .catalog_mutation
+            .lock()
+            .map_err(|_| PackError::LockPoisoned)?;
         let mut catalog_guard = self.catalog.write().map_err(|_| PackError::LockPoisoned)?;
         let custody = publication::PublicationCustody::new(self)?;
         for rec in root_records {
@@ -390,6 +407,10 @@ impl PackStore {
         new_record: VirtualRootRecord,
     ) -> Result<RootPublishReceipt, PackError> {
         new_record.validate()?;
+        let _mutation = self
+            .catalog_mutation
+            .lock()
+            .map_err(|_| PackError::LockPoisoned)?;
         let mut catalog_guard = self.catalog.write().map_err(|_| PackError::LockPoisoned)?;
         let custody = publication::PublicationCustody::new(self)?;
         custody.verify_root(&new_record)?;
@@ -402,6 +423,10 @@ impl PackStore {
         root_id: &str,
         reason_digest: ContentDigest,
     ) -> Result<CatalogRootEntry, PackError> {
+        let _mutation = self
+            .catalog_mutation
+            .lock()
+            .map_err(|_| PackError::LockPoisoned)?;
         let mut catalog_guard = self.catalog.write().map_err(|_| PackError::LockPoisoned)?;
         catalog_guard.tombstone_root(root_id, reason_digest)
     }
@@ -436,6 +461,10 @@ impl PackStore {
 
     /// Compacts the virtual root catalog journal into an atomic `catalog.snap` snapshot.
     pub fn compact_catalog(&self) -> Result<CompactionReceipt, PackError> {
+        let _mutation = self
+            .catalog_mutation
+            .lock()
+            .map_err(|_| PackError::LockPoisoned)?;
         let mut catalog_guard = self.catalog.write().map_err(|_| PackError::LockPoisoned)?;
         catalog_guard.compact()
     }

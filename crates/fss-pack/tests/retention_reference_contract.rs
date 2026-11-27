@@ -4,6 +4,8 @@
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, mpsc};
+use std::time::Duration;
 
 use fss_core::{ContentDigest, TimestampNs};
 use fss_pack::{
@@ -323,5 +325,87 @@ fn unreferenced_object_only_retention_records_remain_supported() -> TestResult {
     assert!(store.get_root("object-only")?.is_none());
     assert!(store.object_tombstone(&digest)?.is_some());
     assert!(store.lookup(&digest)?.is_none());
+    Ok(())
+}
+
+#[test]
+fn prepared_eviction_allows_metadata_append_and_fences_late_publication() -> TestResult {
+    for as_metadata in [false, true] {
+        let dir = TestDirectory::new()?;
+        let store = Arc::new(PackStore::open(&dir.0, PackConfig::default())?);
+        let shared = append(&store, b"source selected for retirement")?;
+        let descriptor = append(&store, b"late publication descriptor")?;
+        store.publish_root(root("old", shared, None)?)?;
+        let batch = eviction(&[candidate("old", &[shared])])?;
+        let prepared = store.prepare_eviction(&batch)?;
+        let replacement = if as_metadata {
+            root("late", descriptor, Some(shared))?
+        } else {
+            root("late", shared, None)?
+        };
+        let publisher = Arc::clone(&store);
+        let (appended_tx, appended_rx) = mpsc::channel();
+        let (published_tx, published_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            // Canonical retirement must be able to append metadata while the plan is
+            // fenced. The catalog publication that follows must wait for its outcome.
+            let appended = append(&publisher, b"canonical retirement metadata");
+            let _ = appended_tx.send(appended);
+            let published = publisher.publish_root(replacement);
+            let _ = published_tx.send(());
+            published
+        });
+        let metadata_append = appended_rx.recv_timeout(Duration::from_secs(5));
+        let publication_before_commit =
+            published_rx.recv_timeout(Duration::from_millis(100));
+        let committed = prepared.commit(Some(7));
+        let publication = worker.join().map_err(|_| "publication worker panicked")?;
+
+        // Join after releasing the guard, including on failure, so a failed assertion
+        // never leaves a worker holding this test's store or temporary directory.
+        let metadata = metadata_append??;
+        assert!(matches!(
+            publication_before_commit,
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        committed?.verify()?;
+        assert!(matches!(publication, Err(PackError::EvidenceDeleted { .. })));
+        assert!(store.get_root("late")?.is_none());
+        assert_eq!(
+            store.read_verified(&metadata)?,
+            b"canonical retirement metadata"
+        );
+        assert!(store.object_tombstone(&shared)?.is_some());
+    }
+    Ok(())
+}
+
+#[test]
+fn dropping_prepared_eviction_preserves_evidence_and_releases_publication() -> TestResult {
+    let dir = TestDirectory::new()?;
+    let store = PackStore::open(&dir.0, PackConfig::default())?;
+    let digest = append(&store, b"aborted retirement source")?;
+    store.publish_root(root("old", digest, None)?)?;
+    let batch = eviction(&[candidate("old", &[digest])])?;
+    let before = store.telemetry_snapshot()?;
+    let prepared = store.prepare_eviction(&batch)?;
+    assert_eq!(store.telemetry_snapshot()?, before);
+    assert_eq!(store.read_verified(&digest)?, b"aborted retirement source");
+    drop(prepared);
+
+    store.publish_root(root("new", digest, None)?)?;
+    assert!(store.object_tombstone(&digest)?.is_none());
+    assert!(matches!(
+        store
+            .get_root("old")?
+            .ok_or("original root disappeared")?
+            .status,
+        RootStatus::Live
+    ));
+    // A subsequent attempt observes the newly published reference.
+    assert!(matches!(
+        store.prepare_eviction(&batch),
+        Err(PackError::RetentionPolicyViolation { .. })
+    ));
     Ok(())
 }

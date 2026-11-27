@@ -1,6 +1,9 @@
 #![forbid(unsafe_code)]
 //! Rebuildable media retention, durable pins, and canonical retirement before pack reclaim.
 
+#[cfg(test)]
+mod tests;
+
 use std::collections::BTreeSet;
 
 use fss_core::ClockBasis;

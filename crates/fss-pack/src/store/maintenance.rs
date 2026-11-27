@@ -5,6 +5,7 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
+use std::sync::MutexGuard;
 
 use fss_core::{ContentDigest, DigestAlgorithm};
 
@@ -18,6 +19,32 @@ use crate::error::{PackCutPoint, PackError, PackIoOperation};
 use crate::format::PackId;
 use crate::retention::{RetentionEvictionBatch, TombstoneCommitProof};
 use crate::store::PackStore;
+
+/// An immutable eviction plan checked against a stable catalog publication boundary.
+///
+/// Holds the store's catalog-mutation fence until committed or dropped. Reads and object
+/// appends remain available, allowing the caller to durably retire canonical query rows
+/// before catalog/object tombstones. Do not invoke catalog mutators while retaining this
+/// guard. Dropping it without committing leaves the pack store unchanged.
+///
+/// Hold authority and format-specific child closures remain the caller's responsibility.
+/// This guard does not make canonical retirement and physical deletion one transaction:
+/// an I/O failure or process interruption may still leave partial durable work.
+#[must_use = "commit the prepared eviction or drop it to release the catalog fence"]
+pub struct PreparedEviction<'a> {
+    store: &'a PackStore,
+    batch: &'a RetentionEvictionBatch,
+    digest_reasons: Vec<(ContentDigest, ContentDigest)>,
+    _mutation: MutexGuard<'a, ()>,
+}
+
+impl PreparedEviction<'_> {
+    /// Commits the exact checked plan while catalog mutations remain excluded.
+    pub fn commit(self, ledger_commit_seq: Option<u64>) -> Result<TombstoneCommitProof, PackError> {
+        self.store
+            .commit_prepared_eviction(self.batch, self.digest_reasons, ledger_commit_seq)
+    }
+}
 
 impl PackStore {
     /// Returns the on-disk packfiles directory (`<root>/objects/packs`).
@@ -93,10 +120,53 @@ impl PackStore {
         batch: &RetentionEvictionBatch,
         ledger_commit_seq: Option<u64>,
     ) -> Result<TombstoneCommitProof, PackError> {
+        self.prepare_eviction(batch)?.commit(ledger_commit_seq)
+    }
+
+    /// Checks an eviction without mutation and retains a publication fence for the caller's
+    /// canonical retirement. Surviving references and conflicting root tombstones refuse
+    /// before query rows are retired; no catalog mutation can invalidate a successful check.
+    /// Object appends and reads do not acquire this fence.
+    pub fn prepare_eviction<'a>(
+        &'a self,
+        batch: &'a RetentionEvictionBatch,
+    ) -> Result<PreparedEviction<'a>, PackError> {
+        let mutation = self
+            .catalog_mutation
+            .lock()
+            .map_err(|_| PackError::LockPoisoned)?;
+        let catalog = self.catalog.read().map_err(|_| PackError::LockPoisoned)?;
+        let digest_reasons = preflight_eviction(&catalog, batch)?;
+        // Validate proof encoding before the caller performs irreversible canonical work.
+        let _ = TombstoneCommitProof::build(
+            batch,
+            batch
+                .tombstones
+                .iter()
+                .map(|tomb| tomb.import_id.clone())
+                .collect(),
+            digest_reasons.iter().map(|(digest, _)| *digest).collect(),
+            batch.evaluated_at_ns,
+            None,
+        )?;
+        Ok(PreparedEviction {
+            store: self,
+            batch,
+            digest_reasons,
+            _mutation: mutation,
+        })
+    }
+
+    fn commit_prepared_eviction(
+        &self,
+        batch: &RetentionEvictionBatch,
+        digest_reasons: Vec<(ContentDigest, ContentDigest)>,
+        ledger_commit_seq: Option<u64>,
+    ) -> Result<TombstoneCommitProof, PackError> {
         let mut committed_import_ids = Vec::with_capacity(batch.tombstones.len());
-        // Serialize direct-reference verification/publication with object tombstone commitment.
+        // PreparedEviction still holds the mutation fence. Upgrade from read-only checks
+        // to the catalog write lock only after canonical metadata appends are complete.
         let mut catalog_guard = self.catalog.write().map_err(|_| PackError::LockPoisoned)?;
-        let digest_reasons = preflight_eviction(&catalog_guard, batch)?;
         for tomb in &batch.tombstones {
             if catalog_guard.get_root(&tomb.import_id).is_some() {
                 let _ = catalog_guard.tombstone_root(&tomb.import_id, tomb.reason_digest)?;
@@ -155,6 +225,10 @@ impl PackStore {
                 expected_digest.algorithm(),
             ));
         }
+        let _mutation = self
+            .catalog_mutation
+            .lock()
+            .map_err(|_| PackError::LockPoisoned)?;
         // Exclusive ownership fences append and compaction until index removal is finished.
         let catalog = self.catalog.write().map_err(|_| PackError::LockPoisoned)?;
         let entry = catalog
@@ -369,7 +443,7 @@ impl PackStore {
     }
 }
 
-/// The caller holds the catalog write lock through this check and the resulting deletions.
+/// The caller holds the catalog-mutation fence through this check and the resulting deletions.
 /// Only catalog roots actually retiring in this batch may stop protecting their direct bytes.
 fn preflight_eviction(
     catalog: &VirtualRootCatalog,
@@ -424,7 +498,7 @@ fn preflight_eviction(
     }
 
     // Page through current live descriptors rather than copying the complete catalog.
-    // Holding its write lock makes the scan and subsequent mutation one publication boundary.
+    // The mutation fence keeps this scan and subsequent deletion at one publication boundary.
     let mut cursor: Option<String> = None;
     loop {
         let page = catalog.list_live_roots(cursor.as_deref(), 512);
