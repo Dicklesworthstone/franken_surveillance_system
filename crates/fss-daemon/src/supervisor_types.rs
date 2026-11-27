@@ -349,6 +349,7 @@ pub(crate) struct CameraSlot {
     pub(crate) last_ingest_lag_ms: u64,
     pub(crate) active_gaps: u32,
     pub(crate) ingest_paused: bool,
+    pub(crate) retention_blocked: bool,
     pub(crate) peak_concurrent_sessions: u32,
 }
 

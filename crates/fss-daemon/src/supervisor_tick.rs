@@ -403,6 +403,7 @@ impl DaemonSupervisor {
         };
         for sid in &targets {
             if let Some(slot) = self.sensors.get(sid)
+                && !slot.retention_blocked
                 && let Some(frame) = slot.ring.latest()
                 && slot
                     .health
@@ -1012,7 +1013,9 @@ impl DaemonSupervisor {
                 };
                 let (mut perc_frames, _) =
                     slot.ring.read_for_cursor(&mut slot.perception_cursor, 8);
-                if let Some(health) = &slot.health {
+                if slot.retention_blocked {
+                    perc_frames.clear();
+                } else if let Some(health) = &slot.health {
                     perc_frames.retain(|frame| {
                         slot.state == SensorState::Streaming && health.admits_frame(frame)
                     });
@@ -1021,7 +1024,9 @@ impl DaemonSupervisor {
                 perception_batch.extend(perc_frames);
                 let _ = slot.ring.read_for_cursor(&mut slot.preview_cursor, 16);
                 (
-                    !slot.ingest_paused && !self.storage.is_quota_pinned(),
+                    !slot.ingest_paused
+                        && !slot.retention_blocked
+                        && !self.storage.is_quota_pinned(),
                     slot.entry.gop_frames.max(8),
                 )
             };

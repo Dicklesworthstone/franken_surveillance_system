@@ -24,6 +24,10 @@ pub struct SensorTelemetryRecord {
     pub queue_depth: usize,
     /// Cumulative frames shed due to bounded ring backpressure.
     pub dropped_frames: u64,
+    /// Logical bytes protected by camera-local retention pins at the last assessment.
+    pub retention_pinned_bytes: u64,
+    /// Effective retention capacity for this camera, in bytes.
+    pub retention_cap_bytes: u64,
     /// Cumulative reconnect attempts since daemon start.
     pub reconnects: u64,
     /// Total on-disk sealed + active pack bytes expressed in MiB.
@@ -48,6 +52,7 @@ impl SensorTelemetryRecord {
                 "\"sensor_id\":\"{}\",\"state\":\"{}\",\"stream_generation\":{},",
                 "\"fps_in\":{:.2},\"fps_decode\":{:.2},\"ingest_lag_ms\":{},",
                 "\"queue_depth\":{},\"dropped_frames\":{},\"reconnects\":{},",
+                "\"retention_pinned_bytes\":{},\"retention_cap_bytes\":{},\"retention_quota_pinned\":{},",
                 "\"pack_mb\":{:.3},\"pressure\":\"{}\",\"corroborated_events\":{},",
                 "\"active_tasks\":{}}}"
             ),
@@ -60,6 +65,9 @@ impl SensorTelemetryRecord {
             self.queue_depth,
             self.dropped_frames,
             self.reconnects,
+            self.retention_pinned_bytes,
+            self.retention_cap_bytes,
+            self.retention_pinned_bytes >= self.retention_cap_bytes,
             self.pack_mb,
             escape_json(&self.pressure),
             self.corroborated_events,

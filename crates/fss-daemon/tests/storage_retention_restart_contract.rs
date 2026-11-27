@@ -176,6 +176,115 @@ fn media_digest(
 }
 
 #[test]
+fn pinned_camera_refuses_only_its_own_frames_at_exact_cap_across_restart() -> TestResult {
+    let dir = TempDirGuard::new("pinned-camera-admission")?;
+    let site_cap = 1_048_576;
+    let bootstrap = manifest(site_cap)?;
+    let regions =
+        DaemonRegionTree::initialize(&bootstrap, "principal:retention-test", TimestampNs(0))?;
+    let cx = regions.storage_ledger_cx();
+    let tree = regions.region_tree();
+    let held = {
+        let mut storage = StorageEngine::open(&bootstrap, Some(dir.path()))?;
+        let held = ingest(&mut storage, &regions, SENSOR_A, 1, 10, 1024)?;
+        assert!(storage.set_candidate_hold(
+            &held.import_id,
+            "hold:camera-admission",
+            true,
+            cx,
+            tree
+        )?);
+        storage.shutdown_and_flush()?;
+        held
+    };
+    let config = manifest_with_camera_fields(
+        site_cap,
+        &format!(r#""max_sensor_bytes":{},"#, held.byte_size),
+        "",
+    )?;
+    let camera_a = SensorId::parse(SENSOR_A)?;
+    let camera_b = SensorId::parse(SENSOR_B)?;
+    let mut storage = StorageEngine::open(&config, Some(dir.path()))?;
+    assert!(!storage.is_quota_pinned());
+    assert_eq!(
+        storage.camera_retention_quota(&camera_a),
+        (held.byte_size, held.byte_size)
+    );
+    assert!(!storage.is_camera_quota_pinned(&camera_b));
+    let before = storage.head_snapshot()?;
+    let outcome = storage.ingest_frame(
+        frame(SENSOR_A, 2, 20, 1024)?,
+        CameraAdapterKind::Synthetic,
+        1,
+        cx,
+        tree,
+    );
+    assert!(
+        matches!(outcome, Err(DaemonError::StorageQuotaPinned { pinned_bytes, cap_bytes })
+        if pinned_bytes == held.byte_size && cap_bytes == held.byte_size)
+    );
+    assert_eq!(
+        storage.head_snapshot()?.commit_sequence,
+        before.commit_sequence
+    );
+    assert_eq!(storage.retention_candidates().len(), 1);
+    let other = ingest(&mut storage, &regions, SENSOR_B, 3, 20, 1024)?;
+    let report = storage.run_maintenance_tick(cx, tree, TimestampNs(20), false)?;
+    assert!(!report.quota_pinned);
+    assert_eq!(report.evicted_imports, 0);
+    assert!(storage.is_camera_quota_pinned(&camera_a));
+
+    assert!(storage.set_candidate_hold(
+        &held.import_id,
+        "hold:camera-admission",
+        false,
+        cx,
+        tree
+    )?);
+    storage.run_maintenance_tick(cx, tree, TimestampNs(21), false)?;
+    assert_eq!(
+        storage.camera_retention_quota(&camera_a),
+        (0, held.byte_size)
+    );
+    // The age policy and both byte policies select no victim at exact equality.
+    // A reference published by another catalog owner must still affect admission.
+    let alias = "foreign:camera-cap";
+    storage.pack_store().publish_root(VirtualRootRecord::new(
+        alias.to_owned(),
+        media_digest(&held)?,
+        "evidence-alias-v1",
+        1,
+        held.byte_size,
+        1,
+        held.capture_end_ns,
+        None,
+    )?)?;
+    let aliased = storage.run_maintenance_tick(cx, tree, TimestampNs(21), false)?;
+    assert_eq!(aliased.evicted_imports, 0);
+    assert!(storage.is_camera_quota_pinned(&camera_a));
+    storage
+        .pack_store()
+        .tombstone_root(alias, ContentDigest::sha256(b"release-camera-cap-alias"))?;
+    storage.run_maintenance_tick(cx, tree, TimestampNs(21), false)?;
+    assert!(!storage.is_camera_quota_pinned(&camera_a));
+    let replacement = ingest(&mut storage, &regions, SENSOR_A, 2, 22, 1024)?;
+    let rolled = storage.run_maintenance_tick(cx, tree, TimestampNs(22), false)?;
+    assert_eq!(rolled.evicted_imports, 1);
+    assert!(!storage.retention_candidates().contains_key(&held.import_id));
+    assert!(
+        storage
+            .retention_candidates()
+            .contains_key(&replacement.import_id)
+    );
+    assert!(
+        storage
+            .retention_candidates()
+            .contains_key(&other.import_id)
+    );
+    Ok(())
+}
+
+#[test]
 fn manifest_scoped_retention_survives_restart_and_preserves_held_footage() -> TestResult {
     let dir = TempDirGuard::new("sensor-policy")?;
     let config = manifest_with_camera_fields(

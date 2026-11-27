@@ -584,6 +584,76 @@ fn slow_consumer_backpressure_sheds_deterministically_with_bounded_ring_ram() ->
 }
 
 #[test]
+fn full_camera_quota_pauses_only_its_recording_and_perception() -> TestResult {
+    let dir = TempDirGuard::new("camera-quota-pinned")?;
+    let mut manifest = SiteManifest::parse_json(&three_camera_manifest_json(
+        dir.path(),
+        64 * 1024 * 1024,
+        64,
+    ))?;
+    let target = SensorId::parse("sensor:wyze-39")?;
+    let other = SensorId::parse("sensor:wyze-51")?;
+    let cap = 8192;
+    let camera = manifest
+        .cameras
+        .iter_mut()
+        .find(|cam| cam.sensor_id == target)
+        .ok_or("missing target camera")?;
+    camera.max_sensor_bytes = Some(cap);
+    let (drivers, controls) = wire_synthetic_drivers(&manifest);
+    let t0: i128 = 1_700_000_000_000_000_000;
+    let mut cfg = DaemonStartConfig::new(manifest);
+    cfg.custom_drivers = drivers;
+    cfg.started_at_ns = t0;
+    cfg.enable_ipc = false;
+    let mut supervisor = DaemonSupervisor::start(cfg)?;
+    let pinned = RetentionCandidate {
+        import_id: "manual:active-obligation".to_owned(),
+        sensor_id: target.as_str().to_owned(),
+        capture_end_ns: TimestampNs(t0),
+        byte_size: cap,
+        object_digests: vec![ContentDigest::sha256(b"camera-local-obligation")],
+        is_derived_proxy: false,
+        held_by: Vec::new(),
+        active_obligation_ids: vec!["obligation:export".to_owned()],
+        active_event_ids: Vec::new(),
+    };
+    supervisor
+        .storage_mut()
+        .register_retention_candidate(pinned)?;
+    let first = supervisor.step_tick(t0 + 100_000_000)?;
+    assert!(!first.quota_pinned);
+    let before = supervisor.camera_views();
+    for control in controls.values() {
+        control.push_spec(SyntheticFrameSpec::Quiescent { is_keyframe: true });
+    }
+    let next = supervisor.step_tick(t0 + 200_000_000)?;
+    assert!(!next.quota_pinned);
+    let current = supervisor.camera_views();
+    assert_eq!(
+        current[&target].frames_ingested,
+        before[&target].frames_ingested
+    );
+    assert_eq!(
+        current[&target].frames_decoded,
+        before[&target].frames_decoded
+    );
+    assert!(current[&other].frames_ingested > before[&other].frames_ingested);
+    assert!(supervisor.telemetry_jsonl().iter().any(|line| {
+        line.contains(r#""sensor_id":"sensor:wyze-39""#)
+            && line.contains(r#""retention_pinned_bytes":8192,"retention_cap_bytes":8192,"retention_quota_pinned":true"#)
+    }));
+
+    // Unaccepted source frames still in the pinned camera's bounded ring prevent
+    // production of a clean all-cameras shutdown receipt.
+    assert!(matches!(
+        supervisor.shutdown_graceful(),
+        Err(DaemonError::StorageQuotaPinned { .. })
+    ));
+    Ok(())
+}
+
+#[test]
 fn disk_critical_pinned_quota_pauses_ingest_without_evicting_holds() -> TestResult {
     let dir = TempDirGuard::new("quota-pinned")?;
     let cap_bytes = 8_192_u64;

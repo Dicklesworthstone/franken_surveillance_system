@@ -214,6 +214,71 @@ impl StorageEngine {
         rows
     }
 
+    /// Protected media bytes at the last retention assessment and this camera's effective cap.
+    #[must_use]
+    pub fn camera_retention_quota(&self, sensor: &SensorId) -> (u64, u64) {
+        let (_, cap) = self.retention_config.policy_for_sensor(sensor.as_str());
+        (
+            self.sensor_pinned_bytes
+                .get(sensor.as_str())
+                .copied()
+                .unwrap_or(0),
+            cap,
+        )
+    }
+
+    /// A camera cannot retain another window while protected footage alone fills its cap.
+    #[must_use]
+    pub fn is_camera_quota_pinned(&self, sensor: &SensorId) -> bool {
+        let (pinned, cap) = self.camera_retention_quota(sensor);
+        pinned >= cap
+    }
+
+    pub(super) fn assess_retention_pressure(&mut self, current: &[RetentionCandidate]) -> u64 {
+        let mut used = 0_u64;
+        let mut pinned = 0_u64;
+        self.sensor_pinned_bytes.clear();
+        for candidate in current {
+            used = used.saturating_add(candidate.byte_size);
+            if candidate.is_pinned() {
+                pinned = pinned.saturating_add(candidate.byte_size);
+                if candidate.import_id != HISTORY_CANDIDATE {
+                    let bytes = self
+                        .sensor_pinned_bytes
+                        .entry(candidate.sensor_id.clone())
+                        .or_default();
+                    *bytes = bytes.saturating_add(candidate.byte_size);
+                }
+            }
+        }
+        self.pressure = self.retention_config.classify_pressure(used);
+        let blocked = self.pressure == CapacityPressure::Critical
+            && current.iter().all(RetentionCandidate::is_pinned);
+        self.pinned_bytes.store(pinned, Ordering::Release);
+        self.quota_pinned.store(blocked, Ordering::Release);
+        self.ingest_paused_reason = blocked.then_some(fss_pack::ERR_STORAGE_QUOTA_PINNED_001);
+        pinned
+    }
+
+    // At exactly the cap the eviction planner need not select any victim. An external
+    // catalog root can nevertheless pin the whole camera, so check references then too.
+    pub(super) fn camera_at_retention_cap(&self) -> bool {
+        let mut used_by_sensor = BTreeMap::new();
+        for candidate in self.candidates.values() {
+            let bytes = used_by_sensor
+                .entry(candidate.sensor_id.as_str())
+                .or_insert(0_u64);
+            *bytes = bytes.saturating_add(candidate.byte_size);
+            let (_, cap) = self
+                .retention_config
+                .policy_for_sensor(&candidate.sensor_id);
+            if *bytes >= cap {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Durably creates or releases a hold on a retained media closure. The hold identity
     /// cannot be redirected to another target; releasing a hold requires its original target.
     /// The explicit authority context is checked by the canonical commit owner.
@@ -565,7 +630,7 @@ impl StorageEngine {
 
     /// Before an eviction pass, protect source closures also referenced by live catalog
     /// roots outside this owner's candidate inventory. This scan is paged and is skipped
-    /// when no candidate would otherwise be evicted.
+    /// until eviction or camera saturation warrants it.
     pub(super) fn refresh_catalog_reference_pins(&mut self) -> Result<(), DaemonError> {
         let mut referenced = BTreeSet::new();
         let mut cursor: Option<String> = None;

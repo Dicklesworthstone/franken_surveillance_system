@@ -65,6 +65,16 @@ site-wide pressure. An active hold keeps its recording through quota and age
 expiry. Retention changes take effect on a drained restart, including for
 recordings recovered from earlier runs.
 
+At startup and after each retention pass, the daemon sums protected source bytes
+for each camera. When these bytes reach the camera's effective `max_sensor_bytes`,
+new frames for that camera receive `ERR-STORAGE-QUOTA-PINNED-001`. Other cameras
+continue recording while the deployment has space. Live preview continues for the
+affected camera, and its source ring remains bounded. The daemon withholds new
+perception inputs and resets that camera’s stale evidence before the next tick.
+When a hold or competing catalog reference is released, the next maintenance
+assessment admits new frames again. Each camera’s JSONL line includes
+`retention_pinned_bytes`, `retention_cap_bytes`, and `retention_quota_pinned`.
+
 ## Recorded media and durable pins
 
 New daemon GOP roots use the semantic kind `media-gop-v2`. Their FSMC source

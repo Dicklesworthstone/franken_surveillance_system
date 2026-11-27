@@ -214,6 +214,7 @@ impl DaemonSupervisor {
                     last_ingest_lag_ms: 0,
                     active_gaps,
                     ingest_paused: false,
+                    retention_blocked: false,
                     peak_concurrent_sessions: peak_sessions,
                 },
             );
@@ -302,6 +303,15 @@ impl DaemonSupervisor {
         let now = TimestampNs(now_ns);
         let sensor_ids: Vec<SensorId> = self.sensors.keys().cloned().collect();
 
+        // Probes and live inference must both forget observations whose camera can
+        // no longer take custody of new source frames.
+        for slot in self.sensors.values_mut() {
+            let blocked = self.storage.is_camera_quota_pinned(&slot.entry.sensor_id);
+            if blocked && !slot.retention_blocked {
+                self.perception.invalidate_sensor(&slot.entry)?;
+            }
+            slot.retention_blocked = blocked;
+        }
         let (force_scrub, cmd_gaps) = self.process_control_commands_step(now_ns, now)?;
         let poll = self.poll_all_cameras_step(&sensor_ids, now_ns, now)?;
         let (perception_batch, fanout_frames_committed) = self.fanout_rings_step(&sensor_ids)?;
@@ -739,6 +749,8 @@ impl DaemonSupervisor {
             .values()
             .map(|slot| {
                 let stats = slot.ring.stats();
+                let (retention_pinned_bytes, retention_cap_bytes) =
+                    self.storage.camera_retention_quota(&slot.entry.sensor_id);
                 SensorTelemetryRecord {
                     sensor_id: slot.entry.sensor_id.as_str().to_owned(),
                     state: slot.state.as_str().to_owned(),
@@ -748,6 +760,8 @@ impl DaemonSupervisor {
                     ingest_lag_ms: slot.last_ingest_lag_ms,
                     queue_depth: stats.current_frames,
                     dropped_frames: stats.dropped_frames,
+                    retention_pinned_bytes,
+                    retention_cap_bytes,
                     reconnects: slot.reconnects,
                     pack_mb,
                     pressure: combined_pressure_label(head.pressure, stats.pressure).to_owned(),

@@ -71,6 +71,7 @@ pub struct StorageEngine {
     retention_gate: Arc<Mutex<()>>,
     quota_pinned: Arc<AtomicBool>,
     pinned_bytes: Arc<AtomicU64>,
+    sensor_pinned_bytes: BTreeMap<String, u64>,
     retention_config: RetentionRingConfig,
     candidates: BTreeMap<String, RetentionCandidate>,
     candidate_roots: BTreeMap<String, RetainedRoot>,
@@ -227,6 +228,7 @@ impl StorageEngine {
             retention_gate: Arc::new(Mutex::new(())),
             quota_pinned: Arc::new(AtomicBool::new(false)),
             pinned_bytes: Arc::new(AtomicU64::new(0)),
+            sensor_pinned_bytes: BTreeMap::new(),
             retention_config,
             candidates,
             candidate_roots,
@@ -250,21 +252,7 @@ impl StorageEngine {
         engine.resume_committed_retention_intents()?;
         engine.resume_pending_retention_deletions()?;
         let current = engine.retention_plan_candidates()?;
-        let used = current.iter().fold(0_u64, |sum, candidate| {
-            sum.saturating_add(candidate.byte_size)
-        });
-        let pinned = current
-            .iter()
-            .filter(|candidate| candidate.is_pinned())
-            .fold(0_u64, |sum, candidate| {
-                sum.saturating_add(candidate.byte_size)
-            });
-        engine.pressure = engine.retention_config.classify_pressure(used);
-        let blocked = engine.pressure == CapacityPressure::Critical
-            && current.iter().all(RetentionCandidate::is_pinned);
-        engine.pinned_bytes.store(pinned, Ordering::Release);
-        engine.quota_pinned.store(blocked, Ordering::Release);
-        engine.ingest_paused_reason = blocked.then_some(fss_pack::ERR_STORAGE_QUOTA_PINNED_001);
+        engine.assess_retention_pressure(&current);
         Ok(engine)
     }
 
@@ -637,7 +625,8 @@ impl StorageEngine {
                     partial_eviction: Some(_),
                     ..
                 }
-        ) {
+        ) || self.camera_at_retention_cap()
+        {
             self.refresh_catalog_reference_pins()?;
             outcome = plan_retention(
                 &self.retention_config,
@@ -684,21 +673,7 @@ impl StorageEngine {
         // Canonical retirement adds protected metadata. Report measured logical occupancy
         // after that commit, not the planner's pre-commit estimate.
         let current = self.retention_plan_candidates()?;
-        let used = current.iter().fold(0_u64, |sum, candidate| {
-            sum.saturating_add(candidate.byte_size)
-        });
-        let pinned_bytes = current
-            .iter()
-            .filter(|candidate| candidate.is_pinned())
-            .fold(0_u64, |sum, candidate| {
-                sum.saturating_add(candidate.byte_size)
-            });
-        self.pressure = self.retention_config.classify_pressure(used);
-        let quota_pinned = self.pressure == CapacityPressure::Critical
-            && current.iter().all(RetentionCandidate::is_pinned);
-        self.quota_pinned.store(quota_pinned, Ordering::Release);
-        self.pinned_bytes.store(pinned_bytes, Ordering::Release);
-        self.ingest_paused_reason = quota_pinned.then_some(fss_pack::ERR_STORAGE_QUOTA_PINNED_001);
+        let pinned_bytes = self.assess_retention_pressure(&current);
 
         let sealed_count = self.pack_store.sealed_pack_ids()?.len();
         let (scrub_report, scrub_status) = if sealed_count > 0 || force_scrub {

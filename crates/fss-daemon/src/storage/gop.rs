@@ -97,6 +97,13 @@ impl StorageEngine {
                 cap_bytes: self.retention_config.max_total_deployment_bytes,
             });
         }
+        let (pinned_bytes, cap_bytes) = self.camera_retention_quota(&sensor_id);
+        if pinned_bytes >= cap_bytes {
+            return Err(DaemonError::StorageQuotaPinned {
+                pinned_bytes,
+                cap_bytes,
+            });
+        }
         // Do not grow a full GOP whose previous flush was rejected.
         let needs_flush = self.gop_buffers.get(&sensor_id).is_some_and(|buf| {
             buf.len() >= gop_frames.max(1)

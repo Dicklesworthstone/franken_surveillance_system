@@ -63,11 +63,11 @@ pub enum DaemonError {
         /// Non-secret explanation of the configuration error.
         detail: String,
     },
-    /// Retention ring capacity is critical and 100% pinned by active holds/obligations/events.
+    /// The critical deployment ring or the addressed camera quota is filled by pinned data.
     StorageQuotaPinned {
         /// Bytes currently pinned by holds, obligations, or active events.
         pinned_bytes: u64,
-        /// Configured deployment ring capacity ceiling in bytes.
+        /// Configured ceiling for the affected camera or deployment in bytes.
         cap_bytes: u64,
     },
     /// Underlying `fss-core` contract violation.
