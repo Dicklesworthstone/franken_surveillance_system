@@ -1277,6 +1277,34 @@ fn cold_tier_loopback_s3_e2e_archive_audit_tamper_evict_and_restore() -> TestRes
     )?;
     let local_manifests_dir = dir.path.join("cold-manifests");
 
+    // An intact outer seal cannot authorize archiving a bad inner record.
+    let damaged_dir = dir.path.join("damaged-source");
+    fs::create_dir(&damaged_dir)?;
+    let pack_name = sealed_p1.pack_id.file_name();
+    let mut damaged_bytes = fs::read(store.packs_dir().join(&pack_name))?;
+    damaged_bytes[fss_pack::PACK_RECORD_HEADER_LEN] ^= 1;
+    let digest_start = damaged_bytes.len() - 36;
+    let resealed = fss_core::sha256(&damaged_bytes[..digest_start]);
+    damaged_bytes[digest_start..digest_start + 32].copy_from_slice(&resealed);
+    fs::write(damaged_dir.join(pack_name), damaged_bytes)?;
+    assert!(matches!(
+        archive_sealed_pack(
+            &damaged_dir,
+            sealed_p1.pack_id,
+            &policy,
+            &mut catalog,
+            &kek,
+            &mut transport,
+            &mut entropy,
+            None,
+            DurabilityMode::Fsync,
+            now,
+        ),
+        Err(PackError::CrcMismatch { .. })
+    ));
+    assert_eq!(catalog.active_dek_count(), 0);
+    assert!(server.requests().is_empty());
+
     // Archive P1 (SinglePut) and P2 (Multipart)
     let arch_p1 = archive_sealed_pack(
         store.packs_dir(),

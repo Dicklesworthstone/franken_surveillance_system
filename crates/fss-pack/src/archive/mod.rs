@@ -21,7 +21,6 @@ use crate::crypto::keyring::KeyEnvelopeCatalog;
 use crate::crypto::pack_io::{EncryptedStreamKind, encrypt_pack_bytes, write_file_atomic};
 use crate::error::{PackError, PackIoOperation};
 use crate::format::{DurabilityMode, PackId, sync_dir};
-use crate::packfile::verify_sealed_pack;
 
 pub use audit::{
     ColdAuditConfig, ColdPackRestoreReceipt, ColdRangeSampleResult, ColdRetrievabilityAuditReceipt,
@@ -99,8 +98,7 @@ pub fn archive_sealed_pack(
     now_ns: TimestampNs,
 ) -> Result<ColdPackArchiveReceipt, PackError> {
     policy.validate()?;
-    // 1. Verify the local packfile is sealed and cryptographically intact.
-    let _footer = verify_sealed_pack(packs_dir, pack_id)?;
+    // 1. Verify the same bounded bytes that encryption will consume.
     let pack_path = packs_dir.join(pack_id.file_name());
     let mut file =
         File::open(&pack_path).map_err(|err| PackError::io(PackIoOperation::Open, err))?;
@@ -123,9 +121,20 @@ pub fn archive_sealed_pack(
         });
     }
 
-    let mut plaintext_pack = Vec::with_capacity(usize::try_from(file_len).unwrap_or(0));
-    file.read_to_end(&mut plaintext_pack)
+    let len = usize::try_from(file_len).map_err(|_| PackError::ArithmeticOverflow)?;
+    let mut plaintext_pack = vec![0; len];
+    file.read_exact(&mut plaintext_pack)
         .map_err(|err| PackError::io(PackIoOperation::Read, err))?;
+    if file
+        .read(&mut [0; 1])
+        .map_err(|err| PackError::io(PackIoOperation::Read, err))?
+        != 0
+    {
+        return Err(PackError::ArchiveIntegrity {
+            detail: "sealed pack grew during archive admission".to_owned(),
+        });
+    }
+    drop(audit::verify_sealed_pack_bytes(pack_id, &plaintext_pack)?);
 
     // 2. Mint and wrap a per-pack 256-bit DEK under the active site KEK.
     let (dek, wrapped_env) = catalog.create_and_wrap_dek(kek, entropy, &[pack_id], now_ns)?;

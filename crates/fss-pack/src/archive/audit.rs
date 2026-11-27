@@ -506,7 +506,7 @@ pub fn restore_cold_pack_to_dir(
     Ok(digests)
 }
 
-struct VerifiedInnerRecord {
+pub(super) struct VerifiedInnerRecord {
     digest: ContentDigest,
     object_kind: u16,
     flags: u16,
@@ -577,7 +577,7 @@ fn download_decrypt_and_verify_pack(
     Ok((plaintext_pack, verified_records))
 }
 
-fn verify_sealed_pack_bytes(
+pub(super) fn verify_sealed_pack_bytes(
     pack_id: PackId,
     raw: &[u8],
 ) -> Result<Vec<VerifiedInnerRecord>, PackError> {
@@ -611,7 +611,7 @@ fn verify_sealed_pack_bytes(
             detail: "restored footer_offset out of bounds".to_owned(),
         });
     }
-    let footer = decode_sealed_footer(pack_id, tail.footer_offset, &raw[footer_offset_usize..])?;
+    let mut footer = decode_sealed_footer(pack_id, tail.footer_offset, &raw[footer_offset_usize..])?;
 
     let whole_sha = sha256(&raw[..raw.len() - 36]);
     if !constant_time_eq(&whole_sha, &footer.whole_pack_sha256) {
@@ -621,9 +621,20 @@ fn verify_sealed_pack_bytes(
         });
     }
 
+    // Canonical footers are digest-sorted. In physical order every byte before
+    // FSSF must belong to exactly one indexed record.
+    footer.entries.sort_unstable_by_key(|entry| entry.offset);
     let mut records = Vec::with_capacity(footer.entries.len());
+    let mut next_offset = 0;
     for entry in &footer.entries {
         let start = usize::try_from(entry.offset).map_err(|_| PackError::ArithmeticOverflow)?;
+        if start != next_offset {
+            return Err(PackError::CorruptPack {
+                pack_id,
+                offset: entry.offset,
+                detail: "sealed footer omits or overlaps record bytes".to_owned(),
+            });
+        }
         let rec_len = usize::try_from(entry.len)
             .ok()
             .and_then(|n| n.checked_add(PACK_RECORD_OVERHEAD_LEN))
@@ -644,6 +655,14 @@ fn verify_sealed_pack_bytes(
             &raw[start..end],
             Some(entry.digest()),
         )?;
+        if entry.kind != hdr.object_kind || entry.flags != hdr.flags {
+            return Err(PackError::CorruptPack {
+                pack_id,
+                offset: entry.offset,
+                detail: "sealed footer kind or flags differ from record header".to_owned(),
+            });
+        }
+        next_offset = end;
         let payload_start = start + crate::format::PACK_RECORD_HEADER_LEN;
         let payload_end = end - crate::format::PACK_RECORD_TRAILER_LEN;
         records.push(VerifiedInnerRecord {
@@ -654,6 +673,16 @@ fn verify_sealed_pack_bytes(
             payload_end,
         });
     }
+    if next_offset != footer_offset_usize {
+        return Err(PackError::CorruptPack {
+            pack_id,
+            offset: next_offset as u64,
+            detail: "sealed footer leaves trailing record bytes unindexed".to_owned(),
+        });
+    }
+
+    // Preserve canonical order for append_batch and its returned locations.
+    records.sort_unstable_by_key(|record| (record.digest, record.payload_start));
     Ok(records)
 }
 
@@ -796,6 +825,9 @@ fn compute_audit_receipt_digest(
     let bytes = enc.finish_checked()?;
     Ok(ContentDigest::sha256(&bytes))
 }
+
+#[cfg(test)]
+mod sealed_pack_tests;
 
 #[cfg(test)]
 mod read_failure_tests {
