@@ -235,6 +235,22 @@ fn planes_are_filled_exactly_and_chroma_conservatively() -> TestResult {
 }
 
 #[test]
+fn ground_mask_coverage_handles_the_horizon_and_closed_zone_edges() -> TestResult {
+    use super::coverage::ground_zone_masked;
+    let mask = policy([96, 48], &[[50, 5, 1, 1]])?;
+    // (50,5) projects to (50/51,5/51), strictly inside the zone. Its four
+    // corner preimages alone span columns [-2,0], missing the masked pixel.
+    let horizon = [1., 0., 0., 0., 1., 0., 1., 0., 1.];
+    assert!(ground_zone_masked(&mask, horizon, [0., 0., 2., 1.]));
+    let identity = [1., 0., 0., 0., 1., 0., 0., 0., 1.];
+    assert!(ground_zone_masked(&mask, identity, [48., 3., 2., 2.]));
+    assert!(!ground_zone_masked(&mask, identity, [48., 3., 1.5, 2.]));
+    assert!(!ground_zone_masked(&mask, identity, [100., 4., 1., 1.]));
+    assert!(ground_zone_masked(&mask, [0.; 9], [1., 1., 1., 1.]));
+    Ok(())
+}
+
+#[test]
 fn zone_masking_distinguishes_unmasked_partial_and_full_cover() -> TestResult {
     let p = policy([96, 48], &[[0, 0, 48, 32], [48, 0, 48, 16]])?;
     assert_eq!(p.zone_masking([0, 36, 96, 12]), ZoneMasking::Unmasked);

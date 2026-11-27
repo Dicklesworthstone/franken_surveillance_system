@@ -1,0 +1,4 @@
+cee841d82197aa5dc47550a2fbcf6cf24f99ba41ff352ca8fbb4a1a668f19d98  crates/fss-reference/src/ingest/ground_visibility.rs
+add19484a2c3c24a60601d5c81536b54035620f019fc01b2051cb5fb3975e80c  crates/fss-reference/src/ingest/privacy_mask/coverage.rs
+3f6e4b039fc160137e99077ae89bd6b2d171784c0e1a212ec5aa9edc599eb06b  crates/fss-reference/src/ingest/privacy_mask/tests.rs
+af4ff4fcac9120bda05b8fc33c83d02079a2b31a88250df82c1c278049d6d63b  crates/fss-reference/src/ingest/recorded_corroboration.rs

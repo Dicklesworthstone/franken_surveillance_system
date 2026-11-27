@@ -16,6 +16,7 @@ use std::collections::BTreeSet;
 use fss_core::{CaptureInterval, ContractError};
 
 use super::PrivacyMaskPolicy;
+use crate::ingest::ground_visibility::{homography_pixel, invert};
 use crate::ingest::recorded_coverage::{CoverageRecord, UncoveredInterval, UncoveredReason};
 
 fn hull(a: Option<CaptureInterval>, b: Option<CaptureInterval>) -> Option<CaptureInterval> {
@@ -85,25 +86,15 @@ pub fn mask_coverage_zones(
 /// be computed counts as masked.
 #[must_use]
 pub fn ground_zone_masked(policy: &PrivacyMaskPolicy, matrix: [f64; 9], zone: [f64; 4]) -> bool {
-    let [a, b, c, d, e, f, g, h, i] = matrix;
-    let det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
-    if !det.is_finite() || det == 0.0 {
+    let [x, y, w, h] = zone;
+    let (max_x, max_y) = (x + w, y + h);
+    if ![x, y, max_x, max_y].iter().all(|v| v.is_finite()) || max_x <= x || max_y <= y {
         return true;
     }
-    let inverse = [
-        (e * i - f * h) / det,
-        (c * h - b * i) / det,
-        (b * f - c * e) / det,
-        (f * g - d * i) / det,
-        (a * i - c * g) / det,
-        (c * d - a * f) / det,
-        (d * h - e * g) / det,
-        (b * g - a * h) / det,
-        (a * e - b * d) / det,
-    ];
-    let [x, y, w, zh] = zone;
-    let corners = [(x, y), (x + w, y), (x, y + zh), (x + w, y + zh)];
-    let [m11, m12, m13, m21, m22, m23, m31, m32, m33] = inverse;
+    let Ok(inverse) = invert(&matrix) else {
+        return true;
+    };
+    let corners = [(x, y), (max_x, y), (x, max_y), (max_x, max_y)];
     let mut bounds = [
         f64::INFINITY,
         f64::INFINITY,
@@ -111,12 +102,15 @@ pub fn ground_zone_masked(policy: &PrivacyMaskPolicy, matrix: [f64; 9], zone: [f
         f64::NEG_INFINITY,
     ];
     for (gx, gy) in corners {
-        let weight = m31 * gx + m32 * gy + m33;
-        let column = (m11 * gx + m12 * gy + m13) / weight;
-        let row = (m21 * gx + m22 * gy + m23) / weight;
-        if !weight.is_finite() || weight == 0.0 || !column.is_finite() || !row.is_finite() {
+        // The inverse denominator is affine over the zone. Only if every corner is on
+        // the front side of the horizon are the coordinate extrema at these corners.
+        let weight = inverse[6] * gx + inverse[7] * gy + inverse[8];
+        if !weight.is_finite() || weight <= 0.0 {
             return true;
         }
+        let Some((column, row)) = homography_pixel(&matrix, &inverse, gx, gy) else {
+            return true;
+        };
         bounds = [
             bounds[0].min(column),
             bounds[1].min(row),
@@ -127,8 +121,10 @@ pub fn ground_zone_masked(policy: &PrivacyMaskPolicy, matrix: [f64; 9], zone: [f
     let [width, height] = policy.resolution();
     let left = bounds[0].floor().max(0.0);
     let top = bounds[1].floor().max(0.0);
-    let right = bounds[2].ceil().min(f64::from(width));
-    let bottom = bounds[3].ceil().min(f64::from(height));
+    // GroundZone::contains includes the maximum x and y. An endpoint exactly at
+    // integer column k touches pixel k, so its exclusive right edge is k + 1.
+    let right = (bounds[2].floor() + 1.0).min(f64::from(width));
+    let bottom = (bounds[3].floor() + 1.0).min(f64::from(height));
     if left >= right || top >= bottom {
         return false;
     }

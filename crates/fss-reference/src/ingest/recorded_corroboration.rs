@@ -1931,11 +1931,18 @@ fn camera_coverage(
         pose.as_ref(),
         visibility_plan.mesh.map(|mesh| mesh.package_digest),
     );
-    // A mask generation is part of the pipeline generation: witnesses never cross it.
+    // The retained binding and the rule used to interpret it both identify a masked
+    // analysis. Earlier coverage used corner bounds without checking the horizon.
+    let ground_mask_rule = camera.privacy.policy().map(|_| {
+        ContentDigest::sha256(b"fss.ground-mask-preimage.v2:front-side:closed-zone-edges")
+    });
     bind_cascade_parameters(
         &mut parameters,
         camera.privacy.policy().map(|_| camera.privacy.digest()),
     );
+    if let Some(rule) = ground_mask_rule {
+        bind_cascade_parameters(&mut parameters, Some(rule));
+    }
     bind_cascade_parameters(
         &mut parameters,
         camera
@@ -2070,6 +2077,10 @@ fn camera_coverage(
     e.u64(index as u64);
     e.digest(camera.watch_analysis_digest);
     visibility_plan.encode(&mut e);
+    if let Some(rule) = ground_mask_rule {
+        e.text("ground-mask-preimage");
+        e.digest(rule);
+    }
     // Only a bound provenance extends the identity, so unbound analyses keep their digests.
     if let Some(provenance) = &context.provenance {
         e.text("pose-provenance");

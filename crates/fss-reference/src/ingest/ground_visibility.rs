@@ -607,7 +607,7 @@ pub fn ground_samples(
     Ok(samples)
 }
 
-fn invert(matrix: &[f64; 9]) -> Result<[f64; 9], VisibilityError> {
+pub(super) fn invert(matrix: &[f64; 9]) -> Result<[f64; 9], VisibilityError> {
     if !matrix.iter().all(|value| value.is_finite()) {
         return Err(VisibilityError::InvalidHomography);
     }
@@ -664,7 +664,12 @@ fn close(a: (f64, f64), b: (f64, f64)) -> bool {
 
 /// Image position of a ground sample through the homography's inverse, when the image point
 /// maps back in front of the camera onto the same ground point.
-fn homography_pixel(matrix: &[f64; 9], inverse: &[f64; 9], x: f64, y: f64) -> Option<(f64, f64)> {
+pub(super) fn homography_pixel(
+    matrix: &[f64; 9],
+    inverse: &[f64; 9],
+    x: f64,
+    y: f64,
+) -> Option<(f64, f64)> {
     let [m11, m12, m13, m21, m22, m23, m31, m32, m33] = *inverse;
     let weight = m31 * x + m32 * y + m33;
     if !weight.is_finite() || weight == 0.0 {
