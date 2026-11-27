@@ -1,3 +1,5 @@
+import { parseExactJson } from './model.js';
+
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => {
   const n = document.createElement(tag);
@@ -8,7 +10,10 @@ const el = (tag, cls, text) => {
 const fpsText = (milli) => `${(Number(milli || 0) / 1000).toFixed(1)}`;
 
 function renderFrame(f) {
-  if (!f || f.schema !== 'fss.dashboard_live_frame.v1') return;
+  if (f?.schema !== 'fss.dashboard_live_frame.v1' || f.read_only !== true ||
+      typeof f.daemon_live !== 'boolean' || typeof f.site !== 'string') {
+    throw new Error('Unsupported cockpit frame.');
+  }
   $('live-dot').className = `dot ${f.daemon_live ? 'live' : ''}`;
   $('site-label').textContent = `${f.site} · ${f.daemon_live ? 'LIVE IPC' : 'OFFLINE MVCC'}`;
   $('mode-badge').textContent = f.read_only ? 'READ-ONLY' : 'MUTABLE';
@@ -97,14 +102,59 @@ function renderFrame(f) {
   $('agent-body').replaceChildren(...(logNodes.length ? logNodes : [el('p', '', 'No deltas yet.')]));
 }
 
-async function fetchSnapshot() {
-  const res = await fetch('/api/live', { headers: { 'X-FSS-Read': '1' } });
-  if (res.ok) renderFrame(await res.json());
+// The SSE endpoint sends a full frame upon every connection, including a reconnect.
+let stream = null;
+const panes = ['cameras', 'situation', 'events', 'obligations', 'storage', 'agent'];
+
+function clearFrame(status, retry = false) {
+  $('live-dot').className = 'dot';
+  $('site-label').textContent = status;
+  $('mode-badge').textContent = 'READ-ONLY';
+  $('anchor-badge').textContent = 'anchor —';
+  $('latency-badge').textContent = 'deltas —';
+  $('retry-live').hidden = !retry;
+  for (const pane of panes) $(pane + '-body').replaceChildren();
 }
 
-fetchSnapshot().catch(() => {});
-const es = new EventSource('/api/live/stream');
-es.addEventListener('live_frame', (ev) => {
-  try { renderFrame(JSON.parse(ev.data)); } catch {}
-});
-es.onerror = () => { fetchSnapshot().catch(() => {}); };
+function stop() {
+  stream?.close();
+  stream = null;
+}
+
+function connect() {
+  if (document.hidden || stream) return;
+  clearFrame('Connecting…');
+  const current = new EventSource('/api/live/stream');
+  stream = current;
+  current.addEventListener('live_frame', (event) => {
+    if (current !== stream) return;
+    try {
+      renderFrame(parseExactJson(event.data));
+      $('retry-live').hidden = true;
+    } catch {
+      stop();
+      clearFrame('Frame could not be read', true);
+    }
+  });
+  current.onerror = () => {
+    if (current !== stream) return;
+    if (current.readyState === EventSource.CLOSED) {
+      stop();
+      clearFrame('Stream closed', true);
+    } else {
+      clearFrame('Connection lost · reconnecting…');
+    }
+  };
+}
+
+function pause() {
+  stop();
+  clearFrame('Paused');
+}
+
+$('retry-live').addEventListener('click', connect);
+document.addEventListener('visibilitychange', () => document.hidden ? pause() : connect());
+window.addEventListener('pagehide', pause);
+window.addEventListener('pageshow', connect);
+if (document.hidden) pause();
+else connect();

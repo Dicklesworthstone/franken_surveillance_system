@@ -1,6 +1,7 @@
 // Native JavaScript test runner only; no npm install or frontend runtime dependency.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { runInNewContext } from 'node:vm';
 import { readFile } from 'node:fs/promises';
 const web = new URL('../crates/fss-cli/src/bin/fss-dashboard/web/', import.meta.url);
 const source = await readFile(new URL('model.js', web), 'utf8');
@@ -98,3 +99,102 @@ for (const [name, edit] of [
 ]) {
   test(`${name} refuses instead of silently defaulting`, () => { const raw = clone(); edit(raw); assert.throws(() => model.normalizeSnapshot(raw)); });
 }
+
+const liveScript = (await readFile(new URL('live.js', web), 'utf8')).replace(
+  "import { parseExactJson } from './model.js';", ''
+);
+
+// Drive the shipped controller with queued EventSource callbacks and a small DOM surface.
+function cockpit() {
+  const nodes = new Map(), streams = [], visibility = {}, lifecycle = {};
+  const node = () => ({
+    children: [], textContent: '', hidden: false, className: '',
+    append(...items) { this.children.push(...items); },
+    replaceChildren(...items) { this.children = items; },
+    addEventListener(type, listener) { this[type] = listener; }
+  });
+  function get(id) {
+    if (!nodes.has(id)) nodes.set(id, node());
+    return nodes.get(id);
+  }
+  const document = {
+    hidden: false, getElementById: get, createElement: node,
+    addEventListener(type, listener) { visibility[type] = listener; }
+  };
+  class Source {
+    static CLOSED = 2;
+    constructor(url) {
+      assert.equal(url, '/api/live/stream');
+      streams.push(this);
+    }
+    addEventListener(type, listener) { this[type] = listener; }
+    close() { this.readyState = Source.CLOSED; }
+    deliver(data) { this.live_frame({ data }); }
+  }
+  const window = { addEventListener(type, listener) { lifecycle[type] = listener; } };
+  runInNewContext(liveScript, { document, window, EventSource: Source, parseExactJson: model.parseExactJson });
+  return { get, streams, document, visibility, lifecycle };
+}
+
+const frameJson = JSON.stringify({
+  schema: 'fss.dashboard_live_frame.v1', site: 'test-site', read_only: true, daemon_live: true,
+  situation: { anchor_commit_sequence: 'WIDE', coverage_summary: {}, attention_frontier: [], affordances: [] },
+  cameras: [], events: [], obligations_and_holds: {notes: []}, storage_ring: {},
+  agent_log: {recent_deltas: [], operator_workflows: []}
+}).replace('"WIDE"', '9007199254740993');
+
+function assertCleared(view) {
+  for (const pane of ['cameras', 'situation', 'events', 'obligations', 'storage', 'agent']) {
+    assert.equal(view.get(pane + '-body').children.length, 0, pane);
+  }
+  assert.equal(view.get('live-dot').className, 'dot');
+  assert.equal(view.get('anchor-badge').textContent, 'anchor —');
+}
+
+test('cockpit clears on disconnect, recovers from the full stream frame, and preserves exact anchors', () => {
+  const view = cockpit(), stream = view.streams[0];
+  stream.deliver(frameJson);
+  assert.equal(view.get('anchor-badge').textContent, 'seq 9007199254740993');
+  assert.equal(view.get('agent-body').children.length, 1);
+  stream.onerror();
+  assertCleared(view);
+  assert.match(view.get('site-label').textContent, /reconnecting/);
+  stream.deliver(frameJson);
+  assert.equal(view.get('live-dot').className, 'dot live');
+  stream.close();
+  stream.onerror();
+  assertCleared(view);
+  assert.equal(view.get('retry-live').hidden, false);
+  view.get('retry-live').click();
+  assert.equal(view.streams.length, 2);
+  stream.deliver(frameJson);
+  assertCleared(view);
+});
+
+test('hidden or invalid cockpit frames cannot leave camera or event state on screen', () => {
+  const view = cockpit();
+  view.streams[0].deliver(frameJson);
+  view.document.hidden = true;
+  view.visibility.visibilitychange();
+  assertCleared(view);
+  assert.equal(view.streams[0].readyState, 2);
+  view.streams[0].deliver(frameJson);
+  assertCleared(view);
+  view.document.hidden = false;
+  view.visibility.visibilitychange();
+  view.lifecycle.pageshow();
+  assert.equal(view.streams.length, 2);
+  const next = view.streams[1];
+  next.deliver(frameJson);
+  next.deliver(frameJson.replace('"notes":[]', '"notes":null'));
+  assertCleared(view);
+  assert.equal(next.readyState, 2);
+  assert.equal(view.get('retry-live').hidden, false);
+  view.get('retry-live').click();
+  view.streams[2].deliver('{"schema":"unknown"}');
+  assertCleared(view);
+  view.get('retry-live').click();
+  view.streams[3].deliver(frameJson);
+  view.lifecycle.pagehide();
+  assertCleared(view);
+});

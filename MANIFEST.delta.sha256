@@ -1,4 +1,7 @@
 982c89fbdedcee8efd816b57e29cba830606c9d0f24ab278fdaabd2939bc2b96  PRIVACY.md
+b6852df1c334fc09ae04518f7d5d19853fef0c31e15a9ccd68c61e33e465eb9e  crates/fss-cli/src/bin/fss-dashboard/server.rs
+cc81b575372f00c0fa2f665bc23cb20f496fbf2cdecab501b7890dcef606fed1  crates/fss-cli/src/bin/fss-dashboard/web/live.html
+3bdb39a3aa901ac9fc9dd2d12b8339e147b667c67ff4936f7ba3beb5f3f26828  crates/fss-cli/src/bin/fss-dashboard/web/live.js
 50f99c93aa89c0840b0b9d54b00e95923156c33b138b030bb9d3997d534822fd  crates/fss-cli/src/bin/fss-evaluate.rs
 0e3c510cf15d32b82ae58d6b3e7f4d405619e8502bba82b43f96fac801c9b2ff  crates/fss-cli/src/bin/fss-evaluate/holdout.rs
 2bfb9af84cf2006e4bd74635b39a41d43302cfbbd6010022090350ba962a58b6  crates/fss-cli/src/bin/fss-event/privacy_mask.rs
@@ -19,3 +22,4 @@ af4ff4fcac9120bda05b8fc33c83d02079a2b31a88250df82c1c278049d6d63b  crates/fss-ref
 a715a06d5434cb9b8110542c3a18df94cd3fc05faa15e9374d827daf2e10e4fb  docs/EVENT_EVALUATION_CLI.md
 f72c862573c98d7161dc525ac2c55f56f9c24826413b193e00bd4b49cdf15799  docs/evaluation_class_breakdown.md
 b1a74553c4a8efccb984bb3e3ca3ddcfcf25857985b12d3643b755d8f721ef8f  fixtures/evaluation/cli-smoke/holdout.tsv
+1cb5d9fb0c53b7fcfb45ddc52972e75f88ac0fc4e86a3b4165e78b821fb24e68  tests/test_dashboard_model.mjs

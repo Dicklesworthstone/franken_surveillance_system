@@ -298,12 +298,17 @@ fn send_sse_stream(
     let initial_msg = format!("id: {last_gen}\nevent: live_frame\ndata: {initial}\n\n");
     write_all_bounded(stream, initial_msg.as_bytes(), lease)?;
     let _ = stream.flush();
+    let mut last_write = Instant::now();
     while !hub.is_shutdown() && lease.check().is_ok() {
         if let Some((next_gen, payload)) = hub.wait_next(last_gen, Duration::from_millis(200)) {
             last_gen = next_gen;
             let msg = format!("id: {next_gen}\nevent: live_frame\ndata: {payload}\n\n");
             write_all_bounded(stream, msg.as_bytes(), lease)?;
-            let _ = stream.flush();
+            last_write = Instant::now();
+        } else if last_write.elapsed() >= Duration::from_secs(15) {
+            // A comment is invisible to EventSource and detects disconnected idle readers.
+            write_all_bounded(stream, b": keep-alive\n\n", lease)?;
+            last_write = Instant::now();
         }
     }
     Ok(())
