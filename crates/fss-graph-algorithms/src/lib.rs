@@ -77,6 +77,8 @@ pub mod planar;
 pub mod ppr;
 /// Immutable graph projection and generational-handle core (`FSS-151`, `fss-x4a.23.1`).
 pub mod projection;
+/// Authorized snapshot execution boundary wiring `FSS-154..160` onto `GraphSnapshotView`.
+pub mod projection_runner;
 pub mod reference;
 pub mod registry;
 pub mod reliability;
@@ -90,6 +92,8 @@ pub mod set_cover;
 pub mod snapshot_view;
 pub mod spanning;
 pub mod spectral;
+/// Incremental retract/add standing predicates over DBSP `Z-set` delta streams (`FSS-163`, `fss-x4a.23.13`).
+pub mod standing_predicates;
 pub mod steiner;
 /// Exact aggregate camera-demand routing with shared capacity, failure, cost and cut proofs.
 pub mod stream_capacity;

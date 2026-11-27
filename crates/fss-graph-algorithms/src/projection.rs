@@ -30,6 +30,7 @@ use fss_core::{
 };
 
 use crate::graph::{GraphBuilder, GraphError, MAX_NODE_ID_LEN, UndirectedGraph};
+use crate::weighted::{WeightedGraph, WeightedGraphBuilder};
 
 /// Registered digest domain for [`ImmutableGraphProjection`] commitments (`FSS-151`).
 pub const IMMUTABLE_PROJECTION_DOMAIN: &str = "fss.graph.immutable_projection.v1";
@@ -914,6 +915,38 @@ impl ImmutableGraphProjection {
                     self.nodes[edge.target_index as usize].node_id.clone(),
                 );
             }
+        }
+        builder.build()
+    }
+
+    /// Projects this authorized immutable projection into a canonical [`WeightedGraph`] with
+    /// explicit numeric `unit`, preserving orientation (`Undirected` or `Directed`) and node/edge
+    /// weights. If `relation_filter` is `Some(rel)`, only edges matching `rel` are projected;
+    /// otherwise all edges are projected and duplicate simple endpoints across relations fail
+    /// closed rather than silently dropping weights.
+    pub fn to_weighted_graph(
+        &self,
+        unit: &str,
+        relation_filter: Option<&str>,
+    ) -> Result<WeightedGraph, GraphError> {
+        let mut builder = match self.orientation {
+            ProjectionOrientation::Undirected => WeightedGraphBuilder::undirected(unit),
+            ProjectionOrientation::Directed => WeightedGraphBuilder::directed(unit),
+        };
+        for node in &self.nodes {
+            builder.add_node(node.node_id.clone());
+        }
+        for edge in &self.edges {
+            if let Some(rel) = relation_filter
+                && edge.relation != rel
+            {
+                continue;
+            }
+            builder.add_arc(
+                self.nodes[edge.source_index as usize].node_id.clone(),
+                self.nodes[edge.target_index as usize].node_id.clone(),
+                edge.weight,
+            );
         }
         builder.build()
     }

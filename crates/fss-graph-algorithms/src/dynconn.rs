@@ -159,6 +159,16 @@ fn lifetimes(
     Ok(closed)
 }
 
+/// Execution lane for `ALG-DYNCONN-001` (`FSS-154`): deterministic per-state BFS reference vs
+/// optimized offline segment-tree rollback union-find.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DynamicConnectivityLane {
+    /// Deterministic per-state BFS reference oracle lane (simplest semantic baseline).
+    ReferencePerStateBfs,
+    /// Optimized offline segment-tree + rollback union-find lane (`O((L + Q) log S log V)`).
+    OptimizedSegmentTreeRollback,
+}
+
 /// Runs `ALG-DYNCONN-001` over the undirected projection `graph` (state 0) and `batches`.
 ///
 /// # Errors
@@ -171,6 +181,18 @@ pub fn dynamic_connectivity(
     batches: &[Vec<EdgeUpdate>],
     queries: &[(u32, &str, &str)],
     budget: Budget,
+) -> Result<CertifiedRun<DynamicConnectivityOutput>, GraphError> {
+    dynamic_connectivity_with_cancel(graph, batches, queries, budget, &|| false)
+}
+
+/// Runs the optimized segment-tree rollback lane of `ALG-DYNCONN-001` with cooperative
+/// cancellation checkpoints (`FSS-154`).
+pub fn dynamic_connectivity_with_cancel(
+    graph: &WeightedGraph,
+    batches: &[Vec<EdgeUpdate>],
+    queries: &[(u32, &str, &str)],
+    budget: Budget,
+    is_cancelled: &dyn Fn() -> bool,
 ) -> Result<CertifiedRun<DynamicConnectivityOutput>, GraphError> {
     graph.require_orientation(Orientation::Undirected)?;
     if batches.len() > MAX_BATCHES {
@@ -192,7 +214,7 @@ pub fn dynamic_connectivity(
     }
     canonical.sort_unstable();
     canonical.dedup();
-    let mut meter = Meter::new(&IDENTITY, budget);
+    let mut meter = Meter::new_cancellable(&IDENTITY, budget, is_cancelled);
     // Segment tree over states [0, states): node 1 covers everything; children 2i, 2i + 1.
     let size = states.next_power_of_two();
     let mut segments: Vec<Vec<(u32, u32)>> = vec![Vec::new(); 2 * size];
@@ -314,6 +336,161 @@ pub fn dynamic_connectivity(
         },
         output,
         &bound(n64, lifetimes64, states as u64, canonical.len() as u64),
+        peak,
+    )
+}
+
+/// Complexity bound for the deterministic per-state BFS reference lane of `ALG-DYNCONN-001`.
+#[must_use]
+pub fn reference_bound(n: u64, max_edges: u64, states: u64, queries: u64) -> Vec<BoundRow> {
+    vec![
+        (
+            "bfs_visits",
+            add(mul(states, add(n, mul(2, max_edges))), add(queries, 4)),
+        ),
+        (OUTPUT_ENTRIES, add(states, queries)),
+    ]
+}
+
+/// Runs the deterministic per-state BFS reference lane of `ALG-DYNCONN-001` (`FSS-154`),
+/// enforcing identical strict update validation, canonical query ordering, output digests, and
+/// cooperative cancellation as [`dynamic_connectivity_with_cancel`].
+pub fn dynamic_connectivity_reference_with_cancel(
+    graph: &WeightedGraph,
+    batches: &[Vec<EdgeUpdate>],
+    queries: &[(u32, &str, &str)],
+    budget: Budget,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<CertifiedRun<DynamicConnectivityOutput>, GraphError> {
+    graph.require_orientation(Orientation::Undirected)?;
+    if batches.len() > MAX_BATCHES {
+        return Err(GraphError::TooLarge);
+    }
+    let n = graph.node_count();
+    let states = batches.len() + 1;
+    // Reuse exact strict lifetime validator so preconditions match the optimized lane identically!
+    let _all = lifetimes(graph, batches)?;
+    let mut canonical: Vec<(u32, u32, u32)> = Vec::with_capacity(queries.len());
+    for &(state, a, b) in queries {
+        if state as usize >= states {
+            return Err(GraphError::PreconditionFailed(format!(
+                "query state {state} is outside 0..={}",
+                states - 1
+            )));
+        }
+        let (x, y) = (graph.require(a)?, graph.require(b)?);
+        canonical.push((state, x.min(y), x.max(y)));
+    }
+    canonical.sort_unstable();
+    canonical.dedup();
+
+    let mut edges: std::collections::BTreeSet<(u32, u32)> = graph
+        .arcs()
+        .iter()
+        .map(|arc| (arc.tail, arc.head))
+        .collect();
+    let mut max_edges = edges.len() as u64;
+    let mut state_edges: Vec<std::collections::BTreeSet<(u32, u32)>> = Vec::with_capacity(states);
+    state_edges.push(edges.clone());
+    for batch in batches {
+        for update in batch {
+            match update {
+                EdgeUpdate::Insert(a, b) => {
+                    let (x, y) = (graph.require(a)?, graph.require(b)?);
+                    edges.insert((x.min(y), x.max(y)));
+                }
+                EdgeUpdate::Delete(a, b) => {
+                    let (x, y) = (graph.require(a)?, graph.require(b)?);
+                    edges.remove(&(x.min(y), x.max(y)));
+                }
+            }
+        }
+        max_edges = max_edges.max(edges.len() as u64);
+        state_edges.push(edges.clone());
+    }
+
+    let mut meter = Meter::new_cancellable(&IDENTITY, budget, is_cancelled);
+    let mut component_counts = vec![0_u64; states];
+    let mut answers: Vec<(u32, String, String, bool)> = Vec::with_capacity(canonical.len());
+    let mut next_query = 0_usize;
+
+    for (state, active_edges) in state_edges.iter().enumerate() {
+        let mut adj: Vec<Vec<u32>> = vec![Vec::new(); n];
+        for &(a, b) in active_edges {
+            adj[a as usize].push(b);
+            adj[b as usize].push(a);
+        }
+        let mut comp = vec![u32::MAX; n];
+        let mut count = 0_u64;
+        for start in 0..n {
+            if comp[start] != u32::MAX {
+                continue;
+            }
+            comp[start] = count as u32;
+            let mut q = std::collections::VecDeque::from([start as u32]);
+            while let Some(u) = q.pop_front() {
+                meter.tick("bfs_visits")?;
+                for &v in &adj[u as usize] {
+                    meter.tick("bfs_visits")?;
+                    if comp[v as usize] == u32::MAX {
+                        comp[v as usize] = count as u32;
+                        q.push_back(v);
+                    }
+                }
+            }
+            count += 1;
+        }
+        component_counts[state] = count;
+        meter.decide(0, state as u64, count);
+        while next_query < canonical.len() && canonical[next_query].0 as usize == state {
+            meter.tick("bfs_visits")?;
+            let (_, x, y) = canonical[next_query];
+            let connected = x == y || comp[x as usize] == comp[y as usize];
+            answers.push((
+                state as u32,
+                graph.id(x).to_owned(),
+                graph.id(y).to_owned(),
+                connected,
+            ));
+            next_query += 1;
+        }
+    }
+
+    let output = DynamicConnectivityOutput {
+        component_counts,
+        answers,
+    };
+    let n64 = n as u64;
+    let mut input = query_encoder(&IDENTITY, graph.digest());
+    input.u64(batches.len() as u64);
+    for batch in batches {
+        input.u64(batch.len() as u64);
+        for update in batch {
+            let (tag, a, b) = match update {
+                EdgeUpdate::Insert(a, b) => (0, a, b),
+                EdgeUpdate::Delete(a, b) => (1, a, b),
+            };
+            input.tag(tag);
+            input.text(a);
+            input.text(b);
+        }
+    }
+    input.u64(canonical.len() as u64);
+    for &(state, x, y) in &canonical {
+        input.u32(state);
+        input.text(graph.id(x));
+        input.text(graph.id(y));
+    }
+    let peak = (n64 + max_edges + states as u64 + 1) * 64;
+    meter.finish(
+        &IDENTITY,
+        InputShape {
+            node_count: n64,
+            edge_count: graph.arc_count() as u64,
+            input_digest: query_digest(input),
+        },
+        output,
+        &reference_bound(n64, max_edges, states as u64, canonical.len() as u64),
         peak,
     )
 }
