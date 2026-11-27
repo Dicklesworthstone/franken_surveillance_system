@@ -398,6 +398,8 @@ pub enum ResourceEnvelopeViolation {
     },
     /// Host memory pressure refused new admission cleanly as typed abstention.
     PressureAbstained(ResourcePressure),
+    /// Supplied reservation token was unknown, already released, or belonged to another ledger.
+    ReservationNotFound(u64),
 }
 
 impl std::fmt::Display for ResourceEnvelopeViolation {
@@ -426,19 +428,44 @@ impl std::fmt::Display for ResourceEnvelopeViolation {
                     p.as_str()
                 )
             }
+            Self::ReservationNotFound(id) => {
+                write!(f, "unknown or already-released reservation id {id}")
+            }
         }
     }
 }
 
 impl std::error::Error for ResourceEnvelopeViolation {}
 
-/// Active reservation handle returned by [`JobResourceAdmissionLedger::reserve_job`].
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Linear move-only active reservation token returned by [`JobResourceAdmissionLedger::reserve_job`].
+///
+/// Intentionally neither `Clone` nor `Copy` so a single reservation cannot be accidentally or
+/// adversarially released twice to corrupt concurrent accounting.
+#[derive(Debug, Eq, PartialEq)]
 pub struct JobEnvelopeReservation {
+    reservation_id: u64,
+    activation_memory_bytes: u64,
+    scratch_memory_bytes: u64,
+}
+
+impl JobEnvelopeReservation {
+    /// Monotonic ledger-assigned reservation identifier.
+    #[must_use]
+    pub const fn reservation_id(&self) -> u64 {
+        self.reservation_id
+    }
+
     /// Reserved activation memory bytes.
-    pub activation_memory_bytes: u64,
+    #[must_use]
+    pub const fn activation_memory_bytes(&self) -> u64 {
+        self.activation_memory_bytes
+    }
+
     /// Reserved scratch memory bytes.
-    pub scratch_memory_bytes: u64,
+    #[must_use]
+    pub const fn scratch_memory_bytes(&self) -> u64 {
+        self.scratch_memory_bytes
+    }
 }
 
 /// Deterministic hard resource-envelope admission ledger enforcing all 8 `MODEL-INV-008`
@@ -450,6 +477,8 @@ pub struct JobResourceAdmissionLedger {
     active_jobs: u32,
     reserved_activation_bytes: u64,
     reserved_scratch_bytes: u64,
+    next_reservation_id: u64,
+    active_reservations: std::collections::BTreeMap<u64, (u64, u64)>,
 }
 
 impl JobResourceAdmissionLedger {
@@ -492,6 +521,8 @@ impl JobResourceAdmissionLedger {
             active_jobs: 0,
             reserved_activation_bytes: 0,
             reserved_scratch_bytes: 0,
+            next_reservation_id: 1,
+            active_reservations: std::collections::BTreeMap::new(),
         })
     }
 
@@ -595,17 +626,52 @@ impl JobResourceAdmissionLedger {
             });
         }
 
+        let reservation_id = self.next_reservation_id;
+        let next_id =
+            reservation_id
+                .checked_add(1)
+                .ok_or(ResourceEnvelopeViolation::BoundExceeded {
+                    dimension: EnvelopeDimension::QueuedJobs,
+                    requested: u64::MAX,
+                    limit: u64::from(self.envelope.max_queued_jobs),
+                })?;
+
+        self.next_reservation_id = next_id;
         self.active_jobs = next_jobs;
         self.reserved_activation_bytes = next_act;
         self.reserved_scratch_bytes = next_scratch;
+        self.active_reservations.insert(
+            reservation_id,
+            (req.activation_memory_bytes, req.scratch_memory_bytes),
+        );
         Ok(JobEnvelopeReservation {
+            reservation_id,
             activation_memory_bytes: req.activation_memory_bytes,
             scratch_memory_bytes: req.scratch_memory_bytes,
         })
     }
 
     /// Releases a previously granted reservation upon completion, cancellation, or abstention.
-    pub fn release_job(&mut self, reservation: JobEnvelopeReservation) {
+    ///
+    /// Fails closed with [`ResourceEnvelopeViolation::ReservationNotFound`] if the token does not
+    /// match an active reservation owned by this ledger, leaving accounting untouched.
+    pub fn release_job(
+        &mut self,
+        reservation: JobEnvelopeReservation,
+    ) -> Result<(), ResourceEnvelopeViolation> {
+        let Some(&(act, scratch)) = self.active_reservations.get(&reservation.reservation_id)
+        else {
+            return Err(ResourceEnvelopeViolation::ReservationNotFound(
+                reservation.reservation_id,
+            ));
+        };
+        if act != reservation.activation_memory_bytes || scratch != reservation.scratch_memory_bytes
+        {
+            return Err(ResourceEnvelopeViolation::ReservationNotFound(
+                reservation.reservation_id,
+            ));
+        }
+        self.active_reservations.remove(&reservation.reservation_id);
         self.active_jobs = self.active_jobs.saturating_sub(1);
         self.reserved_activation_bytes = self
             .reserved_activation_bytes
@@ -613,6 +679,7 @@ impl JobResourceAdmissionLedger {
         self.reserved_scratch_bytes = self
             .reserved_scratch_bytes
             .saturating_sub(reservation.scratch_memory_bytes);
+        Ok(())
     }
 
     /// Current active/queued job count.

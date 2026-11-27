@@ -377,6 +377,7 @@ fn model_inv_008_hard_resource_envelopes_enforce_all_eight_dimensions_and_bounde
     // Bounded queueing + aggregate memory ceiling: 2 jobs succeed, 3rd is refused (no unbounded queue)!
     let r1 = ledger.reserve_job(ok_req, ResourcePressure::Nominal)?;
     let r2 = ledger.reserve_job(ok_req, ResourcePressure::Nominal)?;
+    assert_ne!(r1.reservation_id(), r2.reservation_id());
     assert_eq!(ledger.active_jobs(), 2);
     assert_eq!(ledger.reserved_activation_bytes(), 8_192);
     assert!(matches!(
@@ -386,8 +387,26 @@ fn model_inv_008_hard_resource_envelopes_enforce_all_eight_dimensions_and_bounde
             ..
         })
     ));
-    ledger.release_job(r1);
-    ledger.release_job(r2);
+
+    // A linear reservation from another ledger (different byte amounts) cannot corrupt this ledger!
+    let mut other_ledger = JobResourceAdmissionLedger::new(env, MemoryAdmission::NominalOnly)?;
+    let foreign_res = other_ledger.reserve_job(
+        JobResourceRequest {
+            activation_memory_bytes: 1_024,
+            scratch_memory_bytes: 512,
+            ..ok_req
+        },
+        ResourcePressure::Nominal,
+    )?;
+    assert_eq!(
+        ledger.release_job(foreign_res),
+        Err(ResourceEnvelopeViolation::ReservationNotFound(1))
+    );
+    assert_eq!(ledger.active_jobs(), 2);
+    assert_eq!(ledger.reserved_activation_bytes(), 8_192);
+
+    ledger.release_job(r1)?;
+    ledger.release_job(r2)?;
     assert_eq!(ledger.active_jobs(), 0);
     assert_eq!(ledger.reserved_activation_bytes(), 0);
     assert_eq!(ledger.reserved_scratch_bytes(), 0);

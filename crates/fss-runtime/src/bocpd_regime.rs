@@ -374,6 +374,12 @@ impl RegimeHypothesis {
         enc.u8(u8::from(self.is_event_evidence));
         ContentDigest::sha256(&enc.finish())
     }
+
+    /// Returns `true` iff `hypothesis_digest` matches the canonical SHA-256 commitment.
+    #[must_use]
+    pub fn verify_digest(&self) -> bool {
+        self.hypothesis_digest == self.compute_digest()
+    }
 }
 
 /// Staged advisory tuning proposal awaiting mandatory shadow evaluation before root-last activation.
@@ -844,7 +850,6 @@ impl BocpdRegimeMonitor {
         {
             return Err(BocpdError::InvalidObservation("non_monotonic_timestamp"));
         }
-        self.last_timestamp_ns = Some(obs.timestamp_ns);
         let expires_at_ns = TimestampNs(
             obs.timestamp_ns
                 .0
@@ -854,6 +859,7 @@ impl BocpdRegimeMonitor {
         // Separate operational boundaries (clock gap, reconnect, config change) trigger explicit
         // clean reset instead of false change-point alarms!
         if obs.cause != ObservationCause::Nominal {
+            self.last_timestamp_ns = Some(obs.timestamp_ns);
             self.reset_to_prior();
             let explanation = format!("operational_reset:{}", obs.cause.as_str());
             return Ok(self.seal_hypothesis(
@@ -871,6 +877,7 @@ impl BocpdRegimeMonitor {
 
         // Insufficient coverage preserves current baseline without corrupting sufficient statistics.
         if obs.coverage_bps < self.config.min_coverage_bps {
+            self.last_timestamp_ns = Some(obs.timestamp_ns);
             self.consecutive_triggers = 0;
             let start_ns = self.window_start_ns.unwrap_or(obs.timestamp_ns);
             return Ok(self.seal_hypothesis(
@@ -886,10 +893,6 @@ impl BocpdRegimeMonitor {
             ));
         }
 
-        if self.window_start_ns.is_none() {
-            self.window_start_ns = Some(obs.timestamp_ns);
-        }
-
         let h = f64::from(self.config.hazard_ppm) / 1_000_000.0;
         let ln_h = h.ln();
         let ln_1_minus_h = (1.0 - h).ln();
@@ -903,6 +906,8 @@ impl BocpdRegimeMonitor {
         next_stats.push(NigParams::from_prior(self.config.prior));
 
         let mut cp_log_mass = f64::NEG_INFINITY;
+        let mut tail_best_growth = f64::NEG_INFINITY;
+        let mut tail_best_stats: Option<NigParams> = None;
         for r in 0..prev_len {
             let log_pred = self.stats[r].log_predictive_pdf(obs.value);
             let joint = self.log_probs[r] + log_pred;
@@ -915,15 +920,16 @@ impl BocpdRegimeMonitor {
             let growth = joint + ln_1_minus_h;
             next_log_probs[target_r] = log_sum_exp(next_log_probs[target_r], growth);
 
-            if r + 1 < next_len {
+            if target_r < max_len {
                 next_stats.push(self.stats[r].update(obs.value));
-            } else if target_r == max_len {
-                // Fold tail stats deterministically toward the longest retained run.
-                let updated = self.stats[r].update(obs.value);
-                if let Some(last) = next_stats.last_mut() {
-                    *last = updated;
-                }
+            } else if tail_best_stats.is_none() || growth > tail_best_growth {
+                // Retain the higher-mass tail branch's conjugate sufficient statistics.
+                tail_best_growth = growth;
+                tail_best_stats = Some(self.stats[r].update(obs.value));
             }
+        }
+        if let Some(tail_stat) = tail_best_stats {
+            next_stats.push(tail_stat);
         }
         next_log_probs[0] = cp_log_mass;
 
@@ -939,6 +945,11 @@ impl BocpdRegimeMonitor {
             *lp -= norm;
         }
 
+        // All fallible math passed — commit monitor state atomically.
+        self.last_timestamp_ns = Some(obs.timestamp_ns);
+        if self.window_start_ns.is_none() {
+            self.window_start_ns = Some(obs.timestamp_ns);
+        }
         self.log_probs = next_log_probs;
         self.stats = next_stats;
 
@@ -995,12 +1006,19 @@ impl BocpdRegimeMonitor {
         if self.staged_proposal.is_some() {
             return Err(BocpdError::InvalidProposalState("proposal_already_staged"));
         }
-        if !hypothesis.sufficient_coverage
+        if !hypothesis.verify_digest()
+            || hypothesis.is_event_evidence
+            || !hypothesis.sufficient_coverage
             || hypothesis.reset_by_operational_cause
+            || hypothesis.evidence_window_end_ns.0 < hypothesis.evidence_window_start_ns.0
+            || hypothesis.expires_at_ns.0 < hypothesis.evidence_window_end_ns.0
             || now_ns.0 > hypothesis.expires_at_ns.0
             || hypothesis.policy_generation != self.active_generation
         {
             return Err(BocpdError::StaleOrUncoveredHypothesis);
+        }
+        if now_ns.0 < hypothesis.evidence_window_end_ns.0 {
+            return Err(BocpdError::InvalidObservation("non_monotonic_timestamp"));
         }
         if proposed_params.weakens_invariants {
             return Err(BocpdError::ClampViolation(
@@ -1043,6 +1061,14 @@ impl BocpdRegimeMonitor {
     ) -> Result<BocpdAdvisoryReceipt, BocpdError> {
         if is_cancelled() {
             return Err(BocpdError::Cancelled);
+        }
+        {
+            let Some(staged_ref) = self.staged_proposal.as_ref() else {
+                return Err(BocpdError::InvalidProposalState("no_staged_proposal"));
+            };
+            if now_ns.0 < staged_ref.staged_at_ns.0 {
+                return Err(BocpdError::InvalidObservation("non_monotonic_timestamp"));
+            }
         }
         let Some(staged) = self.staged_proposal.take() else {
             return Err(BocpdError::InvalidProposalState("no_staged_proposal"));

@@ -685,6 +685,20 @@ impl MediaDeliveryDecisionCard {
                 "invalid_migration_placement_child",
             ));
         }
+        if migrated_at_ns.0 < self.evaluated_at_ns.0 {
+            return Err(MediaDeliveryCardError::InvalidRequest(
+                "non_monotonic_migration_timestamp",
+            ));
+        }
+        if self
+            .placement_children
+            .iter()
+            .any(|p| p.placement_receipt_digest == new_placement.placement_receipt_digest)
+        {
+            return Err(MediaDeliveryCardError::InvalidRequest(
+                "duplicate_placement_receipt_digest",
+            ));
+        }
         if self.placement_children.len() >= MAX_PLACEMENT_RECORDS {
             return Err(MediaDeliveryCardError::InvalidRequest(
                 "placement_children_limit_exceeded",
@@ -805,6 +819,41 @@ impl CanonicalDecode for MediaDeliveryDecisionCard {
             return Err(ContractError::InvalidIdentifier);
         }
 
+        // Enforce structural frontier integrity on the wire: globally unique candidate IDs,
+        // mutual Pareto nondominance across `nondominated_frontier`, and every `dominated_by`
+        // pointing to a real frontier member.
+        let mut all_ids = BTreeSet::new();
+        let mut frontier_ids = BTreeSet::new();
+        for opt in &nondominated_frontier {
+            if !all_ids.insert(opt.candidate_id.as_str()) {
+                return Err(ContractError::InvalidIdentifier);
+            }
+            frontier_ids.insert(opt.candidate_id.as_str());
+        }
+        for (i, a) in nondominated_frontier.iter().enumerate() {
+            for (j, b) in nondominated_frontier.iter().enumerate() {
+                if i != j && pareto_dominates(a, b) {
+                    return Err(ContractError::InvalidIdentifier);
+                }
+            }
+        }
+        for opt in &dominated_options {
+            if !all_ids.insert(opt.candidate_id.as_str()) {
+                return Err(ContractError::InvalidIdentifier);
+            }
+            let Some(dom) = opt.dominated_by.as_deref() else {
+                return Err(ContractError::InvalidIdentifier);
+            };
+            if !frontier_ids.contains(dom) {
+                return Err(ContractError::InvalidIdentifier);
+            }
+        }
+        for rej in &clamped_rejections {
+            if !all_ids.insert(rej.candidate_id.as_str()) {
+                return Err(ContractError::InvalidIdentifier);
+            }
+        }
+
         let card = Self {
             format_version,
             card_id,
@@ -907,6 +956,20 @@ pub fn evaluate_media_delivery_card(
             ));
         }
 
+        // Reject contradictory lossy/fidelity specifications fail-closed.
+        let passthrough_or_remux = matches!(
+            cand.mode,
+            MediaMovementMode::Passthrough | MediaMovementMode::Remux
+        );
+        if (cand.derivative_receipt.is_lossy && cand.fidelity_loss_bps == 0)
+            || (passthrough_or_remux
+                && (cand.fidelity_loss_bps > 0 || cand.derivative_receipt.is_lossy))
+        {
+            return Err(MediaDeliveryCardError::InvalidRequest(
+                "contradictory_lossy_or_fidelity_spec",
+            ));
+        }
+
         // Hard safety/privacy/security/custody clamps BEFORE frontier evaluation.
         let clamp_reason: Option<(&str, bool)> = if cand.overwrites_source {
             Some(("source_overwrite_forbidden", true))
@@ -974,52 +1037,50 @@ pub fn evaluate_media_delivery_card(
     admitted.sort_by(|a, b| a.0.candidate_id.cmp(&b.0.candidate_id));
     clamped_rejections.sort_by(|a, b| a.candidate_id.cmp(&b.candidate_id));
 
-    // Identify lowest-cost Passthrough/Remux option for explicit remux-before-transcode dominance.
-    let best_remux_id = admitted
-        .iter()
-        .filter(|(o, _, _)| {
-            matches!(
-                o.mode,
-                MediaMovementMode::Passthrough | MediaMovementMode::Remux
+    // Stage 1: Partition out transcodes disqualified by explicit remux-before-transcode policy
+    // whenever any compatible Passthrough/Remux option survived hard clamps.
+    let has_compatible_remux = admitted.iter().any(|(o, _, _)| {
+        matches!(
+            o.mode,
+            MediaMovementMode::Passthrough | MediaMovementMode::Remux
+        )
+    });
+    let mut stage1_survivors = Vec::with_capacity(admitted.len());
+    let mut remux_disqualified = Vec::new();
+    for entry in admitted {
+        if has_compatible_remux
+            && entry.0.mode == MediaMovementMode::Transcode
+            && !matches!(
+                entry.1,
+                TranscodeJustification::PrivacyRedaction
+                    | TranscodeJustification::ModelAnalysisInput
             )
-        })
-        .min_by_key(|(o, _, _)| (o.total_cost_micros, o.latency_ms, o.candidate_id.clone()))
-        .map(|(o, _, _)| o.candidate_id.clone());
+        {
+            remux_disqualified.push(entry.0);
+        } else {
+            stage1_survivors.push(entry);
+        }
+    }
+
+    // Stage 2: Exact Pareto nondominance strictly among Stage-1 survivors so every dominator
+    // pointer resolves to a genuine member of `nondominated_frontier`.
+    let mut is_dominated = vec![false; stage1_survivors.len()];
+    for (idx, (opt, _, _)) in stage1_survivors.iter().enumerate() {
+        for (other_idx, (other, _, _)) in stage1_survivors.iter().enumerate() {
+            if idx != other_idx && pareto_dominates(other, opt) {
+                is_dominated[idx] = true;
+                break;
+            }
+        }
+    }
 
     let mut nondominated_frontier = Vec::new();
     let mut dominated_options = Vec::new();
     let mut placement_children = Vec::new();
     let mut seen_placement_digests = BTreeSet::new();
 
-    for (idx, (opt, just, placement)) in admitted.iter().enumerate() {
-        // Explicit remux-before-transcode policy dominance when a compatible remux/passthrough
-        // already satisfies all constraints and transcode is not demanded for privacy/analysis.
-        let mut dominator: Option<String> = None;
-        if opt.mode == MediaMovementMode::Transcode
-            && !matches!(
-                just,
-                TranscodeJustification::PrivacyRedaction
-                    | TranscodeJustification::ModelAnalysisInput
-            )
-            && let Some(ref remux_id) = best_remux_id
-        {
-            dominator = Some(remux_id.clone());
-        }
-
-        if dominator.is_none() {
-            for (other_idx, (other, _, _)) in admitted.iter().enumerate() {
-                if idx != other_idx && pareto_dominates(other, opt) {
-                    dominator = Some(other.candidate_id.clone());
-                    break;
-                }
-            }
-        }
-
-        if let Some(dom_id) = dominator {
-            let mut dom_opt = opt.clone();
-            dom_opt.dominated_by = Some(dom_id);
-            dominated_options.push(dom_opt);
-        } else {
+    for (idx, (opt, _, placement)) in stage1_survivors.iter().enumerate() {
+        if !is_dominated[idx] {
             nondominated_frontier.push(opt.clone());
             if placement_children.len() < MAX_PLACEMENT_RECORDS
                 && seen_placement_digests.insert(placement.placement_receipt_digest)
@@ -1028,6 +1089,56 @@ pub fn evaluate_media_delivery_card(
             }
         }
     }
+
+    for (idx, (opt, _, _)) in stage1_survivors.iter().enumerate() {
+        if is_dominated[idx] {
+            // Finite strict partial order guarantees at least one Pareto dominator in the frontier.
+            let dom_id = nondominated_frontier
+                .iter()
+                .find(|front| pareto_dominates(front, opt))
+                .map(|front| front.candidate_id.clone());
+            let mut dom_opt = opt.clone();
+            dom_opt.dominated_by = dom_id;
+            dominated_options.push(dom_opt);
+        }
+    }
+
+    // Bind remux-disqualified transcodes to the lowest-cost surviving Passthrough/Remux frontier
+    // option (or the lowest-cost frontier option if a lossless privacy transcode dominated remux).
+    let frontier_remux_id = nondominated_frontier
+        .iter()
+        .filter(|o| {
+            matches!(
+                o.mode,
+                MediaMovementMode::Passthrough | MediaMovementMode::Remux
+            )
+        })
+        .min_by_key(|o| {
+            (
+                o.total_cost_micros,
+                o.latency_ms,
+                o.energy_millijoules,
+                o.candidate_id.clone(),
+            )
+        })
+        .or_else(|| {
+            nondominated_frontier.iter().min_by_key(|o| {
+                (
+                    o.total_cost_micros,
+                    o.latency_ms,
+                    o.energy_millijoules,
+                    o.candidate_id.clone(),
+                )
+            })
+        })
+        .map(|o| o.candidate_id.clone());
+
+    for mut transcode_opt in remux_disqualified {
+        transcode_opt.dominated_by = frontier_remux_id.clone();
+        dominated_options.push(transcode_opt);
+    }
+
+    dominated_options.sort_by(|a, b| a.candidate_id.cmp(&b.candidate_id));
 
     let mut card = MediaDeliveryDecisionCard {
         format_version: MEDIA_DELIVERY_CARD_FORMAT_VERSION,

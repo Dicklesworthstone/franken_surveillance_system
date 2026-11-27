@@ -319,5 +319,68 @@ fn doc_049_refuses_unmasked_nonfinite_weakening_clamps_operational_causes_and_ex
         BocpdRegimeMonitor::new(bad_cfg).err(),
         Some(BocpdError::InvalidConfiguration("invalid_bocpd_config"))
     );
+
+    // 8. Tampered hypothesis digest, forged is_event_evidence, and backwards clock fail closed!
+    assert!(hot.verify_digest());
+    let mut forged_triggers = hot.clone();
+    forged_triggers.consecutive_triggers = 99;
+    assert!(!forged_triggers.verify_digest());
+    assert_eq!(
+        monitor.stage_advisory_proposal(
+            &forged_triggers,
+            AdvisoryParameters::default(),
+            TimestampNs(4_800),
+            || false
+        ),
+        Err(BocpdError::StaleOrUncoveredHypothesis)
+    );
+    assert_eq!(
+        monitor.stage_advisory_proposal(
+            &hot,
+            AdvisoryParameters::default(),
+            TimestampNs(hot.evidence_window_end_ns.0 - 1),
+            || false
+        ),
+        Err(BocpdError::InvalidObservation("non_monotonic_timestamp"))
+    );
+
+    // Backwards clock on finalize_shadow_evaluation leaves staged proposal intact!
+    let _staged = monitor.stage_advisory_proposal(
+        &hot,
+        AdvisoryParameters::default(),
+        TimestampNs(4_800),
+        || false,
+    )?;
+    assert_eq!(
+        monitor.finalize_shadow_evaluation(
+            ShadowEvalOutcome::Passed {
+                shadow_evidence_digest: ContentDigest::sha256(b"shadow:early"),
+            },
+            TimestampNs(4_799),
+            || false,
+        ),
+        Err(BocpdError::InvalidObservation("non_monotonic_timestamp"))
+    );
+    assert!(
+        monitor.staged_proposal().is_some(),
+        "backwards-clock refusal must not drop staged proposal"
+    );
+
+    // 9. Tail-bin saturation (> max_run_length observations) remains bounded & numerically stable.
+    let mut sat = BocpdRegimeMonitor::new(default_config())?;
+    for i in 0..80_i128 {
+        let h = sat.observe(
+            &obs(
+                10_000 + i * 100,
+                12.0 + ((i % 2) as f64) * 0.1,
+                ObservationCause::Nominal,
+            ),
+            || false,
+        )?;
+        assert!(h.verify_digest());
+        assert!(sat.state_len() <= 33);
+    }
+    let after_sat_shift = sat.observe(&obs(20_000, 95.0, ObservationCause::Nominal), || false)?;
+    assert!(after_sat_shift.change_point_prob_bps >= 3_500);
     Ok(())
 }

@@ -306,7 +306,43 @@ fn doc_052_remux_before_transcode_clamps_pareto_frontier_and_backend_portability
         MediaDeliveryDecisionCard::decode_canonical(&mut CanonicalDecoder::new(&encoded))?;
     assert_eq!(decoded, migrated);
 
-    let mut forged = migrated;
+    // Backwards migration timestamp and duplicate placement receipt digest fail closed!
+    assert_eq!(
+        migrated.append_backend_migration_child(
+            BackendPlacementChild {
+                provider_id: "gcs-cold".to_owned(),
+                tier: ArchiveStorageTier::InfrequentAccess,
+                region_code: "us-west1".to_owned(),
+                placement_receipt_digest: ContentDigest::sha256(b"place:gcs-cold"),
+                migrated_from_provider: Some("b2-eu-mirror".to_owned()),
+            },
+            event_digest,
+            content_root,
+            TimestampNs(19_999),
+        ),
+        Err(MediaDeliveryCardError::InvalidRequest(
+            "non_monotonic_migration_timestamp"
+        ))
+    );
+    assert_eq!(
+        migrated.append_backend_migration_child(
+            BackendPlacementChild {
+                provider_id: "gcs-cold".to_owned(),
+                tier: ArchiveStorageTier::InfrequentAccess,
+                region_code: "us-west1".to_owned(),
+                placement_receipt_digest: ContentDigest::sha256(b"place:b2-eu-mirror"),
+                migrated_from_provider: Some("b2-eu-mirror".to_owned()),
+            },
+            event_digest,
+            content_root,
+            TimestampNs(25_000),
+        ),
+        Err(MediaDeliveryCardError::InvalidRequest(
+            "duplicate_placement_receipt_digest"
+        ))
+    );
+
+    let mut forged = migrated.clone();
     forged.grants_effect_authority = true;
     forged.card_digest = forged.computed_digest();
     let mut bad_enc = CanonicalEncoder::new();
@@ -314,6 +350,33 @@ fn doc_052_remux_before_transcode_clamps_pareto_frontier_and_backend_portability
     assert!(
         MediaDeliveryDecisionCard::decode_canonical(&mut CanonicalDecoder::new(&bad_enc.finish()))
             .is_err()
+    );
+
+    // Wire forgery: dominated_by naming a nonexistent frontier member is rejected even with valid SHA-256!
+    let mut forged_dom = migrated.clone();
+    forged_dom.dominated_options[0].dominated_by = Some("opt-nonexistent".to_owned());
+    forged_dom.card_digest = forged_dom.computed_digest();
+    let mut dom_enc = CanonicalEncoder::new();
+    forged_dom.encode_canonical(&mut dom_enc);
+    assert!(
+        MediaDeliveryDecisionCard::decode_canonical(&mut CanonicalDecoder::new(&dom_enc.finish()))
+            .is_err()
+    );
+
+    // Wire forgery: dominated pair smuggled into nondominated_frontier is rejected!
+    let mut forged_front = migrated;
+    let mut worse = forged_front.nondominated_frontier[0].clone();
+    worse.candidate_id = "opt-z-worse".to_owned();
+    worse.total_cost_micros = worse.total_cost_micros.saturating_add(1);
+    forged_front.nondominated_frontier.push(worse);
+    forged_front.card_digest = forged_front.computed_digest();
+    let mut front_enc = CanonicalEncoder::new();
+    forged_front.encode_canonical(&mut front_enc);
+    assert!(
+        MediaDeliveryDecisionCard::decode_canonical(&mut CanonicalDecoder::new(
+            &front_enc.finish()
+        ))
+        .is_err()
     );
 
     println!(
@@ -375,8 +438,19 @@ fn doc_052_refuses_corrupt_derivative_receipt_unjustified_transcode_and_cancel()
         ))
     );
     assert_eq!(
-        evaluate_media_delivery_card(&constraints, &[cand_tampered], || true),
+        evaluate_media_delivery_card(&constraints, std::slice::from_ref(&cand_tampered), || true),
         Err(MediaDeliveryCardError::Cancelled)
+    );
+
+    // Contradictory lossy/fidelity spec (Remux claiming nonzero fidelity loss) fails closed!
+    let mut cand_bad_fidelity = cand_tampered;
+    cand_bad_fidelity.derivative_receipt = make_derivative_receipt("deriv:remux-bad", false)?;
+    cand_bad_fidelity.fidelity_loss_bps = 250;
+    assert_eq!(
+        evaluate_media_delivery_card(&constraints, &[cand_bad_fidelity], || false),
+        Err(MediaDeliveryCardError::InvalidRequest(
+            "contradictory_lossy_or_fidelity_spec"
+        ))
     );
     Ok(())
 }
