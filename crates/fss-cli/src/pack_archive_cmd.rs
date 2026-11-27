@@ -47,6 +47,8 @@ pub const PACK_ARCHIVE_CLI_SCHEMA: &str = "fss.pack_archive_response.v1";
 /// Canonical digest domain for two-step `fss archive upload|crypto-erase` CLI approvals.
 pub const PACK_ARCHIVE_CLI_APPROVAL_DOMAIN: &str = "fss.pack_archive.cli_approval.v1";
 
+mod audit;
+
 const FORBIDDEN_SECRET_FLAGS: &[&str] = &[
     "--secret",
     "--password",
@@ -93,6 +95,7 @@ struct ArchiveOpts {
     reason: Option<String>,
     principal: String,
     approve: Option<ContentDigest>,
+    audit_download_limit: Option<usize>,
 }
 
 /// Executes an in-process `fss archive <seal|verify|upload|restore|crypto-erase>` command.
@@ -123,13 +126,14 @@ pub fn execute_pack_archive_command(
     match verb {
         "seal" => exec_seal(args),
         "verify" => exec_verify(args),
+        "audit" => audit::execute(args, control),
         "upload" => exec_upload(args),
         "restore" => exec_restore(args, control),
         "crypto-erase" => exec_crypto_erase(args),
         other => err_json(
             "ERR-CLI-UNKNOWN-COMMAND-001",
             &format!(
-                "unknown archive verb `{other}` (expected seal, verify, upload, restore, or crypto-erase)"
+                "unknown archive verb `{other}` (expected seal, verify, upload, audit, restore, or crypto-erase)"
             ),
             ExitIdentity::UNKNOWN_COMMAND,
         ),
@@ -176,6 +180,7 @@ fn parse_archive_opts(
         reason: None,
         principal: "principal:local-operator".to_owned(),
         approve: None,
+        audit_download_limit: None,
     };
 
     let mut i = 0_usize;
@@ -216,7 +221,7 @@ fn parse_archive_opts(
                 }
                 opts.manifest_file = Some(PathBuf::from(next_val(&mut i, "--manifest-file")?));
             }
-            "--manifest-object-key" if verb == "restore" => {
+            "--manifest-object-key" if matches!(verb, "audit" | "restore") => {
                 if opts.manifest_object_key.is_some() {
                     return Err(err_json(
                         "ERR-CLI-MALFORMED-VALUE-001",
@@ -234,7 +239,7 @@ fn parse_archive_opts(
                 }
                 opts.manifest_object_key = Some(key);
             }
-            "--expected-manifest" if verb == "restore" => {
+            "--expected-manifest" if matches!(verb, "audit" | "restore") => {
                 if opts.expected_manifest.is_some() {
                     return Err(err_json(
                         "ERR-CLI-MALFORMED-VALUE-001",
@@ -254,6 +259,20 @@ fn parse_archive_opts(
                     ));
                 }
                 opts.expected_manifest = Some(digest);
+            }
+            "--max-download-bytes" if verb == "audit" => {
+                let parsed = next_val(&mut i, flag)?.parse::<usize>().ok();
+                let max = fss_pack::ColdAuditConfig::default().max_download_bytes;
+                if opts.audit_download_limit.is_some()
+                    || !parsed.is_some_and(|n| (1..=max).contains(&n))
+                {
+                    return Err(err_json(
+                        "ERR-CLI-MALFORMED-VALUE-001",
+                        "--max-download-bytes must be supplied once and within 1..=268435456",
+                        ExitIdentity::MALFORMED_VALUE,
+                    ));
+                }
+                opts.audit_download_limit = parsed;
             }
             "--local-manifest-dir" => {
                 opts.local_manifest_dir =
@@ -410,6 +429,24 @@ fn parse_archive_opts(
         i += 1;
     }
 
+    if verb == "audit" {
+        if opts.expected_manifest.is_none()
+            || (opts.manifest_file.is_none() && opts.manifest_object_key.is_none())
+        {
+            return Err(err_json(
+                "ERR-CLI-MISSING-VALUE-001",
+                "audit requires --expected-manifest and one manifest source",
+                ExitIdentity::MISSING_VALUE,
+            ));
+        }
+        if opts.manifest_file.is_some() && opts.manifest_object_key.is_some() {
+            return Err(err_json(
+                "ERR-CLI-MALFORMED-VALUE-001",
+                "audit accepts exactly one of --manifest-file or --manifest-object-key",
+                ExitIdentity::MALFORMED_VALUE,
+            ));
+        }
+    }
     if verb == "restore" {
         match (
             &opts.manifest_file,
@@ -1219,10 +1256,7 @@ fn build_archive_policy(opts: &ArchiveOpts) -> Result<ColdArchivePolicy, (String
     Ok(policy)
 }
 
-fn load_kek_from_vault(
-    opts: &ArchiveOpts,
-    op_id: &str,
-) -> Result<(LocalEncryptedVault, KeyEncryptionKey, SecretScope), (String, ExitIdentity)> {
+fn open_archive_vault(opts: &ArchiveOpts) -> Result<LocalEncryptedVault, (String, ExitIdentity)> {
     let vault_dir = opts.vault_dir.as_ref().ok_or_else(|| {
         err_json(
             "ERR-CLI-MISSING-VALUE-001",
@@ -1237,6 +1271,22 @@ fn load_kek_from_vault(
             ExitIdentity::MISSING_VALUE,
         )
     })?;
+    let passphrase = read_secret_file_0600(pass_file, false)?;
+    let mut vault = LocalEncryptedVault::open(vault_dir);
+    if let Err(err) = vault.unlock(&passphrase) {
+        return Err(err_json(
+            err.error_id(),
+            &err.to_string(),
+            ExitIdentity::RUNTIME_FAILURE,
+        ));
+    }
+    Ok(vault)
+}
+
+fn load_kek_from_vault(
+    opts: &ArchiveOpts,
+    op_id: &str,
+) -> Result<(LocalEncryptedVault, KeyEncryptionKey, SecretScope), (String, ExitIdentity)> {
     let kek_secret_id = opts.kek_secret_id.as_ref().ok_or_else(|| {
         err_json(
             "ERR-CLI-MISSING-VALUE-001",
@@ -1250,15 +1300,7 @@ fn load_kek_from_vault(
         .unwrap_or_else(|| format!("storage-kek://{}/epoch-{}", opts.site_id, opts.kek_epoch));
     let kek_scope = SecretScope::new(AdapterFamily::StorageKek, &opts.site_id, &kek_endpoint)
         .map_err(|e| err_json(e.error_id(), &e.to_string(), ExitIdentity::MALFORMED_VALUE))?;
-    let passphrase = read_secret_file_0600(pass_file, false)?;
-    let mut vault = LocalEncryptedVault::open(vault_dir);
-    if let Err(err) = vault.unlock(&passphrase) {
-        return Err(err_json(
-            err.error_id(),
-            &err.to_string(),
-            ExitIdentity::RUNTIME_FAILURE,
-        ));
-    }
+    let mut vault = open_archive_vault(opts)?;
     let cx = match build_secret_cx(
         &opts.principal,
         op_id,
@@ -1299,8 +1341,22 @@ fn load_kek_and_s3_from_vault(
     (String, ExitIdentity),
 > {
     let (mut vault, kek, kek_scope) = load_kek_from_vault(opts, op_id)?;
+    match load_s3_credentials(opts, endpoint, op_id, &vault) {
+        Ok(creds) => Ok((vault, kek, kek_scope, creds)),
+        Err(err) => {
+            vault.lock();
+            Err(err)
+        }
+    }
+}
+
+fn load_s3_credentials(
+    opts: &ArchiveOpts,
+    endpoint: &ColdS3Endpoint,
+    op_id: &str,
+    vault: &LocalEncryptedVault,
+) -> Result<ColdS3Credentials, (String, ExitIdentity)> {
     let Some(access_key_id) = opts.s3_access_key_id.as_deref() else {
-        vault.lock();
         return Err(err_json(
             "ERR-CLI-MISSING-VALUE-001",
             "`--access-key-id <id>` is required",
@@ -1308,7 +1364,6 @@ fn load_kek_and_s3_from_vault(
         ));
     };
     let Some(s3_secret_id) = opts.s3_secret_id.as_ref() else {
-        vault.lock();
         return Err(err_json(
             "ERR-CLI-MISSING-VALUE-001",
             "`--s3-secret-id <vault-secret-id>` is required",
@@ -1323,38 +1378,16 @@ fn load_kek_and_s3_from_vault(
         .s3_endpoint_scope
         .clone()
         .unwrap_or_else(|| format!("s3://{}/{}", endpoint.host(), endpoint.bucket()));
-    let s3_scope = match SecretScope::new(AdapterFamily::ArchiveS3, s3_target, &s3_endpoint_scope) {
-        Ok(s) => s,
-        Err(e) => {
-            vault.lock();
-            return Err(err_json(
-                e.error_id(),
-                &e.to_string(),
-                ExitIdentity::MALFORMED_VALUE,
-            ));
-        }
-    };
-    let s3_cx = match build_secret_cx(
+    let s3_scope = SecretScope::new(AdapterFamily::ArchiveS3, s3_target, &s3_endpoint_scope)
+        .map_err(|e| err_json(e.error_id(), &e.to_string(), ExitIdentity::MALFORMED_VALUE))?;
+    let s3_cx = build_secret_cx(
         &opts.principal,
         &format!("{op_id}:s3"),
         &[CAP_SECRET_READ_001],
         s3_scope,
-    ) {
-        Ok(c) => c,
-        Err(e) => {
-            vault.lock();
-            return Err(e);
-        }
-    };
-    let creds =
-        match ColdS3Credentials::from_vault(&vault, &s3_cx, access_key_id, s3_secret_id, None) {
-            Ok(c) => c,
-            Err(err) => {
-                vault.lock();
-                return Err(pack_err_to_json(err));
-            }
-        };
-    Ok((vault, kek, kek_scope, creds))
+    )?;
+    ColdS3Credentials::from_vault(vault, &s3_cx, access_key_id, s3_secret_id, None)
+        .map_err(pack_err_to_json)
 }
 
 fn compute_upload_approval(

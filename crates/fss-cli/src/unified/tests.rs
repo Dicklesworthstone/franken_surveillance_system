@@ -104,7 +104,14 @@ fn all_fourteen_domains_and_key_verbs_are_registered() {
         ("notify", &["preview", "dispatch"]),
         (
             "archive",
-            &["seal", "verify", "upload", "restore", "crypto-erase"],
+            &[
+                "seal",
+                "verify",
+                "upload",
+                "audit",
+                "restore",
+                "crypto-erase",
+            ],
         ),
     ];
     assert_eq!(UNIFIED_DOMAINS.len(), expected.len());

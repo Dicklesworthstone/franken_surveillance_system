@@ -920,10 +920,18 @@ fn handle_s3_conn(
     let path = target.split_once('?').map_or(target, |(p, _)| p).to_owned();
     let mut content_len = 0_usize;
     let mut has_sigv4 = false;
+    let mut range = None;
     for line in lines {
         if let Some((k, v)) = line.split_once(':') {
             if k.eq_ignore_ascii_case("content-length") {
                 content_len = v.trim().parse().unwrap_or(0);
+            } else if k.eq_ignore_ascii_case("range") {
+                let (start, end) = v
+                    .trim()
+                    .strip_prefix("bytes=")
+                    .and_then(|s| s.split_once('-'))
+                    .ok_or("invalid range")?;
+                range = Some((start.parse::<usize>()?, end.parse::<usize>()?));
             } else if k.eq_ignore_ascii_case("authorization")
                 && v.trim().starts_with("AWS4-HMAC-SHA256 ")
             {
@@ -959,6 +967,17 @@ fn handle_s3_conn(
         "GET" => {
             if let Some(bytes) = guard.get(&path) {
                 let etag = format!("\"{}\"", &ContentDigest::sha256(bytes).to_text()[7..23]);
+                if let Some((start, end)) = range {
+                    let part = bytes.get(start..=end).ok_or("invalid mock sample range")?;
+                    write!(
+                        stream,
+                        "HTTP/1.1 206 Partial Content\r\nETag: {etag}\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{}\r\nConnection: close\r\n\r\n",
+                        part.len(),
+                        bytes.len()
+                    )?;
+                    stream.write_all(part)?;
+                    return Ok(());
+                }
                 let head = format!(
                     "HTTP/1.1 200 OK\r\nETag: {etag}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     bytes.len()
@@ -1270,6 +1289,69 @@ fn fss_archive_cli_seal_verify_s3_upload_restore_and_crypto_erase_e2e() -> TestR
             .join(PackId::new(1, 1).file_name()),
     )?;
     fs::remove_file(&restored_pack)?;
+    // The cold read audit uses only S3 credentials and the independent upload pin.
+    // At this point the plaintext pack, restored copy, and local manifests are all absent.
+    let audit_args = [
+        "archive",
+        "audit",
+        "--manifest-object-key",
+        &remote_key,
+        "--expected-manifest",
+        &manifest_pin,
+        "--peer",
+        &peer_str,
+        "--host",
+        "s3.local",
+        "--bucket",
+        "fss-cold-bucket",
+        "--vault-dir",
+        &vd,
+        "--passphrase-file",
+        &pf,
+        "--s3-secret-id",
+        "secret:s3:cold-1",
+        "--access-key-id",
+        "AKIAIOSFODNN7EXAMPLE",
+        "--site",
+        "site:archive-e2e",
+        "--json",
+    ];
+    let (code, report, err) = run_fss(&audit_args)?;
+    assert_eq!(code, 0, "{report} {err}");
+    let report = parse_json(&report)?;
+    let Value::Object(fields) = report else {
+        return Err("expected audit response".into());
+    };
+    let audit = fields.get("audit").ok_or("missing cold audit receipt")?;
+    assert_eq!(json_text(audit, "verdict")?, "verified");
+    assert_eq!(json_text(audit, "manifest_digest")?, manifest_pin);
+    let Value::Object(fields) = audit else {
+        return Err("expected receipt object".into());
+    };
+    assert!(
+        matches!(fields.get("sample_results"), Some(Value::Array(ranges)) if !ranges.is_empty())
+    );
+    assert!(!restored_pack.exists());
+
+    let mut limited = audit_args.to_vec();
+    limited.extend(["--max-download-bytes", "1"]);
+    let (code, report, err) = run_fss(&limited)?;
+    assert_ne!(code, 0, "{report} {err}");
+    assert!(format!("{report}{err}").contains("download budget"));
+
+    let pack_object = format!("/fss-cold-bucket/{}", json_text(&upload, "pack_object_key")?);
+    let ciphertext = s3.objects.lock().map_err(|_| "lock poisoned")?
+        .remove(&pack_object).ok_or("expected uploaded ciphertext")?;
+    let (code, report, err) = run_fss(&audit_args)?;
+    assert_ne!(code, 0, "{report} {err}");
+    let body = if report.trim().is_empty() { &err } else { &report };
+    let Value::Object(fields) = parse_json(body)? else {
+        return Err("expected failed audit response".into());
+    };
+    let audit = fields.get("audit").ok_or("missing failure evidence")?;
+    assert_eq!(json_text(audit, "verdict")?, "missing");
+    s3.objects.lock().map_err(|_| "lock poisoned")?.insert(pack_object, ciphertext);
+
     let remote_args = [
         "archive",
         "restore",

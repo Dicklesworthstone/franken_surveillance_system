@@ -82,7 +82,7 @@ pub mod onvif_query_cmd;
 pub mod onvif_replay_plan;
 /// Read-only `orient` (AOP-003) and `explain` (AOP-011) over a deployment root.
 pub mod orient_cmd;
-/// `fss archive <seal|verify|upload|restore|crypto-erase>`: AEAD pack encryption, S3 archive & erasure.
+/// `fss archive <seal|verify|upload|audit|restore|crypto-erase>`: AEAD pack encryption, S3 archive & erasure.
 pub mod pack_archive_cmd;
 /// AOP-006 bounded retained-source probes over existing owned subscriptions.
 pub mod probe_cmd;
