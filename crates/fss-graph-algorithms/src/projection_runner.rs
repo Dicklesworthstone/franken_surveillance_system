@@ -190,6 +190,35 @@ pub fn authorize_snapshot_execution(
     Ok(())
 }
 
+fn reject_redacted_id(
+    id: &str,
+    authority: &ProjectionAuthorityScope,
+) -> Result<(), AuthorizedRunError> {
+    if authority.redacted_node_ids.contains(id) {
+        return Err(AuthorizedRunError::Snapshot(
+            SnapshotViewError::AuthorityMismatch(format!(
+                "redacted entity '{id}' blocked before graph expansion"
+            )),
+        ));
+    }
+    Ok(())
+}
+
+fn reject_redacted_set_cover(
+    problem: &SetCoverProblem,
+    authority: &ProjectionAuthorityScope,
+) -> Result<(), AuthorizedRunError> {
+    for element in problem.elements() {
+        reject_redacted_id(element, authority)?;
+    }
+    for set in problem.sets() {
+        if !problem.excluded().contains(set.id()) {
+            reject_redacted_id(set.id(), authority)?;
+        }
+    }
+    Ok(())
+}
+
 /// `FSS-154` — Runs `ALG-DYNCONN-001` (either deterministic per-state BFS reference lane or
 /// optimized segment-tree rollback lane) over an authorized snapshot view.
 #[allow(clippy::too_many_arguments)]
@@ -206,6 +235,20 @@ pub fn run_dynamic_connectivity_on_snapshot(
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<AuthorizedRunReceipt<CertifiedRun<DynamicConnectivityOutput>>, AuthorizedRunError> {
     authorize_snapshot_execution(view, catalog, authority, is_cancelled)?;
+    for batch in batches {
+        for update in batch {
+            match update {
+                EdgeUpdate::Insert(a, b) | EdgeUpdate::Delete(a, b) => {
+                    reject_redacted_id(a, authority)?;
+                    reject_redacted_id(b, authority)?;
+                }
+            }
+        }
+    }
+    for &(_, a, b) in queries {
+        reject_redacted_id(a, authority)?;
+        reject_redacted_id(b, authority)?;
+    }
     let graph = view.projection().to_weighted_graph(unit, relation_filter)?;
     let run = match lane {
         DynamicConnectivityLane::ReferencePerStateBfs => {
@@ -234,6 +277,9 @@ pub fn run_bridges_on_snapshot(
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<AuthorizedRunReceipt<BridgeAnalysis>, AuthorizedRunError> {
     authorize_snapshot_execution(view, catalog, authority, is_cancelled)?;
+    if let Some(root_id) = root {
+        reject_redacted_id(root_id, authority)?;
+    }
     let simple = view.projection().to_undirected_simple_graph()?;
     let analysis = analyse_bridges(&simple, root, budget)?;
     if is_cancelled() {
@@ -256,6 +302,7 @@ pub fn run_dominators_on_snapshot(
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<AuthorizedRunReceipt<CertifiedRun<DominanceOutput>>, AuthorizedRunError> {
     authorize_snapshot_execution(view, catalog, authority, is_cancelled)?;
+    reject_redacted_id(root, authority)?;
     let graph = view.projection().to_weighted_graph(unit, relation_filter)?;
     let run = dominators(&graph, root, direction, budget)?;
     if is_cancelled() {
@@ -278,6 +325,10 @@ pub fn run_shortest_paths_on_snapshot(
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<AuthorizedRunReceipt<CertifiedRun<ShortestPathOutput>>, AuthorizedRunError> {
     authorize_snapshot_execution(view, catalog, authority, is_cancelled)?;
+    reject_redacted_id(source, authority)?;
+    if let Some(target_id) = target {
+        reject_redacted_id(target_id, authority)?;
+    }
     let graph = view.projection().to_weighted_graph(unit, relation_filter)?;
     let run = shortest_paths(&graph, source, target, budget)?;
     if is_cancelled() {
@@ -299,6 +350,9 @@ pub fn run_multi_source_distances_on_snapshot(
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<AuthorizedRunReceipt<CertifiedRun<MultiSourceOutput>>, AuthorizedRunError> {
     authorize_snapshot_execution(view, catalog, authority, is_cancelled)?;
+    for source in sources {
+        reject_redacted_id(source, authority)?;
+    }
     let graph = view.projection().to_weighted_graph(unit, relation_filter)?;
     let run = multi_source_distances(&graph, sources, budget)?;
     if is_cancelled() {
@@ -324,6 +378,8 @@ pub fn run_k_shortest_paths_on_snapshot(
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<AuthorizedRunReceipt<CertifiedRun<KspOutput>>, AuthorizedRunError> {
     authorize_snapshot_execution(view, catalog, authority, is_cancelled)?;
+    reject_redacted_id(source, authority)?;
+    reject_redacted_id(target, authority)?;
     let graph = view.projection().to_weighted_graph(unit, relation_filter)?;
     let run = k_shortest_paths(
         &graph,
@@ -362,6 +418,10 @@ pub fn run_temporal_reachability_on_snapshot(
             )),
         ));
     }
+    reject_redacted_id(source, authority)?;
+    for id in network.ids() {
+        reject_redacted_id(id, authority)?;
+    }
     let run = temporal_reachability(network, source, start, max_intervals, budget)?;
     if is_cancelled() {
         return Err(AuthorizedRunError::Cancelled);
@@ -388,6 +448,26 @@ pub fn run_min_cost_flow_on_snapshots(
     if costs_view.generation() != capacities_view.generation() {
         authorize_snapshot_execution(capacities_view, catalog, authority, is_cancelled)?;
     }
+    // GRAPH-INV-001 / GRAPH-INV-002: both views must share one pinned anchor and one typed universe.
+    if costs_view.anchor() != capacities_view.anchor() {
+        return Err(AuthorizedRunError::Algorithm(
+            GraphError::PreconditionFailed(
+                "min-cost flow cost and capacity snapshots must share the same ledger anchor"
+                    .to_owned(),
+            ),
+        ));
+    }
+    if costs_view.universe() != capacities_view.universe() {
+        return Err(AuthorizedRunError::Algorithm(
+            GraphError::PreconditionFailed(format!(
+                "min-cost flow cost ({}) and capacity ({}) snapshots must share the same universe",
+                costs_view.universe().as_str(),
+                capacities_view.universe().as_str()
+            )),
+        ));
+    }
+    reject_redacted_id(source, authority)?;
+    reject_redacted_id(sink, authority)?;
     let costs = costs_view.projection().to_weighted_graph(cost_unit, None)?;
     let capacities = capacities_view
         .projection()
@@ -416,6 +496,17 @@ pub fn run_optimal_assignment_on_snapshot(
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<AuthorizedRunReceipt<CertifiedRun<MatchOutput>>, AuthorizedRunError> {
     authorize_snapshot_execution(view, catalog, authority, is_cancelled)?;
+    if view.universe() != GraphUniverse::GAssoc {
+        return Err(AuthorizedRunError::Algorithm(
+            GraphError::PreconditionFailed(format!(
+                "optimal assignment requires G_assoc snapshot, got {}",
+                view.universe().as_str()
+            )),
+        ));
+    }
+    for id in problem.left().iter().chain(problem.right().iter()) {
+        reject_redacted_id(id, authority)?;
+    }
     let run = optimal_assignment_with_cancel(problem, policy, budget, is_cancelled)?;
     Ok(AuthorizedRunReceipt::wrap(view, run))
 }
@@ -434,6 +525,17 @@ pub fn run_k_best_assignments_on_snapshot(
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<AuthorizedRunReceipt<CertifiedRun<KBestOutput>>, AuthorizedRunError> {
     authorize_snapshot_execution(view, catalog, authority, is_cancelled)?;
+    if view.universe() != GraphUniverse::GAssoc {
+        return Err(AuthorizedRunError::Algorithm(
+            GraphError::PreconditionFailed(format!(
+                "k-best assignment requires G_assoc snapshot, got {}",
+                view.universe().as_str()
+            )),
+        ));
+    }
+    for id in problem.left().iter().chain(problem.right().iter()) {
+        reject_redacted_id(id, authority)?;
+    }
     let run = k_best_assignments_with_cancel(problem, policy, k, budget, is_cancelled)?;
     Ok(AuthorizedRunReceipt::wrap(view, run))
 }
@@ -453,6 +555,8 @@ pub fn run_max_flow_min_cut_on_snapshot(
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<AuthorizedRunReceipt<CertifiedRun<FlowOutput>>, AuthorizedRunError> {
     authorize_snapshot_execution(view, catalog, authority, is_cancelled)?;
+    reject_redacted_id(source, authority)?;
+    reject_redacted_id(sink, authority)?;
     let graph = view.projection().to_weighted_graph(unit, relation_filter)?;
     let run = max_flow_min_cut_with_cancel(&graph, source, sink, mode, budget, is_cancelled)?;
     Ok(AuthorizedRunReceipt::wrap(view, run))
@@ -529,6 +633,7 @@ pub fn run_set_cover_on_snapshot(
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<AuthorizedRunReceipt<CoverAnalysis>, AuthorizedRunError> {
     authorize_snapshot_execution(view, catalog, authority, is_cancelled)?;
+    reject_redacted_set_cover(problem, authority)?;
     let analysis = problem.solve_cancellable(method, budget, &|| is_cancelled())?;
     Ok(AuthorizedRunReceipt::wrap(view, analysis))
 }
@@ -543,6 +648,7 @@ pub fn run_submodular_on_snapshot(
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<AuthorizedRunReceipt<SubmodularAnalysis>, AuthorizedRunError> {
     authorize_snapshot_execution(view, catalog, authority, is_cancelled)?;
+    reject_redacted_set_cover(problem.support(), authority)?;
     let analysis = problem.solve_cancellable(budget, &|| is_cancelled())?;
     Ok(AuthorizedRunReceipt::wrap(view, analysis))
 }
@@ -560,6 +666,9 @@ pub fn run_steiner_on_snapshot(
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<AuthorizedRunReceipt<CertifiedRun<SteinerTreeOutput>>, AuthorizedRunError> {
     authorize_snapshot_execution(view, catalog, authority, is_cancelled)?;
+    for terminal in terminals {
+        reject_redacted_id(terminal, authority)?;
+    }
     let graph = view.projection().to_weighted_graph(unit, relation_filter)?;
     let run = steiner_tree_approximation(&graph, terminals, budget)?;
     if is_cancelled() {
@@ -582,6 +691,20 @@ pub fn run_interdiction_on_snapshot(
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<AuthorizedRunReceipt<CertifiedRun<InterdictionOutput>>, AuthorizedRunError> {
     authorize_snapshot_execution(view, catalog, authority, is_cancelled)?;
+    for id in query
+        .entries
+        .iter()
+        .chain(query.targets.iter())
+        .chain(query.observers.keys())
+        .chain(query.costs.keys())
+    {
+        reject_redacted_id(id, authority)?;
+    }
+    for sensors in query.observers.values() {
+        for sensor in sensors {
+            reject_redacted_id(sensor, authority)?;
+        }
+    }
     let graph = view.projection().to_weighted_graph(unit, relation_filter)?;
     let run = interdiction(&graph, query, budget)?;
     if is_cancelled() {

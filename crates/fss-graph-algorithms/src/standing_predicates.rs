@@ -19,10 +19,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 
-use fss_core::{CanonicalEncoder, ContentDigest, LedgerAnchor};
+use fss_core::{CanonicalEncoder, ContentDigest, LedgerAnchor, Plane};
 
 use crate::certified::Budget;
-use crate::graph::GraphError;
+use crate::graph::{GraphError, MAX_NODE_ID_LEN};
 use crate::projection::{GraphUniverse, ProjectionAuthorityScope, ProjectionGuidance};
 use crate::zset::{ZSet, ZSetDeltaBatch, ZSetGraphState, zset_equijoin, zset_incremental_equijoin};
 
@@ -266,10 +266,49 @@ impl From<GraphError> for StandingPredicateError {
     }
 }
 
+fn plane_tag(plane: Plane) -> &'static str {
+    match plane {
+        Plane::Authority => "authority",
+        Plane::Cognition => "cognition",
+        Plane::Effect => "effect",
+    }
+}
+
+fn privacy_scope_digest(authority: &ProjectionAuthorityScope) -> ContentDigest {
+    let mut enc = CanonicalEncoder::new();
+    enc.text(STANDING_PREDICATES_RECEIPT_DOMAIN);
+    enc.tag(0x50);
+    let mut planes: Vec<&str> = authority
+        .allowed_planes
+        .iter()
+        .map(|p| plane_tag(*p))
+        .collect();
+    planes.sort_unstable();
+    enc.u64(planes.len() as u64);
+    for plane in planes {
+        enc.text(plane);
+    }
+    enc.u64(authority.redacted_node_ids.len() as u64);
+    for redacted in &authority.redacted_node_ids {
+        enc.text(redacted);
+    }
+    ContentDigest::sha256(&enc.finish())
+}
+
+fn validate_node_id(id: &str) -> Result<(), StandingPredicateError> {
+    if id.is_empty() || id.len() > MAX_NODE_ID_LEN || id.chars().any(char::is_control) {
+        return Err(StandingPredicateError::InvalidPredicate(format!(
+            "node identity must be 1..={MAX_NODE_ID_LEN} control-free UTF-8 bytes"
+        )));
+    }
+    Ok(())
+}
+
 fn validate_authority(
     universe: GraphUniverse,
     pinned_auth_gen: u64,
     pinned_privacy_epoch: u64,
+    pinned_privacy_scope: ContentDigest,
     authority: &ProjectionAuthorityScope,
 ) -> Result<(), StandingPredicateError> {
     if !authority.capability_active || !authority.privacy_active {
@@ -283,6 +322,12 @@ fn validate_authority(
             universe.as_str()
         )));
     }
+    if authority.authority_generation != authority.expected_authority_generation {
+        return Err(StandingPredicateError::StaleAuthorityGeneration {
+            expected: authority.expected_authority_generation,
+            observed: authority.authority_generation,
+        });
+    }
     if authority.authority_generation != pinned_auth_gen {
         return Err(StandingPredicateError::StaleAuthorityGeneration {
             expected: pinned_auth_gen,
@@ -295,13 +340,21 @@ fn validate_authority(
             authority.privacy_epoch
         )));
     }
+    if privacy_scope_digest(authority) != pinned_privacy_scope {
+        return Err(StandingPredicateError::AuthorityRevoked(
+            "privacy redaction or plane scope drifted from engine creation basis; rebuild engine under new scope".to_owned(),
+        ));
+    }
     Ok(())
 }
 
 fn validate_predicate(p: &StandingPredicate) -> Result<(), StandingPredicateError> {
-    if p.predicate_id.is_empty() || p.predicate_id.len() > 128 {
+    if p.predicate_id.is_empty()
+        || p.predicate_id.len() > 128
+        || p.predicate_id.chars().any(char::is_control)
+    {
         return Err(StandingPredicateError::InvalidPredicate(
-            "predicate_id must be 1..=128 bytes".to_owned(),
+            "predicate_id must be 1..=128 control-free bytes".to_owned(),
         ));
     }
     match &p.kind {
@@ -309,9 +362,10 @@ fn validate_predicate(p: &StandingPredicate) -> Result<(), StandingPredicateErro
             node_id,
             min_out_degree,
         } => {
-            if node_id.is_empty() || *min_out_degree == 0 {
+            validate_node_id(node_id)?;
+            if *min_out_degree == 0 {
                 return Err(StandingPredicateError::InvalidPredicate(
-                    "NodeOutDegreeAtLeast requires non-empty node_id and threshold >= 1".to_owned(),
+                    "NodeOutDegreeAtLeast requires threshold >= 1".to_owned(),
                 ));
             }
         }
@@ -319,28 +373,23 @@ fn validate_predicate(p: &StandingPredicate) -> Result<(), StandingPredicateErro
             node_id,
             min_in_degree,
         } => {
-            if node_id.is_empty() || *min_in_degree == 0 {
+            validate_node_id(node_id)?;
+            if *min_in_degree == 0 {
                 return Err(StandingPredicateError::InvalidPredicate(
-                    "NodeInDegreeAtLeast requires non-empty node_id and threshold >= 1".to_owned(),
+                    "NodeInDegreeAtLeast requires threshold >= 1".to_owned(),
                 ));
             }
         }
         StandingPredicateKind::DirectedArcActive { tail_id, head_id } => {
-            if tail_id.is_empty() || head_id.is_empty() {
-                return Err(StandingPredicateError::InvalidPredicate(
-                    "DirectedArcActive requires non-empty endpoints".to_owned(),
-                ));
-            }
+            validate_node_id(tail_id)?;
+            validate_node_id(head_id)?;
         }
         StandingPredicateKind::TwoHopPathExists {
             source_id,
             target_id,
         } => {
-            if source_id.is_empty() || target_id.is_empty() {
-                return Err(StandingPredicateError::InvalidPredicate(
-                    "TwoHopPathExists requires non-empty endpoints".to_owned(),
-                ));
-            }
+            validate_node_id(source_id)?;
+            validate_node_id(target_id)?;
         }
         StandingPredicateKind::ActiveNodeCountAtLeast { min_active_nodes } => {
             if *min_active_nodes == 0 {
@@ -361,6 +410,7 @@ pub struct StandingPredicateEngine {
     last_commit_sequence: u64,
     authority_generation: u64,
     privacy_epoch: u64,
+    privacy_scope: ContentDigest,
     predicates: Vec<StandingPredicate>,
     state: ZSetGraphState,
     /// Incrementally maintained out-degree view (`node -> sum of outgoing arc weights`).
@@ -392,6 +442,12 @@ impl StandingPredicateEngine {
                 "authority scope does not authorize {}",
                 universe.as_str()
             )));
+        }
+        if authority.authority_generation != authority.expected_authority_generation {
+            return Err(StandingPredicateError::StaleAuthorityGeneration {
+                expected: authority.expected_authority_generation,
+                observed: authority.authority_generation,
+            });
         }
         if predicates.len() > MAX_STANDING_PREDICATES {
             return Err(StandingPredicateError::InvalidPredicate(format!(
@@ -429,6 +485,7 @@ impl StandingPredicateEngine {
             last_commit_sequence: initial_anchor.commit_sequence,
             authority_generation: authority.authority_generation,
             privacy_epoch: authority.privacy_epoch,
+            privacy_scope: privacy_scope_digest(authority),
             predicates: sorted,
             state: ZSetGraphState::default(),
             out_degree: ZSet::new(),
@@ -478,6 +535,7 @@ impl StandingPredicateEngine {
             self.universe,
             self.authority_generation,
             self.privacy_epoch,
+            self.privacy_scope,
             authority,
         )?;
         if anchor.site_lineage != self.site_lineage
@@ -489,8 +547,9 @@ impl StandingPredicateEngine {
                 attempted: batch.commit_sequence,
             });
         }
-        // Capability/privacy redaction check BEFORE consolidating deltas!
+        // Validate node IDs and enforce capability/privacy redaction BEFORE consolidating deltas!
         for (nid, _) in &batch.node_deltas {
+            validate_node_id(nid)?;
             if authority.redacted_node_ids.contains(nid) {
                 return Err(StandingPredicateError::RedactedEntityBlocked {
                     node_id: nid.clone(),
@@ -498,6 +557,8 @@ impl StandingPredicateEngine {
             }
         }
         for ((u, v), _) in &batch.arc_deltas {
+            validate_node_id(u)?;
+            validate_node_id(v)?;
             if authority.redacted_node_ids.contains(u) {
                 return Err(StandingPredicateError::RedactedEntityBlocked { node_id: u.clone() });
             }
@@ -653,7 +714,9 @@ impl StandingPredicateEngine {
         let mut enc = CanonicalEncoder::new();
         enc.text(STANDING_PREDICATES_RECEIPT_DOMAIN);
         enc.text(self.universe.as_str());
+        enc.text(&anchor.site_lineage);
         enc.u64(batch.commit_sequence);
+        enc.digest(anchor.state_root);
         enc.digest(state_digest);
         enc.u64(transitions.len() as u64);
         for row in &transitions {

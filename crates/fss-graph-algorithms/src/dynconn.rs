@@ -194,6 +194,9 @@ pub fn dynamic_connectivity_with_cancel(
     budget: Budget,
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<CertifiedRun<DynamicConnectivityOutput>, GraphError> {
+    if is_cancelled() {
+        return Err(GraphError::Cancelled);
+    }
     graph.require_orientation(Orientation::Undirected)?;
     if batches.len() > MAX_BATCHES {
         return Err(GraphError::TooLarge);
@@ -362,6 +365,9 @@ pub fn dynamic_connectivity_reference_with_cancel(
     budget: Budget,
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<CertifiedRun<DynamicConnectivityOutput>, GraphError> {
+    if is_cancelled() {
+        return Err(GraphError::Cancelled);
+    }
     graph.require_orientation(Orientation::Undirected)?;
     if batches.len() > MAX_BATCHES {
         return Err(GraphError::TooLarge);
@@ -393,6 +399,9 @@ pub fn dynamic_connectivity_reference_with_cancel(
     let mut state_edges: Vec<std::collections::BTreeSet<(u32, u32)>> = Vec::with_capacity(states);
     state_edges.push(edges.clone());
     for batch in batches {
+        if is_cancelled() {
+            return Err(GraphError::Cancelled);
+        }
         for update in batch {
             match update {
                 EdgeUpdate::Insert(a, b) => {

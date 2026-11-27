@@ -359,3 +359,94 @@ fn fss_163_atomic_refusals_preserve_committed_state_on_stale_cancel_redaction_an
     );
     Ok(())
 }
+
+#[test]
+fn fss_163_expected_auth_generation_privacy_scope_node_validation_and_anchor_receipt_binding()
+-> TestResult {
+    let auth = ProjectionAuthorityScope::active_for(GraphUniverse::GEvidence, 5, 1);
+    let preds = vec![StandingPredicate {
+        predicate_id: "p:arc_ab".to_owned(),
+        kind: StandingPredicateKind::DirectedArcActive {
+            tail_id: "a".to_owned(),
+            head_id: "b".to_owned(),
+        },
+    }];
+
+    // 1. Mismatched expected_authority_generation refused at new()!
+    let mut bad_expected = auth.clone();
+    bad_expected.expected_authority_generation = 4;
+    assert!(matches!(
+        StandingPredicateEngine::new(
+            GraphUniverse::GEvidence,
+            anchor_at(0),
+            &bad_expected,
+            preds.clone(),
+        ),
+        Err(StandingPredicateError::StaleAuthorityGeneration {
+            expected: 4,
+            observed: 5
+        })
+    ));
+
+    let mut engine =
+        StandingPredicateEngine::new(GraphUniverse::GEvidence, anchor_at(0), &auth, preds.clone())?;
+    let budget = Budget::new(100, 16);
+
+    // 2. Drifted redacted_node_ids (even WITHOUT bumping privacy_epoch) refused atomically!
+    let mut drifted_privacy = auth.clone();
+    drifted_privacy.redacted_node_ids.insert("a".to_owned());
+    assert!(matches!(
+        engine.apply_delta_batch(
+            &ZSetDeltaBatch {
+                commit_sequence: 1,
+                node_deltas: vec![("c".to_owned(), 1)],
+                arc_deltas: Vec::new(),
+            },
+            &anchor_at(1),
+            &drifted_privacy,
+            budget,
+            &|| false,
+        ),
+        Err(StandingPredicateError::AuthorityRevoked(_))
+    ));
+
+    // 3. Empty or control-character node ID in delta batch refused atomically!
+    for bad_node in ["", "bad\nid"] {
+        assert!(matches!(
+            engine.apply_delta_batch(
+                &ZSetDeltaBatch {
+                    commit_sequence: 1,
+                    node_deltas: vec![(bad_node.to_owned(), 1)],
+                    arc_deltas: Vec::new(),
+                },
+                &anchor_at(1),
+                &auth,
+                budget,
+                &|| false,
+            ),
+            Err(StandingPredicateError::InvalidPredicate(_))
+        ));
+    }
+    assert_eq!(engine.last_commit_sequence(), 0);
+
+    // 4. Identical deltas on distinct state_root anchors produce distinct receipt_digests!
+    let mut engine_alt =
+        StandingPredicateEngine::new(GraphUniverse::GEvidence, anchor_at(0), &auth, preds)?;
+    let batch = ZSetDeltaBatch {
+        commit_sequence: 1,
+        node_deltas: vec![("a".to_owned(), 1), ("b".to_owned(), 1)],
+        arc_deltas: vec![(("a".to_owned(), "b".to_owned()), 1)],
+    };
+    let anchor_a = anchor_at(1);
+    let mut anchor_b = anchor_at(1);
+    anchor_b.state_root = ContentDigest::sha256(b"forked-state-root:1");
+
+    let rec_a = engine.apply_delta_batch(&batch, &anchor_a, &auth, budget, &|| false)?;
+    let rec_b = engine_alt.apply_delta_batch(&batch, &anchor_b, &auth, budget, &|| false)?;
+    assert_eq!(rec_a.state_digest, rec_b.state_digest);
+    assert_ne!(
+        rec_a.receipt_digest, rec_b.receipt_digest,
+        "receipt_digest must bind anchor.state_root to prevent cross-branch collisions"
+    );
+    Ok(())
+}

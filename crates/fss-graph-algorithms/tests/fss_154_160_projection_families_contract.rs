@@ -851,3 +851,353 @@ fn fss_160_set_cover_submodular_steiner_and_interdiction() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+fn fresh_eyes_side_input_privacy_universe_single_anchor_and_early_cancel_guards() -> TestResult {
+    // 1. Side-input privacy redaction MUST fail closed with AuthorityMismatch BEFORE expansion!
+    let mut auth_assoc = ProjectionAuthorityScope::active_for(GraphUniverse::GAssoc, 9, 1);
+    auth_assoc
+        .redacted_node_ids
+        .insert("redacted-trk".to_owned());
+    let proj_assoc = ImmutableGraphProjection::build(
+        GraphUniverse::GAssoc,
+        ProjectionOrientation::Directed,
+        anchor_at(80),
+        history_at(80),
+        &auth_assoc,
+        vec![node("trk-1"), node("det-1"), node("redacted-trk")],
+        vec![edge("trk-1", "det-1", "match", 1)],
+        complete_absence("cov:80"),
+        false,
+    )?;
+    let mut catalog = GraphSnapshotCatalog::new();
+    catalog.publish(proj_assoc, &auth_assoc, false)?;
+    let view_assoc = catalog.acquire_view(GraphUniverse::GAssoc, &auth_assoc, false)?;
+
+    let mut ab_red = AssignmentProblemBuilder::new("score");
+    ab_red
+        .add_left("redacted-trk")
+        .add_right("det-1")
+        .allow("redacted-trk", "det-1", 5);
+    let prob_red = ab_red.build()?;
+    let m_b = assignment::match_bound(2, 1);
+    let red_match = run_optimal_assignment_on_snapshot(
+        &view_assoc,
+        &catalog,
+        &auth_assoc,
+        &prob_red,
+        NonAssignment::MaximumCardinality,
+        registered(&m_b),
+        &|| false,
+    );
+    assert!(matches!(
+        red_match,
+        Err(AuthorizedRunError::Snapshot(
+            fss_graph_algorithms::snapshot_view::SnapshotViewError::AuthorityMismatch(_)
+        ))
+    ));
+    let kb_b = assignment::multimatch_bound(2, 1, 1);
+    let red_kbest = run_k_best_assignments_on_snapshot(
+        &view_assoc,
+        &catalog,
+        &auth_assoc,
+        &prob_red,
+        NonAssignment::MaximumCardinality,
+        1,
+        registered(&kb_b),
+        &|| false,
+    );
+    assert!(matches!(
+        red_kbest,
+        Err(AuthorizedRunError::Snapshot(
+            fss_graph_algorithms::snapshot_view::SnapshotViewError::AuthorityMismatch(_)
+        ))
+    ));
+
+    // 2. Wrong universe (G_phys instead of G_assoc) refused on assignment & k-best assignment!
+    let mut auth_phys = ProjectionAuthorityScope::active_for(GraphUniverse::GPhys, 9, 1);
+    auth_phys.redacted_node_ids.insert("secret-zone".to_owned());
+    let proj_phys = ImmutableGraphProjection::build(
+        GraphUniverse::GPhys,
+        ProjectionOrientation::Undirected,
+        anchor_at(81),
+        history_at(81),
+        &auth_phys,
+        vec![node("entry"), node("vault"), node("secret-zone")],
+        vec![edge("entry", "vault", "walk", 2)],
+        complete_absence("cov:81"),
+        false,
+    )?;
+    catalog.publish(proj_phys, &auth_phys, false)?;
+    let view_phys = catalog.acquire_view(GraphUniverse::GPhys, &auth_phys, false)?;
+
+    let mut ab_ok = AssignmentProblemBuilder::new("score");
+    ab_ok
+        .add_left("trk-1")
+        .add_right("det-1")
+        .allow("trk-1", "det-1", 5);
+    let prob_ok = ab_ok.build()?;
+    assert!(matches!(
+        run_optimal_assignment_on_snapshot(
+            &view_phys,
+            &catalog,
+            &auth_phys,
+            &prob_ok,
+            NonAssignment::MaximumCardinality,
+            registered(&m_b),
+            &|| false,
+        ),
+        Err(AuthorizedRunError::Algorithm(
+            GraphError::PreconditionFailed(_)
+        ))
+    ));
+    assert!(matches!(
+        run_k_best_assignments_on_snapshot(
+            &view_phys,
+            &catalog,
+            &auth_phys,
+            &prob_ok,
+            NonAssignment::MaximumCardinality,
+            1,
+            registered(&kb_b),
+            &|| false,
+        ),
+        Err(AuthorizedRunError::Algorithm(
+            GraphError::PreconditionFailed(_)
+        ))
+    ));
+
+    // 3. Redacted entity in set-cover, submodular, interdiction, temporal, and dynconn side inputs refused!
+    let sc_red = SetCoverProblem::new(
+        &["secret-zone".to_owned()],
+        &[CoverSet::new("cam-a", &["secret-zone".to_owned()])?],
+        &[],
+        &[],
+        1,
+    )?;
+    assert!(matches!(
+        run_set_cover_on_snapshot(
+            &view_phys,
+            &catalog,
+            &auth_phys,
+            &sc_red,
+            CoverMethod::ExactSmall,
+            CoverBudget::default(),
+            &|| false,
+        ),
+        Err(AuthorizedRunError::Snapshot(
+            fss_graph_algorithms::snapshot_view::SnapshotViewError::AuthorityMismatch(_)
+        ))
+    ));
+    let sub_red = SubmodularProblem::new(
+        sc_red,
+        &BTreeMap::from([("secret-zone".to_owned(), 5_u64)]),
+        &BTreeMap::from([("cam-a".to_owned(), 2_u64)]),
+        5,
+    )?;
+    assert!(matches!(
+        run_submodular_on_snapshot(
+            &view_phys,
+            &catalog,
+            &auth_phys,
+            &sub_red,
+            CoverBudget::default(),
+            &|| false,
+        ),
+        Err(AuthorizedRunError::Snapshot(
+            fss_graph_algorithms::snapshot_view::SnapshotViewError::AuthorityMismatch(_)
+        ))
+    ));
+    let iq_red = InterdictionQuery {
+        observers: BTreeMap::from([(
+            "secret-zone".to_owned(),
+            BTreeSet::from(["cam-a".to_owned()]),
+        )]),
+        costs: BTreeMap::from([("cam-a".to_owned(), 1_u64)]),
+        entries: BTreeSet::from(["entry".to_owned()]),
+        targets: BTreeSet::from(["vault".to_owned()]),
+    };
+    let int_b = interdiction::bound(2, 1, 1);
+    assert!(matches!(
+        run_interdiction_on_snapshot(
+            &view_phys,
+            &catalog,
+            &auth_phys,
+            "meters",
+            None,
+            &iq_red,
+            registered(&int_b),
+            &|| false,
+        ),
+        Err(AuthorizedRunError::Snapshot(
+            fss_graph_algorithms::snapshot_view::SnapshotViewError::AuthorityMismatch(_)
+        ))
+    ));
+    let dyn_b = dynconn::bound(2, 1, 2, 1);
+    assert!(matches!(
+        run_dynamic_connectivity_on_snapshot(
+            &view_phys,
+            &catalog,
+            &auth_phys,
+            "hops",
+            None,
+            DynamicConnectivityLane::ReferencePerStateBfs,
+            &[vec![EdgeUpdate::Insert(
+                "entry".to_owned(),
+                "secret-zone".to_owned()
+            )]],
+            &[(0, "entry", "vault")],
+            registered(&dyn_b),
+            &|| false,
+        ),
+        Err(AuthorizedRunError::Snapshot(
+            fss_graph_algorithms::snapshot_view::SnapshotViewError::AuthorityMismatch(_)
+        ))
+    ));
+
+    // 4. Temporal network containing a redacted node refused BEFORE temporal_reachability!
+    let mut auth_t = ProjectionAuthorityScope::active_for(GraphUniverse::GTime, 9, 1);
+    auth_t.redacted_node_ids.insert("secret-zone".to_owned());
+    let proj_t = ImmutableGraphProjection::build(
+        GraphUniverse::GTime,
+        ProjectionOrientation::Directed,
+        anchor_at(82),
+        history_at(82),
+        &auth_t,
+        vec![node("entry"), node("vault"), node("secret-zone")],
+        vec![edge("entry", "vault", "transit", 1)],
+        complete_absence("cov:82"),
+        false,
+    )?;
+    catalog.publish(proj_t, &auth_t, false)?;
+    let view_t = catalog.acquire_view(GraphUniverse::GTime, &auth_t, false)?;
+    let mut tb_red = TemporalNetworkBuilder::new("seconds", 10);
+    tb_red.add_node("entry", 2).add_node("secret-zone", 2);
+    let net_red = tb_red.build()?;
+    let tr_b = temporal::bound(2, 0, 10, 4);
+    assert!(matches!(
+        run_temporal_reachability_on_snapshot(
+            &view_t,
+            &catalog,
+            &auth_t,
+            &net_red,
+            "entry",
+            (0, 1),
+            4,
+            registered(&tr_b),
+            &|| false,
+        ),
+        Err(AuthorizedRunError::Snapshot(
+            fss_graph_algorithms::snapshot_view::SnapshotViewError::AuthorityMismatch(_)
+        ))
+    ));
+
+    // 5. Cross-anchor AND cross-universe min-cost flow refused (GRAPH-INV-001 / GRAPH-INV-002)!
+    let mut auth_both = ProjectionAuthorityScope::active_for(GraphUniverse::GAssoc, 9, 1);
+    auth_both.allowed_universes.insert(GraphUniverse::GTime);
+    let mut mcf_catalog = GraphSnapshotCatalog::new();
+    let p_mcf_a = ImmutableGraphProjection::build(
+        GraphUniverse::GAssoc,
+        ProjectionOrientation::Directed,
+        anchor_at(83),
+        history_at(83),
+        &auth_both,
+        vec![node("entry"), node("vault")],
+        vec![edge("entry", "vault", "flow", 1)],
+        complete_absence("cov:83"),
+        false,
+    )?;
+    let p_mcf_b_diff_anchor = ImmutableGraphProjection::build(
+        GraphUniverse::GTime,
+        ProjectionOrientation::Directed,
+        anchor_at(84),
+        history_at(84),
+        &auth_both,
+        vec![node("entry"), node("vault")],
+        vec![edge("entry", "vault", "flow", 1)],
+        complete_absence("cov:84"),
+        false,
+    )?;
+    mcf_catalog.publish(p_mcf_a, &auth_both, false)?;
+    mcf_catalog.publish(p_mcf_b_diff_anchor, &auth_both, false)?;
+    let v_mcf_a = mcf_catalog.acquire_view(GraphUniverse::GAssoc, &auth_both, false)?;
+    let v_mcf_diff_anchor = mcf_catalog.acquire_view(GraphUniverse::GTime, &auth_both, false)?;
+    let mcf_b = min_cost_flow::bound(2, 1, 1);
+    assert!(matches!(
+        run_min_cost_flow_on_snapshots(
+            &v_mcf_a,
+            &v_mcf_diff_anchor,
+            &mcf_catalog,
+            &auth_both,
+            "cost",
+            "cap",
+            "entry",
+            "vault",
+            1,
+            registered(&mcf_b),
+            &|| false,
+        ),
+        Err(AuthorizedRunError::Algorithm(
+            GraphError::PreconditionFailed(msg)
+        )) if msg.contains("same ledger anchor")
+    ));
+    let p_mcf_a_84 = ImmutableGraphProjection::build(
+        GraphUniverse::GAssoc,
+        ProjectionOrientation::Directed,
+        anchor_at(84),
+        history_at(84),
+        &auth_both,
+        vec![node("entry"), node("vault")],
+        vec![edge("entry", "vault", "flow", 1)],
+        complete_absence("cov:84"),
+        false,
+    )?;
+    mcf_catalog.publish(p_mcf_a_84, &auth_both, false)?;
+    let v_mcf_a_84 = mcf_catalog.acquire_view(GraphUniverse::GAssoc, &auth_both, false)?;
+    assert!(matches!(
+        run_min_cost_flow_on_snapshots(
+            &v_mcf_a_84,
+            &v_mcf_diff_anchor,
+            &mcf_catalog,
+            &auth_both,
+            "cost",
+            "cap",
+            "entry",
+            "vault",
+            1,
+            registered(&mcf_b),
+            &|| false,
+        ),
+        Err(AuthorizedRunError::Algorithm(
+            GraphError::PreconditionFailed(msg)
+        )) if msg.contains("same universe")
+    ));
+
+    // 6. Early cooperative cancellation fires BEFORE lifetimes() in both dynconn lanes!
+    let wg = view_phys.projection().to_weighted_graph("hops", None)?;
+    let invalid_batches = vec![vec![EdgeUpdate::Delete(
+        "nonexistent".to_owned(),
+        "entry".to_owned(),
+    )]];
+    assert_eq!(
+        dynconn::dynamic_connectivity_with_cancel(
+            &wg,
+            &invalid_batches,
+            &[],
+            registered(&dyn_b),
+            &|| true,
+        ),
+        Err(GraphError::Cancelled)
+    );
+    assert_eq!(
+        dynconn::dynamic_connectivity_reference_with_cancel(
+            &wg,
+            &invalid_batches,
+            &[],
+            registered(&dyn_b),
+            &|| true,
+        ),
+        Err(GraphError::Cancelled)
+    );
+    Ok(())
+}
