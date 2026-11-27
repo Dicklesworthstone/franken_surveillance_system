@@ -1,6 +1,6 @@
 a51d13c4430c5aa3d142843553887cc568008a8433b289befcdb22209c8a08b5  crates/fss-cli/src/bin/fss-dashboard/live_projection.rs
-ac72b412f7fb0fd297b0c2de841392de57d882c5b5cd96961f56b20f5789f900  crates/fss-cli/src/bin/fss-dashboard/live_render.rs
-4c70280fb35e40208037e85cb529a8c9f6138806922b9b41aad3248b7a94c2d1  crates/fss-cli/src/bin/fss-dashboard/web/live.js
+7a7685be59ce002ad1a1d925dc4cf1156bad83d3b89a7c3b91180922d2b24ad2  crates/fss-cli/src/bin/fss-dashboard/live_render.rs
+7e8c5eea9c3214fac4b593c6d6854a4e9ceb9895cad768116d545f710287aa2e  crates/fss-cli/src/bin/fss-dashboard/web/live.js
 8fb256328a36d05e3eeca74c5933a5454baea05c46531af41112286431f06a43  crates/fss-cli/src/pack_archive_cmd.rs
 73bd832b2a4cd86af51ac3eea4368b34ce97f440dbffb38271e11700c492cd4e  crates/fss-cli/tests/dashboard_live_contract.rs
 24542ed498215a16a2d56c213227ccf90a0a4f9e25da15fe23fcfbbb6604bf50  crates/fss-pack/src/archive/audit.rs
@@ -13,3 +13,4 @@ b40046b2ebd9e64d0945709402c71da70a806f3bb578159066353ba294607b6a  crates/fss-pac
 fc7a78da9697128d04692316aa89430c9e217e9cf1e8e8e248b42d397cf59741  crates/fss-reference/src/ingest/privacy_mask/coverage.rs
 a4429ac2436b06fe927b74160cec12795876572f17f32fbffdd2972fa0fca90a  crates/fss-reference/src/ingest/privacy_mask/tests.rs
 569908af14dd39fd973294d831ae3dc29bfc29e063d43916b57e1548585b0a94  crates/fss-reference/src/ingest/recorded_corroboration.rs
+7a9816a48c5172728d91aea687a0c7270a32a7387557be70391db11578d5ed37  tests/test_dashboard_model.mjs

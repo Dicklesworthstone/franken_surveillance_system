@@ -9,6 +9,18 @@ const el = (tag, cls, text) => {
 };
 const fpsText = (milli) => `${(Number(milli || 0) / 1000).toFixed(1)}`;
 
+function eventCard(e) {
+  const card = el('div', 'row-card');
+  const tone = e.epistemic_classification === 'Corroborated' ? 'ok' : 'warn';
+  card.append(
+    el('span', `tag ${tone}`, e.epistemic_classification),
+    el('strong', '', `${e.event_id} `),
+    el('span', '', `clusters=${e.failure_domain_clusters || 'unknown'} · ${e.fusion_summary}`),
+    el('div', '', `handle=${e.privacy_masked_handle.handle_id} · raw_media=${e.privacy_masked_handle.raw_media_exposed}`),
+  );
+  return card;
+}
+
 function renderFrame(f) {
   if (f?.schema !== 'fss.dashboard_live_frame.v1' || f.read_only !== true ||
       typeof f.daemon_live !== 'boolean' || typeof f.site !== 'string') {
@@ -55,22 +67,23 @@ function renderFrame(f) {
   sitNodes.push(affCard);
   sitHost.replaceChildren(...sitNodes);
 
-  // Pane 3: Corroborated Events & Milliban Fusion
+  // The native projection admits up to 64 events per frame.
   const evHost = $('events-body');
+  if (!Array.isArray(f.events) || f.events.length > 64) throw new Error('Invalid event inventory.');
   if (!f.events.length) {
-    evHost.replaceChildren(el('p', '', 'No committed events yet. Empty inventory never certifies physical absence.'));
+    evHost.replaceChildren(el('p', '', 'No event rows in this frame.'));
   } else {
-    evHost.replaceChildren(...f.events.slice(0, 12).map((e) => {
-      const card = el('div', 'row-card');
-      const tone = e.epistemic_classification === 'Corroborated' ? 'ok' : 'warn';
-      card.append(
-        el('span', `tag ${tone}`, e.epistemic_classification),
-        el('strong', '', `${e.event_id} `),
-        el('span', '', `clusters=${e.failure_domain_clusters || 'unknown'} · ${e.fusion_summary}`),
-        el('div', '', `handle=${e.privacy_masked_handle.handle_id} · raw_media=${e.privacy_masked_handle.raw_media_exposed}`),
-      );
-      return card;
-    }));
+    const visible = f.events.slice(0, 12).map(eventCard);
+    const focusedDisclosure = document.activeElement?.tagName === 'SUMMARY' && evHost.contains(document.activeElement);
+    if (f.events.length > 12) {
+      const more = el('details');
+      more.open = evHost.querySelector('details')?.open ?? false;
+      more.append(el('summary', '', `${f.events.length - 12} more · ${f.events.length} events in this frame`));
+      for (const event of f.events.slice(12)) more.append(eventCard(event));
+      visible.push(more);
+    }
+    evHost.replaceChildren(...visible);
+    if (focusedDisclosure) evHost.querySelector('summary')?.focus({ preventScroll: true });
   }
 
   // Pane 4: Obligations, Effects & Holds

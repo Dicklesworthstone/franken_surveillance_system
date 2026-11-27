@@ -428,6 +428,13 @@ pub fn render_live_tui(frame: &LiveCockpitFrame, ansi: bool) -> String {
             "  (no committed events; empty inventory never certifies physical absence)"
         );
     } else {
+        if frame.events.len() > 12 {
+            let _ = writeln!(
+                out,
+                "  Showing 12 of {} events in this frame. Use --json for all frame rows.",
+                frame.events.len()
+            );
+        }
         for ev in frame.events.iter().take(12) {
             let _ = writeln!(
                 out,

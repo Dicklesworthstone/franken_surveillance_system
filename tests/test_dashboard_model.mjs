@@ -111,6 +111,7 @@ function cockpit() {
     children: [], textContent: '', hidden: false, className: '',
     append(...items) { this.children.push(...items); },
     replaceChildren(...items) { this.children = items; },
+    querySelector(tag) { return this.children.find(child => child.tagName === tag); },
     addEventListener(type, listener) { this[type] = listener; }
   });
   function get(id) {
@@ -118,7 +119,7 @@ function cockpit() {
     return nodes.get(id);
   }
   const document = {
-    hidden: false, getElementById: get, createElement: node,
+    hidden: false, getElementById: get, createElement(tagName) { return { ...node(), tagName }; },
     addEventListener(type, listener) { visibility[type] = listener; }
   };
   class Source {
@@ -196,5 +197,26 @@ test('hidden or invalid cockpit frames cannot leave camera or event state on scr
   view.get('retry-live').click();
   view.streams[3].deliver(frameJson);
   view.lifecycle.pagehide();
+  assertCleared(view);
+});
+
+test('all 64 admitted cockpit events remain inspectable across updates', () => {
+  const view = cockpit(), frame = JSON.parse(frameJson);
+  frame.events = Array.from({ length: 64 }, (_, index) => ({
+    event_id: 'event:' + index, epistemic_classification: 'Observed', failure_domain_clusters: 0,
+    fusion_summary: 'details unavailable', privacy_masked_handle: { handle_id: 'h:' + index, raw_media_exposed: false }
+  }));
+  const stream = view.streams[0], host = view.get('events-body');
+  stream.deliver(JSON.stringify(frame));
+  const more = host.querySelector('details');
+  assert.equal(host.children.length, 13);
+  assert.equal(more.children.length, 53);
+  assert.match(more.children[0].textContent, /52 more · 64 events in this frame/);
+  assert.equal(more.children[52].children[1].textContent, 'event:63 ');
+  more.open = true;
+  stream.deliver(JSON.stringify(frame));
+  assert.equal(host.querySelector('details').open, true);
+  frame.events.push(frame.events[0]);
+  stream.deliver(JSON.stringify(frame));
   assertCleared(view);
 });
