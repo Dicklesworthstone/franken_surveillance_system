@@ -4,6 +4,9 @@
 
 use std::collections::{BTreeSet, VecDeque};
 
+/// Exact signed-cost assignment, independent of FSS core.
+pub mod assignment;
+
 /// Fail-closed input, resource, arithmetic, and proof errors.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Error {
