@@ -269,6 +269,91 @@ fn alg_facility_001_distinct_objectives_capacity_privacy_domains_and_oracle() ->
     assert_eq!(cap_run.output.selected_facilities.len(), 2);
     assert_eq!(cap_run.output.distinct_failure_domains, 2);
 
+    // Exact capacitated assignment trap in ExactSmall: naive greedy descending-weight order picks
+    // d1->f1 (dist 1) leaving only f2 for d2 (dist 100 -> PM=1010, KC=100), whereas exact
+    // branch-and-bound assigns d1->f2 (dist 2) and d2->f1 (dist 1) giving PM=30, KC=2!
+    let trap_cands = vec![
+        FacilityCandidate {
+            facility_id: "f:1".to_owned(),
+            opening_cost: 0,
+            capacity: 10,
+            failure_domain: "pwr:1".to_owned(),
+            privacy_excluded: false,
+        },
+        FacilityCandidate {
+            facility_id: "f:2".to_owned(),
+            opening_cost: 0,
+            capacity: 10,
+            failure_domain: "pwr:2".to_owned(),
+            privacy_excluded: false,
+        },
+    ];
+    let trap_dems = vec![
+        DemandPoint {
+            demand_id: "d:1".to_owned(),
+            weight: 10,
+        },
+        DemandPoint {
+            demand_id: "d:2".to_owned(),
+            weight: 10,
+        },
+    ];
+    let trap_dists = BTreeMap::from([
+        (("f:1".to_owned(), "d:1".to_owned()), 1_u64),
+        (("f:2".to_owned(), "d:1".to_owned()), 2),
+        (("f:1".to_owned(), "d:2".to_owned()), 1),
+        (("f:2".to_owned(), "d:2".to_owned()), 100),
+    ]);
+    let b_trap = facility::bound(2, 2, 2);
+    let trap_pm = solve_facility_placement(
+        &FacilityProblem {
+            objective: FacilityObjective::PMedian,
+            max_facilities: 2,
+            min_distinct_failure_domains: 1,
+            candidates: trap_cands.clone(),
+            demands: trap_dems.clone(),
+            distances: trap_dists.clone(),
+        },
+        registered(&b_trap),
+        &|| false,
+    )?;
+    assert_eq!(trap_pm.output.lane, FacilitySolverLane::ExactSmall);
+    assert!(trap_pm.output.feasible);
+    assert_eq!(trap_pm.output.objective_value, 30);
+    let trap_kc = solve_facility_placement(
+        &FacilityProblem {
+            objective: FacilityObjective::KCenter,
+            max_facilities: 2,
+            min_distinct_failure_domains: 1,
+            candidates: trap_cands.clone(),
+            demands: trap_dems.clone(),
+            distances: trap_dists,
+        },
+        registered(&b_trap),
+        &|| false,
+    )?;
+    assert_eq!(trap_kc.output.objective_value, 2);
+    // Feasibility trap where d:2 can ONLY reach f:1 (greedy would assign d:1->f:1 and declare infeasible!):
+    let feas_dists = BTreeMap::from([
+        (("f:1".to_owned(), "d:1".to_owned()), 1_u64),
+        (("f:2".to_owned(), "d:1".to_owned()), 5),
+        (("f:1".to_owned(), "d:2".to_owned()), 1),
+    ]);
+    let trap_feas = solve_facility_placement(
+        &FacilityProblem {
+            objective: FacilityObjective::PMedian,
+            max_facilities: 2,
+            min_distinct_failure_domains: 1,
+            candidates: trap_cands,
+            demands: trap_dems,
+            distances: feas_dists,
+        },
+        registered(&b_trap),
+        &|| false,
+    )?;
+    assert!(trap_feas.output.feasible);
+    assert_eq!(trap_feas.output.objective_value, 60);
+
     println!(
         "CAPLOG {{\"alg\":\"ALG-FACILITY-001\",\"fl\":\"{}\",\"kc\":\"{}\",\"pm\":\"{}\",\"large_lane_regret\":{}}}",
         fl.output.selected_facilities[0],
@@ -433,6 +518,47 @@ fn alg_motif_001_exact_16_man_classes_oracle_and_non_whitelisting() -> TestResul
         }
     }
     assert_eq!(seen_classes.len(), 16);
+    // Exhaustive all-64 labeled 3-node digraph census MUST match exact canonical MAN multiplicities!
+    let mut class_hist: BTreeMap<&'static str, u64> = BTreeMap::new();
+    for mask in 0_u8..64 {
+        let cls = classify_man_triad(
+            (mask & 1) != 0,
+            (mask & 2) != 0,
+            (mask & 4) != 0,
+            (mask & 8) != 0,
+            (mask & 16) != 0,
+            (mask & 32) != 0,
+        );
+        *class_hist.entry(cls).or_insert(0) += 1;
+    }
+    let expected_hist = BTreeMap::from([
+        ("003", 1_u64),
+        ("012", 6),
+        ("102", 3),
+        ("021D", 3),
+        ("021U", 3),
+        ("021C", 6),
+        ("111D", 6),
+        ("111U", 6),
+        ("030T", 6),
+        ("030C", 2),
+        ("201", 3),
+        ("120D", 3),
+        ("120U", 3),
+        ("120C", 6),
+        ("210", 6),
+        ("300", 1),
+    ]);
+    assert_eq!(class_hist, expected_hist);
+    // Explicit Batagelj-Mrvar / NetworkX 111D (a<->c, b->c) vs 111U (a<->c, c->b) direction check:
+    assert_eq!(
+        classify_man_triad(false, false, true, true, true, false),
+        "111D"
+    );
+    assert_eq!(
+        classify_man_triad(false, false, true, true, false, true),
+        "111U"
+    );
 
     // Run full triadic census on a 6-node directed graph with known 030C + 030T + 300 motifs.
     let mut wb = WeightedGraphBuilder::directed("unit");

@@ -520,10 +520,39 @@ fn test_biconnected_block_dmp(
         }
     }
 
-    // Self-check Euler's formula `V - E + F == 2` on every planar biconnected block!
-    if nb + faces.len() != mb + 2 {
+    // Self-check full embedding coverage, Euler's formula `V - E + F == 2`, and dual-edge
+    // face incidence (every undirected block edge must appear on exactly two face boundaries)!
+    if edge_in_h.len() != local_edges.len() || nb + faces.len() != mb + 2 {
         return Ok(BlockPlanarity::NonPlanar {
             kind: "euler_face_identity_failed".to_owned(),
+            nodes: verts.to_vec(),
+        });
+    }
+    let mut edge_face_counts: BTreeMap<(usize, usize), usize> = BTreeMap::new();
+    for face in &faces {
+        if face.len() < 3 {
+            return Ok(BlockPlanarity::NonPlanar {
+                kind: "face_dual_edge_certificate_failed".to_owned(),
+                nodes: verts.to_vec(),
+            });
+        }
+        for i in 0..face.len() {
+            let a = face[i];
+            let b = face[(i + 1) % face.len()];
+            let e = (a.min(b), a.max(b));
+            if !local_edges.contains(&e) {
+                return Ok(BlockPlanarity::NonPlanar {
+                    kind: "face_dual_edge_certificate_failed".to_owned(),
+                    nodes: verts.to_vec(),
+                });
+            }
+            *edge_face_counts.entry(e).or_insert(0) += 1;
+        }
+    }
+    if edge_face_counts.len() != local_edges.len() || edge_face_counts.values().any(|&cnt| cnt != 2)
+    {
+        return Ok(BlockPlanarity::NonPlanar {
+            kind: "face_dual_edge_certificate_failed".to_owned(),
             nodes: verts.to_vec(),
         });
     }

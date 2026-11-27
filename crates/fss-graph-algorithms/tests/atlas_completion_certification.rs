@@ -1,5 +1,5 @@
-//! Certification suite for the remaining 8 algorithms of the 27-algorithm Certified Graph Atlas
-//! (`fss-esder`, `fss-9mxru`, `fss-8d1g1`, `fss-6gf89`).
+//! Certification suite for the remaining 8 algorithms of the 36-algorithm Certified Graph Atlas
+//! (`fss-esder`, `fss-9mxru`, `fss-8d1g1`, `fss-6gf89`, extended by `fss-x4a.23.70`).
 #![forbid(unsafe_code)]
 
 mod common;
@@ -34,7 +34,7 @@ fn emit_log(algorithm_id: &str, cases: u64, status: &str) {
 }
 
 #[test]
-fn all_27_graph_algorithms_are_registered_and_implemented() -> TestResult {
+fn all_36_graph_algorithms_are_registered_and_implemented() -> TestResult {
     assert_registered(&ppr::IDENTITY)?;
     assert_registered(&hits::IDENTITY)?;
     assert_registered(&centrality::IDENTITY)?;

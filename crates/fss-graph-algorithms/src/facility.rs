@@ -47,8 +47,12 @@ pub static IDENTITY: AlgorithmIdentity = AlgorithmIdentity {
 
 /// Maximum candidate facilities eligible for exhaustive exact combination search.
 pub const EXACT_CANDIDATE_LIMIT: usize = 16;
-/// Maximum `k` eligible for exhaustive exact combination search.
+/// Maximum `k` eligible for exhaustive exact combination search (uncapacitated).
 pub const EXACT_K_LIMIT: usize = 6;
+/// Maximum `k` eligible for exact branch-and-bound capacitated demand assignment.
+pub const EXACT_CAP_K_LIMIT: usize = 4;
+/// Maximum demand count eligible for exact branch-and-bound capacitated demand assignment.
+pub const EXACT_CAP_DEMAND_LIMIT: usize = 6;
 
 /// Distinct placement objective — NEVER collapsed into set cover!
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -274,14 +278,118 @@ pub fn bound(c: u64, d: u64, k: u64) -> Vec<BoundRow> {
         add(mul(k, c), mul(mul(k, c), 2))
     };
     let eval_cap = exact_evals.max(1);
+    let per_subset_lookups =
+        if d <= EXACT_CAP_DEMAND_LIMIT as u64 && k <= EXACT_CAP_K_LIMIT as u64 && k >= 2 {
+            let bnb = k.saturating_pow(d as u32).saturating_mul(k);
+            add(mul(d, k), bnb)
+        } else {
+            mul(d, k.max(1))
+        };
     vec![
         ("subset_evaluations", add(eval_cap, c)),
-        ("distance_lookups", add(mul(eval_cap, mul(d, k.max(1))), d)),
+        (
+            "distance_lookups",
+            add(mul(eval_cap, per_subset_lookups), d),
+        ),
         (OUTPUT_ENTRIES, add(k, d)),
     ]
 }
 
+type BestSlotAssignment = (u64, Vec<(usize, usize, u64)>);
+
+#[allow(clippy::too_many_arguments)]
+fn exact_capacitated_assign(
+    depth: usize,
+    dem_order: &[usize],
+    subset: &[usize],
+    demands: &[DemandPoint],
+    dist_matrix: &[Vec<Option<u64>>],
+    objective: FacilityObjective,
+    opening_sum: u64,
+    rem_cap: &mut [u64],
+    cur_slots: &mut Vec<(usize, usize, u64)>,
+    cur_weighted: u64,
+    cur_max: u64,
+    best: &mut Option<BestSlotAssignment>,
+    meter: &mut Meter<'_>,
+) -> Result<(), GraphError> {
+    let cur_lb = match objective {
+        FacilityObjective::FacilityLocation => opening_sum.saturating_add(cur_weighted),
+        FacilityObjective::KCenter => cur_max,
+        FacilityObjective::PMedian => cur_weighted,
+    };
+    if let Some((best_obj, _)) = best
+        && cur_lb > *best_obj
+    {
+        return Ok(());
+    }
+    if depth == dem_order.len() {
+        let mut sorted = cur_slots.clone();
+        sorted.sort_by_key(|&(d_idx, _, _)| d_idx);
+        let better = match best {
+            None => true,
+            Some((bo, bs)) => {
+                cur_lb < *bo
+                    || (cur_lb == *bo
+                        && sorted
+                            .iter()
+                            .map(|&(_, slot, _)| subset[slot])
+                            .lt(bs.iter().map(|&(_, slot, _)| subset[slot])))
+            }
+        };
+        if better {
+            *best = Some((cur_lb, sorted));
+        }
+        return Ok(());
+    }
+
+    let d_idx = dem_order[depth];
+    let dem = &demands[d_idx];
+    for slot in 0..subset.len() {
+        meter.tick("distance_lookups")?;
+        if rem_cap[slot] < dem.weight {
+            continue;
+        }
+        let Some(dist) = dist_matrix[d_idx][slot] else {
+            continue;
+        };
+        let weighted = dist
+            .checked_mul(dem.weight)
+            .ok_or(GraphError::ArithmeticOverflow("weighted_distance"))?;
+        let next_weighted = cur_weighted
+            .checked_add(weighted)
+            .ok_or(GraphError::ArithmeticOverflow("total_weighted_distance"))?;
+        let next_max = cur_max.max(dist);
+        if objective == FacilityObjective::FacilityLocation {
+            opening_sum
+                .checked_add(next_weighted)
+                .ok_or(GraphError::ArithmeticOverflow("facility_location_obj"))?;
+        }
+        rem_cap[slot] -= dem.weight;
+        cur_slots.push((d_idx, slot, dist));
+        exact_capacitated_assign(
+            depth + 1,
+            dem_order,
+            subset,
+            demands,
+            dist_matrix,
+            objective,
+            opening_sum,
+            rem_cap,
+            cur_slots,
+            next_weighted,
+            next_max,
+            best,
+            meter,
+        )?;
+        cur_slots.pop();
+        rem_cap[slot] += dem.weight;
+    }
+    Ok(())
+}
+
 /// Evaluates one candidate facility subset under exact capacity/diversity constraints.
+#[allow(clippy::too_many_arguments)]
 fn evaluate_subset(
     subset: &[usize],
     eligible: &[FacilityCandidate],
@@ -289,6 +397,7 @@ fn evaluate_subset(
     distances: &BTreeMap<(String, String), u64>,
     objective: FacilityObjective,
     min_domains: usize,
+    exact_assignment: bool,
     meter: &mut Meter<'_>,
 ) -> Result<Option<(u64, usize, Vec<DemandAssignment>)>, GraphError> {
     meter.tick("subset_evaluations")?;
@@ -298,6 +407,8 @@ fn evaluate_subset(
     let mut domains = BTreeSet::new();
     let mut opening_sum = 0_u64;
     let mut rem_cap: Vec<u64> = Vec::with_capacity(subset.len());
+    let mut total_cap = 0_u64;
+    let mut min_cap = u64::MAX;
     for &idx in subset {
         let c = &eligible[idx];
         domains.insert(c.failure_domain.as_str());
@@ -305,13 +416,80 @@ fn evaluate_subset(
             .checked_add(c.opening_cost)
             .ok_or(GraphError::ArithmeticOverflow("opening_cost"))?;
         rem_cap.push(c.capacity);
+        total_cap = total_cap.saturating_add(c.capacity);
+        min_cap = min_cap.min(c.capacity);
     }
     if domains.len() < min_domains {
         return Ok(None);
     }
+    let total_demand: u64 = demands
+        .iter()
+        .map(|d| d.weight)
+        .fold(0_u64, u64::saturating_add);
+    if total_cap < total_demand {
+        return Ok(None);
+    }
 
-    // Assign demands in deterministic order of descending weight then ascending demand_id so
-    // heavy demands get priority for scarce capacity deterministically.
+    let capacity_binds = subset.len() >= 2 && total_demand > min_cap;
+    if capacity_binds
+        && exact_assignment
+        && demands.len() <= EXACT_CAP_DEMAND_LIMIT
+        && subset.len() <= EXACT_CAP_K_LIMIT
+    {
+        // Exact branch-and-bound capacitated assignment (globally optimal!).
+        let dist_matrix: Vec<Vec<Option<u64>>> = demands
+            .iter()
+            .map(|dem| {
+                subset
+                    .iter()
+                    .map(|&f_idx| {
+                        distances
+                            .get(&(eligible[f_idx].facility_id.clone(), dem.demand_id.clone()))
+                            .copied()
+                    })
+                    .collect()
+            })
+            .collect();
+        let mut dem_order: Vec<usize> = (0..demands.len()).collect();
+        dem_order.sort_by(|&a, &b| {
+            let ra = dist_matrix[a].iter().filter(|x| x.is_some()).count();
+            let rb = dist_matrix[b].iter().filter(|x| x.is_some()).count();
+            ra.cmp(&rb)
+                .then_with(|| demands[b].weight.cmp(&demands[a].weight))
+                .then_with(|| demands[a].demand_id.cmp(&demands[b].demand_id))
+        });
+        let mut cur_slots = Vec::with_capacity(demands.len());
+        let mut best: Option<BestSlotAssignment> = None;
+        exact_capacitated_assign(
+            0,
+            &dem_order,
+            subset,
+            demands,
+            &dist_matrix,
+            objective,
+            opening_sum,
+            &mut rem_cap,
+            &mut cur_slots,
+            0,
+            0,
+            &mut best,
+            meter,
+        )?;
+        let Some((obj, chosen_slots)) = best else {
+            return Ok(None);
+        };
+        let assignments: Vec<DemandAssignment> = chosen_slots
+            .into_iter()
+            .map(|(d_idx, slot, dist)| DemandAssignment {
+                demand_id: demands[d_idx].demand_id.clone(),
+                facility_id: eligible[subset[slot]].facility_id.clone(),
+                distance: dist,
+            })
+            .collect();
+        return Ok(Some((obj, domains.len(), assignments)));
+    }
+
+    // Uncapacitated (provably exact!) or large-lane deterministic greedy assignment.
     let mut dem_order: Vec<usize> = (0..demands.len()).collect();
     dem_order.sort_by(|&a, &b| {
         demands[b]
@@ -418,7 +596,16 @@ pub fn solve_facility_placement(
         }
     }
 
-    let use_exact = eligible.len() <= EXACT_CANDIDATE_LIMIT && k <= EXACT_K_LIMIT;
+    let total_demand_weight: u64 = demands
+        .iter()
+        .map(|d| d.weight)
+        .fold(0_u64, u64::saturating_add);
+    let min_eligible_cap = eligible.iter().map(|c| c.capacity).min().unwrap_or(0);
+    let capacity_may_bind = k >= 2 && total_demand_weight > min_eligible_cap;
+    let use_exact = eligible.len() <= EXACT_CANDIDATE_LIMIT
+        && k <= EXACT_K_LIMIT
+        && (!capacity_may_bind
+            || (demands.len() <= EXACT_CAP_DEMAND_LIMIT && k <= EXACT_CAP_K_LIMIT));
     let lane = if use_exact {
         FacilitySolverLane::ExactSmall
     } else {
@@ -474,6 +661,7 @@ pub fn solve_facility_placement(
                     &problem.distances,
                     problem.objective,
                     min_d,
+                    false,
                     &mut meter,
                 )? && step_best.as_ref().is_none_or(|b| (obj, cand) < (b.0, b.1))
                 {
@@ -544,6 +732,7 @@ pub fn solve_facility_placement(
                         &problem.distances,
                         problem.objective,
                         problem.min_distinct_failure_domains,
+                        false,
                         &mut meter,
                     )? && (obj, trial.as_slice()) < (cur_obj, cur_set.as_slice())
                     {
@@ -625,6 +814,7 @@ fn enumerate_subsets(
             distances,
             objective,
             min_domains,
+            true,
             meter,
         )? && best_sol
             .as_ref()
