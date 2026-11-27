@@ -180,3 +180,63 @@ fn pack_store_refuses_reopen_instead_of_resurrecting_deleted_source_bytes() -> T
     assert_eq!(recovered.read_verified(&live)?, live_bytes);
     Ok(())
 }
+
+#[test]
+fn missing_deletion_history_blocks_rebuild_until_original_log_is_restored() -> TestResult {
+    let dir = TestDir::new()?;
+    let payload = b"source bytes still in a sealed pack";
+    let digest = ContentDigest::sha256(payload);
+    let reason = ContentDigest::sha256(b"authorized erasure");
+    let log_path = dir.0.join("objects/roots/object-tombstones.fssr");
+    {
+        let store = PackStore::open(&dir.0, PackConfig::default())?;
+        store.append_batch(&[PackObjectInput::new(PACK_KIND_RAW_PAYLOAD, 0, payload)])?;
+        store.seal_active_pack()?;
+    }
+    let mut log = ObjectTombstoneLog::open(&log_path, DurabilityMode::Fsync)?;
+    log.append_batch(&[(digest, reason)])?;
+    drop(log);
+    let saved = fs::read(&log_path)?;
+    fs::remove_file(&log_path)?;
+    for _ in 0..2 {
+        assert!(matches!(
+            PackStore::open(&dir.0, PackConfig::default()),
+            Err(PackError::CorruptCatalog { .. })
+        ));
+        assert!(!log_path.try_exists()?);
+    }
+    fs::write(&log_path, saved)?;
+    let recovered = PackStore::open(&dir.0, PackConfig::default())?;
+    assert!(
+        matches!(recovered.read_verified(&digest), Err(PackError::EvidenceDeleted { reason_digest, .. }) if reason_digest == reason)
+    );
+    Ok(())
+}
+
+#[test]
+fn missing_history_distinguishes_empty_bootstrap_from_partial_store() -> TestResult {
+    for populated_dir in ["packs", "index", "roots"] {
+        let dir = TestDir::new()?;
+        let objects = dir.0.join("objects");
+        let retained = objects.join(populated_dir);
+        fs::create_dir_all(&retained)?;
+        fs::write(retained.join("retained-artifact"), b"must survive")?;
+        assert!(matches!(
+            PackStore::open(&dir.0, PackConfig::default()),
+            Err(PackError::CorruptCatalog { .. })
+        ));
+        assert!(!objects.join("roots/object-tombstones.fssr").try_exists()?);
+        assert_eq!(
+            fs::read(retained.join("retained-artifact"))?,
+            b"must survive"
+        );
+        fs::remove_file(retained.join("retained-artifact"))?;
+        let store = PackStore::open(&dir.0, PackConfig::default())?;
+        assert!(
+            store
+                .object_tombstone(&ContentDigest::sha256(b"new"))?
+                .is_none()
+        );
+    }
+    Ok(())
+}

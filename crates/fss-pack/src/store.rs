@@ -126,8 +126,8 @@ impl PackStore {
             }
         }
 
-        let tombstone_log_path = roots_dir.join("object-tombstones.fssr");
-        let tombstone_log = ObjectTombstoneLog::open(&tombstone_log_path, config.durability)?;
+        let tombstone_log =
+            ObjectTombstoneLog::open_for_store(&roots_dir, &packs_dir, &index_dir, config.durability)?;
         let tombstoned_snapshot = tombstone_log.snapshot_map();
 
         let (pack_index, active_state, next_seq, pack_recovery) =
