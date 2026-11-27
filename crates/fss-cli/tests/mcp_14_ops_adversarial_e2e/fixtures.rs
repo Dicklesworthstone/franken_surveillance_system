@@ -66,6 +66,7 @@ impl TempWorkspace {
             PathBuf::from("/tmp").join(format!("fss14-{short}-{}-{seq}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(&base)?;
+        let base = base.canonicalize()?;
         let deploy_root = base.join("dep");
         let v2_root = base.join("v2");
         let vault_dir = base.join("vault");
