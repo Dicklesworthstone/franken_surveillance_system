@@ -310,3 +310,20 @@
     flex-basis: 40%;
   }
 }
+
+/* Phones: Play and the time share the first row and the slider gets the whole second row, so the
+   time never drops under the button on its own and the slider is wide enough to scrub. */
+@media (max-width: 480px) {
+  .controls {
+    gap: 12px 14px;
+  }
+
+  .controls input {
+    order: 1;
+    flex-basis: 100%;
+  }
+
+  .controls output {
+    margin-left: auto;
+  }
+}
