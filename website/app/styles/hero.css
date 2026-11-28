@@ -498,6 +498,11 @@
     clip-path: none;
     white-space: normal;
     grid-column: 1 / -1;
+  }
+  /* The camera row sits below the pause button, so it may run on under it (44 px button + 10 px
+     gap). With reduced motion there is no button, and the same margin would push the row out of
+     the card. */
+  .hero__hud:has(.hero__pause) .hero__seen {
     margin-right: -54px;
   }
   .hero__seen ol {
