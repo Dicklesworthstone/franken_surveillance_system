@@ -35,6 +35,9 @@ pub mod custody_review;
 pub mod diagnostic;
 /// `fss plan` / `commit` / `wait` / `cancel` (AOP-007..010): the canonical effect grammar.
 pub mod effect_cmd;
+/// Universal `fss/1` `AgentRequestEnvelope`/`AgentResponseEnvelope` dispatch with
+/// operation-registry-owned typed payload validation (FSS-242).
+pub mod envelope_dispatch;
 /// `fss plan --close`: the immutable execution episode of a terminal plan (AOP-007 `close`).
 pub mod episode_cmd;
 pub mod error;
@@ -145,6 +148,13 @@ pub use crosswalk::{
 };
 
 pub use diagnostic::{emit_diagnostic, escape_json_str, render_diagnostic};
+pub use envelope_dispatch::{
+    DispatchAuthority, DispatchOutcome, DispatchReceipt, ERR_AGENT_PROTOCOL,
+    ERR_AGENT_TRANSPORT_DIVERGED, ERR_AUTH_DENIED, ERR_BUDGET_EXHAUSTED, ERR_IDEMPOTENCY_CONFLICT,
+    MAX_REQUEST_ENVELOPE_BYTES, MAX_RESPONSE_ENVELOPE_BYTES, RequestEnvelopeSpec,
+    ValidatedResponseMeta, dispatch_envelope_json, dispatch_envelope_json_with_control,
+    validate_response_envelope_against_registry,
+};
 pub use error::{
     CliError, ERR_CLI_DUPLICATE_OPTION, ERR_CLI_INVALID_UNICODE, ERR_CLI_MALFORMED_VALUE,
     ERR_CLI_MISSING_VALUE, ERR_CLI_READ_CANCELLED, ERR_CLI_RUNTIME_FAILURE,

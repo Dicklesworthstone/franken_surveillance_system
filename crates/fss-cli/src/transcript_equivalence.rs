@@ -105,6 +105,8 @@ pub enum SurfaceKind {
     Cli,
     /// Standalone `fss-mcp` stdio JSON-RPC 2.0 server (`tools/call`).
     Mcp,
+    /// Universal `fss/1` `AgentRequestEnvelope`/`AgentResponseEnvelope` dispatch (`FSS-242`).
+    EnvelopeDispatch,
 }
 
 impl SurfaceKind {
@@ -115,6 +117,7 @@ impl SurfaceKind {
             Self::RustApi => "rust_api",
             Self::Cli => "cli",
             Self::Mcp => "mcp",
+            Self::EnvelopeDispatch => "envelope_dispatch",
         }
     }
 }
@@ -300,6 +303,7 @@ impl NormalizationPolicy {
             "handoffRoot",
             "planId",
             "claimId",
+            "findingId",
             "proposalId",
             "feedbackId",
             "episodeId",
@@ -601,6 +605,7 @@ fn mask_instance_hex_ids(input: &str) -> String {
         "handoff:",
         "plan:",
         "claim:",
+        "finding:",
         "feedback:",
         "episode:",
         "proposal:",

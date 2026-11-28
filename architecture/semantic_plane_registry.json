@@ -648,6 +648,7 @@
     "crates/fss-cli/src/custody_review/tests.rs": "support",
     "crates/fss-cli/src/diagnostic.rs": "support",
     "crates/fss-cli/src/effect_cmd.rs": "support",
+    "crates/fss-cli/src/envelope_dispatch.rs": "cognition",
     "crates/fss-cli/src/episode_cmd.rs": "support",
     "crates/fss-cli/src/error.rs": "support",
     "crates/fss-cli/src/event_counterfactual.rs": "cognition",
