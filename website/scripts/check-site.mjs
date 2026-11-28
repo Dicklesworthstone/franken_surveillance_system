@@ -119,8 +119,8 @@ try {
   // Copy rules the owner set: no estate name, no dash punctuation in prose. The estates' working
   // names (Alder House, and Juniper House with its court) also stay out of copy that is not on
   // screen: hidden panels and SVG titles, alt text, labels and titles, the titles and descriptions
-  // link previews read, and each chapter's share page. File paths are not copy and are not
-  // searched.
+  // link previews read, and each chapter's share page. Addresses in metadata and attributes are
+  // not copy and are not searched.
   const text = await page.evaluate(() => document.body.innerText);
   const unseen = await page.evaluate(() => {
     // Text nodes in place: a cloned body would clone the films and start fetching them again.
@@ -129,16 +129,16 @@ try {
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
       if (!node.parentElement?.closest("script, style, noscript")) words.push(node.data);
     }
-    return [
-      ...words,
+    // Metadata and attribute values that are addresses (og:image, og:url) are skipped; page text
+    // never is, even when it starts with a slash.
+    const values = [
       document.title,
       ...[...document.querySelectorAll("meta[name=description], meta[property^='og:'], meta[name^='twitter:']")].map((m) => m.content),
       ...[...document.querySelectorAll("[alt], [aria-label], [title]")].flatMap((e) =>
         ["alt", "aria-label", "title"].map((name) => e.getAttribute(name)),
       ),
-    ]
-      .filter((copy) => copy && !/^(https?:)?\//.test(copy))
-      .join("\n");
+    ].filter((value) => value && !/^(https?:)?\//.test(value));
+    return [...words, ...values].join("\n");
   });
   const shares = [...new Set(await page.locator('a[href^="/chapter/"]').evaluateAll((links) => links.map((a) => a.getAttribute("href"))))];
   assert.ok(shares.length >= 5, `every chapter links its share page (${shares.length} found)`);
@@ -147,7 +147,8 @@ try {
     const response = await page.request.get(absolute(share));
     assert.equal(response.status(), 200, `${share} is served`);
     const html = await response.text();
-    const body = html.match(/<body[^>]*>([\s\S]*)<\/body>/)?.[1] ?? "";
+    const body = html.match(/<body[^>]*>([\s\S]*)<\/body>/)?.[1];
+    assert.ok(body, `${share} has a body to read`);
     shareCopy.push(
       body.replace(/<(script|style)[\s\S]*?<\/\1>/g, " ").replace(/<[^>]+>/g, " "),
       ...[...html.matchAll(/<title>([^<]*)<\/title>|<meta [^>]*content="([^"]*)"/g)]
