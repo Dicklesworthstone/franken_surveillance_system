@@ -554,6 +554,41 @@ pub fn dispatch_compiled_nl_query_with_control(
     let raw_digest = compiled.original_text_digest;
     let tainted = compiled.taint.contains_untrusted_control_text;
 
+    if control.is_cancelled() {
+        let op = compiled
+            .query_plan
+            .as_ref()
+            .map_or(AgentOperation::Query, |p| p.operation());
+        return build_refusal_outcome(
+            authority,
+            RefusalSpec {
+                operation: op,
+                request_id: request_id.to_owned(),
+                session_id: compiled
+                    .query_plan
+                    .as_ref()
+                    .map(|p| p.session_id().as_str().to_owned()),
+                mission_id: compiled
+                    .query_plan
+                    .as_ref()
+                    .map(|p| p.mission_id().as_str().to_owned()),
+                view: compiled.output_view,
+                error_id: ERR_CLI_READ_CANCELLED,
+                outcome: ResponseOutcome::Cancelled,
+                completeness: Completeness::Partial,
+                recovery_class: "operator_action_required",
+                safe_retry: ResponseSafeRetry::No,
+                resnapshot_required: false,
+                detail: "Request owner cancelled natural-language query dispatch before admission."
+                    .to_owned(),
+                remediation: "Start a fresh request with an active request owner.".to_owned(),
+                request_payload_schema: op.request_payload_schema().to_owned(),
+                request_digest: raw_digest,
+                tainted,
+            },
+        );
+    }
+
     if compiled.disposition != CompilationDisposition::Selected {
         let (error_id, recovery_class, safe_retry, detail) = match compiled.disposition {
             CompilationDisposition::ClarificationRequired => (
@@ -661,8 +696,12 @@ pub fn dispatch_compiled_nl_query_with_control(
         );
     };
 
-    // Defense in depth: compiled NL queries NEVER execute effectful operations.
-    if selected.operation.effectful() || selected.effectful_intent_downgraded {
+    // Defense in depth: compiled NL queries NEVER execute effectful operations or carry effect authority.
+    if selected.operation.effectful()
+        || selected.effectful_intent_downgraded
+        || compiled.grants_effect_authority()
+        || compiled.receipt.grants_effect_authority
+    {
         return build_refusal_outcome(
             authority,
             RefusalSpec {
@@ -707,18 +746,40 @@ pub fn dispatch_compiled_nl_query_with_control(
         AgentOperation::Query => {
             let target = selected.query_target.as_deref().unwrap_or("events");
             let mut fields = vec![("target", string(target))];
-            if target == "cameras"
-                && let Some(cam) = selected.target_ids.first()
-            {
-                fields.push(("camera_id", string(cam)));
-            } else if target == "events"
-                && let Some(tid) = selected.target_ids.first()
-            {
-                if tid.starts_with("zone:") {
-                    fields.push(("zone", string(tid)));
-                } else if tid.starts_with("sensor:") {
-                    fields.push(("sensor", string(tid)));
+            match target {
+                "cameras" => {
+                    if let Some(cam) = selected
+                        .target_ids
+                        .iter()
+                        .find(|t| t.starts_with("sensor:"))
+                        .or_else(|| selected.target_ids.first())
+                    {
+                        fields.push(("camera_id", string(cam)));
+                    }
                 }
+                "events" => {
+                    if let Some(zone) = selected.target_ids.iter().find(|t| t.starts_with("zone:"))
+                    {
+                        fields.push(("zone", string(zone)));
+                    }
+                    if let Some(ev) = selected
+                        .target_ids
+                        .iter()
+                        .find(|t| t.starts_with("event:") || t.starts_with("evt:"))
+                    {
+                        fields.push(("event_id", string(ev)));
+                    }
+                }
+                "footage" | "holds" | "privacy-masks" => {
+                    if let Some(sensor) = selected
+                        .target_ids
+                        .iter()
+                        .find(|t| t.starts_with("sensor:"))
+                    {
+                        fields.push(("sensor", string(sensor)));
+                    }
+                }
+                _ => {}
             }
             object(&fields)
         }
@@ -727,6 +788,11 @@ pub fn dispatch_compiled_nl_query_with_control(
             let mut fields = vec![("question", string(q))];
             if let Some(ev) = selected.target_ids.first() {
                 fields.push(("event_id", string(ev)));
+            }
+            match selected.output_view {
+                AgentView::Forensic => fields.push(("view", string("forensic"))),
+                AgentView::DecisionDiff => fields.push(("view", string("decision_diff"))),
+                _ => {}
             }
             object(&fields)
         }
@@ -773,6 +839,15 @@ pub fn dispatch_compiled_nl_query_with_control(
     );
     spec.contract_basis = compiled.effective_basis.clone();
     spec.view = selected.output_view;
+    if let Some(ref plan) = compiled.query_plan {
+        let anchor = plan.basis_anchor();
+        spec.input_anchor = Some(anchor.clone());
+        spec.requested_privacy_projection.policy_generation_id =
+            format!("privacy-epoch:{}", anchor.privacy_epoch);
+        if plan.budget() != BudgetVector::ZERO {
+            spec.budget = plan.budget();
+        }
+    }
     spec.target_uris = compiled
         .resolved_uris
         .iter()
