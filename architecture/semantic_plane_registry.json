@@ -3328,6 +3328,11 @@
       "file": "crates/fss-reference/src/nl_query_compiler.rs",
       "plane": "cognition",
       "description": "Deterministic staged natural-language to AgentQueryPlan compilation receipt (DOC-033 / INV-088); taint-preserving cognition only, never grants effect authority."
+    },
+    "FabricQuiescenceReceipt": {
+      "file": "crates/fss-runtime/src/semantic_subject.rs",
+      "plane": "authority",
+      "description": "Canonical semantic subject fabric quiescence proof and plane-separated drain receipt (DOC-050 / IMP-AS-SUBJECT-001 / INT-AS-001); binds explicit AuthorityCx, RegionTree, LeaseRegistry fencing, and bounded queues."
     }
   }
 }

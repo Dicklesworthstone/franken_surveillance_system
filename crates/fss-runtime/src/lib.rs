@@ -46,4 +46,6 @@ pub mod lease;
 #[cfg(any(feature = "lab-oracle", test))]
 pub mod lab;
 pub mod obligation;
+/// Typed semantic subject fabric with separate packet, authority, and reasoning service classes (`DOC-050`).
+pub mod semantic_subject;
 pub mod tcp_ingress;
