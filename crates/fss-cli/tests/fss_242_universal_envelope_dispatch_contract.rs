@@ -56,7 +56,7 @@ use fss_cli::envelope_dispatch::{
 };
 use fss_cli::error::{ERR_CLI_READ_CANCELLED, ExitIdentity};
 use fss_cli::escape_json_str;
-use fss_cli::query_cmd::ops_targets::{CAP_AGENT_QUERY, CAP_OBSERVE_STATUS};
+use fss_cli::query_cmd::ops_targets::{CAP_AGENT_QUERY, CAP_OBSERVE_STATUS, CAP_RETENTION_PREPARE};
 use fss_cli::request_control::RequestControl;
 use fss_cli::transcript_equivalence::{
     NormalizationPolicy, SemanticProjection, StepEquivalenceRow, SurfaceKind, TokenNormalizer,
@@ -85,7 +85,7 @@ const PROTOCOL_VERSION: &str = "2025-06-18";
 const SITE_ID: &str = "site:fss242-dispatch";
 const PRINCIPAL: &str = "principal:fss242-owner";
 const MIRROR_HOMOGRAPHY: &str = "-1,0,96,0,1,0,0,0,1";
-const OPS_READ_CAPS: &[&str] = &[CAP_AGENT_QUERY, CAP_OBSERVE_STATUS];
+const OPS_READ_CAPS: &[&str] = &[CAP_AGENT_QUERY, CAP_OBSERVE_STATUS, CAP_RETENTION_PREPARE];
 
 const CANARY_RTSP: &[u8] = b"CANARY-FSS242-RTSP-SECRET-AABBCCDDEEFF0011-NO-LEAK";
 const CANARY_HMAC: &[u8] = b"CANARY-FSS242-HMAC-SECRET-9988776655443322-NO-LEAK";
@@ -689,7 +689,7 @@ fn fss_242_read_only_four_surface_exact_equivalence() -> TestResult {
                       cli_argv: &[OsString],
                       mcp_tool: &str,
                       payload_json: &str|
-     -> TestResult {
+     -> TestResult<Option<String>> {
         let req_id = format!("req:ro:{seq:03}");
         seq += 1;
         let (p_env, _, _) = execute_envelope_step(
@@ -702,6 +702,7 @@ fn fss_242_read_only_four_surface_exact_equivalence() -> TestResult {
             &policy,
             &tokens,
         )?;
+        let env_outcome = p_env.outcome.clone();
         let (p_api, _) = execute_rust_api_argv(cli_argv, &policy, &tokens)?;
         let (p_cli, _, _) = execute_cli_argv(cli_argv, &policy, &tokens)?;
         let (p_mcp, _, _) = mcp.call_tool(mcp_tool, payload_json, &policy, &tokens)?;
@@ -714,7 +715,8 @@ fn fss_242_read_only_four_surface_exact_equivalence() -> TestResult {
             p_api,
             p_cli,
             p_mcp,
-        )
+        )?;
+        Ok(env_outcome)
     };
 
     // AOP-014 doctor
@@ -789,17 +791,25 @@ fn fss_242_read_only_four_surface_exact_equivalence() -> TestResult {
             CAP_AGENT_QUERY,
             "--capability",
             CAP_OBSERVE_STATUS,
+            "--capability",
+            CAP_RETENTION_PREPARE,
         ];
         let tgt_flag = format!("--target={target}");
         argv.push(&tgt_flag);
         argv.extend(extra_cli);
-        run_ro(
+        let outcome = run_ro(
             &format!("query {target}"),
             AgentOperation::Query,
             &os_args(&argv),
             "query",
             payload,
         )?;
+        // Prove authorized operational reads actually succeed (not merely identical refusals).
+        assert_eq!(
+            outcome.as_deref(),
+            Some("ok"),
+            "authorized query --target={target} must return outcome=ok across all 4 surfaces"
+        );
     }
 
     // AOP-011 explain (why, why_not, forensic)
@@ -2213,6 +2223,65 @@ fn fss_242_adversarial_basis_anchor_authority_taint_budget_cancel_and_canary_sca
     assert_eq!(text(&parsed_budget, &["errorId"])?, ERR_BUDGET_EXHAUSTED);
     outputs.push(out.response_json);
 
+    // 6b. expectedDecisionFingerprint match vs drift on live read-only orient + pre-mutation guard
+    let orient_ok = dispatch_envelope_json(
+        &auth,
+        &RequestEnvelopeSpec::for_operation(
+            AgentOperation::SessionOrient,
+            "req:adv:fp-probe",
+            principal.clone(),
+            r#"{"view":"pulse"}"#,
+        )
+        .to_json(),
+    );
+    assert_eq!(orient_ok.receipt.outcome, "ok");
+    let orient_parsed = parse_mcp_reply(&orient_ok.response_json)?;
+    let live_fp = ContentDigest::parse(text(&orient_parsed, &["decisionFingerprint"])?)?;
+    let mut fp_match = RequestEnvelopeSpec::for_operation(
+        AgentOperation::SessionOrient,
+        "req:adv:fp-match",
+        principal.clone(),
+        r#"{"view":"pulse"}"#,
+    );
+    fp_match.expected_decision_fingerprint = Some(live_fp);
+    let out_fp_match = dispatch_envelope_json(&auth, &fp_match.to_json());
+    assert_eq!(out_fp_match.receipt.outcome, "ok");
+    outputs.push(out_fp_match.response_json);
+
+    let mut fp_stale = fp_match;
+    fp_stale.request_id = "req:adv:fp-stale".to_owned();
+    fp_stale.expected_decision_fingerprint = Some(ContentDigest::sha256(b"drifted-decision-fp"));
+    let out_fp_stale = dispatch_envelope_json(&auth, &fp_stale.to_json());
+    assert_eq!(out_fp_stale.exit_identity, ExitIdentity::AGENT_REFUSED);
+    assert_eq!(
+        out_fp_stale.receipt.error_id.as_deref(),
+        Some(ERR_AGENT_SESSION_STALE)
+    );
+    outputs.push(out_fp_stale.response_json);
+
+    // 6c. query --target=holds without CAP-RETENTION-PREPARE fails closed with ERR-CAPABILITY-DENIED-001
+    let no_ret_auth = DispatchAuthority::with_capabilities(
+        dep.clone(),
+        principal.clone(),
+        BTreeSet::from([CAP_AGENT_QUERY.to_owned(), CAP_OBSERVE_STATUS.to_owned()]),
+    );
+    let holds_denied = dispatch_envelope_json(
+        &no_ret_auth,
+        &RequestEnvelopeSpec::for_operation(
+            AgentOperation::Query,
+            "req:adv:holds-noret",
+            principal.clone(),
+            r#"{"target":"holds"}"#,
+        )
+        .to_json(),
+    );
+    assert_eq!(holds_denied.exit_identity, ExitIdentity::AGENT_REFUSED);
+    assert_eq!(
+        holds_denied.receipt.error_id.as_deref(),
+        Some("ERR-CAPABILITY-DENIED-001")
+    );
+    outputs.push(holds_denied.response_json);
+
     // 6. Cooperative cancellation drain
     let cancelled = || true;
     let cancel_out = dispatch_envelope_json_with_control(
@@ -2260,8 +2329,9 @@ fn fss_242_planted_response_drift_and_four_surface_divergence_detected() -> Test
     let d = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
 
     // Planted V2 payload schema under reference V1 basis fails closed; allowed under probe_contract_basis.
+    let boundary = r#"{"completed":[],"notStarted":[],"possiblyOccurred":[],"preservedTruth":[],"invalidated":[]}"#;
     let v2_resp = format!(
-        r#"{{"schema":"fss.agent_response_envelope.v1","contractBasis":{{}},"operationId":"AOP-006","principalId":"{PRINCIPAL}","outcome":"ok","errorId":null,"payloadSchema":"fss.agent_cognitive_envelope.v2","payloadDigest":"{d}","decisionFingerprint":"{d}"}}"#
+        r#"{{"schema":"fss.agent_response_envelope.v1","contractBasis":{{}},"operationId":"AOP-006","principalId":"{PRINCIPAL}","effectiveViewId":"AVIEW-004","epistemicState":"known","completeness":"complete","recoveryClass":"safe_read_retry","safeRetry":"yes_same_request","resnapshotRequired":false,"executionBoundary":{boundary},"outcome":"ok","errorId":null,"payloadSchema":"fss.agent_cognitive_envelope.v2","payloadDigest":"{d}","decisionFingerprint":"{d}"}}"#
     );
     assert!(
         validate_response_envelope_against_registry(

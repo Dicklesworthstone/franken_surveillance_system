@@ -35,6 +35,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
+use std::fs;
 use std::path::PathBuf;
 
 use fss_core::contract_basis::{
@@ -54,6 +55,10 @@ use fss_core::{
 use fss_reference::agent_orient::{OrientLimits, read_deployment};
 use fss_reference::agent_session::checkpoint::journal::coordination::investigations::InvestigationChange;
 use fss_reference::agent_session::checkpoint::journal::coordination::investigations::evolution::InvestigationCitation;
+use fss_reference::agent_session::checkpoint::journal::{
+    DurableSessionLimits, inspect_session_bytes,
+};
+use fss_reference::agent_session::work_claims::WorkClaimLimits;
 use fss_reference::alert_reconcile::MAX_RECONCILE_STATEMENT_BYTES;
 use fss_reference::deployment_session::claims::{
     ClaimAction, ClaimChange, ClaimRecovery, ClaimRequest, ClaimWork, DEFAULT_LEASE_MS,
@@ -67,6 +72,7 @@ use fss_reference::deployment_session::findings::{
 use fss_reference::deployment_session::investigation::CaseAction;
 use fss_reference::deployment_session::{
     MAX_MISSION_BYTES, MAX_NOTE_BYTES, MAX_OBJECTIVE_BYTES, MAX_SESSION_TOKEN_BUDGET,
+    SESSION_JOURNAL_FILE, SESSIONS_RELPATH,
 };
 
 use crate::agent_json::{self, array, object, optional_string, string, strings};
@@ -91,7 +97,7 @@ use crate::query_cmd::ops_targets::graph::{
 use crate::query_cmd::ops_targets::holds_masks::{
     HOLDS_PAYLOAD_SCHEMA, HoldsQueryRequest, PRIVACY_MASKS_PAYLOAD_SCHEMA, PrivacyMasksQueryRequest,
 };
-use crate::query_cmd::ops_targets::{CAP_AGENT_QUERY, CAP_OBSERVE_STATUS};
+use crate::query_cmd::ops_targets::{CAP_AGENT_QUERY, CAP_OBSERVE_STATUS, CAP_RETENTION_PREPARE};
 use crate::redact::sanitize_and_truncate;
 use crate::request_control::RequestControl;
 use crate::token::ArgToken;
@@ -158,7 +164,8 @@ pub struct DispatchAuthority {
 
 impl DispatchAuthority {
     /// Constructs a launcher authority carrying all 14 registered `AOP-001`..`AOP-014`
-    /// capabilities plus read-only operational observation (`CAP-OBSERVE-STATUS-001`).
+    /// capabilities plus read-only operational observation (`CAP-OBSERVE-STATUS-001`,
+    /// `CAP-RETENTION-PREPARE-001`).
     #[must_use]
     pub fn owner_standard(root: PathBuf, principal: PrincipalId) -> Self {
         let mut granted_capabilities = BTreeSet::new();
@@ -169,6 +176,7 @@ impl DispatchAuthority {
         }
         granted_capabilities.insert(CAP_AGENT_QUERY.to_owned());
         granted_capabilities.insert(CAP_OBSERVE_STATUS.to_owned());
+        granted_capabilities.insert(CAP_RETENTION_PREPARE.to_owned());
         Self {
             root,
             principal,
@@ -503,6 +511,8 @@ struct ValidatedRequest {
     session_id: Option<SessionId>,
     mission_id: Option<MissionId>,
     input_anchor: Option<LedgerAnchor>,
+    expected_workspace_revision: Option<u64>,
+    expected_decision_fingerprint: Option<ContentDigest>,
     view: AgentView,
     payload_schema: String,
     payload_obj: BTreeMap<String, Value>,
@@ -683,6 +693,12 @@ pub fn dispatch_envelope_json_with_control(
         }
     }
 
+    // Enforce expectedWorkspaceRevision and pre-mutation expectedDecisionFingerprint preconditions
+    // BEFORE executing any command so stale callers never mutate deployment/session state.
+    if let Err(refusal) = verify_workspace_and_decision_preconditions(authority, &validated) {
+        return build_refusal_outcome(authority, *refusal);
+    }
+
     let command = match compile_operation_payload(authority, &validated) {
         Ok(cmd) => cmd,
         Err(refusal) => return build_refusal_outcome(authority, *refusal),
@@ -761,6 +777,39 @@ pub fn dispatch_envelope_json_with_control(
         expected_ops_schema,
     ) {
         Ok(meta) => {
+            // For read-only operations carrying expectedDecisionFingerprint, fail closed with
+            // ERR-AGENT-SESSION-STALE-001 when the live decision fingerprint drifted.
+            if let Some(expected_fp) = validated.expected_decision_fingerprint
+                && is_readonly_operation(validated.operation)
+                && meta.decision_fingerprint != Some(expected_fp)
+            {
+                return build_refusal_outcome(
+                    authority,
+                    RefusalSpec {
+                        operation: validated.operation,
+                        request_id: validated.request_id,
+                        session_id: validated.session_id.as_ref().map(|s| s.as_str().to_owned()),
+                        mission_id: validated.mission_id.as_ref().map(|m| m.as_str().to_owned()),
+                        view: validated.view,
+                        error_id: ERR_AGENT_SESSION_STALE,
+                        outcome: ResponseOutcome::Refused,
+                        completeness: Completeness::Stale,
+                        recovery_class: "rebase_required",
+                        safe_retry: ResponseSafeRetry::YesAfterRefresh,
+                        resnapshot_required: true,
+                        detail: format!(
+                            "Observed decisionFingerprint ({}) drifted from expectedDecisionFingerprint ({}).",
+                            meta.decision_fingerprint
+                                .map_or_else(|| "none".to_owned(), |d| d.to_text()),
+                            expected_fp.to_text()
+                        ),
+                        remediation: "Re-orient on the current deployment head and rebuild the request against the fresh decisionFingerprint.".to_owned(),
+                        request_payload_schema: validated.payload_schema,
+                        request_digest: validated.request_digest,
+                        tainted: validated.taint.contains_untrusted_control_text,
+                    },
+                );
+            }
             let response_digest = ContentDigest::sha256(raw_response.as_bytes());
             let receipt = build_dispatch_receipt(
                 validated.operation.id(),
@@ -808,6 +857,141 @@ pub fn dispatch_envelope_json_with_control(
     }
 }
 
+const fn is_readonly_operation(op: AgentOperation) -> bool {
+    matches!(
+        op,
+        AgentOperation::SessionOrient
+            | AgentOperation::SessionFollow
+            | AgentOperation::Query
+            | AgentOperation::Wait
+            | AgentOperation::Explain
+            | AgentOperation::Doctor
+    )
+}
+
+fn verify_workspace_and_decision_preconditions(
+    authority: &DispatchAuthority,
+    validated: &ValidatedRequest,
+) -> Result<(), Box<RefusalSpec>> {
+    let need_rev = validated.expected_workspace_revision.is_some();
+    let need_pre_fp = validated.expected_decision_fingerprint.is_some()
+        && !is_readonly_operation(validated.operation);
+    if !need_rev && !need_pre_fp {
+        return Ok(());
+    }
+
+    let stale_err = |detail: String| {
+        Box::new(RefusalSpec {
+            operation: validated.operation,
+            request_id: validated.request_id.clone(),
+            session_id: validated.session_id.as_ref().map(|s| s.as_str().to_owned()),
+            mission_id: validated.mission_id.as_ref().map(|m| m.as_str().to_owned()),
+            view: validated.view,
+            error_id: ERR_AGENT_SESSION_STALE,
+            outcome: ResponseOutcome::Refused,
+            completeness: Completeness::Stale,
+            recovery_class: "rebase_required",
+            safe_retry: ResponseSafeRetry::YesAfterRefresh,
+            resnapshot_required: true,
+            detail: sanitize_and_truncate(&detail, 320),
+            remediation: "Re-orient on the current session workspace and rebuild the request against the fresh workspaceRevision and decisionFingerprint.".to_owned(),
+            request_payload_schema: validated.payload_schema.clone(),
+            request_digest: validated.request_digest,
+            tainted: validated.taint.contains_untrusted_control_text,
+        })
+    };
+
+    // Resolve effective session ID (rejecting conflicts between envelope.sessionId and payload.session).
+    let payload_sess = match validated.payload_obj.get("session") {
+        None => None,
+        Some(v) => Some(
+            bounded_text(Some(v), 128)
+                .ok()
+                .and_then(|s| SessionId::parse(s).ok())
+                .ok_or_else(|| {
+                    stale_err(
+                        "Invalid session identifier while verifying workspace precondition."
+                            .to_owned(),
+                    )
+                })?,
+        ),
+    };
+    let effective_session = match (validated.session_id.as_ref(), payload_sess.as_ref()) {
+        (Some(a), Some(b)) if a != b => {
+            return Err(stale_err(
+                "payload.session conflicts with envelope.sessionId during precondition check."
+                    .to_owned(),
+            ));
+        }
+        (Some(a), _) => a,
+        (None, Some(b)) => b,
+        (None, None) => {
+            return Err(stale_err(
+                "expectedWorkspaceRevision / pre-mutation expectedDecisionFingerprint requires an existing session-bound workspace.".to_owned(),
+            ));
+        }
+    };
+
+    let journal_path = authority
+        .root
+        .join(SESSIONS_RELPATH)
+        .join(SESSION_JOURNAL_FILE);
+    let bytes = fs::read(&journal_path).map_err(|_| {
+        stale_err(
+            "Session journal is absent or unreadable; workspace precondition cannot be verified."
+                .to_owned(),
+        )
+    })?;
+    let state = inspect_session_bytes(
+        &bytes,
+        DurableSessionLimits::default(),
+        WorkClaimLimits::default(),
+    )
+    .map_err(|_| {
+        stale_err(
+            "Session journal failed integrity check; workspace precondition refused.".to_owned(),
+        )
+    })?;
+    let owned = state.sessions.iter().any(|entry| {
+        entry.session.session_id == *effective_session
+            && entry.session.principal_id == authority.principal
+            && !entry.closed
+    });
+    if !owned {
+        return Err(stale_err(
+            "Target session is absent, closed, or not owned by the authenticated principal."
+                .to_owned(),
+        ));
+    }
+
+    let latest_ws = state
+        .workspace_revisions
+        .iter()
+        .filter(|rev| rev.capsule().session_id == *effective_session)
+        .max_by_key(|rev| rev.capsule().revision);
+
+    if let Some(expected_rev) = validated.expected_workspace_revision {
+        let observed_rev = latest_ws.map(|rev| rev.capsule().revision);
+        if observed_rev != Some(expected_rev) {
+            return Err(stale_err(format!(
+                "Workspace revision mismatch: expected {expected_rev}, observed {}.",
+                observed_rev.map_or_else(|| "none".to_owned(), |r| r.to_string())
+            )));
+        }
+    }
+    if need_pre_fp && let Some(expected_fp) = validated.expected_decision_fingerprint {
+        let observed_fp = latest_ws.map(|rev| rev.capsule().decision_digest.as_str());
+        if observed_fp != Some(expected_fp.to_text().as_str()) {
+            return Err(stale_err(format!(
+                "Pre-mutation decisionFingerprint mismatch: expected {}, observed {}.",
+                expected_fp.to_text(),
+                observed_fp.unwrap_or("none")
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Verified metadata extracted from a live response envelope.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedResponseMeta {
@@ -819,6 +1003,8 @@ pub struct ValidatedResponseMeta {
     pub outcome: String,
     /// Envelope `errorId` when present.
     pub error_id: Option<String>,
+    /// Envelope `decisionFingerprint` when present (`fss.agent_response_envelope.v1`).
+    pub decision_fingerprint: Option<ContentDigest>,
 }
 
 fn ops_subtarget_response_schema(
@@ -892,6 +1078,7 @@ fn validate_response_envelope_for_target(
             payload_schema: None,
             outcome: verdict.to_owned(),
             error_id: None,
+            decision_fingerprint: None,
         });
     }
 
@@ -928,6 +1115,115 @@ fn validate_response_envelope_for_target(
         return Err("response envelope missing `contractBasis` object".to_owned());
     }
 
+    let effective_view = root
+        .get("effectiveViewId")
+        .and_then(Value::text)
+        .ok_or_else(|| "response envelope missing `effectiveViewId`".to_owned())?;
+    if AgentView::from_id(effective_view).is_err() {
+        return Err(format!(
+            "response envelope has unregistered `effectiveViewId` `{effective_view}`"
+        ));
+    }
+
+    let epistemic_state = root
+        .get("epistemicState")
+        .and_then(Value::text)
+        .ok_or_else(|| "response envelope missing `epistemicState`".to_owned())?;
+    if !matches!(
+        epistemic_state,
+        "known"
+            | "estimated"
+            | "unknown"
+            | "conflicted"
+            | "stale"
+            | "not_observable"
+            | "redacted"
+            | "indeterminate"
+            | "not_applicable"
+    ) {
+        return Err(format!(
+            "response envelope has invalid `epistemicState` `{epistemic_state}`"
+        ));
+    }
+
+    let completeness = root
+        .get("completeness")
+        .and_then(Value::text)
+        .ok_or_else(|| "response envelope missing `completeness`".to_owned())?;
+    if !matches!(
+        completeness,
+        "complete"
+            | "bounded"
+            | "partial"
+            | "unknown"
+            | "not_observable"
+            | "unauthorized"
+            | "stale"
+    ) {
+        return Err(format!(
+            "response envelope has invalid `completeness` `{completeness}`"
+        ));
+    }
+
+    let recovery_class = root
+        .get("recoveryClass")
+        .and_then(Value::text)
+        .ok_or_else(|| "response envelope missing `recoveryClass`".to_owned())?;
+    if !matches!(
+        recovery_class,
+        "never_unchanged"
+            | "safe_read_retry"
+            | "refresh_and_retry"
+            | "rebase_required"
+            | "backoff"
+            | "reconciliation_required"
+            | "operator_action_required"
+            | "resume_from_continuation"
+    ) {
+        return Err(format!(
+            "response envelope has invalid `recoveryClass` `{recovery_class}`"
+        ));
+    }
+
+    let safe_retry = root
+        .get("safeRetry")
+        .and_then(Value::text)
+        .ok_or_else(|| "response envelope missing `safeRetry`".to_owned())?;
+    if !matches!(
+        safe_retry,
+        "yes_same_request" | "yes_after_refresh" | "yes_after_reconcile" | "no" | "not_applicable"
+    ) {
+        return Err(format!(
+            "response envelope has invalid `safeRetry` `{safe_retry}`"
+        ));
+    }
+
+    if root
+        .get("resnapshotRequired")
+        .and_then(Value::boolean)
+        .is_none()
+    {
+        return Err("response envelope missing boolean `resnapshotRequired`".to_owned());
+    }
+
+    let boundary = root
+        .get("executionBoundary")
+        .and_then(Value::object)
+        .ok_or_else(|| "response envelope missing `executionBoundary` object".to_owned())?;
+    for bkey in [
+        "completed",
+        "notStarted",
+        "possiblyOccurred",
+        "preservedTruth",
+        "invalidated",
+    ] {
+        if boundary.get(bkey).and_then(Value::array).is_none() {
+            return Err(format!(
+                "response envelope `executionBoundary.{bkey}` must be an array"
+            ));
+        }
+    }
+
     let payload_digest = root
         .get("payloadDigest")
         .and_then(Value::text)
@@ -935,11 +1231,11 @@ fn validate_response_envelope_for_target(
     ContentDigest::parse(payload_digest)
         .map_err(|_| "response envelope `payloadDigest` is not a valid digest".to_owned())?;
 
-    let decision_fp = root
+    let decision_fp_raw = root
         .get("decisionFingerprint")
         .and_then(Value::text)
         .ok_or_else(|| "response envelope missing `decisionFingerprint`".to_owned())?;
-    ContentDigest::parse(decision_fp)
+    let decision_fp = ContentDigest::parse(decision_fp_raw)
         .map_err(|_| "response envelope `decisionFingerprint` is not a valid digest".to_owned())?;
 
     let payload_schema = root
@@ -968,17 +1264,38 @@ fn validate_response_envelope_for_target(
         .get("outcome")
         .and_then(Value::text)
         .ok_or_else(|| "response envelope missing `outcome`".to_owned())?;
+    if !matches!(
+        outcome,
+        "ok" | "error" | "cancelled" | "panicked" | "partial" | "indeterminate" | "refused"
+    ) {
+        return Err(format!(
+            "response envelope has invalid `outcome` `{outcome}`"
+        ));
+    }
     let error_id = match root.get("errorId") {
         None | Some(Value::Null) => None,
-        Some(Value::Text(s)) => Some(s.clone()),
+        Some(Value::Text(s)) => {
+            if !is_valid_error_id(s) {
+                return Err(format!(
+                    "response envelope `errorId` `{s}` does not match ^ERR-[A-Z0-9-]+-[0-9]{{3}}$"
+                ));
+            }
+            Some(s.clone())
+        }
         Some(_) => return Err("response envelope `errorId` must be string or null".to_owned()),
     };
+    if matches!(outcome, "refused" | "error" | "cancelled" | "panicked") && error_id.is_none() {
+        return Err(format!(
+            "response envelope outcome `{outcome}` requires a registered non-null `errorId`"
+        ));
+    }
 
     Ok(ValidatedResponseMeta {
         schema: schema.to_owned(),
         payload_schema: Some(payload_schema.to_owned()),
         outcome: outcome.to_owned(),
         error_id,
+        decision_fingerprint: Some(decision_fp),
     })
 }
 
@@ -1375,23 +1692,24 @@ fn parse_and_validate_request(
                 "Supply a valid requestedPrivacyProjection object.",
             )
         })?;
-    let privacy_epoch = privacy
+    let explicit_privacy_epoch = privacy
         .policy_generation_id
         .strip_prefix("privacy-epoch:")
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(0);
+        .and_then(|s| s.parse::<u64>().ok());
 
     let input_anchor = match root.get("inputAnchor") {
         Some(Value::Null) => None,
-        Some(v) => Some(parse_evidence_anchor_json(v, privacy_epoch).map_err(|d| {
-            proto_err(
-                operation,
-                request_id.clone(),
-                payload_schema.clone(),
-                d,
-                "Supply a valid fss.evidence_anchor.v1 object or null.",
-            )
-        })?),
+        Some(v) => Some(
+            parse_evidence_anchor_json(v, explicit_privacy_epoch).map_err(|d| {
+                proto_err(
+                    operation,
+                    request_id.clone(),
+                    payload_schema.clone(),
+                    d,
+                    "Supply a valid fss.evidence_anchor.v1 object or null.",
+                )
+            })?,
+        ),
         None => None,
     };
 
@@ -1776,7 +2094,7 @@ fn parse_and_validate_request(
     );
 
     // Construct the canonical `fss_core::AgentRequestEnvelope` when session & mission are bound,
-    // or compute the equivalent domain-separated canonical digest for stateless reads.
+    // or compute an unambiguous 24-field domain-separated canonical digest for stateless reads.
     let request_digest = if let (Some(sess), Some(miss)) = (session_id.clone(), mission_id.clone())
     {
         let core_envelope = AgentRequestEnvelope::new(AgentRequestEnvelopeParams {
@@ -1820,11 +2138,91 @@ fn parse_and_validate_request(
         enc.text(operation.id());
         enc.text(&request_id);
         principal_id.encode_canonical(&mut enc);
+        match &session_id {
+            Some(s) => {
+                enc.bool(true);
+                s.encode_canonical(&mut enc);
+            }
+            None => enc.bool(false),
+        }
+        match &mission_id {
+            Some(m) => {
+                enc.bool(true);
+                m.encode_canonical(&mut enc);
+            }
+            None => enc.bool(false),
+        }
+        match &input_anchor {
+            Some(a) => {
+                enc.bool(true);
+                a.encode_canonical(&mut enc);
+            }
+            None => enc.bool(false),
+        }
+        match expected_workspace_revision {
+            Some(rev) => {
+                enc.bool(true);
+                enc.u64(rev);
+            }
+            None => enc.bool(false),
+        }
         enc.text(view.id());
+        enc.u32(target_uris.len() as u32);
+        for uri in &target_uris {
+            enc.text(uri);
+        }
         enc.text(&payload_schema);
         enc.text(&payload_canonical);
         budget.encode_canonical(&mut enc);
+        match deadline_ns {
+            Some(dl) => {
+                enc.bool(true);
+                enc.i128(dl);
+            }
+            None => enc.bool(false),
+        }
+        enc.u32(requested_capabilities.len() as u32);
+        for cap in &requested_capabilities {
+            enc.text(cap);
+        }
+        enc.text(&privacy.purpose);
+        enc.text(&privacy.policy_generation_id);
+        enc.u32(privacy.allowed_domains.len() as u32);
+        for d in &privacy.allowed_domains {
+            enc.text(d);
+        }
+        enc.u32(privacy.redacted_domains.len() as u32);
+        for d in &privacy.redacted_domains {
+            enc.text(d);
+        }
+        match &idempotency_key {
+            Some(key) => {
+                enc.bool(true);
+                enc.text(key);
+            }
+            None => enc.bool(false),
+        }
+        match &continuation {
+            Some(cont) => {
+                enc.bool(true);
+                enc.text(cont);
+            }
+            None => enc.bool(false),
+        }
+        match expected_decision_fingerprint {
+            Some(fp) => {
+                enc.bool(true);
+                enc.digest(fp);
+            }
+            None => enc.bool(false),
+        }
+        enc.text(max_hydration_level.as_str());
+        enc.bool(accept_compression);
         enc.bool(taint.contains_untrusted_control_text);
+        enc.u32(taint.sources.len() as u32);
+        for src in &taint.sources {
+            enc.text(src);
+        }
         enc.i128(created_at_ns);
         ContentDigest::sha256(&enc.finish())
     };
@@ -1836,6 +2234,8 @@ fn parse_and_validate_request(
         session_id,
         mission_id,
         input_anchor,
+        expected_workspace_revision,
+        expected_decision_fingerprint,
         view,
         payload_schema,
         payload_obj,
@@ -1958,6 +2358,32 @@ fn compile_operation_payload(
         }
     };
 
+    let budget_exceeded = |requested_tokens: u64| {
+        Box::new(RefusalSpec {
+            operation: req.operation,
+            request_id: req.request_id.clone(),
+            session_id: req.session_id.as_ref().map(|s| s.as_str().to_owned()),
+            mission_id: req.mission_id.as_ref().map(|m| m.as_str().to_owned()),
+            view: req.view,
+            error_id: ERR_BUDGET_EXHAUSTED,
+            outcome: ResponseOutcome::Refused,
+            completeness: Completeness::Partial,
+            recovery_class: "refresh_and_retry",
+            safe_retry: ResponseSafeRetry::YesAfterRefresh,
+            resnapshot_required: false,
+            detail: format!(
+                "Payload budget_tokens ({requested_tokens}) exceeds envelope budget.tokens ({}).",
+                req.budget.tokens
+            ),
+            remediation:
+                "Lower payload.budget_tokens to <= envelope.budget.tokens or raise envelope.budget.tokens."
+                    .to_owned(),
+            request_payload_schema: req.payload_schema.clone(),
+            request_digest: req.request_digest,
+            tainted: req.taint.contains_untrusted_control_text,
+        })
+    };
+
     match req.operation {
         AgentOperation::SessionOpen => {
             allow_only(args, &["mission", "objective", "view", "budget_tokens"])
@@ -1980,6 +2406,9 @@ fn compile_operation_payload(
             }
             if let Some(v) = args.get("budget_tokens") {
                 let n = positive_u64(v, MAX_SESSION_TOKEN_BUDGET).map_err(bad_payload)?;
+                if req.budget.tokens > 0 && n > req.budget.tokens {
+                    return Err(budget_exceeded(n));
+                }
                 argv.push(format!("--budget-tokens={n}").into());
             }
             argv.push(principal_flag());
@@ -2009,6 +2438,9 @@ fn compile_operation_payload(
             }
             if let Some(v) = args.get("budget_tokens") {
                 let n = positive_u64(v, MAX_ORIENT_BUDGET_TOKENS).map_err(bad_payload)?;
+                if req.budget.tokens > 0 && n > req.budget.tokens {
+                    return Err(budget_exceeded(n));
+                }
                 argv.push(format!("--budget-tokens={n}").into());
             }
             argv.push(principal_flag());
@@ -2067,8 +2499,17 @@ fn compile_operation_payload(
                     .map_err(bad_payload)?;
                 argv.push(format!("--wait-ms={n}").into());
             }
+            // Enforce payload.session vs envelope.sessionId consistency; emit `--session` only when
+            // durable subscription scope is explicitly requested (otherwise `fss follow` forbids
+            // `--session` without `--subscription`).
+            let resolved_follow_session = resolve_session(false)?;
+            let wants_durable_sub = args.contains_key("session")
+                || args.contains_key("subscription")
+                || args.contains_key("acknowledge");
+            if wants_durable_sub && let Some(session) = resolved_follow_session {
+                argv.push(format!("--session={session}").into());
+            }
             for (field, option, maximum) in [
-                ("session", "--session", 128),
                 ("subscription", "--subscription", 128),
                 ("acknowledge", "--acknowledge", 71),
             ] {
@@ -2169,7 +2610,31 @@ fn compile_operation_payload(
             if question != "what_if" && args.contains_key("counterfactual") {
                 return Err(bad_payload("counterfactual requires question=what_if"));
             }
+            if question != "what_changed"
+                && ["from_revision_digest", "to_revision_digest"]
+                    .iter()
+                    .any(|key| args.contains_key(*key))
+            {
+                return Err(bad_payload(
+                    "from_revision_digest and to_revision_digest require question=what_changed",
+                ));
+            }
             if question == "what_if" {
+                if [
+                    "session",
+                    "learning_root",
+                    "at",
+                    "custody",
+                    "from_revision_digest",
+                    "to_revision_digest",
+                ]
+                .iter()
+                .any(|key| args.contains_key(*key))
+                {
+                    return Err(bad_payload(
+                        "what_if requires current event metadata and one inline scenario without session, learning_root, at, custody, or revision digests",
+                    ));
+                }
                 let event = bounded_text(args.get("event_id"), 128).map_err(bad_payload)?;
                 let cf_val = args
                     .get("counterfactual")
@@ -2183,6 +2648,14 @@ fn compile_operation_payload(
                 argv.push(format!("--event-id={event}").into());
                 argv.push(format!("--counterfactual={cf_json}").into());
             } else if question == "what_changed" {
+                if ["session", "learning_root", "at", "custody"]
+                    .iter()
+                    .any(|key| args.contains_key(*key))
+                {
+                    return Err(bad_payload(
+                        "what_changed requires current adjacent event metadata without session, learning_root, at, or custody",
+                    ));
+                }
                 let event = bounded_text(args.get("event_id"), 128).map_err(bad_payload)?;
                 let from_d =
                     bounded_text(args.get("from_revision_digest"), 71).map_err(bad_payload)?;
@@ -2191,12 +2664,30 @@ fn compile_operation_payload(
                 argv.push(format!("--from-revision-digest={from_d}").into());
                 argv.push(format!("--to-revision-digest={to_d}").into());
             } else if let Some(lroot) = args.get("learning_root") {
+                if question == "why_not" {
+                    return Err(bad_payload(
+                        "question=why_not applies to event_id, not learning_root inspection",
+                    ));
+                }
+                if ["event_id", "at", "custody"]
+                    .iter()
+                    .any(|key| args.contains_key(*key))
+                {
+                    return Err(bad_payload(
+                        "learning_root inspection cannot use event_id, at, or custody",
+                    ));
+                }
                 let lroot_s = bounded_text(Some(lroot), 71).map_err(bad_payload)?;
                 let session = resolve_session(true)?
                     .ok_or_else(|| bad_payload("learning_root requires session"))?;
                 argv.push(format!("--learning-root={lroot_s}").into());
                 argv.push(format!("--session={session}").into());
             } else {
+                if args.contains_key("session") {
+                    return Err(bad_payload(
+                        "learning inspection requires both learning_root and session",
+                    ));
+                }
                 let event = bounded_text(args.get("event_id"), 128).map_err(bad_payload)?;
                 argv.push(format!("--event-id={event}").into());
                 if let Some(v) = args.get("at") {
@@ -2225,6 +2716,9 @@ fn compile_operation_payload(
             };
             if let Some(v) = args.get("budget_tokens") {
                 let n = positive_u64(v, u64::from(view.maximum_tokens())).map_err(bad_payload)?;
+                if req.budget.tokens > 0 && n > req.budget.tokens {
+                    return Err(budget_exceeded(n));
+                }
                 argv.push(format!("--budget-tokens={n}").into());
             }
             argv.push(principal_flag());
@@ -2338,12 +2832,23 @@ where
         target,
         "cameras" | "graph" | "fusion" | "holds" | "privacy-masks"
     ) {
-        let session_id = match args.get("session") {
-            None => req.session_id.clone(),
-            Some(v) => {
+        let session_id = match (args.get("session"), req.session_id.as_ref()) {
+            (Some(v), Some(env_s)) => {
+                let s = bounded_text(Some(v), 128).map_err(bad_payload)?;
+                let parsed = SessionId::parse(s).map_err(|_| bad_payload("invalid session id"))?;
+                if parsed != *env_s {
+                    return Err(bad_payload(
+                        "payload.session conflicts with envelope.sessionId",
+                    ));
+                }
+                Some(parsed)
+            }
+            (Some(v), None) => {
                 let s = bounded_text(Some(v), 128).map_err(bad_payload)?;
                 Some(SessionId::parse(s).map_err(|_| bad_payload("invalid session id"))?)
             }
+            (None, Some(env_s)) => Some(env_s.clone()),
+            (None, None) => None,
         };
         let grants = authority.granted_capabilities.clone();
         let dispatch = match target {
@@ -2525,6 +3030,24 @@ where
     }
 
     // Standard read-only targets: `events`, `footage`, `sources`, `reports`, `localizations`.
+    let resolve_continuation = || -> Result<Option<String>, Box<RefusalSpec>> {
+        match (args.get("continuation"), req.continuation.as_deref()) {
+            (Some(v), Some(env_c)) => {
+                let s = bounded_text(Some(v), 256).map_err(bad_payload)?;
+                if s != env_c {
+                    return Err(bad_payload(
+                        "payload.continuation conflicts with envelope.continuation",
+                    ));
+                }
+                Ok(Some(s.to_owned()))
+            }
+            (Some(v), None) => Ok(Some(
+                bounded_text(Some(v), 256).map_err(bad_payload)?.to_owned(),
+            )),
+            (None, Some(env_c)) => Ok(Some(env_c.to_owned())),
+            (None, None) => Ok(None),
+        }
+    };
     let mut argv: Vec<OsString> = vec![
         "query".into(),
         "--json".into(),
@@ -2564,12 +3087,14 @@ where
                 ("through_ns", "through-ns", 40),
                 ("anchor", "anchor", 256),
                 ("at", "at", 256),
-                ("continuation", "continuation", 256),
             ] {
                 if let Some(v) = args.get(key) {
                     let s = bounded_text(Some(v), bound).map_err(bad_payload)?;
                     argv.push(format!("--{flag}={s}").into());
                 }
+            }
+            if let Some(cont) = resolve_continuation()? {
+                argv.push(format!("--continuation={cont}").into());
             }
             if let Some(v) = args.get("max_entries") {
                 let n = positive_u64(v, u64::from(fss_reference::agent_query::MAX_QUERY_ENTRIES))
@@ -2595,12 +3120,14 @@ where
                 ("sensor", "sensor", 128),
                 ("stream", "stream", 128),
                 ("anchor", "anchor", 256),
-                ("continuation", "continuation", 256),
             ] {
                 if let Some(v) = args.get(key) {
                     let s = bounded_text(Some(v), bound).map_err(bad_payload)?;
                     argv.push(format!("--{flag}={s}").into());
                 }
+            }
+            if let Some(cont) = resolve_continuation()? {
+                argv.push(format!("--continuation={cont}").into());
             }
             if let Some(v) = args.get("max_entries") {
                 let n = positive_u64(v, MAX_PAGE_ENTRIES).map_err(bad_payload)?;
@@ -2627,12 +3154,14 @@ where
                 ("from_ns", "from-ns", 40),
                 ("through_ns", "through-ns", 40),
                 ("anchor", "anchor", 256),
-                ("continuation", "continuation", 256),
             ] {
                 if let Some(v) = args.get(key) {
                     let s = bounded_text(Some(v), bound).map_err(bad_payload)?;
                     argv.push(format!("--{flag}={s}").into());
                 }
+            }
+            if let Some(cont) = resolve_continuation()? {
+                argv.push(format!("--continuation={cont}").into());
             }
             if let Some(v) = args.get("max_entries") {
                 let n = positive_u64(v, MAX_PAGE_ENTRIES).map_err(bad_payload)?;
@@ -2661,12 +3190,14 @@ where
                 ("import_id", "import-id", 71),
                 ("twin_digest", "twin-digest", 71),
                 ("anchor", "anchor", 256),
-                ("continuation", "continuation", 256),
             ] {
                 if let Some(v) = args.get(key) {
                     let s = bounded_text(Some(v), bound).map_err(bad_payload)?;
                     argv.push(format!("--{flag}={s}").into());
                 }
+            }
+            if let Some(cont) = resolve_continuation()? {
+                argv.push(format!("--continuation={cont}").into());
             }
             if let Some(v) = args.get("max_entries") {
                 let n = positive_u64(v, MAX_PAGE_ENTRIES).map_err(bad_payload)?;
@@ -3556,9 +4087,9 @@ fn parse_contract_basis_json(val: Option<&Value>) -> Result<ContractBasis, Strin
     let req_str = |key: &str| -> Result<String, String> {
         obj.get(key)
             .and_then(Value::text)
-            .filter(|s| !s.is_empty() && s.len() <= 256)
+            .filter(|s| !s.is_empty() && s.len() <= 256 && !s.chars().any(char::is_control))
             .map(str::to_owned)
-            .ok_or_else(|| format!("contractBasis.{key} must be a 1..=256 string"))
+            .ok_or_else(|| format!("contractBasis.{key} must be a 1..=256 control-free string"))
     };
     let req_digest = |key: &str| -> Result<ContentDigest, String> {
         let s = req_str(key)?;
@@ -3566,9 +4097,16 @@ fn parse_contract_basis_json(val: Option<&Value>) -> Result<ContractBasis, Strin
     };
     let accepted_nightly = match obj.get("acceptedNightly") {
         None | Some(Value::Null) => None,
-        Some(Value::Text(s)) if !s.is_empty() && s.len() <= 128 => Some(s.clone()),
+        Some(Value::Text(s))
+            if !s.is_empty() && s.len() <= 128 && !s.chars().any(char::is_control) =>
+        {
+            Some(s.clone())
+        }
         Some(_) => {
-            return Err("contractBasis.acceptedNightly must be 1..=128 string or null".to_owned());
+            return Err(
+                "contractBasis.acceptedNightly must be 1..=128 control-free string or null"
+                    .to_owned(),
+            );
         }
     };
     if let Some(notes) = obj.get("compatibilityNotes") {
@@ -3579,9 +4117,13 @@ fn parse_contract_basis_json(val: Option<&Value>) -> Result<ContractBasis, Strin
             return Err("contractBasis.compatibilityNotes exceeds 64 items".to_owned());
         }
         for item in arr {
-            if item.text().is_none_or(|s| s.is_empty() || s.len() > 1024) {
+            if item
+                .text()
+                .is_none_or(|s| s.is_empty() || s.len() > 1024 || s.chars().any(char::is_control))
+            {
                 return Err(
-                    "contractBasis.compatibilityNotes items must be 1..=1024 strings".to_owned(),
+                    "contractBasis.compatibilityNotes items must be 1..=1024 control-free strings"
+                        .to_owned(),
                 );
             }
         }
@@ -3600,10 +4142,58 @@ fn parse_contract_basis_json(val: Option<&Value>) -> Result<ContractBasis, Strin
     })
 }
 
-fn parse_evidence_anchor_json(val: &Value, privacy_epoch: u64) -> Result<LedgerAnchor, String> {
+fn parse_evidence_anchor_json(
+    val: &Value,
+    explicit_privacy_epoch: Option<u64>,
+) -> Result<LedgerAnchor, String> {
     let obj = val
         .object()
         .ok_or_else(|| "`inputAnchor` must be a JSON object or null".to_owned())?;
+    const REQUIRED: &[&str] = &[
+        "schema",
+        "deploymentId",
+        "observationEpoch",
+        "capsuleSequence",
+        "authorityRoot",
+        "deviceGeneration",
+        "streamGeneration",
+        "schemaEpoch",
+        "policyEpoch",
+        "adapterEpoch",
+        "modelGeneration",
+        "calibrationGeneration",
+        "graphGeneration",
+        "searchGeneration",
+    ];
+    const ALLOWED: &[&str] = &[
+        "schema",
+        "deploymentId",
+        "observationEpoch",
+        "capsuleSequence",
+        "authorityRoot",
+        "deviceGeneration",
+        "streamGeneration",
+        "schemaEpoch",
+        "policyEpoch",
+        "adapterEpoch",
+        "modelGeneration",
+        "calibrationGeneration",
+        "graphGeneration",
+        "searchGeneration",
+        "privacyEpoch",
+    ];
+    for key in obj.keys() {
+        if !ALLOWED.contains(&key.as_str()) {
+            return Err(format!(
+                "unexpected inputAnchor field `{key}` (additionalProperties=false)"
+            ));
+        }
+    }
+    for req in REQUIRED {
+        if !obj.contains_key(*req) {
+            return Err(format!("missing required inputAnchor field `{req}`"));
+        }
+    }
     let schema = obj
         .get("schema")
         .and_then(Value::text)
@@ -3616,8 +4206,10 @@ fn parse_evidence_anchor_json(val: &Value, privacy_epoch: u64) -> Result<LedgerA
     let deployment_id = obj
         .get("deploymentId")
         .and_then(Value::text)
-        .filter(|s| !s.is_empty() && s.len() <= 256)
-        .ok_or_else(|| "inputAnchor.deploymentId must be a non-empty string".to_owned())?;
+        .filter(|s| !s.is_empty() && s.len() <= 256 && !s.chars().any(char::is_control))
+        .ok_or_else(|| {
+            "inputAnchor.deploymentId must be a non-empty control-free string".to_owned()
+        })?;
     let req_u64 = |key: &str| -> Result<u64, String> {
         match obj.get(key) {
             Some(Value::Number(raw)) => parse_u64_strict(raw, key),
@@ -3630,6 +4222,50 @@ fn parse_evidence_anchor_json(val: &Value, privacy_epoch: u64) -> Result<LedgerA
         .ok_or_else(|| "inputAnchor.authorityRoot must be a digest string".to_owned())?;
     let state_root = ContentDigest::parse(authority_root)
         .map_err(|_| "inputAnchor.authorityRoot is not a valid digest".to_owned())?;
+    for req_gen in ["deviceGeneration", "streamGeneration"] {
+        let gen_s = obj
+            .get(req_gen)
+            .and_then(Value::text)
+            .ok_or_else(|| format!("inputAnchor.{req_gen} must be a generation string"))?;
+        if !is_valid_generation_token(gen_s) {
+            return Err(format!(
+                "inputAnchor.{req_gen} does not match ^[a-z0-9][a-z0-9:+._-]{{7,255}}$"
+            ));
+        }
+    }
+    for opt_gen in [
+        "modelGeneration",
+        "calibrationGeneration",
+        "graphGeneration",
+        "searchGeneration",
+    ] {
+        match obj.get(opt_gen) {
+            Some(Value::Null) => {}
+            Some(Value::Text(s)) if is_valid_generation_token(s) => {}
+            _ => {
+                return Err(format!(
+                    "inputAnchor.{opt_gen} must be null or match ^[a-z0-9][a-z0-9:+._-]{{7,255}}$"
+                ));
+            }
+        }
+    }
+    let anchor_privacy_epoch = match obj.get("privacyEpoch") {
+        None => None,
+        Some(Value::Number(raw)) => Some(parse_u64_strict(raw, "privacyEpoch")?),
+        Some(_) => {
+            return Err("inputAnchor.privacyEpoch must be a non-negative integer".to_owned());
+        }
+    };
+    let privacy_epoch = match (anchor_privacy_epoch, explicit_privacy_epoch) {
+        (Some(a), Some(b)) if a != b => {
+            return Err(format!(
+                "inputAnchor.privacyEpoch ({a}) conflicts with requestedPrivacyProjection.policyGenerationId privacy-epoch:{b}"
+            ));
+        }
+        (Some(a), _) => a,
+        (None, Some(b)) => b,
+        (None, None) => 0,
+    };
 
     Ok(LedgerAnchor {
         site_lineage: deployment_id.to_owned(),
@@ -3641,6 +4277,17 @@ fn parse_evidence_anchor_json(val: &Value, privacy_epoch: u64) -> Result<LedgerA
         privacy_epoch,
         state_root,
     })
+}
+
+fn is_valid_generation_token(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    (8..=256).contains(&bytes.len())
+        && (bytes[0].is_ascii_lowercase() || bytes[0].is_ascii_digit())
+        && bytes[1..].iter().all(|&b| {
+            b.is_ascii_lowercase()
+                || b.is_ascii_digit()
+                || matches!(b, b':' | b'+' | b'.' | b'_' | b'-')
+        })
 }
 
 fn parse_budget_vector_json(val: Option<&Value>) -> Result<BudgetVector, String> {
@@ -3729,8 +4376,10 @@ fn parse_privacy_projection(val: Option<&Value>) -> Result<PrivacyProjection, St
     let purpose = obj
         .get("purpose")
         .and_then(Value::text)
-        .filter(|s| !s.is_empty() && s.len() <= 1024)
-        .ok_or_else(|| "requestedPrivacyProjection.purpose must be 1..=1024 chars".to_owned())?
+        .filter(|s| !s.is_empty() && s.len() <= 1024 && !s.chars().any(char::is_control))
+        .ok_or_else(|| {
+            "requestedPrivacyProjection.purpose must be 1..=1024 control-free chars".to_owned()
+        })?
         .to_owned();
     let policy_generation_id = obj
         .get("policyGenerationId")
@@ -3814,6 +4463,21 @@ fn is_valid_capability_id(s: &str) -> bool {
         && suffix.bytes().all(|b| b.is_ascii_digit())
 }
 
+fn is_valid_error_id(s: &str) -> bool {
+    let Some(rest) = s.strip_prefix("ERR-") else {
+        return false;
+    };
+    let Some((middle, suffix)) = rest.rsplit_once('-') else {
+        return false;
+    };
+    !middle.is_empty()
+        && middle
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'-')
+        && suffix.len() == 3
+        && suffix.bytes().all(|b| b.is_ascii_digit())
+}
+
 fn parse_bounded_strings(
     val: Option<&Value>,
     max_items: usize,
@@ -3830,8 +4494,8 @@ fn parse_bounded_strings(
     for item in items {
         let s = item
             .text()
-            .filter(|s| !s.is_empty() && s.len() <= max_len)
-            .ok_or_else(|| format!("`{label}` items must be 1..={max_len} strings"))?;
+            .filter(|s| !s.is_empty() && s.len() <= max_len && !s.chars().any(char::is_control))
+            .ok_or_else(|| format!("`{label}` items must be 1..={max_len} control-free strings"))?;
         out.push(s.to_owned());
     }
     Ok(out)
@@ -3877,8 +4541,8 @@ fn allow_only(args: &BTreeMap<String, Value>, allowed: &[&str]) -> Result<(), &'
 
 fn bounded_text(val: Option<&Value>, max_len: usize) -> Result<&str, &'static str> {
     val.and_then(Value::text)
-        .filter(|s| !s.is_empty() && s.len() <= max_len)
-        .ok_or("expected non-empty bounded string")
+        .filter(|s| !s.is_empty() && s.len() <= max_len && !s.contains('\0'))
+        .ok_or("expected non-empty bounded NUL-free string")
 }
 
 fn optional_clean_text(
@@ -3983,8 +4647,10 @@ fn parse_optional_interval(
             None => Ok(None),
             Some(Value::Number(raw)) | Some(Value::Text(raw)) => raw
                 .parse::<i128>()
+                .ok()
+                .filter(|v| v.to_string() == *raw)
                 .map(Some)
-                .map_err(|_| "invalid i128 timestamp"),
+                .ok_or("invalid canonical i128 timestamp"),
             Some(_) => Err("invalid i128 timestamp"),
         }
     };
@@ -4283,24 +4949,50 @@ mod tests {
         let basis = reference_contract_basis();
         let principal = PrincipalId::parse("principal:fss242-unit")?;
         let d = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+        let boundary = r#"{"completed":[],"notStarted":[],"possiblyOccurred":[],"preservedTruth":[],"invalidated":[]}"#;
 
         // Valid AOP-003 response passes
         let valid = format!(
-            r#"{{"schema":"fss.agent_response_envelope.v1","contractBasis":{{}},"operationId":"AOP-003","principalId":"principal:fss242-unit","outcome":"ok","errorId":null,"payloadSchema":"fss.situation_capsule.v1","payloadDigest":"{d}","decisionFingerprint":"{d}"}}"#
+            r#"{{"schema":"fss.agent_response_envelope.v1","contractBasis":{{}},"operationId":"AOP-003","principalId":"principal:fss242-unit","effectiveViewId":"AVIEW-002","epistemicState":"known","completeness":"complete","recoveryClass":"safe_read_retry","safeRetry":"yes_same_request","resnapshotRequired":false,"executionBoundary":{boundary},"outcome":"ok","errorId":null,"payloadSchema":"fss.situation_capsule.v1","payloadDigest":"{d}","decisionFingerprint":"{d}"}}"#
         );
+        let meta = validate_response_envelope_against_registry(
+            &valid,
+            AgentOperation::SessionOrient,
+            &basis,
+            &principal,
+        )
+        .map_err(|e| format!("expected valid envelope: {e}"))?;
+        assert_eq!(meta.decision_fingerprint, Some(ContentDigest::parse(d)?));
+
+        // Refused/error envelope missing errorId MUST fail closed
+        let missing_err_id = valid.replace(r#""outcome":"ok""#, r#""outcome":"refused""#);
         assert!(
             validate_response_envelope_against_registry(
-                &valid,
+                &missing_err_id,
                 AgentOperation::SessionOrient,
                 &basis,
                 &principal,
             )
-            .is_ok()
+            .is_err()
+        );
+
+        // Malformed errorId pattern MUST fail closed
+        let bad_err_id = valid
+            .replace(r#""outcome":"ok""#, r#""outcome":"refused""#)
+            .replace(r#""errorId":null"#, r#""errorId":"not-a-registered-err""#);
+        assert!(
+            validate_response_envelope_against_registry(
+                &bad_err_id,
+                AgentOperation::SessionOrient,
+                &basis,
+                &principal,
+            )
+            .is_err()
         );
 
         // Planted V2 cognitive payload under reference V1 basis MUST be refused
         let drifted_v2 = format!(
-            r#"{{"schema":"fss.agent_response_envelope.v1","contractBasis":{{}},"operationId":"AOP-006","principalId":"principal:fss242-unit","outcome":"ok","errorId":null,"payloadSchema":"fss.agent_cognitive_envelope.v2","payloadDigest":"{d}","decisionFingerprint":"{d}"}}"#
+            r#"{{"schema":"fss.agent_response_envelope.v1","contractBasis":{{}},"operationId":"AOP-006","principalId":"principal:fss242-unit","effectiveViewId":"AVIEW-004","epistemicState":"known","completeness":"complete","recoveryClass":"safe_read_retry","safeRetry":"yes_same_request","resnapshotRequired":false,"executionBoundary":{boundary},"outcome":"ok","errorId":null,"payloadSchema":"fss.agent_cognitive_envelope.v2","payloadDigest":"{d}","decisionFingerprint":"{d}"}}"#
         );
         assert!(
             validate_response_envelope_against_registry(
@@ -4333,6 +5025,181 @@ mod tests {
             )
             .is_err()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn fresh_eyes_cycle24_hardening_regression_matrix() -> TestResult {
+        let auth = test_authority()?;
+        assert!(auth.granted_capabilities.contains(CAP_RETENTION_PREPARE));
+
+        // 1. Stateless request_digest sensitivity across all previously-omitted fields.
+        let base_spec = RequestEnvelopeSpec::for_operation(
+            AgentOperation::Query,
+            "req:digest-sens",
+            auth.principal.clone(),
+            r#"{"target":"events"}"#,
+        );
+        let raw_base = base_spec.to_json();
+        let req_base = parse_and_validate_request(
+            &auth,
+            &raw_base,
+            ContentDigest::sha256(raw_base.as_bytes()),
+        )
+        .map_err(|r| format!("base request should parse: {}", r.detail))?;
+
+        let mut mod_deadline = base_spec.clone();
+        mod_deadline.deadline_ns = Some(base_spec.created_at_ns + 5_000);
+        let raw_dl = mod_deadline.to_json();
+        let req_dl =
+            parse_and_validate_request(&auth, &raw_dl, ContentDigest::sha256(raw_dl.as_bytes()))
+                .map_err(|r| format!("deadline request should parse: {}", r.detail))?;
+        assert_ne!(req_base.request_digest, req_dl.request_digest);
+
+        let mut mod_taint_src = base_spec.clone();
+        mod_taint_src.taint.sources = vec!["taint:user:prompt".to_owned()];
+        let raw_ts = mod_taint_src.to_json();
+        let req_ts =
+            parse_and_validate_request(&auth, &raw_ts, ContentDigest::sha256(raw_ts.as_bytes()))
+                .map_err(|r| format!("taint src request should parse: {}", r.detail))?;
+        assert_ne!(req_base.request_digest, req_ts.request_digest);
+
+        let mut mod_hydr = base_spec.clone();
+        mod_hydr.max_hydration_level = HydrationLevel::H0;
+        let raw_hy = mod_hydr.to_json();
+        let req_hy =
+            parse_and_validate_request(&auth, &raw_hy, ContentDigest::sha256(raw_hy.as_bytes()))
+                .map_err(|r| format!("hydration request should parse: {}", r.detail))?;
+        assert_ne!(req_base.request_digest, req_hy.request_digest);
+
+        let mut mod_uri = base_spec.clone();
+        mod_uri.target_uris = vec!["fss://deployment/events".to_owned()];
+        let raw_uri = mod_uri.to_json();
+        let req_uri =
+            parse_and_validate_request(&auth, &raw_uri, ContentDigest::sha256(raw_uri.as_bytes()))
+                .map_err(|r| format!("uri request should parse: {}", r.detail))?;
+        assert_ne!(req_base.request_digest, req_uri.request_digest);
+
+        // 2. inputAnchor strict schema validation: extra property and missing generation fail closed.
+        let mut anchored = base_spec.clone();
+        anchored.input_anchor = Some(LedgerAnchor::genesis("site:anchor-test"));
+        let anchor_json_extra = anchored.to_json().replace(
+            r#""searchGeneration":null"#,
+            r#""searchGeneration":null,"sneaky":1"#,
+        );
+        let out_extra = dispatch_envelope_json(&auth, &anchor_json_extra);
+        assert_eq!(
+            out_extra.receipt.error_id.as_deref(),
+            Some(ERR_AGENT_PROTOCOL)
+        );
+
+        let anchor_json_missing_gen = anchored
+            .to_json()
+            .replace(r#""searchGeneration":null"#, r#""privacyEpoch":0"#);
+        let out_missing = dispatch_envelope_json(&auth, &anchor_json_missing_gen);
+        assert_eq!(
+            out_missing.receipt.error_id.as_deref(),
+            Some(ERR_AGENT_PROTOCOL)
+        );
+
+        // Conflicting inputAnchor.privacyEpoch vs policyGenerationId privacy-epoch:0
+        let anchor_privacy_conflict = anchored.to_json().replace(
+            r#""searchGeneration":null"#,
+            r#""searchGeneration":null,"privacyEpoch":7"#,
+        );
+        let out_priv = dispatch_envelope_json(&auth, &anchor_privacy_conflict);
+        assert_eq!(
+            out_priv.receipt.error_id.as_deref(),
+            Some(ERR_AGENT_PROTOCOL)
+        );
+
+        // 3. AOP-011 explain mutual-exclusion parity with fss-mcp
+        let d = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+        for (tag, bad_explain_payload) in [
+            ("why-with-rev-digests", format!(r#"{{"event_id":"ev:1","from_revision_digest":"{d}","to_revision_digest":"{d}"}}"#)),
+            ("what_if-with-session", r#"{"question":"what_if","event_id":"ev:1","session":"session:1","counterfactual":{}}"#.to_owned()),
+            ("what_changed-with-at", format!(r#"{{"question":"what_changed","event_id":"ev:1","at":"anchor:x","from_revision_digest":"{d}","to_revision_digest":"{d}"}}"#)),
+            ("why_not-with-learning-root", format!(r#"{{"question":"why_not","learning_root":"{d}","session":"session:1"}}"#)),
+            ("learning-root-with-event", format!(r#"{{"learning_root":"{d}","session":"session:1","event_id":"ev:1"}}"#)),
+            ("session-without-learning-root", r#"{"event_id":"ev:1","session":"session:1"}"#.to_owned()),
+        ] {
+            let spec = RequestEnvelopeSpec::for_operation(
+                AgentOperation::Explain,
+                format!("req:explain:{tag}"),
+                auth.principal.clone(),
+                bad_explain_payload,
+            );
+            let out = dispatch_envelope_json(&auth, &spec.to_json());
+            assert_eq!(
+                out.receipt.error_id.as_deref(),
+                Some(ERR_AGENT_PROTOCOL),
+                "explain mutual exclusion `{tag}` must refuse with ERR-AGENT-PROTOCOL-001"
+            );
+        }
+
+        // 4. payload.session vs envelope.sessionId conflict on follow and ops query targets
+        let mut follow_conflict = RequestEnvelopeSpec::for_operation(
+            AgentOperation::SessionFollow,
+            "req:follow:conflict",
+            auth.principal.clone(),
+            r#"{"since":"anchor:site:0:none:abc","session":"session:other","subscription":"sub:1"}"#,
+        );
+        follow_conflict.session_id = Some(SessionId::parse("session:env")?);
+        let out = dispatch_envelope_json(&auth, &follow_conflict.to_json());
+        assert_eq!(out.receipt.error_id.as_deref(), Some(ERR_AGENT_PROTOCOL));
+
+        let mut ops_conflict = RequestEnvelopeSpec::for_operation(
+            AgentOperation::Query,
+            "req:ops:conflict",
+            auth.principal.clone(),
+            r#"{"target":"cameras","session":"session:other"}"#,
+        );
+        ops_conflict.session_id = Some(SessionId::parse("session:env")?);
+        let out = dispatch_envelope_json(&auth, &ops_conflict.to_json());
+        assert_eq!(out.receipt.error_id.as_deref(), Some(ERR_AGENT_PROTOCOL));
+
+        // 5. payload.continuation vs envelope.continuation conflict on query
+        let mut query_cont_conflict = RequestEnvelopeSpec::for_operation(
+            AgentOperation::Query,
+            "req:query:cont-conflict",
+            auth.principal.clone(),
+            r#"{"target":"events","continuation":"continuation:a"}"#,
+        );
+        query_cont_conflict.continuation = Some("continuation:b".to_owned());
+        let out = dispatch_envelope_json(&auth, &query_cont_conflict.to_json());
+        assert_eq!(out.receipt.error_id.as_deref(), Some(ERR_AGENT_PROTOCOL));
+
+        // 6. envelope.budget.tokens ceiling enforced against payload.budget_tokens
+        let mut tok_budget = RequestEnvelopeSpec::for_operation(
+            AgentOperation::SessionOrient,
+            "req:budget:tokens",
+            auth.principal.clone(),
+            r#"{"view":"brief","budget_tokens":1600}"#,
+        );
+        tok_budget.budget = BudgetVector::builder().tokens(256).build()?;
+        let out = dispatch_envelope_json(&auth, &tok_budget.to_json());
+        assert_eq!(out.receipt.error_id.as_deref(), Some(ERR_BUDGET_EXHAUSTED));
+
+        // 7. expectedWorkspaceRevision without a session fails closed with ERR-AGENT-SESSION-STALE-001
+        let mut stale_ws = RequestEnvelopeSpec::for_operation(
+            AgentOperation::SessionOrient,
+            "req:ws:nosession",
+            auth.principal.clone(),
+            "{}",
+        );
+        stale_ws.expected_workspace_revision = Some(1);
+        let out = dispatch_envelope_json(&auth, &stale_ws.to_json());
+        assert_eq!(
+            out.receipt.error_id.as_deref(),
+            Some(ERR_AGENT_SESSION_STALE)
+        );
+        assert!(out.response_json.contains("\"resnapshotRequired\":true"));
+
+        // 8. Control characters in privacy.purpose / taint.sources fail closed
+        let mut ctrl_purpose = base_spec;
+        ctrl_purpose.requested_privacy_projection.purpose = "bad\npurpose".to_owned();
+        let out = dispatch_envelope_json(&auth, &ctrl_purpose.to_json());
+        assert_eq!(out.receipt.error_id.as_deref(), Some(ERR_AGENT_PROTOCOL));
         Ok(())
     }
 }
