@@ -257,9 +257,30 @@
 .planes__panel-role {
   display: none;
 }
-/* The comparison shows every setup at once on wide screens; the switch is for phones. */
+/* The comparison shows every setup at once on wide screens. Below 1,081 px the five columns
+   (980 px) no longer fit, so a switch picks the one setup shown beside this one: a three-column
+   table on tablets and small laptops, blocks on phones. */
 .compare__pick {
   display: none;
+}
+@media (max-width: 1080px) {
+  .compare__pick {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    width: min(100% - 40px, 480px);
+    margin: 0 20px 16px;
+  }
+  .compare__table {
+    min-width: 0;
+  }
+  .compare__table thead th:first-child {
+    width: 24%;
+  }
+  .compare__table[data-against="nvr"] :is(.is-homelab, .is-vlm),
+  .compare__table[data-against="homelab"] :is(.is-nvr, .is-vlm),
+  .compare__table[data-against="vlm"] :is(.is-nvr, .is-homelab) {
+    display: none;
+  }
 }
 @media (max-width: 1080px) {
   .planes__tabs {
@@ -295,9 +316,7 @@
 /* Phones: one block per dimension, the chosen setup above this one, each with its name. */
 @media (max-width: 760px) {
   .compare__pick {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    margin: 0 20px 16px;
+    width: auto;
   }
   .compare__pick button {
     padding: 5px 6px;
@@ -357,10 +376,5 @@
   }
   .compare__table td.is-fss::before {
     color: var(--chapter);
-  }
-  .compare__table[data-against="nvr"] :is(.is-homelab, .is-vlm),
-  .compare__table[data-against="homelab"] :is(.is-nvr, .is-vlm),
-  .compare__table[data-against="vlm"] :is(.is-nvr, .is-homelab) {
-    display: none;
   }
 }
