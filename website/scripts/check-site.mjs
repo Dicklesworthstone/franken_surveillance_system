@@ -65,6 +65,14 @@ try {
     assert.ok(await page.locator("h1").isVisible(), `h1 visible at ${width}`);
     for (const id of ["minute", "how", "inputs", "fusion", "coverage", "belief", "agent", "effects", "record", "status"])
       assert.equal(await page.locator("#" + id).count(), 1, `section #${id}`);
+    // Before any scrolling the page has fetched only what its first screen needs: the site renders
+    // further down wait until their section comes near, and the one image it preloads is the hero still.
+    const early = await page.evaluate(() => ({
+      renders: performance.getEntriesByType("resource").map((e) => e.name).filter((name) => /\/twin\/[^/]+\.jpg$/.test(name)),
+      preloads: [...document.querySelectorAll('link[rel="preload"][as="image"]')].map((l) => l.getAttribute("href") ?? l.getAttribute("imagesrcset")),
+    }));
+    assert.deepEqual(early.renders, [], `no site render fetched before scrolling at ${width}`);
+    assert.deepEqual(early.preloads, ["/watch/intrusion/hero-still.jpg"], `the hero still is the only image preloaded at ${width}`);
     await page.evaluate(async () => {
       for (let y = 0; y < document.documentElement.scrollHeight; y += 700) {
         scrollTo(0, y);
@@ -99,7 +107,7 @@ try {
     if (shots) await page.screenshot({ path: join(shots, `home-${width}.png`) });
     await context.close();
   }
-  pass(`Home page renders at ${WIDTHS.join(", ")} px with no sideways scroll and no failed request.`);
+  pass(`Home page renders at ${WIDTHS.join(", ")} px with no sideways scroll and no failed request. Its first screen preloads only the hero still and fetches no site render.`);
 
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const { page, errors } = await open(context);

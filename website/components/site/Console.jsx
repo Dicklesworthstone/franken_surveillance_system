@@ -109,7 +109,7 @@ export default function Console({ summary, story, spans, sceneUrl, sceneDigest, 
   const positions = useVerifiedJson(sceneUrl, sceneDigest, true, adapt);
   const take = positions.value;
 
-  // Films are only fetched once the console is close to the viewport.
+  // Films and the site renders are only fetched once the console is close to the viewport.
   const root = useRef(null);
   const [near, setNear] = useState(false);
   useEffect(() => {
@@ -284,7 +284,7 @@ export default function Console({ summary, story, spans, sceneUrl, sceneDigest, 
           })}
         </div>
         <div className="console__site">
-          <SiteTwin summary={summary} take={take} frame={frame} selected={selected} onSelect={pick} mode={view} />
+          <SiteTwin summary={summary} take={take} frame={frame} selected={selected} onSelect={pick} mode={view} backdrop={near} />
           {summary.twin.front && (
             <div className="switch console__view" role="group" aria-label="View of the site">
               <button type="button" aria-pressed={view === "model"} onClick={() => setView("model")}>

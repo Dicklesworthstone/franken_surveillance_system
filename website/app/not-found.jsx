@@ -46,13 +46,16 @@ export default function NotFound() {
         <figure className="missing__monitor">
           <div className="missing__screen">
             {/* The gate camera's still, from the same render as the home page's thumbnail; the 1280 px source on sharp screens.
-                No reticle: on this site it is the frame a detector draws round what it found, and this picture has nobody. */}
+                No reticle: on this site it is the frame a detector draws round what it found, and this picture has nobody.
+                Low priority because Next carries this page's tree in every page, and React hints a preload of any
+                other image into each page's head: a phone opening the home page would fetch this one first. */}
             <img
               src="/watch/plates/cam-gate.webp"
               srcSet="/watch/plates/cam-gate.webp 640w, /watch/intrusion/gate.jpg 1280w"
               sizes="(min-width: 900px) 640px, calc(100vw - 32px)"
               width="640"
               height="360"
+              fetchPriority="low"
               alt=""
             />
             <span className="missing__credit">

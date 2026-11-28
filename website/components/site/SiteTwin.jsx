@@ -57,7 +57,7 @@ function projection(view) {
  * are path-traced renders of the same model the films were shot in: `model`
  * looks down from the street side at 55 degrees, `plan` looks straight down.
  */
-export default function SiteTwin({ summary, take, frame, selected, onSelect, mode = "plan" }) {
+export default function SiteTwin({ summary, take, frame, selected, onSelect, mode = "plan", backdrop = true }) {
   const view = (mode === "model" && summary.twin.front) || summary.twin.plan;
   const p = projection(view);
   const t = frame / summary.fps;
@@ -85,14 +85,20 @@ export default function SiteTwin({ summary, take, frame, selected, onSelect, mod
       }
       style={{ "--m": m }}
     >
-      <image href={view.dark} width="100" height={p.tall} preserveAspectRatio="none" className="twin__plate" />
-      <image
-        href={view.lit}
-        width="100"
-        height={p.tall}
-        preserveAspectRatio="none"
-        className={"twin__plate twin__plate--lit" + (lit ? " is-on" : "")}
-      />
+      {/* A view's two renders weigh 0.5 to 0.8 MB and an SVG image cannot be lazy, so they are
+          only drawn once `backdrop` says the picture is close to the viewport. */}
+      {backdrop && (
+        <>
+          <image href={view.dark} width="100" height={p.tall} preserveAspectRatio="none" className="twin__plate" />
+          <image
+            href={view.lit}
+            width="100"
+            height={p.tall}
+            preserveAspectRatio="none"
+            className={"twin__plate twin__plate--lit" + (lit ? " is-on" : "")}
+          />
+        </>
+      )}
       <g transform={p.ground}>
         {shut && (
           <line

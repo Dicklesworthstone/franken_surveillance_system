@@ -130,6 +130,16 @@ export function FusionBench({ summary }) {
   const [a, , c, , e, f] = plan.affine;
   const image = { x: -c / a, y: -f / e, width: 1 / a, height: 1 / e };
   const svg = useRef(null);
+  // The plan render is 0.4 MB and an SVG image cannot be lazy, so it is drawn once the bench is close to the viewport.
+  const [near, setNear] = useState(false);
+  useEffect(() => {
+    const watcher = new IntersectionObserver(
+      (entries) => entries.some((entry) => entry.isIntersecting) && setNear(true),
+      { rootMargin: "700px" },
+    );
+    watcher.observe(svg.current);
+    return () => watcher.disconnect();
+  }, []);
   const [at, setAt] = useState([-5.5, 10]);
   const [on, setOn] = useState(() => Object.fromEntries(summary.cameras.map((cam) => [cam.id, true])));
   const drag = useRef(false);
@@ -197,7 +207,7 @@ export function FusionBench({ summary }) {
         }}
         onPointerCancel={() => (drag.current = tap.current = false)}
       >
-        <image href={plan.dark} {...image} preserveAspectRatio="none" className="twin__plate" />
+        {near && <image href={plan.dark} {...image} preserveAspectRatio="none" className="twin__plate" />}
         {summary.cameras.map((cam) => (
           <polygon
             key={cam.id}
