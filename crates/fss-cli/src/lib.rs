@@ -152,8 +152,8 @@ pub use envelope_dispatch::{
     DispatchAuthority, DispatchOutcome, DispatchReceipt, ERR_AGENT_PROTOCOL,
     ERR_AGENT_TRANSPORT_DIVERGED, ERR_AUTH_DENIED, ERR_BUDGET_EXHAUSTED, ERR_IDEMPOTENCY_CONFLICT,
     MAX_REQUEST_ENVELOPE_BYTES, MAX_RESPONSE_ENVELOPE_BYTES, RequestEnvelopeSpec,
-    ValidatedResponseMeta, dispatch_envelope_json, dispatch_envelope_json_with_control,
-    validate_response_envelope_against_registry,
+    ValidatedResponseMeta, dispatch_compiled_nl_query_with_control, dispatch_envelope_json,
+    dispatch_envelope_json_with_control, validate_response_envelope_against_registry,
 };
 pub use error::{
     CliError, ERR_CLI_DUPLICATE_OPTION, ERR_CLI_INVALID_UNICODE, ERR_CLI_MALFORMED_VALUE,

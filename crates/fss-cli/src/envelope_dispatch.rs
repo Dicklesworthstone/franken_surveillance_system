@@ -532,6 +532,260 @@ pub fn dispatch_envelope_json(
     dispatch_envelope_json_with_control(authority, raw_request_json, &RequestControl::uncancelled())
 }
 
+/// Bridges a verified read-only [`fss_reference::nl_query_compiler::CompilationResult`] (`DOC-033`)
+/// into the universal `AgentRequestEnvelope` dispatch path under explicit cancellation.
+///
+/// Guarantees:
+/// - **NEVER** executes `ClarificationRequired` (`ERR-AGENT-AMBIGUOUS-001`),
+///   `PreparedDraftOnly` (`ERR-AUTH-DENIED-001` — prose cannot cross an effect boundary),
+///   `Blocked` (`ERR-AUTH-DENIED-001`), or `Refused` results; fails closed with a schema-valid
+///   `AgentResponseEnvelope` refusal preserving the exact registered error identity and taint flag.
+/// - Only `CompilationDisposition::Selected` non-effectful read/compute plans compile into a
+///   typed `AgentRequestEnvelope` and execute through the single canonical owner path.
+#[must_use]
+pub fn dispatch_compiled_nl_query_with_control(
+    authority: &DispatchAuthority,
+    request_id: &str,
+    compiled: &fss_reference::nl_query_compiler::CompilationResult,
+    control: &RequestControl<'_>,
+) -> DispatchOutcome {
+    use fss_reference::nl_query_compiler::{CompilationDisposition, ERR_AGENT_AMBIGUOUS};
+
+    let raw_digest = compiled.original_text_digest;
+    let tainted = compiled.taint.contains_untrusted_control_text;
+
+    if compiled.disposition != CompilationDisposition::Selected {
+        let (error_id, recovery_class, safe_retry, detail) = match compiled.disposition {
+            CompilationDisposition::ClarificationRequired => (
+                compiled.error_id.unwrap_or(ERR_AGENT_AMBIGUOUS),
+                "operator_action_required",
+                ResponseSafeRetry::No,
+                compiled.clarifications.first().cloned().unwrap_or_else(|| {
+                    "Natural-language request is materially ambiguous.".to_owned()
+                }),
+            ),
+            CompilationDisposition::PreparedDraftOnly => (
+                ERR_AUTH_DENIED,
+                "operator_action_required",
+                ResponseSafeRetry::No,
+                format!(
+                    "Effectful natural-language prose was downgraded to witnessed draft `{}`; prose cannot cross an effect boundary without explicit operator approval.",
+                    compiled
+                        .prepared_intent_draft_id
+                        .as_deref()
+                        .unwrap_or("intent-draft:none")
+                ),
+            ),
+            CompilationDisposition::Blocked => (
+                compiled.error_id.unwrap_or(ERR_AUTH_DENIED),
+                "operator_action_required",
+                ResponseSafeRetry::No,
+                compiled.warnings.first().cloned().unwrap_or_else(|| {
+                    "Missing required capabilities for compiled query plan.".to_owned()
+                }),
+            ),
+            CompilationDisposition::Refused => (
+                compiled.error_id.unwrap_or(ERR_AGENT_PROTOCOL),
+                if compiled.error_id == Some(ERR_AGENT_SESSION_STALE) {
+                    "rebase_required"
+                } else {
+                    "never_unchanged"
+                },
+                if compiled.error_id == Some(ERR_AGENT_SESSION_STALE) {
+                    ResponseSafeRetry::YesAfterRefresh
+                } else {
+                    ResponseSafeRetry::No
+                },
+                compiled
+                    .warnings
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "Natural-language compilation refused.".to_owned()),
+            ),
+            CompilationDisposition::Selected => unreachable!(),
+        };
+        let op = compiled
+            .query_plan
+            .as_ref()
+            .map_or(AgentOperation::Query, |p| p.operation());
+        return build_refusal_outcome(
+            authority,
+            RefusalSpec {
+                operation: op,
+                request_id: request_id.to_owned(),
+                session_id: compiled
+                    .query_plan
+                    .as_ref()
+                    .map(|p| p.session_id().as_str().to_owned()),
+                mission_id: compiled
+                    .query_plan
+                    .as_ref()
+                    .map(|p| p.mission_id().as_str().to_owned()),
+                view: compiled.output_view,
+                error_id,
+                outcome: ResponseOutcome::Refused,
+                completeness: compiled.completeness,
+                recovery_class,
+                safe_retry,
+                resnapshot_required: error_id == ERR_AGENT_SESSION_STALE,
+                detail,
+                remediation: compiled.remediation.clone(),
+                request_payload_schema: op.request_payload_schema().to_owned(),
+                request_digest: raw_digest,
+                tainted,
+            },
+        );
+    }
+
+    let Some(selected) = compiled.selected_compiled() else {
+        return build_refusal_outcome(
+            authority,
+            RefusalSpec {
+                operation: AgentOperation::Query,
+                request_id: request_id.to_owned(),
+                session_id: None,
+                mission_id: None,
+                view: compiled.output_view,
+                error_id: ERR_AGENT_PROTOCOL,
+                outcome: ResponseOutcome::Refused,
+                completeness: Completeness::Unknown,
+                recovery_class: "never_unchanged",
+                safe_retry: ResponseSafeRetry::No,
+                resnapshot_required: false,
+                detail: "Compiled result lacked a selected interpretation.".to_owned(),
+                remediation: "Recompile natural-language query.".to_owned(),
+                request_payload_schema: AgentOperation::Query.request_payload_schema().to_owned(),
+                request_digest: raw_digest,
+                tainted,
+            },
+        );
+    };
+
+    // Defense in depth: compiled NL queries NEVER execute effectful operations.
+    if selected.operation.effectful() || selected.effectful_intent_downgraded {
+        return build_refusal_outcome(
+            authority,
+            RefusalSpec {
+                operation: selected.operation,
+                request_id: request_id.to_owned(),
+                session_id: compiled
+                    .query_plan
+                    .as_ref()
+                    .map(|p| p.session_id().as_str().to_owned()),
+                mission_id: compiled
+                    .query_plan
+                    .as_ref()
+                    .map(|p| p.mission_id().as_str().to_owned()),
+                view: selected.output_view,
+                error_id: ERR_AUTH_DENIED,
+                outcome: ResponseOutcome::Refused,
+                completeness: Completeness::Unauthorized,
+                recovery_class: "operator_action_required",
+                safe_retry: ResponseSafeRetry::No,
+                resnapshot_required: false,
+                detail: "Natural-language query plans may never cross an effect boundary."
+                    .to_owned(),
+                remediation: "Submit an explicit operator-approved AOP-007 plan -> AOP-008 commit."
+                    .to_owned(),
+                request_payload_schema: selected.operation.request_payload_schema().to_owned(),
+                request_digest: raw_digest,
+                tainted: true,
+            },
+        );
+    }
+
+    let payload_json = match selected.operation {
+        AgentOperation::Doctor => "{}".to_owned(),
+        AgentOperation::SessionOrient => {
+            let view_name = match selected.output_view {
+                AgentView::Pulse => "pulse",
+                AgentView::EpistemicMap => "epistemic_map",
+                _ => "brief",
+            };
+            object(&[("view", string(view_name))])
+        }
+        AgentOperation::Query => {
+            let target = selected.query_target.as_deref().unwrap_or("events");
+            let mut fields = vec![("target", string(target))];
+            if target == "cameras"
+                && let Some(cam) = selected.target_ids.first()
+            {
+                fields.push(("camera_id", string(cam)));
+            } else if target == "events"
+                && let Some(tid) = selected.target_ids.first()
+            {
+                if tid.starts_with("zone:") {
+                    fields.push(("zone", string(tid)));
+                } else if tid.starts_with("sensor:") {
+                    fields.push(("sensor", string(tid)));
+                }
+            }
+            object(&fields)
+        }
+        AgentOperation::Explain => {
+            let q = selected.explain_question.as_deref().unwrap_or("why");
+            let mut fields = vec![("question", string(q))];
+            if let Some(ev) = selected.target_ids.first() {
+                fields.push(("event_id", string(ev)));
+            }
+            object(&fields)
+        }
+        _ => {
+            return build_refusal_outcome(
+                authority,
+                RefusalSpec {
+                    operation: selected.operation,
+                    request_id: request_id.to_owned(),
+                    session_id: compiled
+                        .query_plan
+                        .as_ref()
+                        .map(|p| p.session_id().as_str().to_owned()),
+                    mission_id: compiled
+                        .query_plan
+                        .as_ref()
+                        .map(|p| p.mission_id().as_str().to_owned()),
+                    view: selected.output_view,
+                    error_id: ERR_AGENT_PROTOCOL,
+                    outcome: ResponseOutcome::Refused,
+                    completeness: Completeness::Partial,
+                    recovery_class: "operator_action_required",
+                    safe_retry: ResponseSafeRetry::No,
+                    resnapshot_required: false,
+                    detail: format!(
+                        "Compiled operation {} ({}) requires explicit cursor/operation parameters before live dispatch.",
+                        selected.operation.id(),
+                        selected.operation.name()
+                    ),
+                    remediation: "Supply explicit since-anchor or operation_id in the typed AgentRequestEnvelope.".to_owned(),
+                    request_payload_schema: selected.operation.request_payload_schema().to_owned(),
+                    request_digest: raw_digest,
+                    tainted,
+                },
+            );
+        }
+    };
+
+    let mut spec = RequestEnvelopeSpec::for_operation(
+        selected.operation,
+        request_id,
+        authority.principal.clone(),
+        payload_json,
+    );
+    spec.contract_basis = compiled.effective_basis.clone();
+    spec.view = selected.output_view;
+    spec.target_uris = compiled
+        .resolved_uris
+        .iter()
+        .map(|u| u.uri.clone())
+        .collect();
+    spec.requested_capabilities = compiled.capability_projection.clone();
+    spec.taint = RequestTaint {
+        contains_untrusted_control_text: tainted,
+        sources: compiled.taint.taint_sources.clone(),
+    };
+    dispatch_envelope_json_with_control(authority, &spec.to_json(), control)
+}
+
 /// Dispatches one canonical `fss.agent_request_envelope.v1` JSON document against `authority`
 /// under explicit cooperative cancellation (`control`).
 ///

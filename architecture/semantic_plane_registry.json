@@ -1900,6 +1900,7 @@
     "crates/fss-reference/src/model_receipt_tests.rs": "support",
     "crates/fss-reference/src/model_scheduler.rs": "cognition",
     "crates/fss-reference/src/model_tests.rs": "support",
+    "crates/fss-reference/src/nl_query_compiler.rs": "cognition",
     "crates/fss-reference/src/notify/ed25519.rs": "support",
     "crates/fss-reference/src/notify/escalation.rs": "effect",
     "crates/fss-reference/src/notify/mod.rs": "effect",
@@ -3322,6 +3323,11 @@
       "file": "crates/fss-tensor/src/media_delivery_card.rs",
       "plane": "cognition",
       "description": "Canonical remux-before-transcode, live delivery surface, archive tier, and backend-neutral portability decision card (DOC-052); derived cognition only, never grants effect authority."
+    },
+    "CompilationReceipt": {
+      "file": "crates/fss-reference/src/nl_query_compiler.rs",
+      "plane": "cognition",
+      "description": "Deterministic staged natural-language to AgentQueryPlan compilation receipt (DOC-033 / INV-088); taint-preserving cognition only, never grants effect authority."
     }
   }
 }
