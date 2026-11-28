@@ -718,8 +718,41 @@ try {
     const status = (await probe.request.get(absolute(path))).status();
     assert.equal(status, 404, path);
   }
+  // What such an address shows: the site's own page, not Next's default, which drew the site's light
+  // text on its own white background and so read as blank. It must be legible, lead back to the top and
+  // to every chapter, keep the copy rules and fit a phone.
+  const lost = await probe.newPage();
+  await lost.setViewportSize({ width: 390, height: 844 });
+  await lost.goto(absolute("/404.html"), { waitUntil: "load" });
+  const missing = await lost.evaluate(() => {
+    const rgb = (c) => c.match(/[\d.]+/g).slice(0, 3).map(Number);
+    const lum = (c) =>
+      rgb(c)
+        .map((v) => (v / 255 <= 0.03928 ? v / 255 / 12.92 : ((v / 255 + 0.055) / 1.055) ** 2.4))
+        .reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i], 0);
+    const h1 = document.querySelector("h1");
+    const [hi, lo] = [lum(getComputedStyle(h1).color), lum(getComputedStyle(document.body).backgroundColor)].sort((a, b) => b - a);
+    return {
+      heading: h1.innerText.trim(),
+      contrast: (hi + 0.05) / (lo + 0.05),
+      home: document.querySelectorAll('a[href="/"]').length,
+      chapters: [...document.querySelectorAll('a[href^="/#"]')].map((a) => a.getAttribute("href").slice(2)),
+      text: document.body.innerText,
+      sideways: document.documentElement.scrollWidth > innerWidth,
+    };
+  });
+  await lost.close();
+  assert.ok(missing.heading, "the missing page has a heading");
+  assert.ok(missing.contrast >= 4.5, `the missing page's heading is legible (contrast ${missing.contrast.toFixed(2)})`);
+  assert.ok(missing.home >= 1, "the missing page links back to the top");
+  const homeHtml = await (await probe.request.get(absolute("/"))).text();
+  assert.equal(missing.chapters.length, 5, "the missing page links every chapter");
+  for (const id of missing.chapters) assert.ok(homeHtml.includes(`id="${id}"`), `chapter #${id} exists on the home page`);
+  assert.doesNotMatch(missing.text, /alder|juniper/i, "estate name absent from the missing page");
+  assert.ok(!/[—–]/.test(missing.text), "no em or en dash on the missing page");
+  assert.ok(!missing.sideways, "the missing page fits a phone");
   await probe.close();
-  pass(`${RETIRED.length} retired addresses return 404.`);
+  pass(`${RETIRED.length} retired addresses return 404. A missing address shows the site's own page, legible, with a way back to the top and to all 5 chapters.`);
   await checkDeliveryDropout(browser, origin);
   pass("The courier recording loses and regains its picture at the measured gap boundaries. Swapped previews are rejected and retry restores both.");
 

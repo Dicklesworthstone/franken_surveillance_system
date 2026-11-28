@@ -1,0 +1,185 @@
+/* An address the site does not have: the words and an empty camera picture, then every chapter. */
+.missing {
+  --chapter: var(--moon);
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  flex-direction: column;
+  gap: clamp(40px, 5vw, 64px);
+  width: min(100% - 2 * var(--gutter), var(--page));
+  min-height: 100svh;
+  margin-inline: auto;
+  padding-block: 28px clamp(32px, 4vw, 56px);
+}
+/* Moonlight from above the monitor, fixed so it stays put on a short screen that scrolls. */
+.missing::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(56rem 30rem at 72% 8%, color-mix(in srgb, var(--moon) 11%, transparent), transparent 70%),
+    radial-gradient(40rem 24rem at 10% 100%, rgb(255 194 77 / 0.05), transparent 70%);
+}
+.missing .share__brand {
+  position: static;
+  align-self: flex-start;
+}
+.missing__grid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
+  gap: clamp(32px, 5vw, 80px);
+  align-items: center;
+}
+.missing h1 {
+  max-width: 11ch;
+  margin-top: 22px;
+}
+.missing .lede {
+  max-width: 34rem;
+  margin-top: 24px;
+}
+
+.missing__monitor {
+  width: 100%;
+  max-width: 640px;
+  margin: 0 0 0 auto;
+}
+.missing__screen {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border: 1px solid rgb(255 255 255 / 0.14);
+  border-radius: 20px;
+  background: #000;
+  box-shadow:
+    0 50px 120px -40px rgb(0 0 0 / 0.95),
+    0 0 90px -34px color-mix(in srgb, var(--moon) 50%, transparent);
+}
+.missing__screen img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+/* The same vignette as the hero's monitor, painted over the still. */
+.missing__screen::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(ellipse at 50% 45%, transparent 58%, rgb(0 0 0 / 0.42) 100%);
+}
+/* Bottom left: the camera's own clock is printed at the top left of the picture. */
+.missing__credit {
+  position: absolute;
+  bottom: 18px;
+  left: 22px;
+  z-index: 5;
+}
+.missing__credit .badge {
+  background: rgb(5 7 11 / 0.74);
+  border-color: rgb(255 255 255 / 0.16);
+}
+.missing__monitor figcaption {
+  margin-top: 14px;
+  text-align: right;
+}
+
+.missing__chapters ol {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.missing__chapters a {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 100%;
+  padding: 16px 18px 18px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgb(255 255 255 / 0.02);
+  color: var(--text);
+  text-decoration: none;
+  transition:
+    border-color 0.2s var(--ease),
+    background-color 0.2s var(--ease);
+}
+.missing__chapters a:hover {
+  border-color: color-mix(in srgb, var(--chapter) 55%, transparent);
+  background: color-mix(in srgb, var(--chapter) 7%, transparent);
+}
+.missing__title {
+  font-size: 0.98rem;
+  font-weight: 650;
+  line-height: 1.3;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+
+/* Three across, then two wider ones, so neither row ends in an empty slot. */
+@media (max-width: 1099px) {
+  .missing__chapters ol {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+  .missing__chapters li {
+    grid-column: span 2;
+  }
+  .missing__chapters li:nth-child(n + 4) {
+    grid-column: span 3;
+  }
+}
+@media (max-width: 899px) {
+  .missing__grid {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+  }
+  /* On a narrow screen the empty picture comes first, under the brand, and the headline follows it. */
+  .missing__monitor {
+    order: -1;
+    max-width: none;
+    margin: 0;
+  }
+  .missing__monitor figcaption {
+    text-align: left;
+  }
+}
+@media (max-width: 640px) {
+  .missing {
+    gap: 36px;
+  }
+  .missing__screen {
+    border-radius: 16px;
+  }
+  .missing__credit {
+    right: 14px;
+    bottom: 12px;
+    left: 14px;
+  }
+  .missing__credit .badge {
+    border-radius: 12px;
+    font-size: 0.62rem;
+  }
+  /* Neither button fits beside the other here, so each takes the full row. */
+  .missing .share__actions .button {
+    flex: 1 1 100%;
+  }
+  .missing__chapters ol {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+  .missing__chapters li,
+  .missing__chapters li:nth-child(n + 4) {
+    grid-column: auto;
+  }
+  .missing__chapters a {
+    gap: 6px;
+    padding: 14px 16px;
+  }
+}
