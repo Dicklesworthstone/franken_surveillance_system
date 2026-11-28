@@ -151,6 +151,11 @@
   border-top: 1px solid var(--line);
   background: radial-gradient(60rem 26rem at 18% 120%, rgb(255 180 156 / 0.14), transparent 66%), var(--ink);
 }
+/* After the finale the render has already faded into the same ink; a rule there reads as a cut.
+   No border at all: a transparent one would show the glow's tile wrapping into it as a pink line. */
+main:has(> .finale:last-child) + .footer {
+  border-top: 0;
+}
 .footer__grid {
   display: grid;
   grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
@@ -265,8 +270,10 @@
   inset: auto 0 0;
   z-index: -1;
   height: var(--plate);
-  mask-image: linear-gradient(to bottom, transparent 0%, black 40%, black 90%, transparent 100%);
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 40%, black 90%, transparent 100%);
+  /* The lit lawn fades out on an eased curve, fully gone at the footer, so the render ends in the
+     night rather than on a line. The lowest path lights sit above 74%. */
+  mask-image: linear-gradient(to bottom, transparent 0%, black 40%, black 74%, rgb(0 0 0 / 0.6) 84%, rgb(0 0 0 / 0.22) 93%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 40%, black 74%, rgb(0 0 0 / 0.6) 84%, rgb(0 0 0 / 0.22) 93%, transparent 100%);
 }
 .finale__plate img {
   width: 100%;
